@@ -27,6 +27,7 @@ _COMMIT = re.compile(
 _TASK_FIELDS = frozenset(
     {"id", "title", "description", "depends_on", "scope", "acceptance", "profiles", "commit"}
 )
+_CRITERION_FIELDS = frozenset({"id", "description"})
 _RESERVED = frozenset({".git", ".local"})
 
 
@@ -37,7 +38,7 @@ class Task:
     description: str
     depends_on: tuple[str, ...]
     scope: tuple[str, ...]
-    acceptance: tuple[dict[str, str], ...]
+    acceptance: tuple[dict[str, Any], ...]
     profiles: tuple[str, ...]
     commit: str
 
@@ -100,6 +101,28 @@ def _scope(value: Any, label: str) -> str:
     return value
 
 
+def _criterion(value: Any, task_id: str, required: set[str]) -> dict[str, Any]:
+    """One acceptance criterion; an optional `evidence` names the kinds it waits for."""
+    label = f"{task_id}.acceptance"
+    optional = {"evidence"} if isinstance(value, dict) and "evidence" in value else set()
+    raw = _object(value, _CRITERION_FIELDS | optional, label)
+    criterion: dict[str, Any] = {
+        "id": _identifier(raw["id"], f"{label}.id"),
+        "description": _text(raw["description"], f"{label}.description", 2048),
+    }
+    if optional:
+        kinds = tuple(_array(raw["evidence"], f"{label}.evidence", len(MANUAL_EVIDENCE)))
+        if not all(isinstance(kind, str) and kind in MANUAL_EVIDENCE for kind in kinds):
+            raise ValueError(f"{label}.evidence names an unsupported evidence kind")
+        _unique(kinds, f"{label}.evidence")
+        # A kind the profiles do not require is never asked for, so a criterion
+        # waiting on it could never be graded; refuse it at intake instead.
+        if unrequired := sorted(set(kinds) - required):
+            raise ValueError(f"{label}.evidence names kinds the profiles do not require: {', '.join(unrequired)}")
+        criterion["evidence"] = kinds
+    return criterion
+
+
 def _task(value: Any, index: int) -> Task:
     label = f"tasks[{index}]"
     raw = _object(value, _TASK_FIELDS, label)
@@ -114,14 +137,6 @@ def _task(value: Any, index: int) -> Task:
         for item in _array(raw["scope"], f"{task_id}.scope", 50, 1)
     )
     _unique(scopes, f"{task_id}.scope")
-    criteria = []
-    for item in _array(raw["acceptance"], f"{task_id}.acceptance", 50, 1):
-        criterion = _object(item, {"id", "description"}, f"{task_id}.acceptance")
-        criteria.append({
-            "id": _identifier(criterion["id"], f"{task_id}.acceptance.id"),
-            "description": _text(criterion["description"], f"{task_id}.acceptance.description", 2048),
-        })
-    _unique([item["id"] for item in criteria], f"{task_id}.acceptance")
     profiles = tuple(
         _text(item, f"{task_id}.profiles", 32)
         for item in _array(raw["profiles"], f"{task_id}.profiles", len(PROFILES), 1)
@@ -129,6 +144,11 @@ def _task(value: Any, index: int) -> Task:
     _unique(profiles, f"{task_id}.profiles")
     if not set(profiles) <= PROFILES:
         raise ValueError(f"{task_id}.profiles contains an unsupported profile")
+    criteria = [
+        _criterion(item, task_id, set(profiles) & MANUAL_EVIDENCE)
+        for item in _array(raw["acceptance"], f"{task_id}.acceptance", 50, 1)
+    ]
+    _unique([item["id"] for item in criteria], f"{task_id}.acceptance")
     commit = _text(raw["commit"], f"{task_id}.commit", 72)
     if not _COMMIT.fullmatch(commit):
         raise ValueError(f"{task_id}.commit must be a Conventional Commit subject")
@@ -245,3 +265,22 @@ def path_allowed(path: str, scopes: Sequence[str]) -> bool:
 def required_evidence(task: Task) -> set[str]:
     """Required manual evidence kinds; profiles alone are never proof."""
     return set(task.profiles) & MANUAL_EVIDENCE
+
+
+def evidence_criteria(task: Task) -> dict[str, frozenset[str]]:
+    """The criteria that wait for external evidence, with the kinds each waits for.
+
+    A criterion's explicit `evidence` list decides, an empty one included.
+    Without one, a criterion whose id is a manual evidence kind waits for that
+    kind. Every other criterion needs no external evidence, so a verifier can
+    grade it before anyone gathers native, performance, package or vendor proof.
+    """
+    gated = {}
+    for criterion in task.acceptance:
+        if "evidence" in criterion:
+            kinds = frozenset(criterion["evidence"])
+        else:
+            kinds = frozenset({criterion["id"]}) & MANUAL_EVIDENCE
+        if kinds:
+            gated[criterion["id"]] = kinds
+    return gated

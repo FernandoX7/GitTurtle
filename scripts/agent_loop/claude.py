@@ -385,8 +385,10 @@ class Claude:
             "Independently review this exact candidate against every acceptance criterion. "
             "The source checkout is read-only. Inspect actual implementation and gate evidence; "
             "do not trust the builder summary. Identify weakened tests and missing native, "
-            "performance, package or vendor evidence. Return blocked and unverified criteria "
-            "when evidence is unavailable. Do not edit source, commit, or operate the desktop. "
+            "performance, package or vendor evidence. Grade in the verification mode stated "
+            "below; it names any criteria that wait for that evidence. Return blocked and "
+            "unverified criteria when evidence the mode requires is unavailable. "
+            "Do not edit source, commit, or operate the desktop. "
             "Do not rerun unchanged full suites without a concrete concern."
         )
         if role == "security-reviewer":

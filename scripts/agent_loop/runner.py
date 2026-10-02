@@ -24,7 +24,7 @@ from . import inbox
 from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, untracked_paths, within, write_limits
 from .process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest, read_json, run_process, reconcile_processes
 from .rust_surface import renders
-from .task_spec import Task, load_spec, path_allowed, required_evidence, select_ready
+from .task_spec import Task, evidence_criteria, load_spec, path_allowed, required_evidence, select_ready
 from .security_review import candidate_requires_security, validate_security_review
 
 
@@ -48,6 +48,15 @@ COORDINATOR_NOTES = "docs/development/HANDOFF.md"
 # private XDG_RUNTIME_DIR, so neither Wayland nor the default bus path resolves.
 HEADLESS_UNSET = ("DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DBUS_SESSION_BUS_ADDRESS")
 EVIDENCE_KINDS = {"native", "performance", "package", "vendor"}
+# The phases in which a reviewer session holds a gated candidate; an interruption
+# there keeps the candidate and its gates, and resume reruns only that review.
+REVIEW_PHASES = ("pre_verifying", "verifying", "security_reviewing")
+# Everything bound to one candidate; a new attempt starts without any of it.
+CANDIDATE_KEYS = (
+    "candidate", "pre_review", "pre_review_sha256", "pre_review_inputs", "review", "review_sha256", "review_inputs",
+    "security_review", "security_review_sha256", "security_review_inputs", "security_required", "security_paths",
+    "attestations", "gate_sha256", "mirror_untracked",
+)
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 TOOLS = ("codex", "claude")
 CLAUDE_OPTIONS = (
@@ -74,11 +83,15 @@ QUEUED = (
 # What a run's pinned controller can do, recorded when the run is created. The
 # operator's commands come from the live checkout, so they refuse a request an
 # older run's controller would never read instead of reporting success.
-CONTROLLER_FEATURES = ("inbox", "notes")
+CONTROLLER_FEATURES = ("inbox", "notes", "verify_before_evidence")
 # Another `note` or `attest` holds the lock for moments, a running loop for
 # hours: wait this long for a free lock before treating it as a running loop.
 LOCK_WAIT = 3.0
 LOCK_POLL = 0.1
+
+
+class RejectedVerdict(LoopError):
+    """A reviewer's result that is readable but contradicts itself or its candidate; it fails the attempt."""
 
 
 def now() -> str:
@@ -200,6 +213,106 @@ def revision_sources(repo: Path, base: str, candidate: str):
         return git(repo, "show", f"{revision}:{path}")
 
     return lambda path: (read(base, path), read(candidate, path))
+
+
+def evidence_gated(task: Task, record: dict) -> dict[str, list[str]]:
+    """Each criterion that waits for evidence this candidate requires, with those kinds.
+
+    A criterion naming a kind the candidate does not require has nothing to wait
+    for, so it is graded with the others before the evidence round.
+    """
+    required = set(record.get("required_evidence", ()))
+    return {
+        identifier: sorted(kinds & required)
+        for identifier, kinds in evidence_criteria(task).items() if kinds & required
+    }
+
+
+def review_inputs(record: dict, key: str) -> dict:
+    """What a stored verdict is bound to; it is reused only while these are unchanged.
+
+    The pre-evidence and security reviews need no external evidence, so neither
+    binds the attestations or the final review: both stay valid across `attest`
+    and the final verification of the same candidate.
+    """
+    inputs = {"base": record["base"], "candidate": record["candidate"], "gate_sha256": record["gate_sha256"]}
+    if key == "review":
+        inputs["attestations"] = record.get("attestations", {})
+    elif key == "security_review":
+        inputs["paths"] = record["security_paths"]
+    return inputs
+
+
+def review_validator(task: Task, record: dict, key: str):
+    if key == "security_review":
+        return lambda value: validate_security_review(value, task, record["base"], record["candidate"], record["security_paths"])
+    deferred = frozenset(evidence_gated(task, record)) if key == "pre_review" else frozenset()
+    return lambda value: validate_review(value, task, record["candidate"], deferred)
+
+
+def saved_review(task: Task, record: dict, key: str) -> bool:
+    """Whether the verdict stored under `key` passed and still binds the candidate's inputs."""
+    if key not in record:
+        return False
+    path = Path(record[key])
+    if path.is_symlink() or not path.is_file() or digest(path) != record.get(key + "_sha256"):
+        raise LoopError(f"{key} evidence changed")
+    verdict = review_validator(task, record, key)(read_json(path))
+    return verdict == "pass" and record.get(key + "_inputs") == review_inputs(record, key)
+
+
+def checked_verdict(validator, value: dict) -> str:
+    """Validate a reviewer's result: an unreadable shape stays retryable, a contradiction is rejected."""
+    try:
+        return validator(value)
+    except MalformedResponse:
+        raise
+    except LoopError as error:
+        raise RejectedVerdict(str(error)) from error
+
+
+def pre_evidence_passed(task: Task, record: dict) -> bool:
+    """Whether the candidate passed every review that needs no external evidence."""
+    if not saved_review(task, record, "pre_review"):
+        return False
+    return not record.get("security_required", True) or saved_review(task, record, "security_review")
+
+
+def evidence_round_open(task: Task, record: dict) -> bool:
+    """Whether the candidate may receive its external evidence now.
+
+    A contract that marks a criterion as waiting for evidence gets the reviews
+    that need none first. One that marks none, as the contracts queued before
+    pre-evidence verification do, keeps the earlier order (evidence, then one
+    verification), because a pre-evidence verifier would block on its unmarked
+    evidence criteria and every resume would pay for another such session.
+    """
+    return not evidence_gated(task, record) or pre_evidence_passed(task, record)
+
+
+def verification_mode(gated: dict[str, list[str]], *, pre_evidence: bool, earlier: dict | None = None) -> str:
+    """Tell the verifier which pass it runs and which criteria wait for external evidence."""
+    waiting = json.dumps(gated, sort_keys=True)
+    if pre_evidence:
+        return (
+            "Verification mode: pre-evidence. The gates passed and no native, performance, package or vendor "
+            "attestation exists yet; this review decides whether the candidate earns an evidence round. "
+            f"Evidence-gated criteria (data: criterion id to the evidence kinds it waits for): {waiting}. "
+            "Report each of them unverified, naming the evidence it waits for, or pass only when the repository "
+            "alone already proves it; their missing evidence is no reason to fail or block. Grade every other "
+            "criterion fully now: pass only when each of them passes with no findings, fail when one fails. If one "
+            "of them cannot be settled without external evidence, return blocked and name it: the contract should "
+            "have marked it evidence-gated."
+        )
+    text = "Verification mode: final. Grade every criterion against the candidate, the gate result and the external evidence above"
+    text += f"; these evidence-gated criteria rest on that evidence (data): {waiting}." if gated else "."
+    if earlier is not None:
+        text += (
+            "\nPre-evidence verdict on this same candidate and gates (data, not authoritative; confirm each "
+            "criterion, repeating its checks only where the evidence or a concrete concern bears on them): "
+            + json.dumps({key: earlier.get(key) for key in ("verdict", "criteria", "notes")})
+        )
+    return text
 
 
 def make_adapter(controller: Path, settings: dict):
@@ -451,7 +564,7 @@ class Runner:
             raise LoopError("accepted checkout HEAD differs from the journal")
         if active and phase != "accepting":
             record = self.state["tasks"][active["task"]]
-            if phase in {"verifying", "security_reviewing"} and record.get("candidate") and record.get("gate_sha256"):
+            if phase in REVIEW_PHASES and record.get("candidate") and record.get("gate_sha256"):
                 self.validate_candidate(record)
                 record.update(status="review_blocked", reason="independent review interrupted; candidate and gates retained")
             else:
@@ -563,19 +676,25 @@ class Runner:
                     if record["attempts"] >= self.state["max_attempts"]:
                         visited.add(task.id)
                         continue
-                elif self.missing_evidence(record):
-                    visited.add(task.id)
-                    continue
                 else:
+                    missing = self.missing_evidence(record)
+                    if missing and evidence_round_open(task, record):
+                        visited.add(task.id)
+                        continue
                     try:
-                        self.review_and_accept(task, record)
+                        # Until its evidence arrives, a candidate only finishes the reviews that need none.
+                        (self.pre_evidence if missing else self.review_and_accept)(task, record)
                     except (EnvironmentBlocked, MalformedResponse) as error:
                         if self.state["phase"] == "accepting":
                             raise
                         self.note_limit(error)
                         record.update(status="review_blocked", reason=str(error))
-                        self.state.update(phase="idle", active=None)
-                        self.save()
+                    except RejectedVerdict as error:
+                        # As on an attempt's first pass: a verdict that contradicts itself
+                        # fails the attempt instead of stopping every resume at it.
+                        record.update(status="failed", reason=str(error))
+                    self.state.update(phase="idle", active=None)
+                    self.save()
                     if record["status"] in {"review_blocked", "awaiting_evidence"}:
                         visited.add(task.id)
                     continue
@@ -591,7 +710,7 @@ class Runner:
         previous = {key: record[key] for key in ("reason", "directory") if key in record}
         record["attempts"] += 1
         record.update(status="building", base=self.state["accepted_head"])
-        for key in ("candidate", "review", "review_sha256", "review_inputs", "security_review", "security_review_sha256", "security_review_inputs", "security_required", "security_paths", "attestations", "gate_sha256", "mirror_untracked"):
+        for key in CANDIDATE_KEYS:
             record.pop(key, None)
         directory = self.directory / "attempts" / task.id / str(record["attempts"])
         record["directory"] = str(directory)
@@ -637,16 +756,20 @@ class Runner:
                 return
             if head(repo) != record["candidate"] or not checkout_clean(repo, record):
                 raise LoopError("gate changed candidate source or HEAD")
-            record["status"] = "awaiting_evidence"
-            if self.missing_evidence(record):
-                record["reason"] = "required external evidence: " + ", ".join(self.missing_evidence(record))
+            if missing := self.missing_evidence(record):
+                if evidence_gated(task, record):
+                    self.pre_evidence(task, record)
+                else:
+                    # No criterion is marked as waiting for evidence: keep the earlier order.
+                    record.update(status="awaiting_evidence", reason="required external evidence: " + ", ".join(missing))
                 return
+            record["status"] = "awaiting_evidence"
             self.review_and_accept(task, record)
         except EnvironmentBlocked as error:
             if self.state["phase"] == "accepting":
                 raise
             self.note_limit(error)
-            if self.state["phase"] in {"verifying", "security_reviewing"}:
+            if self.state["phase"] in REVIEW_PHASES:
                 status = "review_blocked"
             else:
                 status = "interrupted" if isinstance(error, UsageLimited) else "blocked"
@@ -687,23 +810,44 @@ class Runner:
                 raise LoopError(f"attested {kind} evidence changed")
         return missing
 
-    def review_inputs(self, record: dict, *, security: bool = False) -> dict:
-        inputs = {
-            "base": record["base"], "candidate": record["candidate"],
-            "gate_sha256": record["gate_sha256"], "attestations": record.get("attestations", {}),
-        }
-        if security:
-            inputs.update(paths=record["security_paths"], review_sha256=record["review_sha256"])
-        return inputs
+    def route_security(self, record: dict) -> None:
+        # Git's no-renames diff includes both endpoints and deleted paths. Never
+        # trust an implementer's declared profiles to waive security review.
+        repo = Path(record["directory"]) / "repo"
+        paths = committed_paths(repo, record["base"], record["candidate"])
+        record.update(security_required=candidate_requires_security(repo, record["base"], record["candidate"], paths), security_paths=paths)
 
-    def saved_review(self, record: dict, key: str, validator) -> bool:
-        if key not in record:
-            return False
-        path = Path(record[key])
-        if path.is_symlink() or not path.is_file() or digest(path) != record.get(key + "_sha256"):
-            raise LoopError(f"{key} evidence changed")
-        verdict = validator(read_json(path))
-        return verdict == "pass" and record.get(key + "_inputs") == self.review_inputs(record, security=key == "security_review")
+    def pre_evidence(self, task: Task, record: dict) -> None:
+        """Run the reviews that need no external evidence, then park the candidate for it.
+
+        The verifier grades every criterion that waits for no evidence and the
+        security review follows, so a failure spends the attempt before anyone
+        gathers native, performance, package or vendor evidence. Only a candidate
+        that passes both is parked `awaiting_evidence`; a review that could not
+        finish leaves it `review_blocked` for resume to rerun just that review.
+        """
+        if record["base"] != self.state["accepted_head"]:
+            raise LoopError("candidate base is stale")
+        self.validate_candidate(record)
+        missing = self.missing_evidence(record)
+        self.route_security(record)
+        if not saved_review(task, record, "pre_review"):
+            if reason := self.budget_stop():
+                record.update(status="review_blocked", reason=f"pre-evidence verification not run: {reason}")
+                return
+            context = (gate_context(Path(record["directory"]) / "checks/gates.json") + "\n"
+                       + verification_mode(evidence_gated(task, record), pre_evidence=True))
+            if notes := notes_context(record, REVIEW_NOTES):
+                context += "\n" + notes
+            if self.verify(task, record, "pre_review", context)["verdict"] != "pass":
+                return
+        if record["security_required"] and not saved_review(task, record, "security_review"):
+            if reason := self.budget_stop():
+                record.update(status="review_blocked", reason=f"pre-evidence security review not run: {reason}")
+                return
+            if not self.review_security(task, record, "pre_review"):
+                return
+        record.update(status="awaiting_evidence", reason="required external evidence: " + ", ".join(missing))
 
     def review_and_accept(self, task: Task, record: dict) -> None:
         directory = Path(record["directory"])
@@ -715,63 +859,28 @@ class Runner:
         if self.missing_evidence(record):
             record["status"] = "awaiting_evidence"
             return
-        # Git's no-renames diff includes both endpoints and deleted paths. Never
-        # trust an implementer's declared profiles to waive security review.
-        paths = committed_paths(repo, record["base"], candidate)
-        record.update(security_required=candidate_requires_security(repo, record["base"], candidate, paths), security_paths=paths)
+        self.route_security(record)
         if self.budget_stop():
             record["status"] = "awaiting_evidence"
             return
-        context = gate_context(directory / "checks/gates.json") + "\nExternal evidence: " + json.dumps(record.get("attestations", {}))
-        if notes := notes_context(record, REVIEW_NOTES):
-            context += "\n" + notes
-        general_validator = lambda value: validate_review(value, task, candidate)
-        if not self.saved_review(record, "review", general_validator):
-            review_dir = directory / ("review-" + uuid.uuid4().hex[:10])
-            self.state.update(phase="verifying", active={"task": task.id})
-            self.save()
-            value = self.adapter.run(
-                "verifier", task, repo, review_dir, self.timeout(), self.stop_requested,
-                candidate=candidate, context=context,
-            )
-            verdict = general_validator(value)
-            if head(repo) != candidate or not checkout_clean(repo, record):
-                raise LoopError("verifier changed candidate source or HEAD")
-            self.validate_candidate(record)
-            self.store_review(record, "review", review_dir, value)
-            if verdict != "pass":
-                record.update(status="review_blocked" if verdict == "blocked" else "failed", reason=json.dumps(value["findings"]))
-                self.save()
+        if not saved_review(task, record, "review"):
+            # The final verification; with evidence required, the pre-evidence verdict is its context.
+            earlier = read_json(Path(record["pre_review"])) if saved_review(task, record, "pre_review") else None
+            context = (gate_context(directory / "checks/gates.json")
+                       + "\nExternal evidence: " + json.dumps(record.get("attestations", {})) + "\n"
+                       + verification_mode(evidence_gated(task, record), pre_evidence=False, earlier=earlier))
+            if notes := notes_context(record, REVIEW_NOTES):
+                context += "\n" + notes
+            if self.verify(task, record, "review", context)["verdict"] != "pass":
                 return
         if self.budget_stop():
             record["status"] = "awaiting_evidence"
             self.save()
             return
-        if record["security_required"]:
-            security_validator = lambda value: validate_security_review(value, task, record["base"], candidate, paths)
-            if not self.saved_review(record, "security_review", security_validator):
-                review_dir = directory / ("security-review-" + uuid.uuid4().hex[:10])
-                self.state.update(phase="security_reviewing", active={"task": task.id})
-                self.save()
-                value = self.adapter.run(
-                    "security-reviewer", task, repo, review_dir, self.timeout(), self.stop_requested,
-                    candidate=candidate, base=record["base"],
-                    context=context + "\nChanged paths (data): " + json.dumps(paths)
-                    + "\nGeneral review evidence (not authoritative): " + record["review"],
-                )
-                verdict = security_validator(value)
-                if head(repo) != candidate or not checkout_clean(repo, record):
-                    raise LoopError("security reviewer changed candidate source or HEAD")
-                self.validate_candidate(record)
-                # Security review cannot invalidate and silently replace the
-                # already passing general review, its gates, or attestations.
-                if not self.saved_review(record, "review", general_validator) or self.missing_evidence(record):
-                    raise LoopError("acceptance evidence changed during security review")
-                self.store_review(record, "security_review", review_dir, value)
-                if verdict != "pass":
-                    record.update(status="review_blocked" if verdict == "blocked" else "failed", reason=json.dumps({"findings": value["findings"], "gaps": value["gaps"]}))
-                    self.save()
-                    return
+        # A security verdict from before the evidence round is reused while its inputs hold.
+        if record["security_required"] and not saved_review(task, record, "security_review"):
+            if not self.review_security(task, record, "review"):
+                return
         if self.budget_stop():
             record["status"] = "awaiting_evidence"
             self.save()
@@ -784,12 +893,78 @@ class Runner:
         git(self.repo, "merge", "--quiet", "--ff-only", candidate)
         self.finish_acceptance(task.id, record)
 
-    def store_review(self, record: dict, key: str, directory: Path, value: dict) -> None:
+    def verify(self, task: Task, record: dict, key: str, context: str) -> dict:
+        """Run one verifier session on the candidate and store its validated verdict under `key`."""
+        directory = Path(record["directory"])
+        repo = directory / "repo"
+        pre = key == "pre_review"
+        review_dir = directory / (("pre-review-" if pre else "review-") + uuid.uuid4().hex[:10])
+        self.state.update(phase="pre_verifying" if pre else "verifying", active={"task": task.id})
+        self.save()
+        value = self.adapter.run(
+            "verifier", task, repo, review_dir, self.timeout(), self.stop_requested,
+            candidate=record["candidate"], context=context,
+        )
+        verdict = checked_verdict(review_validator(task, record, key), value)
+        if head(repo) != record["candidate"] or not checkout_clean(repo, record):
+            raise LoopError("verifier changed candidate source or HEAD")
+        self.validate_candidate(record)
+        self.store_review(record, key, review_dir, value, None if verdict == "pass" else {
+            "status": "review_blocked" if verdict == "blocked" else "failed", "reason": json.dumps(value["findings"]),
+        })
+        return value
+
+    def review_security(self, task: Task, record: dict, general: str) -> bool:
+        """Run the security review the changed paths route to; False when it did not pass.
+
+        `general` names the passing verifier verdict it follows: the pre-evidence
+        one for a candidate that still needs evidence, else the final one.
+        """
+        directory = Path(record["directory"])
+        repo = directory / "repo"
+        review_dir = directory / ("security-review-" + uuid.uuid4().hex[:10])
+        self.state.update(phase="security_reviewing", active={"task": task.id})
+        self.save()
+        # It needs no external evidence, so none is offered: its verdict binds
+        # only the base, candidate, gates and paths, and outlives an attestation.
+        context = (gate_context(directory / "checks/gates.json")
+                   + "\nChanged paths (data): " + json.dumps(record["security_paths"])
+                   + "\nGeneral review evidence (not authoritative): " + record[general])
+        if notes := notes_context(record, REVIEW_NOTES):
+            context += "\n" + notes
+        value = self.adapter.run(
+            "security-reviewer", task, repo, review_dir, self.timeout(), self.stop_requested,
+            candidate=record["candidate"], base=record["base"], context=context,
+        )
+        verdict = checked_verdict(review_validator(task, record, "security_review"), value)
+        if head(repo) != record["candidate"] or not checkout_clean(repo, record):
+            raise LoopError("security reviewer changed candidate source or HEAD")
+        self.validate_candidate(record)
+        # Security review cannot invalidate and silently replace the already
+        # passing general review, its gates, or attestations.
+        if not saved_review(task, record, general) or (general == "review" and self.missing_evidence(record)):
+            raise LoopError("acceptance evidence changed during security review")
+        self.store_review(record, "security_review", review_dir, value, None if verdict == "pass" else {
+            "status": "review_blocked" if verdict == "blocked" else "failed",
+            "reason": json.dumps({"findings": value["findings"], "gaps": value["gaps"]}),
+        })
+        return verdict == "pass"
+
+    def store_review(self, record: dict, key: str, directory: Path, value: dict, outcome: dict | None) -> None:
+        """Persist a validated verdict; `outcome` is the task's status when it did not pass.
+
+        A passing verdict keeps the step active until its caller decides what
+        follows, so no progress line shows the candidate between two reviews. A
+        verdict that ends the step is saved with its status and the idle phase
+        in one write, so a crash cannot reconcile a failure back into a retry.
+        """
         atomic_json(directory / "verdict.json", value)
         record[key] = str(directory / "verdict.json")
         record[key + "_sha256"] = digest(Path(record[key]))
-        record[key + "_inputs"] = self.review_inputs(record, security=key == "security_review")
-        self.state.update(phase="idle", active=None)
+        record[key + "_inputs"] = review_inputs(record, key)
+        if outcome is not None:
+            record.update(outcome)
+            self.state.update(phase="idle", active=None)
         self.save()
 
     def finish_acceptance(self, task_id: str, record: dict) -> None:
@@ -797,16 +972,14 @@ class Runner:
             raise LoopError("accepted checkout changed during acceptance")
         self.validate_candidate(record)
         task = next(task for task in self.tasks if task.id == task_id)
-        if not self.saved_review(record, "review", lambda value: validate_review(value, task, record["candidate"])):
+        if not saved_review(task, record, "review"):
             raise LoopError("acceptance requires a passing independent review")
         repo = Path(record["directory"]) / "repo"
         paths = committed_paths(repo, record["base"], record["candidate"])
         needs_security = candidate_requires_security(repo, record["base"], record["candidate"], paths)
         if record.get("security_required") != needs_security or record.get("security_paths") != paths:
             raise LoopError("security review routing changed during acceptance")
-        if needs_security and not self.saved_review(record, "security_review", lambda value: validate_security_review(
-            value, task, record["base"], record["candidate"], paths,
-        )):
+        if needs_security and not saved_review(task, record, "security_review"):
             raise LoopError("acceptance requires a passing independent security review")
         if self.missing_evidence(record):
             raise LoopError("acceptance requires all external evidence")
@@ -1031,10 +1204,12 @@ def apply_note(state: dict, request: dict) -> bool:
     return True
 
 
-def checked_attestation(state: dict, request: dict) -> dict | None:
+def checked_attestation(directory: Path, state: dict, request: dict) -> dict | None:
     """The task record an attestation request applies to, or None when it already did.
 
-    The evidence file itself is checked as it is copied: a regular file, not a
+    The one rule set for an attestation applied directly, one queued while a
+    controller holds the run, and that controller's ingestion of it. The
+    evidence file itself is checked as it is copied: a regular file, not a
     symlink, of at most 32 MiB, and for a queued request the digest recorded
     when it was queued.
     """
@@ -1053,11 +1228,19 @@ def checked_attestation(state: dict, request: dict) -> dict | None:
         raise LoopError("this candidate is not waiting for that evidence kind")
     if not isinstance(summary, str) or not summary.strip():
         raise LoopError("provide a nonempty summary and a regular evidence file no larger than 32 MiB")
+    # Evidence rounds are the expensive step; spend one only on a candidate
+    # that already passed every review that needs no evidence. A run whose
+    # controller predates that order, or a contract that marks no criterion as
+    # waiting for evidence, never runs those reviews.
+    if "verify_before_evidence" in state.get("controller_features", ()):
+        task = next((item for item in load_spec(directory / "tasks.json") if item.id == task_id), None)
+        if task is None or not evidence_round_open(task, record):
+            raise LoopError("candidate has not passed its pre-evidence verification and security review; resume to finish them first")
     return record
 
 
 def apply_attestation(directory: Path, state: dict, request: dict, evidence: Path, sha256: str | None = None) -> bool:
-    record = checked_attestation(state, request)
+    record = checked_attestation(directory, state, request)
     if record is None:
         return False
     candidate, kind = request["candidate"], request["evidence_kind"]
@@ -1076,13 +1259,13 @@ def apply_attestation(directory: Path, state: dict, request: dict, evidence: Pat
     return True
 
 
-def check_request(state: dict, request: dict) -> None:
+def check_request(directory: Path, state: dict, request: dict) -> None:
     """Validate a request against `state` without changing anything."""
     kind = request.get("kind")
     if kind == "note":
         checked_note(state, request)
     elif kind == "attest":
-        checked_attestation(state, request)
+        checked_attestation(directory, state, request)
     else:
         raise LoopError(f"unknown request kind {kind!r}")
 
@@ -1124,7 +1307,7 @@ def submit(directory: Path, request: dict, evidence: Path | None = None) -> str:
                 state["updated_at"] = now()
                 atomic_json(directory / "state.json", state)
                 return "applied"
-            check_request(state, request)
+            check_request(directory, state, request)
             if time.monotonic() >= deadline:
                 if "inbox" not in features:
                     raise LoopError(

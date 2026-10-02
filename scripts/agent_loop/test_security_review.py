@@ -226,6 +226,9 @@ class SecurityControllerTests(unittest.TestCase):
 
     def create_security(self, profiles=("tooling",)):
         feature = fixtures.task(profiles=profiles)
+        if "native" in profiles:
+            # Marked as waiting for evidence, so the reviews that need none run first.
+            feature["acceptance"].append({"id": "native", "description": "The fixed output shows in the running app."})
         feature["scope"] = ["scripts/one.py"]
         feature["commit"] = "build: add fixed output fixture"
         if hasattr(self, "original_head"):
@@ -291,22 +294,44 @@ class SecurityControllerTests(unittest.TestCase):
         self.assertTrue(candidate_requires_security(self.root, regular, head(self.root), ["docs/guide.md"]))
         self.assertTrue(candidate_requires_security(self.root, regular, head(self.root), ["docs/other.md"]))
 
-    def test_changed_attestation_reruns_general_review_before_security(self):
+    def test_security_runs_before_evidence_and_outlives_a_changed_attestation(self):
         directory = self.create_security(("tooling", "native"))
-        pending = self.execute(directory, SecurityCodex())
-        candidate = pending["tasks"]["one"]["candidate"]
+        early = SecurityCodex()
+        pending = self.execute(directory, early)
+        record = pending["tasks"]["one"]
+        self.assertEqual(early.calls, [("implementer", "one"), ("verifier", "one"), ("security-reviewer", "one")])
+        self.assertEqual(record["status"], "awaiting_evidence")
+        candidate, security = record["candidate"], record["security_review"]
         evidence = self.root.parent / "native-fixture.json"
         evidence.write_text('{"fixture": "first synthetic controller attestation"}\n')
         attest(directory, "one", candidate, "native", evidence, "Controller fixture only.")
-        paused = self.execute(directory, SecurityCodex(unavailable=True))
+        blocking = SecurityCodex()
+        blocking.blocked = True
+        paused = self.execute(directory, blocking)
+        self.assertEqual(blocking.calls, [("verifier", "one")])
+        self.assertEqual(paused["tasks"]["one"]["status"], "review_blocked")
         first_review = paused["tasks"]["one"]["review"]
         evidence.write_text('{"fixture": "replacement synthetic controller attestation"}\n')
         attest(directory, "one", candidate, "native", evidence, "Revised controller fixture only.")
         adapter = SecurityCodex()
         final = self.execute(directory, adapter)
-        self.assertEqual(adapter.calls, [("verifier", "one"), ("security-reviewer", "one")])
+        # The new evidence needs a new final review; the security verdict never depended on it.
+        self.assertEqual(adapter.calls, [("verifier", "one")])
+        self.assertEqual(final["tasks"]["one"]["status"], "accepted")
+        self.assertEqual(final["tasks"]["one"]["security_review"], security)
         self.assertNotEqual(final["tasks"]["one"]["review"], first_review)
         self.assertTrue(Path(first_review).is_file())
+
+    def test_blocked_pre_evidence_security_resumes_without_repeating_the_verifier(self):
+        directory = self.create_security(("tooling", "native"))
+        state = self.execute(directory, SecurityCodex(unavailable=True))
+        record = state["tasks"]["one"]
+        self.assertEqual((record["status"], record["attempts"]), ("review_blocked", 1))
+        recovered = SecurityCodex()
+        final = self.execute(directory, recovered, lambda *_: self.fail("successful gates reran"))
+        self.assertEqual(recovered.calls, [("security-reviewer", "one")])
+        self.assertEqual(final["tasks"]["one"]["status"], "awaiting_evidence")
+        self.assertEqual(final["tasks"]["one"]["pre_review"], record["pre_review"])
 
     def test_blocked_security_resumes_same_candidate_without_repeating_general_review(self):
         directory = self.create_security()

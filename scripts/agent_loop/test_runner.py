@@ -7,13 +7,14 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_loop.git import clean, git, head
-from agent_loop.process import LoopError, MalformedResponse, Result, atomic_json, read_json
-from agent_loop.runner import Runner, attest, create_run, gate_context, locked, main, profiles_for, validate_patch
+from agent_loop.git import clean, committed_paths, git, head
+from agent_loop.process import EnvironmentBlocked, LoopError, MalformedResponse, Result, atomic_json, digest, read_json
+from agent_loop.runner import Runner, attest, create_run, gate_context, locked, main, note, profiles_for, validate_patch
 from agent_loop.task_spec import parse_spec
 # Records and run state stay private even when the host umask is permissive.
 from agent_loop.test_support import setUpModule, tearDownModule
@@ -31,38 +32,76 @@ def task(identifier="one", dependencies=(), profiles=("docs",)):
     }
 
 
+def evidence_task(identifier="one", profiles=("native",), criteria=None):
+    """A contract whose `native` criterion waits for evidence and whose script routes to security review."""
+    contract = task(identifier, profiles=profiles)
+    contract["scope"] = [f"docs/{identifier}.md", f"scripts/{identifier}.py"]
+    contract["acceptance"] = criteria or [
+        {"id": "content", "description": "The guide explains the actual workflow."},
+        {"id": "native", "description": "The workflow behaves as documented in the running app."},
+    ]
+    return contract
+
+
 class FakeCodex:
     output_tokens = 0
 
-    def __init__(self, failures=0, mutate=None, blocked=False):
+    def __init__(self, failures=0, mutate=None, blocked=False, script=False, review=None):
         self.failures = failures
         self.mutate = mutate
         self.blocked = blocked
+        # Also write the script a contract's scope names, which routes the candidate to a security review.
+        self.script = script
+        # Shapes a verifier verdict: review(value, context).
+        self.review = review
         self.calls = []
         self.sessions = []
+        self.context_log = []
         self.output_tokens = 0
 
     def preflight(self):
         return "fixture Codex"
 
-    def run(self, role, feature, repo, directory, timeout, stop, *, candidate=None, context="", **options):
+    def run(self, role, feature, repo, directory, timeout, stop, *, candidate=None, context="", base=None, **options):
         self.calls.append((role, feature.id))
         self.sessions.append((role, options))
+        self.context_log.append((role, context))
         self.output_tokens += 10
         if role == "implementer":
             (repo / "docs").mkdir(exist_ok=True)
             (repo / "docs" / f"{feature.id}.md").write_text(f"# {feature.title}\n\n{feature.description}\n")
+            if self.script and f"scripts/{feature.id}.py" in feature.scope:
+                (repo / "scripts").mkdir(exist_ok=True)
+                (repo / "scripts" / f"{feature.id}.py").write_text("print('fixed value')\n")
             return {"task_id": feature.id, "status": "ready", "summary": "Implemented guide."}
         if self.mutate:
             self.mutate(repo)
+        if role == "security-reviewer":
+            paths = committed_paths(repo, base, candidate)
+            return {
+                "task_id": feature.id, "base": base, "candidate": candidate, "verdict": "pass", "reviewed_paths": paths,
+                "coverage": [{"boundary": "Repository input to script output", "paths": paths,
+                              "evidence": "The script writes a fixed string and consumes no external input."}],
+                "findings": [], "gaps": [],
+            }
         verdict = "fail" if self.failures else "blocked" if self.blocked else "pass"
         self.failures = max(0, self.failures - 1)
-        return {
+        # A pre-evidence review leaves open the criteria its prompt says wait for evidence.
+        named = re.search(r"it waits for\): (\{.*?\})\. ", context)
+        waiting = json.loads(named[1]) if named else {}
+        value = {
             "task_id": feature.id, "candidate": candidate, "verdict": verdict,
-            "criteria": [{"id": "content", "status": "fail" if verdict == "fail" else "unverified" if verdict == "blocked" else "pass", "evidence": "Inspected the actual guide."}],
+            "criteria": [{
+                "id": criterion["id"],
+                "status": "fail" if verdict == "fail" else "unverified" if verdict == "blocked" or criterion["id"] in waiting else "pass",
+                "evidence": "Inspected the actual guide.",
+            } for criterion in feature.acceptance],
             "findings": [] if verdict == "pass" else ["The required explanation is incomplete."],
             "notes": [],
         }
+        if self.review:
+            self.review(value, context)
+        return value
 
 
 def green_gates(repo, profiles, directory):
@@ -353,6 +392,191 @@ class RunnerTests(unittest.TestCase):
         (directory / updated["tasks"]["one"]["attestations"]["native"]["artifact"]).write_text("replaced\n")
         with self.assertRaisesRegex(LoopError, "evidence changed"):
             self.execute(directory)
+
+    def native_report(self):
+        evidence = self.root.parent / "native.md"
+        evidence.write_text("Fixture native interaction report and build identity.\n")
+        return evidence
+
+    def test_a_pre_evidence_failure_spends_the_attempt_before_any_evidence_round(self):
+        self.options["max_attempts"] = 1
+        directory = self.create([evidence_task()])
+
+        def fail_content(value, context):
+            value.update(verdict="fail", findings=["scripts/one.py:1 asserts the builder flag, not the AccessKit node."])
+            value["criteria"][0]["status"] = "fail"
+
+        adapter = FakeCodex(script=True, review=fail_content)
+        state = self.execute(directory, adapter)
+        record = state["tasks"]["one"]
+        self.assertEqual((record["status"], record["attempts"]), ("failed", 1))
+        self.assertIn("AccessKit node", record["reason"])
+        # Failed before parking: no evidence was asked for and no security session ran.
+        self.assertEqual(adapter.calls, [("implementer", "one"), ("verifier", "one")])
+        self.assertNotIn("awaiting_evidence", self.output)
+        self.assertTrue(record["security_required"])
+        self.assertNotIn("security_review", record)
+        self.assertEqual(read_json(Path(record["pre_review"]))["verdict"], "fail")
+        context = adapter.context_log[1][1]
+        self.assertIn("Verification mode: pre-evidence", context)
+        self.assertIn('{"native": ["native"]}', context)
+        with self.assertRaisesRegex(LoopError, "not waiting"):
+            attest(directory, "one", record["candidate"], "native", self.native_report(), "Checked.")
+
+    def test_a_pre_evidence_pass_that_leaves_another_criterion_open_fails_the_attempt(self):
+        self.options["max_attempts"] = 1
+        directory = self.create([evidence_task()])
+        adapter = FakeCodex(script=True, review=lambda value, context: value["criteria"][0].update(status="unverified"))
+        state = self.execute(directory, adapter)
+        record = state["tasks"]["one"]
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("content (unverified)", record["reason"])
+        self.assertEqual(adapter.calls, [("implementer", "one"), ("verifier", "one")])
+
+    def test_the_final_verification_follows_the_evidence_and_reuses_security(self):
+        directory = self.create([evidence_task()])
+        adapter = FakeCodex(script=True)
+        pending = self.execute(directory, adapter)
+        record = pending["tasks"]["one"]
+        # Both reviews that need no evidence ran before the candidate was parked.
+        self.assertEqual(adapter.calls, [("implementer", "one"), ("verifier", "one"), ("security-reviewer", "one")])
+        self.assertEqual((record["status"], record["reason"]), ("awaiting_evidence", "required external evidence: native"))
+        self.assertNotIn("review", record)
+        early = read_json(Path(record["pre_review"]))
+        self.assertEqual((early["verdict"], {item["id"]: item["status"] for item in early["criteria"]}),
+                         ("pass", {"content": "pass", "native": "unverified"}))
+        self.assertEqual(set(record["security_review_inputs"]), {"base", "candidate", "gate_sha256", "paths"})
+        security = record["security_review"]
+        attest(directory, "one", record["candidate"], "native", self.native_report(), "Checked the intended executable.")
+        final_adapter = FakeCodex(script=True)
+        accepted = self.execute(directory, final_adapter)
+        record = accepted["tasks"]["one"]
+        self.assertEqual(final_adapter.calls, [("verifier", "one")])
+        self.assertEqual((record["status"], record["attempts"], record["security_review"]), ("accepted", 1, security))
+        self.assertEqual(accepted["accepted_head"], record["candidate"])
+        context = final_adapter.context_log[0][1]
+        self.assertIn("Verification mode: final", context)
+        self.assertIn('evidence-gated criteria rest on that evidence (data): {"native": ["native"]}', context)
+        self.assertIn('Pre-evidence verdict on this same candidate and gates', context)
+        self.assertIn('"id": "native", "status": "unverified"', context)
+
+    def test_changed_gates_refuse_both_pre_evidence_verdicts(self):
+        directory = self.create([evidence_task()])
+        pending = self.execute(directory, FakeCodex(script=True))
+        record = pending["tasks"]["one"]
+        # The same candidate with another passing gate record binds neither verdict.
+        gates = Path(record["directory"]) / "checks/gates.json"
+        atomic_json(gates, {"passed": True, "checks": [], "rerun": True})
+        record["gate_sha256"] = digest(gates)
+        atomic_json(directory / "state.json", pending)
+        with self.assertRaisesRegex(LoopError, "pre-evidence"):
+            attest(directory, "one", record["candidate"], "native", self.native_report(), "Checked.")
+        adapter = FakeCodex(script=True)
+        state = self.execute(directory, adapter, lambda *_: self.fail("successful gates reran"))
+        self.assertEqual(adapter.calls, [("verifier", "one"), ("security-reviewer", "one")])
+        self.assertEqual((state["tasks"]["one"]["status"], state["tasks"]["one"]["attempts"]), ("awaiting_evidence", 1))
+        attest(directory, "one", record["candidate"], "native", self.native_report(), "Checked.")
+
+    def test_a_rebuilt_candidate_repeats_both_pre_evidence_reviews(self):
+        directory = self.create([evidence_task(), task("independent")])
+        first = self.execute(directory, FakeCodex(script=True))
+        record = first["tasks"]["one"]
+        self.assertEqual((record["status"], first["tasks"]["independent"]["status"]), ("awaiting_evidence", "accepted"))
+        adapter = FakeCodex(script=True)
+        state = self.execute(directory, adapter)
+        rebuilt = state["tasks"]["one"]
+        self.assertEqual(adapter.calls, [("implementer", "one"), ("verifier", "one"), ("security-reviewer", "one")])
+        self.assertEqual((rebuilt["status"], rebuilt["attempts"]), ("awaiting_evidence", 2))
+        self.assertNotEqual(rebuilt["candidate"], record["candidate"])
+        self.assertNotEqual(rebuilt["pre_review"], record["pre_review"])
+        self.assertNotEqual(rebuilt["security_review"], record["security_review"])
+
+    def test_explicitly_marked_criteria_wait_and_an_unrequired_kind_is_graded_now(self):
+        directory = self.create([evidence_task(profiles=["performance"], criteria=[
+            {"id": "content", "description": "The guide explains the actual workflow."},
+            {"id": "frames", "description": "The release build keeps its frame time.", "evidence": ["performance"]},
+            # Nothing asks this candidate for native evidence, so its namesake is graded before the round.
+            {"id": "native", "description": "The guide names the affected view."},
+        ])])
+        adapter = FakeCodex(script=True)
+        record = self.execute(directory, adapter)["tasks"]["one"]
+        self.assertEqual((record["status"], record["reason"]), ("awaiting_evidence", "required external evidence: performance"))
+        self.assertIn('it waits for): {"frames": ["performance"]}.', adapter.context_log[1][1])
+        statuses = {item["id"]: item["status"] for item in read_json(Path(record["pre_review"]))["criteria"]}
+        self.assertEqual(statuses, {"content": "pass", "frames": "unverified", "native": "pass"})
+
+    def test_a_contract_that_marks_no_evidence_criterion_keeps_the_earlier_order(self):
+        # Contracts queued before pre-evidence verification name their evidence
+        # criteria freely (`cold`, `warm`); an early verifier would only block on them.
+        directory = self.create([task(profiles=["native"])])
+        adapter = FakeCodex()
+        record = self.execute(directory, adapter)["tasks"]["one"]
+        self.assertEqual(adapter.calls, [("implementer", "one")])
+        self.assertEqual((record["status"], record["reason"]), ("awaiting_evidence", "required external evidence: native"))
+        self.assertNotIn("pre_review", record)
+        attest(directory, "one", record["candidate"], "native", self.native_report(), "Checked.")
+        final = FakeCodex()
+        state = self.execute(directory, final)
+        self.assertEqual((final.calls, state["tasks"]["one"]["status"]), ([("verifier", "one")], "accepted"))
+        self.assertIn("Verification mode: final", final.context_log[0][1])
+
+    def test_a_contradictory_pre_evidence_pass_on_resume_fails_the_attempt(self):
+        self.options["max_attempts"] = 1
+        directory = self.create([evidence_task()])
+
+        class Unavailable(FakeCodex):
+            def run(self, role, feature, *args, **kwargs):
+                if role == "verifier":
+                    self.calls.append((role, feature.id))
+                    raise EnvironmentBlocked("fixture verifier unavailable")
+                return super().run(role, feature, *args, **kwargs)
+
+        blocked = Unavailable(script=True)
+        self.assertEqual(self.execute(directory, blocked)["tasks"]["one"]["status"], "review_blocked")
+        contradictory = FakeCodex(script=True, review=lambda value, context: value["criteria"][0].update(status="unverified"))
+        record = self.execute(directory, contradictory)["tasks"]["one"]
+        self.assertEqual((record["status"], record["attempts"]), ("failed", 1))
+        self.assertIn("content (unverified)", record["reason"])
+
+    def test_a_failing_verdict_is_saved_with_its_outcome_and_the_idle_phase(self):
+        self.options["max_attempts"] = 1
+        directory = self.create([evidence_task()])
+        saved = []
+        original = Runner.store_review
+
+        def recording(runner, record, key, verdict_directory, value, outcome):
+            original(runner, record, key, verdict_directory, value, outcome)
+            state = read_json(runner.directory / "state.json")
+            saved.append((key, state["phase"], state["tasks"]["one"]["status"]))
+
+        def fail_content(value, context):
+            value.update(verdict="fail", findings=["docs/one.md:1 explains a different workflow."])
+            value["criteria"][0]["status"] = "fail"
+
+        with patch.object(Runner, "store_review", recording):
+            self.execute(directory, FakeCodex(script=True, review=fail_content))
+        # A crash right after that write reconciles nothing back into a retried review.
+        self.assertEqual(saved, [("pre_review", "idle", "failed")])
+
+    def test_coordinator_notes_reach_both_reviews_before_the_evidence_round(self):
+        directory = self.create([evidence_task()])
+        note(directory, "one", "The ring belongs to the row, not the list.")
+        adapter = FakeCodex(script=True)
+        self.execute(directory, adapter)
+        reviews = [(role, context) for role, context in adapter.context_log if role != "implementer"]
+        self.assertEqual([role for role, _ in reviews], ["verifier", "security-reviewer"])
+        for role, context in reviews:
+            with self.subTest(role=role):
+                self.assertIn("The ring belongs to the row, not the list.", context)
+
+    def test_a_task_without_evidence_keeps_one_final_verification(self):
+        directory = self.create()
+        adapter = FakeCodex()
+        state = self.execute(directory, adapter)
+        self.assertEqual(adapter.calls, [("implementer", "one"), ("verifier", "one")])
+        self.assertNotIn("pre_review", state["tasks"]["one"])
+        self.assertIn("Verification mode: final", adapter.context_log[1][1])
+        self.assertNotIn("Pre-evidence verdict", adapter.context_log[1][1])
 
     def test_verifier_source_write_is_not_accepted(self):
         directory = self.create()

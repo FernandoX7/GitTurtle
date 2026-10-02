@@ -33,7 +33,8 @@ REVIEW_SCHEMA = {
         "candidate": {"type": "string", "description": "The candidate sha you were given, exactly."},
         "verdict": {
             "type": "string", "enum": ["pass", "fail", "blocked"],
-            "description": "pass requires every criterion to pass and findings to be empty.",
+            "description": "pass requires every criterion to pass and findings to be empty, except that a "
+                           "pre-evidence review may leave the criteria its prompt names as evidence-gated unverified.",
         },
         "findings": {
             "type": "array", "items": {"type": "string"},
@@ -65,7 +66,13 @@ REVIEW_SCHEMA = {
 }
 
 
-def validate_review(value: dict, task: Task, candidate: str) -> str:
+def validate_review(value: dict, task: Task, candidate: str, deferred: frozenset[str] = frozenset()) -> str:
+    """The verdict of a review bound to this task and candidate.
+
+    `deferred` names the criteria a pre-evidence review may leave unverified,
+    because they wait for external evidence the final review grades; every
+    other criterion must pass for the verdict to pass.
+    """
     if set(value) != set(REVIEW_SCHEMA["required"]):
         raise MalformedResponse("review has missing or unknown fields")
     if value["task_id"] != task.id or value["candidate"] != candidate:
@@ -77,7 +84,7 @@ def validate_review(value: dict, task: Task, candidate: str) -> str:
             raise MalformedResponse(f"invalid review {field}")
     expected = {criterion["id"] for criterion in task.acceptance}
     seen: set[str] = set()
-    states: set[str] = set()
+    open_criteria: list[str] = []
     if not isinstance(value["criteria"], list):
         raise MalformedResponse("invalid review criteria")
     for criterion in value["criteria"]:
@@ -91,14 +98,16 @@ def validate_review(value: dict, task: Task, candidate: str) -> str:
         if not isinstance(criterion["evidence"], str) or not criterion["evidence"].strip():
             raise MalformedResponse("each criterion needs evidence or a concrete verification gap")
         seen.add(identifier)
-        states.add(criterion["status"])
+        if criterion["status"] != "pass" and (identifier not in deferred or criterion["status"] != "unverified"):
+            open_criteria.append(f"{identifier} ({criterion['status']})")
     if seen != expected:
         raise LoopError("review omitted acceptance criteria")
     # Notes are deliberately excluded: a review that passes every criterion may
     # still record follow-up work, and conflating the two made a sound candidate
     # fail for observing that the worktree was clean.
-    if value["verdict"] == "pass" and (states != {"pass"} or value["findings"]):
-        raise LoopError("a passing review contains incomplete or failing criteria or blocking findings")
+    if value["verdict"] == "pass" and (open_criteria or value["findings"]):
+        raise LoopError("a passing review contains incomplete or failing criteria or blocking findings"
+                        + (": " + ", ".join(open_criteria) if open_criteria else ""))
     return value["verdict"]
 
 
@@ -166,8 +175,10 @@ class Codex:
             "Independently review this exact candidate against every acceptance criterion. "
             "The source checkout is read-only. Inspect actual implementation and gate evidence; "
             "do not trust the builder summary. Identify weakened tests and missing native, "
-            "performance, package or vendor evidence. Return blocked and unverified criteria "
-            "when evidence is unavailable. Do not edit source, commit, or operate the desktop. "
+            "performance, package or vendor evidence. Grade in the verification mode stated "
+            "below; it names any criteria that wait for that evidence. Return blocked and "
+            "unverified criteria when evidence the mode requires is unavailable. "
+            "Do not edit source, commit, or operate the desktop. "
             "Do not rerun unchanged full suites without a concrete concern."
         )
         if role == "security-reviewer":

@@ -58,6 +58,19 @@ Each item names its owner files, design and acceptance. Controller items change 
 
 3. **Verify before evidence.** After the gates pass, and before parking a task `awaiting_evidence`, run the verifier on every criterion that needs no external evidence, and the security review, which needs none. A failure spends the attempt now, before any evidence round. After `attest`, the final verification grades the evidence criteria and the security verdict is reused while the candidate's sha is unchanged. Tests cover a pre-evidence failure, a pass and the reuse.
 
+   Decisions:
+   - **Which criteria wait.** An optional criterion `evidence: [kinds]`, each kind one the profiles require (checked at intake; `[]` opts a kind-named criterion out), else a criterion whose id is a kind. At run time only kinds the candidate requires count. *Reason:* the queues' `native` criteria need no edit, and a criterion waiting on evidence nobody attests would never be graded.
+   - **Pre-evidence verdict.** `validate_review` takes the deferred criteria: `pass` needs every other criterion `pass` and no findings; a contradictory `pass` raises with the open criteria named and fails the attempt. *Reason:* one parameter on the existing fail-closed validator.
+   - **Records.** `pre_review` (+`_sha256`, `_inputs`) under `pre-review-<id>/`, bound to base, candidate and gate digest; `security_review` to those and the paths; `review` (final) also to the attestations. *Reason:* each verdict binds what it saw, so `attest` invalidates only the final review.
+   - **Phase `pre_verifying`.** Reconciled like `verifying`; resume reruns only the unfinished pre-evidence review, and a stop between them leaves `review_blocked`. *Reason:* `awaiting_evidence` must mean the evidence owner may start.
+   - **`attest` refuses** a candidate whose pre-evidence verification or security review has not passed. *Reason:* the order is enforced, not advisory. Candidates parked by an older controller need that run's saved controller (item 0 retires it).
+   - **Prompt.** The runner's context states the mode and the gated criteria for both adapters; their verifier instruction only points at it, and the implementer prompt is unchanged. The final mode carries the pre-evidence verdict inline; the security prompt no longer carries attestations. `.codex/agents/verifier.toml` is unchanged (shared configuration; it already leaves unavailable requirements open). *Reason:* one source for both tools, and a review session cannot read paths outside its checkout.
+   - **Progress.** `store_review` no longer drops the active step; the stage's owner returns the phase to idle. *Reason:* no status line is printed between two reviews of one stage.
+   - **Unmarked contracts keep the earlier order.** A task that requires evidence but has no evidence-gated criterion skips the pre-evidence step and the early-review `attest` refusal. *Reason:* the contracts queued before this item name their evidence criteria freely (`code-font-cold-launch-wait`'s `cold` and `warm`), so an early verifier would block on them and every resume would pay for another session.
+   - **Resume and crash windows.** A verdict that is readable but contradicts itself (`RejectedVerdict`) fails the attempt on resume as on the first pass, instead of stopping every resume. A verdict that ends its step is saved in one write with the task's status and the idle phase. *Reason:* otherwise a crash in that window reconciles a failure into a retried review.
+   - **With items 1 and 2.** New runs record the controller feature `verify_before_evidence`, and `attest`'s early-review refusal lives in item 2's one `checked_attestation`, so the direct path, `submit` before queuing and ingestion all apply it; a run without the feature never runs those reviews and is not refused. Both early reviews receive the coordinator notes as context, and every review session still goes through `adapter.run`, so item 1's retry applies. *Reason:* one rule set per request kind, and no refusal an older run's controller could never satisfy.
+   - **For items 4 and 8.** Queued performance criteria are named `perf` or `measure` and vendor tasks have no `vendor` criterion, so the re-cut queue must mark them with `evidence`, or the pre-evidence verifier blocks on them. Item 4 binds its evidence commit in `review_inputs` for the final `review` only.
+
 4. **Evidence on top of the candidate** (replaces the forced rebuild). The evidence owner commits frames, benchmark records and the dated validation entry as a child `E` of candidate `C` and registers it with `attest --evidence-commit E --evidence-repo PATH`. The controller accepts `E` only if:
    - its only parent is `C`;
    - its diff touches only evidence paths inside the task's scope (`docs/evidence/<task>/**`, `docs/validation.md`, `docs/benchmarks/**`) and nothing built into the executable;
@@ -111,9 +124,9 @@ The evidence standard does not change: release builds of base and candidate in t
 | 0 Retire the run | done 2026-10-02: `tab-reveals-branch-and-tag-rows` landed, run stopped | #136 |
 | 1 Tolerant reviewer results | done 2026-10-02 | #137 |
 | 2 Coordinator notes | done 2026-10-02 | #138 |
-| 3 Verify before evidence | open | |
+| 3 Verify before evidence | done 2026-10-02 | this PR |
 | 4 Evidence on top | open | |
-| 5 Native QA tooling | done 2026-10-02 | this PR |
+| 5 Native QA tooling | done 2026-10-02 (in parallel with 1 to 4, as planned) | #139 |
 | 6 Operator tooling | open | |
 | 7 Rebase and concurrency | open | |
 | 8 Contracts and queue | open | |

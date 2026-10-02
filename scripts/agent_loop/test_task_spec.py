@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from agent_loop.task_spec import (
-    MAX_SPEC_BYTES, load_spec, parse_spec, path_allowed, required_evidence, select_ready,
+    MAX_SPEC_BYTES, evidence_criteria, load_spec, parse_spec, path_allowed, required_evidence, select_ready,
 )
 
 
@@ -130,6 +130,37 @@ class TaskSpecTests(unittest.TestCase):
             self.assertEqual(required_evidence(parse_spec(spec(task(profiles=[profile])))[0]), {profile})
         combined = parse_spec(spec(task(profiles=["rust", "native", "performance", "package", "vendor"])))[0]
         self.assertEqual(required_evidence(combined), {"native", "performance", "package", "vendor"})
+
+    def test_criteria_wait_for_the_evidence_they_name_or_their_id_names(self):
+        criteria = [
+            {"id": "native", "description": "The running app shows the change."},
+            {"id": "perf", "description": "The release build stays fast.", "evidence": ["performance"]},
+            {"id": "frames", "description": "Captures cover both palettes.", "evidence": ["native", "performance"]},
+            {"id": "vendor", "description": "Graded from the repository alone.", "evidence": []},
+            {"id": "tests", "description": "A focused test covers the state."},
+        ]
+        parsed = parse_spec(spec(task(acceptance=criteria, profiles=["rust", "native", "performance", "vendor"])))[0]
+        self.assertEqual(evidence_criteria(parsed), {
+            "native": {"native"}, "perf": {"performance"}, "frames": {"native", "performance"},
+        })
+        self.assertEqual(parsed.acceptance[1]["evidence"], ("performance",))
+        self.assertNotIn("evidence", parsed.acceptance[0])
+        # An id that names a kind waits for it only by default; the profiles decide whether it is asked for.
+        self.assertEqual(evidence_criteria(parse_spec(spec(task(acceptance=criteria[:1])))[0]), {"native": {"native"}})
+
+    def test_criterion_evidence_must_name_kinds_the_profiles_require(self):
+        for evidence, profiles, message in (
+            (["native"], ["rust"], "profiles do not require: native"),
+            (["performance", "package"], ["performance"], "profiles do not require: package"),
+            (["rust"], ["rust", "native"], "unsupported evidence kind"),
+            (["native", "native"], ["native"], "duplicate"),
+            ("native", ["native"], "array"),
+            ([None], ["native"], "unsupported evidence kind"),
+            (["native", "performance", "package", "vendor", "native"], ["native"], "array"),
+        ):
+            criterion = {"id": "frames", "description": "Captures cover the state.", "evidence": evidence}
+            with self.subTest(evidence=evidence), self.assertRaisesRegex(ValueError, message):
+                parse_spec(spec(task(acceptance=[criterion], profiles=profiles)))
 
     def test_loading_rejects_duplicate_keys_invalid_json_and_excess_bytes(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -9,7 +9,7 @@ Read the assigned task contract and the [development workflow](../../../docs/dev
 
 ## Establish the acceptance boundary
 
-Describe the observable result and choose the existing validation profile for the changed behavior. A core operation, integrated native workflow, measured improvement and verified package promise different outcomes. If the supplied contract omits a material acceptance requirement, return a concrete correction to the coordinator before dependent work; continue independent authorized work.
+Describe the observable result and choose the existing validation profile for the changed behavior. A core operation, integrated native workflow, measured improvement and verified package promise different outcomes. Mark each criterion that only native, performance, package or vendor evidence can settle with its `evidence` kinds, or give it the kind as its id: the controller verifies every other criterion before the evidence round, and the [order](../../../docs/development/README.md#native-and-external-attestations) fails a defect there before anyone gathers evidence. If the supplied contract omits a material acceptance requirement, return a concrete correction to the coordinator before dependent work; continue independent authorized work.
 
 For an uncertain design or new dependency, use the [research template](../../../docs/development/research-template.md) to record the decision, current primary sources, compatibility and enforcement. Planning is conditional; ordinary implementation does not require an architecture agent or a research document.
 
