@@ -33,6 +33,9 @@ DEFAULT_WINDOW = (1000, 680)
 TEXT_SIZES = range(11, 19)
 IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9.-]{0,79}")
 PALETTE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+# A variant id keeps a theme key's underscores (`solarized_dark-18pt`), as its default id and committed names do.
+VARIANT_ID = re.compile(r"[a-z0-9][a-z0-9_.-]{0,79}")
+SIZE_SEGMENT = re.compile(r"[0-9]+pt(-|$)")  # an interface size at the start of a settings variant's own part
 KEYSYM = re.compile(r"[A-Za-z0-9_]{1,40}")
 NOW = "@now"
 CAPTURE_STABLE = 8.0  # seconds a capture waits, after parking, for two identical grabs
@@ -384,11 +387,15 @@ def variant_list(value, path: str) -> list[Variant]:
             if not settings:
                 fail(f"{where}.settings", "no settings; leave \"settings\" out instead")
             ident = item.get("id")
-            if not (isinstance(ident, str) and ident.startswith(f"{default}-") and len(ident) > len(default) + 1):
+            own = ident[len(default) + 1:] if isinstance(ident, str) and ident.startswith(f"{default}-") else ""
+            if not own:
                 fail(f"{where}.id", f"a variant with settings needs an \"id\" that extends '{default}-' with what "
                                     f"they change, such as '{default}-code-18pt'; its committed names carry that id "
                                     f"in place of '{default}'")
-        variants.append(Variant(text(item.get("id", default), f"{where}.id", IDENTIFIER), palette, size, settings))
+            if SIZE_SEGMENT.match(own):
+                fail(f"{where}.id", f"{ident!r} names an interface size after '{default}-' that only \"text_size\" "
+                                    f"sets; extend '{default}-' with what the settings change instead")
+        variants.append(Variant(text(item.get("id", default), f"{where}.id", VARIANT_ID), palette, size, settings))
     ids = [variant.id for variant in variants]
     duplicate = sorted({i for i in ids if ids.count(i) > 1})
     if duplicate:
@@ -409,7 +416,7 @@ def when_filter(value, path: str, variants: list[Variant]) -> dict | None:
             result[key] = {None if s is None else integer(s, f"{path}.{key}", TEXT_SIZES.start, TEXT_SIZES.stop - 1)
                            for s in items}
         else:
-            result[key] = {text(item, f"{path}.{key}", PALETTE if key == "palette" else IDENTIFIER) for item in items}
+            result[key] = {text(item, f"{path}.{key}", PALETTE if key == "palette" else VARIANT_ID) for item in items}
     if not any(applies(result, variant) for variant in variants):
         fail(path, "matches no variant, so the entry would never run")
     return result

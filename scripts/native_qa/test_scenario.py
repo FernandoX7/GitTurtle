@@ -150,7 +150,8 @@ class SpecTest(unittest.TestCase):
                          {"code_text_size": 18, "system_code_font": False, "interface_text_size": 13})
         self.assertEqual(scenario.store_settings(loaded, light),
                          {"code_text_size": 18, "system_code_font": False, "reopen_last": False})
-        # A variant with settings commits under its id; a plain one keeps its palette and size.
+        # A variant with settings commits under its id; a plain one keeps its palette and size. A size after the
+        # settings' own part (`code-18pt`) is theirs, not the interface's.
         self.assertEqual([c.name for c in scenario.committed(loaded, roles=("cand",))], [
             "candidate-midnight-13pt-1000x680-focus.png", "candidate-midnight-13pt-code-18pt-1000x680-focus.png",
             "candidate-porcelain-code-18pt-1000x680-focus.png"])
@@ -161,6 +162,24 @@ class SpecTest(unittest.TestCase):
         # `when` names a variant by its id.
         self.assertEqual(scenario.steps_for(loaded, code)[-1].get("key"), "Escape")
         self.assertEqual([len(scenario.steps_for(loaded, v)) for v in (plain, code, light)], [6, 7, 6])
+
+    def test_a_theme_key_with_underscores_takes_every_variant_form(self) -> None:
+        # 11 of the 20 built-in theme keys have one; ids and committed names keep it, as the palette label does.
+        steps = SPEC["steps"] + [{"key": "Escape", "when": {"variant": ["solarized_dark-18pt-code-14pt"]}}]
+        loaded = scenario.validate(spec(steps=steps, variants=[
+            {"palette": "solarized_dark", "text_size": 18},
+            {"palette": "solarized_dark", "text_size": 18, "id": "solarized_dark-18pt-code-14pt",
+             "settings": {"code_text_size": 14}}]))
+        plain, code = loaded["variants"]
+        self.assertEqual((plain.id, code.id), ("solarized_dark-18pt", "solarized_dark-18pt-code-14pt"))
+        self.assertEqual([c.name for c in scenario.committed(loaded, roles=("cand",))], [
+            "candidate-solarized_dark-18pt-1000x680-focus.png",
+            "candidate-solarized_dark-18pt-code-14pt-1000x680-focus.png"])
+        self.assertEqual(scenario.store_settings(loaded, code), {"code_text_size": 14, "interface_text_size": 18})
+        self.assertEqual(scenario.steps_for(loaded, code)[-1].get("key"), "Escape")
+        combined = scenario.validate(spec(variants={"palettes": ["solarized_dark", "rose_pine_dawn"],
+                                                    "text_sizes": [13]}))
+        self.assertEqual([v.id for v in combined["variants"]], ["solarized_dark-13pt", "rose_pine_dawn-13pt"])
 
     def test_steps_filtered_by_variant(self) -> None:
         steps = spec()["steps"] + [{"key": "Escape", "when": {"palette": ["porcelain"]}},
@@ -227,6 +246,15 @@ class SpecTest(unittest.TestCase):
              r"\$\.variants\[0\]\.id: .* extends 'midnight-13pt-'"),
             (dict(variants=[{"palette": "midnight", "id": "midnight-", "settings": {"code_text_size": 18}}]),
              r"\$\.variants\[0\]\.id: a variant with settings needs"),
+            # The id cannot claim an interface size the launch never sets.
+            (dict(variants=[{"palette": "midnight", "id": "midnight-18pt-code", "settings": {"code_text_size": 18}}]),
+             r"\$\.variants\[0\]\.id: 'midnight-18pt-code' names an interface size after 'midnight-' that only "
+             r"\"text_size\" sets"),
+            (dict(variants=[{"palette": "midnight", "id": "midnight-18pt", "settings": {"code_text_size": 18}}]),
+             r"\$\.variants\[0\]\.id: 'midnight-18pt' names an interface size"),
+            (dict(variants=[{"palette": "midnight", "text_size": 13, "id": "midnight-13pt-18pt-code",
+                             "settings": {"code_text_size": 18}}]),
+             r"\$\.variants\[0\]\.id: 'midnight-13pt-18pt-code' names an interface size after 'midnight-13pt-'"),
             (dict(variants={"palettes": ["midnight"], "settings": {"code_text_size": 18}}),
              r"\$\.variants: unknown key\(s\) settings"),
             (dict(env={"GITTURTLE_GITHUB_FIXTURE": 1}), r"\$\.env\.GITTURTLE_GITHUB_FIXTURE: expected a non-empty"),
