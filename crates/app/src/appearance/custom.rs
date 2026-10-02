@@ -918,7 +918,7 @@ pub fn validate_theme_name(
 }
 
 /// The name an imported theme takes in a store that already holds `customs`: its own when the
-/// store accepts it, then "<name> (imported)", "<name> (imported) (2)", … as the specification's
+/// store accepts it, then "`<name>` (imported)", "`<name>` (imported) (2)", … as the specification's
 /// "Import and export" section describes. A stem that would pass the name's byte limit with its
 /// suffix is shortened on a character boundary first.
 pub fn import_name(name: &str, customs: &[CustomTheme]) -> Result<String, String> {
