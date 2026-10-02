@@ -76,7 +76,8 @@ class RunEnvironmentTest(unittest.TestCase):
         self.assertEqual(extra["GITTURTLE_GITHUB_FIXTURE"], "review")
 
     def test_extra_variables_cannot_undo_the_isolation(self) -> None:
-        for key in ("XDG_CONFIG_HOME", "HOME", "WAYLAND_DISPLAY", "GIT_DIR"):
+        for key in ("XDG_CONFIG_HOME", "HOME", "WAYLAND_DISPLAY", "GIT_DIR", "DISPLAY", "GPUI_X11_SCALE_FACTOR",
+                    "XDG_RUNTIME_DIR", "WAYLAND_SOCKET", "DBUS_SESSION_BUS_ADDRESS"):
             with self.subTest(key=key), self.assertRaises(runenv.Refusal):
                 runenv.check_extra({key: "x"})
 

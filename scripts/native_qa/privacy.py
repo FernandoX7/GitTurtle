@@ -180,6 +180,24 @@ def git_unignored(path: Path) -> str | None:
     return None if ignored.returncode == 0 else top.stdout.strip()
 
 
+TEMPLATES_ENV = "GITTURTLE_PRIVACY_TEMPLATES"
+TEMPLATES_DIR = Path(".local/privacy/templates")
+
+
+def default_templates(root: Path = HERE.parents[1]) -> Path | None:
+    """The gate's templates: $GITTURTLE_PRIVACY_TEMPLATES, else .local/privacy/templates in this checkout
+    or in the main checkout of a linked worktree (`privacy_templates` in scripts/gate.py)."""
+    configured = os.environ.get(TEMPLATES_ENV, "")
+    if configured:
+        return Path(configured)
+    roots = [root]
+    common = subprocess.run(["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                            capture_output=True, text=True)
+    if common.returncode == 0 and common.stdout.strip():
+        roots.append(Path(common.stdout.strip()).parent)
+    return next((base / TEMPLATES_DIR for base in roots if (base / TEMPLATES_DIR).is_dir()), None)
+
+
 def refuse_tracked(path: Path, what: str, reveal: bool = True) -> None:
     tree = git_unignored(path)
     if tree is not None:

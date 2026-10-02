@@ -39,4 +39,13 @@ Inspect screenshots as well as semantic state. When a gesture appears ineffectiv
 
 A visible change's frames follow [visual evidence tiers](references/visual-evidence.md): which tier applies, the build identity, captures and comparison each needs, the design review, and the privacy check before any frame is committed. Read it before the first capture, because a frame taken from the wrong fixture or identity has to be retaken.
 
+On Linux, capture through a [scenario](../../../scripts/native_qa/README.md#scenarios), not a driver of your own:
+
+1. Write the task's spec, or extend the committed `docs/evidence/<task>/scenario.json` of the screen you are re-taking: its fixture recipe, variants, steps with guards that stop a route gone astray, crop boxes, a `shows` line per committed capture, and the analyses the criterion names (ring sides, clearance, fill contrast, masked compares). `qa.py scenario check` validates it without a display.
+2. `qa.py scenario run SPEC --build base=EXE --build cand=EXE --out /tmp/gitturtle-evidence/runs/<task>` captures both builds, crops, measures and privacy-scans the crops it will commit; it exits 0 only when every analysis met its expectation and every crop scanned clean.
+3. Give the design reviewer the bundle's `commit/` crops, `analysis.json` and `commit-manifest.json`.
+4. Commit the crops from `commit/`, the spec as `docs/evidence/<task>/scenario.json`, and the dated validation entry naming every frame.
+
+A rebuilt candidate is re-checked with `qa.py recheck docs/evidence/<task>/scenario.json --exe EXE --committed docs/evidence/<task>`, and `qa.py attestation` writes the attestation file from the bundle and that re-check.
+
 Use [gitturtle-performance](../gitturtle-performance/SKILL.md) when making latency or memory claims. Keep raw traces and measurement boundaries. Update `docs/validation.md` with the build, fixture, exercised behavior, and limitations; do not relabel earlier evidence as a fresh check. Once affected checks pass, complete the task rather than repeating the whole matrix.
