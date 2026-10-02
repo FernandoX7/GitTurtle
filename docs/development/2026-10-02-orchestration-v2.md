@@ -124,9 +124,9 @@ The evidence standard does not change: release builds of base and candidate in t
 | 0 Retire the run | done 2026-10-02: `tab-reveals-branch-and-tag-rows` landed, run stopped | #136 |
 | 1 Tolerant reviewer results | done 2026-10-02 | #137 |
 | 2 Coordinator notes | done 2026-10-02 | #138 |
-| 3 Verify before evidence | open | |
+| 3 Verify before evidence | done 2026-10-02 | this PR |
 | 4 Evidence on top | open | |
-| 5 Native QA tooling | done 2026-10-02 | this PR |
+| 5 Native QA tooling | done 2026-10-02 (in parallel with 1 to 4, as planned) | #139 |
 | 6 Operator tooling | open | |
 | 7 Rebase and concurrency | open | |
 | 8 Contracts and queue | open | |
