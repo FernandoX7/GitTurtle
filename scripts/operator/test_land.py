@@ -40,8 +40,10 @@ class GitCase(unittest.TestCase):
             os.environ.pop(name, None)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.repo = Path(directory.name) / "repo"
-        self.git("init", "-q", "-b", "main", str(self.repo), cwd=Path(directory.name))
+        # Resolved, as Git and land.py report paths: macOS's temporary directory sits under the /var symlink.
+        top = Path(directory.name).resolve()
+        self.repo = top / "repo"
+        self.git("init", "-q", "-b", "main", str(self.repo), cwd=top)
 
     def git(self, *args: str, cwd: Path | None = None) -> str:
         return subprocess.run(["git", *args], cwd=cwd or self.repo, check=True, capture_output=True,
