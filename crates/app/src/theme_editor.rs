@@ -437,6 +437,51 @@ struct DeleteFocus {
 /// contrast alone: the pressed step is measured in one channel, not as a ratio.
 const NO_READABILITY_WARNINGS: &str = "Every readability rule is met.";
 
+/// The window's status bar at 13 pt (the foot of `GitTurtle::render` in
+/// `views.rs`), scaled by the interface text size as the bar is. A modal
+/// panel capped by the window ends 16 px above it: under a modal the bar
+/// stays in place, dimmed and inert under the backdrop like the rest of the
+/// window, and no panel edge crosses it (`DESIGN.md`).
+const STATUS_BAR_HEIGHT: f32 = 26.;
+
+/// The client-decoration frame between the window's edges and its content,
+/// for the lengths that place a modal panel vertically: the toolkit's
+/// `window_paddings`, inside which the alert lays itself out, and the frame's
+/// 1 px border inside the bottom padding, which the content (and the status
+/// bar at its foot) ends above. Server decorations and a tiled edge have
+/// neither.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WindowFrame {
+    padding_top: Pixels,
+    padding_bottom: Pixels,
+    border_bottom: Pixels,
+}
+
+impl WindowFrame {
+    /// The frame's 1 px border on each untiled side of a client-decorated
+    /// window (`window_border` in the toolkit, which `Root` draws).
+    const BORDER: Pixels = px(1.);
+
+    fn of(window: &Window) -> Self {
+        Self::new(
+            gpui_kit::component::window_paddings(window),
+            window.window_decorations(),
+        )
+    }
+
+    fn new(paddings: Edges<Pixels>, decorations: Decorations) -> Self {
+        let border_bottom = match decorations {
+            Decorations::Client { tiling } if !tiling.bottom => Self::BORDER,
+            _ => Pixels::ZERO,
+        };
+        Self {
+            padding_top: paddings.top,
+            padding_bottom: paddings.bottom,
+            border_bottom,
+        }
+    }
+}
+
 fn hsla_rgb(color: Hsla) -> u32 {
     let color = color.to_rgb();
     let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u32;
@@ -627,11 +672,23 @@ impl GitTurtle {
             } else {
                 "New theme"
             };
+            // The footer is the form's last row, inside its height cap, so a
+            // footer that grows (a wrapped save error) takes its room from the
+            // scrolling body and never moves the panel's edge. The alert's own
+            // footer slot stays empty, since without one it adds an OK button,
+            // and the alert's bottom padding is zero. The dialog clips its
+            // body to the body's bounds, so the footer keeps the focus ring's
+            // room under its buttons inside them, and the alert's gap above
+            // the empty slot gives the room back: the buttons keep the
+            // panel's 16 px padding under them (`DIALOG_FOOTER_GAP`).
+            let room = appearance::button_ring_room(cx);
             dialog
                 .title(title)
                 .width(width)
+                .gap(tags::DIALOG_FOOTER_GAP - room)
+                .pb_0()
                 .child(form.clone())
-                .footer(ThemeForm::footer(&form, cx))
+                .footer(div())
                 .on_ok(move |_, window, cx| {
                     submit.update(cx, |form, cx| form.submit(window, cx));
                     false
@@ -1679,43 +1736,59 @@ impl ThemeForm {
             .max(appearance::ui_size(240.))
     }
 
-    /// The tallest the form may be: the window less the alert's fixed chrome,
-    /// each term drawn at a whole device pixel as the window's layout snaps it.
-    fn max_height(window: &Window) -> Pixels {
+    /// The tallest the form may be: the window less its client-decoration
+    /// frame, the status bar, the 16 px above the bar and the alert's fixed
+    /// chrome, each term drawn at a whole device pixel as the window's layout
+    /// snaps it.
+    fn max_height(window: &Window, cx: &App) -> Pixels {
         Self::max_height_for(
             window.viewport_size().height,
+            WindowFrame::of(window),
             window.rem_size(),
-            appearance::ui_size(28.),
+            appearance::ui_size(STATUS_BAR_HEIGHT),
+            appearance::button_ring_room(cx),
             |length| window.pixel_snap(length),
         )
     }
 
-    /// [`Self::max_height`] for a window `viewport` tall whose layout snaps a
-    /// length with `snap`, with the alert's text at `rem` and its footer
-    /// buttons `button` tall. The alert opens a tenth of the way down and
-    /// sizes to its content; around the form it adds its 1 px border and
-    /// 16 px padding above and below, the title's one-rem line with the kit's
-    /// half-rem gap under it, a 16 px gap above the footer and the footer
-    /// buttons, and 16 px stay under the panel. The rem terms and the buttons
-    /// follow the interface text size, and the pixel terms do not. GPUI draws
-    /// each term at the nearest device pixel, halves toward zero, so each is
-    /// counted that way (at scale 1 the 6.5 px gap at 13 pt is 6 px), and the
-    /// cap, whole device pixels in turn, is drawn as computed. The body takes
-    /// what the header and base question leave, by layout.
+    /// [`Self::max_height`] for a window `viewport` tall with `frame` around
+    /// its content, whose layout snaps a length with `snap`, with the alert's
+    /// text at `rem`, the status bar `status_bar` tall and a focused Button's
+    /// ring `ring_room` outside its edge.
+    ///
+    /// The alert lays itself out inside the frame's paddings and opens a
+    /// tenth of that height down; the window's content, and the status bar
+    /// at its foot, ends inside the paddings and the frame's border. The
+    /// panel's lower edge stays 16 px above the bar's top edge. Inside the
+    /// panel are its 1 px border and 16 px padding above, the title's
+    /// one-rem line with the kit's half-rem gap under it, the form, which
+    /// holds the footer and the ring's room under its buttons, the alert's
+    /// gap above its empty footer slot, which is the rest of the 16 px
+    /// padding under the footer, and the 1 px border below. The rem terms
+    /// and the bar follow the interface text size, and the pixel terms do
+    /// not. GPUI draws each term at the nearest device pixel, halves toward
+    /// zero, so each is counted that way (at scale 1 the 6.5 px gap at
+    /// 13 pt is 6 px), and the cap, whole device pixels in turn, is drawn as
+    /// computed. The body takes what the header, the base question and the
+    /// footer leave, by layout.
     fn max_height_for(
         viewport: Pixels,
+        frame: WindowFrame,
         rem: Pixels,
-        button: Pixels,
+        status_bar: Pixels,
+        ring_room: Pixels,
         snap: impl Fn(Pixels) -> Pixels,
     ) -> Pixels {
-        let chrome = snap(viewport / 10.)
-            + (snap(px(1.)) + snap(px(16.))) * 2.
+        let panel_top =
+            frame.padding_top + snap((viewport - frame.padding_top - frame.padding_bottom) / 10.);
+        let status_top = viewport - frame.padding_bottom - frame.border_bottom - snap(status_bar);
+        let chrome = snap(px(1.))
+            + snap(px(16.))
             + snap(rem)
             + snap(rem * 0.5)
-            + snap(px(16.))
-            + snap(button)
-            + snap(px(16.));
-        (viewport - chrome).max(px(200.))
+            + snap(tags::DIALOG_FOOTER_GAP - ring_room)
+            + snap(px(1.));
+        (status_top - snap(px(16.)) - panel_top - chrome).max(px(200.))
     }
 
     /// A token row's index among the scroll container's children, which are
@@ -2043,20 +2116,28 @@ impl ThemeForm {
     }
 
     /// Reset to base on the left; the save error, Cancel and Save on the right.
-    fn footer(form: &Entity<Self>, cx: &App) -> AnyElement {
-        let p = palette(cx);
-        let state = form.read(cx);
+    /// The form's last row, 16 px under the body: a save error that wraps
+    /// makes the row taller and the body, which shrinks first, gives up the
+    /// room. The dialog clips its body to the body's bounds, so the row keeps
+    /// a focused button's ring room under the buttons; the 16 px above and
+    /// the body's side padding already hold it.
+    fn render_footer(&self, p: Palette, cx: &Context<Self>) -> AnyElement {
+        let form = cx.entity();
         let reset = form.clone();
         let cancel = form.clone();
         let save = form.clone();
-        let confirm = form.clone();
+        let confirm = form;
         let (reset_focus, cancel_focus, save_focus) = (
-            state.reset_focus.clone(),
-            state.cancel_focus.clone(),
-            state.save_focus.clone(),
+            self.reset_focus.clone(),
+            self.cancel_focus.clone(),
+            self.save_focus.clone(),
         );
         div()
+            .debug_selector(|| "theme-editor-footer".into())
             .w_full()
+            .flex_shrink_0()
+            .mt(px(16.))
+            .pb(appearance::button_ring_room(cx))
             .flex()
             .items_center()
             .gap_2()
@@ -2069,17 +2150,19 @@ impl ThemeForm {
                 div().track_focus(&reset_focus).child(
                     button("theme-editor-reset", "Reset to base", "", false)
                         .secondary()
-                        .disabled(state.pending)
-                        .accessibility_label(format!("Reset every color to {}", state.base.label()))
+                        .debug_selector(|| "theme-editor-reset".into())
+                        .disabled(self.pending)
+                        .accessibility_label(format!("Reset every color to {}", self.base.label()))
                         .on_click(move |_, window, cx| {
                             reset.update(cx, |form, cx| form.reset(window, cx))
                         }),
                 ),
             )
             .child(div().flex_1())
-            .children(state.error.clone().map(|error| {
+            .children(self.error.clone().map(|error| {
                 div()
                     .id("theme-editor-error")
+                    .debug_selector(|| "theme-editor-error".into())
                     .role(Role::Label)
                     .aria_label(error.clone())
                     .min_w_0()
@@ -2088,7 +2171,7 @@ impl ThemeForm {
                     .text_color(rgb(p.warning))
                     .child(error)
             }))
-            .when(state.pending, |footer| {
+            .when(self.pending, |footer| {
                 footer.child(
                     div()
                         .text_size(appearance::ui_text(12.))
@@ -2100,7 +2183,8 @@ impl ThemeForm {
                 div().track_focus(&cancel_focus).child(
                     button("theme-editor-cancel", "Cancel", "", false)
                         .secondary()
-                        .disabled(state.pending)
+                        .debug_selector(|| "theme-editor-cancel".into())
+                        .disabled(self.pending)
                         .on_click(move |_, window, cx| {
                             if cancel.update(cx, |form, cx| form.cancel(window, cx)) {
                                 window.close_dialog(cx);
@@ -2113,7 +2197,7 @@ impl ThemeForm {
                     button("theme-editor-save", "Save", "", false)
                         .primary()
                         .debug_selector(|| "theme-editor-save".into())
-                        .disabled(!state.can_save())
+                        .disabled(!self.can_save())
                         .on_click(move |_, window, cx| {
                             save.update(cx, |form, cx| form.submit(window, cx))
                         }),
@@ -2505,7 +2589,7 @@ impl Render for ThemeForm {
         let wide = viewport.width >= appearance::ui_size(1060.);
         self.wide = wide;
         self.reveal_focused(window, cx);
-        let max_height = Self::max_height(window);
+        let max_height = Self::max_height(window, cx);
         // Group labels and rows are direct children of the scroll container,
         // so `ScrollHandle::scroll_to_item` can reveal a focused row.
         let mut entries: Vec<AnyElement> = Vec::with_capacity(Self::TOKEN_ENTRIES + 2);
@@ -2688,19 +2772,29 @@ impl Render for ThemeForm {
         };
         #[cfg(not(test))]
         let paint_stamp: Option<AnyElement> = None;
+        // The cap holds the footer too: the content above it shrinks, by its
+        // scrolling body, to what the footer leaves.
         div()
             .id("theme-editor")
             .debug_selector(|| "theme-editor".into())
             .max_h(max_height)
             .flex()
             .flex_col()
-            .gap_3()
             .on_action(
                 cx.listener(|this, _: &Confirm, window, cx| this.confirm_pressed(window, cx)),
             )
-            .child(self.render_header(p, cx))
-            .children(self.render_base_question(p, cx))
-            .child(body)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(self.render_header(p, cx))
+                    .children(self.render_base_question(p, cx))
+                    .child(body),
+            )
+            .child(self.render_footer(p, cx))
             .children(paint_stamp)
             // After the rows: each hex field's view node is registered here,
             // outside its cached row (`TokenRowView`).
@@ -3749,11 +3843,11 @@ mod tests {
                 track.left()
             );
 
-            // Where the panel ends is `the_panel_ends_16_px_above_the_window_at_every_text_size`.
+            // Where the panel ends is `the_panel_ends_16_px_above_the_status_bar_at_every_text_size`.
             let editor = bounds(cx, "theme-editor".into());
             assert_eq!(
                 editor.size.height,
-                cx.update(|window, _| ThemeForm::max_height(window)),
+                cx.update(|window, cx| ThemeForm::max_height(window, cx)),
                 "the form is capped at {viewport:?}"
             );
 
@@ -3763,17 +3857,91 @@ mod tests {
         }
     }
 
-    /// With the rows overflowing, the panel ends 16 px above the window's
-    /// bottom edge at every interface text size (`DESIGN.md`), whole sizes
-    /// and those whose half-rem gap or scaled buttons fall between pixels.
-    /// The alert's title and the gap under it are in rems and its footer
-    /// holds the scaled 28 px buttons, while its padding, its border and the
-    /// margin below stay in pixels, so the form's cap counts each in its own
-    /// unit. The panel ends under Save by the 16 px padding and the 1 px
-    /// border. The test window is at 2x;
-    /// `the_cap_leaves_16_px_under_the_panel_at_scale_1_and_2` covers 1x.
+    /// The panel the alert paints around the editor: the smallest bordered
+    /// quad of the last frame that holds the form, in logical pixels.
+    fn panel_bounds(cx: &mut VisualTestContext) -> Bounds<Pixels> {
+        let form = bounds(cx, "theme-editor".into());
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    let widths = quad.border_widths;
+                    [widths.top, widths.right, widths.bottom, widths.left]
+                        .iter()
+                        .all(|width| logical(*width) == px(1.))
+                })
+                .map(|quad| {
+                    Bounds::from_corners(
+                        point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                        point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                    )
+                })
+                .filter(|panel| {
+                    panel.left() < form.left()
+                        && panel.top() < form.top()
+                        && panel.right() > form.right()
+                        && panel.bottom() > form.bottom()
+                })
+                .min_by(|a, b| {
+                    f32::from(a.size.width * f32::from(a.size.height))
+                        .total_cmp(&f32::from(b.size.width * f32::from(b.size.height)))
+                })
+                .expect("the alert paints a bordered panel around the form")
+        })
+    }
+
+    /// The status bar's top edge as the last frame painted it: the quad
+    /// across the window's full width at its foot with only a top rule. It is
+    /// [`STATUS_BAR_HEIGHT`] tall at the interface text size.
+    fn status_bar_top(cx: &mut VisualTestContext) -> Pixels {
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            let viewport = window.viewport_size();
+            let mut bars: Vec<_> = window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    let widths = quad.border_widths;
+                    logical(widths.top) > px(0.)
+                        && [widths.right, widths.bottom, widths.left]
+                            .iter()
+                            .all(|width| logical(*width) == px(0.))
+                        && logical(quad.bounds.left()) == px(0.)
+                        && logical(quad.bounds.right()) == viewport.width
+                        && logical(quad.bounds.bottom()) == viewport.height
+                })
+                .map(|quad| logical(quad.bounds.top()))
+                .collect();
+            bars.dedup();
+            let [top] = bars[..] else {
+                panic!("one status bar at the window's foot: {bars:?}")
+            };
+            assert_eq!(
+                viewport.height - top,
+                window.pixel_snap(appearance::ui_size(STATUS_BAR_HEIGHT)),
+                "the status bar is STATUS_BAR_HEIGHT tall at the text size"
+            );
+            top
+        })
+    }
+
+    /// With the rows overflowing, the panel ends 16 px above the status bar's
+    /// top edge at every interface text size (`DESIGN.md`), whole sizes and
+    /// those whose half-rem gap or scaled bar fall between pixels: the bar
+    /// stays in place under the modal and no panel edge crosses it. The
+    /// alert's title and the gap under it are in rems and the bar scales,
+    /// while the panel's padding, its border and the margin below stay in
+    /// pixels, so the form's cap counts each in its own unit. The panel ends
+    /// under Save by the 16 px padding and the 1 px border. The test window
+    /// is at 2x with server decorations;
+    /// `the_cap_leaves_16_px_under_the_panel_at_scale_1_and_2` covers 1x and
+    /// `the_cap_keeps_the_panel_inside_client_decorations` the Linux frame.
     #[gpui::test]
-    fn the_panel_ends_16_px_above_the_window_at_every_text_size(cx: &mut TestAppContext) {
+    fn the_panel_ends_16_px_above_the_status_bar_at_every_text_size(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);
         // The alert slides in on a wall-clock animation; open it at rest.
         cx.update(|_, cx| cx.set_reduce_motion(true));
@@ -3793,12 +3961,19 @@ mod tests {
                     scroll.max_offset().y > px(0.),
                     "the rows overflow at {text_size} pt in {viewport:?}"
                 );
+                let panel = panel_bounds(cx);
                 let save = bounds(cx, "theme-editor-save".into());
-                let inset = viewport.height - (save.bottom() + px(16. + 1.));
                 assert_eq!(
-                    inset,
+                    panel.bottom(),
+                    save.bottom() + px(16. + 1.),
+                    "the panel ends under Save by its padding and border"
+                );
+                let status = status_bar_top(cx);
+                let clearance = status - panel.bottom();
+                assert_eq!(
+                    clearance,
                     px(16.),
-                    "at {text_size} pt in {viewport:?} the panel ends {inset:?} above the window's bottom edge"
+                    "at {text_size} pt in {viewport:?} the panel ends {clearance:?} above the status bar"
                 );
 
                 cx.simulate_keystrokes("escape");
@@ -3808,39 +3983,389 @@ mod tests {
         }
     }
 
-    /// The cap leaves the panel 16 px above the window's bottom edge at
-    /// scale 1 as at 2. The test platform draws only at 2x, so this places the
-    /// alert as GPUI's layout does at either scale (`Window::pixel_snap`):
-    /// each authored length and the title's line at the nearest device pixel,
-    /// halves toward zero, and the form at its cap, itself an authored length.
-    /// At 2x these are the positions the view test measures. At 1x a cap that
-    /// counts the 13 pt title gap as 6.5 px, where the layout draws 6, has a
-    /// half pixel the layout drops, which ended the panel 17 px up.
+    /// Where GPUI's layout places the alert around a form capped by
+    /// [`ThemeForm::max_height_for`] at `scale` in a window `viewport` tall
+    /// inside `frame`, at interface text size `size`: the panel's top and
+    /// lower edges and the status bar's top edge. The test platform draws
+    /// only at 2x, so this places each authored length and the title's line
+    /// at the nearest device pixel, halves toward zero (`Window::pixel_snap`),
+    /// and the form at its cap, itself an authored length, from the top of
+    /// the alert's padded layout area down.
+    fn modeled_panel(
+        viewport: Pixels,
+        frame: WindowFrame,
+        size: u8,
+        scale: f32,
+    ) -> (Pixels, Pixels, Pixels) {
+        let snap = |length: Pixels| px(((f32::from(length) * scale).abs() - 0.5).ceil() / scale);
+        let ui = |base: f32| px(base * (f32::from(size) / 13.));
+        let (rem, status_bar) = (ui(13.), ui(STATUS_BAR_HEIGHT));
+        // The installed Button ring's room, which the footer keeps under its
+        // buttons inside the form.
+        let room = appearance::BUTTON_FOCUS_RING.gap + appearance::BUTTON_FOCUS_RING.width;
+        let form = snap(ThemeForm::max_height_for(
+            viewport, frame, rem, status_bar, room, snap,
+        ));
+        let top =
+            frame.padding_top + snap((viewport - frame.padding_top - frame.padding_bottom) / 10.);
+        // Border and padding, the title and its gap, the form with its footer
+        // and the ring's room under it, the alert's gap above the empty footer
+        // slot, which gives the room back, and the border.
+        let bottom = top
+            + px(1. + 16.)
+            + snap(rem)
+            + snap(rem * 0.5)
+            + form
+            + snap(tags::DIALOG_FOOTER_GAP - room)
+            + px(1.);
+        let status = viewport - frame.padding_bottom - frame.border_bottom - snap(status_bar);
+        (top, bottom, status)
+    }
+
+    /// The cap leaves the panel 16 px above the status bar at scale 1 as at
+    /// 2, with server decorations and inside an untiled client-decorated
+    /// frame. At 1x a cap that counts the 13 pt title gap as 6.5 px, where
+    /// the layout draws 6, has a half pixel the layout drops, which ended the
+    /// panel 17 px up.
     #[test]
     fn the_cap_leaves_16_px_under_the_panel_at_scale_1_and_2() {
-        for scale in [1., 2.] {
-            let snap =
-                |length: Pixels| px(((f32::from(length) * scale).abs() - 0.5).ceil() / scale);
-            for viewport in [px(675.), px(680.), px(900.)] {
-                for size in [11_u8, 13, 14, 15, 18] {
-                    let ui = |base: f32| px(base * (f32::from(size) / 13.));
-                    let (rem, button) = (ui(13.), ui(28.));
-                    let form = snap(ThemeForm::max_height_for(viewport, rem, button, snap));
-                    let bottom = snap(viewport / 10.)
-                        + px(1. + 16.)
-                        + snap(rem)
-                        + snap(rem * 0.5)
-                        + form
-                        + px(16.)
-                        + snap(button)
-                        + px(16. + 1.);
-                    assert_eq!(
-                        viewport - bottom,
-                        px(16.),
-                        "at {size} pt and scale {scale} in a window {viewport:?} tall"
+        let frames = [
+            WindowFrame::new(Edges::default(), Decorations::Server),
+            WindowFrame::new(
+                Edges::all(px(20.)),
+                Decorations::Client {
+                    tiling: Tiling::default(),
+                },
+            ),
+        ];
+        for frame in frames {
+            for scale in [1., 2.] {
+                for viewport in [px(675.), px(680.), px(900.)] {
+                    for size in [11_u8, 13, 14, 15, 18] {
+                        let (_, bottom, status) = modeled_panel(viewport, frame, size, scale);
+                        assert_eq!(
+                            status - bottom,
+                            px(16.),
+                            "at {size} pt and scale {scale} in a window {viewport:?} tall in {frame:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Under untiled Linux client decorations the toolkit's dialog lays
+    /// itself out inside `window_paddings` (the 20 px shadow inset on every
+    /// side) and the window's content, the status bar at its foot, ends 1 px
+    /// further in, inside the frame's border. The cap counts both, so the
+    /// panel stays inside the padded window and its lower edge at least
+    /// 16 px above the bar's top edge, at 13 and 18 pt and scales 1 and 2.
+    /// A cap that ignored the frame would end the panel 21 px lower, across
+    /// the bar. A tiled bottom edge or server decorations have no frame.
+    #[test]
+    fn the_cap_keeps_the_panel_inside_client_decorations() {
+        // What `window_paddings` returns for an untiled client-decorated
+        // window: its shadow inset, 20 px on Linux, on every side.
+        let paddings = Edges::all(px(20.));
+        let untiled = WindowFrame::new(
+            paddings,
+            Decorations::Client {
+                tiling: Tiling::default(),
+            },
+        );
+        assert_eq!(
+            untiled,
+            WindowFrame {
+                padding_top: px(20.),
+                padding_bottom: px(20.),
+                border_bottom: px(1.),
+            }
+        );
+        for viewport in [px(680.), px(900.)] {
+            for scale in [1., 2.] {
+                for size in [13_u8, 18] {
+                    let (top, bottom, status) = modeled_panel(viewport, untiled, size, scale);
+                    let context =
+                        format!("at {size} pt and scale {scale} in a window {viewport:?} tall");
+                    assert!(
+                        top >= paddings.top,
+                        "the panel opens inside the frame {context}"
+                    );
+                    assert!(
+                        bottom <= viewport - paddings.bottom - px(1.),
+                        "the panel ends inside the frame {context}"
+                    );
+                    assert!(
+                        status - bottom >= px(16.),
+                        "the panel ends {:?} above the status bar {context}",
+                        status - bottom
                     );
                 }
             }
+        }
+        let tiled = WindowFrame::new(
+            Edges {
+                bottom: px(0.),
+                ..paddings
+            },
+            Decorations::Client {
+                tiling: Tiling {
+                    bottom: true,
+                    ..Tiling::default()
+                },
+            },
+        );
+        assert_eq!(
+            (tiled.padding_bottom, tiled.border_bottom),
+            (px(0.), px(0.))
+        );
+        assert_eq!(
+            WindowFrame::new(Edges::default(), Decorations::Server),
+            WindowFrame {
+                padding_top: px(0.),
+                padding_bottom: px(0.),
+                border_bottom: px(0.),
+            }
+        );
+    }
+
+    /// Makes the test's preference directory read-only for as long as it
+    /// lives, as a read-only app-data directory refuses a save natively.
+    #[cfg(unix)]
+    struct ReadOnlyPreferences(std::path::PathBuf);
+
+    #[cfg(unix)]
+    impl ReadOnlyPreferences {
+        fn new() -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let directory = preferences::test_settings_directory().path().to_owned();
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500))
+                .expect("make the preference directory read-only");
+            Self(directory)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ReadOnlyPreferences {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
+    /// Press Save while the test's preference directory refuses writes, as a
+    /// read-only app-data directory does natively, and settle on the error
+    /// the refused save leaves beside Save.
+    #[cfg(unix)]
+    fn refuse_a_save(cx: &mut VisualTestContext, form: &Entity<ThemeForm>) {
+        let refused = ReadOnlyPreferences::new();
+        click(cx, "theme-editor-save");
+        wait_for(cx, |cx| {
+            cx.read(|cx| {
+                let form = form.read(cx);
+                !form.pending && form.error.is_some()
+            })
+        });
+        drop(refused);
+        let error = cx.read(|cx| form.read(cx).error.clone()).unwrap();
+        assert!(
+            error.starts_with("Could not save the theme: Save preferences: "),
+            "{error}"
+        );
+        settle(cx);
+    }
+
+    /// A save the store refuses, here through a read-only app-data
+    /// directory, leaves its error beside Save. At 1000 × 680 at 13 and 18 pt
+    /// the error wraps to two lines and the footer grows, but the panel
+    /// keeps its outer bounds and its 16 px above the status bar: the
+    /// scrolling body gives up exactly the room the footer takes.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_wrapped_save_error_takes_its_room_from_the_body(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        for text_size in [13, 18] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, _| app.settings.interface_text_size = text_size);
+                appearance::apply_text_sizes(text_size, 12, window, cx);
+                app.update(cx, |app, cx| app.open_theme_editor(None, window, cx));
+            });
+            settle(cx);
+            let form = form(cx, &app);
+            next_frame(cx);
+            let panel = panel_bounds(cx);
+            let body = bounds(cx, "theme-editor-body".into());
+            let footer = bounds(cx, "theme-editor-footer".into());
+            let save = bounds(cx, "theme-editor-save".into());
+            let room = cx.read(appearance::button_ring_room);
+            assert_eq!(
+                footer.size.height,
+                save.size.height + room,
+                "one row of buttons and the ring's room under them"
+            );
+            assert!(settings::shown(cx, "theme-editor-error").is_none());
+
+            refuse_a_save(cx, &form);
+
+            let shown = bounds(cx, "theme-editor-error".into());
+            let grown = bounds(cx, "theme-editor-footer".into());
+            // More than one line at any line height of at least 1.25.
+            let line = appearance::ui_text(12.) * 1.25;
+            assert!(
+                shown.size.height >= line * 2. && grown.size.height > footer.size.height,
+                "the error wraps to two lines and grows the footer at {text_size} pt: {shown:?} in {grown:?}"
+            );
+            assert_eq!(
+                panel_bounds(cx),
+                panel,
+                "the panel keeps its outer bounds at {text_size} pt"
+            );
+            assert_eq!(grown.bottom(), footer.bottom(), "the footer keeps its foot");
+            let shrunk = bounds(cx, "theme-editor-body".into());
+            assert_eq!(shrunk.top(), body.top());
+            assert_eq!(
+                body.size.height - shrunk.size.height,
+                grown.size.height - footer.size.height,
+                "the body gives up the footer's room at {text_size} pt"
+            );
+            assert!(status_bar_top(cx) - panel.bottom() >= px(16.));
+
+            // The refused save left the dialog open; Escape discards it.
+            cx.simulate_keystrokes("escape");
+            settle(cx);
+            assert!(cx.read(|cx| app.read(cx).theme_editor.form.is_none()));
+        }
+    }
+
+    /// The clip the dialog's body paints the editor under, in logical
+    /// pixels: the content mask of Save's fill, which the body's clipping
+    /// ancestors set. Only a border-only quad is split into masked edges, so
+    /// a fill carries the whole clip.
+    fn body_clip(cx: &mut VisualTestContext) -> Bounds<Pixels> {
+        let save = bounds(cx, "theme-editor-save".into());
+        let near = |a: Pixels, b: Pixels| (a - b).abs() < px(0.01);
+        painted_quads(cx)
+            .into_iter()
+            .find(|quad| {
+                !quad.background.is_transparent()
+                    && near(quad.bounds.left(), save.left())
+                    && near(quad.bounds.top(), save.top())
+                    && near(quad.bounds.right(), save.right())
+                    && near(quad.bounds.bottom(), save.bottom())
+            })
+            .map(|quad| quad.mask)
+            .expect("Save paints its fill")
+    }
+
+    /// The kit paints a focused Button's ring outside its edge and the
+    /// dialog clips its body to the body's bounds, so the footer, the form's
+    /// last row, keeps the installed ring's room inside them under its
+    /// buttons, as the 16 px above it and the body's side padding hold it at
+    /// the other edges (`DESIGN.md`: a focused Button draws its ring whole).
+    /// At 1000 × 680 at 13 and 18 pt, at rest and with a save error wrapped
+    /// to two lines, Shift-Tab from Name focuses Save, Cancel and Reset to
+    /// base in turn: each one's ring lies inside the body's clip and paints
+    /// all four edges. The header's Name field and Base button, at the
+    /// body's top edge, keep the room as well, and at rest the buttons keep
+    /// the panel's 16 px padding under them, so the ring's room is not taken
+    /// from the window.
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_focused_footer_buttons_ring_lies_inside_the_body_in_every_state(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, cx| {
+            window.activate_window();
+            cx.set_reduce_motion(true);
+        });
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        let (ring, footprint) = installed_ring(cx);
+        for text_size in [13, 18] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, _| app.settings.interface_text_size = text_size);
+                appearance::apply_text_sizes(text_size, 12, window, cx);
+                app.update(cx, |app, cx| app.open_theme_editor(None, window, cx));
+            });
+            settle(cx);
+            let form = form(cx, &app);
+            next_frame(cx);
+            let save = bounds(cx, "theme-editor-save".into());
+            assert_eq!(
+                panel_bounds(cx).bottom() - px(1.) - save.bottom(),
+                px(16.),
+                "the panel's padding under the buttons at {text_size} pt"
+            );
+
+            for wrapped in [false, true] {
+                if wrapped {
+                    refuse_a_save(cx, &form);
+                    let shown = bounds(cx, "theme-editor-error".into());
+                    assert!(
+                        shown.size.height >= appearance::ui_text(12.) * 1.25 * 2.,
+                        "the error wraps to two lines at {text_size} pt: {shown:?}"
+                    );
+                }
+                let state = if wrapped { "a wrapped error" } else { "rest" };
+                let clip = body_clip(cx);
+                for selector in ["theme-editor-name", "theme-editor-base"] {
+                    let control = bounds(cx, selector.into());
+                    assert!(
+                        holds(clip, control.dilate(footprint)),
+                        "{selector} at {text_size} pt at {state}: the ring's room {:?} inside the body's clip {clip:?}",
+                        control.dilate(footprint)
+                    );
+                }
+                let footer = [
+                    (
+                        "theme-editor-save",
+                        cx.read(|cx| form.read(cx).save_focus.clone()),
+                    ),
+                    (
+                        "theme-editor-cancel",
+                        cx.read(|cx| form.read(cx).cancel_focus.clone()),
+                    ),
+                    (
+                        "theme-editor-reset",
+                        cx.read(|cx| form.read(cx).reset_focus.clone()),
+                    ),
+                ];
+                for (presses, (selector, focus)) in footer.into_iter().enumerate() {
+                    let name = cx.read(|cx| form.read(cx).name.clone());
+                    cx.update(|window, cx| name.read(cx).focus_handle(cx).focus(window, cx));
+                    native_frame(cx);
+                    for _ in 0..=presses {
+                        cx.simulate_keystrokes("shift-tab");
+                    }
+                    native_frame(cx);
+                    let context = format!("{selector} at {text_size} pt at {state}");
+                    assert!(
+                        cx.update(|window, cx| focus.contains_focused(window, cx)),
+                        "{context}: Shift-Tab {} times from Name focuses it",
+                        presses + 1
+                    );
+                    let button = bounds(cx, selector.into());
+                    let clip = body_clip(cx);
+                    assert!(
+                        holds(clip, button.dilate(footprint)),
+                        "{context}: the ring {:?} inside the body's clip {clip:?}",
+                        button.dilate(footprint)
+                    );
+                    let quads = painted_quads(cx);
+                    let drawn = PaintedRing::around(&quads, button, footprint);
+                    for (side, band) in drawn.edges(ring.width) {
+                        assert!(
+                            drawn.shows(band),
+                            "{context}: the ring's {side} edge {band:?} is clipped: {:?}",
+                            drawn.parts
+                        );
+                    }
+                }
+            }
+
+            cx.simulate_keystrokes("escape");
+            settle(cx);
+            assert!(cx.read(|cx| app.read(cx).theme_editor.form.is_none()));
         }
     }
 

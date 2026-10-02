@@ -235,3 +235,35 @@ runs on Linux only, where the Omarchy theme exists. How the faded switch renders
 in the real window still needs native inspection. Remove this part of the patch
 when upstream fades a disabled Switch's thumb with its track, and that
 regression passes without it.
+
+The `usize`-constant patch modifies `src/highlighter/highlighter.rs`. Upstream
+imports the `std::usize` module (`use std::{…, usize}`), so the `usize::MIN`
+and `usize::MAX` in `HighlightSummary`'s `Summary::zero` and in
+`unique_styles`'s boundary sentinel named that module's constants. Rust 1.99,
+which `rust-toolchain.toml` pins, deprecates the module, and because this crate
+is a path dependency its eight deprecation warnings, the import and seven uses,
+appeared in every GitTurtle build. The import is removed, so the same paths now
+name the primitive's associated constants, which have the same values. Nothing
+else changes, and no behavior changes.
+
+The consumers are the kit editors the app opens with a grammar (`text::editor`
+in `crates/app/src/text.rs`, Compare's split diff in
+`crates/app/src/split_diff.rs`, and the Markdown source view and pull request
+descriptions, which use `markdown`), which reach `SyntaxHighlighter::styles`
+and its `unique_styles` through `src/highlighter/input_adapter.rs`, and the
+kit's code-block highlighter in `src/text/mod.rs`.
+
+`cargo test --locked -p gitturtle -- text::tests:: split_diff::tests:: markdown_view::tests::`
+runs those app paths, including
+`patch_headers_and_changes_draw_palette_colors_in_every_built_in`, which
+composes `SyntaxHighlighter::styles` with the patch decorations, and the
+Markdown source view's find. The crate's own `highlighter` tests, among them
+`test_unique_styles`, cover the sentinel directly. Both sets pass with and
+without the patch; without it the build only warns. The crate's lib test
+target does not compile as packaged: test code includes three files from the
+upstream repository that the crates.io package omits, and two input
+accessibility probes in `src/input/input.rs` fail the borrow checker. Its
+highlighter tests therefore ran in a scratch workspace with the root patches
+and lockfile, `--features tree-sitter-languages`, placeholders for those files
+and the input test module compiled out. Remove this part of the patch when
+upstream drops the import.

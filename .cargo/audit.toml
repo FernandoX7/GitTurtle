@@ -1,0 +1,28 @@
+# cargo-audit configuration for `scripts/gate.py` (stage "audit", run with
+# `--deny warnings`). Vulnerabilities are never ignored here.
+#
+# Each entry is an "unmaintained" advisory for a crate that the pinned GPUI
+# toolkit or the vendored Mermaid renderer's font stack brings in (`instant`
+# also through the app's exact `notify` pin, whose `notify-types` needs it).
+# deny.toml
+# reports unmaintained crates only for direct workspace dependencies
+# (`unmaintained = "workspace"`); docs/security-build-audit.md records each
+# path and the decision to retain it with the toolkit. A new advisory, of any
+# kind, still turns the audit stage red (a failure under `--strict`) until it
+# is reviewed and recorded there.
+
+[advisories]
+ignore = [
+    # bincode 1.3.3: syntect -> gpui-base syntax support.
+    "RUSTSEC-2025-0141",
+    # instant 0.1.13: gpui-base, gpui-component and notify-types (the app's notify).
+    "RUSTSEC-2024-0384",
+    # paste 1.0.15: gpui-component and image/exr (pulp) compile-time macros.
+    "RUSTSEC-2024-0436",
+    # rustls-pemfile 2.2.0: the toolkit's reqwest adapter; GitHub uses the gh CLI.
+    "RUSTSEC-2025-0134",
+    # rustybuzz 0.20.1: usvg text shaping in gpui-pre.
+    "RUSTSEC-2026-0206",
+    # ttf-parser 0.25.1: fontdb (cosmic-text, usvg) and the vendored Mermaid renderer.
+    "RUSTSEC-2026-0192",
+]
