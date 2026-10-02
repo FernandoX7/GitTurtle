@@ -200,7 +200,8 @@ class ClaudeProcessTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[2] / SETTINGS_TEMPLATE
         settings = json.loads(source.read_text())
         deny = settings["permissions"]["deny"]
-        self.assertIn("Bash(python3 scripts/agent-loop.py *)", deny)
+        # Every spelling of the controller CLI, not only the documented one.
+        self.assertIn("Bash(*agent-loop.py*)", deny)
         self.assertIn("Bash(python3 scripts/agent_loop/*)", deny)
 
     def test_review_sessions_may_start_the_documented_python_suites(self):

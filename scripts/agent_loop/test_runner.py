@@ -80,6 +80,8 @@ class RunnerTests(unittest.TestCase):
         self.environment = patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(self.gitconfig), "GIT_CONFIG_NOSYSTEM": "1"})
         self.environment.start()
         self.addCleanup(self.environment.stop)
+        # A controller session runs this suite with the marker its note and attest refuse.
+        os.environ.pop("GITTURTLE_LOOP", None)
         git(self.root, "init", "--quiet")
         (self.root / ".gitignore").write_text("/.local/\n")
         (self.root / "docs").mkdir()
