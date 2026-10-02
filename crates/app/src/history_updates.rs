@@ -31,6 +31,9 @@ pub(super) struct State {
     pub pending: Option<Update>,
     followed: bool,
     scope_error: Option<String>,
+    /// The vanished scope already reported, so later quiet refreshes and
+    /// accepted writes do not raise it again after it is dismissed.
+    reported_vanished: Option<worker::VanishedScope>,
     pub committed: Option<String>,
 }
 impl State {
@@ -50,6 +53,13 @@ impl State {
             })
             + self.committed.as_ref().map_or(0, String::capacity)
             + self.scope_error.as_ref().map_or(0, String::capacity)
+            + self
+                .reported_vanished
+                .as_ref()
+                .map_or(0, |vanished| match &vanished.0 {
+                    worker::Scope::Branch { name, .. } => name.capacity(),
+                    worker::Scope::Worktree { path } => path.capacity(),
+                })
     }
     pub fn reset_history(&mut self) {
         self.observed = None;
@@ -61,16 +71,32 @@ impl State {
         self.pending = Some(Update::Changed);
         self.followed = false;
     }
-    pub fn report_scope_error(&mut self, error: &str, operation_error: &mut Option<String>) {
+    /// A quiet read could not resolve the scope; the displayed history stays.
+    /// One vanished scope is reported once: after its report is dismissed,
+    /// later quiet refreshes and accepted writes leave it dismissed.
+    pub fn report_scope_error(
+        &mut self,
+        error: &str,
+        vanished: Option<&worker::VanishedScope>,
+        operation_error: &mut Option<String>,
+    ) {
+        if vanished.is_some() && vanished == self.reported_vanished.as_ref() {
+            return;
+        }
+        self.scope_unavailable();
         let message = format!(
             "History scope changed: {error}. The displayed history is retained; choose a current branch to browse its history."
         );
         if operation_error.is_none() || operation_error.as_ref() == self.scope_error.as_ref() {
             *operation_error = Some(message.clone());
             self.scope_error = Some(message);
+            self.reported_vanished = vanished.cloned();
         }
     }
+    /// A snapshot resolved its scope (or replaced it): a later disappearance
+    /// is a new change and is reported again.
     pub fn clear_scope_error(&mut self, operation_error: &mut Option<String>) {
+        self.reported_vanished = None;
         if let Some(previous) = self.scope_error.take()
             && operation_error.as_ref() == Some(&previous)
         {
@@ -183,6 +209,27 @@ fn follows_latest(mode: WorkspaceMode, searching: bool, deep: bool, offset: f32)
 }
 
 impl GitTurtle {
+    /// Accept the scope of an explicit snapshot (Refresh, Show latest, a
+    /// restored tab). When its branch or worktree scope had vanished the worker
+    /// read All history: drop the stale scope and say once, politely, why.
+    pub(super) fn accept_snapshot_scope(&mut self, snapshot: &worker::Snapshot) {
+        self.history_updates
+            .clear_scope_error(&mut self.operation_error);
+        if let Some(vanished) = &snapshot.vanished_scope {
+            self.scope = None;
+            // A restored tab's pinned traversal belonged to the vanished
+            // scope; All history starts from current tips instead.
+            if let Some(saved) = &mut self.repository_tabs.restoring {
+                saved.scope = None;
+                saved.pinned = None;
+                saved.offset = 0;
+            }
+            self.operation_notice = Some(format!(
+                "History scope changed: {vanished}. Showing All history."
+            ));
+        }
+    }
+
     pub(super) fn apply_quiet_snapshot(
         &mut self,
         snapshot: worker::Snapshot,
@@ -360,8 +407,7 @@ impl GitTurtle {
                             .update(cx, |input, cx| input.set_value("", window, cx));
                         match output {
                             Output::Snapshot(snapshot) => {
-                                this.history_updates
-                                    .clear_scope_error(&mut this.operation_error);
+                                this.accept_snapshot_scope(&snapshot);
                                 this.history_updates.captured(&snapshot);
                                 this.install_current_history(snapshot, true, window, cx);
                                 this.status =
@@ -549,6 +595,7 @@ mod tests {
             graph_notice: None,
             refs: HashMap::new(),
             elapsed: std::time::Duration::ZERO,
+            vanished_scope: None,
             commits,
         };
         cx.update(|cx| {
@@ -771,10 +818,10 @@ mod tests {
             "a vanished scope cannot claim current rows are visible"
         );
         let mut error = None;
-        state.report_scope_error("branch missing", &mut error);
+        state.report_scope_error("branch missing", None, &mut error);
         state.clear_scope_error(&mut error);
         assert!(error.is_none());
-        state.report_scope_error("branch missing", &mut error);
+        state.report_scope_error("branch missing", None, &mut error);
         error = Some("unrelated commit failure".into());
         state.clear_scope_error(&mut error);
         assert_eq!(error.as_deref(), Some("unrelated commit failure"));

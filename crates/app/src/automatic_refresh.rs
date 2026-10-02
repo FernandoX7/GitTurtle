@@ -304,15 +304,21 @@ impl GitTurtle {
                 Ok(worker::QuietHistory::Refreshed(snapshot)) => {
                     self.apply_quiet_snapshot(snapshot, window, cx)
                 }
-                Ok(worker::QuietHistory::Retained { metadata, error }) => {
-                    self.history_updates.scope_unavailable();
+                Ok(worker::QuietHistory::Retained {
+                    metadata,
+                    error,
+                    vanished,
+                }) => {
                     self.refs = metadata.refs;
                     self.branches = metadata.branches;
                     self.worktrees = metadata.worktrees;
                     self.repository = Some(metadata.repository);
                     self.rebuild_navigation(cx);
-                    self.history_updates
-                        .report_scope_error(&error, &mut self.operation_error);
+                    self.history_updates.report_scope_error(
+                        &error,
+                        vanished.as_ref(),
+                        &mut self.operation_error,
+                    );
                 }
                 Err(error) => {
                     self.operation_error

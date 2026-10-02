@@ -38,6 +38,9 @@ pub struct Snapshot {
     pub graph_notice: Option<String>,
     pub refs: HashMap<String, Vec<String>>,
     pub elapsed: Duration,
+    /// An explicit Open whose branch or worktree scope no longer resolves
+    /// reads All history instead and names the vanished scope here once.
+    pub vanished_scope: Option<VanishedScope>,
 }
 
 pub struct ImageSide {
@@ -142,6 +145,40 @@ impl Content {
 pub enum Scope {
     Branch { name: String, remote: bool },
     Worktree { path: PathBuf },
+}
+
+/// A branch or worktree scope that no longer resolves in the current local
+/// snapshot. Explicit Open replaces it with All history; quiet refresh and an
+/// unpinned search report it while keeping the displayed history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VanishedScope(pub Scope);
+
+impl std::fmt::Display for VanishedScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Scope::Branch { name, remote } => write!(
+                f,
+                "{} branch '{name}' no longer exists in the local repository snapshot",
+                if *remote { "Remote-tracking" } else { "Local" }
+            ),
+            Scope::Worktree { path } => write!(
+                f,
+                "Worktree '{}' is no longer registered in the local repository snapshot",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for VanishedScope {}
+
+/// What a snapshot read does when its branch or worktree scope is gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MissingScope {
+    /// Fail the read; quiet refresh then retains the displayed history.
+    Fail,
+    /// Read All history and record the vanished scope on the snapshot.
+    AllHistory,
 }
 
 pub enum Job {
@@ -319,6 +356,9 @@ pub enum QuietHistory {
     Retained {
         metadata: Snapshot,
         error: String,
+        /// The scope that vanished, when that is why the read failed; the
+        /// view reports one vanished scope once.
+        vanished: Option<VanishedScope>,
     },
 }
 
@@ -972,6 +1012,7 @@ fn execute(
                 match read_snapshot(
                     repo.path().to_owned(),
                     scope.as_ref(),
+                    MissingScope::Fail,
                     limit,
                     cancellation,
                     session,
@@ -981,10 +1022,17 @@ fn execute(
                         cancellation.check()?;
                         // A zero-row unscoped snapshot reads current navigation
                         // metadata without loading a replacement history page.
-                        let metadata =
-                            read_snapshot(repo.path().to_owned(), None, 0, cancellation, session)?;
+                        let metadata = read_snapshot(
+                            repo.path().to_owned(),
+                            None,
+                            MissingScope::Fail,
+                            0,
+                            cancellation,
+                            session,
+                        )?;
                         Ok(QuietHistory::Retained {
                             metadata,
+                            vanished: error.downcast_ref::<VanishedScope>().cloned(),
                             error: format!("{error:#}"),
                         })
                     }
@@ -1139,9 +1187,18 @@ fn execute(
             ))
         }
         Job::Open { path, scope, limit } => {
-            let mut snapshot =
-                read_snapshot(path.clone(), scope.as_ref(), limit, cancellation, session)
-                    .map_err(|error| crate::repository_access::explain(&path, error))?;
+            // An explicit Open (Refresh, Show latest, a restored tab) resolves
+            // the scope again; a vanished one opens All history, never an
+            // unavailable repository.
+            let mut snapshot = read_snapshot(
+                path.clone(),
+                scope.as_ref(),
+                MissingScope::AllHistory,
+                limit,
+                cancellation,
+                session,
+            )
+            .map_err(|error| crate::repository_access::explain(&path, error))?;
             cancellation.check()?;
             snapshot.elapsed = start.elapsed();
             Ok(Output::Snapshot(snapshot))
@@ -1197,6 +1254,7 @@ fn commit_metadata_bytes(commit: &Commit) -> usize {
 fn read_snapshot(
     path: PathBuf,
     scope: Option<&Scope>,
+    missing: MissingScope,
     limit: usize,
     cancellation: &Cancellation,
     session: &mut RepositorySession,
@@ -1209,7 +1267,11 @@ fn read_snapshot(
     cancellation.check()?;
     let worktrees = repository.worktrees()?;
     cancellation.check()?;
-    let oid = scope_oid(scope, &branches, &worktrees)?;
+    let (oid, vanished_scope) = match scope_oid(scope, &branches, &worktrees) {
+        Ok(oid) => (oid, None),
+        Err(vanished) if missing == MissingScope::AllHistory => (None, Some(vanished)),
+        Err(vanished) => return Err(vanished.into()),
+    };
     let scope = match oid {
         Some(oid) if oid.bytes().all(|byte| byte == b'0') => {
             gitturtle_core::HistoryScope::PinnedRefs(Vec::new())
@@ -1259,6 +1321,7 @@ fn read_snapshot(
         graph_notice,
         refs,
         elapsed: start.elapsed(),
+        vanished_scope,
     })
 }
 
@@ -1328,30 +1391,23 @@ fn scope_oid<'a>(
     scope: Option<&Scope>,
     branches: &'a [Branch],
     worktrees: &'a [Worktree],
-) -> Result<Option<&'a str>> {
-    match scope {
-        None => Ok(None),
-        Some(Scope::Branch { name, remote }) => branches
+) -> std::result::Result<Option<&'a str>, VanishedScope> {
+    let Some(scope) = scope else {
+        return Ok(None);
+    };
+    let resolved = match scope {
+        Scope::Branch { name, remote } => branches
             .iter()
             .find(|branch| branch.name == *name && branch.remote == *remote)
-            .map(|branch| Some(branch.oid.as_str()))
-            .ok_or_else(|| {
-                anyhow!(
-                    "{} branch '{name}' no longer exists in the local repository snapshot",
-                    if *remote { "Remote-tracking" } else { "Local" }
-                )
-            }),
-        Some(Scope::Worktree { path }) => worktrees
+            .map(|branch| branch.oid.as_str()),
+        Scope::Worktree { path } => worktrees
             .iter()
             .find(|worktree| worktree.path == *path)
-            .map(|worktree| Some(worktree.oid.as_str()))
-            .ok_or_else(|| {
-                anyhow!(
-                    "Worktree '{}' is no longer registered in the local repository snapshot",
-                    path.display()
-                )
-            }),
-    }
+            .map(|worktree| worktree.oid.as_str()),
+    };
+    resolved
+        .map(Some)
+        .ok_or_else(|| VanishedScope(scope.clone()))
 }
 
 fn image_change(file: &FileChange) -> bool {
@@ -2623,6 +2679,14 @@ mod image_tests {
         .err()
         .expect("missing branch must fail");
         assert!(error.to_string().contains("branch"));
+        assert_eq!(
+            error.downcast_ref::<VanishedScope>(),
+            Some(&VanishedScope(Scope::Branch {
+                name: "deleted".into(),
+                remote: false,
+            })),
+            "search reports the scope change, not an unavailable repository"
+        );
     }
 
     #[test]
@@ -2858,10 +2922,23 @@ mod image_tests {
         .unwrap() else {
             panic!("expected quiet refresh")
         };
-        let QuietHistory::Retained { metadata, error } = refresh.snapshot.unwrap().unwrap() else {
+        let QuietHistory::Retained {
+            metadata,
+            error,
+            vanished,
+        } = refresh.snapshot.unwrap().unwrap()
+        else {
             panic!("missing scopes must retain displayed history")
         };
         assert!(error.contains("departing"));
+        assert_eq!(
+            vanished,
+            Some(VanishedScope(Scope::Branch {
+                name: "departing".into(),
+                remote: false,
+            })),
+            "the view reports one vanished scope once by its identity"
+        );
         assert!(
             metadata
                 .branches
@@ -4056,8 +4133,15 @@ mod image_tests {
             remote: false,
         };
         let mut session = RepositorySession::default();
-        let before =
-            read_snapshot(fixture.0.clone(), Some(&scope), 10, &active(), &mut session).unwrap();
+        let before = read_snapshot(
+            fixture.0.clone(),
+            Some(&scope),
+            MissingScope::Fail,
+            10,
+            &active(),
+            &mut session,
+        )
+        .unwrap();
         assert_eq!(before.commits[0].oid, first);
         let worktree_scope = Scope::Worktree {
             path: before.repository.path().to_owned(),
@@ -4065,17 +4149,129 @@ mod image_tests {
         let second = fixture.git(&["commit-tree", &tree, "-p", &first, "-m", "second"], &[]);
         fixture.git(&["update-ref", "refs/heads/main", &second], &[]);
         for scope in [&scope, &worktree_scope] {
-            let refreshed =
-                read_snapshot(fixture.0.clone(), Some(scope), 10, &active(), &mut session).unwrap();
+            let refreshed = read_snapshot(
+                fixture.0.clone(),
+                Some(scope),
+                MissingScope::Fail,
+                10,
+                &active(),
+                &mut session,
+            )
+            .unwrap();
             assert_eq!(refreshed.commits[0].oid, second);
             assert_eq!(refreshed.commits[1].oid, first);
         }
         // A missing selection must never silently fall back to unrelated refs.
         fixture.git(&["update-ref", "-d", "refs/heads/main"], &[]);
-        let error = read_snapshot(fixture.0.clone(), Some(&scope), 10, &active(), &mut session)
-            .err()
-            .expect("deleted branch must fail");
+        let error = read_snapshot(
+            fixture.0.clone(),
+            Some(&scope),
+            MissingScope::Fail,
+            10,
+            &active(),
+            &mut session,
+        )
+        .err()
+        .expect("deleted branch must fail");
         assert!(error.to_string().contains("no longer exists"));
+    }
+
+    #[test]
+    fn explicit_open_with_a_vanished_scope_reads_all_history_and_names_the_scope() {
+        let fixture = Fixture::new();
+        fixture.git(&["symbolic-ref", "HEAD", "refs/heads/main"], b"");
+        let tree = fixture.git(&["mktree"], b"");
+        let first = fixture.git(&["commit-tree", &tree, "-m", "first"], b"");
+        let side = fixture.git(&["commit-tree", &tree, "-p", &first, "-m", "side"], b"");
+        fixture.git(&["update-ref", "refs/heads/main", &first], b"");
+        fixture.git(&["update-ref", "refs/heads/departing", &side], b"");
+        fixture.git(&["update-ref", "refs/heads/kept", &side], b"");
+        let linked = fixture.0.with_file_name(format!(
+            "{}-linked",
+            fixture.0.file_name().unwrap().to_string_lossy()
+        ));
+        fixture.git(
+            &["worktree", "add", "-q", linked.to_str().unwrap(), "kept"],
+            b"",
+        );
+        let mut session = RepositorySession::default();
+        let open = |scope: Scope, session: &mut RepositorySession| {
+            let Output::Snapshot(snapshot) = execute(
+                Job::Open {
+                    path: fixture.0.clone(),
+                    scope: Some(scope),
+                    limit: 10,
+                },
+                &mut PreviewCache::default(),
+                &active(),
+                session,
+            )
+            .unwrap() else {
+                panic!("expected snapshot")
+            };
+            snapshot
+        };
+        let branch = Scope::Branch {
+            name: "departing".into(),
+            remote: false,
+        };
+        let scoped = open(branch.clone(), &mut session);
+        assert_eq!(scoped.vanished_scope, None);
+        let worktree = Scope::Worktree {
+            path: scoped
+                .worktrees
+                .iter()
+                .find(|worktree| worktree.branch.as_deref() == Some("kept"))
+                .expect("linked worktree")
+                .path
+                .clone(),
+        };
+        assert_eq!(open(worktree.clone(), &mut session).vanished_scope, None);
+
+        fixture.git(&["update-ref", "-d", "refs/heads/departing"], b"");
+        fixture.git(
+            &["worktree", "remove", "--force", linked.to_str().unwrap()],
+            b"",
+        );
+        for scope in [branch, worktree] {
+            let snapshot = open(scope.clone(), &mut session);
+            assert_eq!(
+                snapshot.vanished_scope,
+                Some(VanishedScope(scope.clone())),
+                "{scope:?}"
+            );
+            assert!(
+                matches!(
+                    snapshot.history_scope,
+                    gitturtle_core::HistoryScope::PinnedRefs(_)
+                ),
+                "All history pins every current ref"
+            );
+            assert_eq!(
+                snapshot
+                    .commits
+                    .iter()
+                    .map(|commit| commit.oid.as_str())
+                    .collect::<Vec<_>>(),
+                vec![side.as_str(), first.as_str()],
+                "{scope:?} reads the repository's commits from current refs"
+            );
+        }
+        // Quiet refresh keeps failing so the displayed history is retained.
+        let error = read_snapshot(
+            fixture.0.clone(),
+            Some(&Scope::Branch {
+                name: "departing".into(),
+                remote: false,
+            }),
+            MissingScope::Fail,
+            10,
+            &active(),
+            &mut session,
+        )
+        .err()
+        .expect("a strict read fails");
+        assert!(error.downcast_ref::<VanishedScope>().is_some());
     }
 
     #[test]
