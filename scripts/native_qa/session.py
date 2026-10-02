@@ -11,7 +11,10 @@ run directory. `atspi_focus` and `store_snapshot` steps send nothing: they keep
 the focused AT-SPI node, or a store's digest, size and JSON, under a label in
 flow-log.json's `readings`. A `probe` keeps every distinct frame of a region
 drawn after a key or a click under `probes/`, never `captures/`, so nothing it
-grabs is committed.
+grabs is committed. Every park, with each pointer motion it sent, goes into
+flow-log.json's `parks`; a park never moves the pointer onto the window after
+keyboard input (`x11.plan_park`), and a capture taken once one had to is
+marked with a `warning`.
 """
 
 from __future__ import annotations
@@ -50,6 +53,9 @@ PROBE_STABLE = 4.0    # s a probe waits, before its first press, for the region 
 PROBE_FRAME_CAP = 60  # distinct frames kept per press; more ends the press, truncated, so memory stays bounded
 # Raw frame bytes kept per press: 98 whole 1000x680 BGRX frames, or 8 of a 3840x2160 window, so name a region.
 PROBE_BYTE_BUDGET = 256 * 1024 * 1024
+KEYBOARD_MODE_LOST = ("a park had to move the pointer onto the app's window after keyboard input, so the app left "
+                      "keyboard mode: indicators it draws only in keyboard mode, such as focus-visible rings, are "
+                      "missing from this frame")
 
 
 def ms(seconds: float) -> float:
@@ -273,7 +279,7 @@ class Session:
                 env={key: self.env[key] for key in (*runenv.LAYOUT, "DISPLAY", "GPUI_X11_SCALE_FACTOR")},
                 env_extra=sorted(extra_env or ()),
             ),
-            input=[], captures=[], checks=[], read_only=[], readings=[], probes=[])
+            input=[], parks=[], captures=[], checks=[], read_only=[], readings=[], probes=[])
         if described["build_info"].get("source_tree") != "clean":
             print("warning: the binary's source_tree is not clean", file=sys.stderr, flush=True)
 
@@ -308,7 +314,7 @@ class Session:
         self.driver.resize(self.width, self.height)
         time.sleep(self.settle)
         self.driver.activate()
-        self.driver.park()
+        self.park("launch")
 
     def close(self, timeout: float = 15.0) -> int | None:
         """SIGTERM to the launched PID only; a survivor is reported, never killed harder.
@@ -403,6 +409,20 @@ class Session:
                 signal.signal(signal.SIGTERM, signal.SIG_DFL if self.previous_sigterm is None else self.previous_sigterm)
                 self.watching_sigterm = False
 
+    # ---------- pointer ----------
+    def park(self, why: str) -> dict:
+        """Park the pointer through the driver and keep what it sent, every motion included, in `parks`."""
+        record = dict(why=why, at_utc=utc(), **(self.driver.park() or {}))
+        self.log["parks"].append(record)
+        if record.get("entered_window") and record.get("keyboard_mode"):
+            print(f"WARNING: the park for {why} moved the pointer onto the app's window after keyboard input, so the "
+                  "app left keyboard mode", file=sys.stderr, flush=True)
+        return record
+
+    def keyboard_mode_lost(self) -> bool:
+        """True while the app is out of keyboard mode only because a park moved the pointer onto its window."""
+        return getattr(self.driver, "keyboard_mode_lost", False) is True
+
     # ---------- frames ----------
     def capture(self, name: str, what: str = "", park: bool = True, settle: float = 0.0,
                 stable: float | None = None, quiet: float = 1.15):
@@ -410,20 +430,26 @@ class Session:
 
         With `stable`, wait up to that many seconds (after parking) for two
         identical grabs `quiet` apart; a window that does not settle is
-        recorded, not refused.
+        recorded, not refused. Parking keeps the app's keyboard mode; a
+        frame taken after a park had to leave it is recorded with a
+        `warning` (KEYBOARD_MODE_LOST) and printed as one.
         """
         path = self.dirs.captures / f"{name}.png"
         if path.exists():
             raise SystemExit(f"refusing: {path} already exists in this run")
-        if park:
-            self.driver.park()
+        parked = self.park(f"capture {name}") if park else {}
+        lost = self.keyboard_mode_lost()
         settled = self.driver.stable(timeout=stable, quiet=quiet) if stable else None
         time.sleep(settle)
         frame = self.driver.snap()
         frame.save(path)
         self.frames[name] = frame
-        self.log["captures"].append(dict(capture=path.name, what=what, parked=park, at_utc=utc(), stable_s=settled,
-                                         sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+        entry = dict(capture=path.name, what=what, parked=park, park_entered_window=bool(parked.get("entered_window")),
+                     at_utc=utc(), stable_s=settled, sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        if lost:
+            entry["warning"] = KEYBOARD_MODE_LOST
+            print(f"WARNING: capture {path.name}: {KEYBOARD_MODE_LOST}", file=sys.stderr, flush=True)
+        self.log["captures"].append(entry)
         unsettled = " (window not settled)" if stable and settled is None else ""
         print(f"captured {path.name}: {what}{unsettled}", flush=True)
         return frame
@@ -431,7 +457,7 @@ class Session:
     def mark(self, name: str, park: bool = False, stable: float | None = None, quiet: float = 0.5):
         """Keep the current frame as `name` for later guards, saved under marks/ (never committed)."""
         if park:
-            self.driver.park()
+            self.park(f"mark {name}")
         if stable:
             self.driver.stable(timeout=stable, quiet=quiet)
         frame = self.driver.snap()
@@ -490,7 +516,7 @@ class Session:
         clicks = click_at is not None
         parked = not clicks and not keep_pointer
         if parked:
-            self.driver.park()
+            self.park(f"probe {name}")
 
         def grab():
             return self.driver.grab(box)
@@ -730,7 +756,7 @@ class Session:
             elif "wheel" in step:
                 d.wheel(*step["wheel"], step["steps"])
             elif "park" in step:
-                d.park()
+                self.park("park step")
             elif "wait" in step:
                 time.sleep(step["wait"])
             elif "stable" in step:
