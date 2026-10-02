@@ -6,8 +6,10 @@ found by PID, Mutter input with X focus verified, nothing sent while the
 desktop is locked, SIGTERM to the launched PID only, and the fixture's state
 compared before and after. Steps run identically for every role; a capture
 limited to some roles is still grabbed in all of them and only committed for
-those. A failed guard stops the launch (after its `on_fail` keys) and the run;
-nothing is retried. A spec with `"atspi": true` sets `org.a11y.Status
+those, and a probe's frames are kept in the launch's `probes/` for the
+analyses only, never committed, so `recheck` runs probes and ignores them. A
+failed guard stops the launch (after its `on_fail` keys) and the run; nothing
+is retried. A spec with `"atspi": true` sets `org.a11y.Status
 IsEnabled` before each launch and puts its value back once the app has
 stopped (`a11y.enabled`); meanwhile SIGTERM only marks the launch, which
 stops before its next step, and a value that does not read back stops the
@@ -127,7 +129,11 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
     unchanged = bool(run.log.get("fixture_unchanged")) and recipe.state(fixture) == before
     record.update(started_utc=header["started_utc"], ended_utc=header["ended_utc"], exit=run.log.get("exit"),
                   fixture_unchanged=unchanged, captures=len(run.log["captures"]),
-                  guards=len(run.log["scenario"]["guards"]))
+                  guards=len(run.log["scenario"]["guards"]),
+                  probes=[{key: probe.get(key) for key in ("probe", "repeat", "frames", "grabs", "interval_ms",
+                                                           "resolution_ms")}
+                          | {"settled": bool(probe["presses"]) and all(p["settled"] for p in probe["presses"])}
+                          for probe in run.log.get("probes", [])])
     if record["error"] is None and code not in (0, -15):
         record["error"] = f"the app exited with {run.log.get('exit')!r}"
     if record["error"] is None and not unchanged:
@@ -274,8 +280,8 @@ def run(spec_path: Path, builds: dict[str, Path], out: Path, fixture: Path | Non
         findings += [f"privacy: {name} matched a template" for name, verdict in
                      record["privacy"]["verdicts"].items() if verdict != "clean"]
         print(f"{len(crops)} crops in {out / evidence.COMMIT}; analyses {analyses['as_expected']} of "
-              f"{analyses['total']} as expected; privacy {record['privacy']['matched']} of "
-              f"{record['privacy']['frames']} matched", flush=True)
+              f"{analyses['total']} as expected ({analyses['recorded']} recorded only); privacy "
+              f"{record['privacy']['matched']} of {record['privacy']['frames']} matched", flush=True)
     else:
         findings.append(f"{stop['role']} {stop['variant']}: {stop['error']}")
     code = 0 if not findings else (2 if stop is not None and stop["refusal"] else 1)

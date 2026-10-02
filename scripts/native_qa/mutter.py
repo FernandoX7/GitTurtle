@@ -207,11 +207,6 @@ class MutterDriver(x11.Driver):
                 return
         raise InputRefused(f"pointer at root {self.pointer()}, wanted ({tx},{ty}); aborting")
 
-    def on_window(self, x: int, y: int) -> bool:
-        q = self.w.query_pointer()
-        width, height = self.size()
-        return bool(q.same_screen) and (q.win_x, q.win_y) == (x, y) and 0 <= x < width and 0 <= y < height
-
     def move(self, x: int, y: int, note: str | None = None) -> None:
         ox, oy = self.origin()
         self._to(ox + x, oy + y)
@@ -236,10 +231,15 @@ class MutterDriver(x11.Driver):
         self.remote.button(BUTTONS[number], down)
         self.record(f"{'press' if down else 'release'} button {number}", note)
 
-    def click(self, x: int, y: int, note: str | None = None) -> None:
-        self.glide(x, y, note, settle=0.2)
+    def aim(self, x: int, y: int, note: str | None = None, settle: float = 0.8) -> None:
+        """The glide to (x, y), after which XWayland must report the pointer there on the app window, or no
+        button is sent (a click, or a probe's press or release)."""
+        self.glide(x, y, note, settle=settle)
         if not self.on_window(x, y):
-            raise InputRefused(f"pointer is not on the app window at ({x},{y}); no click sent")
+            raise InputRefused(f"pointer is not on the app window at ({x},{y}); no button sent")
+
+    def click(self, x: int, y: int, note: str | None = None) -> None:
+        self.aim(x, y, note, settle=0.2)
         self.button(True)
         time.sleep(0.05)
         self.button(False)

@@ -3,16 +3,18 @@
 A scenario names its fixture (a deterministic recipe that `recipe.py` builds),
 the window size, the variants (palette x interface text size, each optionally
 with its own store settings and HOME files), one ordered list of steps that
-every build role runs identically, named crop boxes, the captures to commit and
-the analyses to run on them and on the steps' readings (the focused AT-SPI
-node, a settled store). `qa.py scenario run`
+every build role runs identically, named crop boxes, the captures to commit,
+the probes (every frame drawn after a key or a click, analysed but never
+committed) and the analyses to run on them and on the steps' readings (the
+focused AT-SPI node, a settled store). `qa.py scenario run`
 drives it (`play.py`), and `evidence.py` turns its captures into the committed
 crops, manifest, re-check and attestation.
 
 Validation is strict and happens before anything is built or launched: an
 unknown key, a wrong type, a box outside the window, a reference to an
-undefined crop, capture or mark, a filter that matches no variant, or two
-crops with one committed name is a `SpecError` naming its JSON path.
+undefined crop, capture, mark or probe, a probe analysis whose clip lies
+outside its probe's region, a filter that matches no variant, or two crops
+with one committed name is a `SpecError` naming its JSON path.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import a11y, analysis, frames, runenv, stores
+from . import a11y, analysis, frames, runenv, session, stores
 
 VERSION = 1
 ROLES = ("base", "cand")
@@ -43,6 +45,7 @@ KEYSYM = re.compile(r"[A-Za-z0-9_]{1,40}")
 NOW = "@now"
 CAPTURE_STABLE = 8.0  # seconds a capture waits, after parking, for two identical grabs
 CAPTURE_QUIET = 1.15  # seconds between those grabs: longer than a caret blink's half period
+RECORD = "record"     # an expectation that measures and writes an analysis without holding it to a verdict
 
 TOP_LEVEL = ({"version", "task", "variants", "steps"},
              {"summary", "limitations", "window", "roles", "fixture", "settings", "env", "crops", "analyses",
@@ -70,6 +73,8 @@ STEPS = {
     "mark": {"park_first", "stable_within", "quiet"},
     "guard": {"on_fail"},
     "capture": {"shows", "crop", "roles", "commit", "keep_pointer", "settle", "stable_within", "quiet"},
+    "probe": {"send", "mods", "click_at", "release_at", "repeat", "region", "quiet", "timeout", "stable_within",
+              "keep_pointer"},
 }
 WHEN = {"palette", "text_size", "variant"}
 ANALYSIS_COMMON = {"name", "kind", "when", "roles", "expect", "note"}
@@ -82,6 +87,9 @@ ANALYSES = {
     "compare": ({"a", "b"}, {"region", "crop", "masks", "max_pixels", "min_pixels", "bands", "band_min"}),
     "atspi_focus": ({"focus"}, {"node", "role", "states", "not_states", "same_as"}),
     "store_compare": ({"a", "b"}, {"keys"}),
+    "probe_ring": ({"probe", "clip"}, {"colour", "surface", "tolerance", "corner", "min_width", "uniform_width",
+                                       "min_contrast", "max_outlines", "masks"}),
+    "probe_endpoints": ({"probe", "clip"}, {"masks", "max_pixels"}),
 }
 READING_STEPS = tuple(analysis.READING_KINDS.values())
 JSON_KEY = re.compile(r"[A-Za-z0-9_-]{1,64}(\.[A-Za-z0-9_-]{1,64}){0,15}")
@@ -228,6 +236,41 @@ def box(value, path: str, window) -> tuple[int, int, int, int]:
     if x1 > window[0] or y1 > window[1]:
         fail(path, f"{value} reaches outside the {window[0]}x{window[1]} window")
     return x0, y0, x1, y1
+
+
+def area(value, path: str, spec: dict) -> tuple[int, int, int, int]:
+    """A box, or the name of one of the spec's crop boxes."""
+    if isinstance(value, str):
+        if value not in spec["crops"]:
+            fail(path, f"no crop box named {value!r}; defined: {', '.join(spec['crops']) or 'none'}")
+        return spec["crops"][value]
+    return box(value, path, spec["window"])
+
+
+def spot(value, path: str, spec: dict) -> list[int]:
+    """A window point `[x, y]`, or `{"crop": name, "at": [x, y]}` relative to one of the spec's crop boxes."""
+    if not isinstance(value, dict):
+        return list(point(value, path, spec["window"]))
+    obj(value, path, {"crop", "at"})
+    x0, y0, x1, y1 = area(text(value["crop"], f"{path}.crop", IDENTIFIER), f"{path}.crop", spec)
+    array(value["at"], f"{path}.at", 2, 2)
+    x, y = (integer(v, f"{path}.at[{i}]", 0) for i, v in enumerate(value["at"]))
+    if x0 + x >= x1 or y0 + y >= y1:
+        fail(f"{path}.at", f"({x},{y}) is outside the {x1 - x0}x{y1 - y0} crop {value['crop']!r}")
+    return [x0 + x, y0 + y]
+
+
+def inside(inner, outer) -> bool:
+    return outer[0] <= inner[0] and outer[1] <= inner[1] and inner[2] <= outer[2] and inner[3] <= outer[3]
+
+
+def expectation(value, path: str):
+    """true, false or "record" (measured and written, never a finding)."""
+    if value == RECORD:
+        return RECORD
+    if not isinstance(value, bool):
+        fail(path, f"expected true, false or \"{RECORD}\", got {value!r}")
+    return value
 
 
 def git_date(value, path: str) -> tuple[int, str]:
@@ -584,6 +627,38 @@ def step_entry(value, path: str, spec: dict) -> dict:
         step["settle"] = number(value.get("settle", 0.0), f"{path}.settle", 0, 30)
         step["stable_within"] = number(value.get("stable_within", CAPTURE_STABLE), f"{path}.stable_within", 0, 120)
         step["quiet"] = number(value.get("quiet", CAPTURE_QUIET), f"{path}.quiet", 0.05, 10)
+    elif action == "probe":
+        text(value["probe"], where, IDENTIFIER)
+        problem = session.probe_input_problem(value.get("send"), value.get("click_at"), value.get("release_at"))
+        if problem is not None:
+            fail(path, problem)
+        if "send" in value:
+            step["send"] = text(value["send"], f"{path}.send", KEYSYM)
+            step["mods"] = [text(m, f"{path}.mods[{i}]", KEYSYM)
+                            for i, m in enumerate(array(value.get("mods", []), f"{path}.mods", 0, 4))]
+        else:
+            for key in ("mods", "keep_pointer"):
+                if key in value:
+                    fail(f"{path}.{key}", "a click probe presses the pointer's first button at \"click_at\", "
+                                          "so it takes no modifier and always moves the pointer")
+            step["mods"] = []
+            step["click_at"] = spot(value["click_at"], f"{path}.click_at", spec)
+            if "release_at" in value:
+                step["release_at"] = spot(value["release_at"], f"{path}.release_at", spec)
+        step["repeat"] = integer(value.get("repeat", 1), f"{path}.repeat", 1, 200)
+        step["region"] = list(area(value["region"], f"{path}.region", spec) if "region" in value
+                              else (0, 0, *window))
+        step["quiet"] = number(value.get("quiet", session.PROBE_QUIET), f"{path}.quiet", 0.05, 10)
+        step["timeout"] = number(value.get("timeout", session.PROBE_TIMEOUT), f"{path}.timeout", 0.1, 30)
+        if step["quiet"] >= step["timeout"]:
+            fail(f"{path}.quiet", f"{step['quiet']} s is not shorter than the timeout, {step['timeout']} s, so no "
+                                  "press could settle")
+        step["stable_within"] = number(value.get("stable_within", session.PROBE_STABLE), f"{path}.stable_within",
+                                       0.05, 120)
+        if step["stable_within"] < step["quiet"]:
+            fail(f"{path}.stable_within", f"{step['stable_within']} s is shorter than quiet, {step['quiet']} s, so the "
+                                          "region could never count as settled before a press")
+        step["keep_pointer"] = boolean(value.get("keep_pointer", False), f"{path}.keep_pointer")
     return step
 
 
@@ -652,6 +727,8 @@ def analysis_entry(value, path: str, spec: dict, guard: bool = False) -> dict:
     kind = value.get("kind") if isinstance(value, dict) else None
     if kind not in ANALYSES:
         fail(f"{path}.kind", f"expected one of {', '.join(ANALYSES)}, got {kind!r}")
+    if guard and kind in analysis.PROBE_KINDS:
+        fail(f"{path}.kind", f"a guard reads one frame as the steps run; {kind} reads a probe's frames afterwards")
     required, optional = ANALYSES[kind]
     common = {"kind", "note"} if guard else ANALYSIS_COMMON
     obj(value, path, required | ({"kind"} if guard else {"name", "kind"}), optional | common)
@@ -671,7 +748,9 @@ def analysis_entry(value, path: str, spec: dict, guard: bool = False) -> dict:
             if named is not None and named not in roles:
                 fail(where, f"{named!r} is not one of the roles {', '.join(roles)}")
             if not IDENTIFIER.fullmatch(capture):
-                fail(where, f"{capture!r} is not a capture name")
+                what = ("probe" if kind in analysis.PROBE_KINDS else "reading" if kind in analysis.READING_KINDS
+                        else "capture")
+                fail(where, f"{capture!r} is not a {what} name")
         return name
 
     def ref(key):
@@ -725,6 +804,29 @@ def analysis_entry(value, path: str, spec: dict, guard: bool = False) -> dict:
         optional_int("max_px", 0, 400)
         if "min_px" not in entry and "max_px" not in entry:
             fail(path, "a clearance needs min_px or max_px to pass or fail")
+    elif kind in analysis.PROBE_KINDS:
+        entry.update(probe=ref("probe"), clip=area(value["clip"], f"{path}.clip", spec))
+        if kind == "probe_ring":
+            detect = value.get("colour", "detect")
+            entry["colour"] = "detect" if detect == "detect" else colour(detect, f"{path}.colour")
+            surface = value.get("surface")
+            if isinstance(surface, dict):
+                at = point(obj(surface, f"{path}.surface", {"at"})["at"], f"{path}.surface.at", window)
+                if not inside((*at, at[0] + 1, at[1] + 1), entry["clip"]):
+                    fail(f"{path}.surface.at", f"{list(at)} is outside the clip {list(entry['clip'])}")
+                entry["surface"] = {"at": at}
+            else:
+                entry["surface"] = None if surface is None else colour(surface, f"{path}.surface")
+            entry.update(tolerance=integer(value.get("tolerance", analysis.TOLERANCE), f"{path}.tolerance", 0, 64),
+                         corner=integer(value.get("corner", analysis.CORNER), f"{path}.corner", 0, 64),
+                         min_width=integer(value.get("min_width", 1), f"{path}.min_width", 1, 16),
+                         uniform_width=boolean(value.get("uniform_width", True), f"{path}.uniform_width"))
+            optional_number("min_contrast", 1.0, 21.0)
+            optional_int("max_outlines", 1, 8)
+        else:
+            entry["max_pixels"] = integer(value.get("max_pixels", 0), f"{path}.max_pixels", 0, 100_000_000)
+        entry["masks"] = [box(mask, f"{path}.masks[{i}]", window)
+                          for i, mask in enumerate(array(value.get("masks", []), f"{path}.masks", 0, 32))]
     elif kind == "fill":
         entry.update(frame=ref("frame"), region=box(value["region"], f"{path}.region", window))
         reference = value["reference"]
@@ -781,14 +883,14 @@ def analysis_entry(value, path: str, spec: dict, guard: bool = False) -> dict:
             expect = value.get("expect", True)
             if isinstance(expect, dict):
                 obj(expect, f"{path}.expect", (), roles)
-                entry["expect"] = {r: boolean(expect.get(r, True), f"{path}.expect.{r}") for r in entry["roles"]}
+                entry["expect"] = {r: expectation(expect.get(r, True), f"{path}.expect.{r}") for r in entry["roles"]}
             else:
-                entry["expect"] = {r: boolean(expect, f"{path}.expect") for r in entry["roles"]}
+                entry["expect"] = {r: expectation(expect, f"{path}.expect") for r in entry["roles"]}
         else:
             if "roles" in value:
                 fail(f"{path}.roles", "every frame names its role, so the analysis runs once per variant")
             entry["roles"] = None
-            entry["expect"] = boolean(value.get("expect", True), f"{path}.expect")
+            entry["expect"] = expectation(value.get("expect", True), f"{path}.expect")
     return entry
 
 
@@ -844,12 +946,13 @@ def validate(data, sha256: str = "") -> dict:
 
 
 def check_references(spec: dict) -> None:
-    """Per variant: captures and readings are unique, guards read only frames and readings taken before them,
-    analyses only captures and readings."""
+    """Per variant: captures, probes and readings are unique, guards read only frames and readings taken before
+    them, analyses only captures and readings, and probe analyses only probes whose region holds their clip."""
     for variant in spec["variants"]:
         taken: set[str] = set()
         captures: set[str] = set()
         readings: dict[str, str] = {}  # label: the step kind that took it
+        probed: dict[str, list[int]] = {}
         for step in steps_for(spec, variant):
             where = f"$.steps[{step['index']}]"
             kind = next((key for key in READING_STEPS if key in step), None)
@@ -862,6 +965,10 @@ def check_references(spec: dict) -> None:
                     fail(where, f"capture {step['capture']!r} is taken twice in variant {variant.id}")
                 captures.add(step["capture"])
                 taken.add(step["capture"])
+            elif "probe" in step:
+                if step["probe"] in probed:
+                    fail(where, f"probe {step['probe']!r} runs twice in variant {variant.id}")
+                probed[step["probe"]] = step["region"]
             elif "mark" in step:
                 taken.add(step["mark"])
             elif "guard" in step:
@@ -874,8 +981,15 @@ def check_references(spec: dict) -> None:
             if not applies(entry["when"], variant):
                 continue
             for ref in analysis.frame_refs(entry):
-                if split_ref(ref, None)[1] not in captures:
-                    fail(f"$.analyses[{index}]", f"reads {ref!r}, which variant {variant.id} never captures")
+                name = split_ref(ref, None)[1]
+                if entry["kind"] not in analysis.PROBE_KINDS:
+                    if name not in captures:
+                        fail(f"$.analyses[{index}]", f"reads {ref!r}, which variant {variant.id} never captures")
+                elif name not in probed:
+                    fail(f"$.analyses[{index}]", f"reads probe {ref!r}, which variant {variant.id} never runs")
+                elif not inside(entry["clip"], probed[name]):
+                    fail(f"$.analyses[{index}].clip", f"{list(entry['clip'])} is not inside probe {name!r}'s region "
+                                                      f"{probed[name]}, the only pixels it grabs")
             check_readings(entry, readings, f"$.analyses[{index}]", "is never taken", variant)
 
 
@@ -952,8 +1066,18 @@ def analysis_runs(spec: dict) -> list[tuple[dict, str | None, Variant]]:
     return runs
 
 
-def expected(entry: dict, role: str | None) -> bool:
+def expected(entry: dict, role: str | None) -> bool | str:
+    """True or False, the verdict the analysis must reach, or RECORD when it is only measured."""
     return entry["expect"] if role is None else entry["expect"][role]
+
+
+def probes(spec: dict) -> list[dict]:
+    """Every probe step, once each, in step order (the same name in other variants is listed once)."""
+    seen: dict[str, dict] = {}
+    for step in spec["steps"]:
+        if "probe" in step:
+            seen.setdefault(step["probe"], step)
+    return list(seen.values())
 
 
 def store_settings(spec: dict, variant: Variant) -> dict:

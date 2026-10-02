@@ -339,5 +339,193 @@ class ReadingTest(unittest.TestCase):
         self.assertFalse(analysis.evaluate(compare, None)["passed"])  # no readings at all: missing
 
 
+CHROME = (40, 44, 56)     # the dialog around a list
+CLIP = (20, 10, 180, 110)  # a list's visible bounds in a 200x120 window
+
+
+def list_frame(ring_top=None, size=(200, 120), clip=CLIP, ring_size=(120, 30), left=40, width=2, glyph=None,
+               shift=0, colour=RING, also=None):
+    """A list on its surface inside `clip` with the dialog's chrome around it, and a `width` px ring of `colour`
+    whose outer box is `ring_size` at (`left`, `ring_top`), cut by the clip as the app's content mask cuts it;
+    `also` draws a second ring at that top. `glyph` adds a small block of the ring colour there (an accent icon),
+    and `shift` moves a row's text by that many px."""
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", size, CHROME)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((clip[0], clip[1], clip[2] - 1, clip[3] - 1), fill=SURFACE)
+    draw.rectangle((60 + shift, 70, 100 + shift, 74), fill=BORDER)  # a row's text, which scrolls with the list
+    for top in (ring_top, also):
+        if top is not None:
+            x0, y0 = left, top
+            x1, y1 = x0 + ring_size[0], y0 + ring_size[1]
+            draw.rectangle((x0, y0, x1 - 1, y1 - 1), outline=colour, width=width)
+    if glyph is not None:
+        draw.rectangle((glyph[0], glyph[1], glyph[0] + 5, glyph[1] + 7), fill=RING)
+    painted = Image.new("RGB", size, CHROME)
+    painted.paste(image.crop(clip), clip[:2])
+    return painted
+
+
+def probe(*presses, region=(0, 0, 200, 120), settled=True, changed=True, ended=None):
+    """A probe record as `session.Session.probe` writes it, with images in place of files: each press is a list of
+    (ms, image), the first the frame before the key; `ended` "frame-cap" or "byte-budget" truncates every press."""
+    ended = ended or ("quiet" if settled else "timeout")
+    return dict(probe="rows", region=list(region), timeout=3.0, stable_within=4.0, settled_before_s=0.2,
+                resolution_ms=3.1, interval_ms=dict(min=1.0, median=2.0, max=3.1), grabs=40,
+                presses=[dict(press=number, changed=changed, settled=ended == "quiet", ended=ended,
+                              truncated=ended in ("frame-cap", "byte-budget"), end_ms=300.0,
+                              frames=[dict(index=index, ms=at, image=image) for index, (at, image) in enumerate(frames_)])
+                         for number, frames_ in enumerate(presses, 1)])
+
+
+@unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
+class ProbeRingTest(unittest.TestCase):
+    def test_a_whole_ring_in_every_frame_passes_wherever_it_moves(self) -> None:
+        before, moved, scrolled = list_frame(20), list_frame(60), list_frame(70, shift=-10)
+        result = analysis.probe_ring(probe([(-1.0, before), (8.0, moved), (14.0, scrolled)]), CLIP, min_contrast=3.0)
+        self.assertTrue(result["passed"], result["reasons"])
+        frames_ = result["presses"][0]["frames"]
+        self.assertEqual([(f["index"], f["ms"]) for f in frames_], [(1, 8.0), (2, 14.0)])  # the frame before the key
+        self.assertEqual([f["box"] for f in frames_], [[40, 60, 160, 90], [40, 70, 160, 100]])
+        self.assertEqual(frames_[1]["clip_margins"], dict(top=60, right=20, bottom=10, left=20))
+        self.assertEqual(frames_[0]["contrast"], frames.contrast(RING, SURFACE))
+        self.assertEqual({s["width"] for s in frames_[0]["sides"].values()}, {2})
+        self.assertEqual((result["frames"], result["failing"], result["resolution_ms"]), (2, [], 3.1))
+        self.assertIn("no frame failed at 3.1 ms resolution", result["summary"])
+        self.assertFalse(analysis.probe_ring(probe([(-1.0, before), (8.0, moved)]), CLIP, min_contrast=12.0)["passed"])
+
+    def test_a_ring_cut_at_the_clip_edge_fails_with_its_timing(self) -> None:
+        # The base's frame: the newly focused row drawn before the list scrolls, its ring cut by the lower edge.
+        cut, revealed = list_frame(85), list_frame(80, shift=-10)
+        result = analysis.probe_ring(probe([(-1.0, list_frame(50)), (6.0, cut), (12.0, revealed)]), CLIP,
+                                     min_contrast=3.0)
+        self.assertFalse(result["passed"])
+        [failing] = result["failing"]
+        self.assertEqual((failing["press"], failing["index"], failing["ms"], failing["box"]),
+                         (1, 1, 6.0, [40, 85, 160, 110]))
+        self.assertEqual(failing["reasons"], ["bottom: no ring at 100 of 100 positions"])
+        short = analysis.probe_ring(probe([(-1.0, revealed), (5.0, list_frame(95))]), CLIP)  # 15 px left in view
+        self.assertIn("left: no position to check between its corners (10 px left out at each end)",
+                      short["failing"][0]["reasons"])
+        self.assertEqual(result["presses"][0]["frames"][0]["clip_margins"]["bottom"], 0)
+        self.assertTrue(result["presses"][0]["frames"][1]["passed"])
+        self.assertTrue(result["reasons"][0].startswith("press 1 frame 1 at 6.0 ms: bottom: no ring"))
+        self.assertIn("1 of 2 frames after 1 presses failed", result["summary"])
+        # A ring that keeps 1 of its 2 px at the edge fails on its width; one with no px in the clip on its ring.
+        one_px = analysis.probe_ring(probe([(-1.0, revealed), (5.0, list_frame(81))]), CLIP)
+        self.assertIn("the ring's width differs between sides: [1, 2] px", one_px["failing"][0]["reasons"])
+        gone = analysis.probe_ring(probe([(-1.0, revealed), (5.0, list_frame(112))]), CLIP)
+        self.assertIn("no accent colour", gone["failing"][0]["reasons"][0])
+
+    def test_an_accent_glyph_is_not_a_ring(self) -> None:
+        with_glyph = list_frame(20, glyph=(165, 30))  # 6x8 px of the ring colour, 5 px right of the ring
+        result = analysis.probe_ring(probe([(-1.0, list_frame(20)), (5.0, with_glyph)]), CLIP)
+        self.assertTrue(result["passed"], result["reasons"])
+        self.assertEqual(result["presses"][0]["frames"][0]["box"], [40, 20, 160, 50])
+        alone = analysis.probe_ring(probe([(-1.0, list_frame(20)), (5.0, list_frame(None, glyph=(100, 60)))]), CLIP)
+        self.assertIn("no ring of [117, 224, 187] in the clip", alone["failing"][0]["reasons"][0])
+
+    def test_a_second_ring_in_the_clip_fails_the_frame(self) -> None:
+        # The old focus's ring still drawn beside the new one: the larger alone would pass.
+        both = list_frame(20, also=70)
+        result = analysis.probe_ring(probe([(-1.0, list_frame(20)), (5.0, both), (9.0, list_frame(70))]), CLIP)
+        [failing] = result["failing"]
+        self.assertEqual((failing["index"], failing["ms"]), (1, 5.0))
+        self.assertEqual(failing["reasons"], ["2 rings of [117, 224, 187] in the clip, where only the focused control "
+                                              "has one: [[40, 20, 160, 50], [40, 70, 160, 100]]"])
+        self.assertEqual(result["presses"][0]["frames"][0]["rings"], [[40, 20, 160, 50], [40, 70, 160, 100]])
+        self.assertTrue(result["presses"][0]["frames"][1]["passed"])
+
+    def test_the_ring_colour_is_detected_once_per_press(self) -> None:
+        other = (230, 120, 60)  # another accent: a frame painting it is not the press's ring
+        frames_ = [(-1.0, list_frame(20)), (5.0, list_frame(60, colour=other)), (9.0, list_frame(60))]
+        result = analysis.probe_ring(probe(frames_), CLIP)
+        press = result["presses"][0]
+        self.assertEqual((press["colour"], press["colour_from"]), (list(RING), 2))  # from the settled frame
+        [failing] = result["failing"]
+        self.assertEqual(failing["index"], 1)
+        self.assertEqual(failing["reasons"], ["no ring of [117, 224, 187] in the clip (no straight run of 12 px)",
+                                              "the clip's most frequent accent [230, 120, 60] is not the ring colour "
+                                              "[117, 224, 187]"])
+        self.assertEqual(press["frames"][0]["accent"], list(other))
+        # A settled frame without any ring takes the colour from the first frame that shows one.
+        gone = analysis.probe_ring(probe([(-1.0, list_frame(20)), (5.0, list_frame(60)), (9.0, list_frame(None))]),
+                                   CLIP)
+        self.assertEqual((gone["presses"][0]["colour"], gone["presses"][0]["colour_from"]), (list(RING), 1))
+        self.assertEqual([f["index"] for f in gone["failing"]], [2])
+
+    def test_a_probe_that_did_not_settle_or_change_fails(self) -> None:
+        frames_ = [(-1.0, list_frame(20)), (5.0, list_frame(60))]
+        unsettled = analysis.probe_ring(probe(frames_, settled=False), CLIP)
+        self.assertEqual(unsettled["reasons"], ["press 1 did not settle: it ended by timeout 300.0 ms after the press"])
+        self.assertTrue(unsettled["inconclusive"])
+        for ended in ("frame-cap", "byte-budget"):
+            truncated = analysis.probe_ring(probe(frames_, ended=ended), CLIP)
+            self.assertEqual((truncated["passed"], truncated["inconclusive"]), (False, True))
+            self.assertEqual(truncated["summary"], f"inconclusive: press 1 was truncated by its {ended} 300.0 ms after "
+                                                   "the press, before its region settled")
+            self.assertTrue(analysis.probe_endpoints(probe(frames_, ended=ended), CLIP)["inconclusive"])
+        self.assertFalse(analysis.probe_ring(probe(frames_), CLIP)["inconclusive"])
+        unchanged = analysis.probe_ring(probe(frames_[:1], changed=False), CLIP)
+        self.assertEqual(unchanged["reasons"], ["press 1 changed nothing in the probe's region within 3.0 s"])
+        self.assertFalse(analysis.probe_ring(probe(frames_), (0, 0, 210, 120))["passed"])  # past the region
+
+    def test_a_mask_hides_a_caret_beside_the_ring(self) -> None:
+        caret = list_frame(20)
+        caret.paste(RING, (43, 26, 44, 44))  # an accent caret 1 px inside the ring's left side, 18 px tall
+        frames_ = [(-1.0, list_frame(60)), (5.0, caret)]
+        bare = analysis.probe_ring(probe(frames_), CLIP, max_outlines=1)
+        self.assertEqual(bare["failing"][0]["reasons"], ["left: 2 outlines in the ring colour, over 1"])
+        masked = analysis.probe_ring(probe(frames_), CLIP, max_outlines=1, masks=[(43, 24, 44, 46)])
+        self.assertTrue(masked["passed"], masked["reasons"])
+        self.assertEqual(masked["masks"], [[43, 24, 44, 46]])
+
+    def test_frames_of_a_region_report_window_coordinates(self) -> None:
+        region = (10, 5, 190, 115)
+        frames_ = [(-1.0, list_frame(20).crop(region)), (5.0, list_frame(60).crop(region))]
+        result = analysis.probe_ring(probe(frames_, region=region), CLIP, surface={"at": (25, 15)})
+        self.assertTrue(result["passed"], result["reasons"])
+        entry = result["presses"][0]["frames"][0]
+        self.assertEqual((entry["box"], entry["surface"]), ([40, 60, 160, 90], list(SURFACE)))
+
+
+@unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
+class ProbeEndpointsTest(unittest.TestCase):
+    def test_frames_are_the_frame_before_or_the_settled_one(self) -> None:
+        before, settled = list_frame(50), list_frame(80, shift=-10)
+        self.assertTrue(analysis.probe_endpoints(probe([(-1.0, before), (9.0, settled)]), CLIP)["passed"])
+        result = analysis.probe_endpoints(probe([(-1.0, before), (6.0, list_frame(90)), (12.0, settled)]), CLIP)
+        self.assertFalse(result["passed"])
+        [failing] = result["failing"]
+        self.assertEqual((failing["index"], failing["ms"]), (1, 6.0))
+        self.assertTrue(failing["reasons"][0].startswith("intermediate: "))
+        self.assertEqual([f["state"] for f in result["presses"][0]["frames"]], ["intermediate", "settled"])
+        self.assertEqual(failing["bbox"], [40, 70, 160, 110])  # the text and rings that differ, in the window
+
+    def test_a_tolerance_a_mask_and_a_frame_that_reverts(self) -> None:
+        before, settled = list_frame(50), list_frame(80, shift=-10)
+        caret = settled.copy()
+        caret.paste(BORDER, (150, 100, 151, 108))  # 8 px, like a caret blinking off
+        frames_ = [(-1.0, before), (5.0, caret), (9.0, settled)]
+        self.assertFalse(analysis.probe_endpoints(probe(frames_), CLIP, max_pixels=7)["passed"])
+        self.assertTrue(analysis.probe_endpoints(probe(frames_), CLIP, max_pixels=8)["passed"])
+        self.assertTrue(analysis.probe_endpoints(probe(frames_), CLIP, masks=[(148, 98, 152, 110)])["passed"])
+        reverted = analysis.probe_endpoints(probe([(-1.0, before), (5.0, settled), (9.0, before), (14.0, settled)]),
+                                            CLIP)
+        self.assertEqual([f["state"] for f in reverted["presses"][0]["frames"]], ["settled", "reverted", "settled"])
+        self.assertEqual(reverted["failing"][0]["ms"], 9.0)
+
+    def test_evaluate_reads_a_probe_and_reports_one_missing(self) -> None:
+        probes = {"rows": probe([(-1.0, list_frame(20)), (5.0, list_frame(60))])}
+        ring = dict(kind="probe_ring", probe="rows", clip=CLIP, colour="detect", surface=None, tolerance=6,
+                    corner=10, min_width=1, uniform_width=True, min_contrast=3.0, masks=[])
+        self.assertTrue(analysis.evaluate(ring, probes.get)["passed"])
+        self.assertEqual(analysis.evaluate(dict(ring, probe="gone"), probes.get)["reasons"], ["probe gone is missing"])
+        ends = dict(kind="probe_endpoints", probe="rows", clip=CLIP, masks=[], max_pixels=0)
+        self.assertTrue(analysis.evaluate(ends, probes.get)["passed"])
+        self.assertEqual(analysis.frame_refs(ends), ["rows"])
+
+
 if __name__ == "__main__":
     unittest.main()

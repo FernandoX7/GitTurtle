@@ -17,7 +17,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from native_qa import evidence, play, scenario
+from native_qa import evidence, play, scenario, session
+from native_qa.test_analysis import list_frame
+from native_qa.test_session import FakeClock, ScriptedScreen
 
 HAVE_PIL = importlib.util.find_spec("PIL") is not None
 HERE = Path(__file__).resolve().parent
@@ -49,9 +51,28 @@ INFO = {"application": "GitTurtle", "version": "0.1.0", "source_tree": "clean", 
 BASE_SHA, CAND_SHA, REBUILT_SHA = "a" * 40, "b" * 40, "c" * 40
 
 
+LIST = [100, 100, 400, 300]
+PROBE_STEP = {"probe": "rows", "send": "Tab", "repeat": 2, "region": "list", "quiet": 0.051, "timeout": 0.5,
+              "stable_within": 0.2, "note": "Tab past the list's lower edge, then Shift+Tab"}
+PROBE_ANALYSES = [
+    {"name": "rows-ring", "kind": "probe_ring", "probe": "rows", "clip": "list", "min_contrast": 3.0,
+     "expect": {"base": "record", "cand": True}},
+    {"name": "rows-endpoints", "kind": "probe_endpoints", "probe": "rows", "clip": "list",
+     "expect": {"base": "record", "cand": True}},
+]
+
+
 def spec(**changes) -> dict:
     data = copy.deepcopy(SPEC)
     data.update(changes)
+    return data
+
+
+def probe_spec(**changes) -> dict:
+    """SPEC with a list crop, a probe of two presses in it and both probe analyses, the base's only recorded."""
+    data = spec(crops={"panel": PANEL, "list": LIST}, steps=SPEC["steps"] + [PROBE_STEP],
+                analyses=SPEC["analyses"] + PROBE_ANALYSES)
+    data.update(copy.deepcopy(changes))
     return data
 
 
@@ -471,6 +492,122 @@ class SpecTest(unittest.TestCase):
              "on_fail": [{"key": "Escape"}]}]))
         self.assertEqual(guarded["steps"][-1]["guard"]["focus"], "switch")
 
+    def test_a_probe_step_and_its_analyses(self) -> None:
+        loaded = scenario.validate(probe_spec())
+        step = loaded["steps"][-1]
+        self.assertEqual({key: step[key] for key in ("probe", "send", "mods", "repeat", "region", "quiet", "timeout",
+                                                     "stable_within", "keep_pointer")},
+                         dict(probe="rows", send="Tab", mods=[], repeat=2, region=LIST, quiet=0.051, timeout=0.5,
+                              stable_within=0.2, keep_pointer=False))
+        defaults = scenario.validate(spec(steps=[{"probe": "rows", "send": "Tab", "mods": ["Shift_L"]}], analyses=[]))
+        self.assertEqual({key: defaults["steps"][0][key] for key in ("region", "quiet", "timeout", "stable_within")},
+                         dict(region=[0, 0, 1000, 680], quiet=session.PROBE_QUIET, timeout=session.PROBE_TIMEOUT,
+                              stable_within=session.PROBE_STABLE))
+        ring, ends = loaded["analyses"][2:]
+        self.assertEqual((ring["clip"], ring["colour"], ring["surface"], ring["min_contrast"], ring["expect"]),
+                         (tuple(LIST), "detect", None, 3.0, {"base": "record", "cand": True}))
+        self.assertEqual((ends["masks"], ends["max_pixels"], ends["roles"]), ([], 0, ["base", "cand"]))
+        recorded = scenario.validate(probe_spec(analyses=[dict(PROBE_ANALYSES[0], expect="record",
+                                                               surface={"at": [101, 101]}, colour=[117, 224, 187])]))
+        self.assertEqual(recorded["analyses"][0]["expect"], {"base": "record", "cand": "record"})
+        self.assertEqual(recorded["analyses"][0]["surface"], {"at": (101, 101)})
+        # A probe commits nothing, so the crops (and what recheck compares) are those of the spec without it.
+        self.assertEqual([c.name for c in scenario.committed(loaded)],
+                         [c.name for c in scenario.committed(scenario.validate(spec()))])
+        sent = play.session_step(step, "cand")
+        self.assertEqual([key for key in session.STEP_KEYS if key in sent], ["probe"])
+        self.assertEqual((sent["send"], sent["region"], sent["note"]), ("Tab", LIST, PROBE_STEP["note"]))
+        self.assertEqual([s["probe"] for s in scenario.probes(loaded)], ["rows"])
+
+    def test_a_click_probe_and_a_caret_mask(self) -> None:
+        click = {"probe": "row", "click_at": {"crop": "list", "at": [40, 196]}, "release_at": [300, 80],
+                 "region": "list", "quiet": 0.2, "note": "press a partly visible row; release on the title"}
+        ring = dict(PROBE_ANALYSES[0], probe="row", masks=[[120, 150, 122, 170]])
+        loaded = scenario.validate(probe_spec(steps=SPEC["steps"] + [click], analyses=[ring]))
+        step = loaded["steps"][-1]
+        self.assertEqual((step["click_at"], step["release_at"], step["mods"], step["keep_pointer"], step["quiet"]),
+                         ([140, 296], [300, 80], [], False, 0.2))
+        self.assertNotIn("send", step)
+        self.assertEqual(loaded["analyses"][0]["masks"], [(120, 150, 122, 170)])
+        sent = play.session_step(step, "base")
+        self.assertEqual([key for key in session.STEP_KEYS if key in sent], ["probe"])
+        self.assertEqual((sent["click_at"], sent["release_at"]), ([140, 296], [300, 80]))
+        plain = scenario.validate(spec(steps=[{"probe": "field", "click_at": [500, 300]}], analyses=[]))
+        self.assertNotIn("release_at", plain["steps"][0])
+
+    def test_bad_probe_specs(self) -> None:
+        def with_probe(**changes):
+            return probe_spec(steps=SPEC["steps"] + [dict(PROBE_STEP, **changes)])
+
+        ring = PROBE_ANALYSES[0]
+        cases = [
+            (spec(steps=[{"probe": "rows"}], analyses=[]),
+             r"\$\.steps\[0\]: a probe sends a key \(\"send\"\) or presses a point \(\"click_at\"\), exactly one"),
+            (with_probe(click_at=[5, 5]), r"\$\.steps\[6\]: a probe sends a key .* exactly one of them"),
+            (spec(steps=[{"probe": "rows", "send": "Tab", "release_at": [1, 1]}], analyses=[]),
+             r"\$\.steps\[0\]: \"release_at\" .* needs \"click_at\""),
+            (spec(steps=[{"probe": "row", "click_at": [5, 5], "mods": ["Shift_L"]}], analyses=[]),
+             r"\$\.steps\[0\]\.mods: a click probe presses the pointer's first button"),
+            (spec(steps=[{"probe": "row", "click_at": [5, 5], "keep_pointer": True}], analyses=[]),
+             r"\$\.steps\[0\]\.keep_pointer: a click probe"),
+            (spec(steps=[{"probe": "row", "click_at": [1000, 5]}], analyses=[]),
+             r"\$\.steps\[0\]\.click_at: \(1000,5\) is outside the 1000x680 window"),
+            (spec(steps=[{"probe": "row", "click_at": {"crop": "panel", "at": [100, 5]}}], analyses=[]),
+             r"\$\.steps\[0\]\.click_at\.at: \(100,5\) is outside the 100x50 crop 'panel'"),
+            (spec(steps=[{"probe": "row", "click_at": {"crop": "dialog", "at": [1, 5]}}], analyses=[]),
+             r"\$\.steps\[0\]\.click_at\.crop: no crop box named 'dialog'"),
+            (spec(steps=[{"probe": "row", "click_at": {"crop": "panel", "x": 1}}], analyses=[]),
+             r"\$\.steps\[0\]\.click_at: unknown key\(s\) x"),
+            (probe_spec(analyses=[dict(ring, masks=["status-timing"])]), r"\$\.analyses\[0\]\.masks\[0\]: expected a list"),
+            (with_probe(send="Ta b"), r"\$\.steps\[6\]\.send: 'Ta b' does not match"),
+            (with_probe(region="dialog"), r"\$\.steps\[6\]\.region: no crop box named 'dialog'"),
+            (with_probe(region=[0, 0, 1001, 10]), r"\$\.steps\[6\]\.region: .* reaches outside the 1000x680 window"),
+            (with_probe(quiet=1, timeout=1), r"\$\.steps\[6\]\.quiet: 1\.0 s is not shorter than the timeout"),
+            (with_probe(repeat=0), r"\$\.steps\[6\]\.repeat: 0 is outside 1\.\.200"),
+            (with_probe(stable_within=0.05), r"\$\.steps\[6\]\.stable_within: 0\.05 s is shorter than quiet, 0\.051 s, "
+                                             r"so the region could never count as settled before a press"),
+            (with_probe(quiet=0.4), r"\$\.steps\[6\]\.stable_within: 0\.2 s is shorter than quiet, 0\.4 s"),
+            (with_probe(stable_within=0), r"\$\.steps\[6\]\.stable_within: 0 is outside 0\.05\.\.120"),
+            (with_probe(await_change=1), r"\$\.steps\[6\]: unknown key\(s\) await_change"),
+            (with_probe(key="Tab"), r"\$\.steps\[6\]: needs exactly one action"),
+            (probe_spec(steps=SPEC["steps"] + [PROBE_STEP, PROBE_STEP]),
+             r"\$\.steps\[7\]: probe 'rows' runs twice in variant midnight"),
+            (probe_spec(analyses=[dict(ring, probe="other")]),
+             r"\$\.analyses\[0\]: reads probe 'other', which variant midnight never runs"),
+            (with_probe(region="panel"),
+             r"\$\.analyses\[2\]\.clip: \[100, 100, 400, 300\] is not inside probe 'rows'"),
+            (probe_spec(analyses=[dict(ring, expect={"base": "maybe"})]),
+             r"\$\.analyses\[0\]\.expect\.base: expected true, false or \"record\", got 'maybe'"),
+            (probe_spec(analyses=[dict(ring, surface={"at": [5, 5]})]),
+             r"\$\.analyses\[0\]\.surface\.at: \[5, 5\] is outside the clip"),
+            (probe_spec(analyses=[dict(PROBE_ANALYSES[1], masks=["status-timing"])]),
+             r"\$\.analyses\[0\]\.masks\[0\]: expected a list"),
+            (probe_spec(analyses=[dict(ring, frame="rows")]), r"\$\.analyses\[0\]: unknown key\(s\) frame"),
+            (probe_spec(analyses=[{k: v for k, v in ring.items() if k != "clip"}]),
+             r"\$\.analyses\[0\]: missing required key\(s\) clip"),
+            (probe_spec(analyses=[dict(ring, probe="head:rows")]), "'head' is not one of the roles"),
+            (probe_spec(steps=SPEC["steps"][:2] + [{"guard": {"kind": "probe_ring", "probe": "rows", "clip": "list"}}]),
+             r"\$\.steps\[2\]\.guard\.kind: a guard reads one frame as the steps run"),
+        ]
+        for data, match in cases:
+            with self.subTest(match=match), self.assertRaisesRegex(scenario.SpecError, match):
+                scenario.validate(data)
+
+    def test_cli_check_lists_probes(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "probe.json"
+            path.write_text(json.dumps(probe_spec(steps=SPEC["steps"] + [
+                dict(PROBE_STEP, mods=["Shift_L"]),
+                {"probe": "row", "click_at": [140, 296], "release_at": [300, 80], "region": "list"}])))
+            result = subprocess.run([sys.executable, "-B", str(QA), "scenario", "check", str(path)],
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("6 committed crops", result.stdout)
+        self.assertIn("2 probe(s), kept in the bundle and never committed:\n"
+                      "    rows  (Shift+Tab x2, region [100, 100, 400, 300])\n"
+                      "    row  (click at [140, 296] released at [300, 80] x1, region [100, 100, 400, 300])",
+                      result.stdout)
+
     def test_load_reports_json_errors(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
             path = Path(scratch) / "s.json"
@@ -623,6 +760,92 @@ class BundleTest(unittest.TestCase):
             "builds-agree (both roles, porcelain): failed, expected pass",
             "keys-keep-store (cand, porcelain): failed, expected pass",
             "switch (cand, porcelain): failed, expected pass"])
+        # "record" holds the reading kinds to no verdict, as it does the frame and probe kinds.
+        recorded = scenario.validate(spec(atspi=True, steps=steps, analyses=[
+            {"name": "switch", "kind": "atspi_focus", "focus": "switch", "node": "Follow system appearance",
+             "expect": {"base": "record", "cand": True}},
+            {"name": "builds-agree", "kind": "store_compare", "a": "base:store-b", "b": "cand:store-b",
+             "expect": "record"}]), "f" * 64)
+        self.assertEqual((recorded["analyses"][0]["expect"], recorded["analyses"][1]["expect"]),
+                         ({"base": "record", "cand": True}, "record"))
+        report = evidence.run_analyses(recorded, self.root)
+        self.assertEqual((report["total"], report["recorded"], report["unexpected"]),
+                         (6, 4, ["switch (cand, porcelain): failed, expected pass"]))
+        self.assertEqual([(r["role"], r["variant"], r["passed"]) for r in report["results"]
+                          if r["expected"] == "record" and not r["passed"]],
+                         [("base", "midnight", False), ("base", "porcelain", False), (None, "porcelain", False)])
+
+    def probes(self, root: Path, loaded: dict, cut_roles=("base",), roles=None) -> None:
+        """Each launch's probe through `Session.probe` on a scripted screen: Tab draws the newly focused row with
+        its ring cut by the list's lower edge for one frame (`cut_roles`) or reveals it at once, then Shift+Tab
+        moves the ring up inside the list."""
+        from types import SimpleNamespace
+
+        def window(ring_top, shift=0):
+            return list_frame(ring_top, size=(1000, 680), clip=tuple(LIST), ring_size=(240, 40), left=130,
+                              shift=shift)
+
+        revealed = window(250, shift=-20)
+        for role in roles or loaded["roles"]:
+            first = [(0, window(220)), (9, window(270) if role in cut_roles else revealed), (15, revealed)]
+            for variant in loaded["variants"]:
+                clock = FakeClock()
+                run = SimpleNamespace(dirs=SimpleNamespace(root=root / role / variant.id), log={"probes": []},
+                                      driver=ScriptedScreen([first, [(0, revealed), (5, window(200, shift=-20))]],
+                                                            clock, size=(1000, 680)),
+                                      require_unlocked=lambda why: None, clock=clock, pause=clock.advance)
+                step = play.session_step(loaded["steps"][-1], role)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    session.Session.probe(run, step["probe"], step["send"], step["mods"], None, step["region"],
+                                          step["repeat"], step["quiet"], step["timeout"], step["stable_within"],
+                                          step["keep_pointer"])
+
+    def test_probe_analyses_record_the_bases_cut_frames_and_hold_the_candidate(self) -> None:
+        loaded = scenario.validate(probe_spec(), "f" * 64)
+        self.captures(self.root)
+        self.probes(self.root, loaded)
+        report = evidence.run_analyses(loaded, self.root)
+        self.assertEqual((report["total"], report["as_expected"], report["recorded"], report["unexpected"]),
+                         (14, 14, 4, []))
+        results = {(r["name"], r["role"], r["variant"]): r for r in report["results"]}
+        base = results[("rows-ring", "base", "midnight")]
+        self.assertEqual((base["expected"], base["passed"], base["as_expected"]), ("record", False, True))
+        [cut] = base["result"]["failing"]
+        self.assertEqual((cut["press"], cut["index"], cut["ms"], cut["previous_ms"], cut["last_ms"], cut["grabs"]),
+                         (1, 1, 8.0, 6.0, 12.0, 3))
+        self.assertEqual((cut["file"], cut["box"]), ("base/midnight/probes/rows/001-01.png", [130, 270, 370, 300]))
+        self.assertEqual(cut["reasons"], ["bottom: no ring at 220 of 220 positions"])
+        self.assertEqual(base["result"]["resolution_ms"], 3.0)
+        ends = results[("rows-endpoints", "base", "porcelain")]["result"]
+        self.assertEqual([(f["press"], f["ms"]) for f in ends["failing"]], [(1, 8.0)])
+        cand = results[("rows-ring", "cand", "midnight")]
+        self.assertEqual((cand["expected"], cand["passed"]), (True, True))
+        self.assertEqual(cand["result"]["frames"], 2)  # one frame after each press: the reveal, then the move
+        self.assertIn("no frame failed at 3.0 ms resolution", cand["result"]["summary"])
+        self.assertTrue(results[("rows-endpoints", "cand", "porcelain")]["passed"])
+        # A truncated press is inconclusive: it meets neither a pass nor a fail expectation.
+        record_path = self.root / "cand" / "midnight" / "probes" / "rows" / "probe.json"
+        original = record_path.read_text()
+        truncated = json.loads(original)
+        truncated["presses"][0].update(ended="byte-budget", truncated=True, settled=False)
+        record_path.write_text(json.dumps(truncated))
+        report = evidence.run_analyses(loaded, self.root)
+        self.assertEqual(report["unexpected"], ["rows-ring (cand, midnight): inconclusive, expected pass",
+                                                "rows-endpoints (cand, midnight): inconclusive, expected pass"])
+        record_path.write_text(original)
+        # The same cut in the candidate is a finding; only the base's is recorded.
+        shutil.rmtree(self.root / "cand")
+        self.captures(self.root, roles=("cand",))
+        self.probes(self.root, loaded, cut_roles=("base", "cand"), roles=("cand",))
+        report = evidence.run_analyses(loaded, self.root)
+        self.assertEqual(report["unexpected"], [
+            "rows-ring (cand, midnight): failed, expected pass", "rows-ring (cand, porcelain): failed, expected pass",
+            "rows-endpoints (cand, midnight): failed, expected pass",
+            "rows-endpoints (cand, porcelain): failed, expected pass"])
+        shutil.rmtree(self.root / "base" / "midnight" / "probes")
+        missing = evidence.run_analyses(loaded, self.root)["results"]
+        self.assertEqual([r["result"]["reasons"] for r in missing if r["role"] == "base" and r["variant"] == "midnight"
+                          and r["kind"] == "probe_ring"], [["probe rows is missing"]])
 
     def test_recheck_comparison(self) -> None:
         from PIL import Image
@@ -692,6 +915,12 @@ class BundleTest(unittest.TestCase):
                                               "unchanged by every launch")
         self.assertEqual(payload["committed_frames"], "docs/evidence/demo-task/ (6 crops) and its scenario.json")
         self.assertEqual(len(payload["frames"]), 6)
+        self.assertEqual(payload["analyses"], dict(total=6, as_expected=6, recorded=0))
+        original = (bundle / "analysis.json").read_text()
+        evidence.write_json(bundle / "analysis.json", dict(json.loads(original), recorded=2))
+        self.assertTrue(evidence.attestation(bundle, "demo-task", CAND_SHA, "e" * 40)["sessions"][0]["what"].endswith(
+            "6 of 6 analyses as the scenario expects (2 recorded without a verdict)"))
+        (bundle / "analysis.json").write_text(original)
         self.assertEqual((payload["evidence_commit"], payload["limitations"]), ("d" * 40, "Linux only"))
         self.assertEqual(payload["scenario"]["committed_path"], "docs/evidence/demo-task/scenario.json")
         # A rebuilt candidate is attested through its re-check.
