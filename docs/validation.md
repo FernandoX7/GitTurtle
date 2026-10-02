@@ -65,6 +65,87 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 2 a focused row is revealed in the frame that first draws it
+
+Task `focus-reveal-same-frame`. `focus_reveal::FocusReveal` now scrolls a newly focused control into view before the frame that first draws its focus is laid out. When focus moves onto a control the last frame drew, the view that builds the container sets the offset from that frame's bounds while it renders, so the frame prepaints and paints the control whole. The base applied the offset after painting (`window.defer`), so #136's probe saw the newly focused row cut at the list's edge for one frame. The rule is unchanged: the least scroll that shows the whole control plus the ring's 3 px room, to the nearest edge, without animation; a click and a redraw without a focus change scroll nothing; and the project hub keeps its 12 px and its reveal on a click. It covers the branch chooser, the remote manager, Tags, the tag inspector's Push to… list and the project hub. A control the previous frame did not draw, or one that has moved since, is still revealed after painting. `DESIGN.md:333` now says the list scrolls "in the frame that first draws the focus, so no painted frame shows the control cut", and that the hub's page does so "in the same frame".
+
+Automated, in `cargo test --locked -p gitturtle` at 1000 × 680 with the installed ring, run by the candidate's gates before this round:
+- `branch_actions::tests::branch_chooser_reveals_rows_in_the_frame_that_draws_focus` (30 branches) and `tags::tests::tags_reveal_rows_in_the_frame_that_draws_focus` (30 tags) record every frame painted after each `tab` and `shift-tab`. In each frame, the focused row grown by the ring's room must lie inside the list.
+- `projects::tests::project_hub_reveals_fields_in_the_frame_that_draws_focus` makes the same per-frame check for the hub at 18 pt: 12 px clear after each Tab and Shift+Tab, and after a click on a field cut by the page's lower edge in a 420 px window.
+
+These view tests see every painted frame; the native probe below samples them.
+
+Native evidence, full tier. Let `$EVIDENCE` be `/tmp/gitturtle-evidence`.
+- **Builds:** base `50cc974` (origin/main when the task started; sha256 `95a19b469c3eedc6385336bcabba7e8eb02d881e6b24268dd9a0f7fc112eb813`) and candidate `26376bc` (sha256 `38166547ef495542c0c9127eec8be789e5f30305be23e07c1384ab2ab5d1be8d`). Both are release builds of clean trees, each in its own fresh target directory, `x86_64-unknown-linux-gnu`, rustc 1.99.0, and `qa.py identity` accepted the pair. The base executable is the attested release build of exactly `50cc974`, which two other tasks' evidence rounds also used as their base.
+- **Host:** Ubuntu 26.04.1 LTS, GNOME 50.1, XWayland `:0` at scale factor 1, window 1000 × 680, interface text 13 and 18 pt, palettes Midnight and Porcelain.
+- **Run:** `qa.py scenario run` of `docs/evidence/focus-reveal-same-frame/scenario.json` with both builds into `$EVIDENCE/runs/focus-reveal-same-frame`, 2026-10-02 from 19:54:06 to 20:11:56 UTC, with the tooling at `ddb4614` (#162). Input went through Mutter RemoteDesktop with X focus verified, never XTest. The run exited 0:
+  - 8 launches, every guard passed;
+  - 12 probes per launch;
+  - 236 of 236 analyses as expected, 32 of them recorded rather than graded: the base's 24 list probes and 8 hub probes at 18 pt;
+  - no crop matched a privacy template.
+
+  The spec's sha256 is `dd330060…`.
+- **Fixture:** the spec's recipe, which is `tab-reveals-branch-and-tag-rows`'s under this task's name, so it has the same objects and refs. It holds five commits with HEAD `75842df` on `main`, 30 local branches (`main` and `topic-01` to `topic-29`), 30 tags (`v1.00` to `v1.29`, the even ones annotated) and a local bare `origin`, at `$EVIDENCE/fixtures/focus-reveal-same-frame/repo`. Its HEAD, status, index, refs and reflogs were unchanged by every launch, and no write control was activated. Each launch had its own HOME and XDG directories, a generated store with Follow system off, and the `GitTurtle QA` identity.
+- **Route, the same input in both builds** (counts at 13 pt / 18 pt; a probe grabs only the list's or the hub's crop back to back from each press until it rests):
+  - **Chooser:** the toolbar's branch button, Up ×12 to "Manage another branch…" and Return open "Manage a local branch", each step guarded. Tab ×2 focuses row 0 (`topic-02`), guarded on its ring. Under probes, Tab ×9 / ×7 reaches the first row wholly below the lower edge (`chooser-tab-down`), then come 11 more Tabs and Shift+Tab ×9 / ×7 back to `topic-24` at the upper edge (`chooser-shift-tab-up`). The pointer then glides onto `topic-24` (`chooser-hover`).
+  - **Pointer press:** one wheel step (63 / 87 px) leaves a row cut by the lower edge. A probe presses the button on that row and releases it on the dialog's title. The button is then pressed on the row again and held (`chooser-press`), moved off the row and released; Escape closes the chooser.
+  - **Tags,** from the command palette's "Browse and manage tags": the same route, with Tab ×3 to `v1.00`, Tab ×10 / ×8 (`tags-tab-down`), Tab ×11, Shift+Tab ×10 / ×8 to `v1.11` (`tags-shift-tab-up`), the pointer on it (`tags-hover`), one wheel step, the press probe and the held press (`tags-press`).
+  - **Project hub,** from "Go to projects": a click on Create focuses Project folder name. Under probes, Tab moves to Parent folder (`hub-tab`), Tab ×2 to Browse… and Initial branch, and Tab to Create project, which is focused only. At 18 pt one wheel step up (87 px) then leaves Initial branch's input 2 px above the page's lower edge. Last, a click probe on Initial branch's input (`hub-click`).
+
+Probe results. Each build received 252 probed presses: 224 Tab and Shift+Tab in the two lists, 16 Tabs in the hub, 8 pointer presses on list rows and 4 hub clicks.
+- **Candidate, lists:** after every one of the 224 list keys, every captured frame shows exactly one ring, whole on all four sides, 2 px wide and inside the list's clip. It is (117, 224, 187) on (16, 21, 31) in Midnight, 11.43:1, and (52, 85, 166) on (246, 247, 252) in Porcelain, 6.55:1. Its margin to the clip is 0 px at the left and right in every frame, and at the edge it was revealed to (104 frames at the lower edge, 16 at the upper). That is #136's 3 px ring room: the ring fills it, and the row lies 3 px inside the clip. Every press drew one new frame, and that frame was already the settled one.
+- **Candidate, other presses:** after the 8 pointer presses, the 16 hub Tabs and the 4 hub clicks, every frame equals the frame before the press or the settled frame, 0 px apart outside the masked caret column of the hub's inputs (`p-*-endpoints-*`). Two Porcelain 18 pt hub Tabs drew a second frame equal to the settled one outside that column.
+- **Resolution:** a probe sees only what its grabs return. Each press's resolution is the longest time it went without a grab. Over the candidate's 252 presses that resolution had a median of 4.1 ms, a 95th percentile of 10.0 ms and a maximum of 26.3 ms (Tags, Tab press 6 of the first probe, Midnight 13 pt). The median interval between grabs was 0.75 to 3.4 ms per press. The finding is therefore "no failing frame at each press's recorded resolution".
+- **What a gap could hide:** the largest gaps just before a candidate press's first change were 12.29 ms (Porcelain 13 pt, the chooser's pointer press), 10.94 ms (Midnight 18 pt, the hub click) and 10.0 ms (Porcelain 13 pt, the first of the chooser's 11 further Tabs). The base's cut frames stayed on screen for at least 6.3 to 27.2 ms (first to last grab that showed them), so a cut frame as short as the shortest of them could fall inside such a gap. The per-frame view tests above are the exhaustive check.
+- **Base, recorded with timing** (`probe_ring` and `probe_endpoints` with `"record"`): 33 failing frames, each count a lower bound for the same reason. The 30 ring cuts were first seen 10.3 to 42.7 ms after the press, and each was followed by the settled frame:
+
+| List | Presses per build | Base cut frames | Only a 2 px strip of the ring in view | Row partly in view, one side cut | First seen after the press | On screen, first to last grab |
+| --- | --- | --- | --- | --- | --- | --- |
+| Chooser, 13 pt | 58 | 2 (Midnight 1, Porcelain 1) | 2 | 0 | 15.5–16.8 ms | 11.1–16.4 ms |
+| Chooser, 18 pt | 50 | 12 (Midnight 8, Porcelain 4) | 8 | 4 (30 of the ring's 53 rows) | 11.1–42.7 ms | 6.3–27.2 ms |
+| Tags, 13 pt | 62 | 7 (Midnight 5, Porcelain 2) | 4 | 3 (33 of 40 rows) | 10.3–22.9 ms | 8.3–14.5 ms |
+| Tags, 18 pt | 54 | 9 (Midnight 6, Porcelain 3) | 9 | 0 | 10.7–21.1 ms | 7.3–17.8 ms |
+
+The other three base failures were intermediate frames of the 18 pt hub:
+- After Tab in Midnight, 14.0 to 19.5 ms after the press, Project folder name had lost its focus border while Parent folder was still below the page's lower edge.
+- After the click, at 10.6 ms in Midnight (shown until 18.2 ms) and 17.8 ms in Porcelain (one grab), Initial branch was already focused at the unscrolled page, 2 px from its lower edge instead of 12.
+
+The base's other 18 pt hub presses, and all of its 13 pt hub and pointer presses, drew no intermediate frame.
+
+Frames in [`evidence/focus-reveal-same-frame/`](evidence/focus-reveal-same-frame/), 40 candidate crops of the settled frame after the step that names them, `candidate-{midnight,porcelain}-{13,18}pt-1000x680-{capture}.png`. The chooser crops are 540 × 490 (13 pt) and 540 × 559 (18 pt) at (230, 68); the Tags crops are 600 × 521 and 600 × 563 at (200, 68); and the hub crops are 420 × 574 at (571, 84) and 420 × 530 at (563, 120), the page's right column only. Coordinates below are window pixels; values are the same in both palettes unless given per palette.
+- `candidate-…-chooser-tab-down.png`: Tab past the chooser's lower edge reveals `topic-14` at 13 pt and `topic-04` at 18 pt at the bottom, by the least amount. The ring's outer box is (244, 462)–(756, 502) and (244, 508)–(756, 561), whole, 0 px from the list's clip at the bottom, left and right.
+- `candidate-…-chooser-shift-tab-up.png`: Shift+Tab past the upper edge reveals `topic-24` at the top. The ring is at (244, 166)–(756, 206) and (244, 225)–(756, 278), whole, 0 px from the clip at the top.
+- `candidate-…-chooser-hover.png`: `topic-24` focused with the pointer on it. Inside the 2 px ring there is 1 px of list surface, then the hover fill: (20, 27, 39) in Midnight (1.06:1 against the surface) and (213, 218, 237) in Porcelain (1.30:1). The row's tooltip, `refs/heads/topic-24 · 75842df`, sits over the search field.
+- `candidate-…-chooser-press.png`: a pointer press held on the row cut by the lower edge, with no ring. 26 px of `topic-11` is in view at 13 pt (rows 476–501), and 12 px of the next row at 18 pt (rows 549–560, no label in view). Its pressed fill is (22, 29, 41) in Midnight and (186, 195, 225) in Porcelain. Against the frame before the press, only that band changes (13,142 to 13,144 px at 13 pt, 6,060 at 18 pt). Nothing scrolls, and after the release off the row the list is pixel-identical to the frame before the press.
+- `candidate-…-tags-tab-down.png`: Tab past Tags' lower edge reveals `v1.10` at 13 pt and `v1.08` at 18 pt at the bottom. The ring is at (214, 493)–(786, 533) and (214, 512)–(786, 565), whole, 0 px from the clip at the bottom, left and right.
+- `candidate-…-tags-shift-tab-up.png`: Shift+Tab past the upper edge reveals `v1.11` at the top. The ring is at (214, 167)–(786, 207) and (214, 199)–(786, 252), whole, 0 px from the clip at the top.
+- `candidate-…-tags-hover.png`: `v1.11` focused and hovered: the ring, 1 px of list surface, then the same hover fill as the chooser's, with no tooltip.
+- `candidate-…-tags-press.png`: a pointer press held on the tag cut by the lower edge, with no ring. 19 px of `v1.22` is in view at 13 pt (rows 514–532), and 42 px of `v1.19` at 18 pt (rows 523–564). The pressed fill is the chooser's. Only that band changes (10,724 to 10,741 px at 13 pt, 23,495 to 23,560 at 18 pt), nothing scrolls, and after the release the list is pixel-identical to the frame before.
+- `candidate-…-hub-tab.png`: Parent folder focused by Tab.
+  - At 13 pt nothing scrolls: the panel's title and mode tabs, (581, 218)–(981, 380), are pixel-identical before and after, and every probe frame is the one before the key or the settled one.
+  - At 18 pt the page scrolls 60 px in the first frame that draws the focus: the content's best row alignment between the frame before Tab and the settled frame is a 60 px shift, in both palettes. Parent folder's input then ends at y 632, 12 px clear of the page's lower edge at y 644: its 3 px glow, then 9 px of panel ((23, 30, 43) in Midnight, (255, 255, 255) in Porcelain).
+- `candidate-…-hub-click.png`: Initial branch focused by a click on its input.
+  - At 13 pt nothing scrolls (the same title and tabs region, pixel-identical).
+  - At 18 pt the page scrolls 10 px in the first changed frame: from 2 px clear of the lower edge to 12 px (3 px glow, 9 px panel).
+
+Coordinator decisions, each delegated by the owner:
+- **(a) Only candidate crops are committed.** The base's cut frames are recorded with their timing through `probe_ring` with `"record"`, as the contract asks, and they live in the bundle's probe frames and `analysis.json`. Committing base crops of the settled frames would show nothing, since they equal the candidate's.
+- **(b) The press frames show no ring.** Pointer focus draws no focus-visible ring, and the rule for a click is that it scrolls nothing. The four-side ring rule applies to keyboard-focus frames. The press is held and released off the row because a full click activates the row: it chooses the branch and closes the chooser, or opens the tag.
+- **(c) The 13 pt hub has nothing to reveal at 1000 × 680:** the whole Create form, down to Create project, fits the page. Its frames therefore show that nothing scrolls.
+- **(d) The probe tooling was extended in #162 for this task.** Before it, the scenario format kept only settled frames and could not keep a frame sequence.
+
+Base against candidate: all 40 settled frames are pixel-identical between the builds (`*-base-equals-cand-*`, 0 px in all 40 pairs), so spacing, clipping, text and colours are unchanged; only the probes tell the builds apart.
+
+Design review: passed, 2026-10-02 about 20:20 UTC. Every crop meets `DESIGN.md:333` as the candidate rewrites it. The review noted four things that are the same on both builds and not caused by this change:
+- Tags centres its labels, unlike the chooser.
+- The chooser's hover tooltip covers the search field.
+- At 18 pt the hub's Parent folder placeholder is clipped mid-glyph ("Choose where your project v") with no ellipsis.
+- The Midnight hover step is faint (1.06:1), and the ring carries the cue.
+
+`qa.py privacy scan --redacted --jobs 4` with the local template set (28 templates) found all 40 committed crops clean on their committed bytes (26.0 s wall), as did the run's own scan of the same bytes (14.7 s). The crops show fixture branch, tag and object names and app labels only.
+
+Not covered: macOS, native Wayland and fractional scale factors; other window sizes and text sizes; and, natively, the remote manager and the tag inspector's Push to… list, which the view tests and #136's tests cover. The reveal's fallback path still applies after painting, for a control the previous frame did not draw or one that has moved. The native evidence covers only rows the previous frame drew.
+
 ## October 2 the review's Source patch draws Compare's gutter
 
 Task `pr-source-gutter-like-compare`. The pull request review's Source patch now wraps its editor in Compare's unified-patch view (`diff_view::new`) once the file's `PatchPresentation`, already prepared off the UI thread since #116, and the editor both exist. It draws the same old and new line-number columns and the same added and removed gutter tints as Compare, and the editor's own line numbers and folding are turned off. A file above Compare's bounds, or one still preparing, keeps plain text with the editor's own numbers. `docs/github-collaboration.md` says so.
