@@ -4,16 +4,19 @@ Every launch goes through `session.Session` exactly as `qa.py launch
 --for-commit` does: its own empty run directory and seeded store, the window
 found by PID, Mutter input with X focus verified, nothing sent while the
 desktop is locked, SIGTERM to the launched PID only, and the fixture's state
-compared before and after. Steps run identically for every role; a capture
-limited to some roles is still grabbed in all of them and only committed for
-those, and a probe's frames are kept in the launch's `probes/` for the
-analyses only, never committed, so `recheck` runs probes and ignores them. A
-failed guard stops the launch (after its `on_fail` keys) and the run; nothing
-is retried. A spec with `"atspi": true` sets `org.a11y.Status
-IsEnabled` before each launch and puts its value back once the app has
-stopped (`a11y.enabled`); meanwhile SIGTERM only marks the launch, which
-stops before its next step, and a value that does not read back stops the
-run as inconclusive.
+compared before and after. A scenario with `writes` opens every launch on its
+own fresh copy of the recipe build (`writes.py`), whose changes must be the
+declared ones, while the build itself must stay unchanged. Steps run
+identically for every role; a capture limited to some roles is still grabbed
+in all of them and only committed for those, and a probe's frames are kept in
+the launch's `probes/` for the analyses only, never committed, so `recheck`
+runs probes and ignores them. A failed guard stops the launch (after its
+`on_fail` keys) and the run; nothing is retried. A spec with `"atspi": true`
+sets `org.a11y.Status IsEnabled` before each launch and puts its value back
+once the app has stopped (`a11y.enabled`); meanwhile SIGTERM only marks the
+launch, which stops before its next step, and a value that does not read back
+stops the run as inconclusive. Whatever ends a launch, IsEnabled is restored
+first and then the launch's fixture copy is concluded.
 
 Exit status, as for the other commands: 0 every launch passed, the analyses
 met their expectations and the privacy scan is clean (or, for a re-check,
@@ -23,6 +26,7 @@ every crop is byte-identical); 1 a finding; 2 a refusal or an inconclusive run.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import platform
 import shutil
@@ -31,7 +35,7 @@ import time
 import zlib
 from pathlib import Path
 
-from . import analysis, evidence, identity, recipe, runenv, scenario, stores
+from . import analysis, evidence, identity, recipe, runenv, scenario, stores, writes
 
 
 class Inconclusive(SystemExit):
@@ -90,15 +94,27 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
                   home_sha256={path: identity.sha256_bytes(data) for path, data in sorted(home.items())},
                   error=None, refusal=False)
     width, height = spec["window"]
+    copy = None
+    # Anything that stops the copy or the session before the app could start is a refusal; an unused copy goes.
+    if options.get("writes") is not None:  # the app opens a fresh copy; `fixture` stays the untouched recipe build
+        try:
+            copy = writes.fresh_copy(options["writes"], role, run_dir)
+        except (SystemExit, Exception) as error:
+            return dict(record, error=reason(error), refusal=True, started_utc=utc(), ended_utc=utc())
     try:
-        run = session.Session(binary, fixture, run_dir, store, width=width, height=height,
-                              display=options["display"], scale="1", for_commit=True, extra_env=spec["env"],
-                              settle=options["settle"], backend=options["backend"], home_files=home)
-    except SystemExit as error:
-        return dict(record, error=str(error), refusal=True, started_utc=utc(), ended_utc=utc())
+        run = session.Session(binary, fixture if copy is None else copy.repository, run_dir, store, width=width,
+                              height=height, display=options["display"], scale="1", for_commit=True,
+                              extra_env=spec["env"], settle=options["settle"], backend=options["backend"],
+                              home_files=home)
+    except (SystemExit, Exception) as error:
+        unused = writes.discard(copy) if copy is not None else None
+        return dict(record, error="; ".join(filter(None, [reason(error), unused])), refusal=True, started_utc=utc(),
+                    ended_utc=utc())
     run.log["scenario"] = dict(task=spec["task"], sha256=spec["sha256"], role=role, variant=variant.describe(),
                                guards=[])
-    before = recipe.state(fixture)
+    if copy is not None:
+        run.log["fixture_writes"] = dict(copy=str(copy.root), declared=copy.declared, before=copy.before.record)
+    before = recipe.state(fixture, options.get("remotes"))
     print(f"== {role} {variant.id}: {run_dir}", flush=True)
     accessibility = contextlib.ExitStack()
     try:
@@ -117,16 +133,22 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
                 if "capture" in step:
                     require_settled(run, step, role)
     except (SystemExit, Exception) as error:
-        record.update(error=str(error) if isinstance(error, SystemExit) else repr(error),
-                      refusal=isinstance(error, SystemExit))
+        record.update(error=reason(error), refusal=isinstance(error, SystemExit))
         run.log["error"] = record["error"]
     finally:
         try:
-            code = run.close()
-        finally:
-            accessibility.close()
+            try:
+                code = run.close()
+            finally:
+                accessibility.close()  # IsEnabled back whatever happens
+        except BaseException:
+            if copy is not None:  # concluded whatever happens; a copy whose app may still run is kept
+                conclude_writes(run, copy, record)
+            raise
     header = run.log["header"]
-    unchanged = bool(run.log.get("fixture_unchanged")) and recipe.state(fixture) == before
+    # With `writes`, the session's own before/after check read the copy; the recipe build must not change at all.
+    unchanged = ((copy is not None or bool(run.log.get("fixture_unchanged")))
+                 and recipe.state(fixture, options.get("remotes")) == before)
     record.update(started_utc=header["started_utc"], ended_utc=header["ended_utc"], exit=run.log.get("exit"),
                   fixture_unchanged=unchanged, captures=len(run.log["captures"]),
                   guards=len(run.log["scenario"]["guards"]),
@@ -138,6 +160,8 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
         record["error"] = f"the app exited with {run.log.get('exit')!r}"
     if record["error"] is None and not unchanged:
         record["error"] = "the fixture's state changed during the launch"
+    if copy is not None:
+        conclude_writes(run, copy, record)
     if run.restore_failures:  # a read_only path kept its mode: reported beside whatever else stopped the launch
         record["error"] = "; ".join([*filter(None, [record["error"]]), *run.restore_failures])
     accessibility_record = record.get("atspi", {})
@@ -155,6 +179,29 @@ def stop_if_terminated(record: dict) -> None:
     launch stops before its next step and the run as inconclusive."""
     if record.get("atspi", {}).get("sigterm"):
         raise SystemExit("stopped: SIGTERM received")
+
+
+def reason(error: BaseException) -> str:
+    return str(error) if isinstance(error, SystemExit) else repr(error)
+
+
+def conclude_writes(run, copy: writes.Copy, record: dict) -> None:
+    """The launch's copy against its declaration: both states and the verdict into flow-log.json and run.json."""
+    if getattr(run, "proc", None) is None:  # stopped before the app was spawned (a lock refusal, say)
+        app = writes.NEVER_STARTED
+    else:
+        app = writes.EXITED if isinstance(run.log.get("exit"), int) else writes.MAY_RUN
+    written = writes.conclude(copy, app)
+    record["writes"] = run.log["fixture_writes"] = written
+    (run.dirs.root / "flow-log.json").write_text(json.dumps(run.log, indent=1, default=str))
+    problems = written["verdict"]["problems"]
+    if record["error"] is None and problems:
+        record["error"] = "the fixture copy's changes differ from the declaration: " + "; ".join(problems)
+    if written.get("removal_error"):
+        record["error"] = "; ".join(filter(None, [record["error"], written["removal_error"]]))
+    kept = f"; copy kept: {written['kept_because']}" if written.get("kept_because") else ""
+    print(f"   writes {written['verdict']['result']}: {'; '.join(written['verdict']['changes']) or 'no change'}{kept}",
+          flush=True)
 
 
 def host(spec: dict, variants, display: str, backend: str) -> dict:
@@ -251,6 +298,9 @@ def run(spec_path: Path, builds: dict[str, Path], out: Path, fixture: Path | Non
     require_tools(spec)
     backend = mutter.choose_input(input_choice, mutter.process_argvs())
     repository, manifest, fixture_record = prepare(spec, fixture, fixtures)
+    copies = writes.plan(spec, manifest)
+    if copies is not None:
+        fixture_record["writes"] = copies.record()
     require_unlocked(backend)
     out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(spec_path, out / "scenario.json")
@@ -258,7 +308,8 @@ def run(spec_path: Path, builds: dict[str, Path], out: Path, fixture: Path | Non
         evidence.write_json(out / "fixture-manifest.json", {k: v for k, v in manifest.items() if k != "reused"})
     record = dict(version=1, task=spec["task"], scenario_sha256=spec["sha256"], started_utc=utc(), builds=entries,
                   host=host(spec, spec["variants"], display, backend), fixture=fixture_record, launches=[])
-    options = dict(display=display, settle=settle, backend=backend)
+    options = dict(display=display, settle=settle, backend=backend, writes=copies,
+                   remotes=recipe.bare_remotes(manifest["recipe"], Path(manifest["root"])) if manifest else None)
     for variant in spec["variants"]:
         for role in spec["roles"]:
             record["launches"].append(launch(spec, role, variant, builds[role], repository,
@@ -318,6 +369,9 @@ def recheck(spec_path: Path, exe: Path, committed: Path, out: Path | None = None
     out = output_dir(out)
     backend = mutter.choose_input(input_choice, mutter.process_argvs())
     repository, manifest, fixture_record = prepare(spec, fixture, fixtures)
+    copies = writes.plan(spec, manifest)
+    if copies is not None:
+        fixture_record["writes"] = copies.record()
     require_unlocked(backend)
     out.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(spec_path, out / "scenario.json")
@@ -325,7 +379,8 @@ def recheck(spec_path: Path, exe: Path, committed: Path, out: Path | None = None
     record = dict(version=1, task=spec["task"], scenario_sha256=spec["sha256"], started_utc=utc(),
                   executable=entry, committed=str(committed), host=host(spec, variants, display, backend),
                   fixture=fixture_record, launches=[])
-    options = dict(display=display, settle=settle, backend=backend)
+    options = dict(display=display, settle=settle, backend=backend, writes=copies,
+                   remotes=recipe.bare_remotes(manifest["recipe"], Path(manifest["root"])) if manifest else None)
     for variant in variants:
         record["launches"].append(launch(spec, "cand", variant, Path(entry["path"]), repository,
                                          out / "cand" / variant.id, options))

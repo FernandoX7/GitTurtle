@@ -90,6 +90,10 @@ def scenario_check(args) -> int:
                 sent = f"click at {step['click_at']}" + (f" released at {step['release_at']}"
                                                          if "release_at" in step else "")
             print(f"    {step['probe']}  ({sent} x{step['repeat']}, region {step['region']})")
+    if spec["writes"] is not None:
+        from native_qa import writes
+
+        print("\n".join(f"  {line}" for line in writes.describe(spec)))
     return 0
 
 

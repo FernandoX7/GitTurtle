@@ -253,6 +253,19 @@ def load_recheck(path: Path) -> tuple[Path, dict]:
     return path, json.loads(path.read_text())
 
 
+def fixture_line(run: dict) -> str:
+    """The attestation's fixture sentence: the build, whether every launch left it unchanged and, for a scenario that
+    writes, whether each launch's own copy changed as declared."""
+    fixture, launches = run["fixture"], run["launches"]
+    unchanged = all(l.get("fixture_unchanged") for l in launches)
+    line = f"{fixture['summary']}, {'unchanged by every launch' if unchanged else 'CHANGED by a launch'}"
+    if fixture.get("writes"):
+        declared = all(l.get("writes", {}).get("verdict", {}).get("result") == "pass" for l in launches)
+        line += (f"; each launch wrote only to its own fresh copy at {fixture['writes']['copy']}, which "
+                 f"{'changed exactly as the scenario declares' if declared else 'did NOT change as declared'}")
+    return line
+
+
 def attestation(bundle: Path, task: str, candidate: str, base: str, recheck: Path | None = None,
                 evidence_commit: str | None = None, what: str | None = None,
                 limitations: str | None = None) -> dict:
@@ -332,14 +345,12 @@ def attestation(bundle: Path, task: str, candidate: str, base: str, recheck: Pat
         raise SystemExit(f"refusing: the attested executable was built from {attested['source_revision']}, "
                          f"not the candidate {candidate}")
     sizes = sorted({f["variant"]["text_size"] for f in manifest["frames"] if f["variant"]["text_size"]})
-    fixture = run["fixture"]
-    unchanged = all(l.get("fixture_unchanged") for l in launches)
     return dict(
         task=task, kind="native", candidate=candidate, base=base, attested_executable=attested,
         comparison_builds=comparison, host=run["host"]["description"],
         input=("qa.py scenario run through Mutter RemoteDesktop with X focus verified; never XTest"
                if run["host"]["input"] == "mutter" else "qa.py scenario run through XTest"),
-        fixtures=f"{fixture['summary']}, {'unchanged by every launch' if unchanged else 'CHANGED by a launch'}",
+        fixtures=fixture_line(run),
         sessions=sorted(sessions, key=lambda session: session["utc"]), evidence_commit=evidence_commit,
         committed_frames=f"docs/evidence/{task}/ ({len(manifest['frames'])} crops"
                          + (f", {' and '.join(map(str, sizes))} pt" if sizes else "") + ") and its scenario.json",
