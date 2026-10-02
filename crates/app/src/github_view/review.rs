@@ -77,6 +77,10 @@ pub(super) struct ReviewState {
     /// The Source editor's patch decorations, kept for the editor's life so Find can remove
     /// their backgrounds under its matches and a palette change redecorates them.
     source_decorations: Option<editor_find::PatchDecorations>,
+    /// Compare's unified-patch view around the Source editor: old and new line-number
+    /// columns, change tints and no editor folds, from the same presentation. `None` while the
+    /// file prepares and above Compare's bounds, where Source keeps the editor's own numbers.
+    source_view: Option<Entity<crate::diff_view::DiffView>>,
     /// The selected file's patch presentation, prepared with its rows on the read worker
     /// within Compare's text bounds; `None` while preparing and above them.
     presentation: Option<text::PatchPresentation>,
@@ -118,6 +122,7 @@ impl ReviewState {
             }),
             source: None,
             source_decorations: None,
+            source_view: None,
             presentation: None,
             // Compare's patch is redecorated where the app applies a palette; this panel
             // follows the applied palette itself.
@@ -155,19 +160,28 @@ impl ReviewState {
         self.file_page = 1;
         self.files_next = false;
     }
-    /// Release the selected file's Source editor, its decorations and its presentation.
+    /// Release the selected file's Source editor, its view, decorations and presentation.
     fn release_file(&mut self) {
         self.source = None;
+        self.source_view = None;
         self.source_decorations = None;
         self.presentation = None;
     }
-    /// Decorate the Source editor once it and its file's presentation both exist, whichever
-    /// comes first; a file above the bounds, or not prepared, keeps plain text.
-    fn decorate_source(&mut self, cx: &mut App) {
+    /// Give the Source editor Compare's presentation once it and its file's presentation both
+    /// exist, whichever comes first: the decorations, and Compare's unified-patch view, which
+    /// takes over the editor's line numbers and folds. A file above the bounds, or not
+    /// prepared, keeps plain text with the editor's own line numbers.
+    fn decorate_source(&mut self, window: &mut Window, cx: &mut App) {
         if self.source_decorations.is_none()
             && let (Some(source), Some(presentation)) = (&self.source, &self.presentation)
         {
             self.source_decorations = Some(text::decorate(source, presentation, cx));
+            self.source_view = Some(crate::diff_view::new(
+                source.clone(),
+                presentation,
+                window,
+                cx,
+            ));
         }
     }
     fn refresh_theme(&self, cx: &mut App) {
@@ -576,7 +590,7 @@ impl Panel {
         self.review.preparing = true;
         self.review.prepare_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = prepared.await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 if this.closed
                     || generation != this.review.prepare_generation
                     || this.review.selected_file != Some(index)
@@ -588,7 +602,7 @@ impl Panel {
                     Ok((file, presentation)) => {
                         this.review.files[index] = file;
                         this.review.presentation = presentation;
-                        this.review.decorate_source(cx);
+                        this.review.decorate_source(window, cx);
                     }
                     Err(error) => this.error = Some(format!("{error:#}")),
                 }
@@ -731,11 +745,11 @@ impl Panel {
                 .selected_file
                 .and_then(|n| self.review.files[n].patch.as_deref())
         {
-            // Plain text with the editor's own line numbers; the decorations follow from the
-            // presentation the file's preparation made, now or when it arrives.
+            // Plain text with the editor's own line numbers; Compare's decorations and gutter
+            // follow from the presentation the file's preparation made, now or when it arrives.
             let source = text::editor(patch, "diff", None, window, cx);
             self.review.source = Some(source);
-            self.review.decorate_source(cx);
+            self.review.decorate_source(window, cx);
         }
         self.focus_file_content(window, cx);
         cx.notify();
@@ -1024,7 +1038,7 @@ impl Panel {
                 .child(label("github-file-title",title).font_weight(FontWeight::SEMIBOLD))
                 .child(div().flex().flex_wrap().items_center().gap_1().children(["Changes","Source","Threads"].into_iter().enumerate().map(|(mode,name)|button(("github-file-mode",mode),name,"",self.review.mode==mode).toggled(self.review.mode==mode).on_click(cx.listener(move|this,_,window,cx|this.review_source(mode,window,cx)))))
                     .child(div().flex_1()).child(button("github-inline-start",if self.review.composing.is_some(){"Continue comment"}else{"Comment on selection"},"plus",false).disabled(self.pending||self.review.preparing||file.unavailable.is_some()).on_click(cx.listener(|this,_,window,cx|this.begin_comment(window,cx)))))
-                .child(match self.review.mode {1=>self.review.source.as_ref().map(|source|div().h(px(246.)).flex_shrink_0().child(crate::editor_find::Editor::new(source).readonly(true).h_full().aria_label("Exact GitHub supplied patch source")).into_any_element()).unwrap_or_else(||label("github-no-source","No text patch was supplied. Open the captured local comparison to inspect available source or binary content.").into_any_element()),2=>self.render_threads(Some(&file.filename),cx),_=>self.render_patch(cx)})
+                .child(match self.review.mode {1=>self.review.source_view.as_ref().map(|view|div().debug_selector(||"github-source-patch".into()).h(px(246.)).flex_shrink_0().min_w_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().child(view.clone()).into_any_element()).or_else(||self.review.source.as_ref().map(|source|div().debug_selector(||"github-source-patch".into()).h(px(246.)).flex_shrink_0().child(crate::editor_find::Editor::new(source).readonly(true).h_full().aria_label("Exact GitHub supplied patch source")).into_any_element())).unwrap_or_else(||label("github-no-source","No text patch was supplied. Open the captured local comparison to inspect available source or binary content.").into_any_element()),2=>self.render_threads(Some(&file.filename),cx),_=>self.render_patch(cx)})
                 .when(self.review.mode==0,|element|element.child(label("github-range-hint","Click a changed line · Shift-click or Shift-Up/Down selects a same-side range · Return comments").text_color(rgb(p.muted))))
                 .into_any_element()
         } else {
@@ -1461,6 +1475,9 @@ mod tests {
         let source = |cx: &mut gpui_kit::VisualTestContext| {
             cx.read(|cx| panel.read(cx).review.source.clone().expect("Source editor"))
         };
+        let has_view = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.read(|cx| panel.read(cx).review.source_view.is_some())
+        };
         let decorations = |editor: &Entity<EditorState>, cx: &mut gpui_kit::VisualTestContext| {
             cx.read(|cx| editor_find::patch_layer(editor, cx).map(|layer| layer.drawn(cx)))
         };
@@ -1476,7 +1493,15 @@ mod tests {
         });
         let first = source(cx);
         assert_eq!(decorations(&first, cx), None);
+        assert!(
+            !has_view(cx),
+            "Compare's gutter waits for the presentation prepared off the UI thread"
+        );
         settle(cx);
+        assert!(
+            has_view(cx),
+            "the prepared presentation gives Source Compare's gutter"
+        );
         let expected = compare(&patches[0], cx);
         assert_eq!(
             decorations(&first, cx).as_ref(),
@@ -1517,6 +1542,7 @@ mod tests {
         });
         let superseded = source(cx);
         assert_eq!(decorations(&superseded, cx), None);
+        assert!(!has_view(cx));
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
                 panel.select_review_file(0, window, cx);
@@ -1528,6 +1554,7 @@ mod tests {
         assert_ne!(current, superseded);
         cx.read(|cx| assert!(panel.read(cx).review.files[1].rows.is_empty()));
         assert_eq!(decorations(&current, cx), Some(recolored));
+        assert!(has_view(cx));
 
         // Source opened after its file's preparation finished takes the decorations at once.
         cx.update(|window, cx| {
@@ -1539,6 +1566,7 @@ mod tests {
         cx.read(|cx| assert!(!panel.read(cx).review.files[1].rows.is_empty()));
         let expected = compare(&patches[1], cx);
         assert_eq!(decorations(&later, cx), Some(expected));
+        assert!(has_view(cx));
     }
     /// Source decorations are prepared up to Compare's bounds and not one byte or one line
     /// beyond. Lines are `\n` bytes, as git-core counts them for Compare, so a patch's last
@@ -1565,6 +1593,186 @@ mod tests {
         let over_lines = format!("{at_lines}\n ");
         assert_eq!(newlines(&over_lines), MAX_DIFF_LINES + 1);
         assert!(source_presentation(&over_lines).is_none());
+    }
+
+    /// The PR review's Source draws the fixture's `src/review/session.rs` patch as Compare draws
+    /// its unified patch: the same view around the editor, so the same old and new line-number
+    /// columns, gutter tint and decorations, and no line numbers or folds of the editor's own.
+    /// Its preparation stays off the UI thread and is cancelled on a file change and on close.
+    #[gpui::test]
+    async fn source_patch_draws_compares_gutter(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["-c", "init.templateDir=", "init", "--initial-branch=main"])
+                .arg(fixture.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let repo = GitRepository::open(fixture.path()).unwrap();
+        let panel_repo = repo.clone();
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let output = captured.clone();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.page = AppPage::Repository;
+                app.path = Some(repo.path().to_owned());
+                app.repository = Some(repo);
+                app
+            });
+            *output.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        let app = captured.borrow().as_ref().unwrap().clone();
+        let panel = cx.update(|window, cx| {
+            cx.new(|cx| Panel::new(app.downgrade(), panel_repo, "main".into(), window, cx))
+        });
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.run_until_parked();
+        let pull = model::fixture_pull(false);
+        let captured_pull =
+            pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured_pull, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let index = files
+            .iter()
+            .position(|file| file.filename == "src/review/session.rs")
+            .expect("fixture file");
+        let other = (index + 1) % files.len();
+        let patch = files[index].patch.clone().expect("fixture patch");
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull);
+                panel.review.files = files;
+                panel.review.section = Section::Files;
+                panel.review.show_list = false;
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.select_review_file(index, window, cx);
+                panel.review_source(1, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        for _ in 0..3 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        }
+        let frame = cx
+            .debug_bounds("github-source-patch")
+            .expect("rendered Source patch");
+        // Compare's unified patch for the same text, built as Compare builds it, drawn in the
+        // Source frame's place inside its one-pixel border.
+        let inner = Bounds::new(
+            frame.origin + point(px(1.), px(1.)),
+            frame.size - size(px(2.), px(2.)),
+        );
+        let presentation = text::PatchPresentation::prepare(&patch);
+        let (compare, compare_decorations, compare_view) = cx.update(|window, cx| {
+            let (editor, decorations) =
+                text::editor_with_decorations(&patch, "diff", Some(&presentation), window, cx);
+            let view = crate::diff_view::new(editor.clone(), &presentation, window, cx);
+            (
+                editor,
+                decorations.expect("a prepared patch is decorated"),
+                view,
+            )
+        });
+        for _ in 0..3 {
+            let view = compare_view.clone();
+            cx.draw(inner.origin, inner.size, move |_, _| {
+                div().w(inner.size.width).h(inner.size.height).child(view)
+            });
+            cx.run_until_parked();
+        }
+        let source = cx.read(|cx| panel.read(cx).review.source.clone().expect("Source editor"));
+        // Gutter width (both number columns), where the editor's text starts within it (no
+        // line numbers or fold markers of its own), its size and its line height.
+        let geometry = |editor: &Entity<EditorState>, cx: &mut gpui_kit::VisualTestContext| {
+            cx.read(|cx| {
+                let state = editor.read(cx);
+                let input = state.input_bounds();
+                let text = state.text_bounds().expect("laid out");
+                (
+                    input.origin.x - inner.origin.x,
+                    text.origin.x - input.origin.x,
+                    input.size,
+                    state.line_height().expect("laid out"),
+                )
+            })
+        };
+        let drawn = geometry(&source, cx);
+        assert_eq!(
+            drawn,
+            geometry(&compare, cx),
+            "Source draws Compare's gutter"
+        );
+        let columns = px(2. * presentation.column_width * crate::appearance::code_scale());
+        // The editor's own inset follows the gutter, so the text starts past both columns.
+        assert!(drawn.0 >= columns, "old and new number columns: {drawn:?}");
+        cx.read(|cx| {
+            assert_eq!(
+                editor_find::patch_layer(&source, cx).map(|layer| layer.drawn(cx)),
+                Some(compare_decorations.drawn(cx)),
+                "Source tints its lines as Compare does"
+            );
+            let review = &panel.read(cx).review;
+            let prepared = review.presentation.as_ref().expect("prepared");
+            assert_eq!(
+                prepared.rows, presentation.rows,
+                "the gutter's numbers and tints"
+            );
+            assert_eq!(prepared.change_rows, presentation.change_rows);
+            assert_eq!(prepared.column_width, presentation.column_width);
+        });
+
+        // A file change while Source waits for its presentation cancels it, and so does close:
+        // nothing lands, so neither file's Source gains a gutter afterwards.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.select_review_file(other, window, cx);
+                panel.review_source(1, window, cx);
+                assert!(panel.review.preparing);
+                assert!(panel.review.source_view.is_none());
+                panel.select_review_file(index, window, cx);
+                panel.review_source(1, window, cx);
+                assert!(panel.review.source_view.is_none());
+                panel.close(window, cx);
+                assert!(!panel.review.preparing);
+            })
+        });
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let review = &panel.read(cx).review;
+            assert!(review.presentation.is_none());
+            assert!(review.source_view.is_none());
+            assert!(review.files.iter().all(|file| file.rows.is_empty()));
+        });
     }
     #[gpui::test]
     async fn warm_reopen_retries_interrupted_local_read_and_template_payload_evicts(
