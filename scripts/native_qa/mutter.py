@@ -26,6 +26,10 @@ EI_PORTAL_FLAG = "-enable-ei-portal"
 INPUTS = ("mutter", "xtest")
 BUTTONS = {1: 0x110, 2: 0x112, 3: 0x111}  # evdev BTN_LEFT, BTN_MIDDLE, BTN_RIGHT
 VERTICAL = 0  # NotifyPointerAxisDiscrete axis
+# The screen corners a large relative move pins the pointer in, by preference, as the move's (x, y) signs; never
+# the top-left, where GNOME's hot corner opens the Activities overview.
+ANCHORS = {(1, 1): "bottom-right", (1, -1): "top-right", (-1, 1): "bottom-left"}
+ANCHOR_PUSH = 20000.0  # px of relative motion, more than any screen, so the pointer stops in the corner
 
 
 class InputRefused(SystemExit):
@@ -130,6 +134,14 @@ class RemoteDesktop:
         self.session.NotifyPointerAxisDiscrete(self.types.UInt32(VERTICAL), self.types.Int32(steps))
 
 
+def anchor_corner(rect, root) -> tuple[tuple[int, int], tuple[int, int]]:
+    """The signs of the relative move that anchors the pointer and the root corner it stops in: the first of
+    `ANCHORS` off the window at `rect` on the `root` (width, height) screen, else the bottom-right."""
+    width, height = root
+    corners = [(signs, (width - 1 if signs[0] > 0 else 0, height - 1 if signs[1] > 0 else 0)) for signs in ANCHORS]
+    return next((corner for corner in corners if not x11.inside(rect, *corner[1])), corners[0])
+
+
 def screen_locked(bus=None) -> bool | None:
     """org.gnome.ScreenSaver.GetActive on the session bus: True while locked, None when it cannot be read."""
     try:
@@ -147,11 +159,15 @@ def screen_locked(bus=None) -> bool | None:
 class MutterDriver(x11.Driver):
     """x11.Driver with every input sent through Mutter; window lookup, geometry, focus and grabs are unchanged.
 
-    XWayland learns the pointer position only while the pointer is over an X window, so the position is
-    tracked here: anchored by a large relative move into the bottom-right screen corner (monitor scale 1.0,
-    so logical coordinates are X root coordinates; there is no hot corner there), then moved by exact
-    relative steps. A target on the app window is verified against XWayland; a mismatch re-anchors once,
-    then aborts.
+    The RemoteDesktop session has no screencast stream, so it has no absolute pointer coordinates: every motion
+    is relative. XWayland learns the pointer position only while the pointer is over an X window, so the position
+    is tracked here: anchored by a large relative move into a screen corner off the app's window
+    (`anchor_corner`; monitor scale 1.0, so logical coordinates are X root coordinates), then moved by exact
+    relative steps. A target on the app window is verified against XWayland; a mismatch re-anchors once, then
+    aborts. Mutter applies a relative motion as one jump to its end, with no pointer position between, so a
+    park (`x11.plan_park`) moves straight from a tracked position to its point off the window and the app never
+    sees the pointer on its window; its old move through the window's corner was the X11 hover clearing, not an
+    addressing need. A park that finds the position unknown anchors first, in a corner off the window.
     """
 
     def __init__(self, dsp, window, log: list[str] | None, remote: RemoteDesktop) -> None:
@@ -181,54 +197,65 @@ class MutterDriver(x11.Driver):
         return portal.Keyboard(self.remote, app_focused=self.app_focused)
 
     # ---------- pointer ----------
-    def pointer(self) -> tuple[int, int]:
-        q = self.d.screen().root.query_pointer()
-        return q.root_x, q.root_y
+    def where(self) -> tuple[int, int] | None:
+        """The tracked root position, None until the first anchor (XWayland's own is stale off its windows)."""
+        return self.known
 
-    def _anchor(self) -> None:
-        root = self.d.screen().root.get_geometry()
-        self.remote.relative(20000.0, 20000.0)
+    def locate(self, rect, root) -> tuple[int, int]:
+        self._anchor()
+        return self.known
+
+    def _anchor(self, rect=None, root=None) -> tuple[int, int]:
+        """Pin the pointer in `anchor_corner` by one large relative move; returns that corner."""
+        rect, root = rect or self.rect(), root or self.root_size()
+        signs, corner = anchor_corner(rect, root)
+        self.remote.relative(ANCHOR_PUSH * signs[0], ANCHOR_PUSH * signs[1])
         time.sleep(0.08)
-        self.known = (root.width - 1, root.height - 1)
+        self.known = corner
+        where = "off the window" if not x11.inside(rect, *corner) else "every allowed corner is on the window"
+        self.note_motion(corner, f"anchor: a large relative move pins the pointer in the screen's {ANCHORS[signs]} "
+                                 f"corner, {where}", clears=False)
+        return corner
 
-    def _to(self, tx: int, ty: int) -> None:
+    def _to(self, tx: int, ty: int, why: str = "move") -> bool:
+        """Move the pointer to root (tx, ty), kept on the screen as Mutter keeps it (one monitor), by one relative
+        motion from the tracked position, or none when it is already there; during a park each motion is
+        recorded. True when a motion was sent that ended on the app's window, which puts the app in mouse mode.
+        On the window XWayland must report the pointer there (a mismatch re-anchors once, then aborts)."""
+        rect, root = self.rect(), self.root_size()
+        tx, ty = min(max(tx, 0), root[0] - 1), min(max(ty, 0), root[1] - 1)
+        entered = False
         for attempt in range(2):
             if self.known is None or attempt:
-                self._anchor()
-            kx, ky = self.known
-            self.remote.relative(float(tx - kx), float(ty - ky))
-            self.known = (tx, ty)
-            time.sleep(0.06)
-            ox, oy = self.origin()
-            width, height = self.size()
-            if not (ox <= tx < ox + width and oy <= ty < oy + height):
-                return  # off the app window: XWayland cannot confirm it
+                entered |= x11.inside(rect, *self._anchor(rect, root))
+            if self.known != (tx, ty):
+                kx, ky = self.known
+                self.remote.relative(float(tx - kx), float(ty - ky))
+                self.known = (tx, ty)
+                self.note_motion((tx, ty), why)
+                entered |= x11.inside(rect, tx, ty)
+                time.sleep(0.06)
+            if not x11.inside(rect, tx, ty):
+                return entered  # off the app window: XWayland cannot confirm it
             if self.pointer() == (tx, ty):
-                return
+                return entered
         raise InputRefused(f"pointer at root {self.pointer()}, wanted ({tx},{ty}); aborting")
+
+    def park_motion(self, point: tuple[int, int], why: str) -> None:
+        self._to(*point, why=why)
 
     def move(self, x: int, y: int, note: str | None = None) -> None:
         ox, oy = self.origin()
-        self._to(ox + x, oy + y)
+        if self._to(ox + x, oy + y):
+            self.pointer_input()
         self.record(f"move ({x},{y})", note)
-
-    def park(self, settle: float = 0.8) -> None:
-        width, height = self.size()
-        ox, oy = self.origin()
-        self._to(ox + 4, oy + height - 4)
-        time.sleep(0.2)
-        root = self.d.screen().root.get_geometry()
-        x, y = min(ox + width + 120, root.width - 2), min(oy + height + 120, root.height - 2)
-        if x < ox + width or y < oy + height:
-            x, y = max(ox - 120, 1), max(oy - 120, 1)
-        self._to(x, y)
-        self.record(f"park off-window at root ({x},{y})")
-        time.sleep(settle)
 
     def button(self, down: bool, number: int = 1, note: str | None = None) -> None:
         if number not in BUTTONS:
             raise InputRefused(f"button {number} has no evdev code here; nothing sent")
         self.remote.button(BUTTONS[number], down)
+        if down and self.known is not None and x11.inside(self.rect(), *self.known):
+            self.pointer_input()
         self.record(f"{'press' if down else 'release'} button {number}", note)
 
     def aim(self, x: int, y: int, note: str | None = None, settle: float = 0.8) -> None:
@@ -268,6 +295,7 @@ class MutterDriver(x11.Driver):
             raise InputRefused(f"unknown keysym in {list(mods)} {name!r}; nothing sent")
         self.require_focus(f"key {name}")
         self.remote.chord(syms, sym)
+        self.keys_sent(sym)
         self.record("key " + "+".join([*(m.replace("_L", "") for m in mods), name]), note)
         time.sleep(wait)
 
@@ -279,5 +307,6 @@ class MutterDriver(x11.Driver):
                 raise InputRefused(f"X focus left the app's window after {text[:index]!r}; the rest not typed")
             self.remote.keysym(sym, True)
             self.remote.keysym(sym, False)
+            self.keys_sent(sym)
             time.sleep(per)
         self.record(f"type {text!r}", note)

@@ -151,6 +151,8 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
                  and recipe.state(fixture, options.get("remotes")) == before)
     record.update(started_utc=header["started_utc"], ended_utc=header["ended_utc"], exit=run.log.get("exit"),
                   fixture_unchanged=unchanged, captures=len(run.log["captures"]),
+                  warnings=[f"capture {entry['capture']}: {entry['warning']}" for entry in run.log["captures"]
+                            if entry.get("warning")],
                   guards=len(run.log["scenario"]["guards"]),
                   probes=[{key: probe.get(key) for key in ("probe", "repeat", "frames", "grabs", "interval_ms",
                                                            "resolution_ms")}
@@ -275,6 +277,15 @@ def failed(launches: list[dict]) -> dict | None:
     return next((record for record in launches if record["error"] is not None), None)
 
 
+def warn(record: dict) -> None:
+    """Every launch's warnings, such as a capture taken after a park left keyboard mode, at the top of the record
+    and printed; they never fail the run, but they must not pass unseen."""
+    record["warnings"] = [f"{launch['role']} {launch['variant']}: {warning}" for launch in record["launches"]
+                          for warning in launch.get("warnings", [])]
+    for warning in record["warnings"]:
+        print(f"WARNING: {warning}", flush=True)
+
+
 def run(spec_path: Path, builds: dict[str, Path], out: Path, fixture: Path | None = None, input_choice=None,
         display: str = runenv.DEFAULT_DISPLAY, templates: Path | None = None, jobs: int = 4, settle: float = 5.0,
         fixtures: Path = recipe.DEFAULT_FIXTURES) -> int:
@@ -336,6 +347,7 @@ def run(spec_path: Path, builds: dict[str, Path], out: Path, fixture: Path | Non
     else:
         findings.append(f"{stop['role']} {stop['variant']}: {stop['error']}")
     code = 0 if not findings else (2 if stop is not None and stop["refusal"] else 1)
+    warn(record)
     record["ended_utc"] = utc()
     record["verdict"] = dict(result="pass" if code == 0 else "fail", exit=code, findings=findings)
     evidence.write_json(out / "run.json", record)
@@ -395,6 +407,7 @@ def recheck(spec_path: Path, exe: Path, committed: Path, out: Path | None = None
     else:
         record.update(verdict="inconclusive", results=[], error=f"{stop['variant']}: {stop['error']}")
         code = 2 if stop["refusal"] else 1
+    warn(record)
     record["ended_utc"] = utc()
     evidence.write_json(out / "recheck.json", record)
     for result in record["results"]:

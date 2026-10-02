@@ -794,6 +794,7 @@ class BundleTest(unittest.TestCase):
                                       driver=ScriptedScreen([first, [(0, revealed), (5, window(200, shift=-20))]],
                                                             clock, size=(1000, 680)),
                                       require_unlocked=lambda why: None, clock=clock, pause=clock.advance)
+                run.park = lambda why, run=run: run.driver.park()
                 step = play.session_step(loaded["steps"][-1], role)
                 with contextlib.redirect_stdout(io.StringIO()):
                     session.Session.probe(run, step["probe"], step["send"], step["mods"], None, step["region"],
