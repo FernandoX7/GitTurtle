@@ -65,6 +65,86 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 2 the theme editor stays clear of the status bar
+
+Task `theme-editor-panel-bounds`. The New theme and Edit theme editor's height cap now ends the panel's lower edge 16 px above the status bar's top edge, where it used to end 16 px above the window's bottom edge and so crossed the bar. This holds at every interface text size and inside the toolkit's Linux client-decoration frame (`ThemeForm::max_height_for` with `WindowFrame`). The footer (Reset to base, the save error, Cancel and Save) is now the form's last row inside that cap. A save error that wraps takes its room from the scrolling body and never moves the panel's edge. As the last row of the dialog's clipped body, the footer keeps 3 px under its buttons inside the clip for the focus ring, which the alert's gap above its empty footer slot gives back. So a focused footer button's ring is whole, and the buttons keep the panel's 16 px padding under them. `DESIGN.md` says so in the editor paragraph. Its Status strip section adds the rule for every window-capped modal: under a modal the strip stays in place, dimmed and inert under the backdrop, and a panel edge never crosses it.
+
+History: attempt 1 (`a3f743d`) clipped the footer buttons' focus rings at each button's lower edge, which a native probe showed (`$EVIDENCE/runs/theme-editor-footer-ring-probe-3`, the bottom 2 px band missing for Save, Cancel and Reset to base in both palettes at 13 and 18 pt). The final verifier failed that attempt, and attempt 2 (`c82f3f8`) gives the footer the ring's room.
+
+Design review: passed, 2026-10-02 16:01 UTC. In the 12 focus crops each focused button's ring is a whole 2 px accent band 1 px off the button on all four sides, 11.4:1 against the Midnight panel and 6.6:1 against Porcelain, with 13 px of panel below it and the 16 px above the status bar intact; nothing else in the footer differs from `rest`, and against the probe's frames of attempt 1 only the three rows under each focused button differ, so attempt 1's footer-ring finding is resolved. The 24 rest, end and save-error crops are byte-identical to attempt 1's, so the ring's room took nothing from the panel's 16 px padding or the body. A focused footer button while the save error shows is not captured natively; it rests on `a_focused_footer_buttons_ring_lies_inside_the_body_in_every_state`.
+
+Automated, `cargo test --locked -p gitturtle`, in `theme_editor::tests`:
+- `the_panel_ends_16_px_above_the_status_bar_at_every_text_size` (formerly `…_above_the_window_…`): at 1000 × 680 and 1440 × 900, at 11, 13, 14, 15 and 18 pt, the painted panel ends 17 px under Save and exactly 16 px above the painted status bar.
+- `the_cap_leaves_16_px_under_the_panel_at_scale_1_and_2`: GPUI's placement of the alert around the cap gives exactly 16 px. This covers scales 1 and 2, three window heights and five text sizes, with server decorations and inside an untiled client-decorated frame.
+- `the_cap_keeps_the_panel_inside_client_decorations`: with 20 px window paddings and the frame's 1 px border, at 13 and 18 pt and scales 1 and 2, the panel opens and ends inside the frame and at least 16 px above the bar. A tiled bottom edge and server decorations have no frame.
+- `a_wrapped_save_error_takes_its_room_from_the_body` (Unix): a save refused by a read-only preference directory at 1000 × 680, 13 and 18 pt, wraps the error to two lines. The panel keeps its outer bounds and the body gives up exactly the footer's growth.
+- `a_focused_footer_buttons_ring_lies_inside_the_body_in_every_state` (new in attempt 2): at 1000 × 680, 13 and 18 pt, at rest and with a save error wrapped to two lines, Shift+Tab from Name focuses Save, Cancel and Reset to base in turn. Each one's installed ring lies inside the body's clip and paints all four edges. The header's Name field and Base button keep the room at the body's top edge, and at rest the buttons keep the panel's 16 px padding under them.
+- `strips_cover_the_ring_room_while_the_rows_stand_off_a_boundary` passes unchanged.
+
+Native evidence, full tier. Let `$EVIDENCE` be `/tmp/gitturtle-evidence`.
+- **Builds:** base `629d951` (origin/main when the task started; sha256 `1803562a…`) and candidate `c82f3f8` (sha256 `72862de5…`), release builds of clean trees in separate target directories, `x86_64-unknown-linux-gnu`, rustc 1.98.0. `qa.py identity` accepted the pair.
+- **Host:** Ubuntu 26.04.1 LTS, GNOME 50.1, XWayland `:0` at scale factor 1 with server decorations, window 1000 × 680, interface text 13 and 18 pt, palettes Midnight and Porcelain.
+- **Run:** `qa.py scenario run docs/evidence/theme-editor-panel-bounds/scenario.json --build base=… --build cand=… --input mutter --display :0 --jobs 4 --out $EVIDENCE/runs/theme-editor-panel-bounds-3`, 2026-10-02 from 15:44:42 to 15:53:57 UTC (555 s), input through Mutter RemoteDesktop with X focus verified, never XTest. Exit 0: 8 launches, every guard passed, 152 of 152 analyses as expected, no crop matched a privacy template. The spec's sha256 is `a53a0d3f…`. It is attempt 1's spec unchanged, with the footer focus states, their guards and their analyses added after `rest`.
+- **Fixture:** the spec's recipe, three commits on `main` (HEAD `d33146b`) at `$EVIDENCE/fixtures/theme-editor-panel-bounds/repo`. Its HEAD, status, index, refs and reflogs were unchanged by every launch. Each launch had its own HOME and XDG directories, a generated store with Follow system off, and the `GitTurtle QA` identity.
+- **Steps, the same keys in both builds:**
+  - Ctrl+, opens Settings. 14 wheel steps at 13 pt (16 at 18 pt) bring Your themes on screen.
+  - Tab ×28 from the window's focus reaches **New theme…**. Guards require its whole focus ring and no other change. Space opens the editor (`rest`).
+  - Shift+Tab from Name focuses Save, then Cancel, then Reset to base (`save-focus`, `cancel-focus`, `reset-focus`). Each press is guarded on a ring appearing around that button and nothing outside the footer band and Name's field changing, so the body never scrolls.
+  - Tab ×3 brings focus back through Cancel and Save to Name. A guard requires the editor to draw as at `rest` outside Name's field.
+  - 60 wheel steps over the body reach its end, which 5 more steps leave unchanged (`end`).
+  - The launch's `config/gitturtle` becomes read-only (0500), and Return in Name saves. The store refuses with "Could not save the theme: Save preferences: Permission denied (os error 13)" (`save-error`). Escape cancels.
+- **Latency:** in both builds, the first visible change came 46–55 ms after Ctrl+,, 49–67 ms after Space, 65–81 ms after Shift+Tab, 48–87 ms after Tab, 73–79 ms after Return and 48–76 ms after Escape.
+
+Measured, in window rows at scale 1. The status bar's top rule is at y 654 at 13 pt and y 644 at 18 pt, and both palettes gave the same values:
+
+| | 13 pt | 18 pt |
+| --- | --- | --- |
+| Candidate, rows of backdrop from the panel's lower border to the bar's rule, at rest, at the end and with the save error | 16, 16, 16 (border at y 637) | 16, 16, 16 (border at y 627) |
+| Base, rows of the bar under the panel including its border, at rest and at the end | 10 (border at y 663) | 20 (border at y 663) |
+| Base, the same with the save error | 20 (border at y 673) | 35 (border at y 678) |
+
+The candidate's clearance (`clearance-*`) scans x 500 and 700 over plain page and stops at the bar's rule: (32, 42, 55) in Midnight and (183, 190, 204) in Porcelain. Its tolerance of 10 per channel was set from probe frames: Porcelain's shadowed gap spans −8 to +7 around its sample, and the rule differs from the gap by 15 or more in both palettes. The ceiling of 16 means a scan that ran past the rule could not pass. On the candidate the panel's background never reaches the bar (`overlap-*`, 0). The base's overlap is measured in the panel's side padding (x 190 and 809 at 13 pt, 75 and 924 at 18 pt). It is 9, 19, 19 and 34 rows of panel background below the bar's top edge, plus the panel's 1 px border.
+
+Focused footer buttons, in both builds, both palettes, at 13 and 18 pt. Every ring is whole on all four sides (`*-ring-*`):
+- **The ring:** a continuous 2 px band of the accent, (117, 224, 187) in Midnight and (52, 85, 166) in Porcelain, 1 px off the button.
+- **Candidate rows:** buttons are at y 593–620 at 13 pt and y 572–610 at 18 pt, with ring bands at rows 590–591 and 622–623 (13 pt) and 569–570 and 612–613 (18 pt).
+- **Base rows:** buttons are at y 619–646 and y 608–646, with ring bands at rows 616–617 and 648–649, and 605–606 and 648–649.
+- **Ring outer edges:** Save x 759 to 809 and Cancel x 697 to 758 at 13 pt, Reset to base x 190 to 288; at 18 pt Save x 857 to 925, Cancel x 770 to 853 and Reset to base x 75 to 209.
+- **Bottom band** (`*-bottom-band-*`): the 2 px band 1 px below each button has the top band's colour, contrast 1.00. This is the decisive check for Save, whose own fill is the accent.
+- **Below the ring** (`*-ring-to-border-*`): 13 panel rows from the ring's lower edge to the panel's lower border, on the candidate at y 637 (13 pt) and 627 (18 pt), and on the base at y 663.
+- **At rest** (`*-padding-rest-*`): every button keeps the panel's 16 px padding to that border.
+
+The ring scans run 2 px outside the 1 px gap around each button and 2 px in. In the probe's frames of attempt 1 (`theme-editor-footer-ring-probe-3`) the same scans found no bottom band on Cancel and Reset to base, and only Save's own fill row on Save.
+
+Masked compares, both palettes:
+- `unchanged-*`: the base and the candidate draw the same, 0 px, above y 560 at 13 pt and y 540 at 18 pt in all 12 pairs: the page, the backdrop and the dialog's title and header, and at rest also the first rows. Masked: the Name field's caret, the scrollbar thumb at rest or the scrolled body otherwise, and at 13 pt the box [60, 90, 76, 104] around one caption pixel of the page behind, (66, 96).
+- `keeps-edge-*`: below y 590 at 13 pt and y 575 at 18 pt, outside the candidate's panel interior, the refused save changes 0 px on the candidate, so its lower border, the gap and the bar stay put. On the base 11,198 and 14,323 px change at 13 pt (Midnight, Porcelain) and 17,600 and 21,621 px at 18 pt as the footer grows the panel.
+
+The pixel at (66, 96) varies between launches of one build and has nothing to do with the change. It lies in the Catppuccin Mocha card's caption on the Settings page, which the change does not touch. In attempt 1's first run (`$EVIDENCE/runs/theme-editor-panel-bounds-1`) it was the only difference between the builds in the three 13 pt Porcelain compares, already on the Settings page before the editor opened. A separate launch of the same build drew the other value. In run 3 it again differs by one unit in both palettes at 13 pt: (44, 44, 60) against (44, 45, 60), and (52, 52, 71) against (52, 53, 71). The 13 pt compares therefore mask that one box and still count its pixels as masked. Attempt 1's first run also matched a privacy template on the 13 pt `end` and `save-error` crops, at the word "informational" in the app's own token description "Hunk headers, links and informational messages." Viewed at full size, it is app copy, not personal data, and the `lower` crop starts at y 392, below that row in both builds.
+
+Frames in [`evidence/theme-editor-panel-bounds/`](evidence/theme-editor-panel-bounds/), 36 crops:
+- 24 crops of the window's lower part, 1000 × 288 at (0, 392), each in Midnight and Porcelain at 13 and 18 pt:
+  - `base-{midnight,porcelain}-{13,18}pt-1000x680-rest.png`: on the base, the editor at rest. Its panel ends 16 px above the window and across the status bar, at 18 pt through the bar's text.
+  - `base-…-end.png`: on the base, the body scrolled to its end (the preview card and Readability), the panel still across the bar.
+  - `base-…-save-error.png`: on the base, the refused save's error on two lines beside Cancel and Save. The footer grows and the panel's border moves to y 673 at 13 pt and y 678 at 18 pt, covering most of the bar.
+  - `candidate-{midnight,porcelain}-{13,18}pt-1000x680-rest.png`: on the candidate, the footer as the form's last row and the panel's border 16 px above the bar's rule. The bar's message and hints are whole.
+  - `candidate-…-end.png`: on the candidate, the body at its end above the footer, with the same 16 px.
+  - `candidate-…-save-error.png`: on the candidate, the error on two lines in the footer and the body shorter by the footer's growth. The panel's edge and the 16 px are unchanged.
+- 12 crops of the candidate's footer with a focused button, in Midnight and Porcelain, 646 × 104 at (177, 576) at 13 pt and 877 × 132 at (62, 548) at 18 pt, each showing the footer, the panel's lower border and the status bar's rule:
+  - `candidate-{midnight,porcelain}-{13,18}pt-1000x680-save-focus.png`: Save holding keyboard focus, its ring whole on all four sides, 13 px of panel below it to the border and the bar 16 px below that.
+  - `candidate-…-cancel-focus.png`: Cancel holding focus, its ring whole.
+  - `candidate-…-reset-focus.png`: Reset to base holding focus, its ring whole.
+
+The base's focused footer frames were captured and measured (whole rings) but are not committed.
+
+`qa.py privacy scan --redacted --jobs 4` with the local template set found all 36 committed files clean (21.5 s wall), as did the run's own scan of the same bytes (21.3 s). Each frame was also viewed at full size.
+
+After the save error, the candidate's body keeps its scroll offset while it shrinks. A body scrolled to its end therefore shows its last line, "Every readability rule is met.", cut at the body's new lower edge until it is scrolled again, at both sizes and in both palettes. The design review (14:45 UTC) ruled this ordinary scroll-region behaviour: the footer's growth goes to the body by decision, focus stays in Name, and the line stays reachable by scrolling.
+
+The Reflog does not follow the rule; this is arithmetic from the code, not a measurement. `ReflogBrowser` caps its content at `px(590.).min(body_height)` plus the ring room, with `body_height` the viewport less 240 px (`reflog.rs:318`). That reserves neither the scaled status bar nor the client-decoration frame. Take the alert's title as one rem and its Done button as the toolkit's `h_8` (2 rem). In a 1000 × 680 window with server decorations, the panel then ends about 51 px above the bar at 13 pt and 23 px at 18 pt. At 18 pt the clearance falls below 16 px for window heights between about 750 and 840 px, to about 8 px near 830 px. Under untiled client decorations at 13 pt and 680 px it is about 14 px: under the rule, but not across the bar. These figures depend on the title's line height and the button's height, which a native measurement would settle; the Reflog is unchanged.
+
+Not covered: native Wayland with client decorations, the `window_paddings` case, was not exercised, because `qa.py` launches only X11 clients and removes `WAYLAND_DISPLAY`. That case rests on `the_cap_keeps_the_panel_inside_client_decorations`. The footer buttons' focus was captured at rest only; with the save error it rests on `a_focused_footer_buttons_ring_lies_inside_the_body_in_every_state`. Edit theme, other window sizes and text sizes, macOS and fractional scale factors are not covered natively.
+
 ## October 1 Tab reveals branch, remote and tag rows
 
 Task `tab-reveals-branch-and-tag-rows`. When keyboard focus moves onto a row that lies wholly or partly outside the branch chooser, the remote manager, Tags or the tag inspector's Push to… list, the list scrolls by the least amount that shows the whole row and its ring, to the nearest edge and without animation; a pointer press scrolls nothing. The project hub keeps its reveal through the same shared helper.
