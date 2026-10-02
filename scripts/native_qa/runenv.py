@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import pwd
+import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,8 @@ LAYOUT = {
 }
 DEFAULT_DISPLAY = ":1"
 DEFAULT_SCALE = "1"
+# The run directory's XDG homes, where a `read_only` step may remove write bits; home/ and captures/ stay writable.
+READ_ONLY_ROOTS = tuple(sub for name, sub in LAYOUT.items() if name != "HOME")
 
 
 class Refusal(SystemExit):
@@ -137,6 +140,80 @@ def prepare(run_dir: Path | str, preferences: bytes, home: Path | None = None) -
     captures = run_dir / "captures"
     captures.mkdir()
     return RunDirs(run_dir, captures, paths)
+
+
+def read_only_problem(value) -> str | None:
+    """Why `value` cannot name a `read_only` step's path, or None: a relative POSIX path in one of the XDG homes."""
+    if not isinstance(value, str) or not value or len(value) > 300 or "\0" in value:
+        return f"expected a non-empty path of at most 300 characters, got {value!r}"
+    parts = value.split("/")
+    if value.startswith("/") or "\\" in value or any(part in ("", ".", "..") for part in parts):
+        return f"{value!r} must be a relative POSIX path without empty, . or .. parts"
+    if parts[0] not in READ_ONLY_ROOTS:
+        return f"{value!r} must start with one of {', '.join(READ_ONLY_ROOTS)}, the run directory's XDG homes"
+    return None
+
+
+@dataclass(frozen=True)
+class Locked:
+    """A path a `read_only` step changed, held open so the restore changes that same file or directory even if
+    something else has since been put at its path."""
+    path: str
+    fd: int
+    old_mode: int
+    new_mode: int
+
+
+def lock_read_only(root: Path, relative: str) -> Locked:
+    """Remove every write bit of `root/relative` (a directory keeps at most 0o500) without following a link.
+
+    Refuses, with nothing changed, a symbolic link in any component, a missing
+    component, a final entry that is neither a directory nor a regular file,
+    and a target that resolves outside `root`.
+    """
+    problem = read_only_problem(relative)
+    if problem is not None:
+        raise Refusal(f"read_only: {problem}")
+    parts = relative.split("/")
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for depth, part in enumerate(parts):
+            where = "/".join(parts[:depth + 1])
+            try:
+                info = os.stat(part, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                raise Refusal(f"read_only {relative}: {where} does not exist in {root}") from None
+            if stat.S_ISLNK(info.st_mode):
+                raise Refusal(f"read_only {relative}: {where} is a symbolic link; nothing changed")
+            last = depth == len(parts) - 1
+            directory = stat.S_ISDIR(info.st_mode)
+            if not directory and not (last and stat.S_ISREG(info.st_mode)):
+                raise Refusal(f"read_only {relative}: {where} is not a directory{' or regular file' if last else ''}")
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if directory else 0), dir_fd=fd)
+            except OSError as error:
+                raise Refusal(f"read_only {relative}: cannot open {where} without following a link ({error})") from None
+            os.close(fd)
+            fd = child
+        resolved = Path(os.path.realpath(Path(root) / relative))
+        if not within(resolved, Path(root).resolve()):
+            raise Refusal(f"read_only {relative}: resolves to {resolved}, outside the run directory {root}")
+        info = os.fstat(fd)
+        old = stat.S_IMODE(info.st_mode)
+        new = old & 0o500 if stat.S_ISDIR(info.st_mode) else old & ~0o222
+        os.fchmod(fd, new)
+        return Locked(relative, fd, old, new)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def restore_mode(locked: Locked) -> None:
+    """Put back the mode `lock_read_only` replaced, on the object it changed; the descriptor is closed either way."""
+    try:
+        os.fchmod(locked.fd, locked.old_mode)
+    finally:
+        os.close(locked.fd)
 
 
 def launch_env(dirs: RunDirs, display: str = DEFAULT_DISPLAY, scale: str = DEFAULT_SCALE,

@@ -5,7 +5,9 @@ sends SIGKILL and never kills by name, because the operator often runs their
 own GitTurtle; a process that outlives SIGTERM is reported and left alone.
 With Mutter input, nothing is sent while the desktop is locked: Mutter
 delivers keys to whatever surface has compositor focus, the lock screen's
-password field included.
+password field included. A `read_only` step's paths get their modes back in
+`close`, whatever ended the launch, before anything else reads or removes the
+run directory.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import json
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -25,8 +28,8 @@ DEFAULT_SCENARIO = [
     {"capture": "00-launch", "what": "after launch, pointer parked"},
 ]
 STEP_KEYS = ("key", "type", "palette", "move", "glide", "click", "press", "release", "wheel", "park", "wait",
-             "stable", "mark", "capture", "resize")
-NO_INPUT = ("wait", "stable")  # steps that send nothing, so they need no lock check
+             "stable", "mark", "capture", "resize", "read_only")
+NO_INPUT = ("wait", "stable", "read_only")  # steps that send nothing, so they need no lock check
 PALETTE_KEY = ("p", ("Control_L", "Shift_L"))  # the command palette's shortcut
 # The palette is a modal dialog that dims the whole window: opening it changed about 640,000 of 680,000 pixels
 # on 2026-10-02 (Midnight and Porcelain, 1000x680), where a caret blink changes under 100.
@@ -65,6 +68,10 @@ def load_scenario(path: Path | None) -> list[dict]:
             raise SystemExit(f"refusing: scenario step {number} needs exactly one of {', '.join(STEP_KEYS)}: {step!r}")
         if actions == ["wheel"] and "steps" not in step:
             raise SystemExit(f"refusing: scenario step {number} is a wheel without steps: {step!r}")
+        if actions == ["read_only"]:
+            problem = runenv.read_only_problem(step["read_only"])
+            if problem is not None:
+                raise SystemExit(f"refusing: scenario step {number} ($[{number}].read_only): {problem}")
     return steps
 
 
@@ -97,6 +104,9 @@ class Session:
         self.lock_check = lock_check
         self.frames: dict = {}  # captures and marks by name, for a scenario's guards
         self.proc = self.driver = self.remote = None
+        self.locked: list[tuple[runenv.Locked, dict]] = []  # read_only paths, restored last first by close
+        self.restore_failures: list[str] = []
+        self.watching_sigterm, self.previous_sigterm = False, None
         self.log = dict(
             header=dict(
                 binary=described, fixture=str(self.fixture),
@@ -106,7 +116,7 @@ class Session:
                 env={key: self.env[key] for key in (*runenv.LAYOUT, "DISPLAY", "GPUI_X11_SCALE_FACTOR")},
                 env_extra=sorted(extra_env or ()),
             ),
-            input=[], captures=[], checks=[])
+            input=[], captures=[], checks=[], read_only=[])
         if described["build_info"].get("source_tree") != "clean":
             print("warning: the binary's source_tree is not clean", file=sys.stderr, flush=True)
 
@@ -144,21 +154,29 @@ class Session:
         self.driver.park()
 
     def close(self, timeout: float = 15.0) -> int | None:
-        """SIGTERM to the launched PID only; a survivor is reported, never killed harder."""
-        if self.remote is not None:
-            self.remote.stop()
-            self.remote = None
-        if self.proc is not None:
-            if self.proc.poll() is None:
-                self.proc.send_signal(signal.SIGTERM)
-                try:
-                    self.proc.wait(timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    self.log["exit"] = f"pid {self.proc.pid} still running {timeout}s after SIGTERM; not killed"
-                    print(f"error: {self.log['exit']}", file=sys.stderr, flush=True)
-            if "exit" not in self.log:
-                self.log["exit"] = self.proc.returncode
-            self.applog.close()
+        """SIGTERM to the launched PID only; a survivor is reported, never killed harder.
+
+        Every `read_only` path gets its mode back here, even when stopping the
+        app fails; a mode that cannot be restored is printed and kept in
+        `restore_failures`, which fails the launch.
+        """
+        try:
+            if self.remote is not None:
+                self.remote.stop()
+                self.remote = None
+            if self.proc is not None:
+                if self.proc.poll() is None:
+                    self.proc.send_signal(signal.SIGTERM)
+                    try:
+                        self.proc.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        self.log["exit"] = f"pid {self.proc.pid} still running {timeout}s after SIGTERM; not killed"
+                        print(f"error: {self.log['exit']}", file=sys.stderr, flush=True)
+                if "exit" not in self.log:
+                    self.log["exit"] = self.proc.returncode
+                self.applog.close()
+        finally:
+            self.restore_read_only()
         header = self.log["header"]
         header["ended_utc"] = utc()
         header["fixture_after"] = fixture_state(self.fixture)
@@ -170,6 +188,56 @@ class Session:
         (self.dirs.root / "flow-log.json").write_text(json.dumps(self.log, indent=1, default=str))
         print(f"fixture HEAD/status/index unchanged: {self.log['fixture_unchanged']}", flush=True)
         return self.log.get("exit") if isinstance(self.log.get("exit"), int) else None
+
+    # ---------- read-only paths ----------
+    def watch_sigterm(self) -> None:
+        """While a path is read-only, SIGTERM to this tool ends the launch through `close`, which restores it."""
+        if self.watching_sigterm or threading.current_thread() is not threading.main_thread():
+            return
+
+        def stop(signum, frame):
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)  # a second SIGTERM must not interrupt the restore
+            raise SystemExit("stopped: SIGTERM received")
+
+        self.previous_sigterm = signal.signal(signal.SIGTERM, stop)
+        self.watching_sigterm = True
+
+    def read_only(self, relative: str, note: str | None = None) -> None:
+        """Remove the write bits of a run-directory path until `close` (a `read_only` step); it sends no input."""
+        problem = runenv.read_only_problem(relative)
+        if problem is not None:
+            raise runenv.Refusal(f"read_only: {problem}")
+        target, fixture = (self.dirs.root / relative).resolve(), self.fixture.resolve()
+        if runenv.within(target, fixture) or runenv.within(fixture, target):
+            raise runenv.Refusal(f"read_only {relative}: {target} overlaps the fixture {fixture}; nothing changed")
+        self.watch_sigterm()
+        locked = runenv.lock_read_only(self.dirs.root, relative)
+        entry = dict(path=relative, old_mode=f"{locked.old_mode:04o}", new_mode=f"{locked.new_mode:04o}",
+                     at_utc=utc(), restored=None)
+        self.locked.append((locked, entry))
+        self.log["read_only"].append(entry)
+        self.log["input"].append(f"read_only {relative}: mode {entry['old_mode']} -> {entry['new_mode']}"
+                                 + (f"  # {note}" if note else ""))
+        print(f"read_only {relative}: mode {entry['old_mode']} -> {entry['new_mode']} until the launch ends",
+              flush=True)
+
+    def restore_read_only(self) -> None:
+        """Put back every mode `read_only` removed, the last first; a failure is printed and kept, never dropped."""
+        while self.locked:
+            locked, entry = self.locked.pop()
+            try:
+                runenv.restore_mode(locked)
+            except OSError as error:
+                entry.update(restored=False, error=str(error))
+                message = f"could not restore mode {entry['old_mode']} of {locked.path} in {self.dirs.root}: {error}"
+                self.restore_failures.append(message)
+                print(f"error: {message}", file=sys.stderr, flush=True)
+            else:
+                entry["restored"] = True
+                self.log["input"].append(f"restore {locked.path}: mode {entry['new_mode']} -> {entry['old_mode']}")
+        if self.watching_sigterm:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL if self.previous_sigterm is None else self.previous_sigterm)
+            self.watching_sigterm = False
 
     # ---------- frames ----------
     def capture(self, name: str, what: str = "", park: bool = True, settle: float = 0.0,
@@ -309,3 +377,5 @@ class Session:
                              quiet=step.get("quiet", 1.15))
             elif "resize" in step:
                 d.resize(*step["resize"])
+            elif "read_only" in step:
+                self.read_only(step["read_only"], note)

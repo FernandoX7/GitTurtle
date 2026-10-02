@@ -139,6 +139,15 @@ class SpecTest(unittest.TestCase):
         self.assertEqual([s.get("key") or s.get("wait") for s in scenario.steps_for(loaded, midnight)][-1], 1)
         self.assertEqual(scenario.steps_for(loaded, porcelain)[-1]["key"], "Escape")
 
+    def test_a_read_only_step_takes_a_note_and_a_filter(self) -> None:
+        step = {"read_only": "config/gitturtle", "note": "force a save error", "when": {"palette": ["midnight"]}}
+        loaded = scenario.validate(spec(steps=[step] + SPEC["steps"]))
+        midnight, porcelain = loaded["variants"]
+        self.assertEqual(scenario.steps_for(loaded, midnight)[0]["read_only"], "config/gitturtle")
+        self.assertNotIn("read_only", scenario.steps_for(loaded, porcelain)[0])
+        self.assertEqual(play.session_step(loaded["steps"][0], "cand"),
+                         {"read_only": "config/gitturtle", "note": "force a save error"})
+
     def test_bad_specs(self) -> None:
         def step(index, **changes):
             steps = copy.deepcopy(SPEC["steps"])
@@ -183,6 +192,15 @@ class SpecTest(unittest.TestCase):
             (dict(steps=step(0, mark="Page")), r"\$\.steps\[0\]\.mark: 'Page' does not match"),
             (dict(steps=[{"wheel": [10, 10], "steps": 0}]), "0 steps sends nothing"),
             (dict(steps=[{"click": [1000, 10]}]), "outside the 1000x680 window"),
+            (dict(steps=[{"read_only": "/config/gitturtle"}]), r"\$\.steps\[0\]\.read_only: '/config/gitturtle' must "
+                                                                "be a relative POSIX path"),
+            (dict(steps=[{"read_only": "config/../home"}]), r"\$\.steps\[0\]\.read_only: .* without empty, \. or \.\."),
+            (dict(steps=[{"read_only": "home/.config"}]), r"\$\.steps\[0\]\.read_only: .* must start with one of "
+                                                          "config, data, cache, state"),
+            (dict(steps=[{"read_only": "captures/x"}]), r"\$\.steps\[0\]\.read_only: 'captures/x' must start with"),
+            (dict(steps=[{"read_only": ""}]), r"\$\.steps\[0\]\.read_only: expected a non-empty path"),
+            (dict(steps=[{"read_only": ["config"]}]), r"\$\.steps\[0\]\.read_only: expected a non-empty path"),
+            (dict(steps=[{"read_only": "config/gitturtle", "mode": 0}]), r"\$\.steps\[0\]: unknown key\(s\) mode"),
             (dict(steps=SPEC["steps"] + [{"capture": "focus-2", "crop": "panel", "shows": "x", "roles": ["head"]}]),
              r"roles: 'head' does not match"),
             (dict(analyses=[dict(analysis, frame="missing")]), "reads 'missing', which variant midnight never captures"),
@@ -437,6 +455,39 @@ class BundleTest(unittest.TestCase):
         short = subprocess.run(command[:-6] + ["--candidate", "bbbbbbb", "--base", "e" * 40, "--out", str(out)],
                                capture_output=True, text=True)
         self.assertEqual(short.returncode, 2)
+
+
+@unittest.skipUnless(shutil.which("git"), "no git")
+class LaunchRecordTest(unittest.TestCase):
+    def test_a_mode_the_launch_could_not_restore_fails_it(self) -> None:
+        class FakeSession:
+            """Runs the steps and, on close, reports a read_only path whose mode could not be restored."""
+
+            def __init__(self, *args, **kwargs) -> None:
+                self.log = dict(header=dict(started_utc="2026-10-02T10:00:00Z", ended_utc="2026-10-02T10:01:00Z"),
+                                captures=[], fixture_unchanged=True)
+                self.restore_failures, self.steps = [], []
+
+            def launch(self) -> None:
+                pass
+
+            def run(self, steps) -> None:
+                self.steps += steps
+
+            def close(self) -> int:
+                self.restore_failures.append("could not restore mode 0755 of config/gitturtle in /run: denied")
+                self.log["exit"] = -15
+                return -15
+
+        loaded = scenario.validate(spec(steps=[{"read_only": "config/gitturtle"}, {"wait": 0}], analyses=[]), "f" * 64)
+        with tempfile.TemporaryDirectory() as scratch:
+            fixture = Path(scratch) / "fixture"
+            subprocess.run(["git", "init", "-q", str(fixture)], check=True)
+            with mock.patch("native_qa.session.Session", FakeSession), contextlib.redirect_stdout(io.StringIO()):
+                record = play.launch(loaded, "cand", loaded["variants"][0], Path("/x/cand"), fixture,
+                                     Path(scratch) / "run", dict(display=":1", settle=0, backend="xtest"))
+        self.assertEqual((record["error"], record["refusal"]),
+                         ("could not restore mode 0755 of config/gitturtle in /run: denied", False))
 
 
 @unittest.skipUnless(HAVE_PIL and shutil.which("git"), "Pillow or git is missing")

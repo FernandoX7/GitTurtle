@@ -113,6 +113,8 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
         record["error"] = f"the app exited with {run.log.get('exit')!r}"
     if record["error"] is None and not unchanged:
         record["error"] = "the fixture's state changed during the launch"
+    if run.restore_failures:  # a read_only path kept its mode: reported beside whatever else stopped the launch
+        record["error"] = "; ".join([*filter(None, [record["error"]]), *run.restore_failures])
     print(f"   {role} {variant.id}: {'ok' if record['error'] is None else record['error']}", flush=True)
     return record
 
