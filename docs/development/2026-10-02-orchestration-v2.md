@@ -202,6 +202,17 @@ Each item names its owner files, design and acceptance. Controller items change 
 
 9. **Pilot, then the full run.** Start a new run on two or three tasks from the new queue (one rust-only, one native, one with evidence concurrency) to exercise items 1 to 7 end to end; fix what it shows, then run the rest.
 
+   Pilot so far (run `20261002T073619Z-b621da2e`, from 07:36 UTC on 2026-10-02, `--max-tasks 3`, the owner's settings):
+   - **Confirmed live:** results that arrive as text (item 1; all three roles' results validated on the first parse, so the resumed retry did not fire); `note` (item 2; applied at the next iteration, before the target tasks' first attempts); pre-evidence verification and the early security review (item 3, both native tasks); implementing while a candidate awaits evidence (item 7's cap); the idle wait (item 7; 240 minutes, then `paused`); and `land.py` end to end (#145, with a HANDOFF commit).
+   - **Still to confirm:** `attest` through the inbox while the loop runs, an evidence commit `E` from `qa.py scenario run` with its committed `scenario.json`, whether the final verifier opens the committed PNGs, and the mechanical rebase with `qa.py recheck`.
+   - **Fixes, one PR each:** #146 (F1) adds a `read_only` scenario step, because a scenario could not force the theme editor's save error. #147 (F3) lets a scenario variant carry store settings, because the code 18 pt variants could not be expressed.
+
+   Decisions:
+   - **F2, the hunk-folded state.** `pr-source-gutter-like-compare`'s contract asks for Compare's hunk folding, but Compare's `DiffView` turns folding off (`diff_view.rs:162-197`, one gutter row per patch line). Matching Compare therefore removes the Source's fold, and the folded state does not apply. *Reason:* the owner chose "match Compare". The validation entry records this with the code references. `queue-intake` lesson: a contract that copies a reference view's behaviour first checks that the behaviour exists.
+   - **No offset `compare`.** For Source against Compare, `fill` and per-column `clearance` bands measure what the contract names. *Reason:* the gutters sit at different window positions, and the measurements cover the criterion without more tooling.
+   - **The Reflog's `body_height`** is reported as arithmetic from the code, not measured. *Reason:* the contract asks only whether it follows the rule.
+   - **Controller fixes wait for the run to end.** *Reason:* the run pins its controller by digest, so a change would stop it from resuming.
+
 ## What stays
 
 The evidence standard does not change: release builds of base and candidate in their own targets, `qa.py identity`, Mutter input on `:0`, privacy scans of committed bytes, a design review of visible changes, a dated validation entry naming every frame, and performance measured per [gitturtle-performance](../../.agents/skills/gitturtle-performance/SKILL.md). The verifier and the controller still own acceptance; implementers never grade their own work.
@@ -219,4 +230,4 @@ The evidence standard does not change: release builds of base and candidate in t
 | 6 Operator tooling | done 2026-10-02 | #142 |
 | 7 Rebase and concurrency | done 2026-10-02 | #143 |
 | 8 Contracts and queue | done 2026-10-02: `queue-2026-10-03.json`, 30 tasks | this PR |
-| 9 Pilot and run | open | |
+| 9 Pilot and run | in progress 2026-10-02: pilot paused for evidence; fixes #146, #147 | #145 to #147 |
