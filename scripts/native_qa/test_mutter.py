@@ -191,5 +191,22 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.session.calls, [])
 
 
+class LockTest(unittest.TestCase):
+    def test_screen_saver_state_and_unreadable_bus(self) -> None:
+        class Bus:
+            def __init__(self, active):
+                self.active = active
+
+            def get_object(self, name, path):
+                if self.active is None:
+                    raise RuntimeError("org.gnome.ScreenSaver was not provided by any .service files")
+                assert (name, path) == ("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver")
+                return SimpleNamespace(GetActive=lambda dbus_interface: self.active)
+
+        self.assertIs(mutter.screen_locked(Bus(True)), True)
+        self.assertIs(mutter.screen_locked(Bus(False)), False)
+        self.assertIsNone(mutter.screen_locked(Bus(None)))
+
+
 if __name__ == "__main__":
     unittest.main()

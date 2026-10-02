@@ -24,6 +24,8 @@ NOT_BINARIES = [
 ]
 DRIVERS = [
     "python3 scripts/native_qa/qa.py launch --binary /b --fixture /f --run-dir /r",
+    "/venv/bin/python3 -u scripts/native_qa/qa.py scenario run docs/evidence/t/scenario.json --build base=/b",
+    "python3 scripts/native_qa/qa.py recheck docs/evidence/t/scenario.json --exe /c --committed docs/evidence/t",
     "/usr/bin/python3 -B /work/tools/d3_run.py cand rows midnight",
     "python3.12 /work/b2/tools/drive_transfer.py --binary /b --output /o",
     "python3 -u capture_themes.py",
@@ -32,6 +34,9 @@ DRIVERS = [
 NOT_DRIVERS = [
     "python3 scripts/native_qa/qa.py compare a.png b.png",
     "python3 scripts/native_qa/qa.py display-check",
+    "python3 scripts/native_qa/qa.py scenario check docs/evidence/t/scenario.json",
+    "python3 scripts/native_qa/qa.py scenario fixture docs/evidence/t/scenario.json",
+    "python3 scripts/native_qa/qa.py attestation --bundle /b --task t",
     "python3 -m unittest discover -s scripts/native_qa -t scripts",
     "less drive_transfer.py",
     "python3 scripts/agent-loop.py run",

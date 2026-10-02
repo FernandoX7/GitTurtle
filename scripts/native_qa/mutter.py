@@ -130,6 +130,19 @@ class RemoteDesktop:
         self.session.NotifyPointerAxisDiscrete(self.types.UInt32(VERTICAL), self.types.Int32(steps))
 
 
+def screen_locked(bus=None) -> bool | None:
+    """org.gnome.ScreenSaver.GetActive on the session bus: True while locked, None when it cannot be read."""
+    try:
+        if bus is None:
+            import dbus
+
+            bus = dbus.SessionBus()
+        saver = bus.get_object("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver")
+        return bool(saver.GetActive(dbus_interface="org.gnome.ScreenSaver"))
+    except Exception:
+        return None
+
+
 # ---------- driver ----------
 class MutterDriver(x11.Driver):
     """x11.Driver with every input sent through Mutter; window lookup, geometry, focus and grabs are unchanged.

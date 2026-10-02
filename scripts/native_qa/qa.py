@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-"""GitTurtle native-QA tooling: isolated launches, frame comparison, privacy scan, build identity, display check.
+"""GitTurtle native-QA tooling: scenarios, isolated launches, frame comparison, privacy scan, build identity.
 
+  python3 scripts/native_qa/qa.py scenario check SPEC
+  python3 scripts/native_qa/qa.py scenario fixture SPEC [--fixtures-dir /abs/dir]
+  python3 scripts/native_qa/qa.py scenario run SPEC --build base=EXE --build cand=EXE --out /abs/bundle [--fixture F]
+  python3 scripts/native_qa/qa.py recheck SPEC --exe EXE --committed docs/evidence/TASK [--out /abs/dir]
+  python3 scripts/native_qa/qa.py attestation --bundle B --task T --candidate SHA --base SHA [--recheck R] --out FILE
   python3 scripts/native_qa/qa.py launch --binary B --fixture F --run-dir /abs/empty [--scenario S.json] [--input mutter|xtest]
   python3 scripts/native_qa/qa.py compare BASE CANDIDATE [--mask status-timing] [--mask x0,y0,x1,y1]
   python3 scripts/native_qa/qa.py privacy scan FRAME... --templates /local/dir [--redacted] [--jobs N]
@@ -44,6 +49,78 @@ def key_value(text: str) -> tuple[str, str]:
 def write_json(path: Path | None, payload) -> None:
     if path is not None:
         path.write_text(json.dumps(payload, indent=1))
+
+
+def build_role(text: str) -> tuple[str, Path]:
+    role, sep, path = text.partition("=")
+    if not sep or role not in ("base", "cand") or not path:
+        raise argparse.ArgumentTypeError(f"expected base=EXE or cand=EXE, got {text!r}")
+    return role, Path(path)
+
+
+def full_sha(text: str) -> str:
+    if not (40 <= len(text) <= 64 and all(c in "0123456789abcdef" for c in text)):
+        raise argparse.ArgumentTypeError(f"expected a full lower-case commit SHA, got {text!r}")
+    return text
+
+
+# ---------- scenarios ----------
+def scenario_check(args) -> int:
+    from native_qa import scenario
+
+    spec = scenario.load(args.spec)
+    crops = scenario.committed(spec)
+    print(f"{args.spec}: valid (version {spec['version']}, task {spec['task']}, sha256 {spec['sha256'][:12]})")
+    print(f"  {len(spec['variants'])} variant(s), {len(spec['steps'])} steps, {len(spec['analyses'])} analyses, "
+          f"{len(scenario.analysis_runs(spec))} evaluations, {len(crops)} committed crops:")
+    for crop in crops:
+        print(f"    {crop.name}  ({crop.crop or 'whole frame'})")
+    return 0
+
+
+def scenario_fixture(args) -> int:
+    from native_qa import recipe, scenario
+
+    spec = scenario.load(args.spec)
+    if spec["fixture"] is None:
+        raise SystemExit("refusing: the scenario has no fixture recipe")
+    manifest = recipe.build(spec["fixture"], args.fixtures_dir)
+    print(f"{'reused' if manifest['reused'] else 'built'} {manifest['root']}")
+    print(f"  {recipe.summary(manifest)}")
+    for rev, check in manifest["expect"].items():
+        print(f"  expect {rev} {check['expected'][:12]}: found {check['found'][:12]}")
+    return 0
+
+
+def scenario_run(args) -> int:
+    from native_qa import play
+
+    builds = dict(args.build)
+    if len(builds) != len(args.build):
+        raise SystemExit("refusing: a role was given twice")
+    return play.run(args.spec, builds, args.out, args.fixture, args.input, args.display, args.templates, args.jobs,
+                    args.settle)
+
+
+def recheck(args) -> int:
+    from native_qa import play
+
+    return play.recheck(args.spec, args.exe, args.committed, args.out, args.fixture, args.input, args.display,
+                        args.settle)
+
+
+def attestation(args) -> int:
+    from native_qa import evidence
+
+    if args.out.exists():
+        raise SystemExit(f"refusing: {args.out} exists; an attestation is never overwritten")
+    payload = evidence.attestation(args.bundle, args.task, args.candidate, args.base, args.recheck,
+                                   args.evidence_commit, args.what, args.limitations)
+    args.out.write_text(json.dumps(payload, indent=1) + "\n")
+    print(f"attestation for {args.task} {args.candidate[:12]} written to {args.out}")
+    for session in payload["sessions"]:
+        print(f"  {session['utc']}: {session['what']}")
+    return 0
 
 
 # ---------- commands ----------
@@ -187,6 +264,54 @@ def display_check(args) -> int:
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = top.add_subparsers(dest="command", required=True)
+
+    def live_options(p) -> None:
+        p.add_argument("--fixture", type=Path, help="open this repository instead of building the spec's recipe")
+        p.add_argument("--input", choices=("mutter", "xtest"), help="input backend, as for launch")
+        p.add_argument("--display", default=runenv.DEFAULT_DISPLAY, help="X display (Mutter hosts: :0)")
+        p.add_argument("--settle", type=float, default=5.0, help="seconds after each resize before the first step")
+
+    p = commands.add_parser("scenario", help="declarative scenarios: validate, build the fixture, run a bundle")
+    actions = p.add_subparsers(dest="action", required=True)
+    s = actions.add_parser("check", help="validate a spec and list the crops it commits (no display)")
+    s.add_argument("spec", type=Path)
+    s.set_defaults(func=scenario_check)
+    s = actions.add_parser("fixture", help="build or reuse the spec's fixture recipe (no display)")
+    s.add_argument("spec", type=Path)
+    s.add_argument("--fixtures-dir", type=Path, default=runenv.EVIDENCE_ROOT / "fixtures",
+                   help=f"absolute parent of the fixture (default {runenv.EVIDENCE_ROOT}/fixtures)")
+    s.set_defaults(func=scenario_fixture)
+    s = actions.add_parser("run", help="every build x variant, then crops, manifest, analyses and privacy scan")
+    s.add_argument("spec", type=Path)
+    s.add_argument("--build", type=build_role, action="append", default=[], required=True, metavar="ROLE=EXE",
+                   help="base=EXE and cand=EXE, release builds from their own target directories")
+    s.add_argument("--out", type=Path, required=True, help=f"absolute, absent or empty bundle, e.g. "
+                                                            f"{runenv.EVIDENCE_ROOT}/runs/<task>")
+    s.add_argument("--templates", type=Path, help=".local/privacy/templates by default, as the gate finds it")
+    s.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1), help="crops scanned at once")
+    live_options(s)
+    s.set_defaults(func=scenario_run)
+
+    p = commands.add_parser("recheck", help="re-capture the candidate crops with EXE and compare their bytes")
+    p.add_argument("spec", type=Path, help="the committed docs/evidence/<task>/scenario.json")
+    p.add_argument("--exe", type=Path, required=True, help="the candidate executable to re-check")
+    p.add_argument("--committed", type=Path, required=True, help="the directory holding the committed crops")
+    p.add_argument("--out", type=Path, help=f"absolute, absent or empty (default {runenv.EVIDENCE_ROOT}/runs/"
+                                            "<task>-recheck-<sha>-<utc>)")
+    live_options(p)
+    p.set_defaults(func=recheck)
+
+    p = commands.add_parser("attestation", help="the native attestation JSON from a passing bundle")
+    p.add_argument("--bundle", type=Path, required=True)
+    p.add_argument("--task", required=True)
+    p.add_argument("--candidate", type=full_sha, required=True, help="the attested candidate's full SHA")
+    p.add_argument("--base", type=full_sha, required=True, help="the candidate's base commit")
+    p.add_argument("--recheck", type=Path, help="recheck.json (or its directory) for a rebuilt candidate")
+    p.add_argument("--evidence-commit", type=full_sha, help="the commit that holds the frames")
+    p.add_argument("--what", help="replace the spec's summary in the session line")
+    p.add_argument("--limitations", help="replace the spec's limitations")
+    p.add_argument("--out", type=Path, required=True, help="a new file")
+    p.set_defaults(func=attestation)
 
     p = commands.add_parser("launch", help="one isolated launch: seed, start, drive a scenario, SIGTERM")
     p.add_argument("--binary", type=Path, required=True, help="absolute path of the executable under test")

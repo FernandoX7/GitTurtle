@@ -63,7 +63,7 @@ class SessionTest(unittest.TestCase):
                 calls.append(("snap", ()))
                 return Image.new("RGB", (4, 4))
 
-            def stable(self, timeout):
+            def stable(self, timeout, quiet=0.5):
                 return 0.5
 
         with contextlib.redirect_stderr(io.StringIO()):
@@ -80,6 +80,77 @@ class SessionTest(unittest.TestCase):
         self.assertTrue((self.root / "run" / "captures" / "pressed.png").is_file())
         with self.assertRaises(SystemExit):
             run.run([{"capture": "rest"}])  # a run never overwrites its own capture
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow is not installed")
+    def test_palette_marks_repeats_and_the_lock_check(self) -> None:
+        from PIL import Image
+
+        calls, locked = [], [False]
+
+        class FakeDriver:
+            """Each snap differs from the last unless `frozen`, so every wait_change sees a change; with `caret`,
+            only one pixel of it changes, as a blinking caret does."""
+            frozen = caret = False
+            count = 0
+
+            def __getattr__(self, name):
+                return lambda *args, **kwargs: calls.append((name, args))
+
+            def snap(self):
+                if not self.frozen:
+                    self.count += 1
+                if self.caret:
+                    image = Image.new("RGB", (4, 4))
+                    image.putpixel((0, 0), (self.count % 256, 0, 0))
+                    return image
+                return Image.new("RGB", (4, 4), (self.count % 256, 0, 0))
+
+            def stable(self, timeout, quiet=0.5):
+                calls.append(("stable", (timeout, quiet)))
+                return 0.5
+
+            def wait_change(self, before, timeout=3.0):
+                changed = self.snap()
+                return (None if self.frozen else 0.01), changed
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            run = session.Session(self.binary, self.fixture, self.root / "run", stores.store_text(),
+                                  lock_check=lambda: locked[0])
+        run.driver = FakeDriver()
+        with contextlib.redirect_stdout(io.StringIO()):
+            run.run([{"mark": "before"}, {"palette": "browse reflog"},
+                     {"key": "Tab", "mods": ["Shift_L"], "repeat": 3, "await_change": 1.0, "wait_after": 0},
+                     {"capture": "after", "stable_within": 2.0, "quiet": 0.7}])
+        keys = [args for name, args in calls if name == "key"]
+        self.assertEqual(keys[:2], [("p", ("Control_L", "Shift_L"), "command palette"),
+                                    ("Return", (), "run 'browse reflog'")])
+        self.assertEqual(keys[2:], [("Tab", ["Shift_L"], None)] * 3)
+        self.assertIn(("type", ("browse reflog", "palette query")), calls)
+        self.assertIn(("stable", (2.0, 0.7)), calls)
+        self.assertEqual(sorted(run.frames), ["after", "before"])
+        self.assertTrue((self.root / "run" / "marks" / "00-before.png").is_file())
+        self.assertEqual(sum(1 for c in run.log["checks"] if c.get("check") == "key Tab first change"), 3)
+        self.assertEqual(run.log["captures"][0]["stable_s"], 0.5)
+        # A palette that never opens types nothing.
+        run.driver.frozen = True
+        calls.clear()
+        with self.assertRaisesRegex(SystemExit, "did not open"):
+            run.run([{"palette": "browse reflog"}])
+        self.assertNotIn("type", [name for name, _ in calls])
+        # Nor does one where only a caret blinks: the palette's modal dims the whole window.
+        run.driver.frozen, run.driver.caret = False, True
+        with self.assertRaisesRegex(SystemExit, "did not open"):  # waits the full 3 s
+            run.run([{"palette": "browse reflog"}])
+        self.assertNotIn("type", [name for name, _ in calls])
+        run.driver.caret = False
+        # Nothing is sent while the desktop is locked or its state is unknown.
+        for state in (True, None):
+            locked[0] = state
+            calls.clear()
+            with self.subTest(state=state), self.assertRaisesRegex(SystemExit, "nothing sent"):
+                run.run([{"key": "Tab"}])
+            self.assertEqual(calls, [])
+        run.run([{"wait": 0}, {"stable": 0.1}])  # waiting sends nothing, so it needs no check
 
     def test_refusals_leave_no_run_directory(self) -> None:
         for kwargs in (dict(for_commit=True), dict(extra_env={"XDG_CONFIG_HOME": "/x"})):

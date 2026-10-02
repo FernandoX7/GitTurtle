@@ -14,8 +14,8 @@ from pathlib import Path
 
 # A GitTurtle executable: argv[0]'s basename starts with gitturtle (gitturtle, gitturtle-base-ff06709, ...).
 BINARY_PATTERN = r"^([^ ]*/)?[Gg]it[Tt]urtle[^/ ]*( |$)"
-# A Python QA driver: this package's launcher, or the earlier bundle drivers by name.
-DRIVER_PATTERN = (r"^([^ ]*/)?python3?[.0-9]*( -[^ ]+)* [^ ]*(native_qa/qa\.py (launch|run)"
+# A Python QA driver: this package's launchers (launch, scenario run, recheck), or the earlier bundle drivers by name.
+DRIVER_PATTERN = (r"^([^ ]*/)?python3?[.0-9]*( -[^ ]+)* [^ ]*(native_qa/qa\.py (launch|run|scenario run|recheck)"
                   r"|(drive_|d3_|capture_|design_probe|portal_probe)[^ /]*\.py)( |$)")
 
 

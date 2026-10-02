@@ -157,9 +157,18 @@ def launch_env(dirs: RunDirs, display: str = DEFAULT_DISPLAY, scale: str = DEFAU
     return env
 
 
+# Variables that decide where the app reads and draws, which the run records itself (display, scale) or isolates.
+RESERVED = ("DISPLAY", "GPUI_X11_SCALE_FACTOR", "DBUS_SESSION_BUS_ADDRESS")
+RESERVED_PREFIXES = ("GIT_", "WAYLAND_", "XDG_")
+
+
+def reserved(key: str) -> bool:
+    return key in LAYOUT or key in RESERVED or key.startswith(RESERVED_PREFIXES)
+
+
 def check_extra(extra: dict[str, str]) -> dict[str, str]:
     for key in extra:
-        if key in LAYOUT or key == "WAYLAND_DISPLAY" or key.startswith("GIT_"):
+        if reserved(key):
             raise Refusal(f"--env cannot set {key}")
     return extra
 
