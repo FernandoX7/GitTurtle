@@ -12,7 +12,9 @@ Git runs with a throwaway HOME, no system or global configuration, an empty
 template directory (no hooks), no prompts and no network: every remote is a
 local bare repository inside the fixture. A fixture is built once under
 `<fixtures>/<name>/` and reused while its recipe and repository state are
-unchanged; anything else there is refused, never deleted.
+unchanged; anything else there is refused, never deleted. A scenario whose
+route writes never opens the build itself: `writes.py` gives each launch its
+own copy of it.
 """
 
 from __future__ import annotations
@@ -77,17 +79,39 @@ def checkout_state(repo: Path) -> dict:
                 index_sha256=sha256(index.read_bytes()) if index.is_file() else "absent")
 
 
-def state(repo: Path) -> dict:
-    """HEAD, status, index, refs, reflogs and every linked worktree's own HEAD, status and index, to show a
-    launch left the fixture as it was."""
+def bare_remotes(recipe: dict, root: Path) -> dict[str, Path]:
+    """The recipe's remotes: each name with its local bare repository in the build at `root`."""
+    return {op["name"]: Path(root) / op["bare"] for op in recipe["operations"] if op["action"] == "remote"}
+
+
+def bare_state(bare: Path) -> dict:
+    """A bare remote's refs, reflogs and configuration."""
+    refs = read(bare, "for-each-ref", "--format=%(refname) %(objectname)")
+    config = bare / "config"
+    return dict(refs_sha256=sha256(refs), ref_count=len(refs.splitlines()), reflogs_sha256=tree_digest(bare / "logs"),
+                config_sha256=sha256(config.read_bytes()) if config.is_file() else "absent")
+
+
+def state(repo: Path, remotes: dict[str, Path] | None = None) -> dict:
+    """HEAD, status, index, refs, reflogs, every linked worktree's own HEAD, status and index and, given the
+    recipe's `remotes`, each bare remote's refs, reflogs and configuration, to show a launch left the fixture as
+    it was."""
     common = Path(read(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip())
     refs = read(repo, "for-each-ref", "--format=%(refname) %(objectname)")
     listing = read(repo, "worktree", "list", "--porcelain")
     linked = [line[len(b"worktree "):].decode(errors="replace") for line in listing.splitlines()
               if line.startswith(b"worktree ")][1:]
-    return dict(checkout_state(repo), refs_sha256=sha256(refs), ref_count=len(refs.splitlines()),
-                reflogs_sha256=tree_digest(common / "logs"), worktrees_sha256=sha256(listing),
-                linked_worktrees={path: checkout_state(Path(path)) for path in linked})
+    found = dict(checkout_state(repo), refs_sha256=sha256(refs), ref_count=len(refs.splitlines()),
+                 reflogs_sha256=tree_digest(common / "logs"), worktrees_sha256=sha256(listing),
+                 linked_worktrees={path: checkout_state(Path(path)) for path in linked})
+    if remotes:  # only then, so a build without remotes keeps the state it was recorded with
+        found["remotes"] = {name: bare_state(Path(path)) for name, path in sorted(remotes.items())}
+    return found
+
+
+def build_state(manifest: dict) -> dict:
+    """The state of a recipe build, its bare remotes included."""
+    return state(Path(manifest["repository"]), bare_remotes(manifest["recipe"], Path(manifest["root"])))
 
 
 class Builder:
@@ -114,9 +138,12 @@ class Builder:
     def build(self) -> None:
         recipe = self.recipe
         self.template.mkdir()
+        # No automatic maintenance: a detached Git child (a local push's receive-pack's too, which reads this file)
+        # could otherwise still be writing the fixture after its state is recorded.
         (self.home / ".gitconfig").write_text(
             f"[user]\n\tname = {runenv.QA_NAME}\n\temail = {runenv.QA_EMAIL}\n[init]\n\tdefaultBranch = "
-            f"{recipe['branch']}\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n")
+            f"{recipe['branch']}\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n"
+            "[gc]\n\tauto = 0\n\tautoDetach = false\n[maintenance]\n\tauto = false\n")
         self.repo.mkdir()
         self.git("init", "--quiet", f"--template={self.template}", "-b", recipe["branch"])
         for op in recipe["operations"]:
@@ -168,7 +195,8 @@ class Builder:
         self.git("remote", "add", op["name"], str(bare), date=date)
 
     def op_push(self, op: dict, date: str) -> None:
-        self.git("push", "--quiet", op["remote"], *op["refs"], date=date)
+        upstream = ["--set-upstream"] if op.get("set_upstream") else []
+        self.git("push", "--quiet", *upstream, op["remote"], *op["refs"], date=date)
 
     def op_worktree(self, op: dict, date: str) -> None:
         path = self.root / op["path"]
@@ -199,7 +227,7 @@ class Builder:
                     commits=self.commits, refs=refs,
                     head_reflog=lines("reflog", "--format=%gd %h %gs", "HEAD"),
                     worktrees=lines("worktree", "list", "--porcelain"), remotes=lines("remote", "-v"),
-                    expect=expect, state=state(repo), commands=self.log)
+                    expect=expect, state=state(repo, bare_remotes(self.recipe, self.root)), commands=self.log)
 
 
 def build(recipe: dict, fixtures: Path = DEFAULT_FIXTURES) -> dict:
@@ -231,7 +259,10 @@ def reuse(root: Path, digest: str) -> dict:
     manifest = json.loads(path.read_text())
     if manifest.get("recipe_sha256") != digest:
         raise SystemExit(f"refusing: {root} was built from another recipe; remove it to rebuild, or rename the fixture")
-    now = state(Path(manifest["repository"]))
+    now = state(Path(manifest["repository"]), bare_remotes(manifest["recipe"], root))
+    if "remotes" in now and "remotes" not in manifest.get("state", {}):
+        raise SystemExit(f"refusing: {root} was built before its bare remotes' state was recorded, so they cannot be "
+                         "checked; remove it to rebuild (the same recipe gives the same object IDs)")
     if now != manifest.get("state"):
         changed = sorted(key for key in now if now[key] != manifest.get("state", {}).get(key))
         raise SystemExit(f"refusing: {root} changed since it was built ({', '.join(changed)}); remove it to rebuild")

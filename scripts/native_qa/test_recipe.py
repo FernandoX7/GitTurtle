@@ -75,7 +75,8 @@ class RecipeTest(unittest.TestCase):
         self.assertEqual(recipe.read(repo, "cat-file", "-p", f"{manifest['commits'][0]}:bin/data.bin"), b"\x00\x01\x02")
         self.assertEqual(len(manifest["head_reflog"]), 8)  # commits, checkouts, merge and reset
         self.assertEqual(sum(1 for line in manifest["worktrees"] if line.startswith("worktree ")), 3)
-        self.assertEqual(recipe.state(repo), manifest["state"])
+        self.assertEqual(recipe.build_state(manifest), manifest["state"])
+        self.assertEqual(manifest["state"]["remotes"]["origin"]["ref_count"], 2)  # the bare remote's main and v1
         self.assertTrue((self.root / "a" / "reflog-mix" / "remotes" / "origin.git" / "refs" / "tags" / "v1").exists())
         self.assertIn("5 commits", recipe.summary(manifest))
         self.assertIn("2 linked worktrees", recipe.summary(manifest))

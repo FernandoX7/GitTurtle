@@ -1,12 +1,13 @@
 """Declarative native-QA scenarios: the versioned JSON spec, its strict validation and the committed names.
 
-A scenario names its fixture (a deterministic recipe that `recipe.py` builds),
-the window size, the variants (palette x interface text size, each optionally
-with its own store settings and HOME files), one ordered list of steps that
-every build role runs identically, named crop boxes, the captures to commit,
-the probes (every frame drawn after a key or a click, analysed but never
-committed) and the analyses to run on them and on the steps' readings (the
-focused AT-SPI node, a settled store). `qa.py scenario run`
+A scenario names its fixture (a deterministic recipe that `recipe.py` builds)
+and, for a route that writes, the changes each launch makes to its own copy of
+it (`writes.py`), the window size, the variants (palette x interface text size,
+each optionally with its own store settings and HOME files), one ordered list
+of steps that every build role runs identically, named crop boxes, the
+captures to commit, the probes (every frame drawn after a key or a click,
+analysed but never committed) and the analyses to run on them and on the
+steps' readings (the focused AT-SPI node, a settled store). `qa.py scenario run`
 drives it (`play.py`), and `evidence.py` turns its captures into the committed
 crops, manifest, re-check and attestation.
 
@@ -49,7 +50,7 @@ RECORD = "record"     # an expectation that measures and writes an analysis with
 
 TOP_LEVEL = ({"version", "task", "variants", "steps"},
              {"summary", "limitations", "window", "roles", "fixture", "settings", "env", "crops", "analyses",
-              "home", "atspi"})
+              "home", "atspi", "writes"})
 # Each step has exactly one action key; these are the options each action takes beside `note` and `when`.
 # No option shares an action's name, so a normalised step still names exactly one action.
 STEPS = {
@@ -102,7 +103,7 @@ OPERATIONS = {
     "merge": {"message"},
     "reset": {"mode"},
     "remote": {"bare"},
-    "push": {"refs"},
+    "push": {"refs", "set_upstream"},
     "worktree": {"new_branch", "at"},
 }
 REF_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,99}")
@@ -306,7 +307,10 @@ def fixture_recipe(value, path: str) -> dict:
     clock = obj(value.get("clock", {}), f"{path}.clock", (), {"start", "step"})
     start, offset = git_date(clock.get("start", "2026-01-01T00:00:00Z"), f"{path}.clock.start")
     step = integer(clock.get("step", 60), f"{path}.clock.step", 1, 86_400)
-    operations, commits, places = [], 0, {recipe["repository"], "fixture-manifest.json"}  # recipe.MANIFEST
+    # The build's own files (recipe.MANIFEST, its partial and writes.MARKER) are never a recipe path.
+    places = {recipe["repository"], "fixture-manifest.json", ".fixture-manifest.json.partial",
+              ".gitturtle-fixture-copy.json"}
+    operations, commits = [], 0
     remotes: set[str] = set()
     for index, op in enumerate(array(value["operations"], f"{path}.operations", 1, 2000)):
         where = f"{path}.operations[{index}]"
@@ -379,6 +383,9 @@ def fixture_recipe(value, path: str) -> dict:
                                       "reaches a local bare repository inside the fixture")
             entry.update(remote=op["push"],
                          refs=[text(ref, f"{where}.refs[{i}]", REFSPEC) for i, ref in enumerate(refs)])
+            # Only when set, so the normalised entry, and with it the digest of every earlier recipe, stays as it was.
+            if boolean(op.get("set_upstream", False), f"{where}.set_upstream"):
+                entry["set_upstream"] = True
         elif action == "worktree":
             entry.update(path=relative_path(op["worktree"], f"{where}.worktree"), at=revision("at"),
                          branch=text(op["new_branch"], f"{where}.new_branch", REF_NAME) if "new_branch" in op else None)
@@ -400,6 +407,104 @@ def fixture_recipe(value, path: str) -> dict:
             fail(f"{path}.expect", f"{rev} names a commit the recipe never makes")
         recipe["expect"][rev] = text(oid, f"{path}.expect[{rev!r}]", OBJECT_ID)
     return recipe
+
+
+# ---------- the writes a route makes to its own copy of the fixture ----------
+FULL_REF = re.compile(r"refs/[A-Za-z0-9][A-Za-z0-9._/-]{0,99}")
+# What a declared ref holds after the launch: a recipe commit, an object ID, or the repository's ref of that name.
+WRITE_TARGET = re.compile(rf"@[0-9]{{1,4}}|{OBJECT_ID.pattern}|{FULL_REF.pattern}")
+# A configuration key: section, an optional subsection and a variable, as `git config` names them.
+CONFIG_KEY = re.compile(r"[A-Za-z][A-Za-z0-9-]{0,63}(\.[^\s\0]{1,200})?\.[A-Za-z][A-Za-z0-9-]{0,63}")
+DELETED = "deleted"
+
+
+def fixture_writes(value, path: str, spec: dict) -> dict:
+    """`writes`: the changes every launch makes to its own copy of the recipe build, as {role: changes}.
+
+    One declaration for every role, or `{"base": ..., "cand": ...}` naming each
+    of the scenario's roles. `writes.py` copies the build for each launch and
+    compares the copy before and after it with these changes.
+    """
+    if spec["fixture"] is None:
+        fail(path, "a scenario that writes needs a fixture recipe: every launch writes to its own copy of its build")
+    if isinstance(value, dict) and value and set(value) <= set(ROLES):
+        if set(value) != set(spec["roles"]):
+            fail(path, f"a declaration per role names exactly the scenario's roles: {', '.join(spec['roles'])}")
+        return {role: write_changes(value[role], f"{path}.{role}", spec["fixture"]) for role in spec["roles"]}
+    changes = write_changes(value, path, spec["fixture"])
+    return {role: changes for role in spec["roles"]}
+
+
+def config_key(name: str) -> str:
+    """Git's form of a configuration key: section and variable in lower case, a subsection as written."""
+    section, _, rest = name.partition(".")
+    middle, _, variable = rest.rpartition(".")
+    return ".".join(part for part in (section.lower(), middle, variable.lower()) if part)
+
+
+def write_changes(value, path: str, recipe: dict) -> dict:
+    """One role's declared changes to the repository (`refs`, `config`) and, by recipe remote, to its bare copy
+    (`remotes`: `{"origin": {"refs": ..., "config": ...}}`).
+
+    `refs` maps a full ref name to "deleted" or to what it holds after the
+    launch: `@N`, an object ID, or a ref name, which means that ref of the
+    repository (never of the remote) after the launch. `config` maps a key of
+    the repository's (or the remote's) own configuration file to "deleted", to
+    its one value after the launch, or to the list of its values. Anything
+    undeclared stays as it was.
+    """
+    obj(value, path, (), {"refs", "config", "remotes"})
+    defined = {op["name"] for op in recipe["operations"] if op["action"] == "remote"}
+
+    def ref_changes(items, where: str) -> dict:
+        result = {}
+        for name, target in mapping(items, where).items():
+            text(name, where, FULL_REF, 120)
+            at = f"{where}[{name!r}]"
+            if target != DELETED:
+                text(target, at, WRITE_TARGET, 120)
+                if target.startswith("@") and int(target[1:]) >= recipe["commits"]:
+                    fail(at, f"{target} names a commit the recipe never makes")
+            result[name] = target
+        return result
+
+    def config_changes(items, where: str) -> dict:
+        result = {}
+        for name, item in mapping(items, where).items():
+            key = config_key(text(name, where, CONFIG_KEY, 300))
+            at = f"{where}[{name!r}]"
+            if key in result:
+                fail(at, f"{key} is declared twice")
+            if item == DELETED:
+                result[key] = DELETED
+            elif isinstance(item, list):  # every value, in order; ["deleted"] is the literal value
+                result[key] = [text(v, f"{at}[{i}]", limit=500) for i, v in enumerate(array(item, at, 1, 16))]
+            else:
+                result[key] = [text(item, at, limit=500)]
+        return result
+
+    declared = dict(refs=ref_changes(value.get("refs", {}), f"{path}.refs"),
+                    config=config_changes(value.get("config", {}), f"{path}.config"), remotes={})
+    for remote, items in mapping(value.get("remotes", {}), f"{path}.remotes").items():
+        where = f"{path}.remotes.{remote}"
+        if remote not in defined:
+            fail(f"{path}.remotes", f"{remote!r} is not a remote the recipe defines; only a recipe remote's local bare "
+                                    "repository is copied with the fixture")
+        obj(items, where, (), {"refs", "config"})
+        declared["remotes"][remote] = dict(refs=ref_changes(items.get("refs", {}), f"{where}.refs"),
+                                           config=config_changes(items.get("config", {}), f"{where}.config"))
+    sections = [(f"{path}.refs", declared["refs"], True),
+                *((f"{path}.remotes.{name}.refs", items["refs"], False)
+                  for name, items in declared["remotes"].items())]
+    for where, items, local in sections:
+        for name, target in items.items():
+            if not target.startswith("refs/"):
+                continue
+            if declared["refs"].get(target) == DELETED:
+                fail(f"{where}[{name!r}]", f"{target} is declared deleted, so nothing can equal it after the launch")
+            if local and target == name:
+                fail(f"{where}[{name!r}]", "a ref declared equal to itself declares no change")
+    return declared
 
 
 # ---------- variants, filters and references ----------
@@ -911,6 +1016,7 @@ def validate(data, sha256: str = "") -> dict:
         fail("$.roles", f"expected distinct roles of {', '.join(ROLES)}")
     spec["roles"] = [role for role in ROLES if role in roles]
     spec["fixture"] = fixture_recipe(data["fixture"], "$.fixture") if "fixture" in data else None
+    spec["writes"] = fixture_writes(data["writes"], "$.writes", spec) if "writes" in data else None
     spec["settings"] = store_settings_entry(data.get("settings", {}), "$.settings")
     env = mapping(data.get("env", {}), "$.env")
     for key, item in env.items():
