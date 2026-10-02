@@ -110,6 +110,11 @@ def green_gates(repo, profiles, directory):
     return {"passed": True, "checks": []}
 
 
+def red_on_rebase(repo, profiles, directory):
+    """Every gate passes except a rebased candidate's, which sends it back to a normal attempt."""
+    return {"passed": not Path(directory).parent.name.startswith("rebase-"), "checks": []}
+
+
 class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -127,7 +132,9 @@ class RunnerTests(unittest.TestCase):
         (self.root / ".gitignore").write_text("/.local/\n")
         (self.root / "docs").mkdir()
         (self.root / "protected.txt").write_text("original\n")
-        self.options = {"model": "gpt-6-astra", "effort": "high", "max_tasks": 10, "max_attempts": 2, "max_minutes": 5, "session_minutes": 1, "max_output_tokens": None}
+        # A fixture run ends where a real one would idle for evidence (--max-idle-minutes 0); the wait has its own tests.
+        self.options = {"model": "gpt-6-astra", "effort": "high", "max_tasks": 10, "max_attempts": 2, "max_minutes": 5,
+                        "session_minutes": 1, "max_output_tokens": None, "max_idle_minutes": 0}
 
     def prepare(self, tasks=None):
         tasks = tasks if tasks is not None else [task()]
@@ -367,6 +374,9 @@ class RunnerTests(unittest.TestCase):
             "one: awaiting_evidence (required external evidence: native)",
             "building two attempt 1", "gating two attempt 1", "verifying two attempt 1", "accepting two attempt 1",
             f"two: accepted at {state['tasks']['two']['candidate'][:12]} (all required evidence accepted)",
+            # Accepting `two` moved the head, so `one` is replayed onto it without an implementer.
+            "rebasing one attempt 1",
+            f"one: awaiting_evidence (rebased onto {state['accepted_head']}; required external evidence: native)",
             "blocked",
         ])
 
@@ -481,17 +491,20 @@ class RunnerTests(unittest.TestCase):
 
     def test_a_rebuilt_candidate_repeats_both_pre_evidence_reviews(self):
         directory = self.create([evidence_task(), task("independent")])
-        first = self.execute(directory, FakeCodex(script=True))
-        record = first["tasks"]["one"]
-        self.assertEqual((record["status"], first["tasks"]["independent"]["status"]), ("awaiting_evidence", "accepted"))
         adapter = FakeCodex(script=True)
-        state = self.execute(directory, adapter)
+        # Accepting `independent` moves the head; the replay of `one` fails its gates, so a new attempt rebuilds it.
+        state = self.execute(directory, adapter, red_on_rebase)
         rebuilt = state["tasks"]["one"]
-        self.assertEqual(adapter.calls, [("implementer", "one"), ("verifier", "one"), ("security-reviewer", "one")])
-        self.assertEqual((rebuilt["status"], rebuilt["attempts"]), ("awaiting_evidence", 2))
-        self.assertNotEqual(rebuilt["candidate"], record["candidate"])
-        self.assertNotEqual(rebuilt["pre_review"], record["pre_review"])
-        self.assertNotEqual(rebuilt["security_review"], record["security_review"])
+        self.assertEqual(adapter.calls, [
+            ("implementer", "one"), ("verifier", "one"), ("security-reviewer", "one"),
+            ("implementer", "independent"), ("verifier", "independent"),
+            ("implementer", "one"), ("verifier", "one"), ("security-reviewer", "one"),
+        ])
+        self.assertEqual((rebuilt["status"], rebuilt["attempts"], rebuilt["base"]), ("awaiting_evidence", 2, state["accepted_head"]))
+        self.assertNotIn("rebased_from", rebuilt)
+        for key in ("pre_review", "security_review"):
+            self.assertTrue(rebuilt[key].startswith(str(directory / "attempts/one/2/")), rebuilt[key])
+            self.assertNotIn(key + "_reviewed", rebuilt)
 
     def test_explicitly_marked_criteria_wait_and_an_unrequired_kind_is_graded_now(self):
         directory = self.create([evidence_task(profiles=["performance"], criteria=[
