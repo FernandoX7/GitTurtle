@@ -204,6 +204,9 @@ class SpecTest(unittest.TestCase):
             (dict(settings={"theme": "porcelain"}), r"\$\.settings: the palette and text size come from the variants"),
             (dict(settings={"interface_text_size": 14}), r"\$\.settings: the palette and text size come from"),
             (dict(settings=["code_text_size"]), r"\$\.settings: expected an object, got list"),
+            (dict(settings={"follow_system": False}),
+             r"\$\.settings\.follow_system: the generated store turns Follow system off so frames do not depend on "
+             r"the host's appearance"),
             # A variant's settings are refused exactly as the spec's are.
             (dict(variants=[{"palette": "midnight", "id": "midnight-x", "settings": {"theme": "porcelain"}}]),
              r"\$\.variants\[0\]\.settings: the palette and text size come from the variants"),
@@ -212,6 +215,9 @@ class SpecTest(unittest.TestCase):
              r"\$\.variants\[1\]\.settings: the palette and text size come from the variants"),
             (dict(variants=[{"palette": "midnight", "id": "midnight-x", "settings": ["code_text_size"]}]),
              r"\$\.variants\[0\]\.settings: expected an object, got list"),
+            (dict(variants=[{"palette": "midnight"}, {"palette": "midnight", "id": "midnight-x",
+                                                     "settings": {"code_text_size": 18, "follow_system": True}}]),
+             r"\$\.variants\[1\]\.settings\.follow_system: the generated store turns Follow system off"),
             (dict(variants=[{"palette": "midnight", "id": "midnight-x", "settings": {}}]),
              r"\$\.variants\[0\]\.settings: no settings; leave \"settings\" out"),
             (dict(variants=[{"palette": "midnight", "settings": {"code_text_size": 18}}]),

@@ -348,10 +348,13 @@ def palette_label(palette: str, text_size: int | None) -> str:
 
 
 def store_settings_entry(value, path: str) -> dict:
-    """Extra preference-store settings, the spec's or a variant's; neither sets what the variants decide."""
+    """Extra preference-store settings, the spec's or a variant's; neither sets what the variants or the run decide."""
     settings = mapping(value, path)
     if "theme" in settings or "interface_text_size" in settings:
         fail(path, "the palette and text size come from the variants")
+    if "follow_system" in settings:
+        fail(f"{path}.follow_system", "the generated store turns Follow system off so frames do not depend on the "
+                                      "host's appearance")
     return dict(settings)
 
 
