@@ -37,7 +37,14 @@
       "required": ["id", "description"],
       "properties": {
         "id": {"$ref": "#/$defs/id"},
-        "description": {"$ref": "#/$defs/text", "maxLength": 2048}
+        "description": {"$ref": "#/$defs/text", "maxLength": 2048},
+        "evidence": {
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"type": "string", "enum": ["native", "performance", "package", "vendor"]},
+          "description": "The external evidence kinds this criterion waits for; each must be one the task's profiles require. Without this field, a criterion whose id is native, performance, package or vendor waits for that kind and every other criterion waits for none; an empty list marks a criterion that needs none. The controller's verifier grades criteria that wait for no evidence after the gates pass and before the evidence round, and the rest once the evidence is attested."
+        }
       }
     },
     "task": {

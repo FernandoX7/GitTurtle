@@ -12,7 +12,7 @@ from unittest.mock import patch
 from agent_loop import test_runner as fixtures
 from agent_loop.git import head, write_limits
 from agent_loop.process import EnvironmentBlocked, LoopError, atomic_json, read_json
-from agent_loop.runner import Runner, attest, main, profiles_for, validate_patch
+from agent_loop.runner import Runner, attest, locked, main, profiles_for, validate_patch
 from agent_loop.task_spec import parse_spec
 # Records and run state stay private even when the host umask is permissive.
 from agent_loop.test_support import setUpModule, tearDownModule
@@ -128,6 +128,34 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(final["accepted_head"], candidate)
         self.assertEqual(final["tasks"]["one"]["gate_sha256"], gate_hash)
         self.assertEqual(final["tasks"]["one"]["attempts"], 1)
+
+    def test_interrupted_pre_evidence_review_reruns_only_that_review(self):
+        directory = self.create([fixtures.evidence_task()])
+        unavailable = UnavailableCodex("verifier")
+        unavailable.script = True
+        state = self.execute(directory, unavailable)
+        record = state["tasks"]["one"]
+        candidate = record["candidate"]
+        self.assertEqual((record["status"], record["attempts"]), ("review_blocked", 1))
+        self.assertEqual(unavailable.calls, [("implementer", "one"), ("verifier", "one")])
+        evidence = self.root.parent / "native-report.md"
+        evidence.write_text("Observed candidate-bound native fixture results.\n")
+        # No evidence round until the reviews that need none have passed, applied
+        # directly or queued while a controller holds the run.
+        with self.assertRaisesRegex(LoopError, "pre-evidence"):
+            attest(directory, "one", candidate, "native", evidence, "Observed the identified build.")
+        with locked(directory), self.assertRaisesRegex(LoopError, "pre-evidence"):
+            attest(directory, "one", candidate, "native", evidence, "Observed the identified build.")
+        self.assertFalse((directory / "inbox").exists())
+        # A controller that died during the review leaves its phase for reconciliation.
+        state.update(phase="pre_verifying", active={"task": "one"}, budget_running=True)
+        atomic_json(directory / "state.json", state)
+        recovered = fixtures.FakeCodex(script=True)
+        final = self.execute(directory, recovered, lambda *_: self.fail("successful gates reran"))
+        record = final["tasks"]["one"]
+        self.assertEqual(recovered.calls, [("verifier", "one"), ("security-reviewer", "one")])
+        self.assertEqual((record["status"], record["attempts"], record["candidate"]), ("awaiting_evidence", 1, candidate))
+        attest(directory, "one", candidate, "native", evidence, "Observed the identified build.")
 
     def test_unavailable_review_after_attestation_keeps_evidence_and_candidate(self):
         directory = self.create([fixtures.task(profiles=["native"])])

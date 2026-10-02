@@ -99,6 +99,21 @@ class ReviewTests(unittest.TestCase):
                 with self.assertRaisesRegex(LoopError, "incomplete or failing"):
                     validate_review(review, self.task, self.candidate)
 
+    def test_a_pre_evidence_pass_may_leave_only_deferred_criteria_unverified(self):
+        deferred = frozenset({"selection"})
+        review = passing_review()
+        review["criteria"][0].update(status="unverified", evidence="Waits for the native attestation.")
+        self.assertEqual(validate_review(review, self.task, self.candidate, deferred), "pass")
+        # The final review grades the same criterion and may not leave it open.
+        with self.assertRaisesRegex(LoopError, r"selection \(unverified\)"):
+            validate_review(review, self.task, self.candidate)
+        for criterion, status in ((0, "fail"), (1, "unverified")):
+            with self.subTest(criterion=criterion, status=status):
+                other = passing_review()
+                other["criteria"][criterion]["status"] = status
+                with self.assertRaisesRegex(LoopError, "incomplete or failing"):
+                    validate_review(other, self.task, self.candidate, deferred)
+
     def test_blank_evidence_and_wrong_field_types_are_controlled_failures(self):
         mutations = [
             ("blank evidence", lambda value: value["criteria"][0].update(evidence="  ")),
