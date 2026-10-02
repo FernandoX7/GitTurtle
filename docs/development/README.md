@@ -90,6 +90,8 @@ python3 scripts/agent-loop.py status --run /absolute/path/to/run
 python3 scripts/agent-loop.py stop --run /absolute/path/to/run
 ```
 
+Every `--run` (`status`, `stop`, `resume`, `attest` and `note`) also takes the run's bare name under the checkout's `.local/agent-loop`, as the operator scripts do; an existing directory of that name wins, and a name with a path separator, `.` or `..` is never looked up there.
+
 Do not bypass a lock, manually rewrite the state file, or kill an unrelated Codex process to force progress. On interruption, retain the run directory and use the controller's reconciliation procedure below.
 
 ### Coordinator notes
@@ -110,7 +112,7 @@ An interactive coordinator runs the controller with the tools in `scripts/operat
 
 | Tool | What it does |
 | --- | --- |
-| `start.sh QUEUE [run options…]`, `resume.sh RUN [resume options…]` | Run `agent-loop.py run` or `resume` in tmux session `gitturtle-loop` without any `CLAUDE*` variable, appending to a new `.local/agent-loop/console-<UTC>.log` that ends in `[loop process exited]`, and print that path. They pass every option through and add none. They replace a finished session and refuse while a loop is alive; `start.sh` also needs a clean checkout on `main`. |
+| `start.sh QUEUE [run options…]`, `resume.sh RUN [resume options…]` | Run `agent-loop.py run` or `resume` in tmux session `gitturtle-loop` without any `CLAUDE*` variable, appending to a new `.local/agent-loop/console-<UTC>.log` that ends in `[loop process exited]`, and print that path. They pass every option through and add none. They replace a finished session and refuse while a loop is alive; `start.sh` also needs a clean checkout on `main`. `resume.sh` runs the run's saved controller (`RUN/controller/scripts/agent-loop.py`), which always matches the digests the run pinned, falls back to this checkout's for a run without one, and names the one it used on stderr. |
 | `watch.sh [LOG]` | Follows the newest console log (or `LOG`) and prints only steps, gate failures, task and inbox outcomes, idle waits, the final summary, errors and the end marker, plus one `ALERT` if the session vanished without that marker. |
 | `build-release.sh SRC_DIR OUT_EXE` | Release-builds one source tree in a fresh target directory, retries once if rustc dies with SIGSEGV, copies the executable, prints its `--build-info` and sha256, and deletes the target. |
 | `land.py --run RUN --task TASK` | Refuses until every task the run accepted ahead of this one is on `origin/main` (its subject, carrying its whole accepted range). Then it cherry-picks `record.base..<accepted commit>` with `-x` onto a worktree from a freshly fetched `origin/main` and keeps both entries, newest first, when `docs/validation.md` conflicts. It checks that each copy changes the same files with the same lines as its original, context aside, and binary files to the same objects. It adds an optional HANDOFF commit and opens the PR with a body built from the attestations. Once every check on the pushed head has passed, it squash-merges that head (`--match-head-commit`) and fast-forwards a clean `main` checkout. Finally it removes its worktree and every candidate source clone that is clean and inside the landed range. `--dry-run` stops after the identity check; `--no-merge` stops once the PR is open. |
