@@ -44,7 +44,19 @@ enabled, exactly as upstream; disabled and focused, as a target that is not a
 tab stop, so `focus_next` and `focus_prev` step from its place to its
 neighbours and Tab never lands on it; disabled and unfocused, not at all, as
 upstream. The disabled control gains no click, change, hover or key
-activation, and keeps the pointer blocking and the focus ring it already had.
+activation: it passes its click or change handler only while enabled, so GPUI
+registers no Enter or Space keyboard click for it. It keeps the pointer
+handling and the focus ring it already had: the Switch, Toggle and Link stop a
+disabled mouse-down, and the Checkbox, Radio and swatch let it bubble. Keeping
+the handle of a focused disabled control has the effects the component
+Button's patch states for a disabled Button. A caller's `focus`,
+`focus_visible` and `in_focus` styles apply to the control, as they do while
+it is enabled. AccessKit reports it as the focused node instead of the window
+root. Every ancestor key binding reaches it again, not only Tab and Shift+Tab.
+A mouse-down on it focuses its own handle and calls `prevent_default`, so a
+focusable ancestor no longer takes focus from it; this changes the Checkbox,
+Radio and swatch, whose mouse-down still reaches the ancestor's other handlers,
+while the Switch, Toggle and Link already stopped it before any ancestor.
 `tab_stop(false)` also writes the handle's window-wide record, which the
 enabled path rewrites on every render, so a control that is enabled again is a
 tab stop again. This is the rule of the component Button's disabled-focus patch
@@ -70,10 +82,19 @@ and it is a tab stop again once enabled.
 and
 `cargo test --locked -p gitturtle tab_and_shift_tab_leave_the_directory_checkbox_while_the_rule_is_prepared`
 do the same for the Follow system Switch in the real Settings page and for the
-ignore form's Checkbox. All three fail without this patch. Native keyboard
-behavior needs its own run. Remove this part of the patch when upstream
-gpui-base keeps a focused disabled control's handle in the frame, or GPUI moves
-Tab and Shift+Tab on from a focused element that is no longer rendered, and
-those regressions pass without it.
+ignore form's Checkbox. The Settings regression runs only on Linux, so all
+three fail without this patch there and the other two elsewhere.
+`cargo test --locked -p gitturtle enter_and_space_leave_focused_kit_controls_that_turn_disabled_inert`
+renders the same six controls and a component Button between two tab stops,
+focuses each with Tab, checks that Enter and Space, each sent as a key-down
+and key-up, activate it while enabled, then disables it: neither key runs its
+click or change handler or changes its checked, pressed or selected state, and
+focus stays on it until Tab moves it on. Without this patch its Enter and
+Space checks still hold, because the controls pass no handler while disabled,
+and only its final Tab fails. Native keyboard behavior needs its own run.
+Remove this part of the patch when upstream gpui-base keeps a focused disabled
+control's handle in the frame, or GPUI moves Tab and Shift+Tab on from a
+focused element that is no longer rendered, and those regressions pass without
+it.
 
 All other upstream source, manifests and tests are unmodified. The registry-only `.cargo-ok`, `.cargo-checksum.json` and upstream package lockfile are omitted; the application uses the workspace lockfile. Remove this patch when the matching upstream toolkit publishes equivalent semantics and the application regressions pass against it. Native VoiceOver and macOS AX focus behavior remain separate runtime validation gates.
