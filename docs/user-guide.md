@@ -103,7 +103,7 @@ The application retains opaque theme surfaces after a real native Liquid Glass p
 
 ## Run from source
 
-Use Rust 1.98 or newer and an installed Git executable. On macOS, install Xcode and its Metal toolchain. Use the checked-in lockfile.
+Use Rust 1.99 or newer and an installed Git executable. On macOS, install Xcode and its Metal toolchain. Use the checked-in lockfile.
 
 For Linux prerequisites and a user-local executable, icon and application launcher, see [Build and install locally on Linux](linux.md).
 
@@ -205,7 +205,7 @@ The [Git service documentation](../crates/git-core/README.md) describes passive-
 
 ## Development and measurement
 
-[The quality workflow](../.github/workflows/quality.yml) configures the following checks with Rust 1.98.0: workspace tests and strict Clippy on macOS 15 and Ubuntu 24.04, workspace tests on Arch Linux in a container, and release compilation and package checks on macOS 26 and Ubuntu 24.04. It retains diagnostics and withholds [binary artifacts](ci-artifacts.md) until complete-notice checks pass. See the [dated hosted results](benchmarks/2026-09-15-ci.md); configured jobs and local passes do not establish hosted or native acceptance.
+[The quality workflow](../.github/workflows/quality.yml) configures the following checks with Rust 1.99.0: workspace tests and strict Clippy on macOS 15 and Ubuntu 24.04, workspace tests on Arch Linux in a container, and release compilation and package checks on macOS 26 and Ubuntu 24.04. It retains diagnostics and withholds [binary artifacts](ci-artifacts.md) until complete-notice checks pass. See the [dated hosted results](benchmarks/2026-09-15-ci.md); configured jobs and local passes do not establish hosted or native acceptance.
 
 ```sh
 cargo fmt --all -- --check

@@ -40,7 +40,7 @@ Previews go beyond text: rendered Markdown with Mermaid diagrams, animated GIF c
 
 ## Get started
 
-GitTurtle is in early development and has no published downloads yet: **build it from source**. Prebuilt releases will be announced on [GitHub Releases](https://github.com/FernandoX7/GitTurtle/releases). You need Git and [Rust through rustup](https://rustup.rs/); the checkout's `rust-toolchain.toml` selects Rust **1.98.0** for you.
+GitTurtle is in early development and has no published downloads yet: **build it from source**. Prebuilt releases will be announced on [GitHub Releases](https://github.com/FernandoX7/GitTurtle/releases). You need Git and [Rust through rustup](https://rustup.rs/); the checkout's `rust-toolchain.toml` selects Rust **1.99.0** for you.
 
 ```sh
 git clone https://github.com/FernandoX7/GitTurtle.git

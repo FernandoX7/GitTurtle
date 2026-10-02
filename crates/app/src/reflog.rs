@@ -18,7 +18,7 @@ const DIALOG_FOOTER_GAP: Pixels = px(16.);
 const FILE_ROW_TEXT: f32 = 12.;
 /// A changed-file row's line height in ems, the 1.618 (GPUI's `phi`) the rows
 /// inherited before they set their own.
-const FILE_ROW_LINE: f32 = 1.618_034;
+const FILE_ROW_LINE: f32 = std::f32::consts::GOLDEN_RATIO;
 /// The changed-file list's height bound at the default interface size.
 const FILE_LIST_BOUND: f32 = 110.;
 

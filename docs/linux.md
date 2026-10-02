@@ -107,9 +107,9 @@ sudo apt-get install -y --no-install-recommends \
 ```
 
 Install Rust through [rustup](https://rustup.rs/) if needed. The checked-in
-`rust-toolchain.toml` selects **Rust 1.98.0** with rustfmt and Clippy only for
+`rust-toolchain.toml` selects **Rust 1.99.0** with rustfmt and Clippy only for
 this checkout; other projects' default toolchains are unchanged. The workspace
-minimum is Rust 1.98. `Cargo.lock` pins the matching GPUI Kit 0.6.0 / GPUI 0.3.4
+minimum is Rust 1.99. `Cargo.lock` pins the matching GPUI Kit 0.6.0 / GPUI 0.3.4
 stack and local patches. Do not independently upgrade toolkit components or
 use Ubuntu's older packaged Rust in place of the selected toolchain.
 
@@ -250,7 +250,7 @@ python3 dist/gitturtle-linux-x86_64/install.py
 ```
 
 `rustup` needs no default toolchain: the checkout's `rust-toolchain.toml`
-installs Rust 1.98.0 on the first build. On another Arch system also install
+installs Rust 1.99.0 on the first build. On another Arch system also install
 `base-devel clang pkgconf desktop-file-utils fontconfig wayland libxkbcommon-x11
 libx11 libxcb openssl zstd vulkan-icd-loader`, the Vulkan driver for your GPU,
 `xdg-desktop-portal` and a FileChooser backend. No font package is needed for
