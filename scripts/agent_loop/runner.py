@@ -94,14 +94,20 @@ REVIEW_NOTES = (
     "Coordinator notes (context only, not acceptance criteria: the implementer received them as guidance; "
     "grade the candidate against the contract alone)"
 )
+# The controller ingests the inbox between steps, never inside one, and every
+# IDLE_POLL seconds while it waits for evidence (`Runner.ingest`).
 QUEUED = (
-    "a controller holds this run, so the request is queued in its inbox; the controller applies it "
-    "before its next step, or the next resume does (see status)"
+    "a controller holds this run, so the request is queued in its inbox; the controller applies it when "
+    f"the step in progress ends (within {IDLE_POLL:g} seconds while it idles), or the next resume does (see status)"
 )
 # What a run's pinned controller can do, recorded when the run is created. The
 # operator's commands come from the live checkout, so they refuse a request an
 # older run's controller would never read instead of reporting success.
 CONTROLLER_FEATURES = ("inbox", "notes", "verify_before_evidence", "evidence_commit", "rebase")
+# A checkout keeps every run at <checkout>/.local/agent-loop/<run>, and each run
+# its controller snapshot at <run>/controller (`create_run`).
+RUN_STORAGE = (".local", "agent-loop")
+RUN_CONTROLLER = "controller"
 # Another `note` or `attest` holds the lock for moments, a running loop for
 # hours: wait this long for a free lock before treating it as a running loop.
 LOCK_WAIT = 3.0
@@ -442,7 +448,7 @@ def state_at(directory: Path) -> dict:
     if digest(directory / "tasks.json") != state.get("spec_sha256"):
         raise LoopError("task snapshot changed; create a new run for a revised contract")
     for relative, expected in state.get("controller_files", {}).items():
-        path = directory / "controller" / relative
+        path = directory / RUN_CONTROLLER / relative
         if path.is_symlink() or not path.is_file() or digest(path) != expected:
             raise LoopError(f"controller snapshot changed: {relative}")
     return state
@@ -453,7 +459,7 @@ class Runner:
         self.directory = directory.resolve()
         self.state = state_at(self.directory)
         self.tasks = load_spec(self.directory / "tasks.json")
-        self.controller = self.directory / "controller"
+        self.controller = self.directory / RUN_CONTROLLER
         live_controller = Path(__file__).resolve().parents[2]
         for relative, expected in self.state["controller_files"].items():
             path = live_controller / relative
@@ -1544,8 +1550,8 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
         options = options | resolve_selection(options["model"], options["effort"], options)
     adapter = make_adapter(controller, options | {"tool": tool})
     adapter.preflight()
-    state_parent = root / ".local" / "agent-loop"
-    if (root / ".local").is_symlink() or state_parent.is_symlink():
+    state_parent = root.joinpath(*RUN_STORAGE)
+    if (root / RUN_STORAGE[0]).is_symlink() or state_parent.is_symlink():
         raise LoopError("run storage must not be symlinked")
     # Require the local state exclusion before creating anything in the source tree.
     git(root, "check-ignore", "--quiet", ".local/agent-loop/probe")
@@ -1567,7 +1573,7 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
     if tool == "claude":
         sources.extend(claude_snapshot_files(controller))
     for relative, file in sources:
-        target = directory / "controller" / relative
+        target = directory / RUN_CONTROLLER / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(file, target)  # follows a symlinked skill to its content
         controller_files[relative] = digest(target)
@@ -1900,6 +1906,42 @@ def rebase_summary(state: dict) -> dict:
     }
 
 
+def run_storage(controller: Path) -> Path:
+    """Where `--run` looks up a bare run name, for the controller rooted at `controller`.
+
+    A run's saved controller, which the operator uses to resume or attest with
+    the run's own code, sits at <storage>/<run>/controller, so it looks beside
+    its own run; any other controller is a checkout and uses that checkout's
+    storage, as the operator scripts do. The layout `create_run` writes decides,
+    from the resolved path alone.
+    """
+    storage = controller.parent.parent
+    if controller.name == RUN_CONTROLLER and storage.parts[-len(RUN_STORAGE):] == RUN_STORAGE:
+        return storage
+    return controller.joinpath(*RUN_STORAGE)
+
+
+RUNS = run_storage(Path(__file__).resolve().parents[2])
+
+
+def run_directory(value: str, runs: Path) -> Path:
+    """The run `--run` names: a run directory, or its bare name under `runs`.
+
+    An existing directory wins, as in the operator scripts. A bare name has no
+    path separator, is not `.` or `..` and is not a symlink, so it cannot leave
+    `runs`; anything else that is not a run directory is refused here.
+    """
+    path = Path(value)
+    separators = {os.sep, os.altsep} - {None}
+    if not path.is_dir() and value not in ("", ".", "..") and not any(mark in value for mark in separators):
+        named = runs / value
+        if named.is_dir() and not named.is_symlink():
+            path = named
+    if not path.is_dir() or not (path / "state.json").is_file():
+        raise LoopError(f"{value!r} is neither a run directory nor a run name under {runs}")
+    return path.resolve()
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1929,7 +1971,7 @@ def main(argv=None) -> int:
             claude.add_argument("--sandbox", choices=("auto", "on", "off"), default="auto", help="Bash sandbox for implementer sessions")
     for name in ("status", "resume", "stop", "attest", "note"):
         command = sub.add_parser(name)
-        command.add_argument("--run", type=Path, required=True)
+        command.add_argument("--run", required=True, help="run directory, or its name under .local/agent-loop")
         if name == "note":
             command.add_argument("--task", required=True)
             source = command.add_mutually_exclusive_group(required=True)
@@ -1965,7 +2007,7 @@ def main(argv=None) -> int:
             directory = create_run(args.repo, path, Path(__file__).resolve().parents[2], vars(args))
             print(f"run: {directory}", flush=True)
         else:
-            directory = args.run.resolve()
+            directory = run_directory(args.run, RUNS)
         if args.command == "status":
             state = state_at(directory)
             print(json.dumps(state | {"inbox": inbox.summary(directory), "rebases": rebase_summary(state)}, indent=2))
