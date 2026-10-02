@@ -158,7 +158,7 @@ def launch(args) -> int:
         if monitor is not None:
             monitor.stop()
     print(f"run directory: {run.dirs.root}")
-    return 0 if code in (0, -15) and run.log["fixture_unchanged"] else 1
+    return 0 if code in (0, -15) and run.log["fixture_unchanged"] and not run.restore_failures else 1
 
 
 def compare(args) -> int:

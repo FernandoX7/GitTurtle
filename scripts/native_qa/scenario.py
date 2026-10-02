@@ -55,6 +55,7 @@ STEPS = {
     "wait": set(),
     "stable": {"quiet"},
     "resize": set(),
+    "read_only": set(),
     "mark": {"park_first", "stable_within", "quiet"},
     "guard": {"on_fail"},
     "capture": {"shows", "crop", "roles", "commit", "keep_pointer", "settle", "stable_within", "quiet"},
@@ -441,6 +442,10 @@ def step_entry(value, path: str, spec: dict) -> dict:
     elif action == "resize":
         array(value["resize"], where, 2, 2)
         step["resize"] = [integer(v, f"{where}[{i}]", 200, 8192) for i, v in enumerate(value["resize"])]
+    elif action == "read_only":
+        problem = runenv.read_only_problem(value["read_only"])
+        if problem is not None:
+            fail(where, problem)
     elif action == "mark":
         text(value["mark"], where, IDENTIFIER)
         step["park_first"] = boolean(value.get("park_first", False), f"{path}.park_first")

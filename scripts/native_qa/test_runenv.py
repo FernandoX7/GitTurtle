@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -122,6 +123,98 @@ class RunEnvironmentTest(unittest.TestCase):
 
         with mock.patch.object(Path, "resolve", firmlinked), self.assertRaises(runenv.Refusal):
             runenv.check_commit_run_dir(Path("/home/someone/run"))
+
+
+class ReadOnlyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.scratch = tempfile.TemporaryDirectory()
+        self.root = Path(self.scratch.name).resolve()
+        self.dirs = runenv.prepare(self.root / "run", b'{"version": 6}', home=self.root / "operator")
+        self.themes = self.dirs.preferences.parent  # config/gitturtle
+        self.themes.chmod(0o755)
+        self.dirs.preferences.chmod(0o664)
+
+    def tearDown(self) -> None:
+        for path in (self.themes, self.root / "run" / "config" / "moved"):
+            if path.is_dir() and not path.is_symlink():
+                path.chmod(0o755)
+        self.scratch.cleanup()
+
+    def test_paths_are_validated(self) -> None:
+        for good in ("config/gitturtle", "config", "data/gitturtle/themes", "state/x", "cache/gitturtle/a.json"):
+            with self.subTest(good=good):
+                self.assertIsNone(runenv.read_only_problem(good))
+        for bad in ("", "/config/gitturtle", "config/../home", "../config", "config//gitturtle", "config/./x",
+                    "config/", "home/.config", "home", "captures/x", "config\\gitturtle", "other/x", None, 5,
+                    ["config"], "config/" + "x" * 300):
+            with self.subTest(bad=bad):
+                self.assertIsNotNone(runenv.read_only_problem(bad))
+        with self.assertRaisesRegex(runenv.Refusal, "must start with one of config, data, cache, state"):
+            runenv.lock_read_only(self.dirs.root, "home/.gitconfig")
+
+    def test_write_bits_go_until_the_restore_puts_the_old_mode_back(self) -> None:
+        store = runenv.lock_read_only(self.dirs.root, "config/gitturtle/preferences.json")
+        directory = runenv.lock_read_only(self.dirs.root, "config/gitturtle")
+        self.assertEqual((directory.old_mode, directory.new_mode), (0o755, 0o500))
+        self.assertEqual((store.old_mode, store.new_mode), (0o664, 0o444))
+        self.assertEqual(self.themes.stat().st_mode & 0o7777, 0o500)
+        self.assertEqual(self.dirs.preferences.stat().st_mode & 0o7777, 0o444)
+        if os.geteuid() != 0:  # root writes regardless of the mode
+            with self.assertRaises(PermissionError):
+                (self.themes / "themes.json").write_text("{}")
+        runenv.restore_mode(directory)
+        runenv.restore_mode(store)
+        self.assertEqual(self.themes.stat().st_mode & 0o7777, 0o755)
+        self.assertEqual(self.dirs.preferences.stat().st_mode & 0o7777, 0o664)
+        (self.themes / "themes.json").write_text("{}")
+
+    def test_a_failure_after_the_mode_changed_puts_it_back(self) -> None:
+        real, calls = os.fchmod, []
+
+        def interrupted(fd, mode):
+            calls.append(mode)
+            real(fd, mode)
+            if len(calls) == 1:
+                raise KeyboardInterrupt  # an asynchronous exception just after the mode changed
+
+        with mock.patch.object(runenv.os, "fchmod", interrupted), self.assertRaises(KeyboardInterrupt):
+            runenv.lock_read_only(self.dirs.root, "config/gitturtle")
+        self.assertEqual(calls, [0o500, 0o755])
+        self.assertEqual(self.themes.stat().st_mode & 0o7777, 0o755)
+
+    def test_the_restore_changes_the_locked_entry_not_what_now_has_its_path(self) -> None:
+        # A regular file, because macOS refuses to move a directory without write permission on it.
+        outside = self.root / "outside.json"
+        outside.write_bytes(b"{}")
+        outside.chmod(0o600)
+        locked = runenv.lock_read_only(self.dirs.root, "config/gitturtle/preferences.json")
+        moved = self.themes / "moved.json"
+        self.dirs.preferences.rename(moved)
+        self.dirs.preferences.symlink_to(outside)
+        runenv.restore_mode(locked)
+        self.assertEqual(moved.stat().st_mode & 0o7777, 0o664)
+        self.assertEqual(outside.stat().st_mode & 0o7777, 0o600)
+
+    def test_a_link_a_missing_path_or_another_file_type_is_refused_with_nothing_changed(self) -> None:
+        outside = self.root / "outside"
+        (outside / "gitturtle").mkdir(parents=True)
+        for path in (outside, outside / "gitturtle"):
+            path.chmod(0o755)
+        (self.root / "run" / "data" / "link").symlink_to(outside)
+        (self.root / "run" / "cache" / "store.json").symlink_to(self.dirs.preferences)
+        os.mkfifo(self.root / "run" / "state" / "pipe")
+        for relative, reason in (("data/link", "data/link is a symbolic link"),
+                                 ("data/link/gitturtle", "data/link is a symbolic link"),
+                                 ("cache/store.json", "cache/store.json is a symbolic link"),
+                                 ("config/absent", "config/absent does not exist"),
+                                 ("config/gitturtle/absent/x", "config/gitturtle/absent does not exist"),
+                                 ("config/gitturtle/preferences.json/x", "preferences.json is not a directory"),
+                                 ("state/pipe", "state/pipe is not a directory or regular file")):
+            with self.subTest(relative=relative), self.assertRaisesRegex(runenv.Refusal, reason):
+                runenv.lock_read_only(self.dirs.root, relative)
+        self.assertEqual((outside / "gitturtle").stat().st_mode & 0o7777, 0o755)
+        self.assertEqual(outside.stat().st_mode & 0o7777, 0o755)
+        self.assertEqual(self.dirs.preferences.stat().st_mode & 0o7777, 0o664)
 
 
 class StoreTest(unittest.TestCase):

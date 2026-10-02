@@ -4,12 +4,16 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from native_qa import session, stores
 
@@ -152,6 +156,136 @@ class SessionTest(unittest.TestCase):
             self.assertEqual(calls, [])
         run.run([{"wait": 0}, {"stable": 0.1}])  # waiting sends nothing, so it needs no check
 
+    def open_session(self, run_dir: Path | None = None, **kwargs) -> session.Session:
+        with contextlib.redirect_stderr(io.StringIO()):
+            return session.Session(self.binary, self.fixture, run_dir or self.root / "run", stores.store_text(),
+                                   **kwargs)
+
+    def test_read_only_paths_are_restored_when_the_launch_raises_after_the_step(self) -> None:
+        class FailingDriver:
+            def key(self, *args, **kwargs):
+                raise RuntimeError("the app went away")
+
+        run = self.open_session(lock_check=lambda: True)  # a locked desktop: the step sends no input, so it still runs
+        themes = run.dirs.preferences.parent
+        themes.chmod(0o755)
+        before = session.fixture_state(self.fixture)
+        run.driver = FailingDriver()
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                run.run([{"read_only": "config/gitturtle", "note": "force a save error"}])
+                self.assertEqual(themes.stat().st_mode & 0o7777, 0o500)
+                run.lock_check = lambda: False
+                with self.assertRaisesRegex(RuntimeError, "went away"):
+                    run.run([{"key": "Return"}])
+            finally:
+                run.close()
+        self.assertEqual(themes.stat().st_mode & 0o7777, 0o755)
+        self.assertEqual(run.restore_failures, [])
+        log = json.loads((self.root / "run" / "flow-log.json").read_text())
+        self.assertEqual(log["read_only"], [dict(path="config/gitturtle", old_mode="0755", new_mode="0500",
+                                                 at_utc=log["read_only"][0]["at_utc"], restored=True)])
+        self.assertEqual(log["input"], ["read_only config/gitturtle: mode 0755 -> 0500  # force a save error",
+                                        "restore config/gitturtle: mode 0500 -> 0755"])
+        self.assertTrue(log["fixture_unchanged"])
+        self.assertEqual(session.fixture_state(self.fixture), before)
+
+    def test_sigterm_ends_the_launch_through_close_which_restores_the_modes(self) -> None:
+        previous = signal.getsignal(signal.SIGTERM)
+        run = self.open_session()
+        run.dirs.preferences.parent.chmod(0o755)
+        run.dirs.preferences.chmod(0o644)
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                with self.assertRaisesRegex(SystemExit, "SIGTERM"):
+                    run.run([{"read_only": "config/gitturtle/preferences.json"}, {"read_only": "config/gitturtle"}])
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    time.sleep(5)
+                self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_IGN)  # a second one cannot interrupt
+            finally:
+                run.close()
+        self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
+        self.assertEqual(run.dirs.preferences.parent.stat().st_mode & 0o7777, 0o755)
+        self.assertEqual(run.dirs.preferences.stat().st_mode & 0o7777, 0o644)
+        restores = [line for line in run.log["input"] if line.startswith("restore")]
+        self.assertEqual(restores, ["restore config/gitturtle: mode 0500 -> 0755",  # the last locked goes first
+                                    "restore config/gitturtle/preferences.json: mode 0444 -> 0644"])
+
+    def test_sigterm_just_after_the_mode_changed_waits_until_the_path_is_recorded(self) -> None:
+        previous = signal.getsignal(signal.SIGTERM)
+        run = self.open_session()
+        themes = run.dirs.preferences.parent
+        themes.chmod(0o755)
+        real = os.fchmod
+
+        def terminated(fd, mode):
+            real(fd, mode)
+            os.kill(os.getpid(), signal.SIGTERM)  # between the mode change and its record
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                with mock.patch.object(session.runenv.os, "fchmod", terminated), \
+                        self.assertRaisesRegex(SystemExit, "SIGTERM"):
+                    run.run([{"read_only": "config/gitturtle"}])
+                self.assertEqual([locked.path for locked, _ in run.locked], ["config/gitturtle"])
+                self.assertEqual(themes.stat().st_mode & 0o7777, 0o500)
+            finally:
+                run.close()
+        self.assertEqual(themes.stat().st_mode & 0o7777, 0o755)
+        self.assertEqual(run.log["read_only"][0]["restored"], True)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
+        self.assertNotIn(signal.SIGTERM, signal.pthread_sigmask(signal.SIG_BLOCK, ()))
+
+    def test_sigterm_during_the_restore_waits_until_every_mode_is_back(self) -> None:
+        received = []
+        self.addCleanup(signal.signal, signal.SIGTERM,
+                        signal.signal(signal.SIGTERM, lambda signum, frame: received.append(signum)))
+        run = self.open_session()
+        run.dirs.preferences.parent.chmod(0o755)
+        run.dirs.preferences.chmod(0o644)
+        real = session.runenv.restore_mode
+
+        def terminated(locked):
+            if not received:
+                os.kill(os.getpid(), signal.SIGTERM)  # before the first of two restores
+            real(locked)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            run.run([{"read_only": "config/gitturtle/preferences.json"}, {"read_only": "config/gitturtle"}])
+            with mock.patch.object(session.runenv, "restore_mode", terminated):
+                run.close()
+        self.assertEqual(received, [signal.SIGTERM])  # delivered once, to the tool's own handler, afterwards
+        self.assertEqual(run.dirs.preferences.parent.stat().st_mode & 0o7777, 0o755)
+        self.assertEqual(run.dirs.preferences.stat().st_mode & 0o7777, 0o644)
+        log = json.loads((self.root / "run" / "flow-log.json").read_text())
+        self.assertEqual([entry["restored"] for entry in log["read_only"]], [True, True])
+        self.assertNotIn(signal.SIGTERM, signal.pthread_sigmask(signal.SIG_BLOCK, ()))
+
+    def test_a_failed_restore_is_reported(self) -> None:
+        run = self.open_session()
+        themes = run.dirs.preferences.parent
+        with contextlib.redirect_stdout(io.StringIO()):
+            run.run([{"read_only": "config/gitturtle"}])
+        try:
+            with mock.patch.object(session.runenv.os, "fchmod", side_effect=PermissionError(1, "Operation not permitted")), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as printed:
+                run.close()
+        finally:
+            themes.chmod(0o755)
+        self.assertIn("error: could not restore mode", printed.getvalue())
+        self.assertEqual(len(run.restore_failures), 1)
+        entry = json.loads((self.root / "run" / "flow-log.json").read_text())["read_only"][0]
+        self.assertEqual((entry["restored"], entry["error"]), (False, "[Errno 1] Operation not permitted"))
+
+    def test_read_only_refuses_a_path_in_the_fixture(self) -> None:
+        run = self.open_session(run_dir=self.fixture / "run")  # a run directory inside the fixture's work tree
+        themes = run.dirs.preferences.parent
+        mode = themes.stat().st_mode
+        with self.assertRaisesRegex(SystemExit, "overlaps the fixture"):
+            run.run([{"read_only": "config/gitturtle"}])
+        self.assertEqual(themes.stat().st_mode, mode)
+        self.assertEqual(run.locked, [])
+
     def test_refusals_leave_no_run_directory(self) -> None:
         for kwargs in (dict(for_commit=True), dict(extra_env={"XDG_CONFIG_HOME": "/x"})):
             with self.subTest(kwargs=kwargs), self.assertRaises(SystemExit):
@@ -179,6 +313,13 @@ class ScenarioTest(unittest.TestCase):
                         [{"wheel": [60, 400]}]):
                 path.write_text(json.dumps(bad))
                 with self.subTest(bad=bad), self.assertRaises(SystemExit):
+                    session.load_scenario(path)
+            path.write_text(json.dumps([{"read_only": "config/gitturtle", "note": "force a save error"},
+                                        {"read_only": "data/gitturtle"}]))
+            self.assertEqual(len(session.load_scenario(path)), 2)
+            for bad in ("/config/gitturtle", "config/../home", "home/.config", "captures/x", "", None, 7):
+                path.write_text(json.dumps([{"wait": 0}, {"read_only": bad}]))
+                with self.subTest(bad=bad), self.assertRaisesRegex(SystemExit, r"scenario step 1 \(\$\[1\]\.read_only\)"):
                     session.load_scenario(path)
 
 
