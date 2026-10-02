@@ -162,7 +162,7 @@ class CodexProcessTests(unittest.TestCase):
             "prompt = sys.stdin.read()\n"
             "capture = {'args': args, 'prompt': prompt, 'cwd': os.getcwd(),\n"
             "           'environment': {k: os.environ.get(k) for k in\n"
-            "           ['CODEX_THREAD_ID', 'CODEX_TASK_ID', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE']}}\n"
+            "           ['CODEX_THREAD_ID', 'CODEX_TASK_ID', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE', 'GITTURTLE_LOOP']}}\n"
             f"Path({str(self.invocation)!r}).write_text(json.dumps(capture))\n"
             "assert args[0] == 'exec' and args[-1] == '-'\n"
             "assert '--output-last-message' in args\n"
@@ -206,7 +206,7 @@ class CodexProcessTests(unittest.TestCase):
         self.assertEqual(overrides["model_reasoning_effort"], "medium")
         self.assertEqual(overrides["approval_policy"], "never")
         self.assertEqual(overrides["developer_instructions"], "Inspect the fixture contract.")
-        self.assertEqual(capture["environment"], {key: None for key in environment})
+        self.assertEqual(capture["environment"], {key: None for key in environment} | {"GITTURTLE_LOOP": "1"})
         self.assertEqual(Path(capture["cwd"]).resolve(), self.repo.resolve())
         self.assertIn('"id": "inspect-history"', capture["prompt"])
         self.assertIn(self.task.acceptance[1]["description"], capture["prompt"])

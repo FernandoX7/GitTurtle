@@ -199,6 +199,8 @@ class Codex:
         # A child must not mistake a parent Codex app/goal for its own session.
         for key in ("CODEX_THREAD_ID", "CODEX_TASK_ID", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE"):
             environment.pop(key, None)
+        # The controller's own child: the operator's note and attest refuse it.
+        environment["GITTURTLE_LOOP"] = "1"
         if spec_path:
             # The hook protects the run's own queue, which may live outside docs/development/tasks.json.
             environment["GITTURTLE_TASKS_PATH"] = spec_path

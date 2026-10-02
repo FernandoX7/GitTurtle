@@ -20,6 +20,7 @@ import uuid
 
 from .claude import CLAUDE_EFFORTS, Claude, UsageLimited, resolve_selection, snapshot_files as claude_snapshot_files
 from .codex import Codex, validate_review
+from . import inbox
 from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, untracked_paths, within, write_limits
 from .process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest, read_json, run_process, reconcile_processes
 from .rust_surface import renders
@@ -53,6 +54,31 @@ CLAUDE_OPTIONS = (
     "retry_effort", "hard_model", "light_model", "hard_effort", "light_effort", "review_effort",
     "max_turns", "review_max_turns", "sandbox",
 )
+EVIDENCE_BYTES = 32 * 1024 * 1024
+# Coordinator notes: guidance for a task's next attempt, kept in its run record
+# and never in the contract snapshot, so they cannot change scope or acceptance.
+NOTE_BYTES = 8 * 1024
+MAX_NOTES = 32
+IMPLEMENTER_NOTES = (
+    "Coordinator notes (guidance from the run's coordinator; they never change the contract, its scope "
+    "or its acceptance criteria; if a note conflicts with the contract, follow the contract and say so in your summary)"
+)
+REVIEW_NOTES = (
+    "Coordinator notes (context only, not acceptance criteria: the implementer received them as guidance; "
+    "grade the candidate against the contract alone)"
+)
+QUEUED = (
+    "a controller holds this run, so the request is queued in its inbox; the controller applies it "
+    "before its next step, or the next resume does (see status)"
+)
+# What a run's pinned controller can do, recorded when the run is created. The
+# operator's commands come from the live checkout, so they refuse a request an
+# older run's controller would never read instead of reporting success.
+CONTROLLER_FEATURES = ("inbox", "notes")
+# Another `note` or `attest` holds the lock for moments, a running loop for
+# hours: wait this long for a free lock before treating it as a running loop.
+LOCK_WAIT = 3.0
+LOCK_POLL = 0.1
 
 
 def now() -> str:
@@ -194,19 +220,30 @@ def make_adapter(controller: Path, settings: dict):
 
 
 @contextmanager
-def locked(directory: Path):
+def locked(directory: Path, *, busy_ok: bool = False):
+    """Hold the run lock; with `busy_ok`, yield False instead of failing while another holder has it."""
     lock_path = directory / "lock"
     if lock_path.is_symlink():
         raise LoopError("invalid run lock")
     with lock_path.open("a+") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held = True
         except BlockingIOError as error:
-            raise LoopError("another controller is using this run") from error
+            if not busy_ok:
+                raise LoopError("another controller is using this run") from error
+            held = False
         try:
-            yield
+            yield held
         finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+            if held:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def notes_context(record: dict, heading: str) -> str:
+    """The task's coordinator notes as data under `heading`, each with its UTC time."""
+    notes = [{"at": note["at"], "text": note["text"]} for note in record.get("notes", ())]
+    return heading + ":\n" + json.dumps(notes, indent=2, ensure_ascii=False) if notes else ""
 
 
 def state_at(directory: Path) -> dict:
@@ -364,6 +401,9 @@ class Runner:
                 raise EnvironmentBlocked(self.budget_stop())
             environment = os.environ.copy()
             environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            # Candidate code runs here: mark it as the controller's own, so the
+            # operator's commands refuse it as they refuse a session.
+            environment["GITTURTLE_LOOP"] = "1"
             environment["CARGO_TARGET_DIR"] = str(self.directory / "build")
             environment["CARGO_TERM_COLOR"] = "never"
             with headless(environment) if name == "native-qa-tooling" else nullcontext():
@@ -400,6 +440,7 @@ class Runner:
             candidate = record["candidate"]
             if actual == candidate:
                 self.finish_acceptance(task_id, record)
+                self.ingest()
                 return
             if actual != self.state["accepted_head"]:
                 raise LoopError("accepted checkout moved during interrupted acceptance")
@@ -419,6 +460,43 @@ class Runner:
             self.state["active"] = None
         self.state["phase"] = "idle"
         self.save()
+        self.ingest()
+
+    def ingest(self) -> set[str]:
+        """Apply or refuse the requests queued while this controller held the run lock.
+
+        Runs under the lock at safe points: after reconciliation and before the
+        loop selects each next task, never during a step. Each request passes
+        the same rules as when it applies directly, in name order, and moves to
+        `inbox/done/` with its outcome; a refusal never stops the loop. Returns
+        the tasks that received evidence, so the loop reconsiders them.
+        """
+        attested = set()
+        for name in inbox.pending(self.directory):
+            request = None
+            changed = False
+            try:
+                request = inbox.read(self.directory, name)
+                evidence = sha256 = None
+                if request.get("kind") == "attest":
+                    sha256 = request.get("sha256")
+                    if "artifact" not in request or not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+                        raise LoopError("queued attestation carries no recorded evidence copy")
+                    evidence = inbox.artifact(self.directory, request)
+                changed = apply_request(self.directory, self.state, request, evidence, sha256)
+                if request.get("kind") == "attest":
+                    attested.add(request["task"])
+                outcome = "applied"
+            except LoopError as error:
+                outcome = f"refused: {error}"
+            if changed:
+                # Outside the refusal path: a failed write propagates and leaves
+                # the request pending, and the next ingestion applies it once.
+                self.save()
+            inbox.finish(self.directory, name, request, outcome)
+            subject = f"{request.get('kind')} for {request.get('task')}" if request else name
+            print(f"{now()[11:19]}Z inbox {subject}: {outcome}", flush=True)
+        return attested
 
     def execute(self) -> dict:
         with write_limits(self.timeout, self.stop_requested):
@@ -457,6 +535,8 @@ class Runner:
             self.save()
         visited: set[str] = set()
         while True:
+            # Evidence that reached the inbox reopens its parked task in this run.
+            visited -= self.ingest()
             reason = self.budget_stop()
             if reason:
                 self.state.update(phase="paused", reason=reason)
@@ -524,9 +604,11 @@ class Runner:
             self.save()
         try:
             clone(self.repo, repo, record["base"], tuple(self.state["author"]), owner=self.directory)
+            context = "Previous attempt evidence (read-only): " + json.dumps(previous)
+            if notes := notes_context(record, IMPLEMENTER_NOTES):
+                context += "\n\n" + notes
             result = self.adapter.run("implementer", task, repo, directory, self.timeout(), self.stop_requested,
-                                      context="Previous attempt evidence (read-only): " + json.dumps(previous),
-                                      spec_path=self.state["spec_path"])
+                                      context=context, spec_path=self.state["spec_path"])
             if self.budget_stop():
                 raise LoopError(self.budget_stop())
             if result["status"] == "blocked":
@@ -641,6 +723,8 @@ class Runner:
             record["status"] = "awaiting_evidence"
             return
         context = gate_context(directory / "checks/gates.json") + "\nExternal evidence: " + json.dumps(record.get("attestations", {}))
+        if notes := notes_context(record, REVIEW_NOTES):
+            context += "\n" + notes
         general_validator = lambda value: validate_review(value, task, candidate)
         if not self.saved_review(record, "review", general_validator):
             review_dir = directory / ("review-" + uuid.uuid4().hex[:10])
@@ -895,7 +979,7 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
         "controller_files": controller_files, "author": author, "phase": "idle", "active": None,
         "created_at": now(), "updated_at": now(), "baseline_passed": False,
         "remaining_seconds": options["max_minutes"] * 60, "output_tokens": 0,
-        "tasks": records,
+        "tasks": records, "controller_features": list(CONTROLLER_FEATURES),
         "tool": tool, **prepared,
         **{key: options[key] for key in ("model", "effort", "max_tasks", "max_attempts", "session_minutes", "max_output_tokens")},
         **{key: options[key] for key in CLAUDE_OPTIONS if tool == "claude" and key in options},
@@ -904,28 +988,172 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
     return directory
 
 
-def attest(directory: Path, task_id: str, candidate: str, kind: str, evidence: Path, summary: str) -> None:
-    with locked(directory):
-        state = state_at(directory)
-        record = state["tasks"].get(task_id)
-        if not record or record.get("candidate") != candidate or not re.fullmatch(r"[0-9a-f]{40,64}", candidate):
-            raise LoopError("attestation does not identify the pending candidate")
-        if record.get("base") != state["accepted_head"]:
-            raise LoopError("candidate base is stale; resume to rebuild before gathering evidence")
-        if record["status"] not in {"awaiting_evidence", "review_blocked"} or kind not in record["required_evidence"]:
-            raise LoopError("this candidate is not waiting for that evidence kind")
-        if not summary.strip() or evidence.is_symlink() or not evidence.is_file() or evidence.stat().st_size > 32 * 1024 * 1024:
-            raise LoopError("provide a nonempty summary and a regular evidence file no larger than 32 MiB")
-        artifact = Path("attestations") / task_id / f"{candidate}-{kind}-{uuid.uuid4().hex}.evidence"
-        destination = directory / artifact
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(evidence, destination)
-        record.setdefault("attestations", {})[kind] = {
-            "candidate": candidate, "kind": kind, "summary": summary,
-            "artifact": artifact.as_posix(), "sha256": digest(destination), "recorded_at": now(),
-        }
-        state["updated_at"] = now()
-        atomic_json(directory / "state.json", state)
+def task_record(state: dict, task_id) -> dict | None:
+    return state["tasks"].get(task_id) if isinstance(task_id, str) else None
+
+
+def checked_note(state: dict, request: dict) -> dict | None:
+    """The task record a note request applies to, or None when it already did.
+
+    The one rule set for a note applied directly, a note queued while a
+    controller holds the run, and that controller's ingestion of it.
+    """
+    record = task_record(state, request.get("task"))
+    if record is None:
+        raise LoopError(f"task {request.get('task')!r} is not part of this run")
+    if any(note.get("id") == request.get("id") for note in record.get("notes", ())):
+        return None
+    try:
+        if not isinstance(request.get("id"), str) or not inbox.REQUEST_ID.fullmatch(request["id"]):
+            raise ValueError
+        datetime.fromisoformat(request["at"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise LoopError("note request is malformed") from error
+    text = request.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise LoopError("a note needs nonempty text")
+    try:
+        size = len(text.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise LoopError("a note must be UTF-8 text") from error
+    if size > NOTE_BYTES:
+        raise LoopError(f"a note holds at most {NOTE_BYTES} bytes of UTF-8 text; this one has {size}")
+    if len(record.get("notes", ())) >= MAX_NOTES:
+        raise LoopError(f"task {request['task']} already holds {MAX_NOTES} notes")
+    return record
+
+
+def apply_note(state: dict, request: dict) -> bool:
+    record = checked_note(state, request)
+    if record is None:
+        return False
+    record.setdefault("notes", []).append({key: request[key] for key in ("id", "at", "text")})
+    return True
+
+
+def checked_attestation(state: dict, request: dict) -> dict | None:
+    """The task record an attestation request applies to, or None when it already did.
+
+    The evidence file itself is checked as it is copied: a regular file, not a
+    symlink, of at most 32 MiB, and for a queued request the digest recorded
+    when it was queued.
+    """
+    task_id, candidate, kind, summary = (request.get(key) for key in ("task", "candidate", "evidence_kind", "summary"))
+    record = task_record(state, task_id)
+    if (not record or not isinstance(candidate, str) or record.get("candidate") != candidate
+            or not re.fullmatch(r"[0-9a-f]{40,64}", candidate)):
+        raise LoopError("attestation does not identify the pending candidate")
+    if not isinstance(kind, str) or not isinstance(request.get("id"), str):
+        raise LoopError("attestation request is malformed")
+    if (record.get("attestations") or {}).get(kind, {}).get("request") == request["id"]:
+        return None
+    if record.get("base") != state["accepted_head"]:
+        raise LoopError("candidate base is stale; resume to rebuild before gathering evidence")
+    if record["status"] not in {"awaiting_evidence", "review_blocked"} or kind not in record["required_evidence"]:
+        raise LoopError("this candidate is not waiting for that evidence kind")
+    if not isinstance(summary, str) or not summary.strip():
+        raise LoopError("provide a nonempty summary and a regular evidence file no larger than 32 MiB")
+    return record
+
+
+def apply_attestation(directory: Path, state: dict, request: dict, evidence: Path, sha256: str | None = None) -> bool:
+    record = checked_attestation(state, request)
+    if record is None:
+        return False
+    candidate, kind = request["candidate"], request["evidence_kind"]
+    artifact = Path("attestations") / request["task"] / f"{candidate}-{kind}-{uuid.uuid4().hex}.evidence"
+    copied = inbox.copy_supplied(evidence, directory / artifact, EVIDENCE_BYTES, "evidence file")
+    if sha256 is not None and copied != sha256:
+        (directory / artifact).unlink()
+        raise LoopError("queued evidence changed after it was submitted")
+    proof = {
+        "candidate": candidate, "kind": kind, "summary": request["summary"], "artifact": artifact.as_posix(),
+        "sha256": copied, "recorded_at": now(),
+    }
+    if sha256 is not None:
+        proof["request"] = request["id"]  # makes a re-run ingestion of this queued request a no-op
+    record.setdefault("attestations", {})[kind] = proof
+    return True
+
+
+def check_request(state: dict, request: dict) -> None:
+    """Validate a request against `state` without changing anything."""
+    kind = request.get("kind")
+    if kind == "note":
+        checked_note(state, request)
+    elif kind == "attest":
+        checked_attestation(state, request)
+    else:
+        raise LoopError(f"unknown request kind {kind!r}")
+
+
+def apply_request(directory: Path, state: dict, request: dict, evidence: Path | None = None, sha256: str | None = None) -> bool:
+    """Validate and apply one request to `state`; False when it was already applied."""
+    kind = request.get("kind")
+    if kind == "note":
+        return apply_note(state, request)
+    if kind == "attest":
+        if evidence is None:
+            raise LoopError("attestation request carries no evidence file")
+        return apply_attestation(directory, state, request, evidence, sha256)
+    raise LoopError(f"unknown request kind {kind!r}")
+
+
+def submit(directory: Path, request: dict, evidence: Path | None = None) -> str:
+    """Apply an operator request under the run lock, or queue it while a controller holds the lock.
+
+    Returns "applied" or "queued". A queued request has passed every check that
+    needs no lock, and the controller checks it again before applying it. The
+    controller's own sessions and gate commands carry GITTURTLE_LOOP=1 and are
+    refused either way, as they were while the lock alone kept them out. That
+    restores a guard against workers invoking this CLI; it is not a boundary
+    against hostile code running as the same user.
+    """
+    if os.environ.get("GITTURTLE_LOOP") == "1":
+        raise LoopError("another controller is using this run: its own sessions and gate commands cannot note or attest")
+    deadline = time.monotonic() + LOCK_WAIT
+    while True:
+        with locked(directory, busy_ok=True) as held:
+            state = state_at(directory)
+            features = state.get("controller_features", ())
+            if request.get("kind") == "note" and "notes" not in features:
+                raise LoopError("this run's saved controller predates coordinator notes, so none of its sessions would see one; "
+                                "notes need a run created by this controller")
+            if held:
+                apply_request(directory, state, request, evidence)
+                state["updated_at"] = now()
+                atomic_json(directory / "state.json", state)
+                return "applied"
+            check_request(state, request)
+            if time.monotonic() >= deadline:
+                if "inbox" not in features:
+                    raise LoopError(
+                        "another controller is using this run, and its saved controller predates the run inbox, so it would "
+                        f"never apply a queued request; stop it (agent-loop.py stop --run {directory}), then attest with the "
+                        f"run's saved controller: python3 {directory / 'controller/scripts/agent-loop.py'} attest ..."
+                    )
+                inbox.submit(directory, request, evidence, EVIDENCE_BYTES, "evidence file")
+                return "queued"
+        time.sleep(LOCK_POLL)
+
+
+def attest(directory: Path, task_id: str, candidate: str, kind: str, evidence: Path, summary: str) -> str:
+    return submit(directory, {
+        "version": 1, "kind": "attest", "id": uuid.uuid4().hex, "at": now(), "task": task_id,
+        "candidate": candidate, "evidence_kind": kind, "summary": summary,
+    }, evidence)
+
+
+def note(directory: Path, task_id: str, text: str) -> str:
+    return submit(directory, {"version": 1, "kind": "note", "id": uuid.uuid4().hex, "at": now(), "task": task_id, "text": text})
+
+
+def note_text(path: Path) -> str:
+    data = inbox.read_supplied(path, NOTE_BYTES, "note file")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise LoopError("a note file must hold UTF-8 text") from error
 
 
 def positive(value: str) -> int:
@@ -961,9 +1189,14 @@ def main(argv=None) -> int:
             claude.add_argument("--max-turns", type=positive, default=200, help="turn cap per implementer session")
             claude.add_argument("--review-max-turns", type=positive, default=120, help="turn cap per review session")
             claude.add_argument("--sandbox", choices=("auto", "on", "off"), default="auto", help="Bash sandbox for implementer sessions")
-    for name in ("status", "resume", "stop", "attest"):
+    for name in ("status", "resume", "stop", "attest", "note"):
         command = sub.add_parser(name)
         command.add_argument("--run", type=Path, required=True)
+        if name == "note":
+            command.add_argument("--task", required=True)
+            source = command.add_mutually_exclusive_group(required=True)
+            source.add_argument("--text", help=f"the note itself: nonempty UTF-8, at most {NOTE_BYTES} bytes")
+            source.add_argument("--file", type=Path, help="a regular file (not a symlink) holding the note")
         if name == "resume":
             for option in ("max-minutes", "max-tasks", "max-attempts", "max-output-tokens"):
                 command.add_argument("--" + option, type=positive)
@@ -991,7 +1224,7 @@ def main(argv=None) -> int:
         else:
             directory = args.run.resolve()
         if args.command == "status":
-            print(json.dumps(state_at(directory), indent=2))
+            print(json.dumps(state_at(directory) | {"inbox": inbox.summary(directory)}, indent=2))
             return 0
         if args.command == "stop":
             state_at(directory)
@@ -999,8 +1232,13 @@ def main(argv=None) -> int:
             print("stop requested; the controller will terminate owned work and preserve the attempt")
             return 0
         if args.command == "attest":
-            attest(directory, args.task, args.candidate, args.kind, args.evidence, args.summary)
-            print("evidence recorded; resume to independently verify the candidate")
+            outcome = attest(directory, args.task, args.candidate, args.kind, args.evidence, args.summary)
+            print("evidence recorded; resume to independently verify the candidate" if outcome == "applied" else "evidence " + QUEUED)
+            return 0
+        if args.command == "note":
+            text = args.text if args.file is None else note_text(args.file)
+            outcome = note(directory, args.task, text)
+            print(f"note recorded for {args.task}; its next implementer session receives it" if outcome == "applied" else "note " + QUEUED)
             return 0
         with locked(directory):
             runner = Runner(directory)

@@ -92,6 +92,18 @@ python3 scripts/agent-loop.py stop --run /absolute/path/to/run
 
 Do not bypass a lock, manually rewrite the state file, or kill an unrelated Codex process to force progress. On interruption, retain the run directory and use the controller's reconciliation procedure below.
 
+### Coordinator notes
+
+The coordinator can give a task's next attempt guidance without touching its contract:
+
+```sh
+python3 scripts/agent-loop.py note --run /absolute/path/to/run --task TASK_ID \
+  --text "Name every committed frame in the validation entry."
+python3 scripts/agent-loop.py note --run /absolute/path/to/run --task TASK_ID --file /absolute/path/to/note.txt
+```
+
+A note is nonempty UTF-8 text of at most 8 KiB (a `--file` must be a regular file, not a symlink), and a task holds at most 32. Each is kept with its UTC time in the task's record in the run state, never in the contract snapshot, and outlives attempts. Every later implementer session receives the task's notes under a heading that says they never change the contract, its scope or its acceptance criteria, and that a note in conflict with the contract yields to it and is reported in the summary; the verifier and the security reviewer see them labelled as context only, not acceptance criteria. Like `attest`, `note` applies at once when the run is free and goes through the run inbox while a controller holds it (below). Changing scope or acceptance still takes a revised contract and a new run.
+
 ## Native and external attestations
 
 The unattended controller cannot manufacture native, performance, package or vendor evidence. It preserves the candidate while the required attestation is missing. Dependent tasks wait; other eligible work can continue. A locked desktop, unavailable platform or missing fixture access remains an explicit capability limitation, not a passing check.
@@ -114,6 +126,10 @@ python3 scripts/agent-loop.py resume --run /absolute/path/to/run
 
 Use a supported evidence kind from `attest --help`. `attest` refuses a candidate whose base is no longer `accepted_head`, a symlinked evidence path and a file larger than 32 MiB, so register a short text or JSON summary that names the retained bundle and keep captures, raw samples and logs in the run directory or an ignored evidence directory. This records a responsible owner's assertion and evidence; it cannot prove the truth of an arbitrary file. The controller still requires the task's remaining checks and independent verdict. If the candidate changes, repeat the affected checks and attach evidence to the new identity.
 
+`attest` works while the loop runs, so the loop does not have to exit and be resumed for it. With the run lock free it records the evidence at once, and `resume` then verifies the candidate. While a controller holds the lock, `attest` makes every check that needs no lock (its arguments, the evidence file, and the candidate, base and status in the current `state.json`), copies the evidence into the run's `inbox/` with its digest, and queues the request there; `note` queues the same way. The running controller applies queued requests in order under its lock, after reconciling and before it selects each next task, and checks each one again with the same rules, so a candidate that changed or went stale in the meantime is refused. An applied attestation returns its parked task to that run's queue, and the controller reviews it without a stop or `resume`. Each request then moves to `inbox/done/` with an outcome record, `applied` or `refused: <reason>`; a refusal never stops the loop. `status` lists the pending requests and the latest outcomes under `inbox`. A lock that another `note` or `attest` holds for a moment is waited for, up to three seconds, rather than taken for a running loop; a request queued just as the loop exits waits for the next `resume`, which applies it first.
+
+A run records what its saved controller supports in `controller_features`. A run created before the inbox has none, so `note` refuses it, and so does an `attest` that would have to queue: stop that loop and attest with the run's saved controller, as before. With the lock free, `attest` on such a run records the evidence exactly as it always did. The controller's own sessions and gate commands carry `GITTURTLE_LOOP=1`, and `note` and `attest` refuse them whether the lock is free or not, as the lock alone did before the inbox existed; the Claude settings snapshot also denies every spelling of `agent-loop.py`. This restores the guard against workers invoking the controller CLI; it is not a boundary against hostile code running as the same user.
+
 Live account/network operations, installation over a user's app, publication and releases need their specifically authorized context. Removing the clone's remote does not make arbitrary commands harmless or grant permission to contact other systems. The runner is development tooling, not a security boundary against arbitrary same-user code execution.
 
 ### Evidence gated by its own commit
@@ -132,7 +148,7 @@ Advancing `accepted_head` restales every other pending candidate and costs each 
 
 ## Evidence, interruption and continuation
 
-Run state lives under ignored `.local/agent-loop/`. Each run retains its specification snapshot, isolated checkout, attempts, prompts, child transcripts, command results and candidate identities. Keep private logs and local paths there; copy only sanitized, useful evidence into versioned documentation. Retain failed candidates for diagnosis instead of discarding the only reproduction.
+Run state lives under ignored `.local/agent-loop/`. Each run retains its specification snapshot, isolated checkout, attempts, prompts, child transcripts, command results, candidate identities and its inbox of queued operator requests with their outcomes. Keep private logs and local paths there; copy only sanitized, useful evidence into versioned documentation. Retain failed candidates for diagnosis instead of discarding the only reproduction.
 
 `resume` reconciles saved state, task/controller snapshots and candidate identity before more work. Inspect `status` and the last attempt first. An unexpected accepted-checkout change or modified evidence requires inspection; it is not silently reset. If the installed controller source has changed, use the saved controller path named by the error to resume with the run's original code. Correct a real failure or supply missing evidence; do not treat a crash, lost reply or budget stop as acceptance.
 
