@@ -232,4 +232,4 @@ The evidence standard does not change: release builds of base and candidate in t
 | 6 Operator tooling | done 2026-10-02 | #142 |
 | 7 Rebase and concurrency | done 2026-10-02 | #143 |
 | 8 Contracts and queue | done 2026-10-02: `queue-2026-10-03.json`, 30 tasks | this PR |
-| 9 Pilot and run | in progress 2026-10-02: pilot paused for evidence; fixes #146, #147 | #145 to #147 |
+| 9 Pilot and run | pilot done 2026-10-02 16:18 UTC (3 of 3 accepted, every check confirmed live); fixes #146, #147, #154 (F4), #158 (F6), #159 (controller nits); follow-ups queued; Rust 1.99 cleanup #150 to #153 (strict gate green on `2cb63fb`); full run next | #145 to #147, #154, #155, this PR |

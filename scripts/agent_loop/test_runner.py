@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 import io
 import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from agent_loop.git import clean, committed_paths, git, head
 from agent_loop.process import EnvironmentBlocked, LoopError, MalformedResponse, Result, atomic_json, digest, read_json
-from agent_loop.runner import Runner, attest, create_run, gate_context, locked, main, note, profiles_for, validate_patch
+from agent_loop.runner import (
+    Runner, attest, create_run, gate_context, locked, main, note, profiles_for, run_storage, validate_patch,
+)
 from agent_loop.task_spec import parse_spec
 # Records and run state stay private even when the host umask is permissive.
-from agent_loop.test_support import setUpModule, tearDownModule
+from agent_loop.test_support import GIT_CONFIG, setUpModule, tearDownModule
 
 
 CONTROLLER = Path(__file__).resolve().parents[2]
@@ -122,7 +127,7 @@ class RunnerTests(unittest.TestCase):
         self.root = Path(self.temporary.name).resolve() / "source"
         self.root.mkdir()
         self.gitconfig = self.root.parent / "gitconfig"
-        self.gitconfig.write_text("[user]\n name = Loop Test\n email = loop@example.invalid\n[commit]\n gpgsign = false\n")
+        self.gitconfig.write_text(GIT_CONFIG)
         self.environment = patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(self.gitconfig), "GIT_CONFIG_NOSYSTEM": "1"})
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -344,6 +349,69 @@ class RunnerTests(unittest.TestCase):
         for path in (directory.parent, directory, directory / "controller", directory / "accepted",
                      directory / "tasks.json", directory / "state.json"):
             self.assertEqual(path.stat().st_mode & 0o077, 0, path)
+
+    def test_every_run_option_takes_a_run_directory_or_its_name(self):
+        directory = self.create()
+        runs = directory.parent
+
+        def cli(*argv):
+            output, errors = io.StringIO(), io.StringIO()
+            with patch("agent_loop.runner.RUNS", runs), redirect_stdout(output), redirect_stderr(errors):
+                code = main([str(argument) for argument in argv])
+            return code, output.getvalue(), errors.getvalue()
+
+        for value in (directory, directory.name):
+            with self.subTest(run=str(value)):
+                code, output, _ = cli("status", "--run", value)
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(output)["run"], str(directory))
+        self.assertEqual(cli("note", "--run", directory.name, "--task", "one", "--text", "Named by its run.")[0], 0)
+        self.assertEqual(len(read_json(directory / "state.json")["tasks"]["one"]["notes"]), 1)
+        self.assertEqual(cli("stop", "--run", directory.name)[0], 0)
+        self.assertTrue((directory / "STOP").is_file())
+        (runs / "alias").symlink_to(directory)
+        refused = "is neither a run directory nor a run name under"
+        with chdir(self.root):
+            # Only a bare name is looked up in the run storage: never a path with a
+            # separator, `.` or `..`, or a symlink there, so a name cannot leave it.
+            for value in ("missing", ".", "..", "alias", f"{directory.name}/", f"../{runs.name}/{directory.name}"):
+                with self.subTest(run=value):
+                    code, _, errors = cli("status", "--run", value)
+                    self.assertEqual(code, 1)
+                    self.assertIn(refused, errors)
+            # Every command that takes --run resolves it the same way, before anything else.
+            for command in (["status"], ["stop"], ["resume"], ["note", "--task", "one", "--text", "Unused."],
+                            ["attest", "--task", "one", "--candidate", "0" * 40, "--kind", "native",
+                             "--evidence", "absent.md", "--summary", "Unused."]):
+                with self.subTest(command=command[0]):
+                    code, _, errors = cli(command[0], "--run", "missing", *command[1:])
+                    self.assertEqual(code, 1)
+                    self.assertIn(f"'missing' {refused} {runs}", errors)
+        # An existing directory wins over a run of the same name, as in the operator scripts.
+        (self.root.parent / directory.name).mkdir()
+        with chdir(self.root.parent):
+            self.assertEqual(cli("status", "--run", directory.name)[0], 1)
+
+    def test_a_run_name_resolves_from_the_checkout_and_from_the_runs_saved_controller(self):
+        directory = self.create()  # `create_run` snapshots the controller into <run>/controller
+        for source in [CONTROLLER / "scripts/agent-loop.py", *(CONTROLLER / "scripts/agent_loop").glob("*.py")]:
+            target = self.root / source.relative_to(CONTROLLER)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+        storage = self.root / ".local" / "agent-loop"
+        for script in (self.root / "scripts/agent-loop.py", directory / "controller/scripts/agent-loop.py"):
+            with self.subTest(controller=str(script.relative_to(self.root))):
+                def status(run):
+                    return subprocess.run([sys.executable, "-B", str(script), "status", "--run", run],
+                                          cwd=self.root.parent, capture_output=True, text=True, check=False)
+                found = status(directory.name)
+                self.assertEqual(found.returncode, 0, found.stderr)
+                self.assertEqual(json.loads(found.stdout)["run"], str(directory))
+                missing = status("missing")
+                self.assertEqual(missing.returncode, 1)
+                self.assertIn(f"run name under {storage}", missing.stderr)
+        # Only that layout marks a saved controller, not a checkout that happens to share its name.
+        self.assertEqual(run_storage(Path("/work/controller")), Path("/work/controller/.local/agent-loop"))
 
     def test_hidden_index_change_is_rejected_before_commit(self):
         self.prepare()

@@ -18,10 +18,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import land  # noqa: E402
 
 GIT_ENV = {
-    "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_AUTHOR_NAME": "Operator Test", "GIT_AUTHOR_EMAIL": "operator@example.invalid",
     "GIT_COMMITTER_NAME": "Operator Test", "GIT_COMMITTER_EMAIL": "operator@example.invalid",
 }
+# Each test's global Git configuration. Automatic maintenance stays off: since Git 2.47
+# its detached child can still be writing a repository when the test removes it (see
+# scripts/agent_loop/test_support.py). A file, unlike GIT_CONFIG_COUNT, also reaches
+# the receive-pack of a local push, whose environment Git clears of that variable.
+GIT_CONFIG = "[maintenance]\n auto = false\n[gc]\n auto = 0\n autoDetach = false\n"
 GUIDE = "# Validation notes\n\nIntro.\n\n## Current validation guidance\n\nRows.\n\n"
 OLD = "## October 1 an older entry\n\nTask `old`.\n\nNot covered natively: macOS.\n\n"
 OLDEST = "## September 30 the oldest entry\n\nTask `oldest`.\n"
@@ -33,13 +38,15 @@ def entry(date: str, title: str, task: str) -> str:
 
 class GitCase(unittest.TestCase):
     def setUp(self) -> None:
-        environment = patch.dict(os.environ, GIT_ENV)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        config = Path(directory.name) / "gitconfig"
+        config.write_text(GIT_CONFIG, encoding="utf-8")
+        environment = patch.dict(os.environ, GIT_ENV | {"GIT_CONFIG_GLOBAL": str(config)})
         environment.start()
         self.addCleanup(environment.stop)
         for name in land.FOREIGN_GIT:
             os.environ.pop(name, None)
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
         # Resolved, as Git and land.py report paths: macOS's temporary directory sits under the /var symlink.
         top = Path(directory.name).resolve()
         self.repo = top / "repo"

@@ -1228,6 +1228,306 @@
         "native"
       ],
       "commit": "fix(themes): draw diff fences in markdown source with the patch colours"
+    },
+    {
+      "id": "theme-save-failure-notifies-settings",
+      "title": "Add a test guard for the Your themes actions after a refused theme save",
+      "description": "A test guard, not a bug fix. Source: the pilot HANDOFF (2026-10-02) said a failed theme save lowers `pending_saves` without notifying Settings (theme_editor.rs:1385-1391), so New theme… may stay drawn disabled. Planner check on origin/main d6002fa: neither the code nor the pilot's frames show it. Those lines are the refused-save branch in candidate a3f743d; on main it is `(Err(error), SaveOutcome::Edited { .. })` at crates/app/src/theme_editor.rs:1336-1343 in `finish_custom_theme_save` (:1301), which lowers `pending_saves` at :1308 and, after the match, calls `cx.notify()` and `self.notify_settings_page(cx)` (:1367-1368) for every outcome. New theme… and Import… are disabled only by `pending || full` (settings.rs:1450, :1519, :1529). In /tmp/gitturtle-evidence/runs/theme-editor-panel-bounds-2 the Import… label behind the backdrop is pixel-identical after the refused save to the frame at rest, in base and candidate, Midnight and Porcelain, 13 pt. Decision (coordinator, 2026-10-02, delegated by the owner): keep this task as a test-only guard, rust only, with no native evidence. Reason: the HANDOFF observation is disproved on main and in the frames, but no test covers the refused save's notification (`the_your_themes_card_builds_the_page_once_at_each_step`, :7488, counts page builds for a successful editor save, an import and a delete only), the Settings page is a cached view that a missing notify leaves stale (settings.rs:315-323), and theme_editor.rs is being restructured by theme-editor-panel-bounds. The test drives behaviour rather than a new production hook, so the controller's inert-change check (scripts/agent_loop/rust_surface.py) keeps the task rust-only. Force the refusal with a read-only preference directory, as theme-editor-panel-bounds's `a_wrapped_save_error_takes_its_room_from_the_body` does in a3f743d (Unix only; attempt 2 may rename it). Depends on theme-editor-panel-bounds: it reuses that fixture, and both edit theme_editor.rs's `mod tests` (:2716 on main). Every theme_editor.rs line cited here moves when that task lands (a3f743d alone moved the refused branch 49 lines down; attempt 2 is running).",
+      "depends_on": [
+        "theme-editor-panel-bounds"
+      ],
+      "scope": [
+        "crates/app/src/theme_editor.rs"
+      ],
+      "acceptance": [
+        {
+          "id": "refusal",
+          "description": "A GPUI test in theme_editor.rs `mod tests` opens New theme…, makes the preference store refuse the save (read-only preference directory, Unix), submits, and asserts: the reply builds the Settings page exactly once (counted with `page_builds_after` or `page_renders`, as `the_your_themes_card_builds_the_page_once_at_each_step` counts), the editor stays open with \"Could not save the theme: …\" in its footer, and `save_pending()` is false; then, after Cancel closes the editor, a click on `custom-themes-new` opens it again. It passes on origin/main and after the change."
+        },
+        {
+          "id": "strength",
+          "description": "Because the test counts page builds across the refused reply, it would fail if `finish_custom_theme_save` stopped notifying the page; the handoff records a local run with the final `self.notify_settings_page(cx)` removed in which the test fails, and the restored source."
+        },
+        {
+          "id": "test-only",
+          "description": "No line outside theme_editor.rs's `#[cfg(test)] mod tests` changes, and the existing theme_editor tests, `the_your_themes_card_builds_the_page_once_at_each_step` included, pass unchanged."
+        }
+      ],
+      "profiles": [
+        "rust"
+      ],
+      "commit": "test(themes): guard the theme actions after a refused save"
+    },
+    {
+      "id": "pr-source-accessible-name",
+      "title": "Keep the PR Source patch's accessible name once it is decorated",
+      "description": "Follow-up of the 2026-10-02 design review of pr-source-gutter-like-compare (candidate b64f5d0, not yet on main). The candidate wraps the prepared Source editor in Compare's DiffView with `crate::diff_view::new(source.clone(), presentation, window, cx)` (crates/app/src/github_view/review.rs:179 in b64f5d0, in `decorate_source`), and `diff_view::new` names every patch \"Read-only unified patch\" (diff_view.rs:175 on main, applied by `.aria_label(self.label.clone())` at :265). So once preparation finishes the Source takes Compare's name, while the plain Source past Compare's bounds keeps \"Exact GitHub supplied patch source\" (review.rs:1041 in b64f5d0, :1027 on main). Decision (coordinator, 2026-10-02, delegated by the owner): the Source is named \"Exact GitHub supplied patch source\" whether plain or decorated. Reason: the name says what the pane holds, GitHub's exact text, which decorating does not change, and a screen-reader user hears one name for one pane. Smallest fix, checked by the planner: build the view with `crate::diff_view::new_numbered(source.clone(), Arc::clone(&presentation.rows), presentation.column_width, false, \"Exact GitHub supplied patch source\", window, cx)`. The signature matches (diff_view.rs:185), and what it leaves out, `change_rows` (:180), serves only `navigate_change` (:92), which only Compare's text review calls (text_review.rs:389, :394), never the Source. crates/app/docs/content-and-layout.md:111 still says the Source editor \"keeps its own line numbers\"; since b64f5d0 the prepared Source draws Compare's gutter. Native: the controller requires native evidence for any app Rust change that is not inert (scripts/agent_loop/runner.py `profiles_for`, rust_surface.py), and a name has no pixels, so the evidence is an AT-SPI read, as for gpui-base-disabled-focus-note, with no frame required. Depends on pr-source-gutter-like-compare, which brings the decorated Source. No dependency on review-file-preparation-lifecycle: it edits `select_review_file` and the preparation result (review.rs:522-583 on main), this task only the constructor in `decorate_source`; queue order puts this one later, and a textual conflict costs one rebuilt attempt. Lines that move: review.rs (b64f5d0's numbers, shifted again by review-file-preparation-lifecycle and code-font-blame-conflicts-review-gutter); content-and-layout.md (decorations-in-retained-bounds, code-font-cold-launch-wait); diff_view.rs (code-font-blame-conflicts-review-gutter). Coordinator decision of 2026-10-02 (delegated by the owner): the native criterion is an AT-SPI read with no frames. Reason: the change alters no pixel, and the controller still requires native evidence.",
+      "depends_on": [
+        "pr-source-gutter-like-compare"
+      ],
+      "scope": [
+        "crates/app/src/github_view/review.rs",
+        "crates/app/docs/content-and-layout.md",
+        "docs/validation.md",
+        "docs/evidence/pr-source-accessible-name/**"
+      ],
+      "acceptance": [
+        {
+          "id": "name",
+          "description": "A GPUI view test in github_view/review.rs `mod tests` renders the PR review's Source once its preparation has finished (decorated) and for a patch past Compare's bounds (plain), and asserts that the Source's editing node, captured with `write_a11y_info` as crates/app/src/native_accessibility/input_tests.rs captures nodes, is named \"Exact GitHub supplied patch source\" in both, while Compare's unified patch (`diff_view::new`) is still named \"Read-only unified patch\". It fails on origin/main and passes after the change."
+        },
+        {
+          "id": "gutter",
+          "description": "The decorated Source keeps Compare's gutter and decorations: pr-source-gutter-like-compare's presentation comparison test, `source_patch_takes_the_decorations_its_file_preparation_made` and `source_presentation_stops_at_compares_bounds` pass unchanged, and diff_view.rs does not change."
+        },
+        {
+          "id": "docs",
+          "description": "The Prepared content paragraph of crates/app/docs/content-and-layout.md (:111 on main) says that the prepared Source draws Compare's old and new line-number columns through `diff_view` in place of the editor's own, keeps the name \"Exact GitHub supplied patch source\", and past Compare's bounds stays plain text with the editor's own line numbers."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, launched on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) through the offline fixture (`GITTURTLE_GITHUB_FIXTURE=review`: Pull requests, Refresh fixture PRs, #42, Files, src/review/session.rs, Source), with `org.a11y.Status IsEnabled` set for the launches only, then restored and read back. After the Source's preparation finishes, AT-SPI reads the Source's text node: role and name, \"Exact GitHub supplied patch source\" on the candidate and \"Read-only unified patch\" on the base; and Compare's unified patch of a fixture commit reads \"Read-only unified patch\" on both. Palette Midnight, 13 pt (no pixel changes). The dated docs/validation.md entry records the route, the AT-SPI paths, roles and names on both builds and the IsEnabled value before and after; any committed frame goes under docs/evidence/pr-source-accessible-name/ and is privacy-scanned."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(github): keep the source patch's accessible name when decorated"
+    },
+    {
+      "id": "find-bar-interface-font",
+      "title": "Draw the Find bar in the interface font over every patch view",
+      "description": "Follow-up of the 2026-10-02 design review of pr-source-gutter-like-compare. DiffView's content (crates/app/src/diff_view.rs:248 on main) sets `.code_font(cx)` (:255) and the code size (:256) on the container that holds `editor_find::Editor` (:261), and that Editor draws the Find bar inside itself (editor_find.rs:364, `.children(existing.filter(..open))`). `FindBar::render` (editor_find.rs:594) sets the interface size, `ui_text(11.)` (:629), but no family, so its labels (\"Close\" :657, \"Match case\" :671, \"Previous\" :693, \"Next\" :702), match count and query field draw in the code family wherever DiffView hosts it: Compare's unified patch, recovery, rewrite review, and the PR review's Source once pr-source-gutter-like-compare lands. Over Compare's file text (views.rs:1962) the same bar is already in the interface family. DESIGN.md:116-117: interface text in the system sans, code in monospace. Decision (coordinator, 2026-10-02, delegated by the owner): the Find bar sets the interface family itself, with that font's default features (none of the code font's `calt`/`liga` settings), for all of its text, the query field included, so no host's code font reaches it; DiffView keeps the code font for its text and gutter. Reason: the bar is interface chrome like History's search field, and it is the one owner every host shares, so one change fixes every host and no later code-font host can bring the fault back. Depends on pr-source-gutter-like-compare: the native evidence needs the decorated Source. Lines that move: editor_find.rs with decorations-in-retained-bounds and editor-highlights-keep-syntax-readable (other parts of the file); diff_view.rs with code-font-blame-conflicts-review-gutter; views.rs with the History and narrow-window tasks.",
+      "depends_on": [
+        "pr-source-gutter-like-compare"
+      ],
+      "scope": [
+        "crates/app/src/editor_find.rs",
+        "docs/validation.md",
+        "docs/evidence/find-bar-interface-font/**"
+      ],
+      "acceptance": [
+        {
+          "id": "font",
+          "description": "A GPUI test opens Find over a DiffView and asserts that the text style in effect for the Find bar's labels, match count and query field has the interface family and size and default font features, while the patch text and the gutter keep the code family. It fails on origin/main and passes after the change."
+        },
+        {
+          "id": "hosts",
+          "description": "Over Compare's file text (views.rs:1962 on main), whose ancestors already use the interface family, the bar lays out as on origin/main (a view test compares its controls' bounds), and the existing editor_find tests pass unchanged."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/find-bar-interface-font/scenario.json. States: Find open on a matching query over Compare's unified patch of a fixture commit, over PR #42's Source through the offline fixture (`GITTURTLE_GITHUB_FIXTURE=review`: Pull requests, Refresh fixture PRs, #42, Files, src/review/session.rs, Source), and over Compare's file text of the same file for reference. Palettes: Midnight and Porcelain. Text sizes: interface 13 pt with code 12 pt (the defaults), and code 18 pt. Measured: on the candidate, each label crop (Match case, Previous, Next, Close) over the unified patch and the Source equals, under masked compare, the same label over Compare's file text in the same variant, and the bar's text does not change between code 12 and 18 pt; on the base the labels over the patch views differ. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(app): draw the find bar in the interface font"
+    },
+    {
+      "id": "patch-pane-focus-outline",
+      "title": "Outline keyboard-focused patch and text panes in the accent",
+      "description": "Follow-up of the 2026-10-02 design review of pr-source-gutter-like-compare. DESIGN.md:260: \"Other controls and panes use a visible 1 px accent outline or inset outline.\" Framed panes recolour their 1 px border with GPUI's `focus_visible`, keyboard focus only (the PR review's Changes list `github-patch-focus`, github_view/review.rs:1070 on main; also review.rs:909, rewrite_review.rs:669, workspace.rs:967). Read-only text panes that render `editor_find::Editor` with `.bordered(false)` draw nothing, because that turns off the kit Input's focus treatment (ring-coloured border and `focus_ring_style`, vendor/gpui-component/src/input/input.rs:551-590) and nothing replaces it: Compare's unified patch through DiffView (diff_view.rs:264), Compare's file text and Quick Open's source (views.rs:1962-1972), and the conflict readers (conflicts.rs:635). Compare never had an outline. On the base the PR Source is a plain, bordered kit Input (review.rs:1027 on main) with the kit's focus ring; pr-source-gutter-like-compare (b64f5d0) puts the prepared Source in a DiffView inside a grey 1 px box (review.rs:1041 in b64f5d0), so the decorated Source dropping that ring is a regression introduced by that task. A focus style needs the element that tracks the handle, and the editor's own element tracks it, so the outline comes from an explicit check: the editor's handle is focused and `window.last_input_was_keyboard()`, the rule `focus_visible` applies. Decision (coordinator, 2026-10-02, delegated by the owner): a keyboard-focused read-only text pane shows one 1 px accent line at its edge. One check and one inset outline live in editor_find.rs beside the `Editor` wrapper these panes share: DiffView draws it at its own bounds, so it wraps the gutter; Compare's file text and each conflict reader at the editor's bounds; always over the content, moving nothing, clipped by no ancestor. A host that frames its pane with its own 1 px border (the PR Source's box) recolours that border to the accent instead, as the Changes list beside it does, with no second line. Mouse focus alone draws none, as for the other panes. Reason: one accent line per focused pane is the rule the other panes follow, one mechanism keeps the borderless panes alike, and the Source should match the Changes list beside it. The file text and the conflict readers join this task by the coordinator's decision of 2026-10-02, because the mechanism is the same. Out of scope, for the handoff: Compare's split view (split_diff.rs does not use `editor_find::Editor`) and the plain Source past Compare's bounds (it keeps the kit's ring). Depends on pr-source-gutter-like-compare. No dependency on find-bar-interface-font (it edits `FindBar`, this task the `Editor` side of editor_find.rs) or pr-source-accessible-name; a textual conflict costs one rebuilt attempt. Lines that move: review.rs (b64f5d0's, then review-file-preparation-lifecycle and code-font-blame-conflicts-review-gutter); diff_view.rs and conflicts.rs (code-font-blame-conflicts-review-gutter); views.rs, editor_find.rs and DESIGN.md (several queued tasks).",
+      "depends_on": [
+        "pr-source-gutter-like-compare"
+      ],
+      "scope": [
+        "crates/app/src/editor_find.rs",
+        "crates/app/src/diff_view.rs",
+        "crates/app/src/views.rs",
+        "crates/app/src/conflicts.rs",
+        "crates/app/src/github_view/review.rs",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/patch-pane-focus-outline/**"
+      ],
+      "acceptance": [
+        {
+          "id": "compare",
+          "description": "A GPUI view test focuses Compare's unified patch and Compare's file text (Before or After) with the keyboard and asserts through painted quads a 1 px accent outline on all four sides at the pane's bounds (DiffView's, gutter included, for the patch), with the gutter and the first text row where they are unfocused; a click that focuses an editor without a key paints no outline; and moving focus away clears it in the next frame, including where a host caches the pane's view. It fails on origin/main and passes after the change."
+        },
+        {
+          "id": "conflicts",
+          "description": "On a conflicted fixture file, a view test focuses each conflict reader with the keyboard and asserts the same outline at that reader's bounds and none on the other reader. It fails on origin/main and passes after the change."
+        },
+        {
+          "id": "source",
+          "description": "With the PR review's Source decorated, a view test asserts that keyboard focus on its editor paints the box's 1 px border in the accent on all four sides with no second accent line inside it, that the border is the palette border at rest and after a mouse-only focus, and that the Changes list's `github-patch-focus` outline is unchanged."
+        },
+        {
+          "id": "design",
+          "description": "The focus check and the inset outline exist once, in editor_find.rs, and every pane above uses them; DESIGN.md's keyboard-focus item (:260 on main) names the read-only text panes' inset outline and the framed pane's recoloured border."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/patch-pane-focus-outline/scenario.json. States: Compare's unified patch and file text of a fixture commit, a conflict reader of a conflicted fixture file, and PR #42's Source through the offline fixture (`GITTURTLE_GITHUB_FIXTURE=review`: Pull requests, Refresh fixture PRs, #42, Files, src/review/session.rs, Source), each at rest, focused by keyboard (Primary+F, then Escape returns focus to the text), focused by a click only, and after Tab moves focus on. Palettes and text sizes: every state in Midnight at 13 pt; the keyboard-focused state also in Porcelain and at 18 pt. Measured: on the candidate, the 1 px accent band on all four sides of each keyboard-focused pane and its contrast against the surface beside it (3:1, DESIGN.md's accent rule); masked compares of each focused frame with its rest frame that differ only inside that band; no band on the click-only and moved-on frames; the base draws none on Compare and the conflict readers. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(focus): outline keyboard-focused read-only text panes"
+    },
+    {
+      "id": "reflog-dialog-status-bar-clearance",
+      "title": "Keep the Reflog and Activity dialogs 16 px above the status bar",
+      "description": "Follow-up of theme-editor-panel-bounds, whose 2026-10-02 evidence entry (uncommitted in its evidence clone) checks the Reflog against the rule that task adds to DESIGN.md's Status strip: under a modal the status bar stays in place, dimmed and inert, no panel edge crosses it, and a window-capped modal ends its panel at least 16 px above the bar's top edge at every interface text size, inside the client-decoration frame. `ReflogBrowser::render` takes `body_height` as the viewport less a fixed 240 px (crates/app/src/reflog.rs:318 on main) and caps its content at `px(590.).min(body_height)` plus the ring room (:341), in an alert with a title and a Done footer (:87-100); neither the scaled status bar (views.rs:2935, `ui_size(26.)`) nor the frame is reserved. The entry's arithmetic: at 18 pt the clearance is under 16 px for windows about 750 to 840 px tall (about 8 px near 830); under untiled client decorations at 13 pt and 680 px about 14 px; at 13 pt in 1000 × 680 with server decorations about 51 px. Activity (\"GitTurtle activity\", opened at activity.rs:322) has the same reserve, `body_height` the viewport less 240 px (:338), with its list at most `ui_size(430.)` (:339) and its content capped at `body_height` (:347) with no 590 px ceiling, under the same title and Done footer; the same arithmetic (planner, unmeasured) gives it under 16 px at 18 pt from about 750 px tall once its content fills the cap. Coordinator decision of 2026-10-02: Activity joins this task, because it is the same fix in the same crate and keeps one session. Decision (coordinator, 2026-10-02, delegated by the owner): both dialogs follow the rule; each content cap becomes the smaller of today's cap and what the rule leaves after the alert's chrome at the current text size and frame, so where the rule does not bind nothing moves. The frame and status-bar arithmetic that theme-editor-panel-bounds lands (in a3f743d `STATUS_BAR_HEIGHT` :445, `WindowFrame` :454 and `ThemeForm::max_height_for` :1766, private to theme_editor.rs; attempt 2 may rename them) moves to one portable helper in appearance.rs beside `button_ring_room` (:246), which the status bar (views.rs:2935), the theme editor, the Reflog and Activity use, each dialog keeping its own chrome terms. Not window_chrome.rs, which compiles only on Linux (main.rs:67-68). Reason: one rule, one computation; a second copy of the bar's height would drift. The other window-capped dialogs follow in modal-status-bar-clearance-git and modal-status-bar-clearance-app. Expected hard: theme-editor-panel-bounds needed a second attempt (its footer's focus rings were clipped), and this task moves its helper. Depends on theme-editor-panel-bounds. reflog.rs:341 is one long builder line that tab-reveals-worktree-reflog-profile-rows and reflog-marker-paths-entry-scrollbar also edit; no dependency, a conflict costs one rebuilt attempt. Lines that move: theme_editor.rs (attempt 2 is running), reflog.rs (those two tasks), activity.rs, views.rs and DESIGN.md (several queued tasks).",
+      "depends_on": [
+        "theme-editor-panel-bounds"
+      ],
+      "scope": [
+        "crates/app/src/reflog.rs",
+        "crates/app/src/activity.rs",
+        "crates/app/src/theme_editor.rs",
+        "crates/app/src/appearance.rs",
+        "crates/app/src/views.rs",
+        "DESIGN.md",
+        "docs/validation.md",
+        "docs/evidence/reflog-dialog-status-bar-clearance/**"
+      ],
+      "acceptance": [
+        {
+          "id": "status",
+          "description": "A GPUI view test opens the Reflog and, separately, Activity, each with content that fills its cap (for the Reflog as `content_scrollbar_cues_the_fold`, reflog.rs:816 on main, sets up), at interface 13 and 18 pt in 1000 px wide windows 680, 760, 830 and 900 px tall, and asserts that the painted panel's lower edge lies at least 16 px above the painted status bar's top edge. For each dialog it fails on origin/main at 18 pt in at least one of those heights (the arithmetic gives about 8 px at 830 px) and passes after the change."
+        },
+        {
+          "id": "decorations",
+          "description": "A unit or view test with an untiled client-decorated window (the kit's `window_paddings`, as theme-editor-panel-bounds's decoration test sets them) at 13 pt and 680 px and at 18 pt and 830 px, scale factors 1 and 2, asserts the same 16 px inside the frame for both dialogs."
+        },
+        {
+          "id": "shared",
+          "description": "One portable function computes a window-capped panel's lowest edge from the frame and the scaled status bar, and the status bar's height and the theme editor's, Reflog's and Activity's caps all come from it, with no second status-bar height or frame computation left. The theme editor's panel-bound tests, the Reflog's `reflog_browser_keeps_room_for_every_focus_ring` (:412), `content_scrollbar_cues_the_fold` (:816) and `changed_files_show_whole_rows` (:923), and Activity's tests pass unchanged; at 13 pt in 1000 × 680 both content caps equal origin/main's. DESIGN.md's Status strip paragraph says that window-capped modals take their cap from that helper, instead of naming dialogs one by one."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/reflog-dialog-status-bar-clearance/scenario.json. States: the Reflog on a fixture whose reflog and changed files overflow its content (as reflog-selection-and-scroll-cues's did), at rest and scrolled to its end, and Activity with enough entries to fill its cap, at rest. Palettes: Midnight and Porcelain. Text sizes and windows: 18 pt at 1000 × 830 (or the height between 750 and 840 px where a probe finds the base's clearance least) and 13 pt at 1000 × 680. Measured: the rows from the panel's lower border to the status bar's top rule, 16 or more on every candidate frame, and the base's value; masked base-versus-candidate compares, identical at 13 pt in 1000 × 680. The entry says native Wayland with client decorations was not exercised (qa.py launches only X11 clients). The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(dialogs): keep the reflog and activity clear of the status bar"
+    },
+    {
+      "id": "vendor-gpui-component-test-build",
+      "title": "Make vendored gpui-component's own tests build and run",
+      "description": "Found by the 2026-10-02 Rust 1.99 cleanup (coordinator notes; its scratch harness compiled the input tests out to run the highlighter's). gpui-component is an excluded workspace member (Cargo.toml:4) whose own tests no workspace check builds (vendor/AGENTS.md), and its test build does not compile. Two GitTurtle input-patch tests, `editable_input_offers_accessibility_write_action` (vendor/gpui-component/src/input/input.rs:781) and `input_emits_accessibility_id` (:846), bind the outer Input's rendered frame (`let _frame = …render(window, cx)`, :802 and :868); `RenderOnce::render`'s return type captures the `window` and `cx` borrows, so the next `state.update(cx, …)` fails (E0499/E0500 at :803 and :869). Three upstream tests `include_str!` files the crates.io package omits: dock/mod.rs:251 (`../../../base/src/dock/mod.rs`), text/compat.rs:409 (`../../../story/examples/fixtures/test.md`) and theme/schema.rs:1235 (`../../../../themes/aurora.json`); `#[ignore]` cannot help, since `include_str!` runs at compile time. Research (planner, 2026-10-02, `gh api` on longbridge/gpui-component at the vendored revision 94a313a72a2513aee2780240cd322d552b2395f0 from .cargo_vcs_info.json): crates/base/src/dock/mod.rs is blob 5414af7d, byte-identical to vendor/gpui-base/src/dock/mod.rs (same revision); crates/story/examples/fixtures/test.md is blob f61e0ba7 (7,116 bytes) and themes/aurora.json blob 1648e0ee (10,084 bytes), from the same Apache-2.0 repository. Decision (coordinator, 2026-10-02, delegated by the owner): the smallest change that builds every test: end each frame's borrow before the state update, keeping what each test asserts; point the dock test at the vendored gpui-base's module; restore the two fixtures byte for byte from that revision under vendor/gpui-component/tests/fixtures/ and include them from there; document in GITTURTLE-PATCH.md the command that builds and runs the crate's tests. Reason: restoring keeps upstream coverage that compiling the tests out would drop, and the fixtures share the vendored source's origin and licence, so no new notice. The package cannot be tested from the workspace with `-p`, so the command needs a scratch workspace outside the repository, as the cleanup's harness used; it must keep vendor/gpui-component and vendor/gpui-base siblings for the dock include. No runtime source changes; the controller still derives vendor, rust and native from vendor/gpui* paths (runner.py `profiles_for`), hence a vendor run and an AT-SPI read of an Input, as for gpui-base-disabled-focus-note. vendor/AGENTS.md is protected in controller sessions; pointing its sentence about vendored tests at the new command is left to the librarian change HANDOFF already lists. Expected hard: the scratch-workspace run, and upstream tests that may fail at runtime once they build. Lines are main's; GITTURTLE-PATCH.md also changes with kit-button-focused-border and the later vendor tasks, and input.rs's test lines move if any of them edits that file. Coordinator decision of 2026-10-02 (delegated by the owner): the native criterion is an AT-SPI read with no frames. Reason: the change alters no pixel, and the controller still requires native evidence.",
+      "depends_on": [],
+      "scope": [
+        "vendor/gpui-component/src/**",
+        "vendor/gpui-component/tests/**",
+        "vendor/gpui-component/GITTURTLE-PATCH.md",
+        "docs/validation.md",
+        "docs/evidence/vendor-gpui-component-test-build/**"
+      ],
+      "acceptance": [
+        {
+          "id": "build",
+          "description": "`editable_input_offers_accessibility_write_action` and `input_emits_accessibility_id` compile and pass and still assert what they assert on origin/main (no materialized value with SetValue advertised, then the set values; author identifiers `[None, Some(\"search.query\")]`), and no line outside `#[cfg(test)]` code under vendor/gpui-component/src changes."
+        },
+        {
+          "id": "fixtures",
+          "description": "`every_base_dock_export_is_reachable_from_here` reads vendor/gpui-base/src/dock/mod.rs; test.md and aurora.json sit under vendor/gpui-component/tests/fixtures/, byte-identical to upstream blobs f61e0ba7 and 1648e0ee at 94a313a7, and the Markdown and Aurora tests include them from there. GITTURTLE-PATCH.md records their provenance, blob ids, licence and removal condition in a test-only section kept apart from the runtime patches."
+        },
+        {
+          "id": "command",
+          "description": "GITTURTLE-PATCH.md documents a command sequence that builds and runs the crate's lib tests and its five `[[test]]` targets with the root `[patch.crates-io]` set, starting from a copy of the root Cargo.lock and with the tree-sitter features the app enables (crates/app/Cargo.toml:9), writing nothing inside the repository. Run on the candidate it exits 0: every test passes, or an upstream test that fails at runtime for a reason unrelated to GitTurtle's patches is marked `#[ignore = \"…\"]` with that reason and listed in the note; no GitTurtle patch test is ignored."
+        },
+        {
+          "id": "vendor",
+          "description": "Evidence owner: the documented command fails to build on origin/main (input.rs:803 and :869 and the three includes) and passes on the candidate, each build in its own CARGO_TARGET_DIR. In a throwaway copy, `author_id: None` in place of `author_id: self.accessibility_id` (input.rs:545) fails `input_emits_accessibility_id`, and `.when(false, …)` in place of `.when(!disabled && !readonly, …)` around the SetValue handler (vendor/gpui-base/src/input/base/state.rs:3201) fails `editable_input_offers_accessibility_write_action`. `cargo test --locked -p gitturtle input_semantics_follow_the_editing_focus_owner` passes on both builds, and a read-only code-reviewer pass checks the note against the code. Recorded in the task's docs/validation.md entry, which the evidence owner commits on top of the candidate."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate in the same session, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, launched on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host), with `org.a11y.Status IsEnabled` set for the launches only, then restored and read back. In History, Primary+F focuses the commit search field; on both builds AT-SPI reports the same role, name, focused state and editable-text interface for it, and typed text reaches it. Palette Midnight, 13 pt (no pixel changes). The dated docs/validation.md entry records the keys, the AT-SPI paths and states on both builds and the IsEnabled value before and after; any committed frame goes under docs/evidence/vendor-gpui-component-test-build/ and is privacy-scanned."
+        }
+      ],
+      "profiles": [
+        "vendor",
+        "rust",
+        "native"
+      ],
+      "commit": "test(vendor): make gpui-component's own tests build and run"
+    },
+    {
+      "id": "modal-status-bar-clearance-git",
+      "title": "Audit and fix the Git workflow dialogs against the status-bar rule",
+      "description": "Coordinator follow-up of 2026-10-02, first of two audit tasks split by dialog group so each fits one session. DESIGN.md's Status strip rule (from theme-editor-panel-bounds) holds for every modal whose height the window caps: its panel ends at least 16 px above the status bar's top edge at every interface text size, inside the client-decoration frame. reflog-dialog-status-bar-clearance adds the portable helper in appearance.rs and moves the theme editor, the Reflog and Activity onto it. These alert dialogs cap their height from the viewport with reserves that do not count the scaled status bar or the frame, and some of them do not scale with the text size (lines on main): interactive_rebase.rs:556 `RebaseForm` (\"Edit local commits\", opened :124) and :716 `MessageForm` (\"Continue rebase\", :248), the viewport less 240 px, at least 160; revision_inspection.rs:760 `CompareForm` (\"Compare local revisions\", :153), less 240 px; revision_inspection.rs:956 and :994 `QuickForm` (\"Quick Open File\", :221), its list the viewport less `ui_size(300.)` and its content less 240 px; rewrite_review.rs:648 `SeriesBrowser` (\"Review rewritten series\", :21), less 250, clamped to 240-690 px; recovery.rs:1339 `StashBrowser` (\"Stashes\", :382), less 230, clamped to 300-620 px; and recovery_drafts.rs:634 `RecoveryList` (\"Saved recovery drafts\", :497), less 300, clamped to 120-560 px. Whether each crosses depends on its own chrome and on whether its content reaches the cap, so it is measured, not assumed. Decision (coordinator, 2026-10-02, delegated by the owner): audit each dialog at 13 and 18 pt; each that ends less than 16 px above the bar in a tested window takes its cap from the shared helper (the smaller of its current cap and what the rule leaves after its own chrome); each that already clears keeps its code. Reason: one rule for every modal, and the audit leaves alone a dialog the rule does not bind. Expected hard, by volume: seven dialogs, each needing content that reaches its cap. Depends on reflog-dialog-status-bar-clearance, which supplies the helper and the measuring test pattern. Lines are main's; review-arrow-buttons-hover and copy-actions-say-copied may move them, and decorations-in-retained-bounds edits recovery.rs and rewrite_review.rs.",
+      "depends_on": [
+        "reflog-dialog-status-bar-clearance"
+      ],
+      "scope": [
+        "crates/app/src/interactive_rebase.rs",
+        "crates/app/src/revision_inspection.rs",
+        "crates/app/src/rewrite_review.rs",
+        "crates/app/src/recovery.rs",
+        "crates/app/src/recovery_drafts.rs",
+        "crates/app/src/appearance.rs",
+        "docs/validation.md",
+        "docs/evidence/modal-status-bar-clearance-git/**"
+      ],
+      "acceptance": [
+        {
+          "id": "audit",
+          "description": "For each of the seven dialogs a GPUI view test opens it with content that reaches its cap, at interface 13 and 18 pt in 1000 px wide windows 680, 830 and 1200 px tall, and asserts that the painted panel's lower edge lies at least 16 px above the painted status bar's top edge. The handoff lists each dialog's clearance on origin/main and after the change at every size tested."
+        },
+        {
+          "id": "fix",
+          "description": "Every dialog whose test fails on origin/main takes its cap from the shared helper, with no new status-bar height or frame arithmetic, and where the rule does not bind its cap is unchanged; every dialog whose test passes on origin/main keeps its code; each dialog's existing tests pass unchanged."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/modal-status-bar-clearance-git/scenario.json. For each dialog the task changes. States: the dialog with content that reaches its cap, at 18 pt in the window height where the audit found its base clearance least, and at 13 pt in 1000 × 680. Palettes: Midnight and Porcelain at 18 pt, Midnight at 13 pt. Measured: the rows from the panel's lower border to the status bar's top rule, 16 or more on every candidate frame, and the base's; masked base-versus-candidate compares. The entry lists the dialogs left unchanged with their audited clearances (if none changed it says so and commits no frame), and says native Wayland with client decorations was not exercised. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(dialogs): keep git workflow dialogs clear of the status bar"
+    },
+    {
+      "id": "modal-status-bar-clearance-app",
+      "title": "Audit and fix the app and document dialogs against the status-bar rule",
+      "description": "Coordinator follow-up of 2026-10-02, second of two audit tasks split by dialog group so each fits one session. DESIGN.md's Status strip rule (from theme-editor-panel-bounds) holds for every modal whose height the window caps: its panel ends at least 16 px above the status bar's top edge at every interface text size, inside the client-decoration frame. reflog-dialog-status-bar-clearance adds the portable helper in appearance.rs and moves the theme editor, the Reflog and Activity onto it. These alert dialogs cap their height from the viewport with reserves that do not count the scaled status bar or the frame, and some of them do not scale with the text size (lines on main): discard/review.rs:72-74 (`confirm_discard`, opened :57), its body `ui_size(330.)` at most, else 0.8 of the viewport less `ui_size(118.)`, at least 160 px; command_palette.rs:823 `Palette` (\"Command palette\", :579), its list the viewport less `ui_size(300.)`; shortcuts.rs:657 `ShortcutHelpView` (\"Keyboard Shortcuts\", :575), the viewport less `ui_size(280.)`, between `ui_size(88.)` and `ui_size(430.)`; platform_polish.rs:423 `AboutDetails` (\"About GitTurtle\", :400), the viewport less `ui_size(230.)`, at least 100 px; markdown_view.rs:1303 `LocalDocument` (\"Captured local document\", :1247), 0.65 of the viewport, at most 700 px; and pdf_view.rs:306, a PDF page's text (\"‹label› · Page N text\", :307), 0.6 of the viewport, at most 640 px. Whether each crosses depends on its own chrome and on whether its content reaches the cap, so it is measured, not assumed. Decision (coordinator, 2026-10-02, delegated by the owner): audit each dialog at 13 and 18 pt; each that ends less than 16 px above the bar in a tested window takes its cap from the shared helper (the smaller of its current cap and what the rule leaves after its own chrome); each that already clears keeps its code. Reason: one rule for every modal, and the audit leaves alone a dialog the rule does not bind. Out of scope, for the handoff to report: the primary menu's popover (platform_polish.rs:95, `PrimaryMenu::toggle` :46) is not a modal, and modals with fixed caps such as the profile manager (profiles.rs, `max_h(px(430.))`) are not window-capped. Expected hard, by volume: six dialogs, each needing content that reaches its cap. Depends on reflog-dialog-status-bar-clearance, which supplies the helper and the measuring test pattern. Lines are main's; review-arrow-buttons-hover and copy-actions-say-copied may move them.",
+      "depends_on": [
+        "reflog-dialog-status-bar-clearance"
+      ],
+      "scope": [
+        "crates/app/src/discard/**",
+        "crates/app/src/command_palette.rs",
+        "crates/app/src/shortcuts.rs",
+        "crates/app/src/platform_polish.rs",
+        "crates/app/src/markdown_view.rs",
+        "crates/app/src/pdf_view.rs",
+        "crates/app/src/appearance.rs",
+        "docs/validation.md",
+        "docs/evidence/modal-status-bar-clearance-app/**"
+      ],
+      "acceptance": [
+        {
+          "id": "audit",
+          "description": "For each of the six dialogs a GPUI view test opens it with content that reaches its cap, at interface 13 and 18 pt in 1000 px wide windows 680, 830 and 1200 px tall, and asserts that the painted panel's lower edge lies at least 16 px above the painted status bar's top edge. The handoff lists each dialog's clearance on origin/main and after the change at every size tested."
+        },
+        {
+          "id": "fix",
+          "description": "Every dialog whose test fails on origin/main takes its cap from the shared helper, with no new status-bar height or frame arithmetic, and where the rule does not bind its cap is unchanged; every dialog whose test passes on origin/main keeps its code; each dialog's existing tests pass unchanged."
+        },
+        {
+          "id": "native",
+          "description": "Evidence owner, committed as one evidence commit on top of the candidate (the implementer writes no docs/validation.md entry, frame, scenario or \"pending\" placeholder): release builds of the base (origin/main when the task starts) and of the candidate, each in its own CARGO_TARGET_DIR and checked with `qa.py identity`, captured on Linux X11 at scale factor 1 on display :0 with `--input mutter` (never XTest on this host) by `qa.py scenario run` from the committed docs/evidence/modal-status-bar-clearance-app/scenario.json. For each dialog the task changes. States: the dialog with content that reaches its cap, at 18 pt in the window height where the audit found its base clearance least, and at 13 pt in 1000 × 680. Palettes: Midnight and Porcelain at 18 pt, Midnight at 13 pt. Measured: the rows from the panel's lower border to the status bar's top rule, 16 or more on every candidate frame, and the base's; masked base-versus-candidate compares. The entry lists the dialogs left unchanged with their audited clearances (if none changed it says so and commits no frame), and says native Wayland with client decorations was not exercised. The crops (never a full-window project hub frame), the scenario.json and a dated docs/validation.md entry that names every committed frame, what it shows and each measured value are privacy-scanned on their committed bytes and design-reviewed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "native"
+      ],
+      "commit": "fix(dialogs): keep app and document dialogs clear of the status bar"
     }
   ]
 }
