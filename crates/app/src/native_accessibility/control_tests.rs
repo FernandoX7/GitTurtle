@@ -727,3 +727,214 @@ fn tab_and_shift_tab_leave_focused_kit_controls_that_turn_disabled(cx: &mut Test
         );
     }
 }
+
+/// One bare kit control, or a component Button, between two tab stops the
+/// probe owns, with the click or change handler that records each run and
+/// updates the state the probe passes back to it.
+struct ActivationProbe {
+    before: FocusHandle,
+    after: FocusHandle,
+    control: &'static str,
+    disabled: bool,
+    /// The control's checked, pressed or selected state; a Link has none, so
+    /// its handler only marks the activation.
+    on: bool,
+    /// Click and change handler runs.
+    runs: usize,
+}
+
+impl ActivationProbe {
+    fn record(probe: &WeakEntity<Self>, on: bool, cx: &mut App) {
+        probe
+            .update(cx, |probe, cx| {
+                probe.on = on;
+                probe.runs += 1;
+                cx.notify();
+            })
+            .expect("the probe is alive");
+    }
+}
+
+impl Render for ActivationProbe {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::base;
+        let (disabled, on) = (self.disabled, self.on);
+        let probe = cx.entity().downgrade();
+        let control = match self.control {
+            "radio" => base::Radio::new("probe-control")
+                .checked(on)
+                .disabled(disabled)
+                .on_change(move |checked, _, _, cx| Self::record(&probe, checked, cx))
+                .size(px(20.))
+                .into_any_element(),
+            "toggle" => base::Toggle::new("probe-control")
+                .pressed(on)
+                .disabled(disabled)
+                .on_change(move |pressed, _, _, cx| Self::record(&probe, pressed, cx))
+                .size(px(20.))
+                .into_any_element(),
+            "link" => base::Link::new("probe-control")
+                .disabled(disabled)
+                .on_activate(move |_, _, cx| Self::record(&probe, true, cx))
+                .size(px(20.))
+                .into_any_element(),
+            "color-swatch" => base::ColorSwatch::new("probe-control", gpui::red())
+                .selected(on)
+                .disabled(disabled)
+                .on_click(move |_, _, _, cx| Self::record(&probe, true, cx))
+                .size(px(20.))
+                .into_any_element(),
+            "checkbox" => base::Checkbox::new("probe-control")
+                .checked(on)
+                .disabled(disabled)
+                .on_change(move |state, _, _, cx| {
+                    Self::record(&probe, state == base::CheckboxState::Checked, cx)
+                })
+                .size(px(20.))
+                .into_any_element(),
+            "switch" => base::Switch::new("probe-control")
+                .checked(on)
+                .disabled(disabled)
+                .on_change(move |checked, _, _, cx| Self::record(&probe, checked, cx))
+                .size(px(20.))
+                .into_any_element(),
+            "button" => Button::new("probe-control")
+                .label("Open")
+                .selected(on)
+                .disabled(disabled)
+                .on_click(move |_, _, cx| Self::record(&probe, !on, cx))
+                .into_any_element(),
+            other => unreachable!("{other}"),
+        };
+        div()
+            .flex()
+            .gap_2()
+            .child(
+                div()
+                    .id("probe-before")
+                    .track_focus(&self.before.clone().tab_stop(true))
+                    .size(px(20.)),
+            )
+            .child(control)
+            .child(
+                div()
+                    .id("probe-after")
+                    .track_focus(&self.after.clone().tab_stop(true))
+                    .size(px(20.)),
+            )
+    }
+}
+
+/// Enter and Space, sent as key-down and key-up events, activate each bare kit
+/// Radio, Toggle, Link, ColorPicker swatch, Checkbox and Switch, and a
+/// component Button, while it is enabled; once it turns disabled while it holds
+/// focus, neither key runs its click or change handler or changes its state,
+/// and focus stays on it until Tab moves it on.
+#[gpui::test]
+fn enter_and_space_leave_focused_kit_controls_that_turn_disabled_inert(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    for control in DISABLING_CONTROLS.into_iter().chain(["button"]) {
+        let captured: Rc<RefCell<Option<Entity<ActivationProbe>>>> = Default::default();
+        let output = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let probe = cx.new(|cx| ActivationProbe {
+                before: cx.focus_handle(),
+                after: cx.focus_handle(),
+                control,
+                disabled: false,
+                on: false,
+                runs: 0,
+            });
+            *output.borrow_mut() = Some(probe.clone());
+            gpui_kit::component::Root::new(probe, window, cx)
+        });
+        let probe = captured.borrow().as_ref().unwrap().clone();
+        let draw = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.focused(cx))
+                .expect("a focused element")
+        };
+        // A keyboard click runs on the key-up that follows a key-down on the
+        // same focused element, so each key sends both, as a real press does.
+        let activate = |cx: &mut VisualTestContext, key: &str| {
+            let keystroke = Keystroke::parse(key).unwrap();
+            cx.simulate_event(KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(KeyUpEvent { keystroke });
+            draw(cx);
+        };
+        let set = |cx: &mut VisualTestContext, disabled: bool| {
+            cx.update(|_, cx| {
+                probe.update(cx, |probe, cx| {
+                    probe.disabled = disabled;
+                    probe.on = false;
+                    probe.runs = 0;
+                    cx.notify();
+                })
+            });
+            draw(cx);
+        };
+        let state = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                let probe = probe.read(cx);
+                (probe.on, probe.runs)
+            })
+        };
+        let (before, after) = cx.read(|cx| {
+            let probe = probe.read(cx);
+            (probe.before.clone(), probe.after.clone())
+        });
+
+        draw(cx);
+        cx.update(|window, cx| window.focus(&before, cx));
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let handle = focused(cx);
+        assert!(
+            handle != before && handle != after,
+            "Tab reaches the {control}"
+        );
+
+        // Enabled, each key reaches the focused control and activates it.
+        for key in ["enter", "space"] {
+            set(cx, false);
+            activate(cx, key);
+            assert_eq!(
+                state(cx),
+                (true, 1),
+                "{key} activates the enabled {control}"
+            );
+            assert_eq!(focused(cx), handle, "{key} keeps focus on the {control}");
+        }
+
+        set(cx, true);
+        assert_eq!(
+            focused(cx),
+            handle,
+            "the disabled {control} keeps focus until the keyboard moves it"
+        );
+        for key in ["enter", "space", "enter"] {
+            activate(cx, key);
+            assert_eq!(
+                state(cx),
+                (false, 0),
+                "{key} runs no handler and changes no state on the disabled {control}"
+            );
+            assert_eq!(
+                focused(cx),
+                handle,
+                "{key} keeps focus on the disabled {control}"
+            );
+        }
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(focused(cx), after, "Tab leaves the disabled {control}");
+    }
+}

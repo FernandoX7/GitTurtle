@@ -1,0 +1,394 @@
+{
+ "version": 1,
+ "task": "gpui-base-disabled-focus-note",
+ "summary": "A focused Follow system Switch that the Omarchy card disables keeps focus, ignores Space and Enter, leaves the Switch and the saved preferences unchanged, and Tab moves on to the card",
+ "limitations": "keyboard and AT-SPI only on Linux X11 at scale factor 1 and 13 pt; the other five controls and the Button are covered by the view test; macOS, native Wayland, fractional scale factors and a screen reader speaking are not covered",
+ "window": [
+  1000,
+  680
+ ],
+ "roles": [
+  "base",
+  "cand"
+ ],
+ "atspi": true,
+ "home": {
+  ".local/state/omarchy/current/theme/colors.toml": "mode = \"dark\"\n\naccent = \"#7aa2f7\"\nselection = \"#292e42\"\nmuted = \"#414868\"\n\nbackground = \"#1a1b26\"\ndark_background = \"#13141c\"\ndarker_background = \"#0e0e14\"\nlighter_background = \"#24283b\"\n\nforeground = \"#a9b1d6\"\ndark_foreground = \"#565f89\"\nlight_foreground = \"#b4bee6\"\nbright_foreground = \"#c0caf5\"\n\nred = \"#f7768e\"\nyellow = \"#e0af68\"\norange = \"#eb927b\"\ngreen = \"#9ece6a\"\ncyan = \"#449dab\"\nblue = \"#7aa2f7\"\nmagenta = \"#ad8ee6\"\nbrown = \"#75493d\"\n\nbright_red = \"#ff7a93\"\nbright_yellow = \"#ff9e64\"\nbright_green = \"#b9f27c\"\nbright_cyan = \"#0db9d7\"\nbright_blue = \"#7da6ff\"\nbright_magenta = \"#bb9af7\"\n",
+  ".local/state/omarchy/current/theme.name": "tokyo-night\n"
+ },
+ "fixture": {
+  "name": "gpui-base-disabled-focus-note",
+  "description": "one commit under the QA identity: a repository for Settings to open over",
+  "repository": "repo",
+  "branch": "main",
+  "operations": [
+   {
+    "commit": "Initial commit",
+    "date": "2026-10-01T16:30:00Z",
+    "files": {
+     "README.md": "# Disabled focus fixture\n\nDisposable QA repository.\n"
+    }
+   }
+  ]
+ },
+ "variants": [
+  {
+   "palette": "midnight",
+   "text_size": 13
+  }
+ ],
+ "crops": {
+  "settings": [
+   10,
+   130,
+   990,
+   435
+  ]
+ },
+ "steps": [
+  {
+   "stable": 12.0,
+   "quiet": 1.15,
+   "note": "the launch settles on History"
+  },
+  {
+   "mark": "history"
+  },
+  {
+   "key": "comma",
+   "mods": [
+    "Control_L"
+   ],
+   "await_change": 3.0,
+   "wait_after": 0.0,
+   "note": "open Settings, nothing focused"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "history",
+    "b": "@now",
+    "min_pixels": 100001
+   },
+   "note": "Settings opened"
+  },
+  {
+   "capture": "settings-open",
+   "commit": false
+  },
+  {
+   "key": "Tab",
+   "repeat": 7,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "Tab 6 is Back to repository, Tab 7 the Follow system Switch (#124's order)"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "settings-open",
+    "b": "@now",
+    "masks": [
+     "status-timing"
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the Switch draws no focus ring, so the frame equals Settings with nothing focused; a visible ring means the count went astray"
+  },
+  {
+   "atspi_focus": "switch-focused",
+   "within": 5,
+   "note": "AT-SPI's focused node with the Switch focused and enabled"
+  },
+  {
+   "guard": {
+    "kind": "atspi_focus",
+    "focus": "switch-focused",
+    "node": "Follow system appearance",
+    "role": "toggle button",
+    "states": [
+     "focused"
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "focus is on Follow system appearance before the card is clicked"
+  },
+  {
+   "capture": "switch-focused",
+   "crop": "settings",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Settings on Midnight with keyboard focus on the Follow system Switch, which draws no ring; AT-SPI names the focused node"
+  },
+  {
+   "store_snapshot": "store-before-click",
+   "path": "config/gitturtle/preferences.json",
+   "quiet": 1,
+   "within": 10,
+   "note": "the store before the card click"
+  },
+  {
+   "click": [
+    187,
+    340
+   ],
+   "note": "select the Omarchy card with the pointer, so the Switch turns disabled while it holds focus"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "settings-open",
+    "b": "@now",
+    "min_pixels": 100001
+   },
+   "note": "the palette changed to Omarchy Tokyo Night"
+  },
+  {
+   "store_snapshot": "store-after-click",
+   "path": "config/gitturtle/preferences.json",
+   "quiet": 1,
+   "within": 10,
+   "note": "the store once the click's save has settled"
+  },
+  {
+   "capture": "switch-disabled",
+   "crop": "settings",
+   "roles": [
+    "cand"
+   ],
+   "shows": "the Omarchy card selected by the pointer: Tokyo Night applied, the Follow system Switch disabled and still holding keyboard focus"
+  },
+  {
+   "atspi_focus": "focus-before-keys",
+   "within": 5,
+   "note": "focus after the click, before Space and Enter"
+  },
+  {
+   "key": "space",
+   "await_change": 2.0,
+   "wait_after": 0.5,
+   "note": "Space on the focused disabled Switch; its logged first change should be none"
+  },
+  {
+   "capture": "after-space",
+   "commit": false
+  },
+  {
+   "key": "Return",
+   "await_change": 2.0,
+   "wait_after": 0.5,
+   "note": "Enter on the focused disabled Switch; its logged first change should be none"
+  },
+  {
+   "capture": "after-enter",
+   "crop": "settings",
+   "roles": [
+    "cand"
+   ],
+   "shows": "after Space and Enter on the focused disabled Switch: the Switch, the card and the palette unchanged"
+  },
+  {
+   "store_snapshot": "store-after-keys",
+   "path": "config/gitturtle/preferences.json",
+   "quiet": 1,
+   "within": 10,
+   "note": "the store after Space and Enter"
+  },
+  {
+   "atspi_focus": "focus-after-keys",
+   "within": 5,
+   "note": "focus after Space and Enter"
+  },
+  {
+   "park": true,
+   "note": "park before the keyboard input: the capture after Tab keeps the pointer off the window, so GPUI stays in keyboard mode and nothing is hovered"
+  },
+  {
+   "key": "Tab",
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "Tab leaves the disabled Switch for the Omarchy card"
+  },
+  {
+   "capture": "after-tab",
+   "crop": "settings",
+   "roles": [
+    "cand"
+   ],
+   "shows": "Tab leaves the Switch: keyboard focus on the Omarchy card, drawn with its whole 2 px ring outside the selected border; AT-SPI agrees",
+   "keep_pointer": true
+  },
+  {
+   "atspi_focus": "focus-after-tab",
+   "within": 5,
+   "note": "focus after Tab"
+  }
+ ],
+ "analyses": [
+  {
+   "name": "switch-holds-focus",
+   "kind": "atspi_focus",
+   "focus": "switch-focused",
+   "node": "Follow system appearance",
+   "role": "toggle button",
+   "states": [
+    "focused"
+   ],
+   "not_states": [
+    "pressed"
+   ],
+   "note": "Tab 7 focuses the Follow system Switch, which is off (a Switch is pressed while on)"
+  },
+  {
+   "name": "click-keeps-focus-on-the-switch",
+   "kind": "atspi_focus",
+   "focus": "focus-before-keys",
+   "node": "Follow system appearance",
+   "role": "toggle button",
+   "states": [
+    "focused"
+   ],
+   "not_states": [
+    "pressed"
+   ],
+   "note": "after the card click the disabled Switch still holds focus and is still off"
+  },
+  {
+   "name": "keys-keep-focus-and-state",
+   "kind": "atspi_focus",
+   "focus": "focus-after-keys",
+   "same_as": "focus-before-keys",
+   "note": "Space and Enter change neither focus nor the Switch's AT-SPI states"
+  },
+  {
+   "name": "keys-keep-the-store",
+   "kind": "store_compare",
+   "a": "store-after-click",
+   "b": "store-after-keys",
+   "note": "the saved preferences are byte-identical before and after Space and Enter"
+  },
+  {
+   "name": "click-keeps-follow-system-off",
+   "kind": "store_compare",
+   "a": "store-before-click",
+   "b": "store-after-click",
+   "keys": [
+    "settings.follow_system"
+   ],
+   "note": "the card click saves the theme and leaves follow_system as it was"
+  },
+  {
+   "name": "tab-leaves-the-switch",
+   "kind": "atspi_focus",
+   "focus": "focus-after-tab",
+   "node": "Omarchy theme",
+   "note": "Tab moves focus from the disabled Switch to the Omarchy card"
+  },
+  {
+   "name": "space-changes-nothing",
+   "kind": "compare",
+   "a": "switch-disabled",
+   "b": "after-space",
+   "masks": [
+    "status-timing"
+   ],
+   "note": "Space on the focused disabled Switch changes no pixel"
+  },
+  {
+   "name": "enter-changes-nothing",
+   "kind": "compare",
+   "a": "switch-disabled",
+   "b": "after-enter",
+   "masks": [
+    "status-timing"
+   ],
+   "note": "Space then Enter change no pixel: the Switch's state and the palette stay as they were"
+  },
+  {
+   "name": "tab-reaches-the-card",
+   "kind": "ring",
+   "frame": "after-tab",
+   "rect": [
+    35,
+    289,
+    341,
+    424
+   ],
+   "min_contrast": 3.0,
+   "note": "after Tab the Omarchy card's ring is whole, 2 px on every side at 3:1 or more (#124 and the park diagnostic measured [33, 287, 342, 425], 7.29:1); the card draws it only in keyboard mode, so the pointer is parked before Tab and kept off the window"
+  },
+  {
+   "name": "tab-moves-only-the-ring",
+   "kind": "compare",
+   "a": "after-enter",
+   "b": "after-tab",
+   "region": [
+    10,
+    130,
+    990,
+    435
+   ],
+   "bands": [
+    [
+     287,
+     288
+    ],
+    [
+     423,
+     424
+    ]
+   ],
+   "band_min": 21,
+   "note": "Tab changes only the card's ring rows [[287, 288], [423, 424]], as in #124's frames"
+  },
+  {
+   "name": "switch-focused-base-equals-cand",
+   "kind": "compare",
+   "a": "base:switch-focused",
+   "b": "cand:switch-focused",
+   "crop": "settings",
+   "note": "the candidate changes only a test and a patch note, so both builds draw the same"
+  },
+  {
+   "name": "switch-disabled-base-equals-cand",
+   "kind": "compare",
+   "a": "base:switch-disabled",
+   "b": "cand:switch-disabled",
+   "crop": "settings",
+   "note": "the candidate changes only a test and a patch note, so both builds draw the same"
+  },
+  {
+   "name": "after-enter-base-equals-cand",
+   "kind": "compare",
+   "a": "base:after-enter",
+   "b": "cand:after-enter",
+   "crop": "settings",
+   "note": "the candidate changes only a test and a patch note, so both builds draw the same"
+  },
+  {
+   "name": "after-tab-base-equals-cand",
+   "kind": "compare",
+   "a": "base:after-tab",
+   "b": "cand:after-tab",
+   "crop": "settings",
+   "note": "the candidate changes only a test and a patch note, so both builds draw the same"
+  }
+ ]
+}
