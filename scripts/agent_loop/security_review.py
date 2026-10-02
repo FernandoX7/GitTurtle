@@ -71,7 +71,7 @@ SECURITY_REVIEW_SCHEMA = {
 
 
 def security_required(paths: list[str]) -> bool:
-    """Skip only recognized prose and static artwork; unknown inputs review.
+    """Skip only recognized prose, static artwork and evidence records; unknown inputs review.
 
     The caller supplies Git's --no-renames diff so both old and new names of a
     move are considered, including deleted files. A path is not a security
@@ -93,7 +93,12 @@ def security_required(paths: list[str]) -> bool:
         artwork = value.startswith("assets/") and path.suffix in {
             ".png", ".jpg", ".jpeg", ".webp", ".ico", ".icns",
         }
-        if not prose and not artwork:
+        # Captured frames and measurement records: read by people and reviewers,
+        # never by the build, which a test holds (evidence.build_references).
+        records = value.startswith(("docs/evidence/", "docs/benchmarks/")) and path.suffix in {
+            ".png", ".jpg", ".jpeg", ".webp", ".json", ".jsonl", ".csv", ".tsv", ".log",
+        }
+        if not prose and not artwork and not records:
             return True
     return False
 

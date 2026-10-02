@@ -127,6 +127,12 @@ class SecurityReviewTests(unittest.TestCase):
     def test_only_recognized_prose_and_static_artwork_can_skip(self):
         self.assertFalse(security_required(["docs/guide.md", "docs/reference.txt", "README.md", "assets/icon.png"]))
         self.assertFalse(security_required(["CONTRIBUTING.md", "LICENSE"]))
+        self.assertFalse(security_required(["docs/evidence/one/focus.png", "docs/benchmarks/2026-10-02-scroll.json"]))
+        # Records elsewhere, and code or scriptable images among the records, still review.
+        for path in ("docs/development/tasks.json", "docs/benchmarks/probe.py", "docs/evidence/one/frame.svg",
+                     "docs/evidence/one/frame.PNG", "crates/app/tests/fixtures/frame.png"):
+            with self.subTest(path=path):
+                self.assertTrue(security_required([path]))
 
     def test_accepts_complete_review_bound_to_all_inputs(self):
         self.assertEqual(self.validate(passing_security()), "pass")
