@@ -248,10 +248,12 @@ class RecoveryTests(unittest.TestCase):
         self.assertNotIn("candidate", state["tasks"]["one"])
 
     def test_attestation_refuses_candidate_after_an_independent_acceptance_advances_base(self):
+        self.options["max_attempts"] = 1
         directory = self.create([fixtures.task(profiles=["native"]), fixtures.task("independent")])
-        state = self.execute(directory)
+        # Its replay onto the advanced head fails its gates, and no attempt remains to rebuild it.
+        state = self.execute(directory, gate=fixtures.red_on_rebase)
         record = state["tasks"]["one"]
-        self.assertEqual(record["status"], "awaiting_evidence")
+        self.assertEqual(record["status"], "stale")
         self.assertNotEqual(record["base"], state["accepted_head"])
         evidence = self.root.parent / "stale-native.md"
         evidence.write_text("Native report for an older candidate.\n")

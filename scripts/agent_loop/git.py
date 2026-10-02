@@ -37,7 +37,7 @@ def git(repo: Path, *args: str, owner: Path | None = None) -> str:
             environment.pop(key)
     environment.update(GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", GIT_NO_LAZY_FETCH="1")
     argv = ["git", *([] if args[0] == "check-ignore" else ["--literal-pathspecs"]), "-c", "core.fsmonitor=false", "-C", str(repo), *args]
-    if args[0] in {"clone", "switch", "add", "commit", "fetch", "merge", "config", "remote"}:
+    if args[0] in {"clone", "switch", "add", "commit", "cherry-pick", "fetch", "merge", "config", "remote"}:
         # Writes can invoke hooks/filters. Keep their process ownership journal
         # alongside the run so recovery waits for cleanup before inspecting Git.
         owner = owner or next((parent for parent in [repo, *repo.parents] if

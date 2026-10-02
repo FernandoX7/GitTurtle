@@ -20,7 +20,7 @@ import uuid
 
 from .claude import CLAUDE_EFFORTS, Claude, UsageLimited, resolve_selection, snapshot_files as claude_snapshot_files
 from .codex import Codex, validate_review
-from . import inbox
+from . import inbox, rebase
 from .evidence import SHA, checkout_evidence, evidence_paths, fetch_evidence
 from .git import changed_paths, clean, clone, commit, committed_paths, git, head, identity, source_root, untracked_paths, within, write_limits
 from .process import EnvironmentBlocked, LoopError, MalformedResponse, atomic_json, digest, read_json, run_process, reconcile_processes
@@ -57,9 +57,24 @@ CANDIDATE_KEYS = (
     "candidate", "pre_review", "pre_review_sha256", "pre_review_inputs", "review", "review_sha256", "review_inputs",
     "security_review", "security_review_sha256", "security_review_inputs", "security_required", "security_paths",
     "attestations", "gate_sha256", "mirror_untracked", "evidence_commit", "evidence_directory", "evidence_gate_sha256",
+    "pre_review_reviewed", "rebased_from", "recheck",
 )
+# The verdict a rebase carries to a replayed candidate whose patch is unchanged. The
+# security review is never carried: it must see the candidate on its new base.
+REUSABLE_REVIEWS = ("pre_review",)
 # The phase in which the controller gates an evidence commit with the docs profile.
 EVIDENCE_GATING = "evidence_gating"
+# A gated candidate waiting on its evidence owner or on a review to finish.
+PENDING = ("awaiting_evidence", "review_blocked")
+# The phase in which the controller replays a pending candidate onto the accepted head.
+REBASING = "rebasing"
+# The phase in which the loop idles until evidence arrives; it charges no time.
+WAITING = "waiting_for_evidence"
+MAX_AWAITING_EVIDENCE = 3
+MAX_IDLE_MINUTES = 240
+# While waiting, the inbox is read this often and the stop flag every tick.
+IDLE_POLL = 30.0
+IDLE_TICK = 1.0
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 TOOLS = ("codex", "claude")
 CLAUDE_OPTIONS = (
@@ -86,7 +101,7 @@ QUEUED = (
 # What a run's pinned controller can do, recorded when the run is created. The
 # operator's commands come from the live checkout, so they refuse a request an
 # older run's controller would never read instead of reporting success.
-CONTROLLER_FEATURES = ("inbox", "notes", "verify_before_evidence", "evidence_commit")
+CONTROLLER_FEATURES = ("inbox", "notes", "verify_before_evidence", "evidence_commit", "rebase")
 # Another `note` or `attest` holds the lock for moments, a running loop for
 # hours: wait this long for a free lock before treating it as a running loop.
 LOCK_WAIT = 3.0
@@ -278,11 +293,32 @@ def evidence_context(record: dict, paths: list[str], gates: Path) -> str:
     )
 
 
-def review_validator(task: Task, record: dict, key: str):
+def reviewed_identity(record: dict, key: str) -> tuple[str, str]:
+    """The base and candidate the stored verdict under `key` names.
+
+    A verdict a rebase carried over names the candidate its reviewer saw, whose
+    patch the record's candidate replays unchanged; any other names the record's own.
+    """
+    seen = record.get(key + "_reviewed") or {}
+    return seen.get("base", record["base"]), seen.get("candidate", record["candidate"])
+
+
+def rebased_reason(record: dict, onto: str, dropped: str) -> str:
+    """What a rebased candidate waits for: a re-check of its replayed evidence commit, or the evidence itself."""
+    if recheck := record.get("recheck"):
+        return (f"rebased onto {onto}; re-check the committed frames with `qa.py recheck` against "
+                f"{recheck['evidence_commit']} and attest with --evidence-commit {recheck['evidence_commit']} "
+                f"--evidence-repo {recheck['evidence_repo']}")
+    return f"rebased onto {onto}; " + (f"{dropped}; " if dropped else "") + record["reason"]
+
+
+def review_validator(task: Task, record: dict, key: str, identity: tuple[str, str] | None = None):
+    """Validate a verdict on the record's candidate, or on `identity` for a stored one."""
+    base, candidate = identity or (record["base"], record["candidate"])
     if key == "security_review":
-        return lambda value: validate_security_review(value, task, record["base"], record["candidate"], record["security_paths"])
+        return lambda value: validate_security_review(value, task, base, candidate, record["security_paths"])
     deferred = frozenset(evidence_gated(task, record)) if key == "pre_review" else frozenset()
-    return lambda value: validate_review(value, task, record["candidate"], deferred)
+    return lambda value: validate_review(value, task, candidate, deferred)
 
 
 def saved_review(task: Task, record: dict, key: str) -> bool:
@@ -292,7 +328,7 @@ def saved_review(task: Task, record: dict, key: str) -> bool:
     path = Path(record[key])
     if path.is_symlink() or not path.is_file() or digest(path) != record.get(key + "_sha256"):
         raise LoopError(f"{key} evidence changed")
-    verdict = review_validator(task, record, key)(read_json(path))
+    verdict = review_validator(task, record, key, reviewed_identity(record, key))(read_json(path))
     return verdict == "pass" and record.get(key + "_inputs") == review_inputs(record, key)
 
 
@@ -325,7 +361,8 @@ def evidence_round_open(task: Task, record: dict) -> bool:
     return not evidence_gated(task, record) or pre_evidence_passed(task, record)
 
 
-def verification_mode(gated: dict[str, list[str]], *, pre_evidence: bool, earlier: dict | None = None) -> str:
+def verification_mode(gated: dict[str, list[str]], *, pre_evidence: bool, earlier: dict | None = None,
+                      rebased: str | None = None) -> str:
     """Tell the verifier which pass it runs and which criteria wait for external evidence."""
     waiting = json.dumps(gated, sort_keys=True)
     if pre_evidence:
@@ -347,6 +384,9 @@ def verification_mode(gated: dict[str, list[str]], *, pre_evidence: bool, earlie
             "criterion, repeating its checks only where the evidence or a concrete concern bears on them): "
             + json.dumps({key: earlier.get(key) for key in ("verdict", "criteria", "notes")})
         )
+        if rebased:
+            text += (f"\nThat verdict graded {rebased}, which the controller replayed onto the current base as this "
+                     "candidate with the same patch; the gates above ran on this candidate.")
     return text
 
 
@@ -428,6 +468,12 @@ class Runner:
         self.usage_limited: str | None = None
         self.gate_runner = gate_runner
         self.started = time.monotonic()
+        # Waiting for evidence spends no model or gate time, so it is not charged.
+        self.idle_seconds = 0.0
+        self.idle_since: float | None = None
+        # The idle wait's clock and sleep; tests replace them to wait without waiting.
+        self.idle_clock = time.monotonic
+        self.idle_sleep = time.sleep
         self.initial_seconds = self.state["remaining_seconds"]
         self.initial_tokens = self.state.get("output_tokens", 0)
         if self.state.get("budget_running"):
@@ -473,9 +519,15 @@ class Runner:
         self.initial_tokens = max(self.initial_tokens, reported)
         self.state["output_usage_incomplete"] = self.state.get("output_usage_incomplete", False) or incomplete
 
+    def elapsed(self) -> float:
+        """Seconds this controller charged to the run's time budget: all but its idle waits."""
+        current = time.monotonic()
+        idle = self.idle_seconds + (current - self.idle_since if self.idle_since is not None else 0.0)
+        return current - self.started - idle
+
     def save(self) -> None:
         self.state["updated_at"] = now()
-        self.state["remaining_seconds"] = max(0, self.initial_seconds - (time.monotonic() - self.started))
+        self.state["remaining_seconds"] = max(0, self.initial_seconds - self.elapsed())
         self.state["output_tokens"] = self.initial_tokens + self.adapter.output_tokens
         self.state["output_usage_incomplete"] = self.state.get("output_usage_incomplete", False) or getattr(self.adapter, "output_usage_incomplete", False)
         atomic_json(self.directory / "state.json", self.state)
@@ -489,7 +541,7 @@ class Runner:
             self.reported_phase = (self.state["phase"], active)
             if active:
                 print(f"{stamp} {self.state['phase']} {active} attempt {self.state['tasks'][active]['attempts']}", flush=True)
-            elif self.state["phase"] != "idle":
+            elif self.state["phase"] not in {"idle", WAITING}:  # a wait prints its own start and end
                 print(f"{stamp} {self.state['phase']}", flush=True)
         if active:
             return  # a step's intermediate statuses are reported by its outcome
@@ -509,7 +561,7 @@ class Runner:
         return self.interrupted or (self.directory / "STOP").exists()
 
     def timeout(self) -> float:
-        return min(self.state["session_minutes"] * 60, max(0, self.initial_seconds - (time.monotonic() - self.started)))
+        return min(self.state["session_minutes"] * 60, max(0, self.initial_seconds - self.elapsed()))
 
     def budget_stop(self) -> str | None:
         if self.stop_requested():
@@ -606,6 +658,14 @@ class Runner:
                 # Only the evidence commit's own gate was running; it reruns in a fresh checkout.
                 self.validate_candidate(record)
                 record.update(status="awaiting_evidence", reason="evidence commit gate interrupted; resume reruns it")
+            elif phase == REBASING and record.get("candidate") and record.get("gate_sha256"):
+                # The replay works in a clone of its own and the record adopts it
+                # in one save, so the record holds either the old candidate, which
+                # the next step replays again, or the adopted one with its reviews
+                # pending; either keeps its status.
+                self.validate_candidate(record)
+                if record["base"] != self.state["accepted_head"]:
+                    record["reason"] = "rebase interrupted; the next step replays the candidate again"
             else:
                 record["status"] = "interrupted"
                 record["reason"] = f"interrupted during {phase}; preserved attempt, retry from accepted source"
@@ -686,6 +746,8 @@ class Runner:
             self.state["baseline_passed"] = True
             self.save()
         visited: set[str] = set()
+        # Tasks whose rebase a stop or the time budget interrupted; a later run replays them.
+        deferred: set[str] = set()
         while True:
             # Evidence that reached the inbox reopens its parked task in this run.
             visited -= self.ingest()
@@ -695,52 +757,75 @@ class Runner:
                 break
             accepted = {key for key, value in self.state["tasks"].items() if value["status"] == "accepted"}
             # --max-tasks bounds work accepted by this run; tasks that landed before it only satisfy dependencies.
-            if len([key for key in accepted if "landed" not in self.state["tasks"][key]]) >= self.state["max_tasks"]:
+            accepted_here = len([key for key in accepted if "landed" not in self.state["tasks"][key]])
+            if accepted_here >= self.state["max_tasks"]:
                 self.state.update(phase="complete" if len(accepted) == len(self.tasks) else "paused", reason="accepted-task limit reached")
                 break
-            blocked = set(visited)
+            # An acceptance moved the head: replay each pending candidate onto it, one per step, before other work.
+            if stale := self.stale_candidate(deferred):
+                task, record = stale
+                if not self.rebase_candidate(task, record):
+                    deferred.add(task.id)
+                elif record["status"] == "review_blocked":
+                    visited.add(task.id)  # its review just ran and was blocked; resume reruns it
+                else:
+                    # A rebased candidate's next step follows from its status: an owner's
+                    # evidence, its final review, or a normal attempt while attempts remain.
+                    visited.discard(task.id)
+                continue
+            blocked = visited | deferred
             for task_id, record in self.state["tasks"].items():
-                if record["attempts"] >= self.state["max_attempts"] and record["status"] not in {"awaiting_evidence", "review_blocked"}:
+                if record["attempts"] >= self.state["max_attempts"] and record["status"] not in PENDING:
                     blocked.add(task_id)
             ready = select_ready(self.tasks, accepted, blocked)
-            if not ready:
-                self.state.update(phase="complete" if len(accepted) == len(self.tasks) else "blocked", reason="no eligible tasks remain")
-                break
-            task = ready[0]
-            record = self.state["tasks"][task.id]
-            if record["status"] in {"awaiting_evidence", "review_blocked"}:
-                if record["base"] != self.state["accepted_head"]:
-                    record.update(status="stale", reason="accepted base advanced; candidate evidence cannot be reused")
-                    self.save()
-                    if record["attempts"] >= self.state["max_attempts"]:
-                        visited.add(task.id)
+            # Evidence that arrived and reviews left to finish come before new work.
+            task = next((item for item in ready if self.state["tasks"][item.id]["status"] in PENDING), None)
+            if task is None:
+                waiting = self.awaiting_owner()
+                full = self.no_room(accepted_here, waiting)
+                if ready and full is None:
+                    task = ready[0]
+                elif waiting and self.idle_limit() > 0:
+                    reopened, ended = self.wait_for_evidence(waiting, full or "no other eligible work")
+                    visited -= reopened
+                    if reopened or ended is None:  # a stop is reported by the budget check
                         continue
+                    self.state.update(phase="paused", reason=ended)
+                    break
+                elif ready:
+                    # Room is gone and --max-idle-minutes 0 never waits, or no candidate awaits an owner.
+                    self.state.update(phase="paused", reason=f"{full}; attest or finish the pending candidates, then resume")
+                    break
                 else:
-                    missing = self.missing_evidence(record)
-                    # Waiting on its owner: evidence not yet attested, or an evidence
-                    # commit whose docs gate failed and needs replacing.
-                    if (missing and evidence_round_open(task, record)) or (not missing and self.evidence_refused(record)):
-                        visited.add(task.id)
-                        continue
-                    try:
-                        # Until its evidence arrives, a candidate only finishes the reviews that need none.
-                        (self.pre_evidence if missing else self.review_and_accept)(task, record)
-                    except (EnvironmentBlocked, MalformedResponse) as error:
-                        if self.state["phase"] == "accepting":
-                            raise
-                        self.note_limit(error)
-                        # A stopped evidence gate reruns as it was; a stopped review is retried.
-                        status = "awaiting_evidence" if self.state["phase"] == EVIDENCE_GATING else "review_blocked"
-                        record.update(status=status, reason=str(error))
-                    except RejectedVerdict as error:
-                        # As on an attempt's first pass: a verdict that contradicts itself
-                        # fails the attempt instead of stopping every resume at it.
-                        record.update(status="failed", reason=str(error))
-                    self.state.update(phase="idle", active=None)
-                    self.save()
-                    if record["status"] in {"review_blocked", "awaiting_evidence"}:
-                        visited.add(task.id)
+                    self.state.update(phase="complete" if len(accepted) == len(self.tasks) else "blocked", reason="no eligible tasks remain")
+                    break
+            record = self.state["tasks"][task.id]
+            if record["status"] in PENDING:
+                missing = self.missing_evidence(record)
+                # Waiting on its owner: evidence not yet attested, or an evidence
+                # commit whose docs gate failed and needs replacing.
+                if (missing and evidence_round_open(task, record)) or (not missing and self.evidence_refused(record)):
+                    visited.add(task.id)
                     continue
+                try:
+                    # Until its evidence arrives, a candidate only finishes the reviews that need none.
+                    (self.pre_evidence if missing else self.review_and_accept)(task, record)
+                except (EnvironmentBlocked, MalformedResponse) as error:
+                    if self.state["phase"] == "accepting":
+                        raise
+                    self.note_limit(error)
+                    # A stopped evidence gate reruns as it was; a stopped review is retried.
+                    status = "awaiting_evidence" if self.state["phase"] == EVIDENCE_GATING else "review_blocked"
+                    record.update(status=status, reason=str(error))
+                except RejectedVerdict as error:
+                    # As on an attempt's first pass: a verdict that contradicts itself
+                    # fails the attempt instead of stopping every resume at it.
+                    record.update(status="failed", reason=str(error))
+                self.state.update(phase="idle", active=None)
+                self.save()
+                if record["status"] in PENDING:
+                    visited.add(task.id)
+                continue
             self.attempt(task, record)
             if record["status"] in {"blocked", "awaiting_evidence", "review_blocked"}:
                 visited.add(task.id)
@@ -913,9 +998,11 @@ class Runner:
         if not saved_review(task, record, "review"):
             # The final verification; with evidence required, the pre-evidence verdict is its context.
             earlier = read_json(Path(record["pre_review"])) if saved_review(task, record, "pre_review") else None
+            graded = reviewed_identity(record, "pre_review")[1] if earlier is not None else candidate
             context = (gate_context(directory / "checks/gates.json")
                        + "\nExternal evidence: " + json.dumps(record.get("attestations", {})) + "\n"
-                       + verification_mode(evidence_gated(task, record), pre_evidence=False, earlier=earlier))
+                       + verification_mode(evidence_gated(task, record), pre_evidence=False, earlier=earlier,
+                                           rebased=graded if graded != candidate else None))
             if evidence_files is not None:
                 context += "\n" + evidence_context(record, evidence_files, Path(record["evidence_directory"]) / "checks/gates.json")
             if notes := notes_context(record, REVIEW_NOTES):
@@ -1024,6 +1111,7 @@ class Runner:
         record[key] = str(directory / "verdict.json")
         record[key + "_sha256"] = digest(Path(record[key]))
         record[key + "_inputs"] = review_inputs(record, key)
+        record.pop(key + "_reviewed", None)  # a fresh verdict names this candidate itself
         if outcome is not None:
             record.update(outcome)
             self.state.update(phase="idle", active=None)
@@ -1106,6 +1194,250 @@ class Runner:
             return False
         gates = Path(record["evidence_directory"]) / "checks/gates.json"
         return checked_gate(gates, record["evidence_gate_sha256"]).get("passed") is not True
+
+    def stale_candidate(self, deferred: set[str]) -> tuple[Task, dict] | None:
+        """The first pending candidate, in contract order, whose base is no longer the accepted head."""
+        for task in self.tasks:
+            record = self.state["tasks"][task.id]
+            if (task.id not in deferred and record["status"] in PENDING and record.get("candidate")
+                    and record["base"] != self.state["accepted_head"]):
+                return task, record
+        return None
+
+    def awaiting_owner(self) -> list[str]:
+        """Parked tasks waiting for their evidence owner: unattested evidence or a refused evidence commit.
+
+        A candidate on an older base waits for its rebase, not for its owner.
+        """
+        return [
+            task.id for task in self.tasks
+            if (record := self.state["tasks"][task.id])["status"] == "awaiting_evidence"
+            and record.get("base") == self.state["accepted_head"]
+            and (self.missing_evidence(record) or self.evidence_refused(record))
+        ]
+
+    def no_room(self, accepted_here: int, waiting: list[str]) -> str | None:
+        """Why no new attempt may start while candidates are pending, or None when one may.
+
+        Up to --max-awaiting-evidence candidates wait for evidence while the loop
+        implements others. A new attempt also waits while the tasks this run
+        accepted and the pending candidates already reach --max-tasks, since its
+        candidate could not be accepted in this run.
+        """
+        cap = self.state.get("max_awaiting_evidence", MAX_AWAITING_EVIDENCE)
+        if len(waiting) >= cap:
+            return f"--max-awaiting-evidence {cap} reached"
+        pending = sum(1 for record in self.state["tasks"].values() if record["status"] in PENDING and record.get("candidate"))
+        if accepted_here + pending >= self.state["max_tasks"]:
+            return f"accepted tasks and pending candidates reach --max-tasks {self.state['max_tasks']}"
+        return None
+
+    def idle_limit(self) -> float:
+        """Seconds one wait for evidence may last; 0 never waits."""
+        return float(self.state.get("max_idle_minutes", MAX_IDLE_MINUTES)) * 60
+
+    def wait_for_evidence(self, waiting: list[str], why: str) -> tuple[set[str], str | None]:
+        """Idle until an attestation reopens a parked task, a stop, or the idle limit.
+
+        Returns the reopened tasks, and with none the reason to pause, or None
+        after a stop, which the loop's budget check reports. Nothing runs while
+        waiting, so the wait is not charged to --max-minutes, and the budget is
+        recorded as idle, so a controller that dies here is charged no downtime.
+        --max-idle-minutes bounds one continuous wait.
+        """
+        limit = self.idle_limit()
+        minutes = f"{limit / 60:g}"
+        print(f"{now()[11:19]}Z waiting for evidence on {', '.join(waiting)} ({why}); idling at most {minutes} minutes", flush=True)
+        self.state.update(phase=WAITING, budget_running=False)
+        self.save()
+        self.idle_since = time.monotonic()
+        start = polled = self.idle_clock()
+        reopened: set[str] = set()
+        ended = "stop requested"
+        try:
+            while not reopened:
+                if self.stop_requested():
+                    break
+                current = self.idle_clock()
+                if current - start >= limit:
+                    ended = f"waited {minutes} minutes for evidence on {', '.join(waiting)} and none arrived; attest, then resume"
+                    break
+                if current - polled >= IDLE_POLL:
+                    polled = current
+                    reopened = self.ingest()
+                    continue
+                self.idle_sleep(max(0.0, min(IDLE_TICK, polled + IDLE_POLL - current, start + limit - current)))
+        finally:
+            self.idle_seconds += time.monotonic() - self.idle_since
+            self.idle_since = None
+            self.state.update(phase="idle", budget_running=True)
+        outcome = f"evidence arrived for {', '.join(sorted(reopened))}" if reopened else ended.split(";")[0]
+        print(f"{now()[11:19]}Z wait ended after {(self.idle_clock() - start) / 60:.0f} minutes: {outcome}", flush=True)
+        self.save()
+        return reopened, None if reopened or ended == "stop requested" else ended
+
+    def rebase_candidate(self, task: Task, record: dict) -> bool:
+        """Replay a pending candidate onto the accepted head without an implementer session.
+
+        A clean replay with green gates keeps the attempt count, and its status
+        then follows from what it still needs (`settle_rebase`). Anything else
+        that stops the replay, a conflict, a refused patch, a red gate, a gate
+        or Git limit, an old candidate that fails its own checks, or a failure
+        after adoption, leaves it `stale` with the reason, for a normal attempt.
+        Returns False only when a stop or the run's budget interrupted the
+        replay, which leaves the record as it was for a later run.
+        """
+        onto = self.state["accepted_head"]
+        self.state.update(phase=REBASING, active={"task": task.id})
+        self.save()
+        try:
+            self.validate_candidate(record)
+            replayed = self.replay_candidate(task, record, onto)
+        except EnvironmentBlocked as error:
+            self.note_limit(error)
+            if self.budget_stop():
+                record["reason"] = f"rebase onto {onto[:12]} interrupted: {error}; a later run replays the candidate again"
+                self.state.update(phase="idle", active=None)
+                self.save()
+                return False
+            replayed = str(error)  # a gate deadline or Git limit, not the run's budget
+        except LoopError as error:
+            replayed = str(error)
+        failure = replayed if isinstance(replayed, str) else None
+        if failure is None:
+            try:
+                self.adopt_rebase(task, record, onto, replayed)
+                self.settle_rebase(task, record, onto, replayed["dropped"])
+            except (EnvironmentBlocked, MalformedResponse) as error:
+                self.note_limit(error)
+                record.update(status="review_blocked", reason=str(error))
+            except RejectedVerdict as error:
+                record.update(status="failed", reason=str(error))
+            except LoopError as error:
+                failure = str(error)
+        if failure is not None:
+            record.update(status="stale", reason=f"rebase onto {onto[:12]} failed: {failure}; a new attempt rebuilds the task")
+        self.state.update(phase="idle", active=None)
+        self.save()
+        return True
+
+    def settle_rebase(self, task: Task, record: dict, onto: str, dropped: str) -> None:
+        """Give an adopted candidate the status of what it still needs, as a new candidate's gates do.
+
+        Evidence-gated criteria get the reviews that need no evidence first:
+        the verifier's when it did not carry over, and always the security
+        review. A candidate that needs only evidence is parked with the
+        re-check or evidence reason; one that needs none goes to its review.
+        """
+        missing = self.missing_evidence(record)
+        if not missing:
+            record.update(status="awaiting_evidence", reason=f"rebased onto {onto}; its final review follows")
+            return
+        if evidence_gated(task, record):
+            self.pre_evidence(task, record)
+        else:
+            # No criterion is marked as waiting for evidence: keep the earlier order, as an attempt does.
+            record.update(status="awaiting_evidence", reason="required external evidence: " + ", ".join(missing))
+        if record["status"] == "awaiting_evidence":
+            record["reason"] = rebased_reason(record, onto, dropped)
+
+    def replay_candidate(self, task: Task, record: dict, onto: str) -> dict | str:
+        """Replay the candidate, and its evidence commit, onto `onto` in a fresh clone and gate it there.
+
+        Returns what the record adopts, or why it cannot. The checks applied to
+        a new candidate apply to the replayed one, and those applied to an
+        attested evidence commit to the replayed one. An evidence commit that
+        conflicts only in the validation log is replayed by union
+        (`rebase.replay_evidence`); one that still conflicts, or fails those
+        checks, is dropped and its evidence asked for again. The old record and
+        its clone never change here.
+        """
+        evidence = record.get("evidence_commit")
+        directory = self.directory / "attempts" / task.id / str(record["attempts"]) / ("rebase-" + uuid.uuid4().hex[:10])
+        repo = directory / "repo"
+        rebase.prepare(Path(record["directory"]) / "repo", repo, self.repo, onto, record["candidate"], evidence,
+                       task.id, tuple(self.state["author"]), owner=self.directory)
+        candidate, why = rebase.replay(repo, record["candidate"], owner=self.directory)
+        if candidate is None:
+            return why
+        paths = committed_paths(repo, onto, candidate)
+        for path in paths:
+            if controlled(path) or path == self.state["spec_path"] or not path_allowed(path, task.scope):
+                return f"the replayed patch changes a protected or out-of-scope path: {path}"
+        if links := rebase.link_paths(repo, onto, candidate):
+            return f"the replayed patch changes a stored symlink or submodule: {links[0]}"
+        replayed, dropped = None, ""
+        if evidence:
+            replayed, why = rebase.replay_evidence(repo, record["candidate"], evidence, owner=self.directory)
+            if replayed is not None:
+                # One ref per evidence commit, as for an attested one, before HEAD leaves it.
+                fetch_evidence(repo, repo, task.id, replayed)
+                git(repo, "switch", "--quiet", "--detach", candidate, owner=self.directory)
+                try:
+                    evidence_paths(repo, task, candidate, replayed, protected=controlled)
+                except LoopError as error:
+                    replayed, why = None, str(error)
+            if replayed is None:
+                dropped = f"its evidence commit {evidence[:12]} was dropped: {why}"
+        if head(repo) != candidate or not checkout_clean(repo):
+            raise LoopError("rebased candidate checkout changed")
+        patch = git(repo, "diff", "--binary", "--no-ext-diff", "--no-textconv", onto, candidate)
+        (directory / "candidate.patch").write_bytes(patch.encode("utf-8", "surrogateescape"))
+        # The recorded profiles stay; a changed patch may add some, never drop one.
+        profiles = set(record.get("profiles", ())) | profiles_for(task, paths, revision_sources(repo, onto, candidate))
+        report = self.gates(repo, profiles, directory / "checks")
+        if not report["passed"]:
+            return f"its gates failed on the new base; inspect {directory / 'checks/gates.json'}"
+        if head(repo) != candidate or not checkout_clean(repo):
+            raise LoopError("gate changed the rebased candidate source or HEAD")
+        return {
+            "directory": str(directory), "candidate": candidate, "evidence_commit": replayed, "dropped": dropped,
+            "gate_sha256": digest(directory / "checks/gates.json"), "profiles": sorted(profiles),
+            "same_patch": rebase.fingerprint(repo, record["base"], record["candidate"]) == rebase.fingerprint(repo, onto, candidate),
+        }
+
+    def adopt_rebase(self, task: Task, record: dict, onto: str, replayed: dict) -> None:
+        """Bind the record to the replayed candidate in one save.
+
+        Every attestation and the final review named the old candidate, so they
+        go, and so does the security review, which must see the candidate on
+        its new base. A passing pre-evidence verdict carries over only when the
+        patch is unchanged: rebound to the new inputs, it still names the
+        candidate its reviewer saw. Until its reviews finish the candidate is
+        `review_blocked`, so an interruption never leaves it `awaiting_evidence`
+        before they passed.
+        """
+        entry = {"at": now(), "onto": onto, "base": record["base"], "candidate": record["candidate"],
+                 "directory": record["directory"], "patch": "unchanged" if replayed["same_patch"] else "changed"}
+        if "evidence_commit" in record:
+            entry["evidence_commit"] = record["evidence_commit"]
+        carried = {}
+        if replayed["same_patch"]:
+            for key in REUSABLE_REVIEWS:
+                if saved_review(task, record, key):
+                    base, candidate = reviewed_identity(record, key)
+                    carried[key] = {key: record[key], key + "_sha256": record[key + "_sha256"],
+                                    key + "_reviewed": {"base": base, "candidate": candidate}}
+        entry["reused"] = sorted(carried)
+        history = [*record.get("rebased_from", ()), entry]
+        for key in CANDIDATE_KEYS:
+            record.pop(key, None)
+        record.update(
+            base=onto, candidate=replayed["candidate"], directory=replayed["directory"], gate_sha256=replayed["gate_sha256"],
+            profiles=replayed["profiles"], rebased_from=history, status="review_blocked",
+            required_evidence=sorted(set(record["required_evidence"]) | required_evidence(task) | (set(replayed["profiles"]) & EVIDENCE_KINDS)),
+            reason=f"rebased onto {onto}; its reviews rerun on the rebased candidate",
+        )
+        if replayed["evidence_commit"]:
+            record["evidence_commit"] = replayed["evidence_commit"]
+            # The frames are committed; the owner re-checks them on the rebased build instead of retaking them.
+            record["recheck"] = {"evidence_commit": replayed["evidence_commit"], "frames_from": entry["evidence_commit"],
+                                 "evidence_repo": str(Path(replayed["directory"]) / "repo")}
+        self.route_security(record)
+        for key, values in carried.items():
+            record.update(values)
+            record[key + "_inputs"] = review_inputs(record, key)
+        self.save()
 
 
 def revert_target(subject: str) -> str | None:
@@ -1259,6 +1591,8 @@ def create_run(repo: Path, spec_path: Path, controller: Path, options: dict) -> 
         "tasks": records, "controller_features": list(CONTROLLER_FEATURES),
         "tool": tool, **prepared,
         **{key: options[key] for key in ("model", "effort", "max_tasks", "max_attempts", "session_minutes", "max_output_tokens")},
+        "max_awaiting_evidence": options.get("max_awaiting_evidence") or MAX_AWAITING_EVIDENCE,
+        "max_idle_minutes": MAX_IDLE_MINUTES if options.get("max_idle_minutes") is None else options["max_idle_minutes"],
         **{key: options[key] for key in CLAUDE_OPTIONS if tool == "claude" and key in options},
     }
     atomic_json(directory / "state.json", state)
@@ -1328,7 +1662,12 @@ def checked_attestation(directory: Path, state: dict, request: dict, *, commit_c
     if (record.get("attestations") or {}).get(kind, {}).get("request") == request["id"]:
         return None
     if record.get("base") != state["accepted_head"]:
-        raise LoopError("candidate base is stale; resume to rebuild before gathering evidence")
+        if "rebase" not in state.get("controller_features", ()):
+            raise LoopError("candidate base is stale; resume to rebuild before gathering evidence")
+        if record["status"] in PENDING:
+            raise LoopError("candidate base is stale; the controller replays it onto the accepted head at its next step "
+                            "(or on resume), so attest the rebased candidate that status then shows")
+        raise LoopError(f"candidate base is stale and it is {record['status']}: {record.get('reason', '')}")
     if record["status"] not in {"awaiting_evidence", "review_blocked"} or kind not in record["required_evidence"]:
         raise LoopError("this candidate is not waiting for that evidence kind")
     if not isinstance(summary, str) or not summary.strip():
@@ -1362,6 +1701,11 @@ def checked_evidence_commit(state: dict, task: Task, record: dict, request: dict
     if evidence_commit is None:
         if replace:
             raise LoopError("replacing the evidence commit needs the new one")
+        if (recheck := record.get("recheck")) and record.get("evidence_commit") == recheck["evidence_commit"]:
+            # Its frames came from the old build: an attestation must vouch for them on this one.
+            raise LoopError(f"this rebased candidate carries the replayed evidence commit {recheck['evidence_commit']}; "
+                            "re-check its frames on the rebased build and attest with --evidence-commit naming it, "
+                            "or commit new evidence and attest with --replace-evidence-commit")
         return
     if "evidence_commit" not in state.get("controller_features", ()):
         raise LoopError("this run's saved controller predates evidence commits and would never accept one; "
@@ -1405,6 +1749,8 @@ def apply_attestation(directory: Path, state: dict, request: dict, evidence: Pat
                 key: value for key, value in record.get("attestations", {}).items()
                 if not old or value.get("evidence_commit") != old
             }
+            # New evidence replaces the replayed commit, so no re-check of it remains.
+            record.pop("recheck", None)
         for key in ("evidence_directory", "evidence_gate_sha256"):
             record.pop(key, None)
         record["evidence_commit"] = evidence_commit
@@ -1515,6 +1861,45 @@ def positive(value: str) -> int:
     return parsed
 
 
+def non_negative(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or positive")
+    return parsed
+
+
+def concurrency_options(command: argparse.ArgumentParser, *, defaults: bool) -> None:
+    """The evidence-concurrency bounds; `run` sets them, `resume` may renew them."""
+    keep = "" if defaults else "; default: the run's saved value"
+    command.add_argument("--max-awaiting-evidence", type=positive, default=MAX_AWAITING_EVIDENCE if defaults else None,
+                         help=f"implement other tasks while fewer candidates than this await evidence (default {MAX_AWAITING_EVIDENCE}{keep})")
+    command.add_argument("--max-idle-minutes", type=non_negative, default=MAX_IDLE_MINUTES if defaults else None,
+                         help=f"longest wait for evidence, uncharged to --max-minutes, before the run pauses; 0 never waits "
+                              f"(default {MAX_IDLE_MINUTES}{keep})")
+
+
+def recheck_wanted(record: dict) -> bool:
+    """Whether a required kind still lacks an attestation that vouches for the replayed evidence commit."""
+    recheck = record.get("recheck")
+    if not recheck or record.get("status") == "accepted":
+        return False
+    proofs = record.get("attestations", {})
+    return any(
+        (proofs.get(kind) or {}).get("candidate") != record.get("candidate")
+        or proofs[kind].get("evidence_commit") != recheck["evidence_commit"]
+        for kind in record.get("required_evidence", ())
+    )
+
+
+def rebase_summary(state: dict) -> dict:
+    """Each rebased task's lineage and whether its owner should re-check committed frames."""
+    return {
+        task_id: {"candidate": record.get("candidate"), "rebased_from": record["rebased_from"],
+                  "recheck_wanted": recheck_wanted(record), "recheck": record.get("recheck")}
+        for task_id, record in state["tasks"].items() if record.get("rebased_from")
+    }
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1531,6 +1916,7 @@ def main(argv=None) -> int:
             command.add_argument("--session-minutes", type=positive, default=45)
             command.add_argument("--max-output-tokens", type=positive)
             command.add_argument("--tool", choices=TOOLS, default="codex", help="session CLI: codex (default) or claude")
+            concurrency_options(command, defaults=True)
             claude = command.add_argument_group("claude", "options used only with --tool claude")
             claude.add_argument("--retry-effort", choices=CLAUDE_EFFORTS, help="effort for attempt 2 (default: one step above --effort)")
             claude.add_argument("--hard-model", help="model for attempt 3 onward via the implementer-hard agent (default: --model); none disables")
@@ -1552,6 +1938,7 @@ def main(argv=None) -> int:
         if name == "resume":
             for option in ("max-minutes", "max-tasks", "max-attempts", "max-output-tokens"):
                 command.add_argument("--" + option, type=positive)
+            concurrency_options(command, defaults=False)
         if name == "attest":
             command.add_argument("--task", required=True)
             command.add_argument("--candidate", required=True)
@@ -1580,7 +1967,8 @@ def main(argv=None) -> int:
         else:
             directory = args.run.resolve()
         if args.command == "status":
-            print(json.dumps(state_at(directory) | {"inbox": inbox.summary(directory)}, indent=2))
+            state = state_at(directory)
+            print(json.dumps(state | {"inbox": inbox.summary(directory), "rebases": rebase_summary(state)}, indent=2))
             return 0
         if args.command == "stop":
             state_at(directory)
@@ -1601,7 +1989,7 @@ def main(argv=None) -> int:
         with locked(directory):
             runner = Runner(directory)
             if args.command == "resume":
-                for name in ("max_tasks", "max_attempts", "max_output_tokens"):
+                for name in ("max_tasks", "max_attempts", "max_output_tokens", "max_awaiting_evidence", "max_idle_minutes"):
                     if getattr(args, name) is not None:
                         runner.state[name] = getattr(args, name)
                 if args.max_minutes is not None:

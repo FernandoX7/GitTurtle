@@ -249,7 +249,7 @@ class NoteTests(unittest.TestCase):
     def test_a_run_from_an_older_controller_refuses_what_it_would_never_read(self):
         directory, candidate, evidence = self.native_candidate()
         state = read_json(directory / "state.json")
-        self.assertEqual(state.pop("controller_features"), ["inbox", "notes", "verify_before_evidence", "evidence_commit"])
+        self.assertEqual(state.pop("controller_features"), ["inbox", "notes", "verify_before_evidence", "evidence_commit", "rebase"])
         atomic_json(directory / "state.json", state)
         with self.assertRaisesRegex(LoopError, "predates coordinator notes"):
             note(directory, "one", "Never read by this run's controller.")
