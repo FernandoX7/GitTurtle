@@ -7,8 +7,9 @@ A bundle (`qa.py scenario run --out BUNDLE`) holds:
   <role>/<variant>/      one launch's run directory: flow-log.json, app.log, captures/, marks/ and
                          probes/<probe>/ (probe.json and every frame it kept; never committed)
   commit/                the crops to commit, under their committed names
-  commit-manifest.json   per crop: name, sha256, bytes, size, role, variant, capture, box, the window it is
-                         cut from, what it shows
+  commit-manifest.json   per crop: name, sha256, bytes, size, role, variant, capture, box, layout (a scaled or
+                         composed crop's boxes, scale, gap and fill colour), the window it is cut from, what
+                         it shows
   analysis.json          every analysis with its numbers, verdict and the scenario's expectation (true,
                          false, or "record": measured and written, never a finding)
   run.json               builds, host, fixture, launches, privacy scan and the verdict
@@ -66,21 +67,30 @@ def load_probe(directory: Path, root: Path) -> dict | None:
     return record
 
 
-def cut(source: Path, box, output: Path) -> dict:
+def cut(source: Path, box, output: Path, layout: dict | None = None) -> dict:
     """Crop `source` (the whole frame when `box` is None) into `output` as an RGB PNG; its digest and size.
 
-    The bytes depend on the pixels and on the Pillow and zlib versions only, so
-    a re-capture with the same tooling reproduces a committed crop exactly.
+    A scaled or composed crop (`layout`, `scenario.crop_layout`) is composed
+    by `frames.compose` instead, and its boxes, scale, gap and the fill colour
+    it used are returned as `layout`. The bytes depend on the pixels and on
+    the Pillow and zlib versions only, so a re-capture with the same tooling
+    reproduces a committed crop exactly.
     """
     from PIL import Image
 
+    described = None
     with Image.open(source) as image:
         frame = image.convert("RGB")
-        cropped = frame if box is None else frame.crop(tuple(box))
+        if layout is not None:
+            cropped, fill = frames.compose(frame, layout["boxes"], layout["scale"], layout["gap"], layout["fill"])
+            described = dict(boxes=[list(item) for item in layout["boxes"]], scale=layout["scale"], gap=layout["gap"],
+                             fill=None if fill is None else list(fill))
+        else:
+            cropped = frame if box is None else frame.crop(tuple(box))
         cropped.save(output, optimize=True)
         size = list(cropped.size)
     data = output.read_bytes()
-    return dict(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data), size=size)
+    return dict(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data), size=size, layout=described)
 
 
 def write_crops(root: Path, crops: list[scenario.Crop], destination: Path) -> list[dict]:
@@ -103,10 +113,11 @@ def write_crops(root: Path, crops: list[scenario.Crop], destination: Path) -> li
                 raise SystemExit(f"capture {crop.capture} of {crop.role} {crop.variant.id} is {image.size[0]}x"
                                  f"{image.size[1]}, not the {crop.window[0]}x{crop.window[1]} window the scenario has "
                                  "at that capture; nothing cropped")
-        info = cut(source, crop.box, destination / crop.name)
+        info = cut(source, crop.box, destination / crop.name, crop.layout)
         entries.append(dict(name=crop.name, sha256=info["sha256"], bytes=info["bytes"], size=info["size"],
                             role=crop.role, variant=crop.variant.describe(), capture=crop.capture, crop=crop.crop,
-                            box=list(crop.box) if crop.box else None, window=list(crop.window), shows=crop.shows,
+                            box=list(crop.box) if crop.box else None, layout=info["layout"],
+                            window=list(crop.window), shows=crop.shows,
                             source=str(source.relative_to(root)), source_sha256=identity.sha256_file(source)))
     return entries
 

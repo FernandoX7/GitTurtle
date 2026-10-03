@@ -84,7 +84,7 @@ def scenario_check(args) -> int:
     print(f"  {len(spec['variants'])} variant(s), {len(spec['steps'])} steps, {len(spec['analyses'])} analyses, "
           f"{len(scenario.analysis_runs(spec))} evaluations, {len(crops)} committed crops:")
     for crop in crops:
-        print(f"    {crop.name}  ({crop.crop or 'whole frame'})")
+        print(f"    {crop.name}  ({crop.crop or 'whole frame'}{scenario.layout_note(crop.layout)})")
     probes = scenario.probes(spec)
     if probes:
         print(f"  {len(probes)} probe(s), kept in the bundle and never committed:")
@@ -232,6 +232,8 @@ def privacy_scan(args) -> int:
     for frame, result in report.items():
         best = max(result["templates"].items(), key=lambda item: item[1]["best"])
         where = f" in frame {best[1]['frame']}" if result["frames"] > 1 else ""
+        if best[1].get("magnified"):
+            where += f" (read at 1/{best[1]['magnified']} size, as an exact {best[1]['magnified']}x magnification)"
         print(f"{Path(frame).name}: {result['hits']} hit(s) >= {args.threshold}; best {best[0]} "
               f"{best[1]['best']:.2f} at {best[1]['at']}{where} ({result['engine']})")
         for name, found in result["templates"].items():

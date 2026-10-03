@@ -1,4 +1,4 @@
-"""Base versus candidate frame comparison with masked regions, and small pixel helpers.
+"""Base versus candidate frame comparison with masked regions, scaled and composed crops, and small pixel helpers.
 
 A mask removes a region from the verdict but not from the report: masked
 differences are counted separately, so a mask never hides that something
@@ -11,6 +11,8 @@ from pathlib import Path
 
 BLOCK = 4  # difference cells, in pixels
 GAP = 3    # cells: differences within 12 px are one region
+SCALES = range(2, 9)    # a committed crop's nearest-neighbour magnification; the privacy scan undoes these
+MAX_COMPOSED = 2048     # px on each side of a scaled or composed crop: it magnifies details, not screens
 
 
 def status_timing(width: int, height: int) -> tuple[int, int, int, int]:
@@ -121,6 +123,75 @@ def pairs(base: Path, candidate: Path) -> list[tuple[Path, Path]]:
     if base.is_dir() or candidate.is_dir():
         raise SystemExit("compare needs two files or two directories")
     return [(base, candidate)]
+
+
+# ---------- scaled and composed crops ----------
+def composed_size(boxes, scale: int = 1, gap: int = 0) -> tuple[int, int]:
+    """The size of `compose`'s image: the boxes side by side, `gap` px apart, as tall as the tallest, times `scale`."""
+    width = sum(x1 - x0 for x0, _, x1, _ in boxes) + gap * (len(boxes) - 1)
+    height = max(y1 - y0 for _, y0, _, y1 in boxes)
+    return width * scale, height * scale
+
+
+def compose(image, boxes, scale: int = 1, gap: int = 0, fill=None):
+    """`boxes` of `image` side by side, left to right and top-aligned, `gap` px apart, then magnified `scale` times
+    by nearest neighbour, so every source pixel becomes one exact `scale` x `scale` block; with the fill colour used.
+
+    The gap and the space under a box shorter than the tallest are painted
+    `fill`: a colour, `{"at": [x, y]}` (that pixel of `image`), or None for the
+    most frequent colour of all the boxes' pixels (ties: the larger colour),
+    usually the surface they share. Top alignment keeps row r of every box at
+    row r of the composite. One box has no gap or fill, and its fill is None.
+    """
+    from collections import Counter
+
+    from PIL import Image
+
+    image = image.convert("RGB")
+    pieces = [image.crop(tuple(box)) for box in boxes]
+    colour = None
+    if len(pieces) == 1:
+        canvas = pieces[0]
+    else:
+        if fill is None:
+            counts: Counter = Counter()
+            for piece in pieces:
+                counts.update({found: count for count, found in piece.getcolors(piece.width * piece.height)})
+            colour = max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+        elif isinstance(fill, dict):
+            colour = image.getpixel(tuple(fill["at"]))[:3]
+        else:
+            colour = tuple(fill[:3])
+        canvas = Image.new("RGB", composed_size(boxes, 1, gap), colour)
+        left = 0
+        for piece in pieces:
+            canvas.paste(piece, (left, 0))
+            left += piece.width + gap
+    if scale > 1:
+        canvas = canvas.resize((canvas.width * scale, canvas.height * scale), Image.Resampling.NEAREST)
+    return canvas, None if colour is None else tuple(colour)
+
+
+def magnifications(image) -> list[tuple[int, object]]:
+    """Every factor of SCALES by which `image` is an exact nearest-neighbour magnification, every factor x factor
+    block one colour, with the image it magnifies at that factor, smallest factor first; none for most frames.
+
+    The privacy scan also reads the image at each of them: a 4x crop of
+    content that is itself 2x2-blocky is an exact 8x magnification as well,
+    and only its 1/4 reading has the app's own size, which its templates
+    were cut at.
+    """
+    from PIL import Image
+
+    width, height = image.size
+    data, found = image.tobytes(), []
+    for factor in SCALES:
+        if width % factor or height % factor:
+            continue
+        small = image.resize((width // factor, height // factor), Image.Resampling.NEAREST)
+        if small.resize(image.size, Image.Resampling.NEAREST).tobytes() == data:
+            found.append((factor, small))
+    return found
 
 
 # ---------- measurement helpers for drivers ----------

@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from native_qa import privacy
+from native_qa import frames, privacy
 
 HAVE_PIL = importlib.util.find_spec("PIL") is not None
 HAVE_CC = any(shutil.which(name) for name in ("cc", "gcc", "clang"))
@@ -187,6 +187,50 @@ class ScanTest(unittest.TestCase):
             with self.assertRaises(SystemExit) as refused:
                 privacy.load_templates(root / "tpl", anonymous=True)
             self.assertNotIn("QA-TEMPLATE", str(refused.exception))
+
+    def test_a_magnified_crop_is_also_scanned_at_1x(self) -> None:
+        from PIL import Image
+
+        frame, width, height, (patch, tw, th) = synthetic()
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "tpl").mkdir()
+            Image.frombytes("L", (tw, th), patch).save(root / "tpl" / "name.png")
+            leaky = Image.frombytes("L", (width, height), frame).convert("RGB")
+            leaky.save(root / "leaky.png")
+            # A scenario's 4x crop around the string: 1x templates cannot match its 4x4 blocks.
+            frames.compose(leaky, [(20, 6, 60, 26)], scale=4)[0].save(root / "leaky-4x.png")
+            report = privacy.scan([root / "leaky-4x.png", root / "leaky.png"], privacy.load_templates(root / "tpl"),
+                                  engine="python")
+            scaled, plain = report[str(root / "leaky-4x.png")], report[str(root / "leaky.png")]
+            self.assertEqual((scaled["size"], scaled["magnified"], scaled["hits"]), ([160, 80], [2, 4], 1))
+            self.assertEqual((scaled["templates"]["name"]["at"], scaled["templates"]["name"]["magnified"],
+                              scaled["templates"]["name"]["hit_list"]), ([40, 24], 4, [[40, 24, 1.0]]))
+            self.assertEqual((plain["magnified"], plain["hits"]), ([], 1))
+            self.assertNotIn("magnified", plain["templates"]["name"])
+            run = [sys.executable, "-B", str(QA), "privacy", "scan", "--templates", str(root / "tpl"), "--engine",
+                   "python", str(root / "leaky-4x.png")]
+            named = subprocess.run(run, capture_output=True, text=True)
+            redacted = subprocess.run(run + ["--redacted"], capture_output=True, text=True)
+        self.assertEqual((named.returncode, redacted.returncode), (1, 1), named.stderr + redacted.stderr)
+        self.assertIn("best name 1.00 at [40, 24] (read at 1/4 size, as an exact 4x magnification)", named.stdout)
+        self.assertIn("HIT name at (40,24)", named.stdout)
+        self.assertIn("leaky-4x.png: MATCH", redacted.stdout)
+
+    def test_a_4x_crop_of_blocky_content_is_read_at_every_exact_factor(self) -> None:
+        from PIL import Image
+
+        frame, width, height, _ = synthetic()
+        # The app drew the string 2x2-blocky, so its template, cut at the app's size, is blocky too.
+        drawn = Image.frombytes("L", (width, height), frame).resize((width * 2, height * 2), Image.Resampling.NEAREST)
+        template = drawn.crop((60, 24, 92, 40))
+        crop = frames.compose(drawn.convert("RGB"), [(40, 12, 120, 52)], scale=4)[0]  # an exact 8x as well
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "blocky-4x.png"
+            crop.save(path)
+            report = privacy.scan([path], {"t1": privacy.gray(template)}, engine="python")[str(path)]
+        self.assertEqual((report["magnified"], report["hits"]), ([2, 4, 8], 1))
+        self.assertEqual((report["templates"]["t1"]["magnified"], report["templates"]["t1"]["at"]), (4, [80, 48]))
 
     def test_every_animation_frame_is_scanned_up_to_the_cap(self) -> None:
         from PIL import Image

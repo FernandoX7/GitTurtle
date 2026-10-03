@@ -1,5 +1,5 @@
-"""Analyses for native-QA evidence: focus-ring sides, clearance, fill contrast, masked compares and probes on
-frames, and the focused AT-SPI node and store snapshots on a launch's readings.
+"""Analyses for native-QA evidence: focus-ring sides, clearance, fill and glyph contrast, masked compares and probes
+on frames, and the focused AT-SPI node and store snapshots on a launch's readings.
 
 Pure functions on Pillow images, with no display. Coordinates are window
 pixels and boxes are PIL boxes, `(x0, y0, x1, y1)` with exclusive ends. Each
@@ -28,7 +28,7 @@ SIDES = ("top", "right", "bottom", "left")
 # Each reading kind with the step kind whose readings it reads.
 READING_KINDS = {"atspi_focus": "atspi_focus", "store_compare": "store_snapshot"}
 PROBE_KINDS = ("probe_ring", "probe_endpoints")
-KINDS = ("ring", "clearance", "fill", "compare", *PROBE_KINDS, *READING_KINDS)
+KINDS = ("ring", "clearance", "fill", "glyph_contrast", "compare", *PROBE_KINDS, *READING_KINDS)
 TOLERANCE = 6     # per channel; a ring is one colour, but blending at its ends can move it a few units
 REACH = 4         # px searched on each side of a rect's edge for its ring
 CORNER = 10       # px left out at each end of a side, where a ring rounds its corner (8 left blended pixels in 2026)
@@ -37,6 +37,8 @@ MAX_REGIONS = 64  # difference regions kept per compare, so analysis.json stays 
 RUN = 12          # px: a probe finds a ring by its sides, straight runs of the ring colour; glyph strokes are shorter
 MIN_RING_PIXELS = 40  # pixels of one accent colour a probe frame needs before that colour can be a ring
 MAX_LISTED = 32   # failing probe frames named in a verdict's reasons; the result lists every one
+MIN_INK = 8       # ink pixels a glyph box needs, so a box of surface alone fails
+MIN_PEAK_PIXELS = 2  # ink pixels near a glyph's peak colour, so one stray pixel cannot carry its contrast
 
 
 def near(pixel, colour, tolerance: int = TOLERANCE) -> bool:
@@ -254,6 +256,104 @@ def fill_contrast(image, region, reference, min_contrast: float | None = None,
     if max_contrast is not None and ratio > max_contrast:
         reasons.append(f"contrast {ratio} over {max_contrast}")
     return dict(fill=list(colour), share=round(count / total, 4), reference=list(reference[:3]), contrast=ratio,
+                passed=not reasons, reasons=reasons)
+
+
+def weighted_median(values: list[tuple[float, int]]) -> float | None:
+    """The median of values given with their counts (the mean of the middle two for an even total); None for none."""
+    total = sum(count for _, count in values)
+    if not total:
+        return None
+    middle, seen, found = ((total - 1) // 2, total // 2), 0, []
+    for value, count in sorted(values):
+        found += [value for index in middle if seen <= index < seen + count]
+        seen += count
+    return round(sum(found) / 2, 4)
+
+
+def glyph_contrast(image, box, surface=None, min_contrast: float | None = None, tolerance: int = TOLERANCE,
+                   min_ink: int = MIN_INK, min_peak_pixels: int = MIN_PEAK_PIXELS, allow_edge: bool = False) -> dict:
+    """The ink of one glyph in `box` against the surface it is drawn on, as WCAG contrast ratios.
+
+    The surface is a colour, `{"at": [x, y]}`, `{"region": box}` (that
+    region's most frequent colour) or, by default, the box's most frequent
+    colour. Ink is every pixel of the box that differs from the surface by
+    more than `tolerance` in a channel, so a border or a neighbour inside the
+    box is ink too: the box needs a clear margin of surface on every side,
+    and ink reaching a side (`touches`) fails unless `allow_edge`. The peak is
+    the ink colour of the highest contrast against the surface that at least
+    `min_peak_pixels` ink pixels within `tolerance` of it back (`support`), so
+    a stray pixel cannot carry it; `strongest` is the highest-contrast ink
+    colour with or without that support. Also reported: the ink pixel count
+    and its bounding box, the most frequent ink colour, and the median ratio
+    over every ink pixel. It passes when the box holds at least `min_ink` ink
+    pixels, none on a side, and the peak reaches `min_contrast`, so an empty
+    box fails.
+
+    Anti-aliasing blends a thin stroke's pixels with the surface: a stroke
+    narrower than a pixel, or off the pixel grid, may never show its tint
+    unblended, so the peak is a lower bound of the contrast of the colour the
+    glyph is drawn in, and the median, which counts the blended edges, is
+    lower still.
+    """
+    from PIL import Image, ImageChops
+
+    image = image.convert("RGB")
+    if surface is None:
+        surface, source = modal(image, box)[0], "box"
+    elif isinstance(surface, dict) and "region" in surface:
+        surface, source = modal(image, surface["region"])[0], "region"
+    elif isinstance(surface, dict):
+        surface, source = image.getpixel(tuple(surface["at"]))[:3], "at"
+    else:
+        source = "spec"
+    surface = tuple(surface[:3])
+    region = image.crop(tuple(box))
+    total = region.width * region.height
+    ink = [(count, colour) for count, colour in region.getcolors(total) if not near(colour, surface, tolerance)]
+    count = sum(found for found, _ in ink)
+    red, green, blue = ImageChops.difference(region, Image.new("RGB", region.size, surface)).split()
+    mask = ImageChops.lighter(ImageChops.lighter(red, green), blue).point(lambda v: 255 if v > tolerance else 0)
+    bounds = mask.getbbox()
+    touches = []
+    if bounds is not None:
+        edges = dict(top=bounds[1] == 0, right=bounds[2] == region.width, bottom=bounds[3] == region.height,
+                     left=bounds[0] == 0)
+        touches = [side for side in SIDES if edges[side]]
+
+    def described(item):
+        found, colour = item
+        return dict(colour=list(colour), contrast=frames.contrast(colour, surface), pixels=found)
+
+    ranked = sorted(ink, key=lambda item: (frames.contrast(item[1], surface), item[0], item[1]), reverse=True)
+    peak = None
+    for item in ranked:  # the strongest colour that enough ink pixels near it back
+        support = sum(found for found, other in ink if near(other, item[1], tolerance))
+        if support >= min_peak_pixels:
+            peak = dict(described(item), support=support)
+            break
+    strongest = described(ranked[0]) if ink else None
+    dominant = described(max(ink)) if ink else None
+    median = weighted_median([(frames.contrast(colour, surface), found) for found, colour in ink])
+    reasons = []
+    if count < min_ink:
+        reasons.append(f"{count} ink pixels (more than {tolerance} from the surface {list(surface)} in a channel), "
+                       f"under {min_ink}: no glyph in the box")
+    if touches and not allow_edge:
+        reasons.append(f"ink reaches the box's {', '.join(touches)} side(s): the box cuts the glyph or holds a border "
+                       "or a neighbour; give the glyph a clear margin of surface on every side")
+    if ink and peak is None:
+        reasons.append(f"no ink colour is backed by {min_peak_pixels} ink pixels within {tolerance} of it: stray "
+                       "pixels, not a glyph")
+    if min_contrast is not None and peak is not None and peak["contrast"] < min_contrast:
+        reasons.append(f"peak ink contrast {peak['contrast']} ({peak['colour']}, {peak['support']} px) against the "
+                       f"surface {list(surface)}, under {min_contrast}")
+    x0, y0 = box[0], box[1]
+    return dict(box=list(box), surface=list(surface), surface_from=source, tolerance=tolerance, pixels=total,
+                ink_pixels=count, ink_share=round(count / total, 4),
+                ink_box=None if bounds is None else [bounds[0] + x0, bounds[1] + y0, bounds[2] + x0, bounds[3] + y0],
+                touches=touches, allow_edge=allow_edge, peak=peak, strongest=strongest, dominant=dominant,
+                median_contrast=median, min_contrast=min_contrast, min_ink=min_ink, min_peak_pixels=min_peak_pixels,
                 passed=not reasons, reasons=reasons)
 
 
@@ -820,4 +920,7 @@ def evaluate(entry: dict, resolve, reading=None) -> dict:
         else:
             colour = modal(images[reference.get("frame") or entry["frame"]], reference["region"])[0]
         return fill_contrast(image, entry["region"], colour, entry.get("min_contrast"), entry.get("max_contrast"))
+    if kind == "glyph_contrast":
+        return glyph_contrast(image, entry["box"], entry["surface"], entry["min_contrast"], entry["tolerance"],
+                              entry["min_ink"], entry["min_peak_pixels"], entry["allow_edge"])
     raise ValueError(f"unknown analysis kind {kind!r}")

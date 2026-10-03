@@ -106,6 +106,23 @@ def probe_spec(**changes) -> dict:
     return data
 
 
+GLYPH, PULL = [56, 26, 80, 46], [16, 16, 30, 32]  # the noisy patch (a glyph) and a corner of the panel's ring
+GLYPHS = {"boxes": [GLYPH, PULL], "scale": 4, "gap": 2}
+
+
+def glyph_spec(**changes) -> dict:
+    """SPEC with a 4x crop of two boxes side by side, a 4x crop of one, and a glyph contrast the base only records."""
+    data = spec(crops={"panel": PANEL, "glyphs": GLYPHS, "glyph": {"boxes": [GLYPH], "scale": 4}},
+                steps=SPEC["steps"] + [
+                    {"capture": "toolbar", "crop": "glyphs", "shows": "the new glyph beside Pull's, 4x"},
+                    {"capture": "glyph", "crop": "glyph", "roles": ["cand"], "shows": "the new glyph, 4x"}],
+                analyses=SPEC["analyses"] + [
+                    {"name": "glyph-contrast", "kind": "glyph_contrast", "frame": "toolbar", "box": "glyph",
+                     "min_contrast": 3.0, "expect": {"base": "record", "cand": True}}])
+    data.update(copy.deepcopy(changes))
+    return data
+
+
 def build(path: str, revision: str) -> dict:
     return dict(path=path, sha256=revision[0] * 64, build_info=dict(INFO, source_revision=revision))
 
@@ -808,6 +825,137 @@ class SpecTest(unittest.TestCase):
         self.assertNotIn("HOME files", plain.stdout)
         self.assertNotIn("IsEnabled", plain.stdout)
 
+    def test_scaled_and_composed_crops_and_a_glyph_contrast(self) -> None:
+        loaded = scenario.validate(glyph_spec())
+        # A crop of one box is a region as well; one of several boxes is only cut.
+        self.assertEqual(loaded["crops"], {"panel": tuple(PANEL), "glyph": tuple(GLYPH)})
+        self.assertEqual(loaded["layouts"], {
+            "glyphs": dict(boxes=[tuple(GLYPH), tuple(PULL)], scale=4, gap=2, fill=None),
+            "glyph": dict(boxes=[tuple(GLYPH)], scale=4, gap=0, fill=None)})
+        crops = {crop.name: crop for crop in scenario.committed(loaded)}
+        toolbar = crops["candidate-midnight-1000x680-toolbar.png"]
+        self.assertEqual((toolbar.crop, toolbar.box, toolbar.layout), ("glyphs", None, loaded["layouts"]["glyphs"]))
+        single = crops["candidate-midnight-1000x680-glyph.png"]
+        self.assertEqual((single.box, single.layout["scale"]), (tuple(GLYPH), 4))
+        self.assertIsNone(crops["candidate-midnight-1000x680-focus.png"].layout)
+        self.assertEqual(loaded["analyses"][-1], dict(
+            kind="glyph_contrast", name="glyph-contrast", frame="toolbar", box=tuple(GLYPH), min_contrast=3.0,
+            tolerance=6, min_ink=8, min_peak_pixels=2, allow_edge=False, surface=None, when=None,
+            roles=["base", "cand"], expect={"base": "record", "cand": True}))
+        # In a box smaller than the defaults they shrink to its pixel count rather than refuse a key never written.
+        for tiny, counts in (([0, 0, 2, 2], (4, 2)), ([0, 0, 1, 1], (1, 1))):
+            with self.subTest(box=tiny):
+                entry = scenario.validate(glyph_spec(analyses=[dict(glyph_spec()["analyses"][-1], box=tiny)]))
+                self.assertEqual((entry["analyses"][0]["min_ink"], entry["analyses"][0]["min_peak_pixels"]), counts)
+        self.assertEqual(scenario.layout_note(loaded["layouts"]["glyphs"]),
+                         ": 2 boxes side by side 2 px apart, 4x, 160x80 px")
+        self.assertEqual(scenario.layout_note(loaded["layouts"]["glyph"]), ": 4x, 96x80 px")
+        self.assertEqual(scenario.layout_note(None), "")
+        # The default gap, a declared or sampled fill, and the surface forms of a glyph contrast.
+        three = scenario.validate(glyph_spec(crops={"panel": PANEL, "glyph": [56, 26, 80, 46], "glyphs": {
+            "boxes": [GLYPH, PULL, [0, 0, 8, 8]], "fill": {"at": [5, 5]}}}))["layouts"]["glyphs"]
+        self.assertEqual((three["scale"], three["gap"], three["fill"]), (1, scenario.LAYOUT_GAP, {"at": (5, 5)}))
+        surfaces = [([1, 2, 3], (1, 2, 3)), ({"at": [5, 5]}, {"at": (5, 5)}),
+                    ({"region": [0, 0, 10, 10]}, {"region": (0, 0, 10, 10)})]
+        for given, normalised in surfaces:
+            with self.subTest(surface=given):
+                entry = scenario.validate(glyph_spec(analyses=[dict(glyph_spec()["analyses"][-1], surface=given,
+                                                                    box=GLYPH, min_ink=480, tolerance=0)]))
+                self.assertEqual((entry["analyses"][0]["surface"], entry["analyses"][0]["min_ink"],
+                                  entry["analyses"][0]["tolerance"]), (normalised, 480, 0))
+
+    def test_bad_crop_layouts_and_glyph_contrasts(self) -> None:
+        def crops(glyphs) -> dict:
+            return dict(crops={"panel": PANEL, "glyph": {"boxes": [GLYPH], "scale": 4}, "glyphs": glyphs})
+
+        contrast = glyph_spec()["analyses"][-1]
+        cases = [
+            (crops({"boxes": [GLYPH]}), r"\$\.crops\.glyphs: one box without \"scale\" is a plain crop"),
+            (crops({"boxes": [GLYPH], "scale": 4, "gap": 2}),
+             r"\$\.crops\.glyphs: gap needs two or more boxes side by side"),
+            (crops({"boxes": [GLYPH], "scale": 4, "gap": 2, "fill": [0, 0, 0]}), "fill and gap need two or more"),
+            (crops(dict(GLYPHS, scale=1)), r"\$\.crops\.glyphs\.scale: 1 is outside 2\.\.8"),
+            (crops(dict(GLYPHS, scale=9)), r"\$\.crops\.glyphs\.scale: 9 is outside 2\.\.8"),
+            (crops(dict(GLYPHS, scale="4")), r"\$\.crops\.glyphs\.scale: expected an integer"),
+            (crops(dict(GLYPHS, gap=65)), r"\$\.crops\.glyphs\.gap: 65 is outside 0\.\.64"),
+            (crops(dict(GLYPHS, boxes=[GLYPH, [990, 16, 1004, 32]])),
+             r"\$\.crops\.glyphs\.boxes\[1\]: \[990, 16, 1004, 32\] reaches outside the 1000x680 window"),
+            (crops(dict(GLYPHS, boxes=[GLYPH, [16, 16, 16, 32]])), r"\$\.crops\.glyphs\.boxes\[1\]: .* is empty"),
+            (crops(dict(GLYPHS, boxes=[])), r"\$\.crops\.glyphs\.boxes: expected a list of 1 to 8 items"),
+            (crops(dict(GLYPHS, boxes=[PULL] * 9)), r"\$\.crops\.glyphs\.boxes: expected a list of 1 to 8 items"),
+            (crops(dict(GLYPHS, align="centre")), r"\$\.crops\.glyphs: unknown key\(s\) align"),
+            (crops(dict(GLYPHS, fill=[0, 0, 300])), r"\$\.crops\.glyphs\.fill\[2\]: 300 is outside 0\.\.255"),
+            (crops(dict(GLYPHS, fill={"at": [1000, 5]})), r"\$\.crops\.glyphs\.fill\.at: .* outside the 1000x680"),
+            (crops({"boxes": [[0, 0, 600, 100]], "scale": 4}),
+             r"\$\.crops\.glyphs: composes a 2400x400 image; a scaled or composed crop is at most 2048 px a side"),
+            # A crop of several boxes is no region to measure, compare or probe.
+            (dict(analyses=[dict(contrast, box="glyphs")]),
+             r"\$\.analyses\[0\]\.box: crop 'glyphs' composes 2 boxes, so it is not one region"),
+            (dict(analyses=[{"name": "x", "kind": "compare", "a": "base:rest", "b": "cand:rest", "crop": "glyphs"}]),
+             r"\$\.analyses\[0\]\.crop: crop 'glyphs' composes 2 boxes"),
+            (dict(steps=SPEC["steps"] + [dict(PROBE_STEP, region="glyphs")]),
+             r"\$\.steps\[6\]\.region: crop 'glyphs' composes 2 boxes"),
+            (dict(steps=SPEC["steps"] + [{"capture": "x", "crop": "nope", "shows": "x"}]),
+             r"\$\.steps\[6\]\.crop: no crop box named 'nope'; defined: panel, glyph, glyphs"),
+            (dict(analyses=[{k: v for k, v in contrast.items() if k != "min_contrast"}]),
+             r"\$\.analyses\[0\]: missing required key\(s\) min_contrast"),
+            (dict(analyses=[dict(contrast, min_contrast=0.5)]), r"\$\.analyses\[0\]\.min_contrast: 0\.5 is outside"),
+            (dict(analyses=[dict(contrast, min_ink=481)]), r"\$\.analyses\[0\]\.min_ink: 481 is outside 1\.\.480"),
+            (dict(analyses=[dict(contrast, min_peak_pixels=0)]),
+             r"\$\.analyses\[0\]\.min_peak_pixels: 0 is outside 1\.\.480"),
+            (dict(analyses=[dict(contrast, allow_edge="yes")]),
+             r"\$\.analyses\[0\]\.allow_edge: expected true or false"),
+            (dict(analyses=[dict(contrast, surface="button")]), r"\$\.analyses\[0\]\.surface: expected a list of 3"),
+            (dict(analyses=[dict(contrast, surface={"region": [0, 0, 5, 5], "at": [1, 1]})]),
+             r"\$\.analyses\[0\]\.surface: unknown key\(s\) at"),
+            (dict(analyses=[dict(contrast, surface={"at": [5, 680]})]), r"\$\.analyses\[0\]\.surface\.at: .* outside"),
+            (dict(analyses=[dict(contrast, frame="later")]), "reads 'later', which variant midnight never captures"),
+        ]
+        for changes, match in cases:
+            with self.subTest(match=match), self.assertRaisesRegex(scenario.SpecError, match):
+                scenario.validate(glyph_spec(**changes))
+
+    def test_cli_check_lists_scaled_and_composed_crops(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "glyphs.json"
+            path.write_text(json.dumps(glyph_spec()))
+            result = subprocess.run([sys.executable, "-B", str(QA), "scenario", "check", str(path)],
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("12 committed crops", result.stdout)
+        self.assertIn("    candidate-midnight-1000x680-toolbar.png  (glyphs: 2 boxes side by side 2 px apart, 4x, "
+                      "160x80 px)\n", result.stdout)
+        self.assertIn("    candidate-porcelain-1000x680-glyph.png  (glyph: 4x, 96x80 px)\n", result.stdout)
+        self.assertIn("    candidate-porcelain-1000x680-focus.png  (panel)\n", result.stdout)
+
+    def test_a_scaled_or_composed_crop_after_a_resize_takes_that_window(self) -> None:
+        def resized(glyphs, at: int = 3) -> dict:
+            steps = copy.deepcopy(SIZED["steps"])
+            steps.insert(at, {"capture": "glyphs", "crop": "glyphs", "shows": "two glyphs, 4x"})
+            return sized(crops={"panel": PANEL, "wide": WIDE, "glyphs": glyphs}, steps=steps)
+
+        loaded = scenario.validate(resized(GLYPHS))  # captured right after the resize to 461x490
+        crops = {crop.name: crop for crop in scenario.committed(loaded, roles=("cand",))}
+        for label in ("13pt", "18pt"):
+            crop = crops[f"candidate-midnight-{label}-461x490-glyphs.png"]
+            self.assertEqual((crop.window, crop.layout["boxes"], crop.box), ((461, 490), [tuple(GLYPH), tuple(PULL)],
+                                                                             None))
+        # Every box, and the point its fill is sampled at, must fit the window at the capture, not the launch's.
+        late = [GLYPH, [400, 400, 480, 480]]  # inside 1000x680 and 1480x800, past 461x490
+        self.assertTrue(scenario.validate(resized(dict(GLYPHS, boxes=late), at=1)))  # before the resize: 1000x680
+        cases = [(dict(GLYPHS, boxes=late), r"\$\.steps\[3\]\.crop: \[400, 400, 480, 480\] reaches outside the "
+                                            r"461x490 window in effect at this step \(crop box 'glyphs'\) in variant "
+                                            r"midnight-13pt"),
+                 (dict(GLYPHS, fill={"at": [470, 10]}), r"\$\.steps\[3\]\.crop: \(470,10\) is outside the 461x490 "
+                                                        r"window in effect at this step \(the fill point of crop "
+                                                        r"'glyphs'\)"),
+                 (dict(GLYPHS, boxes=[GLYPH, [1400, 10, 1490, 40]]),
+                  r"\$\.crops\.glyphs\.boxes\[1\]: \[1400, 10, 1490, 40\] reaches outside every window of this "
+                  r"scenario \(at most 1480 px wide and 800 px high\)")]
+        for glyphs, match in cases:
+            with self.subTest(match=match), self.assertRaisesRegex(scenario.SpecError, match):
+                scenario.validate(resized(glyphs))
+
 
 def frame(ring: bool = False, patch: bool = False):
     """A window frame: the surface, the panel's ring with `ring`, and a noisy patch (private text) with `patch`."""
@@ -835,6 +983,20 @@ def sized_frame(size, ring: bool = False, mark: bool = False):
                                         width=2)
     if mark:
         image.putpixel((500, 300), (255, 0, 0))
+    return image
+
+
+STROKE = (200, 206, 218)  # a glyph's 2 px stroke
+
+
+def toolbar_frame(glyph: bool = True):
+    """A window frame with the panel's ring and, with `glyph`, a glyph inside GLYPH with a margin on every side: a
+    2 px stroke beside the noisy patch, whose colours are too far apart to back one another as a glyph's peak."""
+    from PIL import ImageDraw
+
+    image = frame(ring=True, patch=glyph)
+    if glyph:
+        ImageDraw.Draw(image).rectangle((58, 28, 59, 43), fill=STROKE)
     return image
 
 
@@ -1080,6 +1242,113 @@ class BundleTest(unittest.TestCase):
         self.assertEqual([(r["name"], r["result"]) for r in result["results"]][1:], [
             ("candidate-porcelain-1000x680-focus.png", "missing"),
             ("candidate-midnight-1000x680-old.png", "not-in-spec")])
+
+    def glyph_captures(self, loaded: dict) -> None:
+        """Every launch's captures for `glyph_spec`: the candidate's toolbar shows the glyph (`toolbar_frame`), the
+        base's does not; both show the panel's ring, whose corner is the second box."""
+        self.captures(self.root)
+        for role in loaded["roles"]:
+            for variant in loaded["variants"]:
+                captures = self.root / role / variant.id / "captures"
+                toolbar_frame(glyph=role == "cand").save(captures / "toolbar.png")
+                toolbar_frame().save(captures / "glyph.png")
+
+    def test_a_4x_composed_crop_commits_its_exact_bytes_and_is_rechecked_by_them(self) -> None:
+        from PIL import Image
+
+        loaded = scenario.validate(glyph_spec(), "f" * 64)
+        self.glyph_captures(loaded)
+        entries = {entry["name"]: entry for entry in
+                   evidence.write_crops(self.root, scenario.committed(loaded), self.root / "commit")}
+        toolbar = entries["candidate-midnight-1000x680-toolbar.png"]
+        self.assertEqual((toolbar["crop"], toolbar["box"], toolbar["size"]), ("glyphs", None, [160, 80]))
+        self.assertEqual(toolbar["layout"], dict(boxes=[GLYPH, PULL], scale=4, gap=2, fill=list(SURFACE)))
+        # Built pixel by pixel from the capture: each source pixel an exact 4x4 block, the boxes top-aligned, and the
+        # 2 px gap and the 4 rows under the shorter box in the boxes' most frequent colour.
+        source = toolbar_frame()
+        expected = Image.new("RGB", (160, 80))
+        for y in range(80):
+            for x in range(160):
+                sx, sy = x // 4, y // 4
+                if sx < 24:
+                    pixel = source.getpixel((GLYPH[0] + sx, GLYPH[1] + sy))
+                elif sx < 26 or sy >= 16:
+                    pixel = SURFACE
+                else:
+                    pixel = source.getpixel((PULL[0] + sx - 26, PULL[1] + sy))
+                expected.putpixel((x, y), pixel)
+        encoded = io.BytesIO()
+        expected.save(encoded, format="PNG", optimize=True)
+        data = (self.root / "commit" / toolbar["name"]).read_bytes()
+        self.assertEqual(data, encoded.getvalue())
+        self.assertEqual((toolbar["sha256"], toolbar["bytes"]), (evidence.identity.sha256_bytes(data), len(data)))
+        single = entries["candidate-midnight-1000x680-glyph.png"]
+        self.assertEqual((single["box"], single["size"], single["layout"]),
+                         (GLYPH, [96, 80], dict(boxes=[GLYPH], scale=4, gap=0, fill=None)))
+        self.assertIsNone(entries["candidate-midnight-1000x680-focus.png"]["layout"])
+        # A re-check compares the composed bytes: identical, then one source pixel is one 4x4 block of difference.
+        crops = scenario.committed(loaded, roles=("cand",))
+        committed = self.root / "committed"
+        shutil.copytree(self.root / "commit", committed)
+        recheck = self.root / "recheck"
+        evidence.write_crops(self.root, crops, recheck)
+        self.assertEqual(evidence.compare_committed(crops, recheck, committed)["verdict"], "identical")
+        changed = toolbar_frame()
+        changed.putpixel((17, 20), (255, 0, 0))  # inside the second box, at (1, 4)
+        changed.save(self.root / "cand" / "midnight" / "captures" / "toolbar.png")
+        shutil.rmtree(recheck)
+        evidence.write_crops(self.root, crops, recheck)
+        result = evidence.compare_committed(crops, recheck, committed)
+        found = {r["name"]: r for r in result["results"]}[toolbar["name"]]
+        self.assertEqual((result["verdict"], found["result"], found["differing_pixels"], found["regions"]),
+                         ("different", "different", 16, [[108, 16, 112, 20]]))
+
+    def test_a_composed_crop_after_a_resize_is_cut_from_a_frame_of_that_window(self) -> None:
+        from native_qa import frames as pixels
+
+        steps = copy.deepcopy(SIZED["steps"])
+        steps.insert(3, {"capture": "glyphs", "crop": "glyphs", "shows": "two glyphs, 4x", "roles": ["cand"]})
+        loaded = scenario.validate(sized(crops={"panel": PANEL, "wide": WIDE, "glyphs": GLYPHS}, steps=steps))
+        crops = [crop for crop in scenario.committed(loaded, roles=("cand",)) if crop.capture == "glyphs"]
+        for crop in crops:
+            captures = self.root / "cand" / crop.variant.id / "captures"
+            captures.mkdir(parents=True)
+            sized_frame(crop.window, ring=True).save(captures / "glyphs.png")
+        [entry, _] = evidence.write_crops(self.root, crops, self.root / "commit")
+        self.assertEqual((entry["name"], entry["window"], entry["size"]),
+                         ("candidate-midnight-13pt-461x490-glyphs.png", [461, 490], [160, 80]))
+        self.assertEqual(entry["layout"], dict(boxes=[GLYPH, PULL], scale=4, gap=2, fill=list(SURFACE)))
+        composed, _ = pixels.compose(sized_frame((461, 490), ring=True), [GLYPH, PULL], scale=4, gap=2)
+        encoded = io.BytesIO()
+        composed.save(encoded, format="PNG", optimize=True)
+        self.assertEqual((self.root / "commit" / entry["name"]).read_bytes(), encoded.getvalue())
+        # A frame of the launch's window, not the resized one, is never composed.
+        sized_frame((1000, 680), ring=True).save(self.root / "cand" / "midnight-18pt" / "captures" / "glyphs.png")
+        with self.assertRaisesRegex(SystemExit, "capture glyphs of cand midnight-18pt is 1000x680, not the 461x490 "
+                                                "window the scenario has at that capture; nothing cropped"):
+            evidence.write_crops(self.root, crops, self.root / "again")
+
+    def test_a_glyph_contrast_is_recorded_for_the_base_and_held_for_the_candidate(self) -> None:
+        loaded = scenario.validate(glyph_spec(), "f" * 64)
+        self.glyph_captures(loaded)
+        report = evidence.run_analyses(loaded, self.root)
+        self.assertEqual((report["total"], report["as_expected"], report["recorded"], report["unexpected"]),
+                         (10, 10, 2, []))
+        results = {(r["name"], r["role"], r["variant"]): r for r in report["results"]}
+        base = results[("glyph-contrast", "base", "midnight")]
+        self.assertEqual((base["kind"], base["frames"], base["expected"], base["passed"], base["as_expected"]),
+                         ("glyph_contrast", ["toolbar"], "record", False, True))
+        self.assertEqual((base["result"]["ink_pixels"], base["result"]["peak"]), (0, None))
+        cand = results[("glyph-contrast", "cand", "porcelain")]["result"]
+        self.assertTrue(cand["passed"], cand["reasons"])
+        self.assertEqual((cand["surface"], cand["surface_from"], cand["ink_pixels"], cand["ink_box"], cand["touches"]),
+                         (list(SURFACE), "box", 192 + 32, [58, 28, 76, 44], []))
+        self.assertEqual((cand["peak"]["colour"], cand["peak"]["support"]), (list(STROKE), 32))
+        self.assertGreaterEqual(cand["peak"]["contrast"], 3.0)
+        # The candidate losing its glyph is a finding.
+        toolbar_frame(glyph=False).save(self.root / "cand" / "porcelain" / "captures" / "toolbar.png")
+        self.assertEqual(evidence.run_analyses(loaded, self.root)["unexpected"],
+                         ["glyph-contrast (cand, porcelain): failed, expected pass"])
 
     def write_bundle(self, bundle: Path, verdict: str = "pass") -> None:
         (bundle).mkdir()

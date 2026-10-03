@@ -7,6 +7,9 @@ supplied font; a template directory inside a Git work tree must be ignored.
 
 Matching is zero-mean normalized cross-correlation, so light-on-dark and
 dark-on-light renderings of the same text both score (the sign is reported).
+Templates have the app's own size, so an image that is an exact
+nearest-neighbour magnification, such as a scenario's scaled crop, is also
+scanned at every exact reduction, one of which is 1x.
 A 1000x680 frame against ~30 templates of ~100x12 px is ~10^10 multiply-adds,
 minutes per frame in pure Python, so the default engine is `ncc.c`, compiled
 once per source digest into a cache directory outside the repository. The
@@ -33,6 +36,8 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from operator import mul
 from pathlib import Path
+
+from .frames import magnifications
 
 HERE = Path(__file__).resolve().parent
 SOURCE = HERE / "ncc.c"
@@ -308,23 +313,39 @@ def frame_paths(paths: list[Path]) -> list[Path]:
 def scan(frames: list[Path], templates: dict, threshold: float = THRESHOLD, engine: str = "auto",
          jobs: int = 1) -> dict:
     """Per image, in order: its size, frame count, engine and each template's best result over every
-    animation frame, with hits summed; `jobs` images at a time."""
+    animation frame, with hits summed; `jobs` images at a time.
+
+    A frame that is an exact nearest-neighbour magnification (a scenario's
+    scaled crop, `frames.magnifications`) is also scanned once per exact
+    factor at that reduction, one of which has the size the templates are cut
+    at; a result found there has its positions scaled back and its factor as
+    `magnified`, and the image's `magnified` lists every factor read.
+    """
     from PIL import Image, ImageSequence
 
     def one(path: Path) -> tuple[str, dict]:
-        merged, hits, used = {}, 0, "python"
+        merged, hits, used, magnified = {}, 0, "python", set()
         with Image.open(path) as image:
-            count = getattr(image, "n_frames", 1)
+            size, count = list(image.size), getattr(image, "n_frames", 1)
             if count > MAX_SCAN_FRAMES:
                 raise SystemExit(f"cannot scan {path}: more than {MAX_SCAN_FRAMES} animation frames")
             for index, frame in enumerate(ImageSequence.Iterator(image)):
-                data, width, height = gray(frame)
-                results, used = match(data, width, height, templates, threshold, engine)
-                hits += sum(result["hits"] for result in results.values())
-                for name, result in results.items():
-                    if name not in merged or result["best"] > merged[name]["best"]:
-                        merged[name] = dict(result, frame=index)
-        return str(path), dict(engine=used, size=[width, height], frames=count, templates=merged, hits=hits)
+                shade = frame.convert("L")
+                reductions = magnifications(shade)
+                magnified.update(factor for factor, _ in reductions)
+                for picture, scale in [(shade, 1), *((small, factor) for factor, small in reductions)]:
+                    data, width, height = gray(picture)
+                    results, used = match(data, width, height, templates, threshold, engine)
+                    hits += sum(result["hits"] for result in results.values())
+                    for name, result in results.items():
+                        if scale > 1:
+                            result = dict(result, at=[v * scale if v >= 0 else v for v in result["at"]],
+                                          hit_list=[[x * scale, y * scale, c] for x, y, c in result["hit_list"]],
+                                          magnified=scale)
+                        if name not in merged or result["best"] > merged[name]["best"]:
+                            merged[name] = dict(result, frame=index)
+        return str(path), dict(engine=used, size=size, frames=count, magnified=sorted(magnified), templates=merged,
+                               hits=hits)
 
     if engine in ("auto", "c"):
         helper()  # build once, before worker threads race for the same partial file

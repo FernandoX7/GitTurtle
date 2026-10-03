@@ -220,6 +220,137 @@ class FillAndCompareTest(unittest.TestCase):
         self.assertEqual(analysis.evaluate(fill, frames_.get)["contrast"], 1.0)
 
 
+BUTTON = (40, 46, 58)        # a button surface
+TINT = (200, 206, 218)       # the colour a glyph is drawn in
+GLYPH_BOX = (10, 10, 30, 30)  # 20x20, with room around the glyph
+
+
+def blend(coverage: float, tint=TINT, surface=BUTTON) -> tuple[int, int, int]:
+    """The colour of a pixel a stroke of `tint` covers by `coverage`, anti-aliased onto `surface`."""
+    return tuple(round(s + (t - s) * coverage) for t, s in zip(tint, surface))
+
+
+def glyph(*strokes, size=(60, 40)):
+    """A frame of the button surface with each stroke, `(box, colour)`, painted on it."""
+    from PIL import Image
+
+    image = Image.new("RGB", size, BUTTON)
+    for box, colour in strokes:
+        image.paste(colour, box)
+    return image
+
+
+@unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
+class GlyphContrastTest(unittest.TestCase):
+    def test_a_solid_glyph_reports_its_tint_against_the_surface(self) -> None:
+        image = glyph(((15, 13, 17, 27), TINT), ((15, 25, 25, 27), TINT))  # an L of 2 px strokes, 44 px
+        result = analysis.glyph_contrast(image, GLYPH_BOX, min_contrast=3.0)
+        self.assertTrue(result["passed"], result["reasons"])
+        tint = frames.contrast(TINT, BUTTON)
+        self.assertEqual((result["surface"], result["surface_from"], result["ink_pixels"], result["pixels"]),
+                         (list(BUTTON), "box", 44, 400))
+        self.assertEqual(result["peak"], dict(colour=list(TINT), contrast=tint, pixels=44, support=44))
+        self.assertEqual((result["dominant"], result["strongest"], result["median_contrast"]),
+                         (dict(colour=list(TINT), contrast=tint, pixels=44),) * 2 + (tint,))
+        self.assertEqual((result["ink_box"], result["touches"]), ([15, 13, 25, 27], []))
+        self.assertGreater(tint, 8)
+
+    def test_an_antialiased_stroke_makes_the_peak_a_lower_bound(self) -> None:
+        # A 1 px stroke centred on a pixel boundary covers two columns by half: its tint never shows unblended.
+        half = blend(0.5)
+        image = glyph(((15, 12, 17, 28), half))
+        result = analysis.glyph_contrast(image, GLYPH_BOX, min_contrast=4.5)
+        self.assertEqual(result["peak"], dict(colour=list(half), contrast=frames.contrast(half, BUTTON), pixels=32,
+                                              support=32))
+        self.assertLess(result["peak"]["contrast"], 4.5)
+        self.assertGreater(frames.contrast(TINT, BUTTON), 4.5)  # the tint itself would pass
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reasons"], [f"peak ink contrast {result['peak']['contrast']} ({list(half)}, 32 px) "
+                                             f"against the surface {list(BUTTON)}, under 4.5"])
+        # A stroke with a full core row between quarter-covered edges: the peak is the tint, while the median and
+        # the most frequent ink colour are the blended edges.
+        edged = glyph(((12, 19, 28, 20), blend(0.25)), ((12, 20, 28, 21), TINT), ((12, 21, 28, 22), blend(0.25)))
+        result = analysis.glyph_contrast(edged, GLYPH_BOX, min_contrast=4.5)
+        self.assertTrue(result["passed"], result["reasons"])
+        edge = frames.contrast(blend(0.25), BUTTON)
+        self.assertEqual((result["ink_pixels"], result["peak"]["contrast"], result["peak"]["pixels"]),
+                         (48, frames.contrast(TINT, BUTTON), 16))
+        self.assertEqual((result["dominant"]["colour"], result["dominant"]["pixels"], result["median_contrast"]),
+                         (list(blend(0.25)), 32, edge))
+
+    def test_an_empty_box_fails_on_its_ink_count(self) -> None:
+        result = analysis.glyph_contrast(glyph(), GLYPH_BOX, min_contrast=3.0)
+        self.assertFalse(result["passed"])
+        self.assertEqual((result["ink_pixels"], result["peak"], result["dominant"], result["median_contrast"],
+                          result["ink_box"], result["touches"]), (0, None, None, None, None, []))
+        self.assertEqual(result["reasons"], [f"0 ink pixels (more than 6 from the surface {list(BUTTON)} in a "
+                                             "channel), under 8: no glyph in the box"])
+        # Seven ink pixels are still under the minimum; a pixel within the tolerance is surface, not ink.
+        few = glyph(((12, 12, 19, 13), TINT), ((20, 20, 21, 21), (46, 46, 58)))
+        self.assertEqual(analysis.glyph_contrast(few, GLYPH_BOX, min_contrast=3.0)["ink_pixels"], 7)
+        self.assertTrue(analysis.glyph_contrast(few, GLYPH_BOX, min_contrast=3.0, min_ink=7)["passed"])
+        noise = glyph(((20, 20, 21, 21), (47, 46, 58)))
+        self.assertEqual(analysis.glyph_contrast(noise, GLYPH_BOX, min_ink=1)["ink_pixels"], 1)
+
+    def test_the_surface_is_named_sampled_or_the_most_frequent_in_the_box(self) -> None:
+        image = glyph(((8, 8, 32, 32), TINT), ((0, 0, 60, 4), (30, 30, 30)))  # a glyph filling its box
+        crowded = analysis.glyph_contrast(image, GLYPH_BOX, min_contrast=3.0)
+        self.assertEqual((crowded["surface"], crowded["ink_pixels"]), (list(TINT), 0))  # the box held no surface
+        for surface, source in ((BUTTON, "spec"), ({"at": [50, 30]}, "at"), ({"region": (40, 10, 60, 40)}, "region")):
+            with self.subTest(surface=surface):
+                result = analysis.glyph_contrast(image, (6, 6, 34, 34), surface, min_contrast=3.0)
+                self.assertEqual((result["surface"], result["surface_from"]), (list(BUTTON), source))
+                self.assertEqual((result["ink_pixels"], result["touches"]), (576, []))
+        cut = analysis.glyph_contrast(image, (20, 6, 34, 34), BUTTON, min_contrast=3.0)
+        self.assertEqual((cut["ink_box"], cut["touches"], cut["passed"]), ([20, 8, 32, 32], ["left"], False))
+
+    def test_ink_on_a_side_of_the_box_fails_unless_allowed(self) -> None:
+        # The box catches only a button's 1 px edge: high contrast, enough pixels, and no glyph at all.
+        from PIL import Image
+
+        image = Image.new("RGB", (60, 40), (40, 40, 40))
+        image.paste((200, 200, 200), (10, 0, 11, 40))
+        edge = analysis.glyph_contrast(image, (10, 5, 30, 25), min_contrast=3.0)
+        self.assertEqual((edge["ink_pixels"], edge["touches"], edge["passed"]), (20, ["top", "bottom", "left"], False))
+        self.assertGreater(edge["peak"]["contrast"], 8)
+        self.assertEqual(edge["reasons"], ["ink reaches the box's top, bottom, left side(s): the box cuts the glyph or "
+                                           "holds a border or a neighbour; give the glyph a clear margin of surface "
+                                           "on every side"])
+        allowed = analysis.glyph_contrast(image, (10, 5, 30, 25), min_contrast=3.0, allow_edge=True)
+        self.assertEqual((allowed["allow_edge"], allowed["passed"]), (True, True))
+
+    def test_a_stray_pixel_cannot_carry_the_peak(self) -> None:
+        faint = blend(0.3)
+        image = glyph(((14, 14, 24, 15), faint), ((18, 20, 19, 21), TINT))  # a faint 10 px stroke and one stray pixel
+        result = analysis.glyph_contrast(image, GLYPH_BOX, min_contrast=3.0)
+        self.assertEqual(result["strongest"], dict(colour=list(TINT), contrast=frames.contrast(TINT, BUTTON), pixels=1))
+        self.assertEqual((result["peak"]["colour"], result["peak"]["support"]), (list(faint), 10))
+        self.assertLess(result["peak"]["contrast"], 3.0)
+        self.assertFalse(result["passed"])
+        self.assertTrue(analysis.glyph_contrast(image, GLYPH_BOX, min_contrast=3.0, min_peak_pixels=1)["passed"])
+        # Pixels of colours too far apart to back one another are no glyph, however many there are.
+        scattered = glyph(*(((12 + 2 * i, 12, 13 + 2 * i, 13), (200, 60 + 20 * i, 60)) for i in range(8)))
+        result = analysis.glyph_contrast(scattered, GLYPH_BOX, min_contrast=1.0)
+        self.assertEqual((result["ink_pixels"], result["peak"], result["passed"]), (8, None, False))
+        self.assertEqual(result["reasons"], ["no ink colour is backed by 2 ink pixels within 6 of it: stray pixels, "
+                                             "not a glyph"])
+
+    def test_evaluate_runs_a_glyph_contrast_entry(self) -> None:
+        captured = {"toolbar": glyph(((15, 13, 17, 27), TINT))}
+        entry = dict(kind="glyph_contrast", frame="toolbar", box=GLYPH_BOX, surface=None, min_contrast=3.0,
+                     tolerance=6, min_ink=8, min_peak_pixels=2, allow_edge=False)
+        self.assertTrue(analysis.evaluate(entry, captured.get)["passed"])
+        self.assertEqual(analysis.frame_refs(entry), ["toolbar"])
+        self.assertEqual(analysis.evaluate(dict(entry, frame="gone"), captured.get)["missing"], ["gone"])
+        self.assertFalse(analysis.evaluate(dict(entry, min_contrast=21.0), captured.get)["passed"])
+
+    def test_weighted_median(self) -> None:
+        self.assertEqual(analysis.weighted_median([(3.0, 1), (1.0, 1)]), 2.0)
+        self.assertEqual(analysis.weighted_median([(5.0, 3), (1.0, 2)]), 5.0)
+        self.assertEqual(analysis.weighted_median([(5.0, 2), (1.0, 2)]), 3.0)
+        self.assertIsNone(analysis.weighted_median([]))
+
+
 SWITCH = dict(name="Follow system appearance", role="toggle button", states=["focused", "focusable", "enabled"],
               depth=5)
 

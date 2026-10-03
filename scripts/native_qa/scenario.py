@@ -6,12 +6,13 @@ it (`writes.py`), the window size and, below the app's own minimum, the
 WM_NORMAL_HINTS minimum each launch lowers it to (`window_minimum`), the
 variants (palette x interface text size, each optionally with its own store
 settings, HOME files, window and minimum), one ordered list of steps that
-every build role runs identically, named crop boxes, the captures to commit,
-the probes (every frame drawn after a key or a click, analysed but never
-committed) and the analyses to run on them and on the steps' readings (the
-focused AT-SPI node, a settled store). `qa.py scenario run` drives it
-(`play.py`), and `evidence.py` turns its captures into the committed crops,
-manifest, re-check and attestation.
+every build role runs identically, named crop boxes (one box, or several side
+by side, optionally magnified), the captures to commit, the probes (every
+frame drawn after a key or a click, analysed but never committed) and the
+analyses to run on them and on the steps' readings (the focused AT-SPI node,
+a settled store). `qa.py scenario run` drives it (`play.py`), and
+`evidence.py` turns its captures into the committed crops, manifest, re-check
+and attestation.
 
 Validation is strict and happens before anything is built or launched: an
 unknown key, a wrong type, a box or point outside the window in effect where
@@ -92,6 +93,8 @@ ANALYSES = {
     "clearance": ({"frame", "rect", "side", "surface"}, {"ring", "at", "reach", "tolerance", "limit", "min_px",
                                                          "max_px"}),
     "fill": ({"frame", "region", "reference"}, {"min_contrast", "max_contrast"}),
+    "glyph_contrast": ({"frame", "box", "min_contrast"}, {"surface", "tolerance", "min_ink", "min_peak_pixels",
+                                                          "allow_edge"}),
     "compare": ({"a", "b"}, {"region", "crop", "masks", "max_pixels", "min_pixels", "bands", "band_min"}),
     "atspi_focus": ({"focus"}, {"node", "role", "states", "not_states", "same_as"}),
     "store_compare": ({"a", "b"}, {"keys"}),
@@ -168,6 +171,7 @@ class Crop:
     box: tuple[int, int, int, int] | None
     shows: str
     window: tuple[int, int]
+    layout: dict | None = field(default=None, hash=False)  # a scaled or composed crop's `crop_layout`
 
 
 class Extent(tuple):
@@ -290,10 +294,58 @@ def below(size, minimum) -> bool:
 def area(value, path: str, spec: dict) -> tuple[int, int, int, int]:
     """A box, or the name of one of the spec's crop boxes."""
     if isinstance(value, str):
+        if value in spec["layouts"] and value not in spec["crops"]:
+            fail(path, f"crop {value!r} composes {len(spec['layouts'][value]['boxes'])} boxes, so it is not one "
+                       "region; give a box or a crop of one box")
         if value not in spec["crops"]:
             fail(path, f"no crop box named {value!r}; defined: {', '.join(spec['crops']) or 'none'}")
         return spec["crops"][value]
     return box(value, path, spec["bounds"])
+
+
+LAYOUT_BOXES = 8  # boxes one composed crop puts side by side
+LAYOUT_GAP = 4    # source px between them unless the crop gives its "gap"
+
+
+def crop_layout(value, path: str, window) -> dict:
+    """A crop given as an object, as `frames.compose` cuts it: `boxes` of one capture side by side, top-aligned,
+    `gap` source px apart on `fill` (a colour, `{"at": [x, y]}` sampled from the capture, or by default the boxes'
+    most frequent colour), magnified `scale` times by nearest neighbour; one box needs a scale."""
+    obj(value, path, {"boxes"}, {"scale", "gap", "fill"})
+    boxes = [box(item, f"{path}.boxes[{i}]", window)
+             for i, item in enumerate(array(value["boxes"], f"{path}.boxes", 1, LAYOUT_BOXES))]
+    scale = 1
+    if "scale" in value:
+        scale = integer(value["scale"], f"{path}.scale", frames.SCALES.start, frames.SCALES.stop - 1)
+    if len(boxes) == 1:
+        if scale == 1:
+            fail(path, "one box without \"scale\" is a plain crop; give its [x0, y0, x1, y1] instead")
+        alone = sorted({"gap", "fill"} & set(value))
+        if alone:
+            fail(path, f"{' and '.join(alone)} {'need' if len(alone) > 1 else 'needs'} two or more boxes side by side")
+    gap = integer(value.get("gap", LAYOUT_GAP), f"{path}.gap", 0, 64) if len(boxes) > 1 else 0
+    fill = value.get("fill")
+    if isinstance(fill, dict):
+        fill = {"at": point(obj(fill, f"{path}.fill", {"at"})["at"], f"{path}.fill.at", window)}
+    elif fill is not None:
+        fill = colour(fill, f"{path}.fill")
+    width, height = frames.composed_size(boxes, scale, gap)
+    if max(width, height) > frames.MAX_COMPOSED:
+        fail(path, f"composes a {width}x{height} image; a scaled or composed crop is at most {frames.MAX_COMPOSED} "
+                   "px a side")
+    return dict(boxes=boxes, scale=scale, gap=gap, fill=fill)
+
+
+def layout_note(layout: dict | None) -> str:
+    """How `scenario check` lists a scaled or composed crop after its name, such as `: 2 boxes side by side 4 px
+    apart, 4x, 152x64 px`; empty for a plain crop."""
+    if layout is None:
+        return ""
+    parts = [f"{len(layout['boxes'])} boxes side by side {layout['gap']} px apart"] if len(layout["boxes"]) > 1 else []
+    if layout["scale"] > 1:
+        parts.append(f"{layout['scale']}x")
+    width, height = frames.composed_size(layout["boxes"], layout["scale"], layout["gap"])
+    return f": {', '.join(parts)}, {width}x{height} px"
 
 
 def spot(value, path: str, spec: dict) -> list[int]:
@@ -765,8 +817,9 @@ def step_entry(value, path: str, spec: dict) -> dict:
         step["roles"] = [text(r, f"{path}.roles", re.compile("|".join(roles))) for r in
                          array(value.get("roles", list(roles)), f"{path}.roles", 1, len(roles))]
         crop = value.get("crop")
-        if crop is not None and crop not in crops:
-            fail(f"{path}.crop", f"no crop box named {crop!r}; defined: {', '.join(crops) or 'none'}")
+        if crop is not None and crop not in crops and crop not in spec["layouts"]:
+            fail(f"{path}.crop", f"no crop box named {crop!r}; defined: "
+                                f"{', '.join(dict.fromkeys([*crops, *spec['layouts']])) or 'none'}")
         step["crop"] = crop
         shows = value.get("shows")
         if isinstance(shows, dict):
@@ -884,7 +937,7 @@ def analysis_entry(value, path: str, spec: dict, guard: bool = False) -> dict:
     """A normalised analysis: its kind's parameters with defaults; a guard has no name, filter or expectation.
     Its boxes and points are checked here against the scenario's extent, and against the window of the frames
     it reads, per variant, by `check_windows`."""
-    window, crops, roles = spec["bounds"], spec["crops"], spec["roles"]
+    window, roles = spec["bounds"], spec["roles"]
     kind = value.get("kind") if isinstance(value, dict) else None
     if kind not in ANALYSES:
         fail(f"{path}.kind", f"expected one of {', '.join(ANALYSES)}, got {kind!r}")
@@ -1003,14 +1056,31 @@ def analysis_entry(value, path: str, spec: dict, guard: bool = False) -> dict:
         optional_number("max_contrast", 1.0, 21.0)
         if "min_contrast" not in entry and "max_contrast" not in entry:
             fail(path, "a fill needs min_contrast or max_contrast to pass or fail")
+    elif kind == "glyph_contrast":
+        entry.update(frame=ref("frame"), box=area(value["box"], f"{path}.box", spec),
+                     min_contrast=number(value["min_contrast"], f"{path}.min_contrast", 1.0, 21.0),
+                     tolerance=integer(value.get("tolerance", analysis.TOLERANCE), f"{path}.tolerance", 0, 64))
+        x0, y0, x1, y1 = entry["box"]
+        pixels = (x1 - x0) * (y1 - y0)  # the defaults shrink to a tiny box; a count the spec gives must fit it
+        entry.update(min_ink=integer(value.get("min_ink", min(analysis.MIN_INK, pixels)), f"{path}.min_ink", 1, pixels),
+                     min_peak_pixels=integer(value.get("min_peak_pixels", min(analysis.MIN_PEAK_PIXELS, pixels)),
+                                             f"{path}.min_peak_pixels", 1, pixels),
+                     allow_edge=boolean(value.get("allow_edge", False), f"{path}.allow_edge"))
+        surface = value.get("surface")
+        if isinstance(surface, dict) and "region" in surface:
+            entry["surface"] = {"region": box(obj(surface, f"{path}.surface", {"region"})["region"],
+                                              f"{path}.surface.region", window)}
+        elif isinstance(surface, dict):
+            entry["surface"] = {"at": point(obj(surface, f"{path}.surface", {"at"})["at"], f"{path}.surface.at",
+                                            window)}
+        else:
+            entry["surface"] = None if surface is None else colour(surface, f"{path}.surface")
     else:
         entry.update(a=ref("a"), b=ref("b"))
         if "crop" in value and "region" in value:
             fail(path, "give a region or a crop, not both")
         if "crop" in value:
-            if value["crop"] not in crops:
-                fail(f"{path}.crop", f"no crop box named {value['crop']!r}")
-            entry["region"] = crops[value["crop"]]
+            entry["region"] = area(text(value["crop"], f"{path}.crop", IDENTIFIER), f"{path}.crop", spec)
         elif "region" in value:
             entry["region"] = box(value["region"], f"{path}.region", window)
         masks = []
@@ -1092,9 +1162,15 @@ def validate(data, sha256: str = "") -> dict:
     steps = array(data["steps"], "$.steps", 1, 2000)
     # Every launch window (the spec's only where a variant has none of its own) and every resize target.
     spec["bounds"] = extent([*(window_for(spec, v) for v in spec["variants"]), *resize_targets(steps)])
-    spec["crops"] = {}
+    spec["crops"], spec["layouts"] = {}, {}  # a crop of one box is a region too; one of several boxes only a layout
     for name, value in mapping(data.get("crops", {}), "$.crops").items():
-        spec["crops"][text(name, "$.crops", IDENTIFIER)] = box(value, f"$.crops.{name}", spec["bounds"])
+        text(name, "$.crops", IDENTIFIER)
+        if isinstance(value, dict):
+            spec["layouts"][name] = crop_layout(value, f"$.crops.{name}", spec["bounds"])
+            if len(spec["layouts"][name]["boxes"]) == 1:
+                spec["crops"][name] = spec["layouts"][name]["boxes"][0]
+        else:
+            spec["crops"][name] = box(value, f"$.crops.{name}", spec["bounds"])
     spec["steps"] = []
     for index, value in enumerate(steps):
         step = step_entry(value, f"$.steps[{index}]", spec)
@@ -1203,6 +1279,10 @@ def placements(entry: dict) -> list[tuple[str, str, tuple]]:
         return [("region", frame, tuple(entry["region"]))] + (
             [("reference.region", reference["frame"] or frame, tuple(reference["region"]))]
             if "region" in reference else [])
+    if kind == "glyph_contrast":
+        surface = entry["surface"] if isinstance(entry["surface"], dict) else {}
+        return [("box", frame, tuple(entry["box"]))] + [(f"surface.{key}", frame, tuple(value))
+                                                        for key, value in surface.items()]
     found = [("rect", frame, tuple(entry["rect"]))]
     if kind == "clearance":
         if isinstance(entry["surface"], dict):
@@ -1263,9 +1343,13 @@ def check_windows(spec: dict) -> None:
                 if key in step:
                     place(step[key], f"{where}.{key}", size, here, variant)
             if "capture" in step:
-                if step["crop"]:
-                    place(spec["crops"][step["crop"]], f"{where}.crop", size, f"{here} (crop box {step['crop']!r})",
-                          variant)
+                if step["crop"]:  # every box of a scaled or composed crop, and the point its fill is sampled at
+                    layout = spec["layouts"].get(step["crop"])
+                    for value in layout["boxes"] if layout else [spec["crops"][step["crop"]]]:
+                        place(value, f"{where}.crop", size, f"{here} (crop box {step['crop']!r})", variant)
+                    if layout and isinstance(layout["fill"], dict):
+                        place(layout["fill"]["at"], f"{where}.crop", size,
+                              f"{here} (the fill point of crop {step['crop']!r})", variant)
                 frames[step["capture"]] = captures[step["capture"]] = size
             elif "mark" in step:
                 frames[step["mark"]] = size
@@ -1374,7 +1458,7 @@ def committed(spec: dict, roles=None) -> list[Crop]:
                 seen[name] = (step["index"], variant.id)
                 crops.append(Crop(name, role, variant, step["capture"], step["crop"],
                                   spec["crops"].get(step["crop"]) if step["crop"] else None, shows_for(step, role),
-                                  size))
+                                  size, spec["layouts"].get(step["crop"])))
     return crops
 
 

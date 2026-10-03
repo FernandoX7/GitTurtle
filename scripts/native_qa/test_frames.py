@@ -104,5 +104,85 @@ class CompareTest(unittest.TestCase):
             self.assertEqual(bad.returncode, 2)
 
 
+SURFACE = (16, 21, 31)
+NEAREST = 0  # PIL.Image.Resampling.NEAREST, without importing Pillow where it is missing
+LEFT, RIGHT = (1, 2, 9, 10), (19, 4, 25, 9)  # 8x8 and 6x5 boxes of glyph-like noise on the surface
+
+
+def noisy_frame():
+    """A 40x30 surface whose two boxes hold seeded noise inside a 1 px margin, so a misplaced pixel shows."""
+    import random
+
+    from PIL import Image
+
+    rng = random.Random(5)
+    image = Image.new("RGB", (40, 30), SURFACE)
+    for x0, y0, x1, y1 in (LEFT, RIGHT):
+        for y in range(y0 + 1, y1 - 1):
+            for x in range(x0 + 1, x1 - 1):
+                image.putpixel((x, y), (rng.randrange(256), rng.randrange(256), rng.randrange(256)))
+    return image
+
+
+@unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
+class ComposeTest(unittest.TestCase):
+    def expected_pixel(self, image, x, y, gap, fill):
+        """The 1x composite's pixel at (x, y): the left box, the gap, the right box, or fill below the shorter box."""
+        width = LEFT[2] - LEFT[0]
+        if x < width:
+            return image.getpixel((LEFT[0] + x, LEFT[1] + y))
+        if x < width + gap or y >= RIGHT[3] - RIGHT[1]:
+            return fill
+        return image.getpixel((RIGHT[0] + x - width - gap, RIGHT[1] + y))
+
+    def test_a_4x_composition_is_exact_blocks_side_by_side_top_aligned(self) -> None:
+        image = noisy_frame()
+        composed, fill = frames.compose(image, [LEFT, RIGHT], scale=4, gap=3)
+        self.assertEqual(fill, SURFACE)  # the boxes' most frequent colour
+        self.assertEqual(composed.size, frames.composed_size([LEFT, RIGHT], 4, 3))
+        self.assertEqual(composed.size, ((8 + 3 + 6) * 4, 8 * 4))
+        for y in range(composed.height):
+            for x in range(composed.width):
+                self.assertEqual(composed.getpixel((x, y)), self.expected_pixel(image, x // 4, y // 4, 3, SURFACE),
+                                 (x, y))
+
+    def test_the_fill_is_declared_sampled_or_the_boxes_surface(self) -> None:
+        image = noisy_frame()
+        image.putpixel((39, 29), (90, 90, 90))
+        for fill, colour in (((1, 2, 3), (1, 2, 3)), ({"at": [39, 29]}, (90, 90, 90)), (None, SURFACE)):
+            with self.subTest(fill=fill):
+                composed, used = frames.compose(image, [LEFT, RIGHT], gap=2, fill=fill)
+                self.assertEqual(used, colour)
+                self.assertEqual(composed.size, (16, 8))
+                self.assertEqual({composed.getpixel((x, y)) for x in (8, 9) for y in range(8)}, {colour})  # the gap
+                self.assertEqual(composed.getpixel((12, 6)), colour)  # under the shorter box
+                self.assertEqual(composed.crop((10, 0, 16, 5)).tobytes(), image.crop(RIGHT).tobytes())
+        single, used = frames.compose(image, [LEFT], scale=3)
+        self.assertIsNone(used)
+        self.assertEqual(single.size, (24, 24))
+        self.assertEqual(single.resize((8, 8), NEAREST).tobytes(), image.crop(LEFT).tobytes())
+
+    def test_magnifications_recover_what_a_scaled_crop_magnifies_at_every_exact_factor(self) -> None:
+        image = noisy_frame()
+        plain, _ = frames.compose(image, [LEFT, RIGHT])  # 14x8
+        for scale, exact in ((2, [2]), (3, [3]), (4, [2, 4]), (8, [2, 4, 8])):
+            with self.subTest(scale=scale):
+                magnified, _ = frames.compose(image, [LEFT, RIGHT], scale=scale)
+                found = dict(frames.magnifications(magnified))
+                self.assertEqual(sorted(found), exact)
+                self.assertEqual(found[scale].tobytes(), plain.tobytes())
+                self.assertEqual([f for f, _ in frames.magnifications(magnified.convert("L"))], exact)
+        # A 4x crop of content that is itself 2x2-blocky is an exact 8x magnification as well; its 1/4 reading is
+        # the content at its own size, which the largest factor alone would miss.
+        blocky = image.resize((80, 60), NEAREST)
+        content, _ = frames.compose(blocky, [(2, 4, 18, 20)])
+        crop, _ = frames.compose(blocky, [(2, 4, 18, 20)], scale=4)
+        found = dict(frames.magnifications(crop))
+        self.assertEqual(sorted(found), [2, 4, 8])
+        self.assertEqual(found[4].tobytes(), content.tobytes())
+        self.assertEqual(frames.magnifications(image), [])
+        self.assertEqual(frames.magnifications(image.crop((0, 0, 20, 20)).resize((20, 40), NEAREST)), [])
+
+
 if __name__ == "__main__":
     unittest.main()
