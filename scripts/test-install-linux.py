@@ -126,9 +126,13 @@ class BackupTests(unittest.TestCase):
                 installer.data_path()
 
     def test_running_installed_executable_is_refused_without_stopping_it(self):
-        shutil.copyfile(shutil.which("sleep"), self.binary)
+        # A copy of this interpreter, not of sleep: a multicall coreutils
+        # (uutils, as on Ubuntu 26.04) picks its program from its own file
+        # name and exits at once as "gitturtle". The installer matches
+        # /proc/<pid>/exe, never the name.
+        shutil.copyfile(sys.executable, self.binary)
         self.binary.chmod(0o755)
-        process = subprocess.Popen([str(self.binary), "30"])
+        process = subprocess.Popen([str(self.binary), "-I", "-S", "-c", "import time; time.sleep(30)"])
         try:
             with self.assertRaisesRegex(RuntimeError, "still running"):
                 installer.refuse_running(self.binary)
