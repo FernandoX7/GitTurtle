@@ -1142,8 +1142,7 @@ impl GitTurtle {
                 if self.tab_snapshot_accepted(&snapshot.repository, window, cx) {
                     return;
                 }
-                self.history_updates
-                    .clear_scope_error(&mut self.operation_error);
+                self.accept_snapshot_scope(&snapshot);
                 self.history_updates.captured(&snapshot);
                 self.history_paging = history_paging::State::from_snapshot(&snapshot);
                 self.status = format!(

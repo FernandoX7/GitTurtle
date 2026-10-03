@@ -1,0 +1,802 @@
+{
+ "version": 1,
+ "task": "history-vanished-scope-refresh",
+ "summary": "With History scoped to a branch deleted through the app, Refresh opens All history with one explanation instead of reporting the repository unavailable, and a later Push does not report the vanished scope again",
+ "limitations": "Each launch writes only to its own copy of the recipe build. The polite announcement is the view test's, not the frames'. The window cannot go below the app's 1000 x 680 minimum (main.rs:2095); at that width, with this branch name, the 13 pt explanation fits on one line and the 18 pt one wraps to two. A notice taller than the banner's bounded height would scroll inside it; no frame shows one. Worktree scopes, macOS, native Wayland and fractional scale factors are not covered natively",
+ "window": [
+  1000,
+  680
+ ],
+ "roles": [
+  "base",
+  "cand"
+ ],
+ "fixture": {
+  "name": "history-vanished-scope-refresh",
+  "description": "three commits on main; feature/refresh-explains-a-vanished-branch at the second, which main contains, so a safe delete accepts it; a local bare origin holding main at the second commit, which main tracks, so main is one commit ahead and a later Push writes without adding an upstream",
+  "repository": "repo",
+  "branch": "main",
+  "operations": [
+   {
+    "commit": "Initial commit",
+    "date": "2026-10-02T09:00:00Z",
+    "files": {
+     "README.md": "# Vanished scope fixture\n\nDisposable QA repository.\n"
+    }
+   },
+   {
+    "commit": "Topic work",
+    "date": "2026-10-02T09:10:00Z",
+    "files": {
+     "notes/topic.md": "- scoped history\n"
+    }
+   },
+   {
+    "branch": "feature/refresh-explains-a-vanished-branch",
+    "at": "@1",
+    "date": "2026-10-02T09:20:00Z"
+   },
+   {
+    "remote": "origin",
+    "bare": "remotes/origin.git",
+    "date": "2026-10-02T09:30:00Z"
+   },
+   {
+    "push": "origin",
+    "refs": [
+     "main"
+    ],
+    "date": "2026-10-02T09:40:00Z",
+    "set_upstream": true
+   },
+   {
+    "commit": "Local change after the push",
+    "date": "2026-10-02T09:50:00Z",
+    "files": {
+     "notes/topic.md": "- scoped history\n- a later push\n"
+    }
+   }
+  ],
+  "expect": {
+   "@0": "6701e6dc543701dc1f509a3040601327a820312f",
+   "@1": "26dd660630a81542ee827252f487c5634683ab73",
+   "HEAD": "7793c5adbae62cffe0d5ffabfb56b89e326c3c41"
+  }
+ },
+ "writes": {
+  "refs": {
+   "refs/heads/feature/refresh-explains-a-vanished-branch": "deleted",
+   "refs/remotes/origin/main": "refs/heads/main"
+  },
+  "remotes": {
+   "origin": {
+    "refs": {
+     "refs/heads/main": "refs/heads/main"
+    }
+   }
+  }
+ },
+ "variants": {
+  "palettes": [
+   "midnight",
+   "porcelain"
+  ],
+  "text_sizes": [
+   13,
+   18
+  ]
+ },
+ "crops": {
+  "page-13": [
+   0,
+   0,
+   1000,
+   654
+  ],
+  "page-18": [
+   0,
+   0,
+   1000,
+   644
+  ]
+ },
+ "steps": [
+  {
+   "stable": 12.0,
+   "quiet": 1.15,
+   "note": "the launch settles on All history"
+  },
+  {
+   "mark": "all-history"
+  },
+  {
+   "click": [
+    50,
+    312
+   ],
+   "note": "expand the feature folder in LOCAL BRANCHES",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "click": [
+    60,
+    432
+   ],
+   "note": "expand the feature folder in LOCAL BRANCHES",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "stable": 4.0,
+   "quiet": 0.8
+  },
+  {
+   "click": [
+    70,
+    342
+   ],
+   "note": "the refresh-explains-a-vanished-branch row scopes History to it",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "click": [
+    80,
+    474
+   ],
+   "note": "the refresh-explains-a-vanished-branch row scopes History to it",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "all-history",
+    "b": "@now",
+    "region": [
+     187,
+     140,
+     400,
+     172
+    ],
+    "min_pixels": 50
+   },
+   "note": "the scope header changed from All history to the feature branch",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "all-history",
+    "b": "@now",
+    "region": [
+     187,
+     196,
+     420,
+     232
+    ],
+    "min_pixels": 50
+   },
+   "note": "the scope header changed from All history to the feature branch",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "scoped",
+   "commit": false
+  },
+  {
+   "mark": "before-actions"
+  },
+  {
+   "key": "F10",
+   "mods": [
+    "Shift_L"
+   ],
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "the branch row's actions"
+  },
+  {
+   "stable": 4.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "before-actions",
+    "b": "@now",
+    "region": [
+     220,
+     68,
+     780,
+     282
+    ],
+    "min_pixels": 20001
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the branch actions dialog opened",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "before-actions",
+    "b": "@now",
+    "region": [
+     220,
+     68,
+     780,
+     396
+    ],
+    "min_pixels": 20001
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the branch actions dialog opened",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "mark": "actions"
+  },
+  {
+   "click": [
+    643,
+    176
+   ],
+   "note": "Delete branch...",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "click": [
+    311,
+    260
+   ],
+   "note": "Delete branch...",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "stable": 4.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "actions",
+    "b": "@now",
+    "region": [
+     240,
+     68,
+     760,
+     226
+    ],
+    "min_pixels": 5001
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    },
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the delete confirmation opened",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "actions",
+    "b": "@now",
+    "region": [
+     240,
+     68,
+     760,
+     316
+    ],
+    "min_pixels": 5001
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    },
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the delete confirmation opened",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "click": [
+    693,
+    195
+   ],
+   "note": "a declared write (see writes): Delete branch deletes refs/heads/feature/refresh-explains-a-vanished-branch in this launch's copy",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "click": [
+    675,
+    280
+   ],
+   "note": "a declared write (see writes): Delete branch deletes refs/heads/feature/refresh-explains-a-vanished-branch in this launch's copy",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "stable": 8.0,
+   "quiet": 1.15
+  },
+  {
+   "capture": "deleted",
+   "commit": false
+  },
+  {
+   "key": "r",
+   "mods": [
+    "Control_L"
+   ],
+   "await_change": 5.0,
+   "wait_after": 0.0,
+   "note": "Refresh"
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15
+  },
+  {
+   "capture": "refreshed",
+   "crop": "page-13",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": {
+    "base": "on the base at 13 pt, Refresh after deleting the scoped branch: \"Could not open repository\", the tab marked unavailable, the red scope banner",
+    "cand": "on the candidate at 13 pt, Refresh after deleting the scoped branch: All history, the tab without a suffix, one explanation on one line that names the branch and says Showing All history"
+   }
+  },
+  {
+   "capture": "refreshed",
+   "crop": "page-18",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "shows": {
+    "base": "on the base at 18 pt, Refresh after deleting the scoped branch: \"Could not open repository\", the tab marked unavailable, the red scope banner cut with an ellipsis",
+    "cand": "on the candidate at 18 pt, Refresh after deleting the scoped branch: All history, the tab without a suffix, one explanation wrapped to two lines that names the branch and ends \"Showing All history.\", with Dismiss beside it"
+   }
+  },
+  {
+   "click": [
+    956,
+    110
+   ],
+   "note": "Dismiss the explanation",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "click": [
+    940,
+    152
+   ],
+   "note": "Dismiss the explanation",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "capture": "dismissed",
+   "crop": "page-13",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "roles": [
+    "cand"
+   ],
+   "shows": "on the candidate, the explanation dismissed: All history with no banner"
+  },
+  {
+   "capture": "dismissed",
+   "crop": "page-18",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "commit": false
+  },
+  {
+   "key": "f",
+   "mods": [
+    "Control_L"
+   ],
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "focus History's search"
+  },
+  {
+   "key": "Tab",
+   "mods": [
+    "Shift_L"
+   ],
+   "repeat": 8,
+   "await_change": 2.0,
+   "wait_after": 0.3,
+   "note": "back to Push: Latest, Columns, the branch filter, Worktrees, Remote, Local, Targets, Push on both builds; a click cannot be used, since the base's stacked notice keeps its toolbar 40 px lower"
+  },
+  {
+   "capture": "push-focused",
+   "commit": false
+  },
+  {
+   "key": "Return",
+   "await_change": 5.0,
+   "wait_after": 0.0,
+   "note": "a declared write (see writes): Push sends main to the copy's bare origin"
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15
+  },
+  {
+   "capture": "after-push",
+   "crop": "page-13",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": {
+    "base": "on the base, after the later Push: the red scope banner reported a second time, the repository still unavailable",
+    "cand": "on the candidate, after the later Push: only \"Pushed main to origin/main\", no second scope report"
+   }
+  },
+  {
+   "capture": "after-push",
+   "crop": "page-18",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "commit": false
+  }
+ ],
+ "analyses": [
+  {
+   "name": "deleted-same-on-both-13pt",
+   "kind": "compare",
+   "a": "base:deleted",
+   "b": "cand:deleted",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "before Refresh both builds show the same quiet-refresh banner (the copy's path masked)"
+  },
+  {
+   "name": "refreshed-differs-13pt",
+   "kind": "compare",
+   "a": "base:refreshed",
+   "b": "cand:refreshed",
+   "crop": "page-13",
+   "masks": [
+    "status-timing"
+   ],
+   "min_pixels": 1,
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "after Refresh the builds differ: unavailable on the base, All history on the candidate"
+  },
+  {
+   "name": "refreshed-replaces-the-report-13pt",
+   "kind": "compare",
+   "a": "deleted",
+   "b": "refreshed",
+   "region": [
+    600,
+    92,
+    900,
+    128
+   ],
+   "min_pixels": 5001,
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "expect": {
+    "base": false,
+    "cand": true
+   },
+   "note": "the candidate replaces the red scope report the delete raised with its explanation; the base keeps the same report"
+  },
+  {
+   "name": "after-push-no-second-report-13pt",
+   "kind": "compare",
+   "a": "deleted",
+   "b": "after-push",
+   "region": [
+    600,
+    92,
+    900,
+    128
+   ],
+   "min_pixels": 5001,
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "expect": {
+    "base": false,
+    "cand": true
+   },
+   "note": "after the later Push the candidate's banner is the push's notice, not the scope report; the base shows the same report again"
+  },
+  {
+   "name": "after-push-differs-13pt",
+   "kind": "compare",
+   "a": "base:after-push",
+   "b": "cand:after-push",
+   "crop": "page-13",
+   "masks": [
+    "status-timing"
+   ],
+   "min_pixels": 1,
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "after the later Push the builds differ"
+  },
+  {
+   "name": "deleted-same-on-both-18pt",
+   "kind": "compare",
+   "a": "base:deleted",
+   "b": "cand:deleted",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "before Refresh both builds show the same quiet-refresh banner (the copy's path masked)"
+  },
+  {
+   "name": "refreshed-differs-18pt",
+   "kind": "compare",
+   "a": "base:refreshed",
+   "b": "cand:refreshed",
+   "crop": "page-18",
+   "masks": [
+    "status-timing"
+   ],
+   "min_pixels": 1,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "after Refresh the builds differ: unavailable on the base, All history on the candidate"
+  },
+  {
+   "name": "refreshed-replaces-the-report-18pt",
+   "kind": "compare",
+   "a": "deleted",
+   "b": "refreshed",
+   "region": [
+    500,
+    126,
+    880,
+    178
+   ],
+   "min_pixels": 5001,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "expect": {
+    "base": false,
+    "cand": true
+   },
+   "note": "the candidate replaces the red scope report the delete raised with its explanation; the base keeps the same report"
+  },
+  {
+   "name": "after-push-no-second-report-18pt",
+   "kind": "compare",
+   "a": "deleted",
+   "b": "after-push",
+   "region": [
+    500,
+    126,
+    880,
+    178
+   ],
+   "min_pixels": 5001,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "expect": {
+    "base": false,
+    "cand": true
+   },
+   "note": "after the later Push the candidate's banner is the push's notice, not the scope report; the base shows the same report again"
+  },
+  {
+   "name": "after-push-differs-18pt",
+   "kind": "compare",
+   "a": "base:after-push",
+   "b": "cand:after-push",
+   "crop": "page-18",
+   "masks": [
+    "status-timing"
+   ],
+   "min_pixels": 1,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "after the later Push the builds differ"
+  },
+  {
+   "name": "explanation-full-text-visible-18pt",
+   "kind": "clearance",
+   "frame": "refreshed",
+   "roles": [
+    "cand"
+   ],
+   "rect": [
+    890,
+    122,
+    900,
+    123
+   ],
+   "side": "bottom",
+   "surface": {
+    "at": [
+     895,
+     150
+    ]
+   },
+   "at": [
+    895
+   ],
+   "limit": 120,
+   "min_px": 68,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the full text is visible because it wraps: at a column clear of text and Dismiss, the banner under the header's rule is two 18 pt lines tall or more, two 25 px lines with 9 px above and below (68 px); attempt 1's one cut line was 57 px, the Dismiss button and the same padding"
+  },
+  {
+   "name": "explanation-last-line-in-banner-18pt",
+   "kind": "clearance",
+   "frame": "refreshed",
+   "roles": [
+    "cand"
+   ],
+   "rect": [
+    10,
+    191,
+    230,
+    192
+   ],
+   "side": "top",
+   "surface": {
+    "at": [
+     895,
+     150
+    ]
+   },
+   "at": [
+    42,
+    141,
+    212
+   ],
+   "limit": 60,
+   "max_px": 16,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the last line is drawn whole in the banner and the crop: up from the toolbar's top edge (y 191) at the descenders of p in snapshot, g in Showing and y in history, the surface ends within 16 px, so the scroll bound clips no line; without that line the scan would reach the line above"
+  }
+ ]
+}

@@ -2854,6 +2854,7 @@ impl Render for GitTurtle {
                         .child(
                             div()
                                 .id("operation-error-summary")
+                                .debug_selector(|| "operation-error-summary".into())
                                 .role(Role::Alert)
                                 .a11y_synthetic_children(native_accessibility::assertive)
                                 .aria_label(error.clone())
@@ -2900,30 +2901,45 @@ impl Render for GitTurtle {
                             .gap_3()
                             .bg(rgb(colors.selected))
                             .text_color(rgb(colors.accent))
+                            // The notice wraps to as many lines as it needs, so
+                            // a long explanation (a vanished scope's branch or
+                            // worktree path) is read whole at every text size
+                            // beside a reachable Dismiss; an unusually long one
+                            // scrolls inside a bounded height rather than
+                            // pushing the page away.
                             .child(
                                 div()
                                     .id("operation-notice-summary")
+                                    .debug_selector(|| "operation-notice-summary".into())
                                     .role(Role::Status)
                                     .a11y_synthetic_children(native_accessibility::polite)
                                     .aria_label(notice.clone())
                                     .flex_1()
-                                    .truncate()
+                                    .min_w_0()
+                                    .max_h(crate::appearance::ui_size(100.))
+                                    .overflow_y_scroll()
                                     .text_size(crate::appearance::ui_text(11.))
-                                    .child(notice.clone()),
+                                    .child(
+                                        div()
+                                            .debug_selector(|| "operation-notice-text".into())
+                                            .child(notice.clone()),
+                                    ),
                             )
                             .when(self.history_updates.committed.as_ref().is_some_and(|oid| notice.starts_with(&format!("Committed {}", short_oid(oid)))), |row| row.child(
                                 button("view-created-commit", "View commit", "", false)
+                                    .flex_shrink_0()
                                     .disabled(self.loading.is_some() || self.operation_busy.is_some())
                                     .tooltip("Inspect the commit you created; the next commit draft stays saved")
                                     .on_click(cx.listener(|this, _, window, cx| this.view_created_commit(window, cx)))
                             ))
                             .child(
-                                button("dismiss-operation-notice", "Dismiss", "", false).on_click(
-                                    cx.listener(|this, _, _, cx| {
+                                button("dismiss-operation-notice", "Dismiss", "", false)
+                                    .debug_selector(|| "dismiss-operation-notice".into())
+                                    .flex_shrink_0()
+                                    .on_click(cx.listener(|this, _, _, cx| {
                                         this.operation_notice = None;
                                         cx.notify();
-                                    }),
-                                ),
+                                    })),
                             )
                     }))
                 },
@@ -4226,5 +4242,398 @@ mod tests {
             &scroll
         ));
         assert!(scroll.0.borrow().deferred_scroll_to_item.is_none());
+    }
+
+    /// Run `git` in a fixture repository without the developer's config.
+    fn fixture_git(repository: &std::path::Path, args: &[&str]) {
+        let mut command = std::process::Command::new("git");
+        command
+            .arg("-C")
+            .arg(repository)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null");
+        for name in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+        ] {
+            command.env_remove(name);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Draw, advancing simulated time past debounces, until `done` holds
+    /// while the reader and operation executors answer on their threads.
+    fn wait_until(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        what: &str,
+        mut done: impl FnMut(&GitTurtle) -> bool,
+    ) {
+        for _ in 0..1000 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            draw(cx);
+            if app.read_with(cx, |app, _| done(app)) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("{what} never happened");
+    }
+
+    /// Scope History of the open fixture to `label`'s `scope`.
+    async fn scope_history(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        label: &str,
+        scope: worker::Scope,
+    ) {
+        let label = label.to_owned();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let path = app.path.clone().unwrap();
+                app.open(path, Some((label, scope)), window, cx)
+            })
+        });
+        settle(app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert!(app.scope.is_some(), "the scope opened");
+            assert_eq!(app.error, None);
+        });
+    }
+
+    /// Press the platform's Refresh shortcut (Ctrl+R, Cmd+R on macOS).
+    async fn press_refresh(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            crate::shortcuts::bind_keys(cx);
+            let focus = app.read(cx).app_focus.clone();
+            window.focus(&focus, cx);
+        });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-r"
+        } else {
+            "ctrl-r"
+        });
+        settle(app, cx).await;
+    }
+
+    /// After Refresh found the scope gone: All history lists the commits, the
+    /// tab is available, and one polite status names `vanished`.
+    fn assert_all_history_with_one_explanation(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        vanished: &str,
+    ) {
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.scope, None, "Refresh opened All history");
+            assert_eq!(app.error, None, "never 'Could not open repository'");
+            assert!(!app.commits.is_empty() && !app.visible.is_empty());
+            let tab = app
+                .repository_tabs
+                .active
+                .and_then(|index| app.repository_tabs.tabs.get(index))
+                .expect("the repository has a tab");
+            assert_eq!(tab.error, None, "the tab has no 'unavailable' suffix");
+            assert_eq!(app.operation_error, None, "no assertive alert");
+            let notice = app.operation_notice.as_deref().unwrap_or_default();
+            assert!(
+                notice.starts_with("History scope changed: ")
+                    && notice.contains(vanished)
+                    && notice.ends_with("Showing All history."),
+                "{notice}"
+            );
+        });
+        // The explanation is the polite Status node, drawn once; the
+        // assertive error summary is absent.
+        assert!(cx.debug_bounds("operation-notice-summary").is_some());
+        assert!(cx.debug_bounds("operation-error-summary").is_none());
+        assert!(cx.debug_bounds("history-scope-name").is_some());
+    }
+
+    #[gpui::test]
+    async fn refresh_opens_all_history_when_the_scoped_branch_is_gone(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().unwrap());
+        fixture_git(&repository, &["branch", "departing"]);
+        scope_history(
+            &app,
+            cx,
+            "departing",
+            worker::Scope::Branch {
+                name: "departing".into(),
+                remote: false,
+            },
+        )
+        .await;
+        fixture_git(&repository, &["branch", "-D", "departing"]);
+        press_refresh(&app, cx).await;
+        assert_all_history_with_one_explanation(&app, cx, "Local branch 'departing'");
+        // Refreshing again is ordinary All history: nothing further to explain.
+        cx.update(|_, cx| app.update(cx, |app, _| app.operation_notice = None));
+        press_refresh(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.scope, None);
+            assert_eq!(app.operation_notice, None);
+            assert_eq!(app.operation_error, None);
+        });
+    }
+
+    #[gpui::test]
+    async fn refresh_opens_all_history_when_the_scoped_worktree_is_gone(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().unwrap());
+        let linked = fixture.path().join("linked-tree");
+        fixture_git(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "side",
+                linked.to_str().unwrap(),
+            ],
+        );
+        press_refresh(&app, cx).await;
+        let path = app.read_with(cx, |app, _| {
+            app.worktrees
+                .iter()
+                .find(|worktree| worktree.branch.as_deref() == Some("side"))
+                .expect("the linked worktree is listed")
+                .path
+                .clone()
+        });
+        scope_history(&app, cx, "linked-tree", worker::Scope::Worktree { path }).await;
+        fixture_git(
+            &repository,
+            &["worktree", "remove", "--force", linked.to_str().unwrap()],
+        );
+        press_refresh(&app, cx).await;
+        assert_all_history_with_one_explanation(&app, cx, "linked-tree");
+    }
+
+    /// At 18 pt in the 1000 × 680 minimum window, Refresh's explanation of a
+    /// long vanished branch wraps instead of truncating: the banner grows to
+    /// hold every line, the whole text lies inside it and the window, and
+    /// Dismiss stays reachable beside it.
+    #[gpui::test]
+    async fn the_vanished_scope_explanation_wraps_whole_at_18_pt(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        // A short notice gives the banner's one-line height at this size.
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.operation_notice = Some("Profile preferences saved".into());
+                cx.notify();
+            })
+        });
+        draw(cx);
+        let one_line = cx
+            .debug_bounds("operation-notice-text")
+            .expect("the short notice is drawn")
+            .size
+            .height;
+        cx.update(|_, cx| app.update(cx, |app, _| app.operation_notice = None));
+
+        let branch = "feature/refresh-explains-a-vanished-branch";
+        let repository = app.read_with(cx, |app, _| app.path.clone().unwrap());
+        fixture_git(&repository, &["branch", branch]);
+        scope_history(
+            &app,
+            cx,
+            branch,
+            worker::Scope::Branch {
+                name: branch.into(),
+                remote: false,
+            },
+        )
+        .await;
+        fixture_git(&repository, &["branch", "-D", branch]);
+        press_refresh(&app, cx).await;
+        assert_all_history_with_one_explanation(&app, cx, &format!("Local branch '{branch}'"));
+
+        let viewport = cx.update(|window, _| window.viewport_size());
+        assert_eq!(viewport, size(px(1000.), px(680.)), "the minimum window");
+        let summary = cx.debug_bounds("operation-notice-summary").unwrap();
+        let text = cx.debug_bounds("operation-notice-text").unwrap();
+        let dismiss = cx.debug_bounds("dismiss-operation-notice").unwrap();
+        assert!(
+            text.size.height >= one_line * 2. - px(0.5),
+            "the explanation wraps onto at least two lines: {text:?}, one line {one_line:?}"
+        );
+        // Every wrapped line is inside the drawn summary (nothing clipped or
+        // scrolled out of view), which ends before Dismiss and inside the
+        // window.
+        assert!(
+            summary.left() <= text.left()
+                && text.right() <= summary.right()
+                && summary.top() <= text.top()
+                && text.bottom() <= summary.bottom(),
+            "the whole explanation is visible: {text:?} in {summary:?}"
+        );
+        assert!(
+            summary.right() <= dismiss.left()
+                && dismiss.right() <= viewport.width
+                && summary.bottom() <= viewport.height,
+            "summary {summary:?}, Dismiss {dismiss:?}"
+        );
+        cx.simulate_click(dismiss.center(), Modifiers::default());
+        draw(cx);
+        app.read_with(cx, |app, _| assert_eq!(app.operation_notice, None));
+        assert!(cx.debug_bounds("operation-notice-summary").is_none());
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Writes after the scoped branch was deleted report the vanished scope
+    /// once; dismissed, it stays dismissed through later writes and quiet
+    /// refreshes, while the displayed history and its scope are kept.
+    #[gpui::test]
+    async fn a_vanished_scope_is_reported_once_across_later_writes(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().unwrap());
+        fixture_git(&repository, &["branch", "departing"]);
+        scope_history(
+            &app,
+            cx,
+            "departing",
+            worker::Scope::Branch {
+                name: "departing".into(),
+                remote: false,
+            },
+        )
+        .await;
+        let reports = std::rc::Rc::new(std::cell::Cell::new(0));
+        let scope_report = |app: &GitTurtle| {
+            app.operation_error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("History scope changed: "))
+        };
+        let write = |cx: &mut VisualTestContext,
+                     command: gitturtle_core::WriteCommand,
+                     branch: &'static str| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.write(command, "Writing…", window, cx))
+            });
+            let counted = reports.clone();
+            let mut seen = false;
+            // Count each report as it appears, until the write's quiet refresh
+            // installed the branch list that follows it.
+            wait_until(cx, &app, "the write's quiet refresh", |app| {
+                if scope_report(app) && !seen {
+                    seen = true;
+                    counted.set(counted.get() + 1);
+                }
+                app.operation_busy.is_none()
+                    && app.branches.iter().any(|b| b.name == branch) == (branch != "departing")
+            });
+        };
+        let plan = app.read_with(cx, |app, _| {
+            app.repository
+                .as_ref()
+                .unwrap()
+                .branch_plan("departing")
+                .unwrap()
+        });
+        write(
+            cx,
+            gitturtle_core::WriteCommand::Branch(
+                gitturtle_core::BranchCommand::Delete { plan }.into(),
+            ),
+            "departing",
+        );
+        assert_eq!(reports.get(), 1, "deleting the scoped branch reports it");
+        // Dismiss the report and the History updated status.
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                app.operation_error = None;
+                app.history_updates.pending = None;
+            })
+        });
+        for branch in ["first-later", "second-later"] {
+            write(
+                cx,
+                gitturtle_core::WriteCommand::CreateBranch {
+                    name: branch.into(),
+                    start_point: None,
+                },
+                branch,
+            );
+        }
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    local_refresh::LocalChange {
+                        rescan: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        settle(&app, cx).await;
+        assert_eq!(reports.get(), 1, "two later writes raise no second report");
+        app.read_with(cx, |app, _| {
+            assert!(!scope_report(app));
+            assert_eq!(app.history_updates.pending, None);
+            assert!(
+                app.scope.is_some(),
+                "quiet refresh keeps the displayed history"
+            );
+            assert!(!app.commits.is_empty());
+        });
+        assert!(cx.debug_bounds("operation-error-summary").is_none());
+    }
+
+    #[gpui::test]
+    async fn search_under_a_vanished_scope_reports_the_scope_change(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().unwrap());
+        fixture_git(&repository, &["branch", "departing"]);
+        scope_history(
+            &app,
+            cx,
+            "departing",
+            worker::Scope::Branch {
+                name: "departing".into(),
+                remote: false,
+            },
+        )
+        .await;
+        fixture_git(&repository, &["branch", "-D", "departing"]);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search
+                    .update(cx, |input, cx| input.set_value("fixture", window, cx));
+                app.history_query_changed(window, cx);
+            })
+        });
+        wait_until(cx, &app, "the search reply", |app| {
+            app.history_search_empty()
+                .is_some_and(|(title, _)| title == "Search could not complete")
+        });
+        app.read_with(cx, |app, _| {
+            let (_, description) = app.history_search_empty().unwrap();
+            assert!(
+                description.starts_with("History scope changed: Local branch 'departing'"),
+                "{description}"
+            );
+            assert_eq!(app.error, None, "never 'Could not open repository'");
+            let tab = &app.repository_tabs.tabs[app.repository_tabs.active.unwrap()];
+            assert_eq!(tab.error, None);
+        });
     }
 }

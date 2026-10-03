@@ -319,8 +319,16 @@ impl GitTurtle {
                         }
                     }
                     Ok(Err(error)) => {
+                        // An unpinned search resolves the scope like Refresh;
+                        // a vanished one is a scope change, not a failed read.
+                        let message = match error.downcast_ref::<worker::VanishedScope>() {
+                            Some(vanished) => format!(
+                                "History scope changed: {vanished}. Refresh to show All history."
+                            ),
+                            None => format!("{error:#}"),
+                        };
                         if let Some(progress) = &mut this.history_search.progress {
-                            progress.error = Some(format!("{error:#}"));
+                            progress.error = Some(message);
                         }
                     }
                     Err(_) | Ok(Ok(_)) => {
