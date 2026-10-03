@@ -7,7 +7,8 @@ A bundle (`qa.py scenario run --out BUNDLE`) holds:
   <role>/<variant>/      one launch's run directory: flow-log.json, app.log, captures/, marks/ and
                          probes/<probe>/ (probe.json and every frame it kept; never committed)
   commit/                the crops to commit, under their committed names
-  commit-manifest.json   per crop: name, sha256, bytes, size, role, variant, capture, box, what it shows
+  commit-manifest.json   per crop: name, sha256, bytes, size, role, variant, capture, box, the window it is
+                         cut from, what it shows
   analysis.json          every analysis with its numbers, verdict and the scenario's expectation (true,
                          false, or "record": measured and written, never a finding)
   run.json               builds, host, fixture, launches, privacy scan and the verdict
@@ -82,10 +83,11 @@ def cut(source: Path, box, output: Path) -> dict:
     return dict(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data), size=size)
 
 
-def write_crops(root: Path, crops: list[scenario.Crop], destination: Path, window) -> list[dict]:
+def write_crops(root: Path, crops: list[scenario.Crop], destination: Path) -> list[dict]:
     """Cut every planned crop from its launch's raw capture into `destination`; manifest entries in plan order.
 
-    Every raw frame must have the spec's window size: Pillow pads a crop that
+    Every raw frame must have the size of the window the scenario has at that
+    capture (`Crop.window`, which its name carries): Pillow pads a crop that
     reaches past a smaller frame with black instead of failing.
     """
     from PIL import Image
@@ -97,20 +99,23 @@ def write_crops(root: Path, crops: list[scenario.Crop], destination: Path, windo
         if not source.is_file():
             raise SystemExit(f"capture {crop.capture} of {crop.role} {crop.variant.id} is missing ({source})")
         with Image.open(source) as image:
-            if tuple(image.size) != tuple(window):
+            if tuple(image.size) != tuple(crop.window):
                 raise SystemExit(f"capture {crop.capture} of {crop.role} {crop.variant.id} is {image.size[0]}x"
-                                 f"{image.size[1]}, not the scenario's {window[0]}x{window[1]} window; nothing cropped")
+                                 f"{image.size[1]}, not the {crop.window[0]}x{crop.window[1]} window the scenario has "
+                                 "at that capture; nothing cropped")
         info = cut(source, crop.box, destination / crop.name)
         entries.append(dict(name=crop.name, sha256=info["sha256"], bytes=info["bytes"], size=info["size"],
                             role=crop.role, variant=crop.variant.describe(), capture=crop.capture, crop=crop.crop,
-                            box=list(crop.box) if crop.box else None, shows=crop.shows,
+                            box=list(crop.box) if crop.box else None, window=list(crop.window), shows=crop.shows,
                             source=str(source.relative_to(root)), source_sha256=identity.sha256_file(source)))
     return entries
 
 
 def commit_manifest(spec: dict, entries: list[dict]) -> dict:
-    return dict(version=1, task=spec["task"], scenario_sha256=spec["sha256"], window=list(spec["window"]),
-                frames=entries)
+    """The manifest: every window size the scenario opens at or resizes to, in order of first use (`[[1000, 680]]`
+    for one that never resizes), and the frames, each with the window it was cut from."""
+    return dict(version=1, task=spec["task"], scenario_sha256=spec["sha256"],
+                windows=[list(size) for size in scenario.windows(spec)], frames=entries)
 
 
 def run_analyses(spec: dict, root: Path) -> dict:
@@ -145,6 +150,23 @@ def run_analyses(spec: dict, root: Path) -> dict:
             logs[role, variant.id] = {item.get("label"): item for item in found if isinstance(item, dict)}
         return logs[role, variant.id]
 
+    sizes: dict = {}
+
+    def mismatched(entry: dict, resolve, role, variant) -> list[str]:
+        """Each frame the analysis reads whose size is not the window the scenario has at its capture, so a box
+        validated against that window could fall outside it (a probe's region is checked when it runs)."""
+        if entry["kind"] in analysis.PROBE_KINDS:
+            return []
+        if variant.id not in sizes:
+            sizes[variant.id] = scenario.capture_windows(spec, variant)
+        found = []
+        for ref in analysis.frame_refs(entry):
+            image, want = resolve(ref), sizes[variant.id].get(scenario.split_ref(ref, role)[1])
+            if image is not None and want is not None and tuple(image.size) != tuple(want):
+                found.append(f"frame {ref} is {image.size[0]}x{image.size[1]}, not the {want[0]}x{want[1]} window "
+                             "the scenario has at that capture")
+        return found
+
     results = []
     for entry, role, variant in scenario.analysis_runs(spec):
         def resolve(ref, role=role, variant=variant, probe=entry["kind"] in analysis.PROBE_KINDS):
@@ -157,7 +179,9 @@ def run_analyses(spec: dict, root: Path) -> dict:
             named, label = scenario.split_ref(ref, role)
             return readings(named, variant).get(label)
 
-        result = analysis.evaluate(entry, resolve, reading)
+        wrong = mismatched(entry, resolve, role, variant)
+        result = dict(passed=False, inconclusive=True, reasons=wrong) if wrong else \
+            analysis.evaluate(entry, resolve, reading)
         want = scenario.expected(entry, role)
         inconclusive = bool(result.get("inconclusive"))  # a truncated or unsettled probe meets neither verdict
         results.append(dict(name=entry["name"], kind=entry["kind"], role=role, variant=variant.id,
@@ -266,6 +290,24 @@ def fixture_line(run: dict) -> str:
     return line
 
 
+def minimum_line(launches: list[dict]) -> str | None:
+    """How the launches lowered the window's WM_NORMAL_HINTS minimum (`x11.Driver.lower_minimum`), from what each
+    read before and after; None when none did. A refused record (`refused`, kept for diagnosis) lowered nothing."""
+    changes: dict[str, int] = {}
+    for launch in launches:
+        record = launch.get("window_minimum")
+        if record and record.get("applied") and not record.get("refused"):
+            was, now = record["original"]["min_size"], record["applied"]["min_size"]
+            change = f"from {was[0]}x{was[1]} to {now[0]}x{now[1]}"
+            changes[change] = changes.get(change, 0) + 1
+    if not changes:
+        return None
+    every = len(changes) == 1 and sum(changes.values()) == len(launches)
+    told = (next(iter(changes)) + " in every launch" if every
+            else "; ".join(f"{change} in {count} of {len(launches)} launches" for change, count in changes.items()))
+    return f"window WM_NORMAL_HINTS minimum lowered {told}, read back before the first resize"
+
+
 def attestation(bundle: Path, task: str, candidate: str, base: str, recheck: Path | None = None,
                 evidence_commit: str | None = None, what: str | None = None,
                 limitations: str | None = None) -> dict:
@@ -335,25 +377,31 @@ def attestation(bundle: Path, task: str, candidate: str, base: str, recheck: Pat
                                                   "against its committed crops")
         attested = build_summary(checked["executable"])
         count = sum(1 for r in checked["results"] if r["result"] == "identical")
+        lowered = minimum_line(checked["launches"])
         sessions.append(dict(utc=utc_span([l["started_utc"] for l in checked["launches"]],
                                           [l["ended_utc"] for l in checked["launches"]]),
                              what=f"re-check of {(attested['source_revision'] or '')[:7]}: the {count} candidate "
                                   f"crops re-captured byte-identical (sha256) to the committed "
-                                  f"{checked['committed']}/candidate-*.png"))
+                                  f"{checked['committed']}/candidate-*.png" + (f"; {lowered}" if lowered else "")))
         where += f" (re-check in {path.parent})"
     if attested["source_revision"] != candidate:
         raise SystemExit(f"refusing: the attested executable was built from {attested['source_revision']}, "
                          f"not the candidate {candidate}")
     sizes = sorted({f["variant"]["text_size"] for f in manifest["frames"] if f["variant"]["text_size"]})
+    windows = sorted({tuple(f["window"]) for f in manifest["frames"] if f.get("window")})
+    lowered = minimum_line(launches)
     return dict(
         task=task, kind="native", candidate=candidate, base=base, attested_executable=attested,
-        comparison_builds=comparison, host=run["host"]["description"],
+        comparison_builds=comparison,
+        host=run["host"]["description"] + (f"; {lowered}" if lowered else ""),
         input=("qa.py scenario run through Mutter RemoteDesktop with X focus verified; never XTest"
                if run["host"]["input"] == "mutter" else "qa.py scenario run through XTest"),
         fixtures=fixture_line(run),
         sessions=sorted(sessions, key=lambda session: session["utc"]), evidence_commit=evidence_commit,
         committed_frames=f"docs/evidence/{task}/ ({len(manifest['frames'])} crops"
-                         + (f", {' and '.join(map(str, sizes))} pt" if sizes else "") + ") and its scenario.json",
+                         + (f", {' and '.join(map(str, sizes))} pt" if sizes else "")
+                         + (f", windows {', '.join(f'{w}x{h}' for w, h in windows)}" if len(windows) > 1 else "")
+                         + ") and its scenario.json",
         frames=[dict(name=f["name"], sha256=f["sha256"]) for f in manifest["frames"]],
         scenario=dict(committed_path=f"docs/evidence/{task}/scenario.json", sha256=spec["sha256"]),
         analyses=dict(total=analyses["total"], as_expected=analyses["as_expected"], recorded=recorded),

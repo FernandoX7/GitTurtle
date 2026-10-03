@@ -14,7 +14,10 @@ drawn after a key or a click under `probes/`, never `captures/`, so nothing it
 grabs is committed. Every park, with each pointer motion it sent, goes into
 flow-log.json's `parks`; a park never moves the pointer onto the window after
 keyboard input (`x11.plan_park`), and a capture taken once one had to is
-marked with a `warning`.
+marked with a `warning`. With `window_minimum`, the window's WM_NORMAL_HINTS
+minimum is lowered and read back before the first resize, and flow-log.json's
+`window_minimum` keeps the hints before and after; without it, nothing reads
+or writes them.
 """
 
 from __future__ import annotations
@@ -239,7 +242,8 @@ class Session:
                  width: int = 1000, height: int = 680, display: str = runenv.DEFAULT_DISPLAY,
                  scale: str = runenv.DEFAULT_SCALE, for_commit: bool = False,
                  extra_env: dict[str, str] | None = None, settle: float = 5.0, backend: str = "xtest",
-                 lock_check=None, home_files: dict[str, bytes] | None = None) -> None:
+                 lock_check=None, home_files: dict[str, bytes] | None = None,
+                 window_minimum: tuple[int, int] | None = None) -> None:
         # Every refusal happens before the run directory is created or the binary is run.
         self.binary = runenv.absolute(binary, "binary")
         self.fixture, warnings = runenv.check_fixture(fixture, for_commit)
@@ -256,6 +260,7 @@ class Session:
         self.dirs = runenv.prepare(run_dir, preferences, home_files=home_files)
         self.env = runenv.launch_env(self.dirs, display=display, scale=scale, extra=extra_env)
         self.width, self.height, self.settle = width, height, settle
+        self.window_minimum = None if window_minimum is None else tuple(window_minimum)
         self.input = backend
         if lock_check is None and backend == "mutter":
             from . import mutter
@@ -280,6 +285,8 @@ class Session:
                 env_extra=sorted(extra_env or ()),
             ),
             input=[], parks=[], captures=[], checks=[], read_only=[], readings=[], probes=[])
+        if self.window_minimum is not None:  # only then, so a launch without it logs exactly what it did before
+            self.log["header"]["window_minimum"] = list(self.window_minimum)
         if described["build_info"].get("source_tree") != "clean":
             print("warning: the binary's source_tree is not clean", file=sys.stderr, flush=True)
 
@@ -311,10 +318,23 @@ class Session:
             self.driver = mutter.MutterDriver(dsp, window, self.log["input"], self.remote)
         else:
             self.driver = x11.Driver(dsp, window, self.log["input"])
-        self.driver.resize(self.width, self.height)
+        self.size_window()
         time.sleep(self.settle)
         self.driver.activate()
         self.park("launch")
+
+    def size_window(self) -> None:
+        """Resize the found window to the launch size, first lowering its WM_NORMAL_HINTS minimum to
+        `window_minimum` when one is given (`x11.Driver.lower_minimum`), with the hints before and after it in
+        flow-log.json's `window_minimum`. A minimum that lowers nothing or does not read back refuses before any
+        resize, and the hints it read, with the reason under `refused`, are logged all the same."""
+        if self.window_minimum is not None:
+            record = self.log["window_minimum"] = {}  # in the log first: `close` writes it even after a refusal
+            self.driver.lower_minimum(*self.window_minimum, record=record)
+            was = record["original"]["min_size"]
+            print(f"window minimum lowered from {was[0]}x{was[1]} to {self.window_minimum[0]}x"
+                  f"{self.window_minimum[1]} (WM_NORMAL_HINTS, read back)", flush=True)
+        self.driver.resize(self.width, self.height)
 
     def close(self, timeout: float = 15.0) -> int | None:
         """SIGTERM to the launched PID only; a survivor is reported, never killed harder.
