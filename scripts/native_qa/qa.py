@@ -76,6 +76,11 @@ def scenario_check(args) -> int:
         print(f"  HOME files seeded before each launch: {', '.join(seeded)}")
     if spec["atspi"]:
         print("  org.a11y.Status IsEnabled set true for each launch, then restored and read back")
+    minimums = sorted({minimum for variant in spec["variants"]
+                       if (minimum := scenario.minimum_for(spec, variant)) is not None})
+    if minimums:
+        print(f"  window minimum lowered to {', '.join(f'{w}x{h}' for w, h in minimums)} (WM_NORMAL_HINTS) before "
+              "each launch's first resize")
     print(f"  {len(spec['variants'])} variant(s), {len(spec['steps'])} steps, {len(spec['analyses'])} analyses, "
           f"{len(scenario.analysis_runs(spec))} evaluations, {len(crops)} committed crops:")
     for crop in crops:
@@ -148,6 +153,10 @@ def launch(args) -> int:
 
     from native_qa import mutter
 
+    minimum = args.window_minimum
+    if minimum is not None and (args.size[0] < minimum[0] or args.size[1] < minimum[1]):
+        raise SystemExit(f"refusing: --size {args.size[0]}x{args.size[1]} is below --window-minimum "
+                         f"{minimum[0]}x{minimum[1]}, which the window manager would keep the window at or above")
     steps = session.load_scenario(args.scenario)
     backend = mutter.choose_input(args.input, mutter.process_argvs())
     if args.preferences:
@@ -157,7 +166,8 @@ def launch(args) -> int:
     width, height = args.size
     run = session.Session(args.binary, args.fixture, args.run_dir, preferences, width=width, height=height,
                           display=args.display, scale=args.scale, for_commit=args.for_commit,
-                          extra_env=dict(args.env), settle=args.settle, backend=backend)
+                          extra_env=dict(args.env), settle=args.settle, backend=backend,
+                          window_minimum=args.window_minimum)
     if args.scenario:
         run.log["header"]["scenario"] = dict(path=str(args.scenario),
                                              sha256=identity.sha256_file(args.scenario), steps=steps)
@@ -342,6 +352,9 @@ def parser() -> argparse.ArgumentParser:
                    help="add a project to the generated store (repeatable)")
     p.add_argument("--scenario", type=Path, help="JSON list of steps (default: settle, park, capture 00-launch)")
     p.add_argument("--size", type=size, default=(1000, 680), help="window size, default 1000x680")
+    p.add_argument("--window-minimum", type=size, metavar="WxH",
+                   help="lower the window's WM_NORMAL_HINTS minimum (the app's 1000x680) to this before resizing, "
+                        "to reach the sizes a tiling window manager, which ignores the hint, allows")
     p.add_argument("--display", default=runenv.DEFAULT_DISPLAY)
     p.add_argument("--scale", default=runenv.DEFAULT_SCALE, help="GPUI_X11_SCALE_FACTOR (default 1)")
     p.add_argument("--settle", type=float, default=5.0, help="seconds after the resize before the first input")

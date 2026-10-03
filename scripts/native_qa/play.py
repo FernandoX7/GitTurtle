@@ -16,7 +16,10 @@ sets `org.a11y.Status IsEnabled` before each launch and puts its value back
 once the app has stopped (`a11y.enabled`); meanwhile SIGTERM only marks the
 launch, which stops before its next step, and a value that does not read back
 stops the run as inconclusive. Whatever ends a launch, IsEnabled is restored
-first and then the launch's fixture copy is concluded.
+first and then the launch's fixture copy is concluded. A spec or variant with
+`window_minimum` lowers each launch window's WM_NORMAL_HINTS minimum before
+its first resize, refusing when it does not read back, and the launch's
+record in run.json keeps the hints before and after.
 
 Exit status, as for the other commands: 0 every launch passed, the analyses
 met their expectations and the privacy scan is clean (or, for a re-check,
@@ -93,7 +96,7 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
     record = dict(role=role, variant=variant.id, run_dir=str(run_dir), store_sha256=identity.sha256_bytes(store),
                   home_sha256={path: identity.sha256_bytes(data) for path, data in sorted(home.items())},
                   error=None, refusal=False)
-    width, height = spec["window"]
+    width, height = scenario.window_for(spec, variant)
     copy = None
     # Anything that stops the copy or the session before the app could start is a refusal; an unused copy goes.
     if options.get("writes") is not None:  # the app opens a fresh copy; `fixture` stays the untouched recipe build
@@ -105,7 +108,7 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
         run = session.Session(binary, fixture if copy is None else copy.repository, run_dir, store, width=width,
                               height=height, display=options["display"], scale="1", for_commit=True,
                               extra_env=spec["env"], settle=options["settle"], backend=options["backend"],
-                              home_files=home)
+                              home_files=home, window_minimum=scenario.minimum_for(spec, variant))
     except (SystemExit, Exception) as error:
         unused = writes.discard(copy) if copy is not None else None
         return dict(record, error="; ".join(filter(None, [reason(error), unused])), refusal=True, started_utc=utc(),
@@ -158,6 +161,8 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
                                                            "resolution_ms")}
                           | {"settled": bool(probe["presses"]) and all(p["settled"] for p in probe["presses"])}
                           for probe in run.log.get("probes", [])])
+    if run.log.get("window_minimum"):  # the hints before and after `window_minimum` lowered them
+        record["window_minimum"] = run.log["window_minimum"]
     if record["error"] is None and code not in (0, -15):
         record["error"] = f"the app exited with {run.log.get('exit')!r}"
     if record["error"] is None and not unchanged:
@@ -225,8 +230,10 @@ def host(spec: dict, variants, display: str, backend: str) -> dict:
     sizes = sorted({v.text_size for v in variants if v.text_size})
     from PIL import __version__ as pillow
 
+    used = scenario.windows(dict(spec, variants=list(variants)))
     parts = [name, shell or os.environ.get("XDG_CURRENT_DESKTOP", ""), f"XWayland {display}", "scale factor 1",
-             f"window {spec['window'][0]}x{spec['window'][1]}",
+             f"window {used[0][0]}x{used[0][1]}" if len(used) == 1
+             else f"windows {', '.join(f'{w}x{h}' for w, h in used)}",
              f"{' and '.join(map(str, sizes))} pt" if sizes else ""]
     return dict(description=", ".join(part for part in parts if part), os=name, desktop=shell, display=display,
                 scale="1", input=backend, python=platform.python_version(), pillow=pillow,
@@ -333,7 +340,7 @@ def run(spec_path: Path, builds: dict[str, Path], out: Path, fixture: Path | Non
     stop = failed(record["launches"])
     findings = []
     if stop is None:
-        crops = evidence.write_crops(out, scenario.committed(spec), out / evidence.COMMIT, spec["window"])
+        crops = evidence.write_crops(out, scenario.committed(spec), out / evidence.COMMIT)
         evidence.write_json(out / "commit-manifest.json", evidence.commit_manifest(spec, crops))
         analyses = evidence.run_analyses(spec, out)
         evidence.write_json(out / "analysis.json", analyses)
@@ -401,7 +408,7 @@ def recheck(spec_path: Path, exe: Path, committed: Path, out: Path | None = None
             break
     stop = failed(record["launches"])
     if stop is None:
-        evidence.write_crops(out, crops, out / evidence.COMMIT, spec["window"])
+        evidence.write_crops(out, crops, out / evidence.COMMIT)
         record.update(evidence.compare_committed(crops, out / evidence.COMMIT, committed))
         code = 0 if record["verdict"] == "identical" else 1
     else:

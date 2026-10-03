@@ -2,20 +2,26 @@
 
 A scenario names its fixture (a deterministic recipe that `recipe.py` builds)
 and, for a route that writes, the changes each launch makes to its own copy of
-it (`writes.py`), the window size, the variants (palette x interface text size,
-each optionally with its own store settings and HOME files), one ordered list
-of steps that every build role runs identically, named crop boxes, the
-captures to commit, the probes (every frame drawn after a key or a click,
-analysed but never committed) and the analyses to run on them and on the
-steps' readings (the focused AT-SPI node, a settled store). `qa.py scenario run`
-drives it (`play.py`), and `evidence.py` turns its captures into the committed
-crops, manifest, re-check and attestation.
+it (`writes.py`), the window size and, below the app's own minimum, the
+WM_NORMAL_HINTS minimum each launch lowers it to (`window_minimum`), the
+variants (palette x interface text size, each optionally with its own store
+settings, HOME files, window and minimum), one ordered list of steps that
+every build role runs identically, named crop boxes, the captures to commit,
+the probes (every frame drawn after a key or a click, analysed but never
+committed) and the analyses to run on them and on the steps' readings (the
+focused AT-SPI node, a settled store). `qa.py scenario run` drives it
+(`play.py`), and `evidence.py` turns its captures into the committed crops,
+manifest, re-check and attestation.
 
 Validation is strict and happens before anything is built or launched: an
-unknown key, a wrong type, a box outside the window, a reference to an
-undefined crop, capture, mark or probe, a probe analysis whose clip lies
-outside its probe's region, a filter that matches no variant, or two crops
-with one committed name is a `SpecError` naming its JSON path.
+unknown key, a wrong type, a box or point outside the window in effect where
+it is used (the launch window, changed by each `resize` step), a window or
+resize below the minimum the scenario lowers to, a compare of frames of two
+sizes, a reference to an undefined crop, capture, mark or probe, a probe
+analysis whose clip lies outside its probe's region, a filter that matches no
+variant, or two crops with one committed name is a `SpecError` naming its
+JSON path. A committed name carries the size of the window its capture was
+taken at, so one scenario can commit crops at several sizes.
 """
 
 from __future__ import annotations
@@ -49,8 +55,9 @@ CAPTURE_QUIET = 1.15  # seconds between those grabs: longer than a caret blink's
 RECORD = "record"     # an expectation that measures and writes an analysis without holding it to a verdict
 
 TOP_LEVEL = ({"version", "task", "variants", "steps"},
-             {"summary", "limitations", "window", "roles", "fixture", "settings", "env", "crops", "analyses",
-              "home", "atspi", "writes"})
+             {"summary", "limitations", "window", "window_minimum", "roles", "fixture", "settings", "env", "crops",
+              "analyses", "home", "atspi", "writes"})
+WINDOW_RANGE = (200, 8192)  # px, for a window, a resize and a window minimum
 # Each step has exactly one action key; these are the options each action takes beside `note` and `when`.
 # No option shares an action's name, so a normalised step still names exactly one action.
 STEPS = {
@@ -124,12 +131,14 @@ class Variant:
     text_size: int | None
     settings: dict = field(default_factory=dict, hash=False)  # store settings over the spec's, for this variant
     home: dict = field(default_factory=dict, hash=False)  # HOME files (path: bytes) over the spec's, for this variant
+    window: tuple[int, int] | None = None  # its launches' window, over the spec's
+    window_minimum: tuple[int, int] | None = None  # the WM_NORMAL_HINTS minimum its launches lower to, over the spec's
 
     @property
     def label(self) -> str:
         """The variant's part of a committed name: `midnight`, or `midnight-13pt` with a text size; a variant with
         its own settings or HOME files uses its id, which extends that with what they change
-        (`midnight-13pt-code-18pt`)."""
+        (`midnight-13pt-code-18pt`). Its own window needs no part: every name carries the capture's window size."""
         if self.settings or self.home:
             return self.id
         return palette_label(self.palette, self.text_size)
@@ -140,12 +149,17 @@ class Variant:
             described["settings"] = self.settings
         if self.home:
             described["home"] = sorted(self.home)
+        if self.window:
+            described["window"] = list(self.window)
+        if self.window_minimum:
+            described["window_minimum"] = list(self.window_minimum)
         return described
 
 
 @dataclass(frozen=True)
 class Crop:
-    """One committed crop: which launch's capture it is cut from, with what box, under which name."""
+    """One committed crop: which launch's capture it is cut from, with what box, under which name, and the size of
+    the window that capture is taken at, which the raw frame must have."""
     name: str
     role: str
     variant: Variant
@@ -153,6 +167,29 @@ class Crop:
     crop: str | None
     box: tuple[int, int, int, int] | None
     shows: str
+    window: tuple[int, int]
+
+
+class Extent(tuple):
+    """The largest width and height among a scenario's windows: what a box or point is checked against before the
+    window in effect where it is used is known (`check_windows`), when the scenario has more than one size."""
+
+    text = ""
+
+
+def extent(sizes) -> tuple[int, int]:
+    """The one window size, or an `Extent` of several (its `text` says so in a message)."""
+    sizes = set(sizes)
+    if len(sizes) == 1:
+        return next(iter(sizes))
+    bound = Extent((max(width for width, _ in sizes), max(height for _, height in sizes)))
+    bound.text = f"every window of this scenario (at most {bound[0]} px wide and {bound[1]} px high)"
+    return bound
+
+
+def outside(window) -> str:
+    """How a message names what a box or point must stay inside: `the 1000x680 window`, or an `Extent`'s text."""
+    return getattr(window, "text", "") or f"the {window[0]}x{window[1]} window"
 
 
 # ---------- primitives ----------
@@ -224,7 +261,7 @@ def point(value, path: str, window) -> tuple[int, int]:
     array(value, path, 2, 2)
     x, y = (integer(v, f"{path}[{i}]", 0) for i, v in enumerate(value))
     if x >= window[0] or y >= window[1]:
-        fail(path, f"({x},{y}) is outside the {window[0]}x{window[1]} window")
+        fail(path, f"({x},{y}) is outside {outside(window)}")
     return x, y
 
 
@@ -235,8 +272,19 @@ def box(value, path: str, window) -> tuple[int, int, int, int]:
     if x0 >= x1 or y0 >= y1:
         fail(path, f"{value} is empty: a box is [x0, y0, x1, y1] with x0 < x1 and y0 < y1")
     if x1 > window[0] or y1 > window[1]:
-        fail(path, f"{value} reaches outside the {window[0]}x{window[1]} window")
+        fail(path, f"{value} reaches outside {outside(window)}")
     return x0, y0, x1, y1
+
+
+def window_size(value, path: str) -> tuple[int, int]:
+    """`[width, height]` of a window, a resize or a window minimum."""
+    array(value, path, 2, 2)
+    return tuple(integer(v, f"{path}[{i}]", *WINDOW_RANGE) for i, v in enumerate(value))
+
+
+def below(size, minimum) -> bool:
+    """True when `size` is narrower or shorter than `minimum`, so the window manager would keep it larger."""
+    return size[0] < minimum[0] or size[1] < minimum[1]
 
 
 def area(value, path: str, spec: dict) -> tuple[int, int, int, int]:
@@ -245,13 +293,13 @@ def area(value, path: str, spec: dict) -> tuple[int, int, int, int]:
         if value not in spec["crops"]:
             fail(path, f"no crop box named {value!r}; defined: {', '.join(spec['crops']) or 'none'}")
         return spec["crops"][value]
-    return box(value, path, spec["window"])
+    return box(value, path, spec["bounds"])
 
 
 def spot(value, path: str, spec: dict) -> list[int]:
     """A window point `[x, y]`, or `{"crop": name, "at": [x, y]}` relative to one of the spec's crop boxes."""
     if not isinstance(value, dict):
-        return list(point(value, path, spec["window"]))
+        return list(point(value, path, spec["bounds"]))
     obj(value, path, {"crop", "at"})
     x0, y0, x1, y1 = area(text(value["crop"], f"{path}.crop", IDENTIFIER), f"{path}.crop", spec)
     array(value["at"], f"{path}.at", 2, 2)
@@ -574,7 +622,7 @@ def variant_list(value, path: str) -> list[Variant]:
     variants = []
     for index, item in enumerate(items):
         where = f"{path}[{index}]"
-        obj(item, where, {"palette"}, {"text_size", "id", "settings", "home"})
+        obj(item, where, {"palette"}, {"text_size", "id", "settings", "home", "window", "window_minimum"})
         size = item.get("text_size")
         if size is not None:
             integer(size, f"{where}.text_size", TEXT_SIZES.start, TEXT_SIZES.stop - 1)
@@ -597,8 +645,10 @@ def variant_list(value, path: str) -> list[Variant]:
             if SIZE_SEGMENT.match(own):
                 fail(f"{where}.id", f"{ident!r} names an interface size after '{default}-' that only \"text_size\" "
                                     f"sets; extend '{default}-' with what the {what} change instead")
+        window = window_size(item["window"], f"{where}.window") if "window" in item else None
+        minimum = window_size(item["window_minimum"], f"{where}.window_minimum") if "window_minimum" in item else None
         variants.append(Variant(text(item.get("id", default), f"{where}.id", VARIANT_ID), palette, size, settings,
-                                home))
+                                home, window, minimum))
     ids = [variant.id for variant in variants]
     duplicate = sorted({i for i in ids if ids.count(i) > 1})
     if duplicate:
@@ -641,7 +691,9 @@ def split_ref(ref: str, role: str | None) -> tuple[str | None, str]:
 
 # ---------- steps ----------
 def step_entry(value, path: str, spec: dict) -> dict:
-    window, crops, roles = spec["window"], spec["crops"], spec["roles"]
+    """A normalised step. Its points and boxes are checked here against the scenario's extent, and against the
+    window in effect at the step, per variant, by `check_windows`."""
+    window, crops, roles = spec["bounds"], spec["crops"], spec["roles"]
     actions = [key for key in STEPS if isinstance(value, dict) and key in value]
     if len(actions) != 1:
         fail(path, f"needs exactly one action of {', '.join(STEPS)}")
@@ -686,8 +738,7 @@ def step_entry(value, path: str, spec: dict) -> dict:
         if "quiet" in value:
             number(value["quiet"], f"{path}.quiet", 0.05, 10)
     elif action == "resize":
-        array(value["resize"], where, 2, 2)
-        step["resize"] = [integer(v, f"{where}[{i}]", 200, 8192) for i, v in enumerate(value["resize"])]
+        step["resize"] = list(window_size(value["resize"], where))
     elif action == "read_only":
         problem = runenv.read_only_problem(value["read_only"])
         if problem is not None:
@@ -751,6 +802,9 @@ def step_entry(value, path: str, spec: dict) -> dict:
             if "release_at" in value:
                 step["release_at"] = spot(value["release_at"], f"{path}.release_at", spec)
         step["repeat"] = integer(value.get("repeat", 1), f"{path}.repeat", 1, 200)
+        if "region" not in value and isinstance(window, Extent):
+            fail(path, "a probe in a scenario of several window sizes needs a \"region\": the whole window is not "
+                       "one box there")
         step["region"] = list(area(value["region"], f"{path}.region", spec) if "region" in value
                               else (0, 0, *window))
         step["quiet"] = number(value.get("quiet", session.PROBE_QUIET), f"{path}.quiet", 0.05, 10)
@@ -827,8 +881,10 @@ def reading_analysis(entry: dict, value, path: str, ref) -> None:
 
 # ---------- analyses ----------
 def analysis_entry(value, path: str, spec: dict, guard: bool = False) -> dict:
-    """A normalised analysis: its kind's parameters with defaults; a guard has no name, filter or expectation."""
-    window, crops, roles = spec["window"], spec["crops"], spec["roles"]
+    """A normalised analysis: its kind's parameters with defaults; a guard has no name, filter or expectation.
+    Its boxes and points are checked here against the scenario's extent, and against the window of the frames
+    it reads, per variant, by `check_windows`."""
+    window, crops, roles = spec["bounds"], spec["crops"], spec["roles"]
     kind = value.get("kind") if isinstance(value, dict) else None
     if kind not in ANALYSES:
         fail(f"{path}.kind", f"expected one of {', '.join(ANALYSES)}, got {kind!r}")
@@ -1008,9 +1064,9 @@ def validate(data, sha256: str = "") -> dict:
     spec: dict = dict(version=VERSION, sha256=sha256, task=text(data["task"], "$.task", IDENTIFIER),
                       summary=text(data["summary"], "$.summary") if "summary" in data else "",
                       limitations=text(data["limitations"], "$.limitations") if "limitations" in data else "")
-    window = data.get("window", list(DEFAULT_WINDOW))
-    array(window, "$.window", 2, 2)
-    spec["window"] = tuple(integer(v, f"$.window[{i}]", 200, 8192) for i, v in enumerate(window))
+    spec["window"] = window_size(data.get("window", list(DEFAULT_WINDOW)), "$.window")
+    spec["window_minimum"] = window_size(data["window_minimum"], "$.window_minimum") \
+        if "window_minimum" in data else None
     roles = array(data.get("roles", list(ROLES)), "$.roles", 1, 2)
     if any(role not in ROLES for role in roles) or len(set(roles)) != len(roles):
         fail("$.roles", f"expected distinct roles of {', '.join(ROLES)}")
@@ -1033,11 +1089,14 @@ def validate(data, sha256: str = "") -> dict:
         problem = runenv.home_files_problem(home_files(spec, variant))
         if problem is not None:
             fail(f"$.variants[{index}].home", f"with the spec's own HOME files, {problem}")
+    steps = array(data["steps"], "$.steps", 1, 2000)
+    # Every launch window (the spec's only where a variant has none of its own) and every resize target.
+    spec["bounds"] = extent([*(window_for(spec, v) for v in spec["variants"]), *resize_targets(steps)])
     spec["crops"] = {}
     for name, value in mapping(data.get("crops", {}), "$.crops").items():
-        spec["crops"][text(name, "$.crops", IDENTIFIER)] = box(value, f"$.crops.{name}", spec["window"])
+        spec["crops"][text(name, "$.crops", IDENTIFIER)] = box(value, f"$.crops.{name}", spec["bounds"])
     spec["steps"] = []
-    for index, value in enumerate(array(data["steps"], "$.steps", 1, 2000)):
+    for index, value in enumerate(steps):
         step = step_entry(value, f"$.steps[{index}]", spec)
         step["index"] = index
         spec["steps"].append(step)
@@ -1047,8 +1106,22 @@ def validate(data, sha256: str = "") -> dict:
     if len(set(names)) != len(names):
         fail("$.analyses", "analysis names repeat")
     check_references(spec)
+    check_windows(spec)
     committed(spec)  # refuses two crops with one committed name
     return spec
+
+
+def resize_targets(steps: list) -> list[tuple[int, int]]:
+    """The sizes the raw steps resize to, for the scenario's extent; a malformed one is left for its step to report
+    in order."""
+    targets = []
+    for index, value in enumerate(steps):
+        if isinstance(value, dict) and "resize" in value:
+            try:
+                targets.append(window_size(value["resize"], f"$.steps[{index}].resize"))
+            except SpecError:
+                pass
+    return targets
 
 
 def check_references(spec: dict) -> None:
@@ -1111,6 +1184,114 @@ def check_readings(entry: dict, readings: dict[str, str], where: str, absent: st
                         f"{wanted} readings")
 
 
+def placements(entry: dict) -> list[tuple[str, str, tuple]]:
+    """(key, the frame or probe it applies to, box or point) for every window coordinate of a normalised analysis;
+    a clearance's scan line and a compare's band are the point at its far end along the axis they count."""
+    kind = entry["kind"]
+    if kind in analysis.READING_KINDS:
+        return []
+    if kind in analysis.PROBE_KINDS:  # the clip lies in the probe's region, which its step checks
+        return [(f"masks[{i}]", entry["probe"], tuple(mask)) for i, mask in enumerate(entry["masks"])]
+    if kind == "compare":  # a and b have one size (`check_windows`), so a's window stands for both
+        found = [("region", entry["a"], tuple(entry["region"]))] if entry.get("region") else []
+        found += [(f"masks[{i}]", entry["a"], tuple(mask)) for i, mask in enumerate(entry["masks"])
+                  if not isinstance(mask, str)]  # a named mask is placed from the frame's own size
+        return found + [(f"bands[{i}]", entry["a"], (0, band[1])) for i, band in enumerate(entry.get("bands", []))]
+    frame = entry["frame"]
+    if kind == "fill":
+        reference = entry["reference"]
+        return [("region", frame, tuple(entry["region"]))] + (
+            [("reference.region", reference["frame"] or frame, tuple(reference["region"]))]
+            if "region" in reference else [])
+    found = [("rect", frame, tuple(entry["rect"]))]
+    if kind == "clearance":
+        if isinstance(entry["surface"], dict):
+            found.append(("surface.at", frame, tuple(entry["surface"]["at"])))
+        across = entry["side"] in ("top", "bottom")  # scan lines are columns there, rows on the left and right
+        found += [(f"at[{i}]", frame, (p, 0) if across else (0, p)) for i, p in enumerate(entry.get("at", []))]
+    return found
+
+
+def place(value, where: str, window, held: str, variant: Variant) -> None:
+    """Refuse a point (`(x, y)`) or box (`(x0, y0, x1, y1)`) outside `window`, which `held` and the variant name."""
+    if len(value) == 2 and (value[0] >= window[0] or value[1] >= window[1]):
+        fail(where, f"({value[0]},{value[1]}) is outside the {window[0]}x{window[1]} window {held} in variant "
+                    f"{variant.id}")
+    if len(value) == 4 and (value[2] > window[0] or value[3] > window[1]):
+        fail(where, f"{list(value)} reaches outside the {window[0]}x{window[1]} window {held} in variant "
+                    f"{variant.id}")
+
+
+def check_placements(entry: dict, path: str, window_of, variant: Variant) -> None:
+    """An analysis or guard against the windows of what it reads: `window_of(ref)` gives a frame's or probe's
+    window and how a message says where it was taken. A compare reads two frames of one size."""
+    if entry["kind"] == "compare":
+        a, b = window_of(entry["a"])[0], window_of(entry["b"])[0]
+        if a != b:
+            fail(path, f"compares a frame of {a[0]}x{a[1]} ({entry['a']!r}) with one of {b[0]}x{b[1]} "
+                       f"({entry['b']!r}) in variant {variant.id}; a compare reads two frames of one size")
+    for key, ref, value in placements(entry):
+        place(value, f"{path}.{key}", *window_of(ref), variant)
+
+
+def check_windows(spec: dict) -> None:
+    """Per variant, the window in effect where each box and point is used: the variant's launch window, at least
+    its minimum, changed by each `resize` step, which must not go below it either. A step's points, a capture's
+    crop box and a probe's region and points must fit the window at that step; a guard's boxes the window of the
+    frames it reads (`@now` is the step's own); and an analysis's boxes the window its captures or probes were
+    taken at."""
+    for index, variant in enumerate(spec["variants"]):
+        size, minimum = window_for(spec, variant), minimum_for(spec, variant)
+        if minimum is not None and below(size, minimum):
+            where = (f"$.variants[{index}].window" if variant.window else
+                     f"$.variants[{index}].window_minimum" if variant.window_minimum else "$.window")
+            fail(where, f"the {size[0]}x{size[1]} window is below the {minimum[0]}x{minimum[1]} minimum variant "
+                        f"{variant.id} lowers the window to, which the window manager keeps it at or above")
+        here = "in effect at this step"
+        frames: dict[str, tuple] = {}  # captures and marks taken so far, as a guard reads them
+        captures: dict[str, tuple] = {}
+        probes: dict[str, tuple] = {}
+        for step in steps_for(spec, variant):
+            where = f"$.steps[{step['index']}]"
+            if "resize" in step:
+                size = tuple(step["resize"])
+                if minimum is not None and below(size, minimum):
+                    fail(f"{where}.resize", f"{size[0]}x{size[1]} is below the {minimum[0]}x{minimum[1]} minimum "
+                                            f"variant {variant.id} lowers the window to, so the window manager "
+                                            "would keep it larger")
+            for key in ("move", "glide", "click", "wheel"):
+                if key in step:
+                    place(step[key], f"{where}.{key}", size, here, variant)
+            if "capture" in step:
+                if step["crop"]:
+                    place(spec["crops"][step["crop"]], f"{where}.crop", size, f"{here} (crop box {step['crop']!r})",
+                          variant)
+                frames[step["capture"]] = captures[step["capture"]] = size
+            elif "mark" in step:
+                frames[step["mark"]] = size
+            elif "probe" in step:
+                for key in ("region", "click_at", "release_at"):
+                    if key in step:
+                        place(step[key], f"{where}.{key}", size, here, variant)
+                probes[step["probe"]] = size
+            elif "guard" in step:
+                now = size
+                check_placements(step["guard"], f"{where}.guard",
+                                 lambda ref: (now, here) if ref == NOW else (frames[ref], f"{ref!r} was taken at"),
+                                 variant)
+        for number, entry in enumerate(spec["analyses"]):
+            if applies(entry["when"], variant):
+                found, what = ((probes, "probe {name} runs at") if entry["kind"] in analysis.PROBE_KINDS
+                               else (captures, "{name} is captured at"))
+                check_placements(entry, f"$.analyses[{number}]", lambda ref: taken_at(found, ref, what), variant)
+
+
+def taken_at(found: dict, ref: str, what: str) -> tuple[tuple, str]:
+    """The window a capture or probe `ref` (`role:name` or `name`) was taken at, and `what` names it."""
+    name = split_ref(ref, None)[1]
+    return found[name], what.format(name=repr(name))
+
+
 def load(path: Path) -> dict:
     data = Path(path).read_bytes()
     try:
@@ -1125,9 +1306,42 @@ def steps_for(spec: dict, variant: Variant) -> list[dict]:
     return [step for step in spec["steps"] if applies(step["when"], variant)]
 
 
+def window_for(spec: dict, variant: Variant) -> tuple[int, int]:
+    """The window a variant's launches open at: its own `window`, else the spec's."""
+    return variant.window or spec["window"]
+
+
+def minimum_for(spec: dict, variant: Variant) -> tuple[int, int] | None:
+    """The WM_NORMAL_HINTS minimum a variant's launches lower the window to before the first resize: its own
+    `window_minimum`, else the spec's; None leaves the app's own."""
+    return variant.window_minimum or spec["window_minimum"]
+
+
+def capture_windows(spec: dict, variant: Variant) -> dict[str, tuple[int, int]]:
+    """The window each of a variant's captures is taken at, by name: its launch window, changed by every `resize`
+    step before the capture."""
+    size, found = window_for(spec, variant), {}
+    for step in steps_for(spec, variant):
+        if "resize" in step:
+            size = tuple(step["resize"])
+        elif "capture" in step:
+            found[step["capture"]] = size
+    return found
+
+
+def windows(spec: dict) -> list[tuple[int, int]]:
+    """Every window size the scenario's launches open at or resize to, in order of first use."""
+    found: list[tuple[int, int]] = []
+    for variant in spec["variants"]:
+        sizes = [window_for(spec, variant), *(tuple(s["resize"]) for s in steps_for(spec, variant) if "resize" in s)]
+        found += [size for size in sizes if size not in found]
+    return found
+
+
 def crop_name(role: str, variant: Variant, window, capture: str) -> str:
     """The committed file name: `{base|candidate}-{palette}[-{size}pt]-{W}x{H}-{capture}.png`, with the variant's
-    id in place of `{palette}[-{size}pt]` when it has its own settings."""
+    id in place of `{palette}[-{size}pt]` when it has its own settings, and `W`x`H` the window the capture is
+    taken at."""
     return f"{COMMITTED_PREFIX[role]}-{variant.label}-{window[0]}x{window[1]}-{capture}.png"
 
 
@@ -1140,23 +1354,27 @@ def committed(spec: dict, roles=None) -> list[Crop]:
     """Every crop the scenario commits, variant by variant, in step order, base before candidate."""
     crops, seen = [], {}
     for variant in spec["variants"]:
+        sizes = capture_windows(spec, variant)
         for step in steps_for(spec, variant):
             if "capture" not in step or not step["commit"]:
                 continue
+            size = sizes[step["capture"]]
             for role in spec["roles"]:
                 if role not in step["roles"] or (roles is not None and role not in roles):
                     continue
-                name = crop_name(role, variant, spec["window"], step["capture"])
+                name = crop_name(role, variant, size, step["capture"])
                 if name in seen:
                     index, other = seen[name]
                     if other != variant.id:
                         fail("$.variants", f"variants {other} and {variant.id} would both commit {name} (step "
-                                           f"{index}); a committed name tells variants apart by palette and text "
-                                           "size, or by the id of a variant with \"settings\"")
+                                           f"{index}); a committed name tells variants apart by palette, text size "
+                                           "and the capture's window size, or by the id of a variant with "
+                                           "\"settings\"")
                     fail(f"$.steps[{step['index']}]", f"commits {name}, as step {index} already does")
                 seen[name] = (step["index"], variant.id)
                 crops.append(Crop(name, role, variant, step["capture"], step["crop"],
-                                  spec["crops"].get(step["crop"]) if step["crop"] else None, shows_for(step, role)))
+                                  spec["crops"].get(step["crop"]) if step["crop"] else None, shows_for(step, role),
+                                  size))
     return crops
 
 

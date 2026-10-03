@@ -18,6 +18,18 @@ except ImportError:  # the unit tests run without python-xlib; connect() names t
     X = XK = xdisplay = xtest = None
 
 WM_CLASS = "gitturtle"
+# Predefined atoms (X11 protocol, Xatom.h), so the hints code needs no python-xlib import to be tested.
+WM_NORMAL_HINTS, WM_SIZE_HINTS = 40, 41
+# WM_SIZE_HINTS (ICCCM 4.1.2.3): 18 CARD32/INT32 fields, x to height obsolete padding. A pre-ICCCM client writes
+# the first 15 only, without base size and gravity.
+SIZE_HINT_FIELDS = ("flags", "x", "y", "width", "height", "min_width", "min_height", "max_width", "max_height",
+                    "width_inc", "height_inc", "min_aspect_num", "min_aspect_den", "max_aspect_num",
+                    "max_aspect_den", "base_width", "base_height", "win_gravity")
+SIZE_HINT_FLAGS = ("USPosition", "USSize", "PPosition", "PSize", "PMinSize", "PMaxSize", "PResizeInc", "PAspect",
+                   "PBaseSize", "PWinGravity")
+P_MIN_SIZE = 1 << SIZE_HINT_FLAGS.index("PMinSize")
+MIN_FIELDS = (SIZE_HINT_FIELDS.index("min_width"), SIZE_HINT_FIELDS.index("min_height"))
+HINTS_WAIT = 10.0  # s a window may take to set its WM_NORMAL_HINTS minimum; GPUI sets it after _NET_WM_PID
 PARK_MARGIN = 120  # px past the window's edge where a park leaves the pointer
 CORNER_INSET = 4   # px into the window's bottom-left corner, where a park clears a hover the pointer left
 # Keysym names for characters XK.string_to_keysym does not accept as-is.
@@ -79,6 +91,55 @@ def find_window(dsp, pid: int, timeout: float = 40.0):
                 return entry["window"]
         time.sleep(0.5)
     raise SystemExit(f"no GitTurtle window for pid {pid} on {dsp.get_display_name()}")
+
+
+# ---------- the window manager's size hints ----------
+def size_hints(values) -> dict:
+    """WM_SIZE_HINTS as recorded in flow-log.json and run.json: the raw 32-bit values, each field by name, the flags
+    set, and the minimum and maximum sizes those flags declare (None when unset)."""
+    values = [int(value) for value in values]
+    fields = dict(zip(SIZE_HINT_FIELDS, values))
+    flags = [name for bit, name in enumerate(SIZE_HINT_FLAGS) if values[0] >> bit & 1]
+
+    def pair(flag, first, second):
+        return [fields[first], fields[second]] if flag in flags and second in fields else None
+
+    return dict(values=values, fields=fields, flags=flags, min_size=pair("PMinSize", "min_width", "min_height"),
+                max_size=pair("PMaxSize", "max_width", "max_height"))
+
+
+def read_hints(prop) -> dict | None:
+    """A WM_NORMAL_HINTS property as read, for the record: None when absent, `size_hints` when it is WM_SIZE_HINTS
+    of 32 bits, otherwise its type, format and raw values."""
+    if prop is None:
+        return None
+    values = [int(value) for value in prop.value]
+    if prop.property_type == WM_SIZE_HINTS and prop.format == 32 and values:
+        return size_hints(values)
+    return dict(property_type=prop.property_type, format=prop.format, values=values)
+
+
+def lowered_hints(values, width: int, height: int) -> list[int]:
+    """`values` with only the minimum changed: min_width and min_height set and PMinSize raised; every other field
+    and flag (the maximum, increments, aspect, base size, gravity and the obsolete padding) is kept as it was."""
+    lowered = [int(value) for value in values]
+    lowered[0] |= P_MIN_SIZE
+    lowered[MIN_FIELDS[0]], lowered[MIN_FIELDS[1]] = width, height
+    return lowered
+
+
+def hints_problem(prop) -> str | None:
+    """Why a WM_NORMAL_HINTS property read back (`get_full_property`) holds no minimum to lower, or None."""
+    if prop is None:
+        return "the window has no WM_NORMAL_HINTS"
+    if prop.property_type != WM_SIZE_HINTS or prop.format != 32:
+        return (f"its WM_NORMAL_HINTS is of type {prop.property_type}, format {prop.format}, not WM_SIZE_HINTS "
+                "of 32 bits")
+    if len(prop.value) < MIN_FIELDS[1] + 1:
+        return f"its WM_NORMAL_HINTS has {len(prop.value)} fields, too few to hold a minimum size"
+    if not int(prop.value[0]) & P_MIN_SIZE:
+        return "its WM_NORMAL_HINTS sets no minimum size (PMinSize)"
+    return None
 
 
 def focus_within(dsp, window, depth: int = 12) -> bool:
@@ -223,8 +284,70 @@ class Driver:
         geometry = self.w.get_geometry()
         return geometry.width, geometry.height
 
+    def normal_hints(self):
+        return self.w.get_full_property(WM_NORMAL_HINTS, WM_SIZE_HINTS)
+
+    def lower_minimum(self, width: int, height: int, timeout: float = HINTS_WAIT, every: float = 0.25,
+                      record: dict | None = None) -> dict:
+        """Lower the window's WM_NORMAL_HINTS minimum to width x height, so it reaches the sizes a tiling window
+        manager, which ignores the hint, gives it.
+
+        The app asks for 1000x680 (`window_min_size`), which GPUI's X11 window
+        sends as WM_NORMAL_HINTS, and Mutter keeps the window at least that
+        large, so a smaller ConfigureWindow never takes. Only min_width,
+        min_height and the PMinSize flag change; the property is rewritten
+        from the values read, so the maximum (GPUI's texture limit), gravity
+        and every other field and flag stay. GPUI sets the hints after the
+        window's _NET_WM_PID, so this waits up to `timeout` for a minimum to
+        appear. A minimum that is not lower than the app's (larger in either
+        dimension, or equal in both) refuses with nothing written. The
+        property is read back, and anything other than exactly the lowered
+        values refuses.
+
+        `record` (a new dict by default, returned) is filled as it goes: the
+        size `requested`, the hints found (`original`), the hints written
+        (`applied`) and those read back (`read_back`), and `refused` with the
+        reason when it refuses, so a caller that logs it before the refusal
+        propagates keeps what was read.
+        """
+        record = {} if record is None else record
+        record["requested"] = [width, height]
+
+        def refuse(message: str):
+            record["refused"] = message
+            raise SystemExit(f"refusing: {message}")
+
+        found = self.normal_hints()
+        for _ in range(max(int(timeout / every), 0)):
+            if hints_problem(found) is None:
+                break
+            time.sleep(every)
+            found = self.normal_hints()
+        record["original"] = read_hints(found)
+        problem = hints_problem(found)
+        if problem is not None:
+            refuse(f"cannot lower the window minimum to {width}x{height}: {problem} after {timeout} s; nothing changed")
+        original = [int(value) for value in found.value]
+        was = [original[MIN_FIELDS[0]], original[MIN_FIELDS[1]]]
+        if width > was[0] or height > was[1] or (width, height) == tuple(was):
+            refuse(f"a window minimum of {width}x{height} is not lower than the app's {was[0]}x{was[1]} (larger in "
+                   "either dimension, or equal in both); nothing changed")
+        applied = lowered_hints(original, width, height)
+        record["applied"] = size_hints(applied)
+        self.w.change_property(WM_NORMAL_HINTS, WM_SIZE_HINTS, 32, applied)
+        self.d.sync()
+        back = self.normal_hints()
+        record["read_back"] = read_hints(back)
+        read = None if back is None or back.format != 32 else [int(value) for value in back.value]
+        if read != applied:
+            refuse(f"the window's WM_NORMAL_HINTS read back {read}, not the lowered {applied}; the window minimum "
+                   "did not take")
+        self.record(f"window minimum {was[0]}x{was[1]} -> {width}x{height} (WM_NORMAL_HINTS, read back)")
+        return record
+
     def resize(self, width: int, height: int, timeout: float = 5.0) -> None:
-        """Mutter honours a plain ConfigureWindow; the app's minimum is 1000x680."""
+        """Mutter honours a plain ConfigureWindow down to the window's WM_NORMAL_HINTS minimum: the app's 1000x680,
+        unless `lower_minimum` lowered it."""
         self.w.configure(width=width, height=height)
         self.d.sync()
         deadline = time.time() + timeout

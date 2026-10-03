@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from native_qa import evidence, play, scenario, session
+from native_qa import evidence, play, scenario, session, x11
 from native_qa.test_analysis import list_frame
 from native_qa.test_session import FakeClock, ScriptedScreen
 
@@ -62,9 +62,39 @@ PROBE_ANALYSES = [
 ]
 
 
+# Below the app's 1000x680 minimum, which each launch lowers to 400x420: the panel at the launch size, at 461x490,
+# then at 1480x800 at 13 pt only, so `last` is taken at a size that depends on the variant.
+WIDE = [10, 10, 1400, 700]
+SIZED = {
+    "version": 1, "task": "demo-sizes", "summary": "the panel at three sizes", "window_minimum": [400, 420],
+    "variants": [{"palette": "midnight", "text_size": 13}, {"palette": "midnight", "text_size": 18}],
+    "crops": {"panel": PANEL, "wide": WIDE},
+    "steps": [
+        {"capture": "focus", "crop": "panel", "shows": "the panel at the launch size"},
+        {"resize": [461, 490]},
+        {"capture": "narrow", "crop": "panel", "shows": "the panel at 461 x 490"},
+        {"resize": [1480, 800], "when": {"text_size": [13]}},
+        {"capture": "wide", "crop": "wide", "shows": "the panel at 1480 x 800", "when": {"text_size": [13]}},
+        {"capture": "last", "crop": "panel", "shows": "the panel at the last size"},
+    ],
+    "analyses": [
+        {"name": "narrow-ring", "kind": "ring", "frame": "narrow", "rect": FOCUS_RECT,
+         "expect": {"base": False, "cand": True}},
+        {"name": "narrow-same", "kind": "compare", "a": "base:narrow", "b": "cand:narrow",
+         "region": [400, 100, 461, 490]},
+    ],
+}
+
+
 def spec(**changes) -> dict:
     data = copy.deepcopy(SPEC)
     data.update(changes)
+    return data
+
+
+def sized(**changes) -> dict:
+    data = copy.deepcopy(SIZED)
+    data.update(copy.deepcopy(changes))
     return data
 
 
@@ -156,6 +186,131 @@ class SpecTest(unittest.TestCase):
                 scenario.validate(spec(roles=["cand"], **changes))
         self.assertEqual([c.name for c in scenario.committed(only_cand)],
                          ["candidate-midnight-1000x680-focus.png", "candidate-porcelain-1000x680-focus.png"])
+
+    def test_every_committed_scenario_names_exactly_its_committed_crops(self) -> None:
+        # A name carries the window its capture is taken at; none of these resizes, so each keeps its old names.
+        specs = sorted((HERE.parents[1] / "docs" / "evidence").glob("*/scenario.json"))
+        if not specs:
+            self.skipTest("no committed scenarios")
+        for path in specs:
+            with self.subTest(task=path.parent.name):
+                loaded = scenario.load(path)
+                crops = scenario.committed(loaded)
+                self.assertEqual(sorted(crop.name for crop in crops), sorted(p.name for p in path.parent.glob("*.png")))
+                self.assertEqual({crop.window for crop in crops}, {loaded["window"]})
+
+    def test_crops_at_several_window_sizes(self) -> None:
+        loaded = scenario.validate(sized())
+        self.assertEqual((loaded["window"], loaded["window_minimum"]), ((1000, 680), (400, 420)))
+        small, large = loaded["variants"]
+        self.assertEqual(scenario.capture_windows(loaded, small),
+                         {"focus": (1000, 680), "narrow": (461, 490), "wide": (1480, 800), "last": (1480, 800)})
+        self.assertEqual(scenario.capture_windows(loaded, large),
+                         {"focus": (1000, 680), "narrow": (461, 490), "last": (461, 490)})
+        self.assertEqual(scenario.windows(loaded), [(1000, 680), (461, 490), (1480, 800)])
+        self.assertEqual(scenario.minimum_for(loaded, large), (400, 420))
+        crops = scenario.committed(loaded, roles=("cand",))
+        self.assertEqual([(c.name, c.window) for c in crops], [
+            ("candidate-midnight-13pt-1000x680-focus.png", (1000, 680)),
+            ("candidate-midnight-13pt-461x490-narrow.png", (461, 490)),
+            ("candidate-midnight-13pt-1480x800-wide.png", (1480, 800)),
+            ("candidate-midnight-13pt-1480x800-last.png", (1480, 800)),
+            ("candidate-midnight-18pt-1000x680-focus.png", (1000, 680)),
+            ("candidate-midnight-18pt-461x490-narrow.png", (461, 490)),
+            ("candidate-midnight-18pt-461x490-last.png", (461, 490))])
+        # A variant's own window and minimum replace the spec's for its launches; its names carry that window.
+        own = scenario.validate(sized(variants=[
+            {"palette": "midnight", "text_size": 13},
+            {"palette": "porcelain", "text_size": 18, "window": [560, 600], "window_minimum": [450, 440]}]))
+        porcelain = own["variants"][1]
+        self.assertEqual((scenario.window_for(own, porcelain), scenario.minimum_for(own, porcelain)),
+                         ((560, 600), (450, 440)))
+        self.assertEqual(porcelain.describe(), {"id": "porcelain-18pt", "palette": "porcelain", "text_size": 18,
+                                                "window": [560, 600], "window_minimum": [450, 440]})
+        self.assertIn("candidate-porcelain-18pt-560x600-focus.png",
+                      [c.name for c in scenario.committed(own, roles=("cand",))])
+        # Without a minimum, a resize below the app's own is left to the window manager, as before.
+        unbounded = {key: value for key, value in sized().items() if key != "window_minimum"}
+        self.assertIsNone(scenario.validate(unbounded)["window_minimum"])
+        # A probe names its region where the window has more than one size.
+        probed = scenario.validate(sized(steps=SIZED["steps"] + [{"probe": "rows", "send": "Tab", "region": "panel"}]))
+        self.assertEqual(scenario.probes(probed)[0]["region"], PANEL)
+        # Where every variant opens its own window, the spec's is never used: one size, so the whole window is a box.
+        own_only = scenario.validate(spec(variants=[{"palette": "midnight", "window": [800, 600]},
+                                                    {"palette": "porcelain", "window": [800, 600]}],
+                                          steps=SPEC["steps"] + [{"probe": "rows", "send": "Tab"}]))
+        self.assertEqual((own_only["bounds"], scenario.windows(own_only)), ((800, 600), [(800, 600)]))
+        self.assertEqual(scenario.probes(own_only)[0]["region"], [0, 0, 800, 600])
+
+    def test_cli_check_names_the_window_minimum(self) -> None:
+        from native_qa import qa
+
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "scenario.json"
+            path.write_text(json.dumps(sized()))
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(qa.main(["scenario", "check", str(path)]), 0)
+        self.assertIn("window minimum lowered to 400x420 (WM_NORMAL_HINTS) before each launch's first resize",
+                      out.getvalue())
+        self.assertIn("candidate-midnight-18pt-461x490-last.png  (panel)", out.getvalue())
+
+    def test_bad_window_sizes(self) -> None:
+        steps = SIZED["steps"]
+        guard = {"guard": {"kind": "fill", "frame": "@now", "region": [500, 10, 600, 60],
+                           "reference": {"colour": [0, 0, 0]}, "min_contrast": 1.1}}
+        ring = {"name": "r", "kind": "ring", "frame": "narrow", "rect": [500, 20, 600, 50]}
+        cases = [
+            (dict(window_minimum=[100, 420]), r"\$\.window_minimum\[0\]: 100 is outside 200\.\.8192"),
+            (dict(window_minimum=[400]), r"\$\.window_minimum: expected a list of 2"),
+            (dict(window_minimum=[1100, 420]),
+             r"\$\.window: the 1000x680 window is below the 1100x420 minimum variant midnight-13pt lowers the window "
+             r"to"),
+            (dict(steps=steps[:3], crops={"panel": PANEL}, variants=[{"palette": "midnight", "window": [450, 450],
+                                                                      "window_minimum": [460, 400]}]),
+             r"\$\.variants\[0\]\.window: the 450x450 window is below the 460x400 minimum variant midnight"),
+            (dict(steps=steps[:3], crops={"panel": PANEL},
+                  variants=[{"palette": "midnight", "window_minimum": [1100, 400]}]),
+             r"\$\.variants\[0\]\.window_minimum: the 1000x680 window is below the 1100x400 minimum"),
+            (dict(variants=[{"palette": "midnight", "window": [100, 450]}]),
+             r"\$\.variants\[0\]\.window\[0\]: 100 is outside 200\.\.8192"),
+            (dict(steps=[steps[0], {"resize": [390, 490]}], crops={"panel": PANEL}, analyses=[]),
+             r"\$\.steps\[1\]\.resize: 390x490 is below the 400x420 minimum variant midnight-13pt lowers the window "
+             r"to, so the window manager would keep it larger"),
+            (dict(steps=steps[:2] + [dict(steps[2], crop="wide")] + steps[3:]),
+             r"\$\.steps\[2\]\.crop: \[10, 10, 1400, 700\] reaches outside the 461x490 window in effect at this step "
+             r"\(crop box 'wide'\) in variant midnight-13pt"),
+            (dict(crops={"panel": PANEL, "wide": WIDE, "huge": [0, 0, 1500, 700]}),
+             r"\$\.crops\.huge: \[0, 0, 1500, 700\] reaches outside every window of this scenario \(at most 1480 px "
+             r"wide and 800 px high\)"),
+            (dict(steps=steps + [{"click": [700, 300]}]),
+             r"\$\.steps\[6\]\.click: \(700,300\) is outside the 461x490 window in effect at this step in variant "
+             r"midnight-18pt"),
+            (dict(steps=steps[:2] + [guard] + steps[2:]),
+             r"\$\.steps\[2\]\.guard\.region: \[500, 10, 600, 60\] reaches outside the 461x490 window in effect at "
+             r"this step in variant midnight-13pt"),
+            (dict(steps=steps + [{"probe": "rows", "send": "Tab"}]),
+             r"\$\.steps\[6\]: a probe in a scenario of several window sizes needs a \"region\""),
+            (dict(steps=steps + [{"probe": "rows", "send": "Tab", "region": [0, 0, 900, 400]}]),
+             r"\$\.steps\[6\]\.region: \[0, 0, 900, 400\] reaches outside the 461x490 window in effect at this step "
+             r"in variant midnight-18pt"),
+            (dict(analyses=[ring]),
+             r"\$\.analyses\[0\]\.rect: \[500, 20, 600, 50\] reaches outside the 461x490 window 'narrow' is "
+             r"captured at in variant midnight-13pt"),
+            (dict(analyses=[{"name": "c", "kind": "compare", "a": "focus", "b": "narrow"}]),
+             r"\$\.analyses\[0\]: compares a frame of 1000x680 \('focus'\) with one of 461x490 \('narrow'\) in "
+             r"variant midnight-13pt; a compare reads two frames of one size"),
+            (dict(analyses=[{"name": "c", "kind": "compare", "a": "base:narrow", "b": "cand:narrow",
+                             "bands": [[10, 600]]}]),
+             r"\$\.analyses\[0\]\.bands\[0\]: \(0,600\) is outside the 461x490 window 'narrow' is captured at"),
+            # Two variants that differ only in their launch window still collide once both resize to one size.
+            (dict(steps=steps[:3], crops={"panel": PANEL},
+                  variants=[{"palette": "midnight", "id": "a"},
+                            {"palette": "midnight", "id": "b", "window": [461, 490]}]),
+             r"\$\.variants: variants a and b would both commit base-midnight-461x490-narrow\.png \(step 2\)"),
+        ]
+        for changes, match in cases:
+            with self.subTest(match=match), self.assertRaisesRegex(scenario.SpecError, match):
+                scenario.validate(sized(**changes))
 
     def test_a_variant_carries_its_own_store_settings(self) -> None:
         steps = SPEC["steps"] + [{"key": "Escape", "when": {"variant": ["midnight-13pt-code-18pt"]}}]
@@ -669,6 +824,20 @@ def frame(ring: bool = False, patch: bool = False):
     return image
 
 
+def sized_frame(size, ring: bool = False, mark: bool = False):
+    """A window frame of `size`: the surface, the panel's ring with `ring`, and with `mark` a red pixel at
+    (500, 300), inside only the `wide` crop box."""
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", tuple(size), SURFACE)
+    if ring:
+        ImageDraw.Draw(image).rectangle(FOCUS_RECT[:2] + [FOCUS_RECT[2] - 1, FOCUS_RECT[3] - 1], outline=RING,
+                                        width=2)
+    if mark:
+        image.putpixel((500, 300), (255, 0, 0))
+    return image
+
+
 @unittest.skipUnless(HAVE_PIL, "Pillow is not installed")
 class BundleTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -690,7 +859,7 @@ class BundleTest(unittest.TestCase):
 
     def test_crops_and_manifest(self) -> None:
         self.captures(self.root)
-        entries = evidence.write_crops(self.root, scenario.committed(self.spec), self.root / "commit", (1000, 680))
+        entries = evidence.write_crops(self.root, scenario.committed(self.spec), self.root / "commit")
         self.assertEqual(sorted(p.name for p in (self.root / "commit").iterdir()), sorted(e["name"] for e in entries))
         first = entries[1]
         self.assertEqual(first["name"], "candidate-midnight-1000x680-focus.png")
@@ -702,8 +871,8 @@ class BundleTest(unittest.TestCase):
         data = (self.root / "commit" / first["name"]).read_bytes()
         self.assertEqual((first["bytes"], first["sha256"]), (len(data), evidence.identity.sha256_bytes(data)))
         manifest = evidence.commit_manifest(self.spec, entries)
-        self.assertEqual((manifest["task"], manifest["scenario_sha256"], manifest["window"], len(manifest["frames"])),
-                         ("demo-task", "f" * 64, [1000, 680], 6))
+        self.assertEqual((manifest["task"], manifest["scenario_sha256"], manifest["windows"], len(manifest["frames"])),
+                         ("demo-task", "f" * 64, [[1000, 680]], 6))
         # The same pixels crop to the same bytes.
         again = self.root / "again.png"
         evidence.cut(self.root / "cand" / "midnight" / "captures" / "focus.png", PANEL, again)
@@ -714,8 +883,41 @@ class BundleTest(unittest.TestCase):
 
         self.captures(self.root)
         Image.new("RGB", (900, 600), SURFACE).save(self.root / "cand" / "porcelain" / "captures" / "focus.png")
-        with self.assertRaisesRegex(SystemExit, "is 900x600, not the scenario's 1000x680 window"):
-            evidence.write_crops(self.root, scenario.committed(self.spec), self.root / "commit", (1000, 680))
+        with self.assertRaisesRegex(SystemExit, "is 900x600, not the 1000x680 window the scenario has at that "
+                                                "capture"):
+            evidence.write_crops(self.root, scenario.committed(self.spec), self.root / "commit")
+
+    def test_crops_and_analyses_at_several_window_sizes(self) -> None:
+        loaded = scenario.validate(sized(), "f" * 64)
+        for role in loaded["roles"]:
+            for variant in loaded["variants"]:
+                captures = self.root / role / variant.id / "captures"
+                captures.mkdir(parents=True)
+                for name, size in scenario.capture_windows(loaded, variant).items():
+                    sized_frame(size, ring=role == "cand").save(captures / f"{name}.png")
+        entries = evidence.write_crops(self.root, scenario.committed(loaded), self.root / "commit")
+        self.assertEqual(len(entries), 14)
+        found = {entry["name"]: entry for entry in entries}
+        wide = found["candidate-midnight-13pt-1480x800-wide.png"]
+        self.assertEqual((wide["window"], wide["size"], wide["box"]), ([1480, 800], [1390, 690], WIDE))
+        last = found["base-midnight-18pt-461x490-last.png"]
+        self.assertEqual((last["window"], last["size"], last["source"]),
+                         ([461, 490], [100, 50], "base/midnight-18pt/captures/last.png"))
+        report = evidence.run_analyses(loaded, self.root)
+        self.assertEqual((report["total"], report["unexpected"]), (6, []))
+        # A frame of another size than the window at its capture is never cropped, and an analysis that reads it
+        # is inconclusive, wherever its boxes would land.
+        sized_frame((1000, 680), ring=True).save(self.root / "cand" / "midnight-18pt" / "captures" / "narrow.png")
+        with self.assertRaisesRegex(SystemExit, "capture narrow of cand midnight-18pt is 1000x680, not the 461x490 "
+                                                "window the scenario has at that capture; nothing cropped"):
+            evidence.write_crops(self.root, scenario.committed(loaded), self.root / "again")
+        report = evidence.run_analyses(loaded, self.root)
+        self.assertEqual(report["unexpected"], ["narrow-ring (cand, midnight-18pt): inconclusive, expected pass",
+                                                "narrow-same (both roles, midnight-18pt): inconclusive, expected pass"])
+        ring = next(r for r in report["results"]
+                    if (r["name"], r["role"], r["variant"]) == ("narrow-ring", "cand", "midnight-18pt"))
+        self.assertEqual(ring["result"]["reasons"],
+                         ["frame narrow is 1000x680, not the 461x490 window the scenario has at that capture"])
 
     def test_analyses_meet_their_expectations(self) -> None:
         self.captures(self.root)
@@ -853,7 +1055,7 @@ class BundleTest(unittest.TestCase):
 
         crops = scenario.committed(self.spec, roles=("cand",))
         self.captures(self.root, roles=("cand",))
-        evidence.write_crops(self.root, crops, self.root / "commit", (1000, 680))
+        evidence.write_crops(self.root, crops, self.root / "commit")
         committed = self.root / "committed"
         shutil.copytree(self.root / "commit", committed)
         result = evidence.compare_committed(crops, self.root / "commit", committed)
@@ -884,7 +1086,7 @@ class BundleTest(unittest.TestCase):
         (bundle / "scenario.json").write_text(json.dumps(spec()))
         loaded = scenario.load(bundle / "scenario.json")
         self.captures(bundle)
-        entries = evidence.write_crops(bundle, scenario.committed(loaded), bundle / "commit", loaded["window"])
+        entries = evidence.write_crops(bundle, scenario.committed(loaded), bundle / "commit")
         evidence.write_json(bundle / "commit-manifest.json", evidence.commit_manifest(loaded, entries))
         evidence.write_json(bundle / "analysis.json", evidence.run_analyses(loaded, bundle))
         launch = dict(started_utc="2026-10-01T22:33:10Z", ended_utc="2026-10-01T22:40:59Z", fixture_unchanged=True)
@@ -1228,6 +1430,58 @@ class RunWithoutDisplayTest(unittest.TestCase):
                                           self.fixture), 1)
         payload = evidence.attestation(out, "demo-task", CAND_SHA, "e" * 40, recheck=self.root / "re")
         self.assertEqual(len(payload["sessions"]), 2)
+
+    def sized_launch(self, spec_, role, variant, binary, fixture, run_dir, options):
+        """A launch of a scenario with several window sizes: each capture at its own window, and the hints its
+        `window_minimum` lowered from GPUI's 1000x680."""
+        captures = run_dir / "captures"
+        captures.mkdir(parents=True)
+        for name, size in scenario.capture_windows(spec_, variant).items():
+            frame_ = sized_frame(size, ring=role == "cand", mark=self.patch and size == (1480, 800))
+            frame_.save(captures / f"{name}.png")
+        hints, minimum = [48, 0, 0, 0, 0, 1000, 680, 16384, 16384, *[0] * 9], scenario.minimum_for(spec_, variant)
+        return dict(role=role, variant=variant.id, run_dir=str(run_dir), error=None, refusal=False,
+                    started_utc="2026-10-03T10:00:00Z", ended_utc="2026-10-03T10:02:00Z", exit=-15,
+                    fixture_unchanged=True, captures=4, guards=0,
+                    window_minimum=dict(requested=list(minimum), original=x11.size_hints(hints),
+                                        applied=x11.size_hints(x11.lowered_hints(hints, *minimum))))
+
+    def test_a_bundle_and_its_recheck_at_several_window_sizes(self) -> None:
+        self.spec_path.write_text(json.dumps(sized()))
+        self.fake_launch = self.sized_launch
+        code, out = self.run_bundle("bundle", base="/x/base", cand="/x/cand")
+        self.assertEqual(code, 0)
+        run = json.loads((out / "run.json").read_text())
+        self.assertEqual({tuple(l["window_minimum"]["applied"]["min_size"]) for l in run["launches"]}, {(400, 420)})
+        manifest = json.loads((out / "commit-manifest.json").read_text())
+        self.assertEqual(sorted({tuple(f["window"]) for f in manifest["frames"]}),
+                         [(461, 490), (1000, 680), (1480, 800)])
+        lowered = ("window WM_NORMAL_HINTS minimum lowered from 1000x680 to 400x420 in every launch, read back "
+                   "before the first resize")
+        payload = evidence.attestation(out, "demo-sizes", CAND_SHA, "e" * 40)
+        self.assertEqual(payload["host"], f"test host; {lowered}")
+        self.assertEqual(payload["committed_frames"], "docs/evidence/demo-sizes/ (14 crops, 13 and 18 pt, windows "
+                                                      "461x490, 1000x680, 1480x800) and its scenario.json")
+        # The re-check takes every candidate crop again at its own size and compares the bytes.
+        committed = self.root / "docs-evidence"
+        committed.mkdir()
+        for entry in manifest["frames"]:
+            shutil.copy(out / "commit" / entry["name"], committed / entry["name"])
+        with self.patched():
+            self.assertEqual(play.recheck(self.spec_path, Path("/x/cand"), committed, self.root / "re",
+                                          self.fixture), 0)
+        checked = json.loads((self.root / "re" / "recheck.json").read_text())
+        self.assertEqual((checked["verdict"], len(checked["results"])), ("identical", 7))
+        rebuilt = evidence.attestation(out, "demo-sizes", CAND_SHA, "e" * 40, recheck=self.root / "re")
+        self.assertTrue(rebuilt["sessions"][1]["what"].endswith(f"; {lowered}"))
+        # A re-capture that differs at one size is found at that size alone.
+        self.patch = True
+        with self.patched():
+            self.assertEqual(play.recheck(self.spec_path, Path("/x/cand"), committed, self.root / "re2",
+                                          self.fixture), 1)
+        results = json.loads((self.root / "re2" / "recheck.json").read_text())["results"]
+        self.assertEqual([(r["name"], r["result"]) for r in results if r["result"] != "identical"],
+                         [("candidate-midnight-13pt-1480x800-wide.png", "different")])
 
     def test_a_privacy_match_fails_the_bundle(self) -> None:
         self.patch = True
