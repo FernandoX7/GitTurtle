@@ -27,7 +27,9 @@
    `--delete-branch --match-head-commit <pushed head>` once every check passed;
    then fast-forward the main checkout if it is clean and on `main`, remove the
    worktree, and remove each `.local/evidence/<task>/src-cand-*` clone that is
-   clean with its HEAD inside the landed range (any other is kept and named).
+   clean with its HEAD inside the landed range (any other is kept and named),
+   and the task's rebuildable outputs there: `gitturtle-*` executables, `pkg-*`
+   bundles, archives and extracts, and `.target-*` directories.
    When GitHub refuses the merge because main moved under the PR (strict required
    checks), merge a freshly fetched origin/main into the branch locally, refuse
    unless the PR's change against it still has the accepted range's patch identity
@@ -865,6 +867,31 @@ def remove_source_clones(root: Path, task_id: str, accepted_repo: Path, tip: str
     return removed, kept
 
 
+# What `.local/evidence/<task>/` keeps once the task has landed: records, not build outputs.
+RECORD_SUFFIXES = frozenset({".json", ".log", ".md", ".out", ".txt"})
+
+
+def remove_build_outputs(root: Path, task_id: str) -> list[Path]:
+    """Delete a landed task's rebuildable evidence outputs: its `gitturtle-*` executables, its package
+    bundles, archives and extracts (`pkg-*`) and any leftover `.target-*` directory. Specs, attestations,
+    logs and the source clones (see `remove_source_clones`) are not touched."""
+    evidence = root / ".local/evidence" / task_id
+    removed = []
+    for path in sorted(evidence.iterdir()) if evidence.is_dir() else []:
+        name, suffixes = path.name, set(path.suffixes)
+        if path.is_symlink():
+            continue
+        if path.is_dir() and name.startswith(("pkg-", ".target-")):
+            shutil.rmtree(path)
+        elif path.is_file() and (name.startswith("pkg-") and name.endswith((".tar.gz", ".tar.gz.sha256"))
+                                 or name.startswith("gitturtle-") and not suffixes & RECORD_SUFFIXES):
+            path.unlink()
+        else:
+            continue
+        removed.append(path)
+    return removed
+
+
 def land(args: argparse.Namespace) -> int:
     script_root = Path(__file__).resolve().parents[2]
     root = main_checkout(script_root)
@@ -1051,6 +1078,8 @@ def land(args: argparse.Namespace) -> int:
         say(f"removed {clone}")
     for reason in kept:
         say(f"kept {reason}")
+    for path in remove_build_outputs(root, args.task):
+        say(f"removed {path}")
     body_file.unlink(missing_ok=True)
     return 0
 

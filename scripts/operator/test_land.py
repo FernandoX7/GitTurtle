@@ -364,6 +364,25 @@ class CloneCleanupTests(GitCase):
         self.assertIn("local changes", " ".join(kept))
         self.assertNotEqual(base, evidence)
 
+    def test_build_outputs_go_and_records_stay(self) -> None:
+        evidence_dir = self.repo.parent / "root/.local/evidence/task"
+        evidence_dir.mkdir(parents=True)
+        outputs = ["gitturtle-cand-abc1234", "gitturtle-base-1234abc", "pkg-abc1234.tar.gz",
+                   "pkg-abc1234.tar.gz.sha256"]
+        records = ["gitturtle-cand-abc1234.build.log", "gitturtle-cand-abc1234.out", "scenario.json",
+                   "attestation-abc1234-native.json", "pkg-abc1234.log", "pkg-abc1234.tar.gz.manifest.json"]
+        for name in outputs + records:
+            (evidence_dir / name).write_text("x", encoding="utf-8")
+        for name in ("pkg-abc1234", "pkg-abc1234-extract", ".target-gitturtle-cand-abc1234.XXXX", "src-cand-abc1234"):
+            (evidence_dir / name / "bin").mkdir(parents=True)
+        (evidence_dir / "gitturtle-link").symlink_to(evidence_dir / "scenario.json")
+        removed = land.remove_build_outputs(self.repo.parent / "root", "task")
+        self.assertEqual(sorted(path.name for path in removed), sorted(
+            outputs + ["pkg-abc1234", "pkg-abc1234-extract", ".target-gitturtle-cand-abc1234.XXXX"]))
+        self.assertEqual(sorted(path.name for path in evidence_dir.iterdir()),
+                         sorted(records + ["src-cand-abc1234", "gitturtle-link"]))
+        self.assertEqual(land.remove_build_outputs(self.repo.parent / "root", "absent"), [])
+
 
 class LandingCase(GitCase):
     """A main checkout cloned from a local bare origin whose main gained an entry after the run's base,
