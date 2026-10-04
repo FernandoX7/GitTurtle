@@ -6,6 +6,7 @@ use gpui_kit::component::{Colorize, FocusRing, Theme, ThemeMode};
 use gpui_kit::{App, FontFeatures, Global, Pixels, Rgba, StyleRefinement, Styled, Window, px, rgb};
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
+use std::collections::BinaryHeap;
 use std::sync::{
     Arc, LazyLock,
     atomic::{AtomicU8, AtomicU32, Ordering},
@@ -1330,12 +1331,15 @@ impl Palette {
             None,
             cx,
         );
-        self.configure(is_light, Theme::global_mut(cx));
+        let roles = self.syntax_roles();
+        let highlights = EditorHighlights::fit(self, roles);
+        self.configure(is_light, roles, highlights, Theme::global_mut(cx));
         CONTROL_BUTTON.set(Some(ControlButton {
             idle: self.control_button(cx),
             selected: self.selected_control_button(cx),
             selected_hover: self.row_hover(true),
         }));
+        cx.set_global(highlights);
         cx.set_global(self);
         Theme::sync_base(cx);
         if let Some(window) = window {
@@ -1343,7 +1347,13 @@ impl Palette {
         }
     }
 
-    fn configure(self, is_light: bool, theme: &mut Theme) {
+    fn configure(
+        self,
+        is_light: bool,
+        roles: SyntaxRoles,
+        highlights: EditorHighlights,
+        theme: &mut Theme,
+    ) {
         let palette = self;
         theme.colors.background = rgb(palette.canvas).into();
         theme.colors.foreground = rgb(palette.text).into();
@@ -1355,7 +1365,8 @@ impl Palette {
         theme.colors.primary_active = rgb(palette.accent_active).into();
         theme.colors.border = rgb(palette.border).into();
         theme.colors.input = rgb(palette.border).into();
-        theme.colors.selection = rgb(palette.selected).into();
+        // Text selection in the editors and inputs; rows and lists keep `selected` below.
+        theme.colors.selection = rgb(highlights.selection).into();
         theme.colors.accent = rgb(palette.hover).into();
         theme.colors.accent_foreground = rgb(palette.text).into();
         theme.colors.button = rgb(palette.panel).into();
@@ -1450,7 +1461,7 @@ impl Palette {
         syntax.style.editor_active_line = Some(rgb(palette.panel).into());
         syntax.style.editor_line_number = Some(rgb(palette.line_number).into());
         syntax.style.editor_foreground = Some(rgb(palette.text).into());
-        syntax.style.syntax = palette.syntax_colors(&syntax.style.syntax);
+        syntax.style.syntax = roles.syntax_colors(&syntax.style.syntax);
         theme.font_size = ui_text(13.);
         theme.mono_font_size = code_text();
         theme.radius = px(7.);
@@ -1461,24 +1472,87 @@ impl Palette {
         theme.tokens = (&theme.colors).into();
     }
 
-    /// The toolkit's syntax styles with each field's color taken from its palette role, fitted
-    /// by [`SyntaxTargets::fit`]; italic and weight stay as the toolkit set them. The literal
-    /// names every field, so a field a later toolkit adds fails to compile until it has a role.
-    /// A capture without a field of its own takes the field of its first segment
-    /// (`variable.builtin` takes `variable`) or, with none, the editor foreground, which is
-    /// `text`, so every capture a grammar emits draws in a palette color.
-    fn syntax_colors(self, kit: &SyntaxColors) -> SyntaxColors {
+    /// Each syntax role's palette color fitted by [`SyntaxTargets::fit`], measured once per
+    /// application.
+    fn syntax_roles(self) -> SyntaxRoles {
         let targets = SyntaxTargets::new(self);
-        let fitted = |role: u32| Some(targets.fit(role));
-        let keyword = fitted(self.renamed);
-        let string = fitted(self.added);
-        let constant = fitted(self.warning);
-        let type_ = fitted(self.modified);
-        let function = fitted(self.hunk);
-        let markup = fitted(self.accent);
-        let comment = fitted(self.muted);
-        // `text` reaches every target by definition, so fitting would return it unchanged.
-        let text = Some(self.text);
+        SyntaxRoles {
+            keyword: targets.fit(self.renamed),
+            string: targets.fit(self.added),
+            constant: targets.fit(self.warning),
+            type_: targets.fit(self.modified),
+            function: targets.fit(self.hunk),
+            markup: targets.fit(self.accent),
+            comment: targets.fit(self.muted),
+            // `text` reaches every target by definition, so fitting would return it unchanged.
+            text: self.text,
+        }
+    }
+
+    /// The kit theme [`Self::apply`] leaves for this palette, without an application:
+    /// `Theme::change` restores the mode's default theme, highlight theme included, and
+    /// `configure` then applies this palette over it.
+    #[cfg(test)]
+    pub(crate) fn configured_theme(self, is_light: bool) -> Theme {
+        use gpui_kit::component::highlighter::HighlightTheme;
+        let mut theme = Theme {
+            highlight_theme: if is_light {
+                HighlightTheme::default_light()
+            } else {
+                HighlightTheme::default_dark()
+            },
+            ..Theme::default()
+        };
+        let roles = self.syntax_roles();
+        self.configure(
+            is_light,
+            roles,
+            EditorHighlights::fit(self, roles),
+            &mut theme,
+        );
+        theme
+    }
+
+    /// The editor highlights [`Self::apply`] fits for this palette, without an application.
+    #[cfg(test)]
+    pub(crate) fn editor_highlights(self) -> EditorHighlights {
+        EditorHighlights::fit(self, self.syntax_roles())
+    }
+}
+
+/// The palette color each syntax role draws in once fitted: `keyword` from `renamed`, `string`
+/// from `added`, `constant` from `warning`, `type_` from `modified`, `function` from `hunk`,
+/// `markup` from `accent`, `comment` from `muted`, and `text` as it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SyntaxRoles {
+    keyword: u32,
+    string: u32,
+    constant: u32,
+    type_: u32,
+    function: u32,
+    markup: u32,
+    comment: u32,
+    text: u32,
+}
+
+impl SyntaxRoles {
+    /// The toolkit's syntax styles with each field's color taken from its role; italic and
+    /// weight stay as the toolkit set them. The literal names every field, so a field a later
+    /// toolkit adds fails to compile until it has a role. A capture without a field of its own
+    /// takes the field of its first segment (`variable.builtin` takes `variable`) or, with none,
+    /// the editor foreground, which is `text`, so every capture a grammar emits draws in a
+    /// palette color.
+    fn syntax_colors(self, kit: &SyntaxColors) -> SyntaxColors {
+        let [
+            keyword,
+            string,
+            constant,
+            type_,
+            function,
+            markup,
+            comment,
+            text,
+        ] = self.colors().map(Some);
         SyntaxColors {
             keyword: restyle(kit.keyword, keyword),
             preproc: restyle(kit.preproc, keyword),
@@ -1525,22 +1599,18 @@ impl Palette {
         }
     }
 
-    /// The kit theme [`Self::apply`] leaves for this palette, without an application:
-    /// `Theme::change` restores the mode's default theme, highlight theme included, and
-    /// `configure` then applies this palette over it.
-    #[cfg(test)]
-    pub(crate) fn configured_theme(self, is_light: bool) -> Theme {
-        use gpui_kit::component::highlighter::HighlightTheme;
-        let mut theme = Theme {
-            highlight_theme: if is_light {
-                HighlightTheme::default_light()
-            } else {
-                HighlightTheme::default_dark()
-            },
-            ..Theme::default()
-        };
-        self.configure(is_light, &mut theme);
-        theme
+    /// Every color the editors draw syntax in: the seven fitted roles and `text`.
+    fn colors(self) -> [u32; 8] {
+        [
+            self.keyword,
+            self.string,
+            self.constant,
+            self.type_,
+            self.function,
+            self.markup,
+            self.comment,
+            self.text,
+        ]
     }
 }
 
@@ -1628,12 +1698,7 @@ impl SyntaxTargets {
         if self.reads(color) {
             return color;
         }
-        let toward_text = |step: u32| {
-            [16, 8, 0].into_iter().fold(0, |mixed, shift| {
-                let (from, to) = ((color >> shift) & 0xff, (self.text >> shift) & 0xff);
-                mixed | (((from * (256 - step) + to * step + 128) / 256) << shift)
-            })
-        };
+        let toward_text = |step: u32| mix(color, self.text, step);
         // `high` always reads (at 256 steps the color is `text`) and `low` never does.
         let (mut low, mut high) = (0, 256);
         while high - low > 1 {
@@ -1646,6 +1711,426 @@ impl SyntaxTargets {
         }
         toward_text(high)
     }
+}
+
+/// `from` moved `step` 256ths of the way to `to` in each sRGB channel, rounded.
+fn mix(from: u32, to: u32, step: u32) -> u32 {
+    [16, 8, 0].into_iter().fold(0, |mixed, shift| {
+        let (from, to) = ((from >> shift) & 0xff, (to >> shift) & 0xff);
+        mixed | (((from * (256 - step) + to * step + 128) / 256) << shift)
+    })
+}
+
+/// The colors the code editors draw behind text, fitted once per palette application by
+/// [`EditorHighlights::fit`] and kept as a global beside the palette: the text selection, Find's
+/// other and current matches, and the added and removed changed-word tints. Rows and lists keep
+/// the palette's `selected`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditorHighlights {
+    pub selection: u32,
+    pub find_match: u32,
+    pub find_current: u32,
+    pub added_word: u32,
+    pub removed_word: u32,
+}
+
+impl Global for EditorHighlights {}
+
+/// The applied palette's editor highlights. Every application sets them with the palette; only
+/// a test application that has not applied one fits the default palette's here.
+pub fn editor_highlights(cx: &App) -> EditorHighlights {
+    cx.try_global::<EditorHighlights>()
+        .copied()
+        .unwrap_or_else(|| {
+            let palette = palette(cx);
+            EditorHighlights::fit(palette, palette.syntax_roles())
+        })
+}
+
+/// How far every fitted editor highlight stands from each line background it is drawn on,
+/// measured as ΔEOK, the Euclidean distance between the two colors in OKLab (the measure CSS
+/// Color 4 names deltaEOK). [`EditorHighlights::fit`] keeps it for every highlight.
+///
+/// Why this measure: a highlight may only move in lightness until every color on it reads, and
+/// where a palette's syntax is fitted to 4.75:1 on a line, a highlight lighter than that line
+/// (toward the syntax) by the selected-row rule's 1.15:1 would leave that syntax at 4.13:1, so a
+/// contrast ratio cannot both keep the syntax readable and the highlight apart. ΔEOK counts
+/// lightness, chroma and hue together, so a highlight that keeps its seed's hue, or gains
+/// chroma, stands apart from a line of nearly the same lightness, as a tinted selection over a
+/// grey line visibly does.
+///
+/// Why this threshold: one just-noticeable difference in OKLab is about 0.02; 0.04 is two, and
+/// sits just under the closest `selected` any built-in keeps from its canvas or active line on
+/// origin/main (0.044, One Light's canvas and One Dark's active line), the distance the curated
+/// palettes already accept as a visible selection. Origin's word tints stood at least 0.10 from
+/// their lines, and its `selected` as little as 0.017 from Daylight's added lines.
+const HIGHLIGHT_DISTANCE: f64 = 0.04;
+
+impl EditorHighlights {
+    /// Fit each highlight to this palette.
+    ///
+    /// Each starts from a seed: the selection and Find's other matches from `selected`, the
+    /// current match from `selected` a quarter of the way to `accent`, and each word tint from its
+    /// line tint a quarter of the way to its diff color, the tint origin/main drew. A seed is kept
+    /// when every color drawn on it reads and it stands [`HIGHLIGHT_DISTANCE`] from every line
+    /// background it sits on. Otherwise the highlight takes the candidate nearest the seed, by
+    /// ΔEOK, that does both: candidates are the seed moved toward black in a dark palette or white
+    /// in a light one in 256ths of each sRGB channel, and the seed's hue at more chroma
+    /// ([`chroma_rows`]), which stands apart where lightness has no room left. A chroma
+    /// candidate is ranked by the coordinates it was built at, before clipping to sRGB.
+    ///
+    /// A color reads when it reaches 4.75:1 on the highlight (the text rule plus the
+    /// rasterization margin), or its own contrast on the line it is drawn on where that is
+    /// lower, never below 4.5:1, as syntax fitting does; when no candidate does that and stands
+    /// apart, the nearest at 4.5:1 that stands apart, and when none stands apart at all, the first
+    /// step toward black or white at 4.5:1. The colors drawn on the selection and on Find's
+    /// matches are `text` and every syntax role, drawn on the editor background, the active line
+    /// and both line tints, and the unified patch's `added`, `removed` and `hunk`, drawn on their
+    /// line tints and the editor background; a word tint carries `text`, every syntax role and its
+    /// diff color, and sits on its line tint. The current match stands apart from the other
+    /// matches too where it can; its accent underline marks it where it cannot.
+    fn fit(palette: Palette, roles: SyntaxRoles) -> Self {
+        let away = if palette.is_light() {
+            0xffffff
+        } else {
+            0x000000
+        };
+        let lines = [
+            palette.canvas,
+            palette.panel,
+            palette.added_background,
+            palette.removed_background,
+        ];
+        let syntax = roles.colors().map(|color| (color, &lines[..]));
+        let diff = [
+            (palette.added, &lines[2..3]),
+            (palette.removed, &lines[3..4]),
+            (palette.hunk, &lines[..1]),
+        ];
+        let patch = [&syntax[..], &diff].concat();
+        let fit = |seed: u32, drawn: &[(u32, &[u32])], lines: &[u32], tint: u32| {
+            let fit = HighlightFit::new(drawn, lines);
+            fit.search(seed, away, tint)
+                .unwrap_or_else(|| fit.readable(seed, away))
+        };
+        let selection = fit(palette.selected, &patch, &lines, palette.accent);
+        let find_match = selection;
+        let current = mix(palette.selected, palette.accent, 64);
+        let find_current = HighlightFit::new(&patch, &[&lines[..], &[find_match]].concat())
+            .search(current, away, palette.accent)
+            .unwrap_or_else(|| fit(current, &patch, &lines, palette.accent));
+        let word = |(diff, line): (u32, &[u32])| {
+            let line = line[0];
+            let seed = [16, 8, 0].into_iter().fold(0, |seed, shift| {
+                let (line, diff) = ((line >> shift) & 0xff, (diff >> shift) & 0xff);
+                seed | ((line * 3 + diff) / 4) << shift
+            });
+            fit(
+                seed,
+                &[&syntax[..], &[(diff, &[line])]].concat(),
+                &[line],
+                diff,
+            )
+        };
+        Self {
+            selection,
+            find_match,
+            find_current,
+            added_word: word(diff[0]),
+            removed_word: word(diff[1]),
+        }
+    }
+}
+
+/// The colors one highlight carries and sits on, measured once for its fitting.
+struct HighlightFit {
+    /// Each color drawn on the highlight: its luminance and the contrast it should reach there,
+    /// 4.75:1 or its own lowest contrast on the lines it is drawn on, never below 4.5:1.
+    drawn: Vec<(f64, f64)>,
+    /// The OKLab coordinates of each background the highlight sits on.
+    lines: Vec<[f64; 3]>,
+}
+
+/// How a candidate highlight reads under the colors drawn on it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Reading {
+    /// Some color misses the text rule.
+    Unreadable,
+    /// Every color reaches the text rule, but not its target.
+    Rule,
+    /// Every color reaches its target.
+    Target,
+}
+
+impl HighlightFit {
+    fn new(drawn: &[(u32, &[u32])], lines: &[u32]) -> Self {
+        Self {
+            drawn: drawn
+                .iter()
+                .map(|&(color, on)| {
+                    let color = custom::luminance(color);
+                    let own = on
+                        .iter()
+                        .map(|&line| custom::luminance_contrast(color, custom::luminance(line)))
+                        .fold(LABEL_RULE + LABEL_MARGIN, f64::min);
+                    (color, own.max(LABEL_RULE))
+                })
+                .collect(),
+            lines: lines.iter().map(|&line| oklab(line)).collect(),
+        }
+    }
+
+    fn reading(&self, color: u32) -> Reading {
+        let color = custom::luminance(color);
+        self.drawn
+            .iter()
+            .map(|&(drawn, target)| {
+                let contrast = custom::luminance_contrast(drawn, color);
+                if contrast >= target {
+                    Reading::Target
+                } else if contrast >= LABEL_RULE {
+                    Reading::Rule
+                } else {
+                    Reading::Unreadable
+                }
+            })
+            .min()
+            .unwrap_or(Reading::Target)
+    }
+
+    /// Whether a color of this luminance before rounding to 8 bits could read at the text rule
+    /// once rounded: rounding the three channels moves a contrast ratio by under 2%, so a margin
+    /// of 3% of the rule keeps every candidate that can.
+    fn may_read(&self, luminance: f64) -> bool {
+        self.drawn
+            .iter()
+            .all(|&(drawn, _)| custom::luminance_contrast(drawn, luminance) >= LABEL_RULE * 0.97)
+    }
+
+    /// Whether `color` stands [`HIGHLIGHT_DISTANCE`] from every line.
+    fn distinct(&self, color: [f64; 3]) -> bool {
+        self.lines
+            .iter()
+            .all(|line| oklab_distance(color, *line) >= HIGHLIGHT_DISTANCE)
+    }
+
+    /// `seed` fitted as [`EditorHighlights::fit`] describes, when a candidate both reads and
+    /// stands apart; `tint` lends its hue to a seed too grey to have one of its own.
+    fn search(&self, seed: u32, away: u32, tint: u32) -> Option<u32> {
+        let origin = oklab(seed);
+        if self.reading(seed) == Reading::Target && self.distinct(origin) {
+            return Some(seed);
+        }
+        // Candidates in order of the distance from the seed each was built at, merged from rows
+        // along which that distance grows: the steps toward `away`, by their own distance, and
+        // each chroma row of [`chroma_rows`], by its unclipped coordinates. Only candidates up to
+        // the first that fits are built. A chroma candidate's luminance before rounding to 8 bits
+        // screens it, so only those near enough to read are rounded and measured. The first that
+        // reaches its targets and stands apart wins; the first at the rule that stands apart
+        // stands in when none does.
+        let end = oklab(away)[0];
+        let rows = chroma_rows(seed, tint);
+        let at = |row: usize, step: u32| match row.checked_sub(1) {
+            None => {
+                let color = mix(seed, away, step);
+                (
+                    oklab_distance(oklab(color), origin),
+                    Candidate::Color(color),
+                )
+            }
+            Some(chroma) => {
+                let lightness = origin[0] + (end - origin[0]) * f64::from(step) / 64.;
+                let lab = [lightness, rows[chroma][0], rows[chroma][1]];
+                (oklab_distance(lab, origin), Candidate::Lab(lab))
+            }
+        };
+        let next = |row: usize, step: u32| {
+            (step <= if row == 0 { 256 } else { 64 }).then(|| {
+                let (distance, candidate) = at(row, step);
+                Nearest {
+                    distance,
+                    row,
+                    step,
+                    candidate,
+                }
+            })
+        };
+        let mut heap = (0..=rows.len())
+            .filter_map(|row| next(row, 0))
+            .collect::<BinaryHeap<_>>();
+        let mut fallback = None;
+        while let Some(Nearest {
+            row,
+            step,
+            candidate,
+            ..
+        }) = heap.pop()
+        {
+            heap.extend(next(row, step + 1));
+            let color = match candidate {
+                Candidate::Color(color) => color,
+                Candidate::Lab(lab) => {
+                    let linear = linear_from_oklab(lab);
+                    if !self.may_read(linear_luminance(linear)) {
+                        continue;
+                    }
+                    from_linear(linear)
+                }
+            };
+            match self.reading(color) {
+                Reading::Target if self.distinct(oklab(color)) => return Some(color),
+                Reading::Rule if fallback.is_none() && self.distinct(oklab(color)) => {
+                    fallback = Some(color);
+                }
+                _ => {}
+            }
+        }
+        fallback
+    }
+
+    /// The first step from `seed` toward `away` that reads at the text rule, for a palette where
+    /// no candidate also stands apart.
+    fn readable(&self, seed: u32, away: u32) -> u32 {
+        toward_away(seed, away)
+            .find(|&color| self.reading(color) != Reading::Unreadable)
+            .unwrap_or(away)
+    }
+}
+
+/// `seed` and each 256th of the way from it to `away`.
+fn toward_away(seed: u32, away: u32) -> impl Iterator<Item = u32> {
+    (0..=256).map(move |step| mix(seed, away, step))
+}
+
+/// Below this OKLab chroma a color is treated as grey, with no hue of its own to keep.
+const GREY_CHROMA: f64 = 0.01;
+
+/// A highlight candidate: an sRGB color, or OKLab coordinates the search rounds to one, clipped
+/// to sRGB, only when it reaches them.
+enum Candidate {
+    Color(u32),
+    Lab([f64; 3]),
+}
+
+/// A candidate on the search's heap, which pops the nearest to the seed first (then the
+/// earliest row and step, so the order is deterministic).
+struct Nearest {
+    distance: f64,
+    row: usize,
+    step: u32,
+    candidate: Candidate,
+}
+
+impl Nearest {
+    fn key(&self) -> (f64, usize, u32) {
+        (self.distance, self.row, self.step)
+    }
+}
+
+impl PartialEq for Nearest {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Nearest {}
+
+impl PartialOrd for Nearest {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Nearest {
+    /// Reversed, so the max-heap pops the nearest.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let ((d, row, step), (other_d, other_row, other_step)) = (self.key(), other.key());
+        other_d
+            .total_cmp(&d)
+            .then(other_row.cmp(&row))
+            .then(other_step.cmp(&step))
+    }
+}
+
+/// The opponent axes of each chroma row a highlight that cannot stand apart by lightness alone
+/// searches: `seed`'s chroma raised by 0.01 at a time up to 0.1 more, in `seed`'s hue and in
+/// `tint`'s (a grey has no hue; with neither, blue). Along a row the lightness moves from
+/// `seed`'s toward `away`'s in 64ths; coordinates outside sRGB are clipped when converted, and the
+/// fitting measures the clipped color.
+fn chroma_rows(seed: u32, tint: u32) -> Vec<[f64; 2]> {
+    let [_, a, b] = oklab(seed);
+    let chroma = a.hypot(b);
+    let hue = |color: u32| {
+        let [_, a, b] = oklab(color);
+        let chroma = a.hypot(b);
+        (chroma >= GREY_CHROMA).then(|| [a / chroma, b / chroma])
+    };
+    let mut hues = [hue(seed), hue(tint)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    hues.dedup();
+    if hues.is_empty() {
+        hues.push([-0.105, -0.995]);
+    }
+    hues.into_iter()
+        .flat_map(|hue| {
+            (1..=10).map(move |raise| {
+                let chroma = chroma + f64::from(raise) * 0.01;
+                [chroma * hue[0], chroma * hue[1]]
+            })
+        })
+        .collect()
+}
+
+/// OKLab coordinates (lightness and the two opponent axes) of an `0xrrggbb` color.
+fn oklab(color: u32) -> [f64; 3] {
+    let [r, g, b] = [16, 8, 0].map(|shift| custom::linear_channel((color >> shift) & 0xff));
+    let l = (0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b).cbrt();
+    let m = (0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b).cbrt();
+    let s = (0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b).cbrt();
+    [
+        0.210_454_255_3 * l + 0.793_617_785_0 * m - 0.004_072_046_8 * s,
+        1.977_998_495_1 * l - 2.428_592_205_0 * m + 0.450_593_709_9 * s,
+        0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766_0 * s,
+    ]
+}
+
+/// The linear-light sRGB channels of OKLab coordinates, each clipped to 0..=1.
+fn linear_from_oklab([lightness, a, b]: [f64; 3]) -> [f64; 3] {
+    let l = (lightness + 0.396_337_777_4 * a + 0.215_803_757_3 * b).powi(3);
+    let m = (lightness - 0.105_561_345_8 * a - 0.063_854_172_8 * b).powi(3);
+    let s = (lightness - 0.089_484_177_5 * a - 1.291_485_548_0 * b).powi(3);
+    [
+        4.076_741_662_1 * l - 3.307_711_591_3 * m + 0.230_969_929_2 * s,
+        -1.268_438_004_6 * l + 2.609_757_401_1 * m - 0.341_319_396_5 * s,
+        -0.004_196_086_3 * l - 0.703_418_614_7 * m + 1.707_614_701_0 * s,
+    ]
+    .map(|channel| channel.clamp(0., 1.))
+}
+
+/// The WCAG relative luminance of linear-light sRGB channels.
+fn linear_luminance([r, g, b]: [f64; 3]) -> f64 {
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// The `0xrrggbb` color whose channels are nearest linear-light values.
+fn from_linear(linear: [f64; 3]) -> u32 {
+    linear
+        .into_iter()
+        .zip([16, 8, 0])
+        .fold(0, |color, (channel, shift)| {
+            color | custom::encode_linear(channel) << shift
+        })
+}
+
+/// ΔEOK: the Euclidean distance between two OKLab colors.
+fn oklab_distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a.iter()
+        .zip(b)
+        .map(|(a, b)| (a - b).powi(2))
+        .sum::<f64>()
+        .sqrt()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1831,6 +2316,143 @@ mod tests {
         assert_eq!(uncolored, Vec::<String>::new());
         // Thirty-nine colored fields and the editor foreground, on four backgrounds.
         assert_eq!(measured, palettes * 40 * 4);
+    }
+
+    /// Text, every syntax color and the unified patch's diff colors read at 4.5:1 on each
+    /// highlight the editors draw behind them in each case's configured theme, and each
+    /// highlight stands [`HIGHLIGHT_DISTANCE`] (ΔEOK) from every line background it is drawn on:
+    /// the selection (the configured theme's text selection) and Find's other and current
+    /// matches on the editor background, the active line and both line tints; each word tint on
+    /// its own line tint, under text, the syntax colors and its diff color. Returns the cases
+    /// whose current Find match stands less than that distance from the other matches (its
+    /// accent underline still marks it).
+    pub(crate) fn assert_editor_highlights_read(
+        cases: impl IntoIterator<Item = (String, Palette, bool)>,
+    ) -> Vec<String> {
+        let mut below = Vec::new();
+        let mut close = Vec::new();
+        let mut current_like_others = Vec::new();
+        let mut palettes = 0;
+        for (name, palette, is_light) in cases {
+            palettes += 1;
+            let theme = palette.configured_theme(is_light);
+            let highlights = palette.editor_highlights();
+            let selection = serialized(&serde_json::to_value(theme.colors.selection).unwrap());
+            assert_eq!(selection, highlights.selection, "{name}: applied selection");
+            // Rows and lists keep the palette's `selected`.
+            let list_active = serialized(&serde_json::to_value(theme.colors.list_active).unwrap());
+            assert_eq!(list_active, palette.selected, "{name}: list selection");
+            let syntax = editor_text_colors(&theme)
+                .into_iter()
+                .filter_map(|(token, color)| color.map(|color| (token, color)))
+                .collect::<Vec<_>>();
+            let with = |extra: &[(&str, u32)]| {
+                let mut drawn = syntax.clone();
+                drawn.extend(
+                    extra
+                        .iter()
+                        .map(|&(token, color)| (token.to_owned(), color)),
+                );
+                drawn
+            };
+            let unified = with(&[
+                ("unified added", palette.added),
+                ("unified removed", palette.removed),
+                ("unified hunk", palette.hunk),
+            ]);
+            let lines = [
+                ("editor background", palette.canvas),
+                ("active line", palette.panel),
+                ("added lines", palette.added_background),
+                ("removed lines", palette.removed_background),
+            ];
+            if oklab_distance(oklab(highlights.find_current), oklab(highlights.find_match))
+                < HIGHLIGHT_DISTANCE
+            {
+                current_like_others.push(name.clone());
+            }
+            // Each highlight, its color, the colors drawn on it and the lines it sits on.
+            type Case<'a> = (&'a str, u32, Vec<(String, u32)>, Vec<(&'a str, u32)>);
+            let cases: [Case; 5] = [
+                ("selection", selection, unified.clone(), lines.to_vec()),
+                (
+                    "Find match",
+                    highlights.find_match,
+                    unified.clone(),
+                    lines.to_vec(),
+                ),
+                (
+                    "current Find match",
+                    highlights.find_current,
+                    unified,
+                    lines.to_vec(),
+                ),
+                (
+                    "added word tint",
+                    highlights.added_word,
+                    with(&[("unified added", palette.added)]),
+                    vec![lines[2]],
+                ),
+                (
+                    "removed word tint",
+                    highlights.removed_word,
+                    with(&[("unified removed", palette.removed)]),
+                    vec![lines[3]],
+                ),
+            ];
+            for (highlight, background, drawn, lines) in cases {
+                for (token, color) in drawn {
+                    let ratio = contrast(color, background);
+                    if ratio < 4.5 {
+                        below.push(format!(
+                            "{name}: {token} #{color:06x} on {highlight} #{background:06x} {ratio:.2}:1"
+                        ));
+                    }
+                }
+                for (surface, line) in lines {
+                    let distance = oklab_distance(oklab(background), oklab(line));
+                    if distance < HIGHLIGHT_DISTANCE {
+                        close.push(format!(
+                            "{name}: {highlight} #{background:06x} on {surface} #{line:06x} ΔEOK {distance:.3}"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(palettes > 0);
+        assert!(
+            below.is_empty(),
+            "{} pairs below 4.5:1:\n{}",
+            below.len(),
+            below.join("\n")
+        );
+        assert!(
+            close.is_empty(),
+            "{} highlights within ΔEOK {HIGHLIGHT_DISTANCE} of their line:\n{}",
+            close.len(),
+            close.join("\n")
+        );
+        current_like_others
+    }
+
+    /// Every built-in, dark and light, and the faint-status custom theme below keep their syntax
+    /// readable on the editor highlights; `omarchy::palette::tests` measures the Omarchy
+    /// fixtures and arbitrary themes. On origin/main the selection and Find drew on `selected`,
+    /// where Alucard's `boolean` read at 3.83:1, and the word tints were a fixed mix, where
+    /// Dracula's `attribute` read at 2.59:1 on its added word tint.
+    #[test]
+    fn syntax_reads_on_every_editor_highlight() {
+        let mut custom = CustomTheme::from_base(1, "Faint statuses", ThemeChoice::Porcelain);
+        custom.palette.set(TokenKind::Renamed, 0x8b62c4);
+        custom.palette.set(TokenKind::Modified, 0x9a6a1c);
+        let like = assert_editor_highlights_read(
+            ThemeChoice::ALL
+                .into_iter()
+                .map(|choice| (format!("{choice:?}"), choice.palette(), choice.is_light()))
+                .chain([(custom.name.clone(), custom.palette, custom.is_light())]),
+        );
+        // Their accent underline marks the current match where its background cannot stand apart.
+        assert_eq!(like, ["Sandstone"]);
     }
 
     /// The syntax colors of the twenty built-ins, and of a custom theme whose keyword and type
@@ -2089,7 +2711,13 @@ mod tests {
             .chain([(custom.name.clone(), custom.palette, custom.is_light())]);
         let mut theme = Theme::default();
         for (choice, palette, is_light) in cases {
-            palette.configure(is_light, &mut theme);
+            let roles = palette.syntax_roles();
+            palette.configure(
+                is_light,
+                roles,
+                EditorHighlights::fit(palette, roles),
+                &mut theme,
+            );
             let foreground: Hsla = rgb(palette.accent_foreground).into();
             assert_eq!(theme.colors.button_primary_foreground, foreground);
             for token in [

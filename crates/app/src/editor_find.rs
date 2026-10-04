@@ -2,7 +2,7 @@
 //! Search never replaces the source entity or its selection, and owns a separate
 //! decoration collection so patch colors survive closing or updating Find.
 
-use crate::appearance::palette;
+use crate::appearance::{editor_highlights, palette};
 use gpui_kit::{
     App, AppContext, Context, DefiniteLength, Entity, EntityId, FocusHandle, Focusable, Global,
     HighlightStyle, InteractiveElement, IntoElement, ParentElement, Pixels, Render, RenderOnce,
@@ -438,7 +438,15 @@ struct FindBar {
 struct PaintedMatches {
     ranges: Rc<Vec<Range<usize>>>,
     current: usize,
-    colors: (u32, u32),
+    colors: MatchColors,
+}
+/// Find's match backgrounds, fitted with the palette ([`crate::appearance::EditorHighlights`]),
+/// and the current match's underline.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct MatchColors {
+    other: u32,
+    current: u32,
+    underline: u32,
 }
 impl FindBar {
     fn new(
@@ -555,8 +563,12 @@ impl FindBar {
         let session = editor.read(cx).search_session();
         let ranges = session.matcher.matched_ranges();
         let current = session.matcher.current_match_index();
-        let colors = palette(cx);
-        let colors = (colors.selected, colors.accent);
+        let highlights = editor_highlights(cx);
+        let colors = MatchColors {
+            other: highlights.find_match,
+            current: highlights.find_current,
+            underline: palette(cx).accent,
+        };
         if self.painted.as_ref().is_some_and(|painted| {
             Rc::ptr_eq(&painted.ranges, &ranges)
                 && painted.current == current
@@ -721,13 +733,14 @@ impl Render for FindBar {
     }
 }
 
-fn match_style(active: bool, background_available: bool, colors: (u32, u32)) -> HighlightStyle {
+fn match_style(active: bool, background_available: bool, colors: MatchColors) -> HighlightStyle {
+    let background = if active { colors.current } else { colors.other };
     HighlightStyle {
-        background_color: background_available.then(|| rgb(colors.0).into()),
+        background_color: background_available.then(|| rgb(background).into()),
         // Syntax styles supply foreground/font properties only. Avoid competing
         // with them in the pinned renderer's unordered property compositor.
         underline: (active || !background_available).then(|| UnderlineStyle {
-            color: Some(rgb(colors.1).into()),
+            color: Some(rgb(colors.underline).into()),
             thickness: px(1.),
             wavy: false,
         }),
@@ -788,9 +801,30 @@ mod tests {
     fn find_background_and_active_underline_survive_real_viewport_style_composition() {
         use crate::appearance::ThemeChoice;
         use gpui_kit::{HighlightStyle, combine_highlights, component::input::TextDecoration, rgb};
-        for theme in ThemeChoice::ALL {
+        for (theme, active) in ThemeChoice::ALL
+            .into_iter()
+            .flat_map(|theme| [(theme, true), (theme, false)])
+        {
             let palette = theme.palette();
-            let find = super::match_style(true, true, (palette.selected, palette.accent));
+            let highlights = palette.editor_highlights();
+            let colors = super::MatchColors {
+                other: highlights.find_match,
+                current: highlights.find_current,
+                underline: palette.accent,
+            };
+            let find = super::match_style(active, true, colors);
+            // The current match and the others draw on their own fitted backgrounds.
+            assert_eq!(
+                find.background_color,
+                Some(
+                    rgb(if active {
+                        highlights.find_current
+                    } else {
+                        highlights.find_match
+                    })
+                    .into()
+                )
+            );
             for unified in [false, true] {
                 for (foreground, background) in [
                     (palette.added, palette.added_background),
@@ -832,18 +866,18 @@ mod tests {
                             combine_highlights([(range.clone(), find)], base.clone())
                                 .collect::<Vec<_>>(),
                         ] {
-                            let active = styles.iter().find(|(r, _)| r.contains(&start)).unwrap().1;
+                            let drawn = styles.iter().find(|(r, _)| r.contains(&start)).unwrap().1;
                             assert_eq!(
-                                active.background_color, find.background_color,
-                                "{theme:?}, {visible_runs}"
+                                drawn.background_color, find.background_color,
+                                "{theme:?}, {active}, {visible_runs}"
                             );
                             assert_eq!(
-                                active.underline, find.underline,
-                                "{theme:?}, {visible_runs}"
+                                drawn.underline, find.underline,
+                                "{theme:?}, {active}, {visible_runs}"
                             );
                             assert!(
-                                active.color == Some(rgb(palette.text).into())
-                                    || active.color == patch.color
+                                drawn.color == Some(rgb(palette.text).into())
+                                    || drawn.color == patch.color
                             );
                         }
                         assert_eq!(super::without_match_backgrounds(&source, &[]), source);
@@ -894,7 +928,15 @@ mod tests {
             changed[0].style.background_color
         );
         assert_eq!(super::without_match_backgrounds(&changed, &[]), changed);
-        let fallback = super::match_style(true, false, (0, 0xabcdef));
+        let fallback = super::match_style(
+            true,
+            false,
+            super::MatchColors {
+                other: 0,
+                current: 0,
+                underline: 0xabcdef,
+            },
+        );
         assert!(fallback.background_color.is_none());
         assert!(fallback.color.is_none());
         assert!(fallback.underline.is_some());
