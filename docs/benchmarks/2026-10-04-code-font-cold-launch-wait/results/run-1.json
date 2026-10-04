@@ -1,0 +1,10531 @@
+{
+ "host": {
+  "kernel": "7.0.0-34-generic",
+  "cpu": "Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz",
+  "logical_cpus": 20,
+  "governor": "powersave",
+  "fontconfig": "fontconfig version 2.17.1",
+  "display": ":0",
+  "session": "wayland",
+  "desktop": "ubuntu:GNOME",
+  "system_fontconfig_cache": {
+   "exists": true,
+   "files": 30,
+   "bytes": 1438272
+  }
+ },
+ "builds": {
+  "base": {
+   "binary": "gitturtle-base-b5b6dad",
+   "sha256": "12861797036bde8dcecd9e6511916162b8048c8d5976fd7eb51417efa1f92943",
+   "build_info": {
+    "application": "GitTurtle",
+    "version": "0.1.0",
+    "source_revision": "b5b6dadbe1764435406ed7478e303a8b48cd12b6",
+    "source_tree": "clean",
+    "target": "x86_64-unknown-linux-gnu",
+    "profile": "release",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "build_unix_seconds": "1791128238"
+   }
+  },
+  "cand": {
+   "binary": "gitturtle-cand-effdb2c",
+   "sha256": "1018c6836e987429ed8200066a25dffdbd0093c5cac57df4f41a92bb8c197fb5",
+   "build_info": {
+    "application": "GitTurtle",
+    "version": "0.1.0",
+    "source_revision": "effdb2c1e972a55ee65986c044e2cc28109c62d5",
+    "source_tree": "clean",
+    "target": "x86_64-unknown-linux-gnu",
+    "profile": "release",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "build_unix_seconds": "1791130424"
+   }
+  }
+ },
+ "fixture": "/tmp/gitturtle-evidence/fixtures/code-font-cold-launch-wait/repo",
+ "rounds": 24,
+ "pinning": "taskset -c 0-7",
+ "percentile": "nearest rank",
+ "started_utc": "2026-10-04T17:20:02Z",
+ "load_before": [
+  0.0615234375,
+  0.15576171875,
+  0.31298828125
+ ],
+ "ended_utc": "2026-10-04T17:28:04Z",
+ "load_after": [
+  0.2158203125,
+  0.21923828125,
+  0.26904296875
+ ],
+ "summary": {
+  "cand-cold": {
+   "launches": 24,
+   "applied": 24,
+   "window_ms": {
+    "n": 24,
+    "p50": 492.765,
+    "p95": 508.696,
+    "max": 519.013
+   },
+   "frame_ms": {
+    "n": 24,
+    "p50": 498.286,
+    "p95": 517.284,
+    "max": 525.862
+   },
+   "family_ms": {
+    "n": 24,
+    "p50": 365.726,
+    "p95": 366.996,
+    "max": 377.2
+   }
+  },
+  "base-cold": {
+   "launches": 24,
+   "applied": 24,
+   "window_ms": {
+    "n": 24,
+    "p50": 493.734,
+    "p95": 512.941,
+    "max": 514.032
+   },
+   "frame_ms": {
+    "n": 24,
+    "p50": 501.481,
+    "p95": 518.452,
+    "max": 521.212
+   },
+   "family_ms": {
+    "n": 24,
+    "p50": 363.975,
+    "p95": 368.824,
+    "max": 369.76
+   }
+  },
+  "cand-warm": {
+   "launches": 24,
+   "applied": 24,
+   "window_ms": {
+    "n": 24,
+    "p50": 488.52,
+    "p95": 505.107,
+    "max": 514.223
+   },
+   "frame_ms": {
+    "n": 24,
+    "p50": 495.504,
+    "p95": 511.572,
+    "max": 520.47
+   },
+   "family_ms": {
+    "n": 24,
+    "p50": 21.86,
+    "p95": 22.358,
+    "max": 22.586
+   }
+  },
+  "base-warm": {
+   "launches": 24,
+   "applied": 24,
+   "window_ms": {
+    "n": 24,
+    "p50": 485.548,
+    "p95": 495.707,
+    "max": 499.85
+   },
+   "frame_ms": {
+    "n": 24,
+    "p50": 495.606,
+    "p95": 502.621,
+    "max": 511.092
+   },
+   "family_ms": {
+    "n": 24,
+    "p50": 21.877,
+    "p95": 22.711,
+    "max": 22.72
+   }
+  }
+ },
+ "warmup": [
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/warmup-base",
+   "window_ms": 505.359,
+   "frame_ms": 512.007,
+   "damage_ms": [
+    [
+     505.37,
+     1480,
+     980
+    ],
+    [
+     512.007,
+     1480,
+     980
+    ],
+    [
+     513.758,
+     1480,
+     980
+    ],
+    [
+     529.959,
+     1480,
+     980
+    ],
+    [
+     539.112,
+     1480,
+     980
+    ],
+    [
+     545.654,
+     1480,
+     980
+    ],
+    [
+     553.168,
+     1480,
+     980
+    ],
+    [
+     574.934,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 505.751,
+   "family_ms": 21.719,
+   "family_lookup_start_ms": 15.472,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.472,
+     "end_ms": 21.719,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 514.445,
+     "end_ms": 520.776,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5238,
+    "1": 800,
+    "2": 5294,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.0615234375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/warmup-cand",
+   "window_ms": 482.449,
+   "frame_ms": 488.672,
+   "damage_ms": [
+    [
+     482.468,
+     1480,
+     980
+    ],
+    [
+     488.672,
+     1480,
+     980
+    ],
+    [
+     490.503,
+     1480,
+     980
+    ],
+    [
+     503.848,
+     1480,
+     980
+    ],
+    [
+     512.128,
+     1480,
+     980
+    ],
+    [
+     522.102,
+     1480,
+     980
+    ],
+    [
+     529.318,
+     1480,
+     980
+    ],
+    [
+     551.008,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 482.684,
+   "family_ms": 21.363,
+   "family_lookup_start_ms": 15.154,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.154,
+     "end_ms": 21.363,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 489.98,
+     "end_ms": 496.227,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5002,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 5001,
+    "7": 800
+   },
+   "load1_before": 0.05615234375
+  }
+ ],
+ "samples": [
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r00-cand-cold",
+   "window_ms": 486.729,
+   "frame_ms": 493.124,
+   "damage_ms": [
+    [
+     486.739,
+     1480,
+     980
+    ],
+    [
+     493.124,
+     1480,
+     980
+    ],
+    [
+     494.797,
+     1480,
+     980
+    ],
+    [
+     515.673,
+     1480,
+     980
+    ],
+    [
+     521.655,
+     1480,
+     980
+    ],
+    [
+     526.502,
+     1480,
+     980
+    ],
+    [
+     533.437,
+     1480,
+     980
+    ],
+    [
+     540.677,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 487.044,
+   "family_ms": 366.831,
+   "family_lookup_start_ms": 15.736,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.736,
+     "end_ms": 366.831,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 497.036,
+     "end_ms": 506.861,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5302,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 5295,
+    "6": 800,
+    "7": 5290
+   },
+   "load1_before": 0.05126953125,
+   "round": 0,
+   "load1_after": 0.046875
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r00-base-cold",
+   "window_ms": 499.193,
+   "frame_ms": 505.535,
+   "damage_ms": [
+    [
+     499.244,
+     1480,
+     980
+    ],
+    [
+     505.535,
+     1480,
+     980
+    ],
+    [
+     508.763,
+     1480,
+     980
+    ],
+    [
+     522.652,
+     1480,
+     980
+    ],
+    [
+     528.312,
+     1480,
+     980
+    ],
+    [
+     532.592,
+     1480,
+     980
+    ],
+    [
+     546.596,
+     1480,
+     980
+    ],
+    [
+     568.222,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 499.587,
+   "family_ms": 363.505,
+   "family_lookup_start_ms": 15.119,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.119,
+     "end_ms": 363.505,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 508.185,
+     "end_ms": 517.776,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5293,
+    "3": 800,
+    "4": 5266,
+    "5": 5059,
+    "6": 800,
+    "7": 5293
+   },
+   "load1_before": 0.046875,
+   "round": 0,
+   "load1_after": 0.04296875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r00-cand-warm",
+   "window_ms": 514.223,
+   "frame_ms": 520.47,
+   "damage_ms": [
+    [
+     514.236,
+     1480,
+     980
+    ],
+    [
+     520.47,
+     1480,
+     980
+    ],
+    [
+     522.119,
+     1480,
+     980
+    ],
+    [
+     543.095,
+     1480,
+     980
+    ],
+    [
+     552.805,
+     1480,
+     980
+    ],
+    [
+     558.582,
+     1480,
+     980
+    ],
+    [
+     566.103,
+     1480,
+     980
+    ],
+    [
+     583.618,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 514.53,
+   "family_ms": 21.283,
+   "family_lookup_start_ms": 14.988,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 14.988,
+     "end_ms": 21.283,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 524.511,
+     "end_ms": 534.467,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5137,
+    "1": 800,
+    "2": 5006,
+    "3": 4996,
+    "4": 5281,
+    "5": 5282,
+    "6": 800,
+    "7": 5004
+   },
+   "load1_before": 0.04296875,
+   "round": 0,
+   "load1_after": 0.0390625
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r00-base-warm",
+   "window_ms": 489.97,
+   "frame_ms": 495.606,
+   "damage_ms": [
+    [
+     490.021,
+     1480,
+     980
+    ],
+    [
+     495.606,
+     1480,
+     980
+    ],
+    [
+     499.248,
+     1480,
+     980
+    ],
+    [
+     511.424,
+     1480,
+     980
+    ],
+    [
+     518.305,
+     1480,
+     980
+    ],
+    [
+     524.607,
+     1480,
+     980
+    ],
+    [
+     537.245,
+     1480,
+     980
+    ],
+    [
+     558.847,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 490.317,
+   "family_ms": 21.773,
+   "family_lookup_start_ms": 15.482,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.482,
+     "end_ms": 21.773,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 497.406,
+     "end_ms": 503.715,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 5287,
+    "5": 5310,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.0390625,
+   "round": 0,
+   "load1_after": 0.03564453125
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r01-base-cold",
+   "window_ms": 496.093,
+   "frame_ms": 501.884,
+   "damage_ms": [
+    [
+     496.188,
+     1480,
+     980
+    ],
+    [
+     501.884,
+     1480,
+     980
+    ],
+    [
+     504.438,
+     1480,
+     980
+    ],
+    [
+     525.097,
+     1480,
+     980
+    ],
+    [
+     531.115,
+     1480,
+     980
+    ],
+    [
+     535.732,
+     1480,
+     980
+    ],
+    [
+     542.656,
+     1480,
+     980
+    ],
+    [
+     549.639,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 496.672,
+   "family_ms": 365.586,
+   "family_lookup_start_ms": 15.165,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.165,
+     "end_ms": 365.586,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 507.58,
+     "end_ms": 513.848,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5255,
+    "3": 800,
+    "4": 800,
+    "5": 5291,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.03564453125,
+   "round": 1,
+   "load1_after": 0.03271484375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r01-cand-warm",
+   "window_ms": 497.834,
+   "frame_ms": 503.646,
+   "damage_ms": [
+    [
+     497.915,
+     1480,
+     980
+    ],
+    [
+     503.646,
+     1480,
+     980
+    ],
+    [
+     506.004,
+     1480,
+     980
+    ],
+    [
+     519.012,
+     1480,
+     980
+    ],
+    [
+     527.337,
+     1480,
+     980
+    ],
+    [
+     537.475,
+     1480,
+     980
+    ],
+    [
+     544.754,
+     1480,
+     980
+    ],
+    [
+     566.547,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 498.218,
+   "family_ms": 21.665,
+   "family_lookup_start_ms": 15.434,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.434,
+     "end_ms": 21.665,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 505.083,
+     "end_ms": 511.596,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5298,
+    "1": 800,
+    "2": 800,
+    "3": 5298,
+    "4": 800,
+    "5": 5301,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.03271484375,
+   "round": 1,
+   "load1_after": 0.02978515625
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r01-base-warm",
+   "window_ms": 482.61,
+   "frame_ms": 488.093,
+   "damage_ms": [
+    [
+     482.718,
+     1480,
+     980
+    ],
+    [
+     488.093,
+     1480,
+     980
+    ],
+    [
+     490.04,
+     1480,
+     980
+    ],
+    [
+     511.82,
+     1480,
+     980
+    ],
+    [
+     517.58,
+     1480,
+     980
+    ],
+    [
+     522.788,
+     1480,
+     980
+    ],
+    [
+     529.709,
+     1480,
+     980
+    ],
+    [
+     536.617,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 483.138,
+   "family_ms": 21.877,
+   "family_lookup_start_ms": 15.565,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.565,
+     "end_ms": 21.877,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 496.374,
+     "end_ms": 502.738,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 5244,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.02978515625,
+   "round": 1,
+   "load1_after": 0.02734375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r01-cand-cold",
+   "window_ms": 483.868,
+   "frame_ms": 489.287,
+   "damage_ms": [
+    [
+     483.983,
+     1480,
+     980
+    ],
+    [
+     489.287,
+     1480,
+     980
+    ],
+    [
+     491.583,
+     1480,
+     980
+    ],
+    [
+     506.919,
+     1480,
+     980
+    ],
+    [
+     513.081,
+     1480,
+     980
+    ],
+    [
+     523.653,
+     1480,
+     980
+    ],
+    [
+     530.919,
+     1480,
+     980
+    ],
+    [
+     552.881,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 484.209,
+   "family_ms": 363.793,
+   "family_lookup_start_ms": 15.242,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.242,
+     "end_ms": 363.793,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 491.05,
+     "end_ms": 497.141,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5277,
+    "3": 5304,
+    "4": 800,
+    "5": 5278,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.02734375,
+   "round": 1,
+   "load1_after": 0.02490234375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r02-cand-warm",
+   "window_ms": 486.548,
+   "frame_ms": 491.991,
+   "damage_ms": [
+    [
+     486.559,
+     1480,
+     980
+    ],
+    [
+     491.991,
+     1480,
+     980
+    ],
+    [
+     494.445,
+     1480,
+     980
+    ],
+    [
+     508.158,
+     1480,
+     980
+    ],
+    [
+     513.193,
+     1480,
+     980
+    ],
+    [
+     518.925,
+     1480,
+     980
+    ],
+    [
+     533.607,
+     1480,
+     980
+    ],
+    [
+     555.284,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 486.858,
+   "family_ms": 22.168,
+   "family_lookup_start_ms": 15.84,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.84,
+     "end_ms": 22.168,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 493.776,
+     "end_ms": 500.05,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5290,
+    "1": 5114,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 5239,
+    "7": 800
+   },
+   "load1_before": 0.02490234375,
+   "round": 2,
+   "load1_after": 0.0224609375
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r02-base-warm",
+   "window_ms": 490.467,
+   "frame_ms": 495.745,
+   "damage_ms": [
+    [
+     490.478,
+     1480,
+     980
+    ],
+    [
+     495.745,
+     1480,
+     980
+    ],
+    [
+     497.833,
+     1480,
+     980
+    ],
+    [
+     512.816,
+     1480,
+     980
+    ],
+    [
+     517.382,
+     1480,
+     980
+    ],
+    [
+     523.142,
+     1480,
+     980
+    ],
+    [
+     537.423,
+     1480,
+     980
+    ],
+    [
+     559.089,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 490.745,
+   "family_ms": 21.664,
+   "family_lookup_start_ms": 15.261,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.261,
+     "end_ms": 21.664,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 497.467,
+     "end_ms": 503.844,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5246,
+    "1": 800,
+    "2": 800,
+    "3": 5296,
+    "4": 5286,
+    "5": 800,
+    "6": 5301,
+    "7": 800
+   },
+   "load1_before": 0.0224609375,
+   "round": 2,
+   "load1_after": 0.0205078125
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r02-cand-cold",
+   "window_ms": 492.765,
+   "frame_ms": 498.17,
+   "damage_ms": [
+    [
+     492.816,
+     1480,
+     980
+    ],
+    [
+     498.17,
+     1480,
+     980
+    ],
+    [
+     501.302,
+     1480,
+     980
+    ],
+    [
+     514.067,
+     1480,
+     980
+    ],
+    [
+     519.089,
+     1480,
+     980
+    ],
+    [
+     525.481,
+     1480,
+     980
+    ],
+    [
+     539.815,
+     1480,
+     980
+    ],
+    [
+     561.406,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 493.092,
+   "family_ms": 366.019,
+   "family_lookup_start_ms": 15.702,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.702,
+     "end_ms": 366.019,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 499.701,
+     "end_ms": 506.028,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5110,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.0205078125,
+   "round": 2,
+   "load1_after": 0.0185546875
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r02-base-cold",
+   "window_ms": 512.941,
+   "frame_ms": 518.452,
+   "damage_ms": [
+    [
+     513.047,
+     1480,
+     980
+    ],
+    [
+     518.452,
+     1480,
+     980
+    ],
+    [
+     520.667,
+     1480,
+     980
+    ],
+    [
+     534.274,
+     1480,
+     980
+    ],
+    [
+     540.67,
+     1480,
+     980
+    ],
+    [
+     546.481,
+     1480,
+     980
+    ],
+    [
+     560.038,
+     1480,
+     980
+    ],
+    [
+     582.036,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 513.282,
+   "family_ms": 363.975,
+   "family_lookup_start_ms": 15.735,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.735,
+     "end_ms": 363.975,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 520.125,
+     "end_ms": 526.356,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5158,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.0185546875,
+   "round": 2,
+   "load1_after": 0.0166015625
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r03-base-warm",
+   "window_ms": 490.759,
+   "frame_ms": 496.346,
+   "damage_ms": [
+    [
+     490.789,
+     1480,
+     980
+    ],
+    [
+     496.346,
+     1480,
+     980
+    ],
+    [
+     498.296,
+     1480,
+     980
+    ],
+    [
+     511.924,
+     1480,
+     980
+    ],
+    [
+     516.792,
+     1480,
+     980
+    ],
+    [
+     523.053,
+     1480,
+     980
+    ],
+    [
+     537.836,
+     1480,
+     980
+    ],
+    [
+     559.599,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 491.069,
+   "family_ms": 22.313,
+   "family_lookup_start_ms": 16.061,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.061,
+     "end_ms": 22.313,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 498.047,
+     "end_ms": 504.413,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5133,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 5118,
+    "7": 800
+   },
+   "load1_before": 0.0166015625,
+   "round": 3,
+   "load1_after": 0.01513671875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r03-cand-cold",
+   "window_ms": 503.008,
+   "frame_ms": 508.256,
+   "damage_ms": [
+    [
+     503.024,
+     1480,
+     980
+    ],
+    [
+     508.256,
+     1480,
+     980
+    ],
+    [
+     510.334,
+     1480,
+     980
+    ],
+    [
+     524.284,
+     1480,
+     980
+    ],
+    [
+     532.118,
+     1480,
+     980
+    ],
+    [
+     542.559,
+     1480,
+     980
+    ],
+    [
+     549.895,
+     1480,
+     980
+    ],
+    [
+     571.648,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 503.341,
+   "family_ms": 365.726,
+   "family_lookup_start_ms": 16.079,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.079,
+     "end_ms": 365.726,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 509.795,
+     "end_ms": 516.008,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5302,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 5298,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.01513671875,
+   "round": 3,
+   "load1_after": 0.013671875
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r03-base-cold",
+   "window_ms": 514.032,
+   "frame_ms": 521.212,
+   "damage_ms": [
+    [
+     514.049,
+     1480,
+     980
+    ],
+    [
+     521.212,
+     1480,
+     980
+    ],
+    [
+     523.986,
+     1480,
+     980
+    ],
+    [
+     538.041,
+     1480,
+     980
+    ],
+    [
+     546.941,
+     1480,
+     980
+    ],
+    [
+     554.493,
+     1480,
+     980
+    ],
+    [
+     561.99,
+     1480,
+     980
+    ],
+    [
+     583.731,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 514.325,
+   "family_ms": 362.853,
+   "family_lookup_start_ms": 15.758,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.758,
+     "end_ms": 362.853,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 523.05,
+     "end_ms": 529.711,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5297,
+    "1": 800,
+    "2": 800,
+    "3": 5303,
+    "4": 800,
+    "5": 800,
+    "6": 5239,
+    "7": 800
+   },
+   "load1_before": 0.013671875,
+   "round": 3,
+   "load1_after": 0.01220703125
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r03-cand-warm",
+   "window_ms": 487.326,
+   "frame_ms": 494.431,
+   "damage_ms": [
+    [
+     487.337,
+     1480,
+     980
+    ],
+    [
+     494.431,
+     1480,
+     980
+    ],
+    [
+     496.146,
+     1480,
+     980
+    ],
+    [
+     512.356,
+     1480,
+     980
+    ],
+    [
+     518.569,
+     1480,
+     980
+    ],
+    [
+     522.575,
+     1480,
+     980
+    ],
+    [
+     528.938,
+     1480,
+     980
+    ],
+    [
+     536.172,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 487.547,
+   "family_ms": 22.074,
+   "family_lookup_start_ms": 15.852,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.852,
+     "end_ms": 22.074,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 496.693,
+     "end_ms": 506.533,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 5287,
+    "5": 800,
+    "6": 5058,
+    "7": 800
+   },
+   "load1_before": 0.01220703125,
+   "round": 3,
+   "load1_after": 0.0107421875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r04-cand-cold",
+   "window_ms": 487.353,
+   "frame_ms": 493.573,
+   "damage_ms": [
+    [
+     487.425,
+     1480,
+     980
+    ],
+    [
+     493.573,
+     1480,
+     980
+    ],
+    [
+     496.126,
+     1480,
+     980
+    ],
+    [
+     508.657,
+     1480,
+     980
+    ],
+    [
+     513.281,
+     1480,
+     980
+    ],
+    [
+     519.764,
+     1480,
+     980
+    ],
+    [
+     534.48,
+     1480,
+     980
+    ],
+    [
+     556.087,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 487.694,
+   "family_ms": 363.895,
+   "family_lookup_start_ms": 15.041,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.041,
+     "end_ms": 363.895,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 494.904,
+     "end_ms": 501.024,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 5300,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.0107421875,
+   "round": 4,
+   "load1_after": 0.009765625
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r04-base-cold",
+   "window_ms": 507.212,
+   "frame_ms": 512.87,
+   "damage_ms": [
+    [
+     507.286,
+     1480,
+     980
+    ],
+    [
+     512.87,
+     1480,
+     980
+    ],
+    [
+     514.965,
+     1480,
+     980
+    ],
+    [
+     528.865,
+     1480,
+     980
+    ],
+    [
+     533.586,
+     1480,
+     980
+    ],
+    [
+     540.341,
+     1480,
+     980
+    ],
+    [
+     554.335,
+     1480,
+     980
+    ],
+    [
+     575.978,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 507.587,
+   "family_ms": 365.757,
+   "family_lookup_start_ms": 15.563,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.563,
+     "end_ms": 365.757,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 514.737,
+     "end_ms": 520.869,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5296,
+    "1": 800,
+    "2": 5301,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 5102,
+    "7": 800
+   },
+   "load1_before": 0.009765625,
+   "round": 4,
+   "load1_after": 0.0087890625
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r04-cand-warm",
+   "window_ms": 468.316,
+   "frame_ms": 473.949,
+   "damage_ms": [
+    [
+     468.44,
+     1480,
+     980
+    ],
+    [
+     473.949,
+     1480,
+     980
+    ],
+    [
+     476.015,
+     1480,
+     980
+    ],
+    [
+     490.07,
+     1480,
+     980
+    ],
+    [
+     494.656,
+     1480,
+     980
+    ],
+    [
+     501.071,
+     1480,
+     980
+    ],
+    [
+     515.507,
+     1480,
+     980
+    ],
+    [
+     537.268,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 468.67,
+   "family_ms": 20.965,
+   "family_lookup_start_ms": 14.696,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 14.696,
+     "end_ms": 20.965,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 475.842,
+     "end_ms": 482.428,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5234,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.0087890625,
+   "round": 4,
+   "load1_after": 0.0078125
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r04-base-warm",
+   "window_ms": 484.64,
+   "frame_ms": 491.083,
+   "damage_ms": [
+    [
+     484.652,
+     1480,
+     980
+    ],
+    [
+     491.083,
+     1480,
+     980
+    ],
+    [
+     492.169,
+     1480,
+     980
+    ],
+    [
+     505.903,
+     1480,
+     980
+    ],
+    [
+     510.145,
+     1480,
+     980
+    ],
+    [
+     517.407,
+     1480,
+     980
+    ],
+    [
+     532.055,
+     1480,
+     980
+    ],
+    [
+     553.679,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 484.899,
+   "family_ms": 21.987,
+   "family_lookup_start_ms": 15.726,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.726,
+     "end_ms": 21.987,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 494.155,
+     "end_ms": 500.435,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5100,
+    "3": 5173,
+    "4": 800,
+    "5": 800,
+    "6": 5274,
+    "7": 800
+   },
+   "load1_before": 0.0078125,
+   "round": 4,
+   "load1_after": 0.0068359375
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r05-base-cold",
+   "window_ms": 497.835,
+   "frame_ms": 503.237,
+   "damage_ms": [
+    [
+     497.929,
+     1480,
+     980
+    ],
+    [
+     503.237,
+     1480,
+     980
+    ],
+    [
+     505.198,
+     1480,
+     980
+    ],
+    [
+     519.303,
+     1480,
+     980
+    ],
+    [
+     524.118,
+     1480,
+     980
+    ],
+    [
+     530.294,
+     1480,
+     980
+    ],
+    [
+     544.927,
+     1480,
+     980
+    ],
+    [
+     566.722,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 498.186,
+   "family_ms": 363.978,
+   "family_lookup_start_ms": 15.608,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.608,
+     "end_ms": 363.978,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 505.1,
+     "end_ms": 511.21,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5198,
+    "1": 800,
+    "2": 800,
+    "3": 5300,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 5300
+   },
+   "load1_before": 0.0068359375,
+   "round": 5,
+   "load1_after": 0.005859375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r05-cand-warm",
+   "window_ms": 484.129,
+   "frame_ms": 489.639,
+   "damage_ms": [
+    [
+     484.205,
+     1480,
+     980
+    ],
+    [
+     489.639,
+     1480,
+     980
+    ],
+    [
+     492.724,
+     1480,
+     980
+    ],
+    [
+     508.998,
+     1480,
+     980
+    ],
+    [
+     518.638,
+     1480,
+     980
+    ],
+    [
+     524.139,
+     1480,
+     980
+    ],
+    [
+     532.113,
+     1480,
+     980
+    ],
+    [
+     553.343,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 484.555,
+   "family_ms": 21.404,
+   "family_lookup_start_ms": 15.002,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.002,
+     "end_ms": 21.404,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 491.445,
+     "end_ms": 497.693,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5100,
+    "1": 800,
+    "2": 800,
+    "3": 5096,
+    "4": 800,
+    "5": 800,
+    "6": 5101,
+    "7": 800
+   },
+   "load1_before": 0.005859375,
+   "round": 5,
+   "load1_after": 0.00537109375
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r05-base-warm",
+   "window_ms": 475.246,
+   "frame_ms": 481.814,
+   "damage_ms": [
+    [
+     475.449,
+     1480,
+     980
+    ],
+    [
+     481.814,
+     1480,
+     980
+    ],
+    [
+     482.87,
+     1480,
+     980
+    ],
+    [
+     496.506,
+     1480,
+     980
+    ],
+    [
+     503.045,
+     1480,
+     980
+    ],
+    [
+     507.709,
+     1480,
+     980
+    ],
+    [
+     522.441,
+     1480,
+     980
+    ],
+    [
+     544.543,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 475.725,
+   "family_ms": 21.523,
+   "family_lookup_start_ms": 15.153,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.153,
+     "end_ms": 21.523,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 484.374,
+     "end_ms": 490.965,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5132,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 5204,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.00537109375,
+   "round": 5,
+   "load1_after": 0.0048828125
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r05-cand-cold",
+   "window_ms": 488.906,
+   "frame_ms": 496.932,
+   "damage_ms": [
+    [
+     489.019,
+     1480,
+     980
+    ],
+    [
+     496.932,
+     1480,
+     980
+    ],
+    [
+     499.246,
+     1480,
+     980
+    ],
+    [
+     512.77,
+     1480,
+     980
+    ],
+    [
+     519.194,
+     1480,
+     980
+    ],
+    [
+     525.132,
+     1480,
+     980
+    ],
+    [
+     538.371,
+     1480,
+     980
+    ],
+    [
+     559.985,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 489.385,
+   "family_ms": 363.294,
+   "family_lookup_start_ms": 15.681,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.681,
+     "end_ms": 363.294,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 498.804,
+     "end_ms": 505.011,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5117,
+    "1": 800,
+    "2": 5156,
+    "3": 800,
+    "4": 5285,
+    "5": 800,
+    "6": 800,
+    "7": 5300
+   },
+   "load1_before": 0.0048828125,
+   "round": 5,
+   "load1_after": 0.00439453125
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r06-cand-warm",
+   "window_ms": 490.412,
+   "frame_ms": 496.926,
+   "damage_ms": [
+    [
+     490.438,
+     1480,
+     980
+    ],
+    [
+     496.926,
+     1480,
+     980
+    ],
+    [
+     498.152,
+     1480,
+     980
+    ],
+    [
+     511.898,
+     1480,
+     980
+    ],
+    [
+     516.235,
+     1480,
+     980
+    ],
+    [
+     522.935,
+     1480,
+     980
+    ],
+    [
+     537.709,
+     1480,
+     980
+    ],
+    [
+     559.16,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 490.735,
+   "family_ms": 22.086,
+   "family_lookup_start_ms": 15.722,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.722,
+     "end_ms": 22.086,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 497.949,
+     "end_ms": 505.061,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5301,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 5304,
+    "5": 800,
+    "6": 800,
+    "7": 5302
+   },
+   "load1_before": 0.00439453125,
+   "round": 6,
+   "load1_after": 0.24462890625
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r06-base-warm",
+   "window_ms": 489.318,
+   "frame_ms": 498.753,
+   "damage_ms": [
+    [
+     489.399,
+     1480,
+     980
+    ],
+    [
+     498.753,
+     1480,
+     980
+    ],
+    [
+     501.563,
+     1480,
+     980
+    ],
+    [
+     514.083,
+     1480,
+     980
+    ],
+    [
+     522.655,
+     1480,
+     980
+    ],
+    [
+     527.566,
+     1480,
+     980
+    ],
+    [
+     534.523,
+     1480,
+     980
+    ],
+    [
+     541.966,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 489.796,
+   "family_ms": 22.051,
+   "family_lookup_start_ms": 15.656,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.656,
+     "end_ms": 22.051,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 498.432,
+     "end_ms": 505.335,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 5302
+   },
+   "load1_before": 0.24462890625,
+   "round": 6,
+   "load1_after": 0.38525390625
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r06-cand-cold",
+   "window_ms": 492.858,
+   "frame_ms": 498.286,
+   "damage_ms": [
+    [
+     492.928,
+     1480,
+     980
+    ],
+    [
+     498.286,
+     1480,
+     980
+    ],
+    [
+     500.242,
+     1480,
+     980
+    ],
+    [
+     514.402,
+     1480,
+     980
+    ],
+    [
+     523.496,
+     1480,
+     980
+    ],
+    [
+     526.963,
+     1480,
+     980
+    ],
+    [
+     534.423,
+     1480,
+     980
+    ],
+    [
+     541.638,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 493.209,
+   "family_ms": 363.321,
+   "family_lookup_start_ms": 15.827,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.827,
+     "end_ms": 363.321,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 500.152,
+     "end_ms": 506.416,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 5305,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.38525390625,
+   "round": 6,
+   "load1_after": 0.38525390625
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r06-base-cold",
+   "window_ms": 488.437,
+   "frame_ms": 499.59,
+   "damage_ms": [
+    [
+     488.488,
+     1480,
+     980
+    ],
+    [
+     499.59,
+     1480,
+     980
+    ],
+    [
+     502.375,
+     1480,
+     980
+    ],
+    [
+     517.267,
+     1480,
+     980
+    ],
+    [
+     523.958,
+     1480,
+     980
+    ],
+    [
+     534.8,
+     1480,
+     980
+    ],
+    [
+     539.393,
+     1480,
+     980
+    ],
+    [
+     561.349,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 488.876,
+   "family_ms": 364.877,
+   "family_lookup_start_ms": 16.08,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.08,
+     "end_ms": 364.877,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 500.243,
+     "end_ms": 506.46,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 5297
+   },
+   "load1_before": 0.35400390625,
+   "round": 6,
+   "load1_after": 0.35400390625
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r07-base-warm",
+   "window_ms": 481.426,
+   "frame_ms": 486.886,
+   "damage_ms": [
+    [
+     481.495,
+     1480,
+     980
+    ],
+    [
+     486.886,
+     1480,
+     980
+    ],
+    [
+     489.159,
+     1480,
+     980
+    ],
+    [
+     502.752,
+     1480,
+     980
+    ],
+    [
+     507.018,
+     1480,
+     980
+    ],
+    [
+     513.92,
+     1480,
+     980
+    ],
+    [
+     528.691,
+     1480,
+     980
+    ],
+    [
+     550.154,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 481.785,
+   "family_ms": 22.165,
+   "family_lookup_start_ms": 15.797,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.797,
+     "end_ms": 22.165,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 488.8,
+     "end_ms": 495.073,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5092,
+    "3": 800,
+    "4": 5297,
+    "5": 800,
+    "6": 5244,
+    "7": 5245
+   },
+   "load1_before": 0.3251953125,
+   "round": 7,
+   "load1_after": 0.3251953125
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r07-cand-cold",
+   "window_ms": 499.947,
+   "frame_ms": 506.189,
+   "damage_ms": [
+    [
+     499.999,
+     1480,
+     980
+    ],
+    [
+     506.189,
+     1480,
+     980
+    ],
+    [
+     509.69,
+     1480,
+     980
+    ],
+    [
+     521.91,
+     1480,
+     980
+    ],
+    [
+     528.302,
+     1480,
+     980
+    ],
+    [
+     533.654,
+     1480,
+     980
+    ],
+    [
+     546.959,
+     1480,
+     980
+    ],
+    [
+     569.062,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 500.233,
+   "family_ms": 366.331,
+   "family_lookup_start_ms": 15.513,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.513,
+     "end_ms": 366.331,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 509.067,
+     "end_ms": 515.347,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5071,
+    "3": 800,
+    "4": 800,
+    "5": 5305,
+    "6": 800,
+    "7": 5174
+   },
+   "load1_before": 0.298828125,
+   "round": 7,
+   "load1_after": 0.298828125
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r07-base-cold",
+   "window_ms": 490.564,
+   "frame_ms": 497.28,
+   "damage_ms": [
+    [
+     490.616,
+     1480,
+     980
+    ],
+    [
+     497.28,
+     1480,
+     980
+    ],
+    [
+     500.256,
+     1480,
+     980
+    ],
+    [
+     511.874,
+     1480,
+     980
+    ],
+    [
+     515.861,
+     1480,
+     980
+    ],
+    [
+     522.9,
+     1480,
+     980
+    ],
+    [
+     537.565,
+     1480,
+     980
+    ],
+    [
+     559.261,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 490.863,
+   "family_ms": 362.987,
+   "family_lookup_start_ms": 15.271,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.271,
+     "end_ms": 362.987,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 498.794,
+     "end_ms": 505.157,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5261,
+    "1": 800,
+    "2": 5308,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 5297,
+    "7": 800
+   },
+   "load1_before": 0.2744140625,
+   "round": 7,
+   "load1_after": 0.2744140625
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r07-cand-warm",
+   "window_ms": 495.271,
+   "frame_ms": 500.818,
+   "damage_ms": [
+    [
+     495.337,
+     1480,
+     980
+    ],
+    [
+     500.818,
+     1480,
+     980
+    ],
+    [
+     503.058,
+     1480,
+     980
+    ],
+    [
+     516.723,
+     1480,
+     980
+    ],
+    [
+     524.121,
+     1480,
+     980
+    ],
+    [
+     530.546,
+     1480,
+     980
+    ],
+    [
+     542.398,
+     1480,
+     980
+    ],
+    [
+     563.903,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 495.625,
+   "family_ms": 21.77,
+   "family_lookup_start_ms": 15.492,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.492,
+     "end_ms": 21.77,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 502.545,
+     "end_ms": 508.819,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5232,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.251953125,
+   "round": 7,
+   "load1_after": 0.251953125
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r08-cand-cold",
+   "window_ms": 490.849,
+   "frame_ms": 496.847,
+   "damage_ms": [
+    [
+     490.901,
+     1480,
+     980
+    ],
+    [
+     496.847,
+     1480,
+     980
+    ],
+    [
+     500.467,
+     1480,
+     980
+    ],
+    [
+     512.234,
+     1480,
+     980
+    ],
+    [
+     516.665,
+     1480,
+     980
+    ],
+    [
+     523.604,
+     1480,
+     980
+    ],
+    [
+     537.925,
+     1480,
+     980
+    ],
+    [
+     559.844,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 491.125,
+   "family_ms": 364.724,
+   "family_lookup_start_ms": 15.508,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.508,
+     "end_ms": 364.724,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 499.504,
+     "end_ms": 505.702,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5313,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 5278,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.2314453125,
+   "round": 8,
+   "load1_after": 0.2314453125
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r08-base-cold",
+   "window_ms": 492.761,
+   "frame_ms": 499.027,
+   "damage_ms": [
+    [
+     492.839,
+     1480,
+     980
+    ],
+    [
+     499.027,
+     1480,
+     980
+    ],
+    [
+     500.781,
+     1480,
+     980
+    ],
+    [
+     516.084,
+     1480,
+     980
+    ],
+    [
+     525.467,
+     1480,
+     980
+    ],
+    [
+     531.329,
+     1480,
+     980
+    ],
+    [
+     538.836,
+     1480,
+     980
+    ],
+    [
+     545.832,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 493.149,
+   "family_ms": 363.69,
+   "family_lookup_start_ms": 16.04,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.04,
+     "end_ms": 363.69,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 501.1,
+     "end_ms": 507.648,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5298,
+    "2": 5194,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.212890625,
+   "round": 8,
+   "load1_after": 0.212890625
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r08-cand-warm",
+   "window_ms": 495.824,
+   "frame_ms": 501.298,
+   "damage_ms": [
+    [
+     495.841,
+     1480,
+     980
+    ],
+    [
+     501.298,
+     1480,
+     980
+    ],
+    [
+     503.251,
+     1480,
+     980
+    ],
+    [
+     517.276,
+     1480,
+     980
+    ],
+    [
+     523.747,
+     1480,
+     980
+    ],
+    [
+     527.767,
+     1480,
+     980
+    ],
+    [
+     533.997,
+     1480,
+     980
+    ],
+    [
+     543.028,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 496.019,
+   "family_ms": 22.27,
+   "family_lookup_start_ms": 15.694,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.694,
+     "end_ms": 22.27,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 503.327,
+     "end_ms": 510.362,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5312,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.2763671875,
+   "round": 8,
+   "load1_after": 0.2763671875
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r08-base-warm",
+   "window_ms": 495.084,
+   "frame_ms": 502.621,
+   "damage_ms": [
+    [
+     495.133,
+     1480,
+     980
+    ],
+    [
+     502.621,
+     1480,
+     980
+    ],
+    [
+     504.43,
+     1480,
+     980
+    ],
+    [
+     519.514,
+     1480,
+     980
+    ],
+    [
+     528.917,
+     1480,
+     980
+    ],
+    [
+     534.955,
+     1480,
+     980
+    ],
+    [
+     542.395,
+     1480,
+     980
+    ],
+    [
+     549.351,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 495.398,
+   "family_ms": 22.711,
+   "family_lookup_start_ms": 16.271,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.271,
+     "end_ms": 22.711,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 503.638,
+     "end_ms": 510.043,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5304,
+    "1": 800,
+    "2": 5114,
+    "3": 5063,
+    "4": 800,
+    "5": 5099,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.25390625,
+   "round": 8,
+   "load1_after": 0.25390625
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r09-base-cold",
+   "window_ms": 491.709,
+   "frame_ms": 497.485,
+   "damage_ms": [
+    [
+     491.763,
+     1480,
+     980
+    ],
+    [
+     497.485,
+     1480,
+     980
+    ],
+    [
+     500.531,
+     1480,
+     980
+    ],
+    [
+     516.01,
+     1480,
+     980
+    ],
+    [
+     525.579,
+     1480,
+     980
+    ],
+    [
+     539.391,
+     1480,
+     980
+    ],
+    [
+     560.905,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 491.999,
+   "family_ms": 364.46,
+   "family_lookup_start_ms": 15.392,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.392,
+     "end_ms": 364.46,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 499.156,
+     "end_ms": 506.182,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5300,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 5239,
+    "5": 800,
+    "6": 800,
+    "7": 5104
+   },
+   "load1_before": 0.2333984375,
+   "round": 9,
+   "load1_after": 0.2333984375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r09-cand-warm",
+   "window_ms": 496.951,
+   "frame_ms": 502.317,
+   "damage_ms": [
+    [
+     497.003,
+     1480,
+     980
+    ],
+    [
+     502.317,
+     1480,
+     980
+    ],
+    [
+     505.445,
+     1480,
+     980
+    ],
+    [
+     521.993,
+     1480,
+     980
+    ],
+    [
+     531.376,
+     1480,
+     980
+    ],
+    [
+     537.484,
+     1480,
+     980
+    ],
+    [
+     544.418,
+     1480,
+     980
+    ],
+    [
+     566.115,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 497.271,
+   "family_ms": 22.358,
+   "family_lookup_start_ms": 16.064,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.064,
+     "end_ms": 22.358,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 503.918,
+     "end_ms": 510.161,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.21435546875,
+   "round": 9,
+   "load1_after": 0.21435546875
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r09-base-warm",
+   "window_ms": 490.602,
+   "frame_ms": 497.33,
+   "damage_ms": [
+    [
+     490.619,
+     1480,
+     980
+    ],
+    [
+     497.33,
+     1480,
+     980
+    ],
+    [
+     500.336,
+     1480,
+     980
+    ],
+    [
+     511.644,
+     1480,
+     980
+    ],
+    [
+     517.844,
+     1480,
+     980
+    ],
+    [
+     522.843,
+     1480,
+     980
+    ],
+    [
+     538.033,
+     1480,
+     980
+    ],
+    [
+     559.162,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 490.832,
+   "family_ms": 21.694,
+   "family_lookup_start_ms": 15.419,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.419,
+     "end_ms": 21.694,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 499.813,
+     "end_ms": 506.069,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.21435546875,
+   "round": 9,
+   "load1_after": 0.357421875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r09-cand-cold",
+   "window_ms": 504.463,
+   "frame_ms": 511.98,
+   "damage_ms": [
+    [
+     504.515,
+     1480,
+     980
+    ],
+    [
+     511.98,
+     1480,
+     980
+    ],
+    [
+     513.94,
+     1480,
+     980
+    ],
+    [
+     530.052,
+     1480,
+     980
+    ],
+    [
+     535.92,
+     1480,
+     980
+    ],
+    [
+     539.675,
+     1480,
+     980
+    ],
+    [
+     547.008,
+     1480,
+     980
+    ],
+    [
+     553.909,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 504.825,
+   "family_ms": 362.613,
+   "family_lookup_start_ms": 15.271,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.271,
+     "end_ms": 362.613,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 513.717,
+     "end_ms": 520.152,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 5098,
+    "5": 800,
+    "6": 800,
+    "7": 5298
+   },
+   "load1_before": 0.357421875,
+   "round": 9,
+   "load1_after": 0.4892578125
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r10-cand-warm",
+   "window_ms": 486.553,
+   "frame_ms": 491.932,
+   "damage_ms": [
+    [
+     486.564,
+     1480,
+     980
+    ],
+    [
+     491.932,
+     1480,
+     980
+    ],
+    [
+     493.948,
+     1480,
+     980
+    ],
+    [
+     509.128,
+     1480,
+     980
+    ],
+    [
+     515.586,
+     1480,
+     980
+    ],
+    [
+     526.308,
+     1480,
+     980
+    ],
+    [
+     534.634,
+     1480,
+     980
+    ],
+    [
+     555.233,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 486.737,
+   "family_ms": 21.86,
+   "family_lookup_start_ms": 15.56,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.56,
+     "end_ms": 21.86,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 493.845,
+     "end_ms": 501.06,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5269,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 5158,
+    "7": 5264
+   },
+   "load1_before": 0.4892578125,
+   "round": 10,
+   "load1_after": 0.5302734375
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r10-base-warm",
+   "window_ms": 488.997,
+   "frame_ms": 497.986,
+   "damage_ms": [
+    [
+     489.066,
+     1480,
+     980
+    ],
+    [
+     497.986,
+     1480,
+     980
+    ],
+    [
+     500.799,
+     1480,
+     980
+    ],
+    [
+     512.118,
+     1480,
+     980
+    ],
+    [
+     517.415,
+     1480,
+     980
+    ],
+    [
+     523.506,
+     1480,
+     980
+    ],
+    [
+     537.97,
+     1480,
+     980
+    ],
+    [
+     560.319,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 489.339,
+   "family_ms": 21.557,
+   "family_lookup_start_ms": 15.266,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.266,
+     "end_ms": 21.557,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 497.31,
+     "end_ms": 503.681,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5212,
+    "1": 5172,
+    "2": 800,
+    "3": 5184,
+    "4": 5304,
+    "5": 800,
+    "6": 5298,
+    "7": 800
+   },
+   "load1_before": 0.5302734375,
+   "round": 10,
+   "load1_after": 0.568359375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r10-cand-cold",
+   "window_ms": 503.921,
+   "frame_ms": 509.726,
+   "damage_ms": [
+    [
+     503.933,
+     1480,
+     980
+    ],
+    [
+     509.726,
+     1480,
+     980
+    ],
+    [
+     511.986,
+     1480,
+     980
+    ],
+    [
+     527.703,
+     1480,
+     980
+    ],
+    [
+     533.58,
+     1480,
+     980
+    ],
+    [
+     544.05,
+     1480,
+     980
+    ],
+    [
+     551.635,
+     1480,
+     980
+    ],
+    [
+     572.704,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 504.147,
+   "family_ms": 363.265,
+   "family_lookup_start_ms": 15.798,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.798,
+     "end_ms": 363.265,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 511.356,
+     "end_ms": 521.165,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5259,
+    "1": 800,
+    "2": 5272,
+    "3": 800,
+    "4": 5218,
+    "5": 5226,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.568359375,
+   "round": 10,
+   "load1_after": 0.68310546875
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r10-base-cold",
+   "window_ms": 498.704,
+   "frame_ms": 504.09,
+   "damage_ms": [
+    [
+     498.755,
+     1480,
+     980
+    ],
+    [
+     504.09,
+     1480,
+     980
+    ],
+    [
+     506.111,
+     1480,
+     980
+    ],
+    [
+     523.796,
+     1480,
+     980
+    ],
+    [
+     528.875,
+     1480,
+     980
+    ],
+    [
+     538.842,
+     1480,
+     980
+    ],
+    [
+     545.672,
+     1480,
+     980
+    ],
+    [
+     567.449,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 499.097,
+   "family_ms": 368.824,
+   "family_lookup_start_ms": 15.66,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.66,
+     "end_ms": 368.824,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 506.056,
+     "end_ms": 515.743,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5302,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.68310546875,
+   "round": 10,
+   "load1_after": 0.78857421875
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r11-base-warm",
+   "window_ms": 478.964,
+   "frame_ms": 485.908,
+   "damage_ms": [
+    [
+     479.12,
+     1480,
+     980
+    ],
+    [
+     485.908,
+     1480,
+     980
+    ],
+    [
+     488.903,
+     1480,
+     980
+    ],
+    [
+     500.294,
+     1480,
+     980
+    ],
+    [
+     507.223,
+     1480,
+     980
+    ],
+    [
+     511.612,
+     1480,
+     980
+    ],
+    [
+     526.121,
+     1480,
+     980
+    ],
+    [
+     548.239,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 479.415,
+   "family_ms": 21.458,
+   "family_lookup_start_ms": 15.235,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.235,
+     "end_ms": 21.458,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 487.671,
+     "end_ms": 494.007,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5296,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 5298
+   },
+   "load1_before": 0.78857421875,
+   "round": 11,
+   "load1_after": 0.72509765625
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r11-cand-cold",
+   "window_ms": 490.104,
+   "frame_ms": 497.436,
+   "damage_ms": [
+    [
+     490.157,
+     1480,
+     980
+    ],
+    [
+     497.436,
+     1480,
+     980
+    ],
+    [
+     499.461,
+     1480,
+     980
+    ],
+    [
+     515.249,
+     1480,
+     980
+    ],
+    [
+     521.006,
+     1480,
+     980
+    ],
+    [
+     528.105,
+     1480,
+     980
+    ],
+    [
+     535.008,
+     1480,
+     980
+    ],
+    [
+     542.185,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 490.482,
+   "family_ms": 363.31,
+   "family_lookup_start_ms": 15.21,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.21,
+     "end_ms": 363.31,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 499.816,
+     "end_ms": 505.952,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5153,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 5312
+   },
+   "load1_before": 0.72509765625,
+   "round": 11,
+   "load1_after": 0.74755859375
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r11-base-cold",
+   "window_ms": 484.405,
+   "frame_ms": 490.832,
+   "damage_ms": [
+    [
+     484.529,
+     1480,
+     980
+    ],
+    [
+     490.832,
+     1480,
+     980
+    ],
+    [
+     493.636,
+     1480,
+     980
+    ],
+    [
+     505.617,
+     1480,
+     980
+    ],
+    [
+     511.259,
+     1480,
+     980
+    ],
+    [
+     517.235,
+     1480,
+     980
+    ],
+    [
+     532.296,
+     1480,
+     980
+    ],
+    [
+     553.496,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 484.774,
+   "family_ms": 364.041,
+   "family_lookup_start_ms": 15.971,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.971,
+     "end_ms": 364.041,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 491.827,
+     "end_ms": 498.011,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 2536,
+    "1": 5076,
+    "2": 5292,
+    "3": 5288,
+    "4": 800,
+    "5": 800,
+    "6": 1684,
+    "7": 800
+   },
+   "load1_before": 0.74755859375,
+   "round": 11,
+   "load1_after": 0.6875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r11-cand-warm",
+   "window_ms": 490.195,
+   "frame_ms": 496.753,
+   "damage_ms": [
+    [
+     490.206,
+     1480,
+     980
+    ],
+    [
+     496.753,
+     1480,
+     980
+    ],
+    [
+     498.484,
+     1480,
+     980
+    ],
+    [
+     515.464,
+     1480,
+     980
+    ],
+    [
+     521.616,
+     1480,
+     980
+    ],
+    [
+     527.339,
+     1480,
+     980
+    ],
+    [
+     534.532,
+     1480,
+     980
+    ],
+    [
+     541.595,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 490.501,
+   "family_ms": 21.877,
+   "family_lookup_start_ms": 15.545,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.545,
+     "end_ms": 21.877,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 499.853,
+     "end_ms": 506.346,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5300,
+    "1": 5199,
+    "2": 800,
+    "3": 5159,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.6875,
+   "round": 11,
+   "load1_after": 0.63232421875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r12-cand-cold",
+   "window_ms": 519.013,
+   "frame_ms": 525.862,
+   "damage_ms": [
+    [
+     519.044,
+     1480,
+     980
+    ],
+    [
+     525.862,
+     1480,
+     980
+    ],
+    [
+     526.768,
+     1480,
+     980
+    ],
+    [
+     541.429,
+     1480,
+     980
+    ],
+    [
+     550.695,
+     1480,
+     980
+    ],
+    [
+     558.677,
+     1480,
+     980
+    ],
+    [
+     565.922,
+     1480,
+     980
+    ],
+    [
+     587.992,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 519.291,
+   "family_ms": 366.334,
+   "family_lookup_start_ms": 15.648,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.648,
+     "end_ms": 366.334,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 526.374,
+     "end_ms": 533.664,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5310,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 5308,
+    "7": 5289
+   },
+   "load1_before": 0.63232421875,
+   "round": 12,
+   "load1_after": 0.58154296875
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r12-base-cold",
+   "window_ms": 502.321,
+   "frame_ms": 508.902,
+   "damage_ms": [
+    [
+     502.415,
+     1480,
+     980
+    ],
+    [
+     508.902,
+     1480,
+     980
+    ],
+    [
+     510.606,
+     1480,
+     980
+    ],
+    [
+     527.259,
+     1480,
+     980
+    ],
+    [
+     535.897,
+     1480,
+     980
+    ],
+    [
+     542.851,
+     1480,
+     980
+    ],
+    [
+     550.243,
+     1480,
+     980
+    ],
+    [
+     571.755,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 502.922,
+   "family_ms": 369.76,
+   "family_lookup_start_ms": 16.183,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.183,
+     "end_ms": 369.76,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 511.928,
+     "end_ms": 518.172,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5292,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.58154296875,
+   "round": 12,
+   "load1_after": 0.53466796875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r12-cand-warm",
+   "window_ms": 478.442,
+   "frame_ms": 484.598,
+   "damage_ms": [
+    [
+     478.557,
+     1480,
+     980
+    ],
+    [
+     484.598,
+     1480,
+     980
+    ],
+    [
+     486.5,
+     1480,
+     980
+    ],
+    [
+     500.143,
+     1480,
+     980
+    ],
+    [
+     504.404,
+     1480,
+     980
+    ],
+    [
+     511.346,
+     1480,
+     980
+    ],
+    [
+     526.034,
+     1480,
+     980
+    ],
+    [
+     547.658,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 478.801,
+   "family_ms": 21.972,
+   "family_lookup_start_ms": 15.548,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.548,
+     "end_ms": 21.972,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 484.139,
+     "end_ms": 490.872,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5201,
+    "1": 800,
+    "2": 5245,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.53466796875,
+   "round": 12,
+   "load1_after": 0.49169921875
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r12-base-warm",
+   "window_ms": 480.456,
+   "frame_ms": 487.35,
+   "damage_ms": [
+    [
+     480.512,
+     1480,
+     980
+    ],
+    [
+     487.35,
+     1480,
+     980
+    ],
+    [
+     489.022,
+     1480,
+     980
+    ],
+    [
+     505.981,
+     1480,
+     980
+    ],
+    [
+     514.285,
+     1480,
+     980
+    ],
+    [
+     520.184,
+     1480,
+     980
+    ],
+    [
+     527.679,
+     1480,
+     980
+    ],
+    [
+     534.609,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 480.885,
+   "family_ms": 22.578,
+   "family_lookup_start_ms": 16.178,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.178,
+     "end_ms": 22.578,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 489.575,
+     "end_ms": 496.366,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5013,
+    "1": 800,
+    "2": 5057,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.49169921875,
+   "round": 12,
+   "load1_after": 0.4521484375
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r13-base-cold",
+   "window_ms": 479.357,
+   "frame_ms": 484.83,
+   "damage_ms": [
+    [
+     479.43,
+     1480,
+     980
+    ],
+    [
+     484.83,
+     1480,
+     980
+    ],
+    [
+     486.786,
+     1480,
+     980
+    ],
+    [
+     508.781,
+     1480,
+     980
+    ],
+    [
+     515.573,
+     1480,
+     980
+    ],
+    [
+     524.43,
+     1480,
+     980
+    ],
+    [
+     531.659,
+     1480,
+     980
+    ],
+    [
+     538.349,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 479.724,
+   "family_ms": 361.567,
+   "family_lookup_start_ms": 15.863,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.863,
+     "end_ms": 361.567,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 486.631,
+     "end_ms": 492.873,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5211,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 5185
+   },
+   "load1_before": 0.4521484375,
+   "round": 13,
+   "load1_after": 0.41552734375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r13-cand-warm",
+   "window_ms": 493.518,
+   "frame_ms": 501.935,
+   "damage_ms": [
+    [
+     493.53,
+     1480,
+     980
+    ],
+    [
+     501.935,
+     1480,
+     980
+    ],
+    [
+     505.138,
+     1480,
+     980
+    ],
+    [
+     519.637,
+     1480,
+     980
+    ],
+    [
+     524.739,
+     1480,
+     980
+    ],
+    [
+     528.225,
+     1480,
+     980
+    ],
+    [
+     534.264,
+     1480,
+     980
+    ],
+    [
+     542.202,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 493.824,
+   "family_ms": 21.881,
+   "family_lookup_start_ms": 15.636,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.636,
+     "end_ms": 21.881,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 503.281,
+     "end_ms": 509.89,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 5308
+   },
+   "load1_before": 0.41552734375,
+   "round": 13,
+   "load1_after": 0.3818359375
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r13-base-warm",
+   "window_ms": 483.064,
+   "frame_ms": 488.904,
+   "damage_ms": [
+    [
+     483.187,
+     1480,
+     980
+    ],
+    [
+     488.904,
+     1480,
+     980
+    ],
+    [
+     491.213,
+     1480,
+     980
+    ],
+    [
+     504.424,
+     1480,
+     980
+    ],
+    [
+     510.379,
+     1480,
+     980
+    ],
+    [
+     515.518,
+     1480,
+     980
+    ],
+    [
+     530.303,
+     1480,
+     980
+    ],
+    [
+     551.803,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 483.416,
+   "family_ms": 21.385,
+   "family_lookup_start_ms": 15.12,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.12,
+     "end_ms": 21.385,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 490.606,
+     "end_ms": 496.897,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5143,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 5276
+   },
+   "load1_before": 0.3818359375,
+   "round": 13,
+   "load1_after": 0.35107421875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r13-cand-cold",
+   "window_ms": 489.783,
+   "frame_ms": 496.326,
+   "damage_ms": [
+    [
+     489.896,
+     1480,
+     980
+    ],
+    [
+     496.326,
+     1480,
+     980
+    ],
+    [
+     497.975,
+     1480,
+     980
+    ],
+    [
+     514.175,
+     1480,
+     980
+    ],
+    [
+     521.95,
+     1480,
+     980
+    ],
+    [
+     527.883,
+     1480,
+     980
+    ],
+    [
+     535.338,
+     1480,
+     980
+    ],
+    [
+     542.44,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 490.236,
+   "family_ms": 366.357,
+   "family_lookup_start_ms": 15.854,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.854,
+     "end_ms": 366.357,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 499.112,
+     "end_ms": 505.4,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5180,
+    "2": 5155,
+    "3": 5300,
+    "4": 5250,
+    "5": 800,
+    "6": 800,
+    "7": 5292
+   },
+   "load1_before": 0.35107421875,
+   "round": 13,
+   "load1_after": 0.32275390625
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r14-cand-warm",
+   "window_ms": 505.107,
+   "frame_ms": 511.572,
+   "damage_ms": [
+    [
+     505.171,
+     1480,
+     980
+    ],
+    [
+     511.572,
+     1480,
+     980
+    ],
+    [
+     513.024,
+     1480,
+     980
+    ],
+    [
+     528.003,
+     1480,
+     980
+    ],
+    [
+     534.403,
+     1480,
+     980
+    ],
+    [
+     544.918,
+     1480,
+     980
+    ],
+    [
+     552.137,
+     1480,
+     980
+    ],
+    [
+     574.041,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 505.437,
+   "family_ms": 21.758,
+   "family_lookup_start_ms": 15.476,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.476,
+     "end_ms": 21.758,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 512.68,
+     "end_ms": 518.933,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5224,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.32275390625,
+   "round": 14,
+   "load1_after": 0.296875
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r14-base-warm",
+   "window_ms": 484.107,
+   "frame_ms": 493.889,
+   "damage_ms": [
+    [
+     484.22,
+     1480,
+     980
+    ],
+    [
+     493.889,
+     1480,
+     980
+    ],
+    [
+     496.691,
+     1480,
+     980
+    ],
+    [
+     515.106,
+     1480,
+     980
+    ],
+    [
+     521.465,
+     1480,
+     980
+    ],
+    [
+     528.012,
+     1480,
+     980
+    ],
+    [
+     534.397,
+     1480,
+     980
+    ],
+    [
+     556.075,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 484.727,
+   "family_ms": 21.477,
+   "family_lookup_start_ms": 15.284,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.284,
+     "end_ms": 21.477,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 497.124,
+     "end_ms": 503.693,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5091,
+    "1": 5102,
+    "2": 800,
+    "3": 5052,
+    "4": 5282,
+    "5": 5121,
+    "6": 800,
+    "7": 5094
+   },
+   "load1_before": 0.296875,
+   "round": 14,
+   "load1_after": 0.27294921875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r14-cand-cold",
+   "window_ms": 485.304,
+   "frame_ms": 490.632,
+   "damage_ms": [
+    [
+     485.316,
+     1480,
+     980
+    ],
+    [
+     490.632,
+     1480,
+     980
+    ],
+    [
+     493.882,
+     1480,
+     980
+    ],
+    [
+     509.606,
+     1480,
+     980
+    ],
+    [
+     518.933,
+     1480,
+     980
+    ],
+    [
+     524.694,
+     1480,
+     980
+    ],
+    [
+     532.266,
+     1480,
+     980
+    ],
+    [
+     553.989,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 485.613,
+   "family_ms": 365.434,
+   "family_lookup_start_ms": 15.096,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.096,
+     "end_ms": 365.434,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 492.283,
+     "end_ms": 498.372,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5284,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 5323,
+    "6": 800,
+    "7": 5302
+   },
+   "load1_before": 0.27294921875,
+   "round": 14,
+   "load1_after": 0.33154296875
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r14-base-cold",
+   "window_ms": 495.768,
+   "frame_ms": 503.126,
+   "damage_ms": [
+    [
+     495.792,
+     1480,
+     980
+    ],
+    [
+     503.126,
+     1480,
+     980
+    ],
+    [
+     504.843,
+     1480,
+     980
+    ],
+    [
+     522.867,
+     1480,
+     980
+    ],
+    [
+     527.911,
+     1480,
+     980
+    ],
+    [
+     531.009,
+     1480,
+     980
+    ],
+    [
+     537.869,
+     1480,
+     980
+    ],
+    [
+     545.09,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 496.169,
+   "family_ms": 364.315,
+   "family_lookup_start_ms": 15.914,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.914,
+     "end_ms": 364.315,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 506.592,
+     "end_ms": 512.838,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5294,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.33154296875,
+   "round": 14,
+   "load1_after": 0.3046875
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r15-base-warm",
+   "window_ms": 499.85,
+   "frame_ms": 511.092,
+   "damage_ms": [
+    [
+     499.864,
+     1480,
+     980
+    ],
+    [
+     511.092,
+     1480,
+     980
+    ],
+    [
+     513.982,
+     1480,
+     980
+    ],
+    [
+     529.087,
+     1480,
+     980
+    ],
+    [
+     538.239,
+     1480,
+     980
+    ],
+    [
+     543.866,
+     1480,
+     980
+    ],
+    [
+     551.417,
+     1480,
+     980
+    ],
+    [
+     572.73,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 500.056,
+   "family_ms": 21.224,
+   "family_lookup_start_ms": 15.002,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.002,
+     "end_ms": 21.224,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 511.704,
+     "end_ms": 519.101,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5302,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.3046875,
+   "round": 15,
+   "load1_after": 0.2802734375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r15-cand-cold",
+   "window_ms": 492.145,
+   "frame_ms": 499.019,
+   "damage_ms": [
+    [
+     492.192,
+     1480,
+     980
+    ],
+    [
+     499.019,
+     1480,
+     980
+    ],
+    [
+     500.705,
+     1480,
+     980
+    ],
+    [
+     519.01,
+     1480,
+     980
+    ],
+    [
+     524.808,
+     1480,
+     980
+    ],
+    [
+     531.445,
+     1480,
+     980
+    ],
+    [
+     538.212,
+     1480,
+     980
+    ],
+    [
+     545.146,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 492.651,
+   "family_ms": 377.2,
+   "family_lookup_start_ms": 16.011,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.011,
+     "end_ms": 377.2,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 502.741,
+     "end_ms": 510.719,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5175,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 5096
+   },
+   "load1_before": 0.2802734375,
+   "round": 15,
+   "load1_after": 0.2578125
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r15-base-cold",
+   "window_ms": 482.958,
+   "frame_ms": 492.181,
+   "damage_ms": [
+    [
+     483.008,
+     1480,
+     980
+    ],
+    [
+     492.181,
+     1480,
+     980
+    ],
+    [
+     494.917,
+     1480,
+     980
+    ],
+    [
+     504.97,
+     1480,
+     980
+    ],
+    [
+     509.534,
+     1480,
+     980
+    ],
+    [
+     516.035,
+     1480,
+     980
+    ],
+    [
+     530.715,
+     1480,
+     980
+    ],
+    [
+     552.267,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 483.218,
+   "family_ms": 364.646,
+   "family_lookup_start_ms": 15.48,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.48,
+     "end_ms": 364.646,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 489.237,
+     "end_ms": 496.651,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5101,
+    "1": 800,
+    "2": 5239,
+    "3": 5176,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.2578125,
+   "round": 15,
+   "load1_after": 0.23681640625
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r15-cand-warm",
+   "window_ms": 485.629,
+   "frame_ms": 490.974,
+   "damage_ms": [
+    [
+     485.688,
+     1480,
+     980
+    ],
+    [
+     490.974,
+     1480,
+     980
+    ],
+    [
+     492.866,
+     1480,
+     980
+    ],
+    [
+     514.792,
+     1480,
+     980
+    ],
+    [
+     521.101,
+     1480,
+     980
+    ],
+    [
+     525.09,
+     1480,
+     980
+    ],
+    [
+     531.194,
+     1480,
+     980
+    ],
+    [
+     538.193,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 486.166,
+   "family_ms": 21.723,
+   "family_lookup_start_ms": 15.461,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.461,
+     "end_ms": 21.723,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 497.531,
+     "end_ms": 504.088,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5258,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.23681640625,
+   "round": 15,
+   "load1_after": 0.2177734375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r16-cand-cold",
+   "window_ms": 498.464,
+   "frame_ms": 505.66,
+   "damage_ms": [
+    [
+     498.577,
+     1480,
+     980
+    ],
+    [
+     505.66,
+     1480,
+     980
+    ],
+    [
+     507.143,
+     1480,
+     980
+    ],
+    [
+     520.234,
+     1480,
+     980
+    ],
+    [
+     526.103,
+     1480,
+     980
+    ],
+    [
+     531.665,
+     1480,
+     980
+    ],
+    [
+     546.233,
+     1480,
+     980
+    ],
+    [
+     567.895,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 498.85,
+   "family_ms": 366.996,
+   "family_lookup_start_ms": 15.981,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.981,
+     "end_ms": 366.996,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 504.603,
+     "end_ms": 511.191,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 5157,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.2177734375,
+   "round": 16,
+   "load1_after": 0.2001953125
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r16-base-cold",
+   "window_ms": 492.556,
+   "frame_ms": 501.481,
+   "damage_ms": [
+    [
+     492.625,
+     1480,
+     980
+    ],
+    [
+     501.481,
+     1480,
+     980
+    ],
+    [
+     504.228,
+     1480,
+     980
+    ],
+    [
+     514.401,
+     1480,
+     980
+    ],
+    [
+     519.436,
+     1480,
+     980
+    ],
+    [
+     525.661,
+     1480,
+     980
+    ],
+    [
+     540.643,
+     1480,
+     980
+    ],
+    [
+     562.053,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 493.028,
+   "family_ms": 363.25,
+   "family_lookup_start_ms": 15.421,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.421,
+     "end_ms": 363.25,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 498.336,
+     "end_ms": 504.577,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5294,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.2001953125,
+   "round": 16,
+   "load1_after": 0.18408203125
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r16-cand-warm",
+   "window_ms": 490.654,
+   "frame_ms": 499.027,
+   "damage_ms": [
+    [
+     490.763,
+     1480,
+     980
+    ],
+    [
+     499.027,
+     1480,
+     980
+    ],
+    [
+     500.493,
+     1480,
+     980
+    ],
+    [
+     513.027,
+     1480,
+     980
+    ],
+    [
+     522.332,
+     1480,
+     980
+    ],
+    [
+     530.553,
+     1480,
+     980
+    ],
+    [
+     537.688,
+     1480,
+     980
+    ],
+    [
+     559.419,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 491.002,
+   "family_ms": 21.466,
+   "family_lookup_start_ms": 15.107,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.107,
+     "end_ms": 21.466,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 500.05,
+     "end_ms": 506.371,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.18408203125,
+   "round": 16,
+   "load1_after": 0.1689453125
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r16-base-warm",
+   "window_ms": 485.548,
+   "frame_ms": 497.409,
+   "damage_ms": [
+    [
+     485.615,
+     1480,
+     980
+    ],
+    [
+     497.409,
+     1480,
+     980
+    ],
+    [
+     500.694,
+     1480,
+     980
+    ],
+    [
+     515.526,
+     1480,
+     980
+    ],
+    [
+     524.51,
+     1480,
+     980
+    ],
+    [
+     530.786,
+     1480,
+     980
+    ],
+    [
+     537.929,
+     1480,
+     980
+    ],
+    [
+     559.555,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 485.961,
+   "family_ms": 22.122,
+   "family_lookup_start_ms": 15.879,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.879,
+     "end_ms": 22.122,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 497.967,
+     "end_ms": 504.411,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5295,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 5288
+   },
+   "load1_before": 0.1689453125,
+   "round": 16,
+   "load1_after": 0.1552734375
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r17-base-cold",
+   "window_ms": 479.505,
+   "frame_ms": 485.318,
+   "damage_ms": [
+    [
+     479.659,
+     1480,
+     980
+    ],
+    [
+     485.318,
+     1480,
+     980
+    ],
+    [
+     487.69,
+     1480,
+     980
+    ],
+    [
+     501.471,
+     1480,
+     980
+    ],
+    [
+     510.691,
+     1480,
+     980
+    ],
+    [
+     519.333,
+     1480,
+     980
+    ],
+    [
+     526.833,
+     1480,
+     980
+    ],
+    [
+     548.531,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 479.917,
+   "family_ms": 360.589,
+   "family_lookup_start_ms": 15.097,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.097,
+     "end_ms": 360.589,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 487.119,
+     "end_ms": 493.278,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5104,
+    "3": 800,
+    "4": 800,
+    "5": 5102,
+    "6": 800,
+    "7": 5082
+   },
+   "load1_before": 0.1552734375,
+   "round": 17,
+   "load1_after": 0.142578125
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r17-cand-warm",
+   "window_ms": 479.596,
+   "frame_ms": 485.313,
+   "damage_ms": [
+    [
+     479.719,
+     1480,
+     980
+    ],
+    [
+     485.313,
+     1480,
+     980
+    ],
+    [
+     487.73,
+     1480,
+     980
+    ],
+    [
+     500.79,
+     1480,
+     980
+    ],
+    [
+     505.969,
+     1480,
+     980
+    ],
+    [
+     512.113,
+     1480,
+     980
+    ],
+    [
+     526.824,
+     1480,
+     980
+    ],
+    [
+     548.427,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 479.96,
+   "family_ms": 21.754,
+   "family_lookup_start_ms": 15.303,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.303,
+     "end_ms": 21.754,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 486.951,
+     "end_ms": 493.173,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5216,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 5304,
+    "7": 800
+   },
+   "load1_before": 0.142578125,
+   "round": 17,
+   "load1_after": 0.130859375
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r17-base-warm",
+   "window_ms": 476.285,
+   "frame_ms": 483.805,
+   "damage_ms": [
+    [
+     476.316,
+     1480,
+     980
+    ],
+    [
+     483.805,
+     1480,
+     980
+    ],
+    [
+     485.653,
+     1480,
+     980
+    ],
+    [
+     499.477,
+     1480,
+     980
+    ],
+    [
+     508.096,
+     1480,
+     980
+    ],
+    [
+     513.683,
+     1480,
+     980
+    ],
+    [
+     521.401,
+     1480,
+     980
+    ],
+    [
+     528.366,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 476.589,
+   "family_ms": 21.727,
+   "family_lookup_start_ms": 15.568,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.568,
+     "end_ms": 21.727,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 484.413,
+     "end_ms": 490.765,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5299,
+    "1": 5164,
+    "2": 5267,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.130859375,
+   "round": 17,
+   "load1_after": 0.1201171875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r17-cand-cold",
+   "window_ms": 495.911,
+   "frame_ms": 501.366,
+   "damage_ms": [
+    [
+     495.922,
+     1480,
+     980
+    ],
+    [
+     501.366,
+     1480,
+     980
+    ],
+    [
+     503.687,
+     1480,
+     980
+    ],
+    [
+     517.812,
+     1480,
+     980
+    ],
+    [
+     521.869,
+     1480,
+     980
+    ],
+    [
+     529.991,
+     1480,
+     980
+    ],
+    [
+     543.115,
+     1480,
+     980
+    ],
+    [
+     564.566,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 496.146,
+   "family_ms": 366.867,
+   "family_lookup_start_ms": 15.363,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.363,
+     "end_ms": 366.867,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 503.084,
+     "end_ms": 509.358,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.1201171875,
+   "round": 17,
+   "load1_after": 0.1103515625
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r18-cand-warm",
+   "window_ms": 500.009,
+   "frame_ms": 505.656,
+   "damage_ms": [
+    [
+     500.064,
+     1480,
+     980
+    ],
+    [
+     505.656,
+     1480,
+     980
+    ],
+    [
+     507.834,
+     1480,
+     980
+    ],
+    [
+     521.527,
+     1480,
+     980
+    ],
+    [
+     530.325,
+     1480,
+     980
+    ],
+    [
+     539.611,
+     1480,
+     980
+    ],
+    [
+     546.941,
+     1480,
+     980
+    ],
+    [
+     568.626,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 500.312,
+   "family_ms": 22.056,
+   "family_lookup_start_ms": 15.646,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.646,
+     "end_ms": 22.056,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 507.635,
+     "end_ms": 513.968,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5298,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 5068
+   },
+   "load1_before": 0.1103515625,
+   "round": 18,
+   "load1_after": 0.10107421875
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r18-base-warm",
+   "window_ms": 482.65,
+   "frame_ms": 489.245,
+   "damage_ms": [
+    [
+     482.796,
+     1480,
+     980
+    ],
+    [
+     489.245,
+     1480,
+     980
+    ],
+    [
+     490.923,
+     1480,
+     980
+    ],
+    [
+     509.357,
+     1480,
+     980
+    ],
+    [
+     509.398,
+     1480,
+     980
+    ],
+    [
+     515.232,
+     1480,
+     980
+    ],
+    [
+     530.473,
+     1480,
+     980
+    ],
+    [
+     551.611,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 483.096,
+   "family_ms": 22.444,
+   "family_lookup_start_ms": 16.115,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.115,
+     "end_ms": 22.444,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 490.573,
+     "end_ms": 496.793,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5303,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.10107421875,
+   "round": 18,
+   "load1_after": 0.0927734375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r18-cand-cold",
+   "window_ms": 485.467,
+   "frame_ms": 491.559,
+   "damage_ms": [
+    [
+     485.558,
+     1480,
+     980
+    ],
+    [
+     491.559,
+     1480,
+     980
+    ],
+    [
+     494.303,
+     1480,
+     980
+    ],
+    [
+     508.4,
+     1480,
+     980
+    ],
+    [
+     515.733,
+     1480,
+     980
+    ],
+    [
+     525.245,
+     1480,
+     980
+    ],
+    [
+     532.534,
+     1480,
+     980
+    ],
+    [
+     554.265,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 485.772,
+   "family_ms": 365.95,
+   "family_lookup_start_ms": 15.914,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.914,
+     "end_ms": 365.95,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 493.267,
+     "end_ms": 499.768,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5270,
+    "1": 5255,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.0927734375,
+   "round": 18,
+   "load1_after": 0.0849609375
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r18-base-cold",
+   "window_ms": 493.734,
+   "frame_ms": 500.28,
+   "damage_ms": [
+    [
+     493.775,
+     1480,
+     980
+    ],
+    [
+     500.28,
+     1480,
+     980
+    ],
+    [
+     503.186,
+     1480,
+     980
+    ],
+    [
+     515.037,
+     1480,
+     980
+    ],
+    [
+     519.141,
+     1480,
+     980
+    ],
+    [
+     526.23,
+     1480,
+     980
+    ],
+    [
+     540.795,
+     1480,
+     980
+    ],
+    [
+     562.456,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 494.015,
+   "family_ms": 365.435,
+   "family_lookup_start_ms": 15.619,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.619,
+     "end_ms": 365.435,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 502.054,
+     "end_ms": 508.14,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5263,
+    "1": 5300,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.0849609375,
+   "round": 18,
+   "load1_after": 0.078125
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r19-base-warm",
+   "window_ms": 493.293,
+   "frame_ms": 500.264,
+   "damage_ms": [
+    [
+     493.344,
+     1480,
+     980
+    ],
+    [
+     500.264,
+     1480,
+     980
+    ],
+    [
+     502.028,
+     1480,
+     980
+    ],
+    [
+     517.319,
+     1480,
+     980
+    ],
+    [
+     522.874,
+     1480,
+     980
+    ],
+    [
+     526.973,
+     1480,
+     980
+    ],
+    [
+     533.377,
+     1480,
+     980
+    ],
+    [
+     542.211,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 493.73,
+   "family_ms": 22.102,
+   "family_lookup_start_ms": 15.852,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.852,
+     "end_ms": 22.102,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 502.321,
+     "end_ms": 508.794,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 5302,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.078125,
+   "round": 19,
+   "load1_after": 0.07177734375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r19-cand-cold",
+   "window_ms": 488.592,
+   "frame_ms": 493.979,
+   "damage_ms": [
+    [
+     488.708,
+     1480,
+     980
+    ],
+    [
+     493.979,
+     1480,
+     980
+    ],
+    [
+     496.028,
+     1480,
+     980
+    ],
+    [
+     509.647,
+     1480,
+     980
+    ],
+    [
+     516.892,
+     1480,
+     980
+    ],
+    [
+     522.9,
+     1480,
+     980
+    ],
+    [
+     530.137,
+     1480,
+     980
+    ],
+    [
+     537.54,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 488.945,
+   "family_ms": 364.174,
+   "family_lookup_start_ms": 15.427,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.427,
+     "end_ms": 364.174,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 495.83,
+     "end_ms": 502.36,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5300,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 5297,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.07177734375,
+   "round": 19,
+   "load1_after": 0.06591796875
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r19-base-cold",
+   "window_ms": 486.182,
+   "frame_ms": 491.873,
+   "damage_ms": [
+    [
+     486.295,
+     1480,
+     980
+    ],
+    [
+     491.873,
+     1480,
+     980
+    ],
+    [
+     493.947,
+     1480,
+     980
+    ],
+    [
+     507.721,
+     1480,
+     980
+    ],
+    [
+     512.796,
+     1480,
+     980
+    ],
+    [
+     518.663,
+     1480,
+     980
+    ],
+    [
+     533.315,
+     1480,
+     980
+    ],
+    [
+     554.951,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 486.577,
+   "family_ms": 362.165,
+   "family_lookup_start_ms": 15.349,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.349,
+     "end_ms": 362.165,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 493.827,
+     "end_ms": 500.01,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.06591796875,
+   "round": 19,
+   "load1_after": 0.060546875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r19-cand-warm",
+   "window_ms": 482.0,
+   "frame_ms": 487.235,
+   "damage_ms": [
+    [
+     482.117,
+     1480,
+     980
+    ],
+    [
+     487.235,
+     1480,
+     980
+    ],
+    [
+     489.338,
+     1480,
+     980
+    ],
+    [
+     503.633,
+     1480,
+     980
+    ],
+    [
+     511.243,
+     1480,
+     980
+    ],
+    [
+     515.568,
+     1480,
+     980
+    ],
+    [
+     522.821,
+     1480,
+     980
+    ],
+    [
+     530.224,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 482.33,
+   "family_ms": 21.928,
+   "family_lookup_start_ms": 15.663,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.663,
+     "end_ms": 21.928,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 488.887,
+     "end_ms": 495.298,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5240,
+    "2": 800,
+    "3": 800,
+    "4": 5222,
+    "5": 800,
+    "6": 5318,
+    "7": 5303
+   },
+   "load1_before": 0.060546875,
+   "round": 19,
+   "load1_after": 0.0556640625
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r20-cand-cold",
+   "window_ms": 508.696,
+   "frame_ms": 517.284,
+   "damage_ms": [
+    [
+     508.746,
+     1480,
+     980
+    ],
+    [
+     517.284,
+     1480,
+     980
+    ],
+    [
+     518.62,
+     1480,
+     980
+    ],
+    [
+     530.06,
+     1480,
+     980
+    ],
+    [
+     536.924,
+     1480,
+     980
+    ],
+    [
+     542.816,
+     1480,
+     980
+    ],
+    [
+     555.853,
+     1480,
+     980
+    ],
+    [
+     577.503,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 508.985,
+   "family_ms": 363.357,
+   "family_lookup_start_ms": 15.491,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.491,
+     "end_ms": 363.357,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 518.587,
+     "end_ms": 525.079,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 5267,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.0556640625,
+   "round": 20,
+   "load1_after": 0.05078125
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r20-base-cold",
+   "window_ms": 500.674,
+   "frame_ms": 506.159,
+   "damage_ms": [
+    [
+     500.699,
+     1480,
+     980
+    ],
+    [
+     506.159,
+     1480,
+     980
+    ],
+    [
+     508.346,
+     1480,
+     980
+    ],
+    [
+     523.779,
+     1480,
+     980
+    ],
+    [
+     530.801,
+     1480,
+     980
+    ],
+    [
+     540.37,
+     1480,
+     980
+    ],
+    [
+     547.704,
+     1480,
+     980
+    ],
+    [
+     569.48,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 500.959,
+   "family_ms": 363.039,
+   "family_lookup_start_ms": 15.654,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.654,
+     "end_ms": 363.039,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 508.05,
+     "end_ms": 517.771,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5236,
+    "1": 5148,
+    "2": 5103,
+    "3": 800,
+    "4": 5328,
+    "5": 5260,
+    "6": 5204,
+    "7": 800
+   },
+   "load1_before": 0.05078125,
+   "round": 20,
+   "load1_after": 0.287109375
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r20-cand-warm",
+   "window_ms": 488.52,
+   "frame_ms": 495.504,
+   "damage_ms": [
+    [
+     488.637,
+     1480,
+     980
+    ],
+    [
+     495.504,
+     1480,
+     980
+    ],
+    [
+     496.713,
+     1480,
+     980
+    ],
+    [
+     512.443,
+     1480,
+     980
+    ],
+    [
+     518.097,
+     1480,
+     980
+    ],
+    [
+     528.541,
+     1480,
+     980
+    ],
+    [
+     536.655,
+     1480,
+     980
+    ],
+    [
+     557.615,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 488.875,
+   "family_ms": 21.395,
+   "family_lookup_start_ms": 15.069,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.069,
+     "end_ms": 21.395,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 496.321,
+     "end_ms": 502.605,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5237,
+    "1": 800,
+    "2": 5291,
+    "3": 5288,
+    "4": 5209,
+    "5": 5196,
+    "6": 5191,
+    "7": 800
+   },
+   "load1_before": 0.287109375,
+   "round": 20,
+   "load1_after": 0.287109375
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r20-base-warm",
+   "window_ms": 493.119,
+   "frame_ms": 499.163,
+   "damage_ms": [
+    [
+     493.23,
+     1480,
+     980
+    ],
+    [
+     499.163,
+     1480,
+     980
+    ],
+    [
+     502.013,
+     1480,
+     980
+    ],
+    [
+     516.398,
+     1480,
+     980
+    ],
+    [
+     522.472,
+     1480,
+     980
+    ],
+    [
+     533.485,
+     1480,
+     980
+    ],
+    [
+     540.261,
+     1480,
+     980
+    ],
+    [
+     561.929,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 493.498,
+   "family_ms": 21.724,
+   "family_lookup_start_ms": 15.486,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.486,
+     "end_ms": 21.724,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 500.748,
+     "end_ms": 510.679,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5253,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.42431640625,
+   "round": 20,
+   "load1_after": 0.42431640625
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r21-base-cold",
+   "window_ms": 494.998,
+   "frame_ms": 502.324,
+   "damage_ms": [
+    [
+     495.012,
+     1480,
+     980
+    ],
+    [
+     502.324,
+     1480,
+     980
+    ],
+    [
+     504.183,
+     1480,
+     980
+    ],
+    [
+     520.61,
+     1480,
+     980
+    ],
+    [
+     525.559,
+     1480,
+     980
+    ],
+    [
+     528.546,
+     1480,
+     980
+    ],
+    [
+     535.648,
+     1480,
+     980
+    ],
+    [
+     543.819,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 495.316,
+   "family_ms": 361.441,
+   "family_lookup_start_ms": 14.809,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 14.809,
+     "end_ms": 361.441,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 503.89,
+     "end_ms": 510.333,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.39013671875,
+   "round": 21,
+   "load1_after": 0.39013671875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r21-cand-warm",
+   "window_ms": 490.626,
+   "frame_ms": 496.35,
+   "damage_ms": [
+    [
+     490.678,
+     1480,
+     980
+    ],
+    [
+     496.35,
+     1480,
+     980
+    ],
+    [
+     498.632,
+     1480,
+     980
+    ],
+    [
+     512.032,
+     1480,
+     980
+    ],
+    [
+     518.329,
+     1480,
+     980
+    ],
+    [
+     523.066,
+     1480,
+     980
+    ],
+    [
+     537.837,
+     1480,
+     980
+    ],
+    [
+     559.635,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 490.928,
+   "family_ms": 22.333,
+   "family_lookup_start_ms": 15.89,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.89,
+     "end_ms": 22.333,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 498.322,
+     "end_ms": 504.573,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5203,
+    "2": 800,
+    "3": 800,
+    "4": 5293,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.35888671875,
+   "round": 21,
+   "load1_after": 0.35888671875
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r21-base-warm",
+   "window_ms": 483.626,
+   "frame_ms": 491.678,
+   "damage_ms": [
+    [
+     483.638,
+     1480,
+     980
+    ],
+    [
+     491.678,
+     1480,
+     980
+    ],
+    [
+     493.861,
+     1480,
+     980
+    ],
+    [
+     506.844,
+     1480,
+     980
+    ],
+    [
+     511.772,
+     1480,
+     980
+    ],
+    [
+     518.056,
+     1480,
+     980
+    ],
+    [
+     532.803,
+     1480,
+     980
+    ],
+    [
+     554.448,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 483.908,
+   "family_ms": 21.891,
+   "family_lookup_start_ms": 15.563,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.563,
+     "end_ms": 21.891,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 492.214,
+     "end_ms": 499.91,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 5298,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.330078125,
+   "round": 21,
+   "load1_after": 0.330078125
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r21-cand-cold",
+   "window_ms": 504.567,
+   "frame_ms": 513.44,
+   "damage_ms": [
+    [
+     504.581,
+     1480,
+     980
+    ],
+    [
+     513.44,
+     1480,
+     980
+    ],
+    [
+     514.896,
+     1480,
+     980
+    ],
+    [
+     526.068,
+     1480,
+     980
+    ],
+    [
+     531.837,
+     1480,
+     980
+    ],
+    [
+     537.389,
+     1480,
+     980
+    ],
+    [
+     552.063,
+     1480,
+     980
+    ],
+    [
+     574.456,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 504.809,
+   "family_ms": 365.743,
+   "family_lookup_start_ms": 15.591,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.591,
+     "end_ms": 365.743,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 510.798,
+     "end_ms": 517.112,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5283,
+    "3": 800,
+    "4": 800,
+    "5": 5237,
+    "6": 800,
+    "7": 5300
+   },
+   "load1_before": 0.30322265625,
+   "round": 21,
+   "load1_after": 0.30322265625
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r22-cand-warm",
+   "window_ms": 481.207,
+   "frame_ms": 486.992,
+   "damage_ms": [
+    [
+     481.232,
+     1480,
+     980
+    ],
+    [
+     486.992,
+     1480,
+     980
+    ],
+    [
+     489.077,
+     1480,
+     980
+    ],
+    [
+     503.842,
+     1480,
+     980
+    ],
+    [
+     509.793,
+     1480,
+     980
+    ],
+    [
+     514.906,
+     1480,
+     980
+    ],
+    [
+     528.332,
+     1480,
+     980
+    ],
+    [
+     550.526,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 481.577,
+   "family_ms": 21.831,
+   "family_lookup_start_ms": 15.582,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.582,
+     "end_ms": 21.831,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 488.745,
+     "end_ms": 495.213,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 5273,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 5088
+   },
+   "load1_before": 0.27880859375,
+   "round": 22,
+   "load1_after": 0.27880859375
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r22-base-warm",
+   "window_ms": 492.497,
+   "frame_ms": 498.117,
+   "damage_ms": [
+    [
+     492.576,
+     1480,
+     980
+    ],
+    [
+     498.117,
+     1480,
+     980
+    ],
+    [
+     500.296,
+     1480,
+     980
+    ],
+    [
+     516.099,
+     1480,
+     980
+    ],
+    [
+     521.864,
+     1480,
+     980
+    ],
+    [
+     525.231,
+     1480,
+     980
+    ],
+    [
+     532.282,
+     1480,
+     980
+    ],
+    [
+     540.152,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 492.903,
+   "family_ms": 22.72,
+   "family_lookup_start_ms": 16.473,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.473,
+     "end_ms": 22.72,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 500.966,
+     "end_ms": 510.777,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 800,
+    "2": 800,
+    "3": 5271,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.25634765625,
+   "round": 22,
+   "load1_after": 0.25634765625
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r22-cand-cold",
+   "window_ms": 497.771,
+   "frame_ms": 503.103,
+   "damage_ms": [
+    [
+     497.824,
+     1480,
+     980
+    ],
+    [
+     503.103,
+     1480,
+     980
+    ],
+    [
+     505.407,
+     1480,
+     980
+    ],
+    [
+     520.984,
+     1480,
+     980
+    ],
+    [
+     529.935,
+     1480,
+     980
+    ],
+    [
+     537.825,
+     1480,
+     980
+    ],
+    [
+     544.766,
+     1480,
+     980
+    ],
+    [
+     566.783,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 498.186,
+   "family_ms": 366.315,
+   "family_lookup_start_ms": 16.214,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.214,
+     "end_ms": 366.315,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 505.359,
+     "end_ms": 511.525,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5223,
+    "1": 5299,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 5255,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.2353515625,
+   "round": 22,
+   "load1_after": 0.2353515625
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r22-base-cold",
+   "window_ms": 511.7,
+   "frame_ms": 517.241,
+   "damage_ms": [
+    [
+     511.753,
+     1480,
+     980
+    ],
+    [
+     517.241,
+     1480,
+     980
+    ],
+    [
+     519.253,
+     1480,
+     980
+    ],
+    [
+     533.038,
+     1480,
+     980
+    ],
+    [
+     540.537,
+     1480,
+     980
+    ],
+    [
+     544.226,
+     1480,
+     980
+    ],
+    [
+     559.224,
+     1480,
+     980
+    ],
+    [
+     580.508,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 512.069,
+   "family_ms": 365.465,
+   "family_lookup_start_ms": 15.529,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.529,
+     "end_ms": 365.465,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 519.045,
+     "end_ms": 525.494,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 800,
+    "1": 5318,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.21630859375,
+   "round": 22,
+   "load1_after": 0.21630859375
+  },
+  {
+   "build": "base",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r23-base-warm",
+   "window_ms": 495.707,
+   "frame_ms": 501.202,
+   "damage_ms": [
+    [
+     495.72,
+     1480,
+     980
+    ],
+    [
+     501.202,
+     1480,
+     980
+    ],
+    [
+     503.356,
+     1480,
+     980
+    ],
+    [
+     520.353,
+     1480,
+     980
+    ],
+    [
+     528.768,
+     1480,
+     980
+    ],
+    [
+     535.428,
+     1480,
+     980
+    ],
+    [
+     542.923,
+     1480,
+     980
+    ],
+    [
+     564.526,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 495.971,
+   "family_ms": 21.898,
+   "family_lookup_start_ms": 15.511,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.511,
+     "end_ms": 21.898,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 503.015,
+     "end_ms": 509.346,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5153,
+    "1": 800,
+    "2": 800,
+    "3": 5110,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.19873046875,
+   "round": 23,
+   "load1_after": 0.19873046875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r23-cand-cold",
+   "window_ms": 496.553,
+   "frame_ms": 502.292,
+   "damage_ms": [
+    [
+     496.568,
+     1480,
+     980
+    ],
+    [
+     502.292,
+     1480,
+     980
+    ],
+    [
+     504.538,
+     1480,
+     980
+    ],
+    [
+     520.145,
+     1480,
+     980
+    ],
+    [
+     529.249,
+     1480,
+     980
+    ],
+    [
+     544.146,
+     1480,
+     980
+    ],
+    [
+     565.152,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 496.799,
+   "family_ms": 365.968,
+   "family_lookup_start_ms": 15.826,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 15.826,
+     "end_ms": 365.968,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 504.261,
+     "end_ms": 510.366,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5229,
+    "1": 800,
+    "2": 800,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.1826171875,
+   "round": 23,
+   "load1_after": 0.1826171875
+  },
+  {
+   "build": "base",
+   "fontconfig": "cold",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r23-base-cold",
+   "window_ms": 490.687,
+   "frame_ms": 496.511,
+   "damage_ms": [
+    [
+     490.746,
+     1480,
+     980
+    ],
+    [
+     496.511,
+     1480,
+     980
+    ],
+    [
+     498.709,
+     1480,
+     980
+    ],
+    [
+     513.253,
+     1480,
+     980
+    ],
+    [
+     522.381,
+     1480,
+     980
+    ],
+    [
+     530.511,
+     1480,
+     980
+    ],
+    [
+     537.655,
+     1480,
+     980
+    ],
+    [
+     559.303,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 490.981,
+   "family_ms": 361.291,
+   "family_lookup_start_ms": 16.136,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.136,
+     "end_ms": 361.291,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 498.154,
+     "end_ms": 504.268,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": true,
+    "files": 30,
+    "bytes": 1438272
+   },
+   "cpu_mhz_0_7": {
+    "0": 5302,
+    "1": 5268,
+    "2": 800,
+    "3": 5293,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.16796875,
+   "round": 23,
+   "load1_after": 0.16796875
+  },
+  {
+   "build": "cand",
+   "fontconfig": "warm",
+   "run": "/tmp/gitturtle-evidence/runs/cold-launch-x11-1791134402/r23-cand-warm",
+   "window_ms": 488.273,
+   "frame_ms": 493.794,
+   "damage_ms": [
+    [
+     488.465,
+     1480,
+     980
+    ],
+    [
+     493.794,
+     1480,
+     980
+    ],
+    [
+     495.976,
+     1480,
+     980
+    ],
+    [
+     509.718,
+     1480,
+     980
+    ],
+    [
+     516.994,
+     1480,
+     980
+    ],
+    [
+     522.895,
+     1480,
+     980
+    ],
+    [
+     535.468,
+     1480,
+     980
+    ],
+    [
+     557.198,
+     1480,
+     980
+    ]
+   ],
+   "activated_ms": 488.74,
+   "family_ms": 22.586,
+   "family_lookup_start_ms": 16.368,
+   "family": "DejaVu\\ Sans\\ Mono",
+   "applied": true,
+   "calls": [
+    {
+     "start_ms": 16.368,
+     "end_ms": 22.586,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    },
+    {
+     "start_ms": 495.795,
+     "end_ms": 502.118,
+     "exit": 0,
+     "args": "%{family} monospace",
+     "output": "DejaVu\\ Sans\\ Mono"
+    }
+   ],
+   "unfinished": [],
+   "still_running": 0,
+   "exit": -15,
+   "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "cache_before": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cache_after": {
+    "exists": false,
+    "files": 0,
+    "bytes": 0
+   },
+   "cpu_mhz_0_7": {
+    "0": 5197,
+    "1": 800,
+    "2": 5300,
+    "3": 800,
+    "4": 800,
+    "5": 800,
+    "6": 800,
+    "7": 800
+   },
+   "load1_before": 0.23486328125,
+   "round": 23,
+   "load1_after": 0.23486328125
+  }
+ ]
+}
