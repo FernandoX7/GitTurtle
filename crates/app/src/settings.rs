@@ -4860,6 +4860,114 @@ mod picker_tests {
         describes(cx, &format!("{reason} Code uses the bundled {bundled}."));
     }
 
+    /// Linux: with no fontconfig cache the lookup outlives the earlier 500 ms
+    /// bound. The row stays pending and then shows the family, which code
+    /// uses; a lookup for a setting since turned off and on stops, and its
+    /// late answer is dropped; and one that outlives the lookup's bound says
+    /// why the bundled font stays. The lookups are the worker's own, with a
+    /// stand-in for `fc-match` on the test clock, and each process is reaped.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn the_code_font_row_stays_pending_through_a_slow_lookup(cx: &mut TestAppContext) {
+        use crate::desktop_text::{self, CODE_FONT_WAIT, StandIn, SystemCodeFont};
+        use std::time::Duration;
+
+        let (_app, cx) = open_app(cx);
+        let describes = |cx: &mut VisualTestContext, description: &str| {
+            let label = format!("Use the desktop's monospace font. {description}");
+            let state = cx.read(desktop_text::system_code_font);
+            assert!(
+                drawn(cx, format!("setting-description: {label}")).is_some(),
+                "the row reads {label:?} while {state:?}"
+            );
+        };
+        let toggle = |cx: &mut VisualTestContext| {
+            let switch = shown(cx, "code-font-switch").expect("Linux Settings offers the switch");
+            cx.simulate_click(switch.center(), Modifiers::default());
+            settle(cx);
+        };
+        let lookup = |cx: &mut VisualTestContext, fake: &StandIn| {
+            let program = fake.program();
+            cx.update(|_, cx| desktop_text::run_code_font_lookup(program, cx))
+        };
+        let until = |cx: &mut VisualTestContext, done: &dyn Fn(&mut VisualTestContext) -> bool| {
+            let started = std::time::Instant::now();
+            while !done(cx) {
+                assert!(started.elapsed() < Duration::from_secs(30), "timed out");
+                desktop_text::pass_real_time(&cx.executor());
+                settle(cx);
+            }
+        };
+        let pass = |cx: &mut VisualTestContext, time: Duration| {
+            cx.executor().advance_clock(time);
+            settle(cx);
+        };
+        let code_family = |cx: &mut VisualTestContext| {
+            cx.read(|cx| {
+                gpui_kit::component::Theme::global(cx)
+                    .mono_font_family
+                    .to_string()
+            })
+        };
+        let bundled = crate::mono();
+        let pending = "Looking up the desktop's monospace font…";
+
+        toggle(cx);
+        let slow = StandIn::new();
+        let _slow = lookup(cx, &slow);
+        until(cx, &|_| slow.code_font_queries() == 1);
+        pass(cx, Duration::from_millis(1500));
+        describes(cx, pending);
+        slow.answer(bundled);
+        until(cx, &|cx| {
+            cx.read(desktop_text::system_code_font) != SystemCodeFont::Pending
+        });
+        describes(
+            cx,
+            &format!("Code uses {bundled}, the desktop's monospace font."),
+        );
+        assert_eq!(
+            cx.read(desktop_text::system_code_font),
+            SystemCodeFont::Loaded(bundled.into())
+        );
+        assert_eq!(code_family(cx), bundled);
+        assert!(slow.reaped());
+
+        // Off and on while a lookup runs: it stops, and the earlier
+        // setting's late answer is dropped.
+        toggle(cx);
+        toggle(cx);
+        let stale = cx.update(|_, cx| desktop_text::code_font_lookup_generation(cx));
+        let stopped = StandIn::new();
+        let _stopped = lookup(cx, &stopped);
+        until(cx, &|_| stopped.code_font_queries() == 1);
+        toggle(cx);
+        toggle(cx);
+        until(cx, &|_| stopped.reaped());
+        stopped.answer(bundled);
+        pass(cx, Duration::from_millis(100));
+        describes(cx, pending);
+        assert!(!cx.update(|_, cx| {
+            desktop_text::answer_code_font_lookup(stale, Ok("Desktop Mono".into()), cx)
+        }));
+        settle(cx);
+        describes(cx, pending);
+
+        // A lookup that never answers is unavailable at the bound, not before.
+        let silent = StandIn::new();
+        let _silent = lookup(cx, &silent);
+        until(cx, &|_| silent.code_font_queries() == 1);
+        pass(cx, CODE_FONT_WAIT - Duration::from_millis(50));
+        describes(cx, pending);
+        pass(cx, Duration::from_millis(50));
+        describes(
+            cx,
+            &format!("fontconfig did not answer. Code uses the bundled {bundled}."),
+        );
+        assert_eq!(code_family(cx), bundled);
+        assert!(silent.reaped());
+    }
+
     /// Linux: with the desktop's Omarchy theme read, Settings offers it as the
     /// one card of a Desktop group above the palettes, named "Omarchy theme",
     /// its caption naming the desktop's theme and its miniature drawing the

@@ -11,8 +11,10 @@
 //! Text"), where the toolkit has no DPI source; the X11 backend already scales
 //! the whole window through `Xft.dpi`. Code uses the bundled DejaVu Sans Mono
 //! unless Settings asks for the desktop's fontconfig `monospace` family, which
-//! is looked up on the same worker and used only when the toolkit has loaded it
-//! and it draws at one advance. Nothing here writes a setting.
+//! is looked up on the same worker, one `fc-match` at a time and for up to a
+//! few seconds so that a cold fontconfig cache can answer, and used only when
+//! the toolkit has loaded it and it draws at one advance. Nothing here writes a
+//! setting.
 
 use gpui_kit::AsyncApp;
 
@@ -46,7 +48,7 @@ pub(super) fn start(system_code_font: bool, cx: &mut gpui_kit::App) -> Initial {
     if system_code_font {
         code_font.enable();
     }
-    let lookup = portal::CodeFontLookup::new(code_font.generation.clone(), cx);
+    let fontconfig = portal::Fontconfig::new(code_font.generation.clone(), cx);
     let (sender, mut snapshots, latest) = portal::snapshots();
     let (refresh, requests) = futures::channel::mpsc::channel(0);
     let (ready, initial) = futures::channel::oneshot::channel();
@@ -55,7 +57,7 @@ pub(super) fn start(system_code_font: bool, cx: &mut gpui_kit::App) -> Initial {
     let (cancel, cancellation) = futures::future::AbortHandle::new_pair();
     let worker = executor.clone().spawn(async move {
         let _ = futures::future::Abortable::new(
-            portal::observe(scales_text, lookup, sender, requests, executor),
+            portal::observe(scales_text, fontconfig, sender, requests, executor),
             cancellation,
         )
         .await;
@@ -84,9 +86,10 @@ pub(super) fn start(system_code_font: bool, cx: &mut gpui_kit::App) -> Initial {
         observer.updates.take();
         let worker = observer.worker.take();
         async move {
-            // Join cancellation before process exit, including reap of a
-            // running child (bounded to 100 ms, below GPUI's shutdown budget).
-            // Pending D-Bus reads and signal subscriptions are dropped.
+            // Join cancellation before process exit, including the kill and
+            // reap of a running `fc-match`, which the dropped query does at
+            // once rather than at its bound. Pending D-Bus reads and signal
+            // subscriptions are dropped.
             if let Some(worker) = worker {
                 worker.await;
             }
@@ -310,6 +313,125 @@ pub(super) fn answer_code_font_lookup(
     changed
 }
 
+/// Tests: how long a code font lookup may run before Settings says the
+/// desktop's family is unavailable.
+#[cfg(all(test, target_os = "linux"))]
+pub(super) use portal::FAMILY_WAIT as CODE_FONT_WAIT;
+
+/// Tests: runs the worker's code font lookup for the current setting with a
+/// stand-in for `fc-match`, on the background executor and against a text
+/// system holding the bundled faces (the test platform's loads none), and
+/// answers it through [`answer_code_font_lookup`].
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn run_code_font_lookup(
+    program: Box<dyn Fn() -> std::process::Command + Send>,
+    cx: &mut gpui_kit::App,
+) -> gpui_kit::Task<()> {
+    let generation = cx.default_global::<CodeFont>().generation.clone();
+    let mut fontconfig = portal::Fontconfig::with_program(program, generation, bundled_text());
+    let executor = cx.background_executor().clone();
+    let lookup = executor
+        .clone()
+        .spawn(async move { fontconfig.code_font(&executor).await });
+    cx.spawn(async move |cx| {
+        if let Some((generation, found)) = lookup.await {
+            cx.update(|cx| answer_code_font_lookup(generation, found, cx));
+        }
+    })
+}
+
+/// Tests: a text system with only the bundled code faces.
+#[cfg(all(test, target_os = "linux"))]
+fn bundled_text() -> std::sync::Arc<gpui_kit::TextSystem> {
+    let text = gpui_kit::TextSystem::new(std::sync::Arc::new(
+        gpui_wgpu::CosmicTextSystem::new_without_system_fonts("IBM Plex Sans"),
+    ));
+    text.add_fonts(code_font_faces()).unwrap();
+    std::sync::Arc::new(text)
+}
+
+/// Tests: lets real time and the test executor's clock pass together by one
+/// read poll, so a real child's output reaches a query timed on that clock.
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn pass_real_time(executor: &gpui_kit::BackgroundExecutor) {
+    std::thread::sleep(portal::READ_POLL);
+    executor.advance_clock(portal::READ_POLL);
+    executor.run_until_parked();
+}
+
+/// Tests: a stand-in for `fc-match`. It logs each query with its process id,
+/// notes a query that starts while another runs, answers the rendering
+/// defaults at once, and answers the code font query only once the test
+/// supplies a family.
+#[cfg(all(test, target_os = "linux"))]
+pub(super) struct StandIn(tempfile::TempDir);
+
+#[cfg(all(test, target_os = "linux"))]
+impl StandIn {
+    const SCRIPT: &str = r#"d=$1; shift
+mkdir "$d/running" 2>/dev/null || echo overlap >> "$d/overlap"
+echo "$$ $*" >> "$d/log"
+case "$*" in
+*sans-serif) printf 'True|1' ;;
+*monospace) while [ ! -e "$d/family" ]; do sleep 0.005; done; cat "$d/family" ;;
+esac
+rmdir "$d/running""#;
+
+    pub(super) fn new() -> Self {
+        Self(tempfile::tempdir().unwrap())
+    }
+
+    pub(super) fn program(&self) -> Box<dyn Fn() -> std::process::Command + Send> {
+        let dir = self.0.path().to_owned();
+        Box::new(move || {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", Self::SCRIPT, "fc-match"]).arg(&dir);
+            command
+        })
+    }
+
+    /// Lets every code font query, running or later, answer `family`.
+    pub(super) fn answer(&self, family: &str) {
+        let staged = self.0.path().join("family.staged");
+        std::fs::write(&staged, family).unwrap();
+        std::fs::rename(staged, self.0.path().join("family")).unwrap();
+    }
+
+    /// The process id of each query started, with its last argument.
+    pub(super) fn queries(&self) -> Vec<(libc::pid_t, String)> {
+        std::fs::read_to_string(self.0.path().join("log"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                let (pid, args) = line.split_once(' ').unwrap();
+                let pattern = args.rsplit(' ').next().unwrap().to_owned();
+                (pid.parse().unwrap(), pattern)
+            })
+            .collect()
+    }
+
+    pub(super) fn code_font_queries(&self) -> usize {
+        self.queries()
+            .iter()
+            .filter(|(_, pattern)| pattern == "monospace")
+            .count()
+    }
+
+    pub(super) fn overlapped(&self) -> bool {
+        self.0.path().join("overlap").exists()
+    }
+
+    /// Whether every query's process has exited and been reaped: a zombie
+    /// would still accept signal zero.
+    pub(super) fn reaped(&self) -> bool {
+        self.queries().iter().all(|(pid, _)| {
+            // SAFETY: signal zero checks existence and does not send a signal.
+            let gone = unsafe { libc::kill(*pid, 0) } == -1;
+            gone && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        })
+    }
+}
+
 /// The first of fontconfig's names for its `monospace` match that the toolkit
 /// has loaded and that draws basic Latin at one advance. The toolkit matches
 /// family names exactly and caches a failed lookup for the life of the
@@ -500,9 +622,10 @@ mod portal {
     use gpui_kit::BackgroundExecutor;
     use std::io::Read as _;
     use std::os::fd::AsRawFd as _;
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Child, ChildStdout, Command, Stdio};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     const INTERFACE: &str = "org.gnome.desktop.interface";
     const FONT_RENDERING: &str = "font-rendering";
@@ -511,9 +634,21 @@ mod portal {
     const PORTAL_WAIT: Duration = Duration::from_millis(250);
     const FONTCONFIG_WAIT: Duration = Duration::from_millis(100);
     const FONTCONFIG_BYTES: usize = 128;
-    /// A family query can miss fontconfig's cache on its first run.
-    const FAMILY_WAIT: Duration = Duration::from_millis(500);
+    /// The bound on the code font query, which Settings shows as pending
+    /// meanwhile. Without a fontconfig cache, `fc-match` scans every font
+    /// directory before it answers. In the September 29 cold-launch record
+    /// (`docs/benchmarks/2026-09-29-code-font-cold-launch.md`) that scan
+    /// outlived the earlier 500 ms bound in all 24 launches. It took about
+    /// 0.8 s in all: a killed call keeps the directories it finished, and the
+    /// next call needed 213 to 331 ms more. The first launch of each run
+    /// needed more than two 500 ms calls. Four seconds is about five times
+    /// the quiet scan, room for a slow disk or a loaded host, and still short
+    /// enough that a fontconfig that never answers is reported within a few
+    /// seconds.
+    pub(crate) const FAMILY_WAIT: Duration = Duration::from_secs(4);
     const FAMILY_BYTES: usize = 1024;
+    /// How often a running query's pipe is read, on the executor's timer.
+    pub(crate) const READ_POLL: Duration = Duration::from_millis(2);
     const SIGNAL_BATCH: usize = 32;
     const CHANGE_COALESCE_WAIT: Duration = Duration::from_millis(16);
 
@@ -559,35 +694,75 @@ mod portal {
         }
     }
 
-    /// The desktop code font query, run on this worker while Settings asks
-    /// for it: once per connection, so at launch, on focus return and when
-    /// the setting turns on, and never per portal signal.
-    pub(super) struct CodeFontLookup {
-        generation: Arc<std::sync::atomic::AtomicU64>,
+    /// fontconfig's queries, run on this worker one `fc-match` at a time:
+    /// the rendering defaults, and the desktop code font while Settings asks
+    /// for it. The worker owns the one value and awaits each query, so a
+    /// refresh requested while one runs waits for it and never starts a
+    /// second process.
+    pub(super) struct Fontconfig {
+        /// `fc-match`, or a test's stand-in, without arguments.
+        program: Box<dyn Fn() -> Command + Send>,
+        generation: Arc<AtomicU64>,
         text: Arc<gpui_kit::TextSystem>,
     }
 
-    impl CodeFontLookup {
-        pub(super) fn new(
-            generation: Arc<std::sync::atomic::AtomicU64>,
-            cx: &gpui_kit::App,
+    impl Fontconfig {
+        pub(super) fn new(generation: Arc<AtomicU64>, cx: &gpui_kit::App) -> Self {
+            Self::with_program(
+                Box::new(|| Command::new("fc-match")),
+                generation,
+                cx.text_system().clone(),
+            )
+        }
+
+        pub(super) fn with_program(
+            program: Box<dyn Fn() -> Command + Send>,
+            generation: Arc<AtomicU64>,
+            text: Arc<gpui_kit::TextSystem>,
         ) -> Self {
             Self {
+                program,
                 generation,
-                text: cx.text_system().clone(),
+                text,
             }
         }
 
-        fn run(&self) -> Option<(u64, Result<gpui_kit::SharedString, String>)> {
-            let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
+        /// fontconfig's `antialias|rgba` defaults for `sans-serif`.
+        async fn defaults(&mut self, executor: &BackgroundExecutor) -> Option<String> {
+            let mut command = (self.program)();
+            command.args(["--format", "%{antialias}|%{rgba}", "sans-serif"]);
+            command_output(
+                executor,
+                &mut command,
+                FONTCONFIG_WAIT,
+                FONTCONFIG_BYTES,
+                || true,
+            )
+            .await
+        }
+
+        /// The desktop code font and the generation it answers, or `None`
+        /// while the setting is off. Once a launch, on focus return and when
+        /// the setting turns on, never per portal signal. A query whose
+        /// setting turns off, or off and on, is stopped and answers nothing;
+        /// the new generation's refresh asks again.
+        pub(super) async fn code_font(
+            &mut self,
+            executor: &BackgroundExecutor,
+        ) -> Option<(u64, Result<gpui_kit::SharedString, String>)> {
+            let generation = self.generation.load(Ordering::Acquire);
             if generation == 0 {
                 return None;
             }
-            let found = match command_output_limited(
-                Command::new("fc-match").args(["--format", "%{family}", "monospace"]),
-                FAMILY_WAIT,
-                FAMILY_BYTES,
-            ) {
+            let current = || self.generation.load(Ordering::Acquire) == generation;
+            let mut command = (self.program)();
+            command.args(["--format", "%{family}", "monospace"]);
+            let output =
+                command_output(executor, &mut command, FAMILY_WAIT, FAMILY_BYTES, current).await;
+            if !current() {
+                return None;
+            }
+            let found = match output {
                 Some(output) => {
                     super::desktop_code_font(&self.text, &super::monospace_families(&output))
                 }
@@ -739,7 +914,20 @@ mod portal {
     /// and child execution have deadlines; the UI retains one latest value.
     pub(super) async fn observe(
         scales_text: bool,
-        code_font: CodeFontLookup,
+        fontconfig: Fontconfig,
+        sender: Snapshots,
+        refresh: Receiver<()>,
+        executor: BackgroundExecutor,
+    ) {
+        observe_with(connect, scales_text, fontconfig, sender, refresh, executor).await
+    }
+
+    /// [`observe`] with its portal connection supplied, so tests can run the
+    /// loop without a session bus.
+    async fn observe_with<C: Future<Output = Option<Session>>>(
+        connect: impl Fn() -> C,
+        scales_text: bool,
+        mut fontconfig: Fontconfig,
         mut sender: Snapshots,
         mut refresh: Receiver<()>,
         executor: BackgroundExecutor,
@@ -759,14 +947,15 @@ mod portal {
             )
             .is_none()
             {
-                observed.fontconfig = fontconfig_defaults();
+                observed.fontconfig = fontconfig.defaults(&executor).await;
             }
             // Launch waits for the first snapshot, so the code font lookup
-            // follows it rather than holding the window back.
+            // follows it rather than holding the window back. The lookup
+            // holds this loop, so a refresh requested meanwhile waits for it.
             if !sender.send(observed.resolve(scales_text)) {
                 return;
             }
-            let code = code_font.run();
+            let code = fontconfig.code_font(&executor).await;
             let resolve = |observed: &Observed| DesktopText {
                 code_font: code.clone(),
                 ..observed.resolve(scales_text)
@@ -805,7 +994,7 @@ mod portal {
                     )
                     .is_none()
                     {
-                        session.observed.fontconfig = fontconfig_defaults();
+                        session.observed.fontconfig = fontconfig.defaults(&executor).await;
                     }
                     if !sender.send(resolve(&session.observed)) {
                         return;
@@ -826,22 +1015,17 @@ mod portal {
         }
     }
 
-    /// fontconfig-only desktops are reread when a window regains focus.
-    fn fontconfig_defaults() -> Option<String> {
-        command_output(
-            Command::new("fc-match").args(["--format", "%{antialias}|%{rgba}", "sans-serif"]),
-            FONTCONFIG_WAIT,
-        )
-    }
-
-    fn command_output(command: &mut Command, timeout: Duration) -> Option<String> {
-        command_output_limited(command, timeout, FONTCONFIG_BYTES)
-    }
-
-    fn command_output_limited(
+    /// Runs `command` without blocking a worker thread: its pipe is read
+    /// every [`READ_POLL`] on the executor's timer, at most `limit` bytes are
+    /// accepted, and the child is killed and reaped when it fails, outlives
+    /// `timeout`, `keep` turns false or the query is dropped. It is always
+    /// reaped before this returns.
+    async fn command_output(
+        executor: &BackgroundExecutor,
         command: &mut Command,
         timeout: Duration,
         limit: usize,
+        keep: impl Fn() -> bool,
     ) -> Option<String> {
         let mut child = ChildGuard(
             command
@@ -858,33 +1042,62 @@ mod portal {
         if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
             return None;
         }
-        let deadline = Instant::now() + timeout;
-        let mut output = Vec::with_capacity(limit);
-        let mut buffer = vec![0; limit + 1];
+        let read = async {
+            let mut output = Vec::with_capacity(limit);
+            let mut buffer = vec![0; limit + 1];
+            loop {
+                if let Some(result) =
+                    read_available(&mut child.0, &mut stdout, &mut output, &mut buffer, limit)
+                {
+                    return result;
+                }
+                if !keep() {
+                    return None;
+                }
+                executor.timer(READ_POLL).await;
+            }
+        };
+        match futures::future::select(Box::pin(read), executor.timer(timeout)).await {
+            futures::future::Either::Left((output, _)) => output,
+            futures::future::Either::Right(_) => None,
+        }
+        // `child` drops here: killed if still running, and reaped.
+    }
+
+    /// One read of everything the pipe holds: `None` while the child may
+    /// write more, otherwise the query's result.
+    fn read_available(
+        child: &mut Child,
+        stdout: &mut ChildStdout,
+        output: &mut Vec<u8>,
+        buffer: &mut [u8],
+        limit: usize,
+    ) -> Option<Option<String>> {
         loop {
-            match stdout.read(&mut buffer) {
+            match stdout.read(buffer) {
                 Ok(count) => {
                     if output.len() + count > limit {
-                        return None;
+                        return Some(None);
                     }
                     output.extend_from_slice(&buffer[..count]);
-                    if count == 0
-                        && let Some(status) = child.0.try_wait().ok()?
-                    {
-                        return status
-                            .success()
-                            .then(|| String::from_utf8(output).ok())
-                            .flatten();
+                    if count > 0 {
+                        continue;
                     }
+                    return match child.try_wait() {
+                        Ok(Some(status)) => Some(
+                            status
+                                .success()
+                                .then(|| String::from_utf8(std::mem::take(output)).ok())
+                                .flatten(),
+                        ),
+                        Ok(None) => None,
+                        Err(_) => Some(None),
+                    };
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return None,
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => return None,
+                Err(_) => return Some(None),
             }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(2));
         }
     }
 
@@ -992,40 +1205,75 @@ mod portal {
             assert!(!sender.send(Observed::default().resolve(true)));
         }
 
-        #[test]
-        fn fontconfig_child_output_and_lifetime_are_bounded() {
+        /// Runs `query` on the executor while real time and its clock pass.
+        fn finish<T: Send + 'static>(
+            cx: &gpui_kit::TestAppContext,
+            query: impl Future<Output = T> + Send + 'static,
+        ) -> T {
+            let result = Arc::new(Mutex::new(None));
+            let slot = result.clone();
+            cx.executor()
+                .spawn(async move { *slot.lock().unwrap() = Some(query.await) })
+                .detach();
+            until(cx, || result.lock().unwrap().is_some());
+            result.lock().unwrap().take().unwrap()
+        }
+
+        fn until(cx: &gpui_kit::TestAppContext, mut done: impl FnMut() -> bool) {
+            let started = std::time::Instant::now();
+            while !done() {
+                assert!(started.elapsed() < Duration::from_secs(30), "timed out");
+                super::super::pass_real_time(&cx.executor());
+            }
+        }
+
+        fn sh(script: &str) -> Command {
+            let mut command = Command::new("sh");
+            command.args(["-c", script, "fixture"]);
+            command
+        }
+
+        #[gpui_kit::test]
+        fn fontconfig_child_output_and_lifetime_are_bounded(cx: &mut gpui_kit::TestAppContext) {
+            let output = |script: &'static str, timeout: Duration| {
+                let executor = cx.executor();
+                finish(cx, async move {
+                    command_output(
+                        &executor,
+                        &mut sh(script),
+                        timeout,
+                        FONTCONFIG_BYTES,
+                        || true,
+                    )
+                    .await
+                })
+            };
+            let second = Duration::from_secs(1);
+            assert_eq!(output("printf 'True|1'", second), Some("True|1".into()));
+            assert_eq!(output("printf 'True|1'; exit 1", second), None);
             assert_eq!(
-                command_output(
-                    Command::new("sh").args(["-c", "printf 'True|1'"]),
-                    Duration::from_secs(1)
-                ),
-                Some("True|1".into())
-            );
-            assert_eq!(
-                command_output(
-                    Command::new("sh").args(["-c", "printf 'True|1'; exit 1"]),
-                    Duration::from_secs(1)
-                ),
-                None
-            );
-            assert_eq!(
-                command_output(
-                    Command::new("sh").args(["-c", "while :; do printf '0123456789'; done"]),
-                    Duration::from_secs(1)
-                ),
+                output("while :; do printf '0123456789'; done", second),
                 None
             );
             // The direct child replaces its shell, so this also detects a leaked
             // sleeper without creating an unrelated descendant process.
             let pid_file = tempfile::NamedTempFile::new().unwrap();
-            let started = Instant::now();
+            let path = pid_file.path().to_owned();
+            let executor = cx.executor();
+            let started = std::time::Instant::now();
             assert_eq!(
-                command_output(
-                    Command::new("sh")
-                        .args(["-c", "echo $$ > \"$1\"; exec sleep 30", "fixture"])
-                        .arg(pid_file.path()),
-                    Duration::from_millis(40)
-                ),
+                finish(cx, async move {
+                    let mut command = sh("echo $$ > \"$1\"; exec sleep 30");
+                    command.arg(path);
+                    command_output(
+                        &executor,
+                        &mut command,
+                        Duration::from_millis(40),
+                        FONTCONFIG_BYTES,
+                        || true,
+                    )
+                    .await
+                }),
                 None
             );
             assert!(started.elapsed() < Duration::from_secs(2));
@@ -1040,6 +1288,149 @@ mod portal {
                 std::io::Error::last_os_error().raw_os_error(),
                 Some(libc::ESRCH)
             );
+        }
+
+        fn stand_in(generation: &Arc<AtomicU64>, fake: &super::super::StandIn) -> Fontconfig {
+            Fontconfig::with_program(
+                fake.program(),
+                generation.clone(),
+                super::super::bundled_text(),
+            )
+        }
+
+        /// A cold fontconfig cache: the code font query outlives the earlier
+        /// 500 ms bound while focus returns several times. No second query
+        /// starts while it runs, its late answer is used, and the refreshes
+        /// requested meanwhile join into one more pass after it. No query,
+        /// defaults included, overlaps another, and every one is reaped.
+        #[gpui_kit::test]
+        fn a_late_code_font_answer_is_used_and_queries_never_overlap(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            let fake = super::super::StandIn::new();
+            let generation = Arc::new(AtomicU64::new(1));
+            let (sender, _wakes, latest) = snapshots();
+            let (mut refresh, requests) = mpsc::channel(0);
+            let executor = cx.executor();
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let finished = done.clone();
+            let worker = observe_with(
+                || async { None },
+                false,
+                stand_in(&generation, &fake),
+                sender,
+                requests,
+                executor.clone(),
+            );
+            executor
+                .spawn(async move {
+                    worker.await;
+                    finished.store(true, Ordering::SeqCst);
+                })
+                .detach();
+            let mut seen = Vec::new();
+            let collect = |seen: &mut Vec<DesktopText>| {
+                seen.extend(latest.lock().unwrap().take());
+            };
+
+            until(cx, || fake.code_font_queries() == 1);
+            collect(&mut seen);
+            // The defaults answered, and launch's snapshot did not wait.
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].rendering, gpui_kit::TextRenderingMode::Subpixel);
+            assert_eq!(seen[0].code_font, None);
+
+            for _ in 0..3 {
+                let _ = refresh.try_send(());
+            }
+            executor.advance_clock(Duration::from_millis(1500));
+            executor.run_until_parked();
+            super::super::pass_real_time(&executor);
+            collect(&mut seen);
+            assert_eq!(seen.len(), 1, "the lookup is still pending at 1.5 s");
+            assert_eq!(fake.code_font_queries(), 1, "a refresh waits for it");
+
+            fake.answer("DejaVu Sans Mono");
+            let answered = |seen: &[DesktopText]| {
+                seen.iter()
+                    .filter(|snapshot| snapshot.code_font.is_some())
+                    .count()
+            };
+            until(cx, || {
+                collect(&mut seen);
+                answered(&seen) == 2
+            });
+            let found = Some((1, Ok(gpui_kit::SharedString::from("DejaVu Sans Mono"))));
+            assert!(
+                seen.iter()
+                    .all(|snapshot| snapshot.code_font.is_none() || snapshot.code_font == found)
+            );
+            for _ in 0..50 {
+                super::super::pass_real_time(&executor);
+            }
+            assert_eq!(fake.code_font_queries(), 2, "three refreshes, one pass");
+            assert_eq!(fake.queries().len(), 4, "defaults and code font, twice");
+            assert!(!fake.overlapped());
+
+            drop(refresh);
+            until(cx, || done.load(Ordering::SeqCst));
+            assert!(fake.reaped());
+        }
+
+        /// A query that outlives the bound is killed, reaped and reported
+        /// unavailable, not before.
+        #[gpui_kit::test]
+        fn a_code_font_query_past_the_bound_is_killed_and_unavailable(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            let fake = super::super::StandIn::new();
+            let generation = Arc::new(AtomicU64::new(7));
+            let mut fontconfig = stand_in(&generation, &fake);
+            let executor = cx.executor();
+            let result = Arc::new(Mutex::new(None));
+            let slot = result.clone();
+            let lookup = executor.clone();
+            executor
+                .spawn(async move {
+                    *slot.lock().unwrap() = Some(fontconfig.code_font(&lookup).await);
+                })
+                .detach();
+            until(cx, || fake.queries().len() == 1);
+            executor.advance_clock(FAMILY_WAIT - Duration::from_millis(50));
+            executor.run_until_parked();
+            assert!(result.lock().unwrap().is_none());
+            executor.advance_clock(Duration::from_millis(50));
+            executor.run_until_parked();
+            assert_eq!(
+                result.lock().unwrap().take(),
+                Some(Some((7, Err("fontconfig did not answer.".into()))))
+            );
+            assert!(fake.reaped());
+        }
+
+        /// Turning the setting off, or off and on, stops a running query at
+        /// once: it answers nothing, and its process is killed and reaped.
+        #[gpui_kit::test]
+        fn a_code_font_query_for_a_changed_setting_stops(cx: &mut gpui_kit::TestAppContext) {
+            for next in [0, 2] {
+                let fake = super::super::StandIn::new();
+                let generation = Arc::new(AtomicU64::new(1));
+                let mut fontconfig = stand_in(&generation, &fake);
+                let executor = cx.executor();
+                let result = Arc::new(Mutex::new(None));
+                let slot = result.clone();
+                let lookup = executor.clone();
+                executor
+                    .spawn(async move {
+                        *slot.lock().unwrap() = Some(fontconfig.code_font(&lookup).await);
+                    })
+                    .detach();
+                until(cx, || fake.queries().len() == 1);
+                generation.store(next, Ordering::Release);
+                super::super::pass_real_time(&executor);
+                assert_eq!(result.lock().unwrap().take(), Some(None), "{next}");
+                assert!(fake.reaped());
+            }
         }
     }
 }
