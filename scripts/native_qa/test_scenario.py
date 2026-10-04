@@ -205,7 +205,8 @@ class SpecTest(unittest.TestCase):
                          ["candidate-midnight-1000x680-focus.png", "candidate-porcelain-1000x680-focus.png"])
 
     def test_every_committed_scenario_names_exactly_its_committed_crops(self) -> None:
-        # A name carries the window its capture is taken at; none of these resizes, so each keeps its old names.
+        # A name carries the window its capture is taken at, so every crop is taken at one of the scenario's own
+        # windows: its launch size alone unless it resizes.
         specs = sorted((HERE.parents[1] / "docs" / "evidence").glob("*/scenario.json"))
         if not specs:
             self.skipTest("no committed scenarios")
@@ -214,7 +215,7 @@ class SpecTest(unittest.TestCase):
                 loaded = scenario.load(path)
                 crops = scenario.committed(loaded)
                 self.assertEqual(sorted(crop.name for crop in crops), sorted(p.name for p in path.parent.glob("*.png")))
-                self.assertEqual({crop.window for crop in crops}, {loaded["window"]})
+                self.assertLessEqual({crop.window for crop in crops}, set(scenario.windows(loaded)))
 
     def test_crops_at_several_window_sizes(self) -> None:
         loaded = scenario.validate(sized())
