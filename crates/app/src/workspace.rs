@@ -934,7 +934,7 @@ impl GitTurtle {
         .track_scroll(&self.working_scroll);
         div()
             .size_full().min_h_0().relative().flex().flex_col().bg(rgb(p.panel))
-            .child(div().flex_shrink_0().child(self.render_working_selection(cx)))
+            .child(div().debug_selector(|| "working-selection".into()).flex_shrink_0().child(self.render_working_selection(cx)))
             .child(
                 div().h(px(header_height)).flex_shrink_0().px_4().flex().items_center().gap_2()
                     .border_b_1().border_color(rgb(p.border))

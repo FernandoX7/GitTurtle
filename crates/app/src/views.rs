@@ -1411,7 +1411,13 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    pub(super) fn render_inspector(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The inspector, its "Changed files" header laid out as `files_header`,
+    /// which the window measures where it fixes the inspector's width.
+    pub(super) fn render_inspector(
+        &self,
+        files_header: FilesHeader,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if self.file_history.is_active() {
             return self.render_file_history(cx);
         }
@@ -1449,7 +1455,7 @@ impl GitTurtle {
                     .debug_selector(|| "commit-inspector-files".into())
                     .flex_1()
                     .min_h_0()
-                    .child(self.render_files(cx)),
+                    .child(self.render_files_with(files_header, cx)),
             )
             .into_any_element()
     }
@@ -1505,6 +1511,11 @@ impl GitTurtle {
     }
 
     pub(super) fn render_files(&self, cx: &mut Context<Self>) -> AnyElement {
+        self.render_files_with(FilesHeader::WHOLE, cx)
+    }
+
+    /// The changed files, their header laid out as `header`.
+    fn render_files_with(&self, header: FilesHeader, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let visible = self.filtered_file_indices(cx);
         div()
@@ -1514,9 +1525,14 @@ impl GitTurtle {
             .border_r_1()
             .border_color(rgb(colors.border))
             .child(
+                // The count never shrinks: the label truncates first, and in
+                // an inspector the window pins too narrow for its first
+                // character and ellipsis it leaves, then the count.
                 div()
+                    .debug_selector(|| "changed-files-header".into())
                     .h(crate::appearance::ui_size(36.))
                     .flex_shrink_0()
+                    .min_w_0()
                     .px_3()
                     .flex()
                     .items_center()
@@ -1525,16 +1541,28 @@ impl GitTurtle {
                     .font_weight(FontWeight::MEDIUM)
                     .gap_2()
                     .child(icon("changes", 15., colors.muted))
-                    .child("Changed files")
-                    .child(
-                        div()
-                            .px_1p5()
-                            .py_0p5()
-                            .rounded(px(4.))
-                            .bg(rgb(colors.hover))
-                            .text_size(crate::appearance::ui_text(10.))
-                            .child(self.files.len().to_string()),
-                    ),
+                    .when(header.label, |row| {
+                        row.child(
+                            div()
+                                .debug_selector(|| "changed-files-label".into())
+                                .min_w_0()
+                                .truncate()
+                                .child("Changed files"),
+                        )
+                    })
+                    .when(header.count, |row| {
+                        row.child(
+                            div()
+                                .debug_selector(|| "changed-files-count".into())
+                                .flex_shrink_0()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(px(4.))
+                                .bg(rgb(colors.hover))
+                                .text_size(crate::appearance::ui_text(10.))
+                                .child(self.files.len().to_string()),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -2063,9 +2091,14 @@ impl GitTurtle {
     }
 }
 
-/// Navigation and the history table (520 px) beside the narrowest inspector
-/// (280 px): below this repository width, History shows the rail.
+// The column and inspector minimums below are those of the default interface
+// text size; each is drawn scaled with the interface size (`appearance::ui_size`),
+// as the rail and the controls they hold are.
+/// Navigation and the history table (`WIDE_CONTENT_MIN`) beside the narrowest
+/// inspector (`INSPECTOR_MIN`): below this repository width, History shows
+/// the rail.
 const SIDEBAR_FIT_WIDTH: f32 = 800.;
+const WIDE_CONTENT_MIN: f32 = 520.;
 /// The narrowest content column beside the rail in a narrow window.
 const NARROW_CONTENT_MIN: f32 = 240.;
 /// The narrowest inspector while the rail and the narrow content column fit.
@@ -2073,9 +2106,102 @@ const INSPECTOR_MIN: f32 = 280.;
 /// Where even those do not fit, as in a half tile of a display about
 /// 1,000 px wide at a fractional scale, the inspector yields to this width
 /// first and then the content column to `TIGHT_CONTENT_MIN`, so the
-/// inspector stays whole down to about 460 px.
+/// inspector stays whole down to about 460 px at the default size. The
+/// column keeps that minimum, which holds History's compact scope toolbar,
+/// and in a window narrower still, or at a larger interface size, the
+/// inspector takes exactly the width the column leaves it.
 const TIGHT_INSPECTOR_MIN: f32 = 240.;
 const TIGHT_CONTENT_MIN: f32 = 176.;
+/// The content column's minimum width, which includes the rail beside it in a
+/// narrow window, and the inspector's, for a repository page `width` wide.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ColumnMinimums {
+    content: Pixels,
+    inspector: Pixels,
+    /// Whether the inspector is exactly `inspector` wide: the column at its
+    /// tight minimum leaves it less than its own, so it takes what is left
+    /// and cannot be resized.
+    pinned: bool,
+}
+
+impl ColumnMinimums {
+    fn new(width: Pixels, rail: Pixels, narrow: bool) -> Self {
+        let scaled = appearance::ui_size;
+        if !narrow {
+            return Self {
+                content: scaled(WIDE_CONTENT_MIN),
+                inspector: scaled(INSPECTOR_MIN),
+                pinned: false,
+            };
+        }
+        let beside_rail = width - rail;
+        let inspector = (beside_rail - scaled(NARROW_CONTENT_MIN))
+            .max(scaled(TIGHT_INSPECTOR_MIN))
+            .min(scaled(INSPECTOR_MIN));
+        let content = (beside_rail - inspector)
+            .max(scaled(TIGHT_CONTENT_MIN))
+            .min(scaled(NARROW_CONTENT_MIN));
+        let left = (beside_rail - content).max(px(0.));
+        Self {
+            content: rail + content,
+            inspector: inspector.min(left),
+            pinned: left < inspector,
+        }
+    }
+}
+
+/// How the inspector's "Changed files" header shares its row. The count comes
+/// first, drawn whole or not at all, and the label truncates beside it only
+/// where at least its first character and ellipsis fit, so as the inspector
+/// narrows the label leaves, then the count, and neither shows a clipped
+/// count or a lone ellipsis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct FilesHeader {
+    label: bool,
+    count: bool,
+}
+
+impl FilesHeader {
+    /// The header of an inspector at least its tight minimum wide, where the
+    /// label and count fit whole at every interface size.
+    pub(super) const WHOLE: Self = Self {
+        label: true,
+        count: true,
+    };
+
+    /// The header of an inspector the window pins `width` wide, holding
+    /// `count` changed files, measured from the interface font at the
+    /// interface size and the header's medium weight: the inspector's 1 px
+    /// left border and the file list's 1 px right border, the row's `px_3` on
+    /// either side and its 15 px icon, then the count, its text between
+    /// `px_1p5` on either side, and the label, each `gap_2` after what
+    /// precedes it.
+    fn within(width: Pixels, count: &str, window: &Window) -> Self {
+        let rem = window.rem_size();
+        let gap = rem * 0.5;
+        let room = width - px(2.) - rem * 1.5 - px(15.);
+        let count = gap
+            + rem * 0.75
+            + cached_text_width(&FILES_COUNT, count, window, || {
+                shaped_width(count, appearance::ui_text(10.), FontWeight::MEDIUM, window).ceil()
+            });
+        let shows_count = count <= room;
+        Self {
+            label: shows_count && room - count - gap >= files_label_min_width(window),
+            count: shows_count,
+        }
+    }
+}
+
+/// The narrowest "Changed files" is drawn in without a lone ellipsis: cut to
+/// its first character and the ellipsis, measured as `scope_name_min_width`
+/// measures a cut scope name.
+fn files_label_min_width(window: &Window) -> Pixels {
+    cached_width(&FILES_LABEL, &LineKey::current(window), || {
+        shaped_width("C…", appearance::ui_text(11.), FontWeight::MEDIUM, window).floor() + px(1.)
+    })
+}
+
 /// Below this window width, at the interface text size, the header drops the
 /// Projects and profile labels so it stays on one row.
 const COMPACT_HEADER_WIDTH: f32 = 800.;
@@ -2173,6 +2299,8 @@ thread_local! {
     static SCOPE_LABELS: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static SCOPE_COUNT: TextWidth = const { RefCell::new(None) };
     static SCOPE_NAME: TextWidth = const { RefCell::new(None) };
+    static FILES_COUNT: TextWidth = const { RefCell::new(None) };
+    static FILES_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
 }
 #[cfg(test)]
 thread_local! {
@@ -2276,7 +2404,7 @@ impl GitTurtle {
     /// Whether History has room for its navigation beside the table and the
     /// narrowest inspector.
     pub(super) fn navigation_fits(&self, window: &Window) -> bool {
-        self.repository_width(window) >= px(SIDEBAR_FIT_WIDTH)
+        self.repository_width(window) >= appearance::ui_size(SIDEBAR_FIT_WIDTH)
     }
 
     /// The shortcut, the menu bar and the command palette share this. Outside
@@ -2314,19 +2442,22 @@ impl GitTurtle {
         // less, so the inspector stays whole; saved widths and the user's
         // navigation choice are untouched.
         let width = self.repository_width(window);
-        let narrow = width < px(SIDEBAR_FIT_WIDTH);
+        let narrow = width < appearance::ui_size(SIDEBAR_FIT_WIDTH);
         let rail = appearance::ui_size(44.);
-        let (content_min, inspector_min) = if narrow {
-            let beside_rail = width - rail;
-            let inspector = (beside_rail - px(NARROW_CONTENT_MIN))
-                .max(px(TIGHT_INSPECTOR_MIN))
-                .min(px(INSPECTOR_MIN));
-            let content = (beside_rail - inspector)
-                .max(px(TIGHT_CONTENT_MIN))
-                .min(px(NARROW_CONTENT_MIN));
-            (rail + content, inspector)
+        let columns = ColumnMinimums::new(width, rail, narrow);
+        let (content_min, inspector_min) = (columns.content, columns.inspector);
+        // Where the inspector is pinned, its message toolbar knows its width
+        // and reserves the rows its copy controls take there.
+        self.inspector_message.lay_out_toolbar(
+            columns
+                .pinned
+                .then(|| commit_message::Toolbar::within(columns.inspector, window)),
+        );
+        // So does its "Changed files" header, which keeps its count whole.
+        let files_header = if columns.pinned && self.mode != WorkspaceMode::Working {
+            FilesHeader::within(columns.inspector, &self.files.len().to_string(), window)
         } else {
-            (px(520.), px(INSPECTOR_MIN))
+            FilesHeader::WHOLE
         };
         let left = if self.mode != WorkspaceMode::History {
             // The preview column as last laid out. Entering from History it is
@@ -2427,12 +2558,20 @@ impl GitTurtle {
             .child(
                 resizable_panel()
                     .size(px(self.settings.inspector_width))
-                    .size_range(inspector_min..px(480.))
+                    // A scaled minimum can pass the 480 px maximum, as at
+                    // 18 pt with a desktop text scale of 1.25.
+                    .size_range(
+                        inspector_min..if columns.pinned {
+                            inspector_min
+                        } else {
+                            px(480.).max(inspector_min)
+                        },
+                    )
                     .flex_none()
                     .child(if self.mode == WorkspaceMode::Working {
                         self.render_working_inspector(window, cx)
                     } else {
-                        self.render_inspector(cx)
+                        self.render_inspector(files_header, cx)
                     }),
             );
         div()
@@ -3260,6 +3399,284 @@ mod tests {
         }
     }
 
+    /// Whether `inner` lies inside `outer`, edges included.
+    fn within(inner: Bounds<Pixels>, outer: Bounds<Pixels>) -> bool {
+        inner.left() >= outer.left()
+            && inner.right() <= outer.right()
+            && inner.top() >= outer.top()
+            && inner.bottom() <= outer.bottom()
+    }
+
+    /// The commit inspector's message toolbar ends above "Changed files",
+    /// and the toolbar, its copy controls and the files stay in the window.
+    fn assert_inspector_whole(cx: &mut VisualTestContext, width: f32, state: &str) {
+        let window = Bounds::new(point(px(0.), px(0.)), size(px(width), px(10_000.)));
+        let files = cx.debug_bounds("commit-inspector-files").unwrap();
+        let header = cx.debug_bounds("changed-files-header").unwrap();
+        let toolbar = cx.debug_bounds("commit-message-toolbar").unwrap();
+        assert!(
+            toolbar.bottom() <= files.top() && toolbar.bottom() <= header.top(),
+            "{state}: toolbar {toolbar:?} over Changed files {header:?}"
+        );
+        assert!(within(files, window), "{state}: files {files:?}");
+        for id in ["copy-message", "copy-commit"] {
+            let control = cx.debug_bounds(id).unwrap();
+            assert!(
+                within(control, toolbar) && control.left() >= files.left(),
+                "{state}: {id} {control:?} outside the {toolbar:?} toolbar"
+            );
+        }
+    }
+
+    /// At an 18 pt interface size the column and inspector minimums grow with
+    /// the text: in a 461 × 490 half tile History's compact paging stays in
+    /// the column, the inspector ends at the window's edge, its message
+    /// toolbar reserves the rows it wraps to above "Changed files", in History
+    /// and Compare alike, and Changes' filter field, whose text area clips its
+    /// placeholder, stays inside the window, focused or not.
+    #[gpui::test]
+    async fn narrow_large_text_keeps_paging_and_the_inspector_whole(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) =
+            history_window_from(cx, &history_script(history_paging::PAGE_SIZE + 20, 1)).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        // At 560 px the inspector is wide enough for the labelled Copy
+        // message, so Hash wraps below it; at 461 only its icon fits.
+        for (width, height, compact) in [(461., 490., true), (560., 600., false)] {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let toolbar = cx.debug_bounds("history-scope-toolbar").unwrap();
+            for selector in ["columns", "history-newest", "history-previous", "load-more"] {
+                let control = cx.debug_bounds(selector).unwrap();
+                assert!(
+                    control.left() >= toolbar.left()
+                        && control.right() <= toolbar.right()
+                        && control.right() <= px(width),
+                    "{selector} outside the {toolbar:?} column at {width}: {control:?}"
+                );
+            }
+            assert_inspector_whole(cx, width, &format!("History at {width}"));
+            let copy = cx.debug_bounds("copy-message").unwrap();
+            let hash = cx.debug_bounds("copy-commit").unwrap();
+            assert_eq!(
+                copy.size.width == appearance::ui_size(28.).ceil(),
+                compact,
+                "Copy message at {width}: {copy:?}"
+            );
+            assert_eq!(
+                hash.top() > copy.top(),
+                !compact,
+                "Hash at {width}: {hash:?}"
+            );
+        }
+        assert_eq!(
+            COMPACT_NAMES.with(|names| names.borrow().get("copy-message").copied()),
+            Some("Copy full commit message")
+        );
+
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        for (width, height) in [(461., 490.), (560., 600.)] {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            assert_inspector_whole(cx, width, &format!("Compare at {width}"));
+        }
+
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        for focused in [false, true] {
+            if focused {
+                cx.update(|window, cx| {
+                    let filter = app.read(cx).working_filter.clone();
+                    filter.update(cx, |filter, cx| filter.focus(window, cx));
+                });
+            }
+            draw(cx);
+            let selection = cx.debug_bounds("working-selection").unwrap();
+            let (field, text) = cx.read(|cx| {
+                let filter = app.read(cx).working_filter.read(cx);
+                (filter.input_bounds(), filter.text_bounds().unwrap())
+            });
+            assert!(
+                selection.right() <= px(461.)
+                    && field.left() >= selection.left()
+                    && field.right() <= selection.right()
+                    && within(text, field),
+                "focused {focused}: field {field:?}, text {text:?} in {selection:?}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A `git fast-import` stream of two commits on `main`: the older adds
+    /// `older` files and the newer `newer` more.
+    fn files_script(older: usize, newer: usize) -> String {
+        let mut input = String::new();
+        for (commit, (first, files)) in [(0, older), (older, newer)].into_iter().enumerate() {
+            let message = format!("fixture files {commit}");
+            input.push_str(&format!(
+                "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\n",
+                1_700_000_000 + commit,
+                message.len(),
+            ));
+            for file in first..first + files {
+                input.push_str(&format!("M 100644 inline file-{file:02}.txt\ndata 2\nx\n"));
+            }
+            input.push('\n');
+        }
+        input + "done\n"
+    }
+
+    /// The "Changed files" header keeps its count whole inside the inspector
+    /// the window pins at 18 pt: in a 461 × 490 half tile the label truncates
+    /// beside a count of 12 or of 3, in History and Compare, and as the window
+    /// narrows the label leaves, then the count, never clipping either.
+    #[gpui::test]
+    async fn narrow_large_text_keeps_the_changed_files_count_whole(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &files_script(3, 12)).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let (gap, inset, label_min) = cx.update(|window, _| {
+            let rem = window.rem_size();
+            (rem * 0.5, rem * 0.75, files_label_min_width(window))
+        });
+        let check = |cx: &mut VisualTestContext, width: f32, state: &str| {
+            cx.simulate_resize(size(px(width), px(490.)));
+            draw(cx);
+            let header = cx.debug_bounds("changed-files-header").unwrap();
+            let files = cx.debug_bounds("commit-inspector-files").unwrap();
+            let count = cx.debug_bounds("changed-files-count");
+            let label = cx.debug_bounds("changed-files-label");
+            // Across the inspector only: the vertical chrome at this height
+            // is the compact-chrome task's.
+            assert!(
+                header.left() >= files.left()
+                    && header.right() <= files.right()
+                    && files.right() <= px(width),
+                "{state} at {width}: header {header:?} in {files:?}"
+            );
+            if let Some(count) = count {
+                assert!(
+                    count.left() >= header.left() + inset
+                        && count.right() <= header.right() - inset,
+                    "{state} at {width}: count {count:?} cut in {header:?}"
+                );
+            }
+            if let Some(label) = label {
+                let count = count.expect("the label shows only beside the count");
+                assert!(
+                    label.size.width >= label_min && label.right() + gap <= count.left(),
+                    "{state} at {width}: label {label:?} beside {count:?}"
+                );
+            }
+            (label.is_some(), count.is_some())
+        };
+        for (commit, count) in [(0, "12"), (1, "3")] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.show_history(window, cx);
+                    app.select_commit(commit, window, cx);
+                })
+            });
+            settle(&app, cx).await;
+            assert_eq!(cx.read(|cx| app.read(cx).files.len().to_string()), count);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+            settle(&app, cx).await;
+            assert_eq!(
+                check(cx, 461., "Compare"),
+                (true, true),
+                "Compare, {count} files"
+            );
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+            settle(&app, cx).await;
+            assert_eq!(
+                check(cx, 461., "History"),
+                (true, true),
+                "History, {count} files"
+            );
+            let mut shown = Vec::new();
+            for width in (341..=461).rev().step_by(4) {
+                shown.push(check(cx, width as f32, "History"));
+            }
+            assert!(
+                shown
+                    .windows(2)
+                    .all(|pair| pair[0].0 >= pair[1].0 && pair[0].1 >= pair[1].1),
+                "{count} files: the label and count only leave as the window narrows: {shown:?}"
+            );
+            assert!(
+                shown.contains(&(false, true)) && shown.contains(&(false, false)),
+                "{count} files: the label leaves before the count: {shown:?}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// At the default interface size the narrow half tiles keep origin/main's
+    /// layout: these are the bounds its fixed minimums gave (the rail, a
+    /// 177 px column and a 240 px inspector at 461 px; a 209 px column at
+    /// 493 px), measured on origin/main at f695dce.
+    #[gpui::test]
+    async fn default_text_size_keeps_the_narrow_layout(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) =
+            history_window_from(cx, &history_script(history_paging::PAGE_SIZE + 20, 1)).await;
+        let bounds = |x: f32, y: f32, width: f32, height: f32| {
+            Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
+        };
+        for (width, height, column, inspector, files_top) in [
+            (461., 490., 177., 222., 322.5),
+            (493., 526., 209., 254., 339.),
+        ] {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let files_height = height - 26. - files_top;
+            let expected = [
+                ("repository-rail", bounds(0., 207., 44., height - 233.)),
+                ("history-scope-toolbar", bounds(44., 207., column, 40.)),
+                ("columns", bounds(column - 90., 212.5, 28., 28.)),
+                ("load-more", bounds(column + 6.5, 212.5, 28., 28.)),
+                (
+                    "commit-inspector-files",
+                    bounds(inspector, files_top, 239., files_height),
+                ),
+                ("commit-message-toolbar", bounds(inspector, 207., 239., 34.)),
+                ("copy-message", bounds(inspector + 9.5, 210., 129., 28.)),
+                ("copy-commit", bounds(inspector + 141.5, 210., 49., 28.)),
+                (
+                    "changed-files-header",
+                    bounds(inspector, files_top, 238., 36.),
+                ),
+                (
+                    "changed-files-count",
+                    bounds(inspector + 123.5, files_top + 8.5, 16., 19.),
+                ),
+            ];
+            for (selector, expected) in expected {
+                assert_eq!(
+                    cx.debug_bounds(selector),
+                    Some(expected),
+                    "{selector} at {width} × {height}"
+                );
+            }
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        for (width, height, inspector) in [(461., 490., 221.), (493., 526., 253.)] {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            assert_eq!(
+                cx.debug_bounds("working-selection"),
+                Some(bounds(inspector, 207., 240., 136.)),
+                "Changes at {width} × {height}"
+            );
+            let field = cx.read(|cx| app.read(cx).working_filter.read(cx).input_bounds());
+            assert_eq!(
+                field,
+                bounds(inspector + 20.5, 218.5, 199., 16.),
+                "at {width}"
+            );
+        }
+    }
+
     /// In a half tile of a display about 1,000 px wide, History's 176 px
     /// column still holds Latest, Previous and Older, and each still acts.
     /// The count beside the scope name is drawn whole or not at all, and the
@@ -3874,20 +4291,23 @@ mod tests {
             "caption {caption:?} beside Options {menu:?} in {row:?}"
         );
 
-        // At 18 pt the collapsed row's caption wraps below the arrows, and
-        // lines up with the labels there too.
+        // At 18 pt the column's minimum grows with the text, so in either
+        // half tile the collapsed row keeps its caption beside Options too.
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
-        cx.simulate_resize(size(px(493.), px(526.)));
-        draw(cx);
-        let inset = cx.update(|window, _| window.rem_size() * 0.5);
-        let first = cx.debug_bounds("previous-text-change").unwrap();
-        let caption = cx.debug_bounds("text-review-caption").unwrap();
-        assert!(cx.debug_bounds("text-review-menu").is_some());
-        assert!(
-            caption.top() >= first.bottom(),
-            "the caption wraps: {caption:?}"
-        );
-        assert_eq!(caption.left(), first.left() + inset, "at 18 pt");
+        for (width, height) in [(461., 490.), (493., 526.)] {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let menu = cx.debug_bounds("text-review-menu").unwrap();
+            let row = cx.debug_bounds("text-review-options").unwrap();
+            let caption = cx.debug_bounds("text-review-caption").unwrap();
+            assert!(
+                caption.top() < menu.bottom()
+                    && caption.left() >= menu.right()
+                    && caption.right() <= row.right()
+                    && row.right() <= px(width),
+                "at 18 pt and {width}: caption {caption:?} beside Options {menu:?} in {row:?}"
+            );
+        }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

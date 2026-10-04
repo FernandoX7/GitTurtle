@@ -3,10 +3,11 @@
 //! This is inspection state, moved with ReturnContext (including warm tabs),
 //! not a second message store or a repository reader. Only a newly selected
 //! immutable OID prepares text pieces; paints clone shared bounded pieces.
+use crate::views::{LineKey, cached_width, compact_control_name, line_widths};
 use crate::*;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::prelude::FluentBuilder;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use unicode_segmentation::UnicodeSegmentation;
 
 const PIECE_BYTES: usize = 1024;
@@ -27,9 +28,74 @@ struct Presentation {
 }
 
 #[derive(Default)]
-pub(super) struct State(RefCell<Option<Presentation>>);
+pub(super) struct State(RefCell<Option<Presentation>>, Cell<Option<Toolbar>>);
+
+/// How the message toolbar lays out Copy message and Hash in an inspector
+/// whose width the window fixes: where the labelled Copy message does not fit
+/// the row, only its icon, and the height of the rows the two then take, which
+/// the message panel reserves so the toolbar never runs into the files below.
+/// An inspector at least its tight minimum wide keeps both labelled on one
+/// row and reserves nothing, as before.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Toolbar {
+    compact: bool,
+    height: Pixels,
+}
+
+thread_local! {
+    static COPY_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+    static HASH_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+}
+
+impl Toolbar {
+    /// The toolbar of an inspector `width` wide, measured from the interface
+    /// font at the interface size: the inspector's 1 px left border and the
+    /// toolbar's `px_3`, then the shared `button` helper's controls a quarter
+    /// rem apart, Copy message its 10 px of padding on either side of a 16 px
+    /// icon 6 px before its label, or a 28 px square of only the icon, and
+    /// Hash its padding beside its label. Wrapped rows are a quarter rem
+    /// apart inside the toolbar's `py_1`, and the panel's 1 px bottom border
+    /// is reserved with them.
+    pub(super) fn within(width: Pixels, window: &Window) -> Self {
+        let key = LineKey::current(window);
+        let label = |cache, text| {
+            cached_width(cache, &key, || {
+                line_widths(&[(text, appearance::ui_text(12.))], window)
+            })
+        };
+        let copy_label = label(&COPY_LABEL, "Copy message");
+        let hash_label = label(&HASH_LABEL, "Hash");
+        let rem = window.rem_size();
+        let room = width - px(1.) - rem * 1.5;
+        let gap = rem * 0.25;
+        let labelled = appearance::ui_size(2. * 10. + 16. + 6.) + copy_label;
+        let compact = labelled > room;
+        let copy = if compact {
+            appearance::ui_size(28.)
+        } else {
+            labelled
+        };
+        let rows = if copy + gap + appearance::ui_size(2. * 10.) + hash_label <= room {
+            1.
+        } else {
+            2.
+        };
+        Self {
+            compact,
+            height: appearance::ui_size(28.).ceil() * rows + gap * (rows - 1.) + rem * 0.5 + px(1.),
+        }
+    }
+}
 
 impl State {
+    /// The toolbar of the inspector the window draws next, where the window
+    /// fixes its width; `None` keeps the labelled toolbar and reserves
+    /// nothing. The window sets it on every repository draw, before the
+    /// inspector, so a state moved with an inspection carries nothing stale.
+    pub(super) fn lay_out_toolbar(&self, toolbar: Option<Toolbar>) {
+        self.1.set(toolbar);
+    }
+
     pub(super) fn select(&self, oid: &str) {
         let mut state = self.0.borrow_mut();
         if state.as_ref().is_some_and(|state| state.oid != oid) {
@@ -202,6 +268,8 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
+        let toolbar = self.inspector_message.1.get();
+        let compact = toolbar.is_some_and(|toolbar| toolbar.compact);
         let (pieces, scroll, focus) = self.inspector_message.presentation(commit, cx);
         let owner = cx.entity().downgrade();
         let oid = commit.oid.clone();
@@ -243,14 +311,22 @@ impl GitTurtle {
             .flex_col()
             .border_b_1()
             .border_color(rgb(colors.border))
+            .when_some(toolbar, |panel, toolbar| panel.min_h(toolbar.height))
             .child(div()
                 .id("commit-message-toolbar")
+                .debug_selector(|| "commit-message-toolbar".into())
                 .flex_shrink_0()
                 .px_3().py_1()
                 .flex().flex_wrap().items_center().gap_1()
-                .child(button("copy-message", "Copy message", "copy", false).debug_selector(|| "copy-message".into())
-                    .accessibility_label("Copy full commit message")
-                    .tooltip("Copy the complete commit title and body")
+                .child(if compact {
+                    compact_control_name(button("copy-message", "", "copy", false), "copy-message", "Copy full commit message")
+                        .tooltip("Copy message · Copy the complete commit title and body")
+                } else {
+                    button("copy-message", "Copy message", "copy", false)
+                        .accessibility_label("Copy full commit message")
+                        .tooltip("Copy the complete commit title and body")
+                }
+                    .debug_selector(|| "copy-message".into())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(commit) = this.message_commit(file_history).filter(|commit| commit.oid == copy_oid) {
                             cx.write_to_clipboard(ClipboardItem::new_string(full_message(commit)));
@@ -394,7 +470,9 @@ pub(crate) mod tests {
                 .debug_selector(|| "inspector-test".into())
                 .w(px(self.width))
                 .h(px(self.height))
-                .child(self.app.update(cx, |app, cx| app.render_inspector(cx)))
+                .child(self.app.update(cx, |app, cx| {
+                    app.render_inspector(crate::views::FilesHeader::WHOLE, cx)
+                }))
         }
     }
 
