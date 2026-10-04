@@ -117,6 +117,8 @@ Automatic reads wait for explicit operations, status reads, foreground reads, pe
 
 The worker retains at most 32 content entries and 128 MiB of counted CPU payload. Image decoding and Git reads have additional input/output bounds. Graph preparation has lane/edge budgets, with an explicit nodes-only fallback. These are separate controls, not a process-memory cap; UI references and GPU resources have separate lifetimes. The app registers directly painted images and retires all uploaded atlas frames through GPUI after the final cache/view/retained-inspection owner releases them. Cleanup is coalesced after real draws and window closure; it does not run an idle polling loop. See the [image ownership contract](../crates/app/docs/content-and-layout.md#images-and-cache-accounting).
 
+Repository tabs share a 512 MiB retained-state admission allowance (`repository_tabs.rs`). Each tab's figure counts history and graph metadata, retained search and nested inspections, captured preview content with its patch presentation and a fourfold editor reservation, and Compare's unified-patch decorations; a warm pull request panel counts its Source presentation and decorations in its own retained bytes. The stash browser and the rewritten-series review keep their patch editor's decorations and count them with their preview content, but have no retained-bytes bound of their own: they are modal, so tabs cannot switch while one is open, and their preview workers' caches bound the content separately. See [navigation and refresh](../crates/app/docs/navigation-and-refresh.md#repository-tabs).
+
 | Interaction | Bound |
 | --- | --- |
 | Ordinary history | 500-row pages, a visible window of at most 5,000 rows or 64 MiB, plus one retained selection |

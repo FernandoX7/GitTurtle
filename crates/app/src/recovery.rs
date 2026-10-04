@@ -824,6 +824,8 @@ struct StashBrowser {
     content: Option<Arc<Content>>,
     text_mode: usize,
     editors: [Option<Entity<EditorState>>; 3],
+    /// The patch editor's decorations, kept for its life like Compare's.
+    decoration: Option<crate::editor_find::PatchDecorations>,
     patch_view: Option<Entity<diff_view::DiffView>>,
     stash_scroll: UniformListScrollHandle,
     file_scroll: UniformListScrollHandle,
@@ -866,6 +868,7 @@ impl StashBrowser {
             content: None,
             text_mode: 0,
             editors: [None, None, None],
+            decoration: None,
             patch_view: None,
             stash_scroll: UniformListScrollHandle::new(),
             file_scroll: UniformListScrollHandle::new(),
@@ -895,8 +898,25 @@ impl StashBrowser {
         self.preview_task = None;
         self.content = None;
         self.editors = [None, None, None];
+        self.decoration = None;
         self.patch_view = None;
         self.preview_error = None;
+    }
+
+    /// CPU bytes the open preview retains: its prepared content, which includes the patch
+    /// presentation, with the same reserve for native editors as a repository tab, plus the
+    /// patch editor's decorations. This transient inspector has no retained-bytes bound of its
+    /// own, and a modal stays out of the repository tabs' bound because tabs cannot switch
+    /// while it is open; its preview worker's cache bounds the content separately.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn preview_retained_bytes(&self) -> usize {
+        self.content
+            .as_ref()
+            .map_or(0, |content| content.bytes().saturating_mul(4))
+            + self
+                .decoration
+                .as_ref()
+                .map_or(0, crate::editor_find::PatchDecorations::retained_bytes)
     }
 
     fn load_page(&mut self, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1079,7 +1099,7 @@ impl StashBrowser {
             return;
         };
         let value = [patch, old, new][self.text_mode];
-        let editor = text::editor(
+        let (editor, decoration) = text::editor_with_decorations(
             value,
             if self.text_mode == 0 { "diff" } else { "text" },
             (self.text_mode == 0).then_some(presentation.as_ref()),
@@ -1088,6 +1108,7 @@ impl StashBrowser {
         );
         if self.text_mode == 0 {
             self.patch_view = Some(diff_view::new(editor.clone(), presentation, window, cx));
+            self.decoration = decoration;
         }
         self.editors[self.text_mode] = Some(editor);
     }
@@ -1417,7 +1438,8 @@ impl Render for StashBrowser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[::core::prelude::v1::test]
+    use ::core::prelude::v1::test;
+    #[test]
     fn amend_fields_preserve_description_whitespace_and_comment_lines() {
         let message = "Title\n\n  indented\n# literal description\n\n";
         let draft = split_message(message);
@@ -1425,7 +1447,7 @@ mod tests {
         assert_eq!(draft.description, "  indented\n# literal description\n\n");
         assert_eq!(draft.message(), message);
     }
-    #[::core::prelude::v1::test]
+    #[test]
     fn legacy_single_newline_messages_split_without_losing_body_text() {
         assert_eq!(
             split_message("Title\nbody\n"),
@@ -1443,7 +1465,7 @@ mod tests {
         );
     }
 
-    #[::core::prelude::v1::test]
+    #[test]
     fn unchanged_amend_preserves_exact_legacy_message_and_edits_use_blank_separator() {
         let original = "Title\n  body\n# literal\n";
         let initial = split_message(original);
@@ -1458,7 +1480,56 @@ mod tests {
         );
     }
 
-    #[::core::prelude::v1::test]
+    /// The stash inspector's unified patch keeps its decorations for the editor's life, and
+    /// its preview figure counts them along with the presentation they were built from.
+    #[gpui::test]
+    async fn stash_patch_preview_counts_its_decorations_and_presentation(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let repository = GitRepository::init(fixture.path().join("repository"), "main").unwrap();
+        cx.update(gpui_kit::init);
+        let captured: std::rc::Rc<std::cell::RefCell<Option<Entity<StashBrowser>>>> =
+            Default::default();
+        let output = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let browser =
+                cx.new(|cx| StashBrowser::new(WeakEntity::new_invalid(), repository, window, cx));
+            *output.borrow_mut() = Some(browser.clone());
+            gpui_kit::component::Root::new(browser, window, cx)
+        });
+        cx.run_until_parked();
+        let browser = captured.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.content = Some(Arc::new(text::decorated_patch_content()));
+                browser.text_mode = 0;
+                browser.ensure_editor(window, cx);
+                let Some(Content::Text { presentation, .. }) = browser.content.as_deref() else {
+                    unreachable!()
+                };
+                let presentation = presentation.retained_bytes();
+                let decoration = browser.decoration.clone().expect("kept with the editor");
+                let decorated = decoration.retained_bytes();
+                assert!(decorated > 0, "a patch with changes has decorations");
+
+                let with = browser.preview_retained_bytes();
+                browser.decoration = None;
+                let without = browser.preview_retained_bytes();
+                assert_eq!(with - without, decorated);
+                browser.content = None;
+                assert!(without - browser.preview_retained_bytes() >= presentation);
+
+                browser.decoration = Some(decoration);
+                browser.clear_preview();
+                assert!(browser.decoration.is_none());
+                assert_eq!(browser.preview_retained_bytes(), 0);
+            })
+        });
+    }
+
+    #[test]
     fn stash_list_navigation_bounds_empty_and_changed_pages() {
         assert_eq!(list_key_selection("down", None, 0), None);
         assert_eq!(list_key_selection("down", None, 4), Some(0));

@@ -499,6 +499,34 @@ fn range_count(range: &str) -> Option<usize> {
     count.parse().ok()
 }
 
+/// A prepared text comparison whose unified patch has additions, removals and context, as
+/// the worker hands it to Compare, recovery and rewrite review.
+#[cfg(test)]
+pub fn decorated_patch_content() -> crate::worker::Content {
+    let patch = "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n\
+                 @@ -1,3 +1,3 @@\n context\n-old line\n+new line\n tail\n"
+        .to_owned();
+    let old = "context\nold line\ntail\n".to_owned();
+    let new = "context\nnew line\ntail\n".to_owned();
+    let presentation = Arc::new(PatchPresentation::prepare(&patch));
+    let split = Arc::new(crate::split_diff::SplitPresentation::prepare(
+        &old,
+        &new,
+        &presentation,
+    ));
+    crate::worker::Content::Text {
+        diagrams: None,
+        markdown: None,
+        patch,
+        old,
+        new,
+        presentation,
+        split,
+        partial: None,
+        partial_unavailable: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

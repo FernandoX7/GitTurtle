@@ -621,6 +621,12 @@ impl GitTurtle {
                 .content
                 .as_ref()
                 .map_or(0, |content| content.bytes().saturating_mul(4))
+            // Compare's unified patch keeps its decorations with its editor; the
+            // presentation they were built from is counted in the content above.
+            + self
+                .patch_decoration
+                .as_ref()
+                .map_or(0, editor_find::PatchDecorations::retained_bytes)
             + self.files.iter().map(file_bytes).sum::<usize>()
             + self.file_history.retained_bytes()
             + self.revision_inspection.retained_bytes()
@@ -2780,6 +2786,140 @@ mod tests {
                 assert!(app.history_list_layout.is_none());
                 assert!(app.file_list_layout.is_none());
             });
+        });
+        settle_tab_test(&app, window_cx).await;
+    }
+
+    /// Compare's unified patch keeps its decorations with its editor. The active tab's figure
+    /// counts them and the presentation they were built from, so a decorated patch reaches the
+    /// retained-tabs bound that the same patch without them stays within.
+    #[gpui::test]
+    async fn compare_patch_decorations_count_toward_the_retained_tabs_bound(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc};
+
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let first = GitRepository::init(fixture.path().join("first"), "main").unwrap();
+        let second = GitRepository::init(fixture.path().join("second"), "main").unwrap();
+        let initial = first.path().to_owned();
+        let next = second.path().to_owned();
+        let destination = fixture.path().join("isolated-session.json");
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, window_cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    Some(initial),
+                    Preferences::default(),
+                    Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.repository_tabs.save_path = Some(destination);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        settle_tab_test(&app, window_cx).await;
+        window_cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.open_repository_tab(next, window, cx))
+        });
+        settle_tab_test(&app, window_cx).await;
+
+        let (decorated, without) = window_cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(app.repository_tabs.active, Some(1));
+                assert!(app.repository_tabs.tabs[0].warm.is_some());
+                let content = Arc::new(text::decorated_patch_content());
+                let Content::Text {
+                    patch,
+                    presentation,
+                    ..
+                } = content.as_ref()
+                else {
+                    unreachable!()
+                };
+                let (editor, decoration) = text::editor_with_decorations(
+                    patch,
+                    "diff",
+                    Some(presentation.as_ref()),
+                    window,
+                    cx,
+                );
+                let presentation = presentation.retained_bytes();
+                let decoration = decoration.expect("a patch editor keeps its decorations");
+                let decorated = decoration.retained_bytes();
+                assert!(decorated > 0, "a patch with changes has decorations");
+                app.text_mode = TextMode::Unified;
+                app.patch_editor = Some(editor);
+                app.content = Some(content);
+                app.patch_decoration = Some(decoration);
+
+                let with = app.tab_retained_bytes();
+                let decoration = app.patch_decoration.take();
+                let without = app.tab_retained_bytes();
+                assert_eq!(with - without, decorated);
+                let content = app.content.take();
+                assert!(without - app.tab_retained_bytes() >= presentation);
+                app.content = content;
+                app.patch_decoration = decoration;
+                (decorated, without)
+            })
+        });
+
+        // Fill the warm tab so the undecorated patch exactly reaches the bound.
+        let at_bound = |app: &mut GitTurtle| {
+            app.repository_tabs.tabs[0]
+                .warm
+                .as_mut()
+                .expect("the first tab stays warm")
+                .bytes = MAX_RETAINED_BYTES - without;
+        };
+        window_cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                at_bound(app);
+                app.error = None;
+                assert_eq!(app.tab_retained_bytes(), without + decorated);
+                app.switch_repository_tab(0, window, cx);
+                assert_eq!(
+                    app.repository_tabs.active,
+                    Some(1),
+                    "the decorated patch is refused at the bound"
+                );
+                assert!(app.error.as_deref().is_some_and(|e| e.contains("512 MiB")));
+                assert!(
+                    app.patch_decoration.is_some(),
+                    "a refusal keeps the preview"
+                );
+
+                app.patch_decoration = None;
+                app.error = None;
+                app.switch_repository_tab(0, window, cx);
+                assert_eq!(
+                    app.repository_tabs.active,
+                    Some(0),
+                    "the same patch without decorations is retained"
+                );
+                assert!(app.error.is_none());
+                assert_eq!(
+                    app.repository_tabs.tabs[1]
+                        .warm
+                        .as_ref()
+                        .map(|warm| warm.bytes),
+                    Some(without)
+                );
+            })
         });
         settle_tab_test(&app, window_cx).await;
     }
