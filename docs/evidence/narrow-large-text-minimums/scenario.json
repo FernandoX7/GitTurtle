@@ -1,0 +1,5611 @@
+{
+ "version": 1,
+ "task": "narrow-large-text-minimums",
+ "summary": "At an 18 pt interface size in a 461 x 490 window, History keeps Columns, Latest, Previous and Older whole in its column, the inspector's Copy message and Hash stay above Changed files in History and Compare, also where Hash wraps (560 x 600), with the Changed files count whole inside the inspector, and Changes' filter field stays inside the window, focused or not; at 13 pt the 461 x 490, 493 x 526, 1000 x 680 and 1480 x 800 windows draw as the base does",
+ "limitations": "Linux under XWayland at scale factor 1 with Mutter input. GNOME keeps the app's 1000 x 680 window minimum, which tiling window managers ignore, so every launch lowers it to 400 x 420 before its first resize. Coordinator decision (2026-10-03, delegated by the owner): the contract's 'Hash toolbar wrapped' is taken at 560 x 600 at 18 pt, since the candidate's 156 px inspector at 461 x 490 keeps the icon-only Copy message and Hash on one row and wraps only from 560 px (its view test asserts both); at 560 x 600 the base also wraps without overlapping. The filter field's caret blinks every 500 ms and shows only while the window is active, so the 18 pt focused crops show either phase and a recheck can differ at the caret alone; the 13 pt focused states are measured against the base with the caret masked, not committed. At 18 pt in 461 x 490 Compare's diff still gets no line; the vertical chrome is the next task. AT-SPI was not read. macOS, native Wayland, Hyprland and fractional scale factors are not covered",
+ "window": [
+  461,
+  490
+ ],
+ "window_minimum": [
+  400,
+  420
+ ],
+ "roles": [
+  "base",
+  "cand"
+ ],
+ "fixture": {
+  "name": "narrow-large-text-minimums",
+  "description": "521 commits on main (an initial commit, 519 paging commits that change notes.txt, then HEAD changing README.md, docs/guide.md and src/layout.txt), so History has more than one 500-row page and Older acts; a work-in-progress commit reset with --mixed leaves README.md and src/layout.txt modified and notes/todo.md untracked, so Changes lists three paths",
+  "repository": "repo",
+  "branch": "main",
+  "clock": {
+   "start": "2026-09-01T09:00:00Z",
+   "step": 60
+  },
+  "operations": [
+   {
+    "commit": "Initial commit",
+    "files": {
+     "README.md": "# Narrow inspector fixture\n\nA disposable QA repository for narrow windows at large text sizes.\n",
+     "docs/guide.md": "# Guide\n\n- History\n- Compare\n- Changes\n",
+     "notes.txt": "draft 0\n",
+     "src/layout.txt": "row 01: column\nrow 02: column\nrow 03: column\nrow 04: column\nrow 05: column\nrow 06: column\nrow 07: column\nrow 08: column\nrow 09: column\nrow 10: column\nrow 11: column\nrow 12: column\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 1",
+    "files": {
+     "notes.txt": "draft 1\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 2",
+    "files": {
+     "notes.txt": "draft 2\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 3",
+    "files": {
+     "notes.txt": "draft 3\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 4",
+    "files": {
+     "notes.txt": "draft 4\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 5",
+    "files": {
+     "notes.txt": "draft 5\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 6",
+    "files": {
+     "notes.txt": "draft 6\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 7",
+    "files": {
+     "notes.txt": "draft 7\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 8",
+    "files": {
+     "notes.txt": "draft 8\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 9",
+    "files": {
+     "notes.txt": "draft 9\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 10",
+    "files": {
+     "notes.txt": "draft 10\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 11",
+    "files": {
+     "notes.txt": "draft 11\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 12",
+    "files": {
+     "notes.txt": "draft 12\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 13",
+    "files": {
+     "notes.txt": "draft 13\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 14",
+    "files": {
+     "notes.txt": "draft 14\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 15",
+    "files": {
+     "notes.txt": "draft 15\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 16",
+    "files": {
+     "notes.txt": "draft 16\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 17",
+    "files": {
+     "notes.txt": "draft 17\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 18",
+    "files": {
+     "notes.txt": "draft 18\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 19",
+    "files": {
+     "notes.txt": "draft 19\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 20",
+    "files": {
+     "notes.txt": "draft 20\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 21",
+    "files": {
+     "notes.txt": "draft 21\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 22",
+    "files": {
+     "notes.txt": "draft 22\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 23",
+    "files": {
+     "notes.txt": "draft 23\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 24",
+    "files": {
+     "notes.txt": "draft 24\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 25",
+    "files": {
+     "notes.txt": "draft 25\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 26",
+    "files": {
+     "notes.txt": "draft 26\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 27",
+    "files": {
+     "notes.txt": "draft 27\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 28",
+    "files": {
+     "notes.txt": "draft 28\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 29",
+    "files": {
+     "notes.txt": "draft 29\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 30",
+    "files": {
+     "notes.txt": "draft 30\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 31",
+    "files": {
+     "notes.txt": "draft 31\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 32",
+    "files": {
+     "notes.txt": "draft 32\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 33",
+    "files": {
+     "notes.txt": "draft 33\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 34",
+    "files": {
+     "notes.txt": "draft 34\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 35",
+    "files": {
+     "notes.txt": "draft 35\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 36",
+    "files": {
+     "notes.txt": "draft 36\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 37",
+    "files": {
+     "notes.txt": "draft 37\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 38",
+    "files": {
+     "notes.txt": "draft 38\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 39",
+    "files": {
+     "notes.txt": "draft 39\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 40",
+    "files": {
+     "notes.txt": "draft 40\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 41",
+    "files": {
+     "notes.txt": "draft 41\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 42",
+    "files": {
+     "notes.txt": "draft 42\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 43",
+    "files": {
+     "notes.txt": "draft 43\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 44",
+    "files": {
+     "notes.txt": "draft 44\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 45",
+    "files": {
+     "notes.txt": "draft 45\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 46",
+    "files": {
+     "notes.txt": "draft 46\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 47",
+    "files": {
+     "notes.txt": "draft 47\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 48",
+    "files": {
+     "notes.txt": "draft 48\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 49",
+    "files": {
+     "notes.txt": "draft 49\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 50",
+    "files": {
+     "notes.txt": "draft 50\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 51",
+    "files": {
+     "notes.txt": "draft 51\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 52",
+    "files": {
+     "notes.txt": "draft 52\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 53",
+    "files": {
+     "notes.txt": "draft 53\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 54",
+    "files": {
+     "notes.txt": "draft 54\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 55",
+    "files": {
+     "notes.txt": "draft 55\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 56",
+    "files": {
+     "notes.txt": "draft 56\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 57",
+    "files": {
+     "notes.txt": "draft 57\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 58",
+    "files": {
+     "notes.txt": "draft 58\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 59",
+    "files": {
+     "notes.txt": "draft 59\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 60",
+    "files": {
+     "notes.txt": "draft 60\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 61",
+    "files": {
+     "notes.txt": "draft 61\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 62",
+    "files": {
+     "notes.txt": "draft 62\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 63",
+    "files": {
+     "notes.txt": "draft 63\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 64",
+    "files": {
+     "notes.txt": "draft 64\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 65",
+    "files": {
+     "notes.txt": "draft 65\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 66",
+    "files": {
+     "notes.txt": "draft 66\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 67",
+    "files": {
+     "notes.txt": "draft 67\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 68",
+    "files": {
+     "notes.txt": "draft 68\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 69",
+    "files": {
+     "notes.txt": "draft 69\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 70",
+    "files": {
+     "notes.txt": "draft 70\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 71",
+    "files": {
+     "notes.txt": "draft 71\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 72",
+    "files": {
+     "notes.txt": "draft 72\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 73",
+    "files": {
+     "notes.txt": "draft 73\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 74",
+    "files": {
+     "notes.txt": "draft 74\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 75",
+    "files": {
+     "notes.txt": "draft 75\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 76",
+    "files": {
+     "notes.txt": "draft 76\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 77",
+    "files": {
+     "notes.txt": "draft 77\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 78",
+    "files": {
+     "notes.txt": "draft 78\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 79",
+    "files": {
+     "notes.txt": "draft 79\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 80",
+    "files": {
+     "notes.txt": "draft 80\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 81",
+    "files": {
+     "notes.txt": "draft 81\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 82",
+    "files": {
+     "notes.txt": "draft 82\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 83",
+    "files": {
+     "notes.txt": "draft 83\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 84",
+    "files": {
+     "notes.txt": "draft 84\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 85",
+    "files": {
+     "notes.txt": "draft 85\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 86",
+    "files": {
+     "notes.txt": "draft 86\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 87",
+    "files": {
+     "notes.txt": "draft 87\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 88",
+    "files": {
+     "notes.txt": "draft 88\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 89",
+    "files": {
+     "notes.txt": "draft 89\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 90",
+    "files": {
+     "notes.txt": "draft 90\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 91",
+    "files": {
+     "notes.txt": "draft 91\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 92",
+    "files": {
+     "notes.txt": "draft 92\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 93",
+    "files": {
+     "notes.txt": "draft 93\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 94",
+    "files": {
+     "notes.txt": "draft 94\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 95",
+    "files": {
+     "notes.txt": "draft 95\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 96",
+    "files": {
+     "notes.txt": "draft 96\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 97",
+    "files": {
+     "notes.txt": "draft 97\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 98",
+    "files": {
+     "notes.txt": "draft 98\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 99",
+    "files": {
+     "notes.txt": "draft 99\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 100",
+    "files": {
+     "notes.txt": "draft 100\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 101",
+    "files": {
+     "notes.txt": "draft 101\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 102",
+    "files": {
+     "notes.txt": "draft 102\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 103",
+    "files": {
+     "notes.txt": "draft 103\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 104",
+    "files": {
+     "notes.txt": "draft 104\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 105",
+    "files": {
+     "notes.txt": "draft 105\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 106",
+    "files": {
+     "notes.txt": "draft 106\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 107",
+    "files": {
+     "notes.txt": "draft 107\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 108",
+    "files": {
+     "notes.txt": "draft 108\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 109",
+    "files": {
+     "notes.txt": "draft 109\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 110",
+    "files": {
+     "notes.txt": "draft 110\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 111",
+    "files": {
+     "notes.txt": "draft 111\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 112",
+    "files": {
+     "notes.txt": "draft 112\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 113",
+    "files": {
+     "notes.txt": "draft 113\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 114",
+    "files": {
+     "notes.txt": "draft 114\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 115",
+    "files": {
+     "notes.txt": "draft 115\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 116",
+    "files": {
+     "notes.txt": "draft 116\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 117",
+    "files": {
+     "notes.txt": "draft 117\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 118",
+    "files": {
+     "notes.txt": "draft 118\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 119",
+    "files": {
+     "notes.txt": "draft 119\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 120",
+    "files": {
+     "notes.txt": "draft 120\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 121",
+    "files": {
+     "notes.txt": "draft 121\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 122",
+    "files": {
+     "notes.txt": "draft 122\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 123",
+    "files": {
+     "notes.txt": "draft 123\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 124",
+    "files": {
+     "notes.txt": "draft 124\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 125",
+    "files": {
+     "notes.txt": "draft 125\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 126",
+    "files": {
+     "notes.txt": "draft 126\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 127",
+    "files": {
+     "notes.txt": "draft 127\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 128",
+    "files": {
+     "notes.txt": "draft 128\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 129",
+    "files": {
+     "notes.txt": "draft 129\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 130",
+    "files": {
+     "notes.txt": "draft 130\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 131",
+    "files": {
+     "notes.txt": "draft 131\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 132",
+    "files": {
+     "notes.txt": "draft 132\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 133",
+    "files": {
+     "notes.txt": "draft 133\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 134",
+    "files": {
+     "notes.txt": "draft 134\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 135",
+    "files": {
+     "notes.txt": "draft 135\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 136",
+    "files": {
+     "notes.txt": "draft 136\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 137",
+    "files": {
+     "notes.txt": "draft 137\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 138",
+    "files": {
+     "notes.txt": "draft 138\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 139",
+    "files": {
+     "notes.txt": "draft 139\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 140",
+    "files": {
+     "notes.txt": "draft 140\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 141",
+    "files": {
+     "notes.txt": "draft 141\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 142",
+    "files": {
+     "notes.txt": "draft 142\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 143",
+    "files": {
+     "notes.txt": "draft 143\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 144",
+    "files": {
+     "notes.txt": "draft 144\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 145",
+    "files": {
+     "notes.txt": "draft 145\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 146",
+    "files": {
+     "notes.txt": "draft 146\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 147",
+    "files": {
+     "notes.txt": "draft 147\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 148",
+    "files": {
+     "notes.txt": "draft 148\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 149",
+    "files": {
+     "notes.txt": "draft 149\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 150",
+    "files": {
+     "notes.txt": "draft 150\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 151",
+    "files": {
+     "notes.txt": "draft 151\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 152",
+    "files": {
+     "notes.txt": "draft 152\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 153",
+    "files": {
+     "notes.txt": "draft 153\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 154",
+    "files": {
+     "notes.txt": "draft 154\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 155",
+    "files": {
+     "notes.txt": "draft 155\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 156",
+    "files": {
+     "notes.txt": "draft 156\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 157",
+    "files": {
+     "notes.txt": "draft 157\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 158",
+    "files": {
+     "notes.txt": "draft 158\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 159",
+    "files": {
+     "notes.txt": "draft 159\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 160",
+    "files": {
+     "notes.txt": "draft 160\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 161",
+    "files": {
+     "notes.txt": "draft 161\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 162",
+    "files": {
+     "notes.txt": "draft 162\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 163",
+    "files": {
+     "notes.txt": "draft 163\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 164",
+    "files": {
+     "notes.txt": "draft 164\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 165",
+    "files": {
+     "notes.txt": "draft 165\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 166",
+    "files": {
+     "notes.txt": "draft 166\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 167",
+    "files": {
+     "notes.txt": "draft 167\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 168",
+    "files": {
+     "notes.txt": "draft 168\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 169",
+    "files": {
+     "notes.txt": "draft 169\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 170",
+    "files": {
+     "notes.txt": "draft 170\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 171",
+    "files": {
+     "notes.txt": "draft 171\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 172",
+    "files": {
+     "notes.txt": "draft 172\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 173",
+    "files": {
+     "notes.txt": "draft 173\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 174",
+    "files": {
+     "notes.txt": "draft 174\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 175",
+    "files": {
+     "notes.txt": "draft 175\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 176",
+    "files": {
+     "notes.txt": "draft 176\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 177",
+    "files": {
+     "notes.txt": "draft 177\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 178",
+    "files": {
+     "notes.txt": "draft 178\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 179",
+    "files": {
+     "notes.txt": "draft 179\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 180",
+    "files": {
+     "notes.txt": "draft 180\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 181",
+    "files": {
+     "notes.txt": "draft 181\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 182",
+    "files": {
+     "notes.txt": "draft 182\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 183",
+    "files": {
+     "notes.txt": "draft 183\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 184",
+    "files": {
+     "notes.txt": "draft 184\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 185",
+    "files": {
+     "notes.txt": "draft 185\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 186",
+    "files": {
+     "notes.txt": "draft 186\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 187",
+    "files": {
+     "notes.txt": "draft 187\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 188",
+    "files": {
+     "notes.txt": "draft 188\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 189",
+    "files": {
+     "notes.txt": "draft 189\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 190",
+    "files": {
+     "notes.txt": "draft 190\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 191",
+    "files": {
+     "notes.txt": "draft 191\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 192",
+    "files": {
+     "notes.txt": "draft 192\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 193",
+    "files": {
+     "notes.txt": "draft 193\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 194",
+    "files": {
+     "notes.txt": "draft 194\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 195",
+    "files": {
+     "notes.txt": "draft 195\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 196",
+    "files": {
+     "notes.txt": "draft 196\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 197",
+    "files": {
+     "notes.txt": "draft 197\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 198",
+    "files": {
+     "notes.txt": "draft 198\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 199",
+    "files": {
+     "notes.txt": "draft 199\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 200",
+    "files": {
+     "notes.txt": "draft 200\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 201",
+    "files": {
+     "notes.txt": "draft 201\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 202",
+    "files": {
+     "notes.txt": "draft 202\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 203",
+    "files": {
+     "notes.txt": "draft 203\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 204",
+    "files": {
+     "notes.txt": "draft 204\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 205",
+    "files": {
+     "notes.txt": "draft 205\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 206",
+    "files": {
+     "notes.txt": "draft 206\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 207",
+    "files": {
+     "notes.txt": "draft 207\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 208",
+    "files": {
+     "notes.txt": "draft 208\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 209",
+    "files": {
+     "notes.txt": "draft 209\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 210",
+    "files": {
+     "notes.txt": "draft 210\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 211",
+    "files": {
+     "notes.txt": "draft 211\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 212",
+    "files": {
+     "notes.txt": "draft 212\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 213",
+    "files": {
+     "notes.txt": "draft 213\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 214",
+    "files": {
+     "notes.txt": "draft 214\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 215",
+    "files": {
+     "notes.txt": "draft 215\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 216",
+    "files": {
+     "notes.txt": "draft 216\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 217",
+    "files": {
+     "notes.txt": "draft 217\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 218",
+    "files": {
+     "notes.txt": "draft 218\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 219",
+    "files": {
+     "notes.txt": "draft 219\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 220",
+    "files": {
+     "notes.txt": "draft 220\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 221",
+    "files": {
+     "notes.txt": "draft 221\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 222",
+    "files": {
+     "notes.txt": "draft 222\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 223",
+    "files": {
+     "notes.txt": "draft 223\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 224",
+    "files": {
+     "notes.txt": "draft 224\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 225",
+    "files": {
+     "notes.txt": "draft 225\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 226",
+    "files": {
+     "notes.txt": "draft 226\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 227",
+    "files": {
+     "notes.txt": "draft 227\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 228",
+    "files": {
+     "notes.txt": "draft 228\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 229",
+    "files": {
+     "notes.txt": "draft 229\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 230",
+    "files": {
+     "notes.txt": "draft 230\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 231",
+    "files": {
+     "notes.txt": "draft 231\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 232",
+    "files": {
+     "notes.txt": "draft 232\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 233",
+    "files": {
+     "notes.txt": "draft 233\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 234",
+    "files": {
+     "notes.txt": "draft 234\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 235",
+    "files": {
+     "notes.txt": "draft 235\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 236",
+    "files": {
+     "notes.txt": "draft 236\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 237",
+    "files": {
+     "notes.txt": "draft 237\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 238",
+    "files": {
+     "notes.txt": "draft 238\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 239",
+    "files": {
+     "notes.txt": "draft 239\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 240",
+    "files": {
+     "notes.txt": "draft 240\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 241",
+    "files": {
+     "notes.txt": "draft 241\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 242",
+    "files": {
+     "notes.txt": "draft 242\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 243",
+    "files": {
+     "notes.txt": "draft 243\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 244",
+    "files": {
+     "notes.txt": "draft 244\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 245",
+    "files": {
+     "notes.txt": "draft 245\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 246",
+    "files": {
+     "notes.txt": "draft 246\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 247",
+    "files": {
+     "notes.txt": "draft 247\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 248",
+    "files": {
+     "notes.txt": "draft 248\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 249",
+    "files": {
+     "notes.txt": "draft 249\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 250",
+    "files": {
+     "notes.txt": "draft 250\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 251",
+    "files": {
+     "notes.txt": "draft 251\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 252",
+    "files": {
+     "notes.txt": "draft 252\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 253",
+    "files": {
+     "notes.txt": "draft 253\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 254",
+    "files": {
+     "notes.txt": "draft 254\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 255",
+    "files": {
+     "notes.txt": "draft 255\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 256",
+    "files": {
+     "notes.txt": "draft 256\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 257",
+    "files": {
+     "notes.txt": "draft 257\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 258",
+    "files": {
+     "notes.txt": "draft 258\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 259",
+    "files": {
+     "notes.txt": "draft 259\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 260",
+    "files": {
+     "notes.txt": "draft 260\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 261",
+    "files": {
+     "notes.txt": "draft 261\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 262",
+    "files": {
+     "notes.txt": "draft 262\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 263",
+    "files": {
+     "notes.txt": "draft 263\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 264",
+    "files": {
+     "notes.txt": "draft 264\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 265",
+    "files": {
+     "notes.txt": "draft 265\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 266",
+    "files": {
+     "notes.txt": "draft 266\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 267",
+    "files": {
+     "notes.txt": "draft 267\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 268",
+    "files": {
+     "notes.txt": "draft 268\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 269",
+    "files": {
+     "notes.txt": "draft 269\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 270",
+    "files": {
+     "notes.txt": "draft 270\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 271",
+    "files": {
+     "notes.txt": "draft 271\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 272",
+    "files": {
+     "notes.txt": "draft 272\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 273",
+    "files": {
+     "notes.txt": "draft 273\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 274",
+    "files": {
+     "notes.txt": "draft 274\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 275",
+    "files": {
+     "notes.txt": "draft 275\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 276",
+    "files": {
+     "notes.txt": "draft 276\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 277",
+    "files": {
+     "notes.txt": "draft 277\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 278",
+    "files": {
+     "notes.txt": "draft 278\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 279",
+    "files": {
+     "notes.txt": "draft 279\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 280",
+    "files": {
+     "notes.txt": "draft 280\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 281",
+    "files": {
+     "notes.txt": "draft 281\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 282",
+    "files": {
+     "notes.txt": "draft 282\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 283",
+    "files": {
+     "notes.txt": "draft 283\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 284",
+    "files": {
+     "notes.txt": "draft 284\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 285",
+    "files": {
+     "notes.txt": "draft 285\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 286",
+    "files": {
+     "notes.txt": "draft 286\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 287",
+    "files": {
+     "notes.txt": "draft 287\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 288",
+    "files": {
+     "notes.txt": "draft 288\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 289",
+    "files": {
+     "notes.txt": "draft 289\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 290",
+    "files": {
+     "notes.txt": "draft 290\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 291",
+    "files": {
+     "notes.txt": "draft 291\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 292",
+    "files": {
+     "notes.txt": "draft 292\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 293",
+    "files": {
+     "notes.txt": "draft 293\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 294",
+    "files": {
+     "notes.txt": "draft 294\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 295",
+    "files": {
+     "notes.txt": "draft 295\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 296",
+    "files": {
+     "notes.txt": "draft 296\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 297",
+    "files": {
+     "notes.txt": "draft 297\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 298",
+    "files": {
+     "notes.txt": "draft 298\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 299",
+    "files": {
+     "notes.txt": "draft 299\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 300",
+    "files": {
+     "notes.txt": "draft 300\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 301",
+    "files": {
+     "notes.txt": "draft 301\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 302",
+    "files": {
+     "notes.txt": "draft 302\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 303",
+    "files": {
+     "notes.txt": "draft 303\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 304",
+    "files": {
+     "notes.txt": "draft 304\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 305",
+    "files": {
+     "notes.txt": "draft 305\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 306",
+    "files": {
+     "notes.txt": "draft 306\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 307",
+    "files": {
+     "notes.txt": "draft 307\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 308",
+    "files": {
+     "notes.txt": "draft 308\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 309",
+    "files": {
+     "notes.txt": "draft 309\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 310",
+    "files": {
+     "notes.txt": "draft 310\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 311",
+    "files": {
+     "notes.txt": "draft 311\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 312",
+    "files": {
+     "notes.txt": "draft 312\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 313",
+    "files": {
+     "notes.txt": "draft 313\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 314",
+    "files": {
+     "notes.txt": "draft 314\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 315",
+    "files": {
+     "notes.txt": "draft 315\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 316",
+    "files": {
+     "notes.txt": "draft 316\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 317",
+    "files": {
+     "notes.txt": "draft 317\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 318",
+    "files": {
+     "notes.txt": "draft 318\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 319",
+    "files": {
+     "notes.txt": "draft 319\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 320",
+    "files": {
+     "notes.txt": "draft 320\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 321",
+    "files": {
+     "notes.txt": "draft 321\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 322",
+    "files": {
+     "notes.txt": "draft 322\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 323",
+    "files": {
+     "notes.txt": "draft 323\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 324",
+    "files": {
+     "notes.txt": "draft 324\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 325",
+    "files": {
+     "notes.txt": "draft 325\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 326",
+    "files": {
+     "notes.txt": "draft 326\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 327",
+    "files": {
+     "notes.txt": "draft 327\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 328",
+    "files": {
+     "notes.txt": "draft 328\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 329",
+    "files": {
+     "notes.txt": "draft 329\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 330",
+    "files": {
+     "notes.txt": "draft 330\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 331",
+    "files": {
+     "notes.txt": "draft 331\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 332",
+    "files": {
+     "notes.txt": "draft 332\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 333",
+    "files": {
+     "notes.txt": "draft 333\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 334",
+    "files": {
+     "notes.txt": "draft 334\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 335",
+    "files": {
+     "notes.txt": "draft 335\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 336",
+    "files": {
+     "notes.txt": "draft 336\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 337",
+    "files": {
+     "notes.txt": "draft 337\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 338",
+    "files": {
+     "notes.txt": "draft 338\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 339",
+    "files": {
+     "notes.txt": "draft 339\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 340",
+    "files": {
+     "notes.txt": "draft 340\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 341",
+    "files": {
+     "notes.txt": "draft 341\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 342",
+    "files": {
+     "notes.txt": "draft 342\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 343",
+    "files": {
+     "notes.txt": "draft 343\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 344",
+    "files": {
+     "notes.txt": "draft 344\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 345",
+    "files": {
+     "notes.txt": "draft 345\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 346",
+    "files": {
+     "notes.txt": "draft 346\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 347",
+    "files": {
+     "notes.txt": "draft 347\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 348",
+    "files": {
+     "notes.txt": "draft 348\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 349",
+    "files": {
+     "notes.txt": "draft 349\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 350",
+    "files": {
+     "notes.txt": "draft 350\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 351",
+    "files": {
+     "notes.txt": "draft 351\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 352",
+    "files": {
+     "notes.txt": "draft 352\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 353",
+    "files": {
+     "notes.txt": "draft 353\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 354",
+    "files": {
+     "notes.txt": "draft 354\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 355",
+    "files": {
+     "notes.txt": "draft 355\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 356",
+    "files": {
+     "notes.txt": "draft 356\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 357",
+    "files": {
+     "notes.txt": "draft 357\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 358",
+    "files": {
+     "notes.txt": "draft 358\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 359",
+    "files": {
+     "notes.txt": "draft 359\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 360",
+    "files": {
+     "notes.txt": "draft 360\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 361",
+    "files": {
+     "notes.txt": "draft 361\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 362",
+    "files": {
+     "notes.txt": "draft 362\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 363",
+    "files": {
+     "notes.txt": "draft 363\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 364",
+    "files": {
+     "notes.txt": "draft 364\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 365",
+    "files": {
+     "notes.txt": "draft 365\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 366",
+    "files": {
+     "notes.txt": "draft 366\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 367",
+    "files": {
+     "notes.txt": "draft 367\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 368",
+    "files": {
+     "notes.txt": "draft 368\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 369",
+    "files": {
+     "notes.txt": "draft 369\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 370",
+    "files": {
+     "notes.txt": "draft 370\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 371",
+    "files": {
+     "notes.txt": "draft 371\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 372",
+    "files": {
+     "notes.txt": "draft 372\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 373",
+    "files": {
+     "notes.txt": "draft 373\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 374",
+    "files": {
+     "notes.txt": "draft 374\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 375",
+    "files": {
+     "notes.txt": "draft 375\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 376",
+    "files": {
+     "notes.txt": "draft 376\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 377",
+    "files": {
+     "notes.txt": "draft 377\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 378",
+    "files": {
+     "notes.txt": "draft 378\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 379",
+    "files": {
+     "notes.txt": "draft 379\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 380",
+    "files": {
+     "notes.txt": "draft 380\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 381",
+    "files": {
+     "notes.txt": "draft 381\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 382",
+    "files": {
+     "notes.txt": "draft 382\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 383",
+    "files": {
+     "notes.txt": "draft 383\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 384",
+    "files": {
+     "notes.txt": "draft 384\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 385",
+    "files": {
+     "notes.txt": "draft 385\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 386",
+    "files": {
+     "notes.txt": "draft 386\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 387",
+    "files": {
+     "notes.txt": "draft 387\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 388",
+    "files": {
+     "notes.txt": "draft 388\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 389",
+    "files": {
+     "notes.txt": "draft 389\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 390",
+    "files": {
+     "notes.txt": "draft 390\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 391",
+    "files": {
+     "notes.txt": "draft 391\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 392",
+    "files": {
+     "notes.txt": "draft 392\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 393",
+    "files": {
+     "notes.txt": "draft 393\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 394",
+    "files": {
+     "notes.txt": "draft 394\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 395",
+    "files": {
+     "notes.txt": "draft 395\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 396",
+    "files": {
+     "notes.txt": "draft 396\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 397",
+    "files": {
+     "notes.txt": "draft 397\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 398",
+    "files": {
+     "notes.txt": "draft 398\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 399",
+    "files": {
+     "notes.txt": "draft 399\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 400",
+    "files": {
+     "notes.txt": "draft 400\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 401",
+    "files": {
+     "notes.txt": "draft 401\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 402",
+    "files": {
+     "notes.txt": "draft 402\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 403",
+    "files": {
+     "notes.txt": "draft 403\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 404",
+    "files": {
+     "notes.txt": "draft 404\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 405",
+    "files": {
+     "notes.txt": "draft 405\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 406",
+    "files": {
+     "notes.txt": "draft 406\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 407",
+    "files": {
+     "notes.txt": "draft 407\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 408",
+    "files": {
+     "notes.txt": "draft 408\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 409",
+    "files": {
+     "notes.txt": "draft 409\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 410",
+    "files": {
+     "notes.txt": "draft 410\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 411",
+    "files": {
+     "notes.txt": "draft 411\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 412",
+    "files": {
+     "notes.txt": "draft 412\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 413",
+    "files": {
+     "notes.txt": "draft 413\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 414",
+    "files": {
+     "notes.txt": "draft 414\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 415",
+    "files": {
+     "notes.txt": "draft 415\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 416",
+    "files": {
+     "notes.txt": "draft 416\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 417",
+    "files": {
+     "notes.txt": "draft 417\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 418",
+    "files": {
+     "notes.txt": "draft 418\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 419",
+    "files": {
+     "notes.txt": "draft 419\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 420",
+    "files": {
+     "notes.txt": "draft 420\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 421",
+    "files": {
+     "notes.txt": "draft 421\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 422",
+    "files": {
+     "notes.txt": "draft 422\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 423",
+    "files": {
+     "notes.txt": "draft 423\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 424",
+    "files": {
+     "notes.txt": "draft 424\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 425",
+    "files": {
+     "notes.txt": "draft 425\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 426",
+    "files": {
+     "notes.txt": "draft 426\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 427",
+    "files": {
+     "notes.txt": "draft 427\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 428",
+    "files": {
+     "notes.txt": "draft 428\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 429",
+    "files": {
+     "notes.txt": "draft 429\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 430",
+    "files": {
+     "notes.txt": "draft 430\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 431",
+    "files": {
+     "notes.txt": "draft 431\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 432",
+    "files": {
+     "notes.txt": "draft 432\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 433",
+    "files": {
+     "notes.txt": "draft 433\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 434",
+    "files": {
+     "notes.txt": "draft 434\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 435",
+    "files": {
+     "notes.txt": "draft 435\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 436",
+    "files": {
+     "notes.txt": "draft 436\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 437",
+    "files": {
+     "notes.txt": "draft 437\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 438",
+    "files": {
+     "notes.txt": "draft 438\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 439",
+    "files": {
+     "notes.txt": "draft 439\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 440",
+    "files": {
+     "notes.txt": "draft 440\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 441",
+    "files": {
+     "notes.txt": "draft 441\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 442",
+    "files": {
+     "notes.txt": "draft 442\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 443",
+    "files": {
+     "notes.txt": "draft 443\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 444",
+    "files": {
+     "notes.txt": "draft 444\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 445",
+    "files": {
+     "notes.txt": "draft 445\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 446",
+    "files": {
+     "notes.txt": "draft 446\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 447",
+    "files": {
+     "notes.txt": "draft 447\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 448",
+    "files": {
+     "notes.txt": "draft 448\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 449",
+    "files": {
+     "notes.txt": "draft 449\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 450",
+    "files": {
+     "notes.txt": "draft 450\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 451",
+    "files": {
+     "notes.txt": "draft 451\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 452",
+    "files": {
+     "notes.txt": "draft 452\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 453",
+    "files": {
+     "notes.txt": "draft 453\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 454",
+    "files": {
+     "notes.txt": "draft 454\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 455",
+    "files": {
+     "notes.txt": "draft 455\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 456",
+    "files": {
+     "notes.txt": "draft 456\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 457",
+    "files": {
+     "notes.txt": "draft 457\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 458",
+    "files": {
+     "notes.txt": "draft 458\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 459",
+    "files": {
+     "notes.txt": "draft 459\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 460",
+    "files": {
+     "notes.txt": "draft 460\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 461",
+    "files": {
+     "notes.txt": "draft 461\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 462",
+    "files": {
+     "notes.txt": "draft 462\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 463",
+    "files": {
+     "notes.txt": "draft 463\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 464",
+    "files": {
+     "notes.txt": "draft 464\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 465",
+    "files": {
+     "notes.txt": "draft 465\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 466",
+    "files": {
+     "notes.txt": "draft 466\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 467",
+    "files": {
+     "notes.txt": "draft 467\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 468",
+    "files": {
+     "notes.txt": "draft 468\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 469",
+    "files": {
+     "notes.txt": "draft 469\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 470",
+    "files": {
+     "notes.txt": "draft 470\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 471",
+    "files": {
+     "notes.txt": "draft 471\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 472",
+    "files": {
+     "notes.txt": "draft 472\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 473",
+    "files": {
+     "notes.txt": "draft 473\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 474",
+    "files": {
+     "notes.txt": "draft 474\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 475",
+    "files": {
+     "notes.txt": "draft 475\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 476",
+    "files": {
+     "notes.txt": "draft 476\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 477",
+    "files": {
+     "notes.txt": "draft 477\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 478",
+    "files": {
+     "notes.txt": "draft 478\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 479",
+    "files": {
+     "notes.txt": "draft 479\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 480",
+    "files": {
+     "notes.txt": "draft 480\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 481",
+    "files": {
+     "notes.txt": "draft 481\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 482",
+    "files": {
+     "notes.txt": "draft 482\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 483",
+    "files": {
+     "notes.txt": "draft 483\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 484",
+    "files": {
+     "notes.txt": "draft 484\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 485",
+    "files": {
+     "notes.txt": "draft 485\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 486",
+    "files": {
+     "notes.txt": "draft 486\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 487",
+    "files": {
+     "notes.txt": "draft 487\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 488",
+    "files": {
+     "notes.txt": "draft 488\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 489",
+    "files": {
+     "notes.txt": "draft 489\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 490",
+    "files": {
+     "notes.txt": "draft 490\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 491",
+    "files": {
+     "notes.txt": "draft 491\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 492",
+    "files": {
+     "notes.txt": "draft 492\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 493",
+    "files": {
+     "notes.txt": "draft 493\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 494",
+    "files": {
+     "notes.txt": "draft 494\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 495",
+    "files": {
+     "notes.txt": "draft 495\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 496",
+    "files": {
+     "notes.txt": "draft 496\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 497",
+    "files": {
+     "notes.txt": "draft 497\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 498",
+    "files": {
+     "notes.txt": "draft 498\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 499",
+    "files": {
+     "notes.txt": "draft 499\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 500",
+    "files": {
+     "notes.txt": "draft 500\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 501",
+    "files": {
+     "notes.txt": "draft 501\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 502",
+    "files": {
+     "notes.txt": "draft 502\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 503",
+    "files": {
+     "notes.txt": "draft 503\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 504",
+    "files": {
+     "notes.txt": "draft 504\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 505",
+    "files": {
+     "notes.txt": "draft 505\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 506",
+    "files": {
+     "notes.txt": "draft 506\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 507",
+    "files": {
+     "notes.txt": "draft 507\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 508",
+    "files": {
+     "notes.txt": "draft 508\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 509",
+    "files": {
+     "notes.txt": "draft 509\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 510",
+    "files": {
+     "notes.txt": "draft 510\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 511",
+    "files": {
+     "notes.txt": "draft 511\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 512",
+    "files": {
+     "notes.txt": "draft 512\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 513",
+    "files": {
+     "notes.txt": "draft 513\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 514",
+    "files": {
+     "notes.txt": "draft 514\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 515",
+    "files": {
+     "notes.txt": "draft 515\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 516",
+    "files": {
+     "notes.txt": "draft 516\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 517",
+    "files": {
+     "notes.txt": "draft 517\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 518",
+    "files": {
+     "notes.txt": "draft 518\n"
+    }
+   },
+   {
+    "commit": "Fixture notes 519",
+    "files": {
+     "notes.txt": "draft 519\n"
+    }
+   },
+   {
+    "commit": "Update the layout notes\n\nRecord the narrow window sizes and the text sizes they were checked at.\nThe paging commits before this one fill more than one history page.",
+    "files": {
+     "README.md": "# Narrow inspector fixture\n\nA disposable QA repository for narrow windows at large text sizes.\n\n## Sizes\n\n- 461 x 490\n- 493 x 526\n",
+     "docs/guide.md": "# Guide\n\n- History\n- Compare\n- Changes\n- Settings\n",
+     "src/layout.txt": "row 01: column\nrow 02: column\nrow 03: rail\nrow 04: column\nrow 05: column\nrow 06: column\nrow 07: inspector\nrow 08: column\nrow 09: column\nrow 10: column\nrow 11: toolbar\nrow 12: column\nrow 13: files\nrow 14: filter\n"
+    }
+   },
+   {
+    "commit": "Work in progress",
+    "files": {
+     "README.md": "# Narrow inspector fixture\n\nA disposable QA repository for narrow windows at large text sizes.\n\n## Sizes\n\n- 461 x 490\n- 493 x 526\n- 1000 x 680\n",
+     "src/layout.txt": "row 01: column\nrow 02: column\nrow 03: rail\nrow 04: column\nrow 05: header\nrow 06: column\nrow 07: inspector\nrow 08: column\nrow 09: column\nrow 10: column\nrow 11: toolbar\nrow 12: column\nrow 13: files\nrow 14: filter\nrow 15: paging\n",
+     "notes/todo.md": "- check 461 x 490\n- check 18 pt\n"
+    }
+   },
+   {
+    "reset": "@520",
+    "mode": "mixed"
+   }
+  ],
+  "expect": {
+   "@0": "963c1e6cc5be79938bafe0e119a3b9d0a75ebf9a",
+   "@519": "46835e14b39da4bb51b8060018d48ee32e63b8cb",
+   "@520": "f00d7e381d77b01e559251a040d5996502488f79",
+   "@521": "5cdda380fddcbf7c494b0db506bae60b55493c95",
+   "HEAD": "f00d7e381d77b01e559251a040d5996502488f79"
+  }
+ },
+ "variants": [
+  {
+   "palette": "midnight",
+   "text_size": 13
+  },
+  {
+   "palette": "midnight",
+   "text_size": 18
+  },
+  {
+   "palette": "porcelain",
+   "text_size": 18
+  }
+ ],
+ "crops": {
+  "page-461x490-13pt": [
+   0,
+   0,
+   461,
+   464
+  ],
+  "page-493x526-13pt": [
+   0,
+   0,
+   493,
+   500
+  ],
+  "page-1000x680-13pt": [
+   0,
+   0,
+   1000,
+   654
+  ],
+  "page-1480x800-13pt": [
+   0,
+   0,
+   1480,
+   774
+  ],
+  "page-461x490-18pt": [
+   0,
+   0,
+   461,
+   454
+  ],
+  "page-560x600-18pt": [
+   0,
+   0,
+   560,
+   564
+  ]
+ },
+ "steps": [
+  {
+   "stable": 12.0,
+   "quiet": 1.15,
+   "note": "the launch settles on History, HEAD selected and the history table focused"
+  },
+  {
+   "capture": "history",
+   "crop": "page-461x490-13pt",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "At 13 pt in 461 x 490, History: Columns, Latest, Previous and Older in the 177 px column; Copy message and Hash on one row above Changed files; identical to the base outside the status-bar timing",
+   "roles": [
+    "cand"
+   ]
+  },
+  {
+   "capture": "history",
+   "crop": "page-461x490-18pt",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "shows": {
+    "base": "On the base at 18 pt in 461 x 490, History: the fixed 176 px column cuts Older, and Hash wraps below Copy message and is drawn over the Changed files label",
+    "cand": "On the candidate at 18 pt in 461 x 490, History: Columns, Latest, Previous and Older whole in the 244 px column; the icon-only Copy message and Hash on one row above the Changed files border; the label truncated beside a whole count badge"
+   }
+  },
+  {
+   "key": "Return",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Open Selected List Item: HEAD's first changed file is already selected, so Compare opens"
+  },
+  {
+   "key": "Home",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "the first changed file, README.md"
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "history",
+    "b": "@now",
+    "region": [
+     44,
+     210,
+     221,
+     460
+    ],
+    "min_pixels": 5001
+   },
+   "note": "Compare replaced the history table in the column",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "history",
+    "b": "@now",
+    "region": [
+     61,
+     350,
+     237,
+     454
+    ],
+    "min_pixels": 2001
+   },
+   "note": "Compare replaced the history table in the column",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "compare",
+   "crop": "page-461x490-13pt",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "At 13 pt in 461 x 490, Compare from History: README.md's diff beside the rail and the inspector whole; identical to the base outside the status-bar timing",
+   "roles": [
+    "cand"
+   ]
+  },
+  {
+   "capture": "compare",
+   "crop": "page-461x490-18pt",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "shows": {
+    "base": "On the base at 18 pt in 461 x 490, Compare from History: Hash wraps below Copy message and is drawn over the Changed files label",
+    "cand": "On the candidate at 18 pt in 461 x 490, Compare from History: the 156 px inspector's icon-only Copy message and Hash on one row above the Changed files border; the label truncated beside a whole count badge"
+   }
+  },
+  {
+   "key": "2",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Go to Working Changes",
+   "mods": [
+    "Control_L"
+   ]
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "compare",
+    "b": "@now",
+    "region": [
+     44,
+     210,
+     221,
+     460
+    ],
+    "min_pixels": 5001
+   },
+   "note": "Changes replaced Compare in the column",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "compare",
+    "b": "@now",
+    "region": [
+     61,
+     350,
+     237,
+     454
+    ],
+    "min_pixels": 2001
+   },
+   "note": "Changes replaced Compare in the column",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "changes",
+   "crop": "page-461x490-13pt",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "At 13 pt in 461 x 490, Changes with the file list focused: the filter field and its placeholder inside the 240 px inspector; identical to the base outside the status-bar timing",
+   "roles": [
+    "cand"
+   ]
+  },
+  {
+   "capture": "changes",
+   "crop": "page-461x490-18pt",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "shows": {
+    "base": "On the base at 18 pt in 461 x 490, Changes with the file list focused: the filter field and Filter working paths... run past the window's right edge",
+    "cand": "On the candidate at 18 pt in 461 x 490, Changes with the file list focused: the filter field and its clipped placeholder inside the window, 13 px from its right edge"
+   }
+  },
+  {
+   "click": [
+    340,
+    226
+   ],
+   "note": "the filter field (interior x 232-449, y 214-237)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "click": [
+    383,
+    373
+   ],
+   "note": "the filter field, inside it on both builds (candidate x 319-446, y 356-389)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "park": true
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "changes",
+    "b": "@now",
+    "region": [
+     228,
+     210,
+     455,
+     244
+    ],
+    "min_pixels": 50
+   },
+   "note": "the filter field took focus",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "changes",
+    "b": "@now",
+    "region": [
+     245,
+     350,
+     461,
+     396
+    ],
+    "min_pixels": 50
+   },
+   "note": "the filter field took focus",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "changes-filter",
+   "commit": false,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "changes-filter",
+   "crop": "page-461x490-18pt",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "shows": {
+    "base": "On the base at 18 pt in 461 x 490, the filter field focused by a click: its right edge and focus ring past the window's edge",
+    "cand": "On the candidate at 18 pt in 461 x 490, the filter field focused by a click: its focus ring whole inside the window, 10 px from its right edge"
+   }
+  },
+  {
+   "resize": [
+    493,
+    526
+   ],
+   "note": "13 pt at 493 x 526",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "mark": "before-history-tile",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "1",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Go to History",
+   "mods": [
+    "Control_L"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "before-history-tile",
+    "b": "@now",
+    "region": [
+     44,
+     210,
+     221,
+     490
+    ],
+    "min_pixels": 5001
+   },
+   "note": "History at 493 x 526",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "history-tile",
+   "crop": "page-493x526-13pt",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "At 13 pt in 493 x 526, History; identical to the base outside the status-bar timing",
+   "roles": [
+    "cand"
+   ]
+  },
+  {
+   "key": "Return",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Open Selected List Item: Compare",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "Home",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "the first changed file",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "history-tile",
+    "b": "@now",
+    "region": [
+     44,
+     210,
+     221,
+     490
+    ],
+    "min_pixels": 5001
+   },
+   "note": "Compare at 493 x 526",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "compare-tile",
+   "crop": "page-493x526-13pt",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "At 13 pt in 493 x 526, Compare from History: README.md's diff; identical to the base outside the status-bar timing",
+   "roles": [
+    "cand"
+   ]
+  },
+  {
+   "key": "2",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Go to Working Changes",
+   "mods": [
+    "Control_L"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "compare-tile",
+    "b": "@now",
+    "region": [
+     44,
+     210,
+     221,
+     490
+    ],
+    "min_pixels": 5001
+   },
+   "note": "Changes at 493 x 526",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "changes-tile",
+   "crop": "page-493x526-13pt",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "At 13 pt in 493 x 526, Changes with the file list focused; identical to the base outside the status-bar timing",
+   "roles": [
+    "cand"
+   ]
+  },
+  {
+   "click": [
+    372,
+    226
+   ],
+   "note": "the filter field",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "park": true,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "changes-tile",
+    "b": "@now",
+    "region": [
+     260,
+     210,
+     487,
+     244
+    ],
+    "min_pixels": 50
+   },
+   "note": "the filter field took focus",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "changes-filter-tile",
+   "commit": false,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "resize": [
+    1000,
+    680
+   ],
+   "note": "13 pt at 1000 x 680",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "mark": "before-history-minimum",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "1",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Go to History",
+   "mods": [
+    "Control_L"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "before-history-minimum",
+    "b": "@now",
+    "region": [
+     0,
+     140,
+     461,
+     640
+    ],
+    "min_pixels": 5001
+   },
+   "note": "History at 1000 x 680",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "history-minimum",
+   "crop": "page-1000x680-13pt",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "At 13 pt in 1000 x 680, History; identical to the base outside the status-bar timing",
+   "roles": [
+    "cand"
+   ]
+  },
+  {
+   "key": "Return",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Open Selected List Item: Compare",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "Home",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "the first changed file",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "history-minimum",
+    "b": "@now",
+    "region": [
+     0,
+     140,
+     461,
+     640
+    ],
+    "min_pixels": 5001
+   },
+   "note": "Compare at 1000 x 680",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "compare-minimum",
+   "crop": "page-1000x680-13pt",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "At 13 pt in 1000 x 680, Compare from History: README.md's diff; identical to the base outside the status-bar timing",
+   "roles": [
+    "cand"
+   ]
+  },
+  {
+   "key": "2",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Go to Working Changes",
+   "mods": [
+    "Control_L"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "compare-minimum",
+    "b": "@now",
+    "region": [
+     0,
+     140,
+     461,
+     640
+    ],
+    "min_pixels": 5001
+   },
+   "note": "Changes at 1000 x 680",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "changes-minimum",
+   "crop": "page-1000x680-13pt",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "At 13 pt in 1000 x 680, Changes with the file list focused; identical to the base outside the status-bar timing",
+   "roles": [
+    "cand"
+   ]
+  },
+  {
+   "click": [
+    860,
+    156
+   ],
+   "note": "the filter field",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "park": true,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "changes-minimum",
+    "b": "@now",
+    "region": [
+     725,
+     140,
+     995,
+     172
+    ],
+    "min_pixels": 50
+   },
+   "note": "the filter field took focus",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "changes-filter-minimum",
+   "commit": false,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "resize": [
+    1480,
+    800
+   ],
+   "note": "13 pt at 1480 x 800",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "mark": "before-history-wide",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "1",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Go to History",
+   "mods": [
+    "Control_L"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "before-history-wide",
+    "b": "@now",
+    "region": [
+     0,
+     140,
+     461,
+     760
+    ],
+    "min_pixels": 5001
+   },
+   "note": "History at 1480 x 800",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "history-wide",
+   "crop": "page-1480x800-13pt",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "At 13 pt in 1480 x 800, History; identical to the base outside the status-bar timing",
+   "roles": [
+    "cand"
+   ]
+  },
+  {
+   "key": "Return",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Open Selected List Item: Compare",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "Home",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "the first changed file",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "history-wide",
+    "b": "@now",
+    "region": [
+     0,
+     140,
+     461,
+     760
+    ],
+    "min_pixels": 5001
+   },
+   "note": "Compare at 1480 x 800",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "compare-wide",
+   "crop": "page-1480x800-13pt",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "At 13 pt in 1480 x 800, Compare from History: README.md's diff; identical to the base outside the status-bar timing",
+   "roles": [
+    "cand"
+   ]
+  },
+  {
+   "key": "2",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Go to Working Changes",
+   "mods": [
+    "Control_L"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "compare-wide",
+    "b": "@now",
+    "region": [
+     0,
+     140,
+     461,
+     760
+    ],
+    "min_pixels": 5001
+   },
+   "note": "Changes at 1480 x 800",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "changes-wide",
+   "crop": "page-1480x800-13pt",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "At 13 pt in 1480 x 800, Changes with the file list focused; identical to the base outside the status-bar timing",
+   "roles": [
+    "cand"
+   ]
+  },
+  {
+   "click": [
+    1320,
+    156
+   ],
+   "note": "the filter field",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "park": true,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "changes-wide",
+    "b": "@now",
+    "region": [
+     1165,
+     140,
+     1475,
+     172
+    ],
+    "min_pixels": 50
+   },
+   "note": "the filter field took focus",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "capture": "changes-filter-wide",
+   "commit": false,
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "resize": [
+    560,
+    600
+   ],
+   "note": "18 pt at 560 x 600: Hash wraps below a labelled Copy message",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "mark": "before-history-wrapped",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "key": "1",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Go to History",
+   "mods": [
+    "Control_L"
+   ],
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "before-history-wrapped",
+    "b": "@now",
+    "region": [
+     61,
+     300,
+     237,
+     560
+    ],
+    "min_pixels": 2001
+   },
+   "note": "History at 560 x 600",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "history-wrapped",
+   "crop": "page-560x600-18pt",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "shows": {
+    "base": "On the base at 18 pt in 560 x 600, History: Hash wraps below Copy message; the panel happens to be tall enough, 46 px of it below Hash",
+    "cand": "On the candidate at 18 pt in 560 x 600, History: Hash wraps below the labelled Copy message, 46 px above the Changed files border, which the message panel reserves"
+   }
+  },
+  {
+   "key": "Return",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "Open Selected List Item: Compare",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "key": "Home",
+   "await_change": 5.0,
+   "wait_after": 0.3,
+   "note": "the first changed file",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "history-wrapped",
+    "b": "@now",
+    "region": [
+     61,
+     300,
+     237,
+     560
+    ],
+    "min_pixels": 2001
+   },
+   "note": "Compare at 560 x 600",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "compare-wrapped",
+   "crop": "page-560x600-18pt",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "shows": {
+    "base": "On the base at 18 pt in 560 x 600, Compare from History: Hash wraps below Copy message, above Changed files",
+    "cand": "On the candidate at 18 pt in 560 x 600, Compare from History: Hash wraps below the labelled Copy message, 46 px above the Changed files border"
+   }
+  }
+ ],
+ "analyses": [
+  {
+   "name": "same-as-base-13pt-461x490-history",
+   "kind": "compare",
+   "a": "base:history",
+   "b": "cand:history",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 461x490: identical to the base outside the status-bar timing"
+  },
+  {
+   "name": "same-as-base-13pt-461x490-compare",
+   "kind": "compare",
+   "a": "base:compare",
+   "b": "cand:compare",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 461x490: identical to the base outside the status-bar timing"
+  },
+  {
+   "name": "same-as-base-13pt-461x490-changes",
+   "kind": "compare",
+   "a": "base:changes",
+   "b": "cand:changes",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 461x490: identical to the base outside the status-bar timing"
+  },
+  {
+   "name": "same-as-base-13pt-461x490-changes-filter",
+   "kind": "compare",
+   "a": "base:changes-filter",
+   "b": "cand:changes-filter",
+   "masks": [
+    "status-timing",
+    [
+     240,
+     214,
+     244,
+     238
+    ]
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 461x490: identical to the base outside the status-bar timing and the filter's blinking caret"
+  },
+  {
+   "name": "same-as-base-13pt-493x526-history",
+   "kind": "compare",
+   "a": "base:history-tile",
+   "b": "cand:history-tile",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 493x526: identical to the base outside the status-bar timing"
+  },
+  {
+   "name": "same-as-base-13pt-493x526-compare",
+   "kind": "compare",
+   "a": "base:compare-tile",
+   "b": "cand:compare-tile",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 493x526: identical to the base outside the status-bar timing"
+  },
+  {
+   "name": "same-as-base-13pt-493x526-changes",
+   "kind": "compare",
+   "a": "base:changes-tile",
+   "b": "cand:changes-tile",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 493x526: identical to the base outside the status-bar timing"
+  },
+  {
+   "name": "same-as-base-13pt-493x526-changes-filter",
+   "kind": "compare",
+   "a": "base:changes-filter-tile",
+   "b": "cand:changes-filter-tile",
+   "masks": [
+    "status-timing",
+    [
+     272,
+     214,
+     276,
+     238
+    ]
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 493x526: identical to the base outside the status-bar timing and the filter's blinking caret"
+  },
+  {
+   "name": "same-as-base-13pt-1000x680-history",
+   "kind": "compare",
+   "a": "base:history-minimum",
+   "b": "cand:history-minimum",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 1000x680: identical to the base outside the status-bar timing"
+  },
+  {
+   "name": "same-as-base-13pt-1000x680-compare",
+   "kind": "compare",
+   "a": "base:compare-minimum",
+   "b": "cand:compare-minimum",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 1000x680: identical to the base outside the status-bar timing"
+  },
+  {
+   "name": "same-as-base-13pt-1000x680-changes",
+   "kind": "compare",
+   "a": "base:changes-minimum",
+   "b": "cand:changes-minimum",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 1000x680: identical to the base outside the status-bar timing"
+  },
+  {
+   "name": "same-as-base-13pt-1000x680-changes-filter",
+   "kind": "compare",
+   "a": "base:changes-filter-minimum",
+   "b": "cand:changes-filter-minimum",
+   "masks": [
+    "status-timing",
+    [
+     739,
+     144,
+     743,
+     168
+    ]
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 1000x680: identical to the base outside the status-bar timing and the filter's blinking caret"
+  },
+  {
+   "name": "same-as-base-13pt-1480x800-history",
+   "kind": "compare",
+   "a": "base:history-wide",
+   "b": "cand:history-wide",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 1480x800: identical to the base outside the status-bar timing"
+  },
+  {
+   "name": "same-as-base-13pt-1480x800-compare",
+   "kind": "compare",
+   "a": "base:compare-wide",
+   "b": "cand:compare-wide",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 1480x800: identical to the base outside the status-bar timing"
+  },
+  {
+   "name": "same-as-base-13pt-1480x800-changes",
+   "kind": "compare",
+   "a": "base:changes-wide",
+   "b": "cand:changes-wide",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 1480x800: identical to the base outside the status-bar timing"
+  },
+  {
+   "name": "same-as-base-13pt-1480x800-changes-filter",
+   "kind": "compare",
+   "a": "base:changes-filter-wide",
+   "b": "cand:changes-filter-wide",
+   "masks": [
+    "status-timing",
+    [
+     1179,
+     144,
+     1183,
+     168
+    ]
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "13 pt at 1480x800: identical to the base outside the status-bar timing and the filter's blinking caret"
+  },
+  {
+   "name": "toolbar-above-changed-files-18pt-history",
+   "kind": "clearance",
+   "frame": "history",
+   "roles": [
+    "cand"
+   ],
+   "expect": true,
+   "rect": [
+    329,
+    356,
+    412,
+    374
+   ],
+   "side": "bottom",
+   "surface": {
+    "at": [
+     450,
+     366
+    ]
+   },
+   "at": [
+    338,
+    380,
+    400
+   ],
+   "limit": 40,
+   "min_px": 1,
+   "max_px": 30,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "down from the toolbar's lowest ink to the next non-surface pixel: the message panel's border above Changed files"
+  },
+  {
+   "name": "changed-files-header-clear-18pt-history",
+   "kind": "clearance",
+   "frame": "history",
+   "roles": [
+    "cand"
+   ],
+   "expect": true,
+   "rect": [
+    343,
+    411,
+    435,
+    426
+   ],
+   "side": "top",
+   "surface": {
+    "at": [
+     450,
+     400
+    ]
+   },
+   "at": [
+    350,
+    380,
+    410
+   ],
+   "min_px": 8,
+   "max_px": 30,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "up from the Changed files label: only the header's padding up to the panel's border, nothing of the toolbar drawn in it"
+  },
+  {
+   "name": "toolbar-above-changed-files-18pt-history-base",
+   "kind": "clearance",
+   "frame": "history",
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "rect": [
+    267,
+    402,
+    300,
+    415
+   ],
+   "side": "bottom",
+   "surface": {
+    "at": [
+     450,
+     366
+    ]
+   },
+   "at": [
+    270,
+    285,
+    296
+   ],
+   "limit": 40,
+   "min_px": 1,
+   "max_px": 30,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "down from the toolbar's lowest ink to the next non-surface pixel: the message panel's border above Changed files; recorded (on the base at 461 the wrapped Hash is below it)"
+  },
+  {
+   "name": "changed-files-header-clear-18pt-history-base",
+   "kind": "clearance",
+   "frame": "history",
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "rect": [
+    275,
+    411,
+    367,
+    426
+   ],
+   "side": "top",
+   "surface": {
+    "at": [
+     450,
+     400
+    ]
+   },
+   "at": [
+    280,
+    285,
+    296
+   ],
+   "min_px": 8,
+   "max_px": 30,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "up from the Changed files label: only the header's padding up to the panel's border, nothing of the toolbar drawn in it; recorded"
+  },
+  {
+   "name": "toolbar-above-changed-files-18pt-compare",
+   "kind": "clearance",
+   "frame": "compare",
+   "roles": [
+    "cand"
+   ],
+   "expect": true,
+   "rect": [
+    329,
+    360,
+    412,
+    378
+   ],
+   "side": "bottom",
+   "surface": {
+    "at": [
+     450,
+     370
+    ]
+   },
+   "at": [
+    338,
+    380,
+    400
+   ],
+   "limit": 40,
+   "min_px": 1,
+   "max_px": 30,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "down from the toolbar's lowest ink to the next non-surface pixel: the message panel's border above Changed files"
+  },
+  {
+   "name": "changed-files-header-clear-18pt-compare",
+   "kind": "clearance",
+   "frame": "compare",
+   "roles": [
+    "cand"
+   ],
+   "expect": true,
+   "rect": [
+    343,
+    413,
+    435,
+    428
+   ],
+   "side": "top",
+   "surface": {
+    "at": [
+     450,
+     403
+    ]
+   },
+   "at": [
+    350,
+    380,
+    410
+   ],
+   "min_px": 8,
+   "max_px": 30,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "up from the Changed files label: only the header's padding up to the panel's border, nothing of the toolbar drawn in it"
+  },
+  {
+   "name": "toolbar-above-changed-files-18pt-compare-base",
+   "kind": "clearance",
+   "frame": "compare",
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "rect": [
+    267,
+    406,
+    300,
+    419
+   ],
+   "side": "bottom",
+   "surface": {
+    "at": [
+     450,
+     370
+    ]
+   },
+   "at": [
+    270,
+    285,
+    296
+   ],
+   "limit": 40,
+   "min_px": 1,
+   "max_px": 30,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "down from the toolbar's lowest ink to the next non-surface pixel: the message panel's border above Changed files; recorded (on the base at 461 the wrapped Hash is below it)"
+  },
+  {
+   "name": "changed-files-header-clear-18pt-compare-base",
+   "kind": "clearance",
+   "frame": "compare",
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "rect": [
+    275,
+    413,
+    367,
+    428
+   ],
+   "side": "top",
+   "surface": {
+    "at": [
+     450,
+     403
+    ]
+   },
+   "at": [
+    280,
+    285,
+    296
+   ],
+   "min_px": 8,
+   "max_px": 30,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "up from the Changed files label: only the header's padding up to the panel's border, nothing of the toolbar drawn in it; recorded"
+  },
+  {
+   "name": "toolbar-above-changed-files-18pt-history-wrapped",
+   "kind": "clearance",
+   "frame": "history-wrapped",
+   "roles": [
+    "cand"
+   ],
+   "expect": true,
+   "rect": [
+    334,
+    354,
+    369,
+    368
+   ],
+   "side": "bottom",
+   "surface": {
+    "at": [
+     520,
+     380
+    ]
+   },
+   "at": [
+    505,
+    520,
+    535
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "max_px": 60,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "down from the toolbar's lowest ink to the next non-surface pixel: the message panel's border above Changed files; scanned right of the message title"
+  },
+  {
+   "name": "changed-files-header-clear-18pt-history-wrapped",
+   "kind": "clearance",
+   "frame": "history-wrapped",
+   "roles": [
+    "cand"
+   ],
+   "expect": true,
+   "rect": [
+    343,
+    434,
+    435,
+    449
+   ],
+   "side": "top",
+   "surface": {
+    "at": [
+     520,
+     425
+    ]
+   },
+   "at": [
+    350,
+    380,
+    410
+   ],
+   "min_px": 8,
+   "max_px": 30,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "up from the Changed files label: only the header's padding up to the panel's border, nothing of the toolbar drawn in it"
+  },
+  {
+   "name": "toolbar-above-changed-files-18pt-history-wrapped-base",
+   "kind": "clearance",
+   "frame": "history-wrapped",
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "rect": [
+    330,
+    354,
+    365,
+    368
+   ],
+   "side": "bottom",
+   "surface": {
+    "at": [
+     520,
+     380
+    ]
+   },
+   "at": [
+    505,
+    520,
+    535
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "max_px": 60,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "down from the toolbar's lowest ink to the next non-surface pixel: the message panel's border above Changed files; scanned right of the message title; recorded (on the base at 461 the wrapped Hash is below it)"
+  },
+  {
+   "name": "changed-files-header-clear-18pt-history-wrapped-base",
+   "kind": "clearance",
+   "frame": "history-wrapped",
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "rect": [
+    339,
+    434,
+    431,
+    449
+   ],
+   "side": "top",
+   "surface": {
+    "at": [
+     520,
+     425
+    ]
+   },
+   "at": [
+    346,
+    376,
+    406
+   ],
+   "min_px": 8,
+   "max_px": 30,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "up from the Changed files label: only the header's padding up to the panel's border, nothing of the toolbar drawn in it; recorded"
+  },
+  {
+   "name": "toolbar-above-changed-files-18pt-compare-wrapped",
+   "kind": "clearance",
+   "frame": "compare-wrapped",
+   "roles": [
+    "cand"
+   ],
+   "expect": true,
+   "rect": [
+    334,
+    354,
+    369,
+    368
+   ],
+   "side": "bottom",
+   "surface": {
+    "at": [
+     520,
+     380
+    ]
+   },
+   "at": [
+    505,
+    520,
+    535
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "max_px": 60,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "down from the toolbar's lowest ink to the next non-surface pixel: the message panel's border above Changed files; scanned right of the message title"
+  },
+  {
+   "name": "changed-files-header-clear-18pt-compare-wrapped",
+   "kind": "clearance",
+   "frame": "compare-wrapped",
+   "roles": [
+    "cand"
+   ],
+   "expect": true,
+   "rect": [
+    343,
+    434,
+    435,
+    449
+   ],
+   "side": "top",
+   "surface": {
+    "at": [
+     520,
+     425
+    ]
+   },
+   "at": [
+    350,
+    380,
+    410
+   ],
+   "min_px": 8,
+   "max_px": 30,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "up from the Changed files label: only the header's padding up to the panel's border, nothing of the toolbar drawn in it"
+  },
+  {
+   "name": "toolbar-above-changed-files-18pt-compare-wrapped-base",
+   "kind": "clearance",
+   "frame": "compare-wrapped",
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "rect": [
+    330,
+    354,
+    365,
+    368
+   ],
+   "side": "bottom",
+   "surface": {
+    "at": [
+     520,
+     380
+    ]
+   },
+   "at": [
+    505,
+    520,
+    535
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "max_px": 60,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "down from the toolbar's lowest ink to the next non-surface pixel: the message panel's border above Changed files; scanned right of the message title; recorded (on the base at 461 the wrapped Hash is below it)"
+  },
+  {
+   "name": "changed-files-header-clear-18pt-compare-wrapped-base",
+   "kind": "clearance",
+   "frame": "compare-wrapped",
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "rect": [
+    339,
+    434,
+    431,
+    449
+   ],
+   "side": "top",
+   "surface": {
+    "at": [
+     520,
+     425
+    ]
+   },
+   "at": [
+    346,
+    376,
+    406
+   ],
+   "min_px": 8,
+   "max_px": 30,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "up from the Changed files label: only the header's padding up to the panel's border, nothing of the toolbar drawn in it; recorded"
+  },
+  {
+   "name": "filter-clear-of-right-edge-18pt-changes",
+   "kind": "clearance",
+   "frame": "changes",
+   "rect": [
+    318,
+    355,
+    448,
+    391
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     455,
+     350
+    ]
+   },
+   "at": [
+    365,
+    373,
+    381
+   ],
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "right from the candidate's field border to the window's right edge, all inspector surface (13 px when calibrated); on the base the field's interior continues there"
+  },
+  {
+   "name": "filter-found-from-window-edge-18pt-changes",
+   "kind": "clearance",
+   "frame": "changes",
+   "rect": [
+    460,
+    355,
+    461,
+    391
+   ],
+   "side": "left",
+   "surface": {
+    "at": [
+     455,
+     350
+    ]
+   },
+   "at": [
+    365,
+    373,
+    381
+   ],
+   "min_px": 1,
+   "max_px": 30,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "left from x 459, beside the window's last column, to the field's border or focus ring, which must be found within 30 px; on the base the field's interior is there"
+  },
+  {
+   "name": "filter-clear-of-right-edge-18pt-changes-filter",
+   "kind": "clearance",
+   "frame": "changes-filter",
+   "rect": [
+    318,
+    355,
+    451,
+    391
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     455,
+     350
+    ]
+   },
+   "at": [
+    365,
+    373,
+    381
+   ],
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "right from the candidate's field focus ring to the window's right edge, all inspector surface (10 px when calibrated); on the base the field's interior continues there"
+  },
+  {
+   "name": "filter-found-from-window-edge-18pt-changes-filter",
+   "kind": "clearance",
+   "frame": "changes-filter",
+   "rect": [
+    460,
+    355,
+    461,
+    391
+   ],
+   "side": "left",
+   "surface": {
+    "at": [
+     455,
+     350
+    ]
+   },
+   "at": [
+    365,
+    373,
+    381
+   ],
+   "min_px": 1,
+   "max_px": 30,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "left from x 459, beside the window's last column, to the field's border or focus ring, which must be found within 30 px; on the base the field's interior is there"
+  },
+  {
+   "name": "count-badge-inside-inspector-18pt-history",
+   "kind": "clearance",
+   "frame": "history",
+   "rect": [
+    460,
+    406,
+    461,
+    428
+   ],
+   "side": "left",
+   "surface": {
+    "at": [
+     452,
+     398
+    ]
+   },
+   "at": [
+    410,
+    417,
+    424
+   ],
+   "limit": 80,
+   "min_px": 8,
+   "max_px": 30,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "left from x 459, inside the file list's right border, across the header's padding to the count badge's right edge: the badge, padding included, ends 8 to 30 px inside the inspector; attempt 1's badge reached the border (0 px); on the base its badge sits further left"
+  },
+  {
+   "name": "count-badge-whole-18pt-history",
+   "kind": "glyph_contrast",
+   "frame": "history",
+   "roles": [
+    "cand"
+   ],
+   "box": [
+    420,
+    398,
+    460,
+    436
+   ],
+   "surface": {
+    "at": [
+     452,
+     398
+    ]
+   },
+   "min_contrast": 3.0,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the badge and its digit inside a box that ends at the file list's right border: no ink on any side (allow_edge false), so the badge is not cut, and the digit at 3:1 or more against the header"
+  },
+  {
+   "name": "count-badge-whole-18pt-history-base",
+   "kind": "glyph_contrast",
+   "frame": "history",
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "box": [
+    369,
+    398,
+    406,
+    436
+   ],
+   "surface": {
+    "at": [
+     452,
+     398
+    ]
+   },
+   "min_contrast": 3.0,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the base's badge (x 377-398) in its own box: recorded"
+  },
+  {
+   "name": "count-badge-inside-inspector-18pt-compare",
+   "kind": "clearance",
+   "frame": "compare",
+   "rect": [
+    460,
+    409,
+    461,
+    431
+   ],
+   "side": "left",
+   "surface": {
+    "at": [
+     452,
+     400
+    ]
+   },
+   "at": [
+    413,
+    420,
+    427
+   ],
+   "limit": 80,
+   "min_px": 8,
+   "max_px": 30,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "left from x 459, inside the file list's right border, across the header's padding to the count badge's right edge: the badge, padding included, ends 8 to 30 px inside the inspector; attempt 1's badge reached the border (0 px); on the base its badge sits further left"
+  },
+  {
+   "name": "count-badge-whole-18pt-compare",
+   "kind": "glyph_contrast",
+   "frame": "compare",
+   "roles": [
+    "cand"
+   ],
+   "box": [
+    420,
+    400,
+    460,
+    438
+   ],
+   "surface": {
+    "at": [
+     452,
+     400
+    ]
+   },
+   "min_contrast": 3.0,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the badge and its digit inside a box that ends at the file list's right border: no ink on any side (allow_edge false), so the badge is not cut, and the digit at 3:1 or more against the header"
+  },
+  {
+   "name": "count-badge-whole-18pt-compare-base",
+   "kind": "glyph_contrast",
+   "frame": "compare",
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "box": [
+    369,
+    400,
+    406,
+    438
+   ],
+   "surface": {
+    "at": [
+     452,
+     400
+    ]
+   },
+   "min_contrast": 3.0,
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the base's badge (x 377-398) in its own box: recorded"
+  }
+ ]
+}

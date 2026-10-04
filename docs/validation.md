@@ -65,6 +65,123 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 4 narrow windows at 18 pt keep History's paging, the inspector and its file count whole
+
+Task `narrow-large-text-minimums`, attempt 2. In a narrow window, the repository page's column and inspector minimums now scale with the interface text size (`appearance::ui_size`), as the 44 px rail already did. At 18 pt in a 461 × 490 window, History's column is 244 px instead of a fixed 176 px, so Columns, Latest, Previous and Older all fit in it. The inspector takes exactly the 156 px left beside the column and cannot be resized there. Its message toolbar is laid out for that width. Where the labelled Copy message does not fit, only its icon remains, as a 28 px compact control: it keeps the accessible name "Copy full commit message", and its tooltip leads with "Copy message". The message panel reserves the rows the toolbar wraps to, so Hash is no longer drawn over "Changed files" in History or Compare. The "Changed files" header keeps its count whole: in the 156 px inspector the label truncates with an ellipsis beside the count, and in an inspector pinned narrower still the label leaves, then the count, so neither is clipped. Attempt 1 (candidate `dc8c379`, 2026-10-03) clipped the count badge at the inspector's right edge, which its frames showed and no analysis then covered; this attempt's spec measures it. In Changes, the filter field and its clipped placeholder stay inside the window. Where a scaled inspector minimum passes the 480 px maximum, as at 18 pt with a desktop text scale of 1.25, the maximum yields to it. At the default 13 pt nothing moves. `DESIGN.md` describes the scaled minimums, the reserved toolbar rows and the files header. The vertical chrome is the next task, `narrow-large-text-compact-chrome`.
+
+Automated, in `cargo test --locked -p gitturtle`, run by the candidate's gates (the controller parks a candidate for evidence only after they pass):
+- `views::tests::narrow_large_text_keeps_paging_and_the_inspector_whole` is new. It runs at 18 pt, at 461 × 490 and 560 × 600.
+  - History: Columns, Latest, Previous and Older lie inside the column and the window.
+  - History and Compare: the message toolbar ends above "Changed files", with Copy message and Hash inside it. At 461 Copy message is the 28 px icon with Hash on its row; at 560 it is labelled and Hash is on a second row. The compact control keeps the name "Copy full commit message".
+  - Changes, unfocused and focused: the filter field lies inside the window, and its text area inside the field.
+- `views::tests::narrow_large_text_keeps_the_changed_files_count_whole` is new. At 18 pt, with 12 and with 3 changed files, in History and Compare at 461 × 490, the header lies inside the file list, the count lies whole inside the header's padding, and the label is at least its first character and ellipsis wide, beside the count. Narrowing the window from 461 to 341 px in 4 px steps, the label leaves, then the count, and neither comes back.
+- `views::tests::default_text_size_keeps_the_narrow_layout` is new. At 13 pt, in 461 × 490 and 493 × 526, it asserts the exact bounds that origin/main's fixed minimums gave: the rail, the scope toolbar, Columns and Older, the inspector's files, message toolbar and "Changed files" header and count, Copy message and Hash, and Changes' selection and filter field.
+- `views::tests::review_caption_aligns_with_the_button_labels` now expects the collapsed review row to keep its caption beside Options at 18 pt, in both 461 × 490 and 493 × 526, since the column grows with the text. Before, at 493 × 526, the caption wrapped below the arrows.
+- The candidate leaves `narrow_windows_keep_the_inspector_whole_and_the_header_on_one_row` and `narrow_history_keeps_paging_in_the_column` byte for byte as the base has them.
+
+Native evidence, full tier. Let `$EVIDENCE` be `/tmp/gitturtle-evidence`.
+- **Builds:** base `1feb0d3`, the candidate's parent (sha256 `38f923a33333ad779c8333d8b227275e8c15a41ef0a0bc4456ec6e9d4f629d41`), and candidate `2cec48f` (sha256 `3f85d88f17f532663b30f384f22b37fac6263fa89967b9ed0d10313f13c1707a`). Both are release builds of clean trees, `x86_64-unknown-linux-gnu`, rustc 1.99.0, each in its own target directory; `qa.py identity` accepted the pair.
+- **Host:** 2026-10-04, Ubuntu 26.04.1 LTS, GNOME 50.1, XWayland `:0` at scale factor 1, `--input mutter`: input went through Mutter RemoteDesktop with X focus verified, never XTest. `qa.py display-check` found the desktop unlocked and no other QA process before the run and after it.
+  - GNOME keeps the app's 1000 × 680 window minimum, which tiling window managers ignore. So every launch lowered the window's `WM_NORMAL_HINTS` minimum from 1000 × 680 to 400 × 420 before its first resize and read it back.
+  - Windows 461 × 490, 493 × 526, 1000 × 680, 1480 × 800 and 560 × 600. Interface text 13 and 18 pt, in Midnight, and in Porcelain at 18 pt.
+- **Run:** `qa.py scenario run` of `docs/evidence/narrow-large-text-minimums/scenario.json` (sha256 `5e85efe3…`) with both builds into `$EVIDENCE/runs/narrow-large-text-minimums-2cec48f`, 2026-10-04 from 14:48:42 to 14:55:20 UTC, with the tooling on `main` at `35ad8e9` (#172; the `glyph_contrast` analysis is #171's). It exited 0:
+  - 6 launches with no warnings, and all 50 guards passed;
+  - 80 of 80 evaluations of the 42 analyses as expected, 32 of them base values recorded only;
+  - none of the 36 crops matched a privacy template (46.1 s).
+- **Fixture:** the spec's recipe (sha256 `6ed61a64…`) at `$EVIDENCE/fixtures/narrow-large-text-minimums/repo`, reused from its earlier build and unchanged by every launch.
+  - `main` has 521 commits: the initial commit `963c1e6`, 519 paging commits that change `notes.txt` (the last is `46835e1`), and HEAD `f00d7e3`, "Update the layout notes", which changes `README.md`, `docs/guide.md` and `src/layout.txt`. History therefore has more than one 500-row page, and Older is enabled.
+  - A work-in-progress commit (`5cdda38`), reset with `--mixed`, leaves `README.md` and `src/layout.txt` modified and `notes/todo.md` untracked, so Changes lists three paths.
+  - Each launch had its own HOME and XDG directories, a generated store with Follow system off, and the `GitTurtle QA` identity.
+- **Route, the same input in both builds:**
+  1. Each launch opens at 461 × 490 on History, with HEAD selected (`history`).
+  2. Return opens Compare on README.md, which is already the selected file, and Home keeps it (`compare`).
+  3. Ctrl+2 opens Changes with the file list focused (`changes`).
+  4. A click on the filter field focuses it (`changes-filter`).
+  5. The 13 pt launch then resizes to 493 × 526 (`-tile`), 1000 × 680 (`-minimum`) and 1480 × 800 (`-wide`), and repeats Ctrl+1, Return, Home, Ctrl+2 and the click at each.
+  6. The 18 pt launches resize to 560 × 600 and repeat Ctrl+1, Return and Home (`-wrapped`).
+
+  After every step a guard checks that the view changed.
+- **Latency:** the first window change after each key, from the run's flow logs, was alike in both builds. Return took 18–49 ms, Ctrl+2 18–51 ms and Ctrl+1 23–55 ms. Home changed the window in 2 of 8 presses per build (20–23 ms) and nothing otherwise, since README.md was already selected.
+
+Frames in [`evidence/narrow-large-text-minimums/`](evidence/narrow-large-text-minimums/): 36 crops of the window from (0, 0) down to the status bar's top border. They are 461 × 464, 493 × 500, 1000 × 654 and 1480 × 774 at 13 pt, and 461 × 454 and 560 × 564 at 18 pt. The spec beside them is the run's byte for byte. The 13 pt crops are the candidate's alone; the base draws them identically (see the compares below).
+
+At 13 pt:
+- `candidate-midnight-13pt-461x490-history.png`: History in a half tile. It shows the rail, the 177 px column with the compact Columns, Latest, Previous and Older, and a 240 px inspector with Copy message and Hash on one row above "Changed files 3".
+- `candidate-midnight-13pt-461x490-compare.png`: Compare from History. README.md's diff sits beside the rail, its review options collapsed to arrows and Options, and the inspector is whole.
+- `candidate-midnight-13pt-461x490-changes.png`: Changes with the file list focused. "Filter working paths…" sits inside the 240 px inspector, with Directories, Stage 0 and Unstage 0 below it.
+- `candidate-midnight-13pt-493x526-history-tile.png`, `candidate-midnight-13pt-493x526-compare-tile.png`, `candidate-midnight-13pt-493x526-changes-tile.png`: the same three views at 493 × 526, where History's column also shows the count "1–500".
+- `candidate-midnight-13pt-1000x680-history-minimum.png`, `candidate-midnight-13pt-1000x680-compare-minimum.png`, `candidate-midnight-13pt-1000x680-changes-minimum.png`: the same views at the 1000 × 680 minimum.
+  - History shows its navigation, "All history 1–500" and the labelled Columns, Latest, Previous (disabled) and Older.
+  - Compare shows README.md's diff with its labelled review row.
+  - Changes shows its list above the commit composer.
+- `candidate-midnight-13pt-1480x800-history-wide.png`, `candidate-midnight-13pt-1480x800-compare-wide.png`, `candidate-midnight-13pt-1480x800-changes-wide.png`: the same at 1480 × 800, where History also shows its Author, Date and SHA columns.
+
+At 18 pt in 461 × 490, Midnight and Porcelain:
+- `base-midnight-18pt-461x490-history.png`, `base-porcelain-18pt-461x490-history.png`: on the base, the fixed 176 px column's toolbar ends at Previous, so Older is cut off. In the 240 px inspector, Hash wraps below Copy message and is drawn over the "Changed files" label.
+- `candidate-midnight-18pt-461x490-history.png`, `candidate-porcelain-18pt-461x490-history.png`: on the candidate, a 61 px rail, a 244 px column holding Columns, Latest, Previous and Older whole, and a 156 px inspector.
+  - The inspector's icon-only Copy message and Hash share one row, above the panel's border over "Changed files".
+  - The files header's label truncates to "Change…" beside the count badge "3", which is whole, 13 px inside the file list's right border.
+- `base-midnight-18pt-461x490-compare.png`, `base-porcelain-18pt-461x490-compare.png`: on the base, Compare's header wraps Blame below the path, and Hash again wraps below Copy message, over "Changed files".
+- `candidate-midnight-18pt-461x490-compare.png`, `candidate-porcelain-18pt-461x490-compare.png`: on the candidate, the path, copy, history and Blame share one row above Diff, Split and Before. The inspector's toolbar is one row, above the border, and the header shows "Change…" beside the whole count badge, as in History.
+- `base-midnight-18pt-461x490-changes.png`, `base-porcelain-18pt-461x490-changes.png`: on the base, with the file list focused, the filter field and "Filter working paths…" run past the window's right edge.
+- `candidate-midnight-18pt-461x490-changes.png`, `candidate-porcelain-18pt-461x490-changes.png`: on the candidate, the field (border at x 318–447) and its placeholder, clipped to "Filter working", sit inside the window, with Directories below.
+- `base-midnight-18pt-461x490-changes-filter.png`, `base-porcelain-18pt-461x490-changes-filter.png`: on the base, the field focused by a click; its focus ring runs out at the window's right edge.
+- `candidate-midnight-18pt-461x490-changes-filter.png`, `candidate-porcelain-18pt-461x490-changes-filter.png`: on the candidate, the focused field's 3 px ring is whole inside the window, its outer edge at x 450. In both crops the caret happens to be off (see (b) below).
+
+At 18 pt in 560 × 600, Midnight and Porcelain:
+- `base-midnight-18pt-560x600-history-wrapped.png`, `base-porcelain-18pt-560x600-history-wrapped.png`, `base-midnight-18pt-560x600-compare-wrapped.png`, `base-porcelain-18pt-560x600-compare-wrapped.png`: on the base, a 259 px inspector. Hash wraps below a labelled Copy message, and the message panel happens to be tall enough to hold it.
+- `candidate-midnight-18pt-560x600-history-wrapped.png`, `candidate-porcelain-18pt-560x600-history-wrapped.png`, `candidate-midnight-18pt-560x600-compare-wrapped.png`, `candidate-porcelain-18pt-560x600-compare-wrapped.png`: on the candidate, the inspector is pinned to the 255 px left beside the 244 px column. Copy message is labelled, and Hash sits on the second row, which the panel reserves. "Changed files 3" is whole.
+
+In both builds at this size, the message title "Update the layout" is cut at the panel's lower edge, as the message area bounds it.
+
+Against attempt 1's crops from the same spec route and base, 32 of the 36 are byte-identical. The four candidate History and Compare crops at 18 pt in 461 × 490 differ by 1,052 px each, all inside x 395–459, y 404–432: the label's end and the count badge (`qa.py compare` of each pair, no mask).
+
+Measured values, from the 80 evaluations:
+- **13 pt, base against candidate** (`same-as-base-13pt-*`): 0 px in all 16 compares, of History, Compare, Changes and Changes with the filter focused, at 461 × 490, 493 × 526, 1000 × 680 and 1480 × 800.
+  - Each compare is masked with `status-timing`, which covered 0 differing pixels in every one.
+  - The focused compares also mask the caret's column: x 240–244, 272–276, 739–743 and 1179–1183, over the field's height.
+- **History, 18 pt in 461 × 490, both palettes:**
+  - Candidate: the toolbar's lowest ink (the copy icon and Hash, ending at y 373) lies 17 px above the message panel's border at y 391 (`toolbar-above-changed-files-18pt-history`). Above the "Changed files" label (from y 411), only the header's 19 px of padding lies before that border (`changed-files-header-clear-18pt-history`).
+  - Base, recorded: 0 and 0 px. Hash's ink sits below the border, over the label.
+- **Compare, 18 pt in 461 × 490, both palettes:** the candidate measures 16 px to the border at y 394 and 18 px of header padding; the base records 0 and 0 px.
+- **The count badge, 18 pt in 461 × 490, both palettes:**
+  - Candidate: scanning left from x 459, inside the file list's right border at x 460, 13 px of header surface lie before the badge's right edge at x 446, in History and in Compare (`count-badge-inside-inspector-18pt-*`, which requires 8 to 30 px).
+  - Candidate: the box x 420–459 around the badge holds its ink with none on any side, at x 425–446 and y 404–429 in History (407–432 in Compare). The digit's peak contrast against the header is 7.02:1 in Midnight and 6.02:1 in Porcelain, and the badge's fill against it 1.19:1 and 1.21:1 (`count-badge-whole-18pt-*`, 3:1 required of the peak).
+  - Base, recorded: its badge ends at x 398, 61 px from x 459, with the same 7.02:1 and 6.02:1 in its own box.
+- **560 × 600 at 18 pt, History and Compare, both palettes:** in the candidate, the wrapped Hash's ink (ending at y 367) lies 46 px above the border at y 414, scanned at x 505, 520 and 535, right of the message title. The label has 19 px of header padding above it. The base records the same 46 and 19 px.
+- **Changes, 18 pt in 461 × 490, both palettes:**
+  - Candidate, unfocused: 13 px of inspector surface from the field's border at x 447 to the window's right edge (`filter-clear-of-right-edge-18pt-changes`). Scanning left from x 459, the border is found 12 px in (`filter-found-from-window-edge-18pt-changes`).
+  - Candidate, focused: 10 px from the ring's outer edge at x 450 to the right edge, and the ring is found 9 px in from x 459.
+  - Base, recorded: 0 px in all four, where the field's interior reaches the edge.
+
+Coordinator decisions, each delegated by the owner:
+- **(a) The wrapped toolbar is shown at 560 × 600.** The contract lists "the inspector's Hash toolbar wrapped" among the 461 × 490 states. At that size, though, the candidate's 156 px inspector keeps the icon-only Copy message and Hash on one row. It wraps Hash below a labelled Copy message only from 560 px, as its view test asserts. Since the contract's purpose is that the toolbar never overlaps "Changed files", 461 × 490 stays the primary state and 560 × 600 adds the wrapped one, with the same clearances. At 560 × 600 the base also wraps without overlapping, so that size shows the wrap but does not separate the builds; 461 × 490 does.
+- **(b) The caret.** The filter field's caret blinks every 500 ms and is drawn only while the window is active, so a committed focused crop can show either phase.
+  - A `qa.py recheck` of `candidate-midnight-18pt-461x490-changes-filter.png` and `candidate-porcelain-18pt-461x490-changes-filter.png` can therefore differ at the caret alone (x 329, about 19 px tall).
+  - These two crops are committed because the contract requires the focused field at 18 pt.
+  - The 13 pt focused states are measured against the base and not committed, and every compare masks the caret.
+- **(c) Whole-page crops above the status bar.** These are repository pages, not the project hub, and the status bar carries the per-launch timing.
+
+The spec is attempt 1's, calibrated on 2026-10-03 in three runs against attempt 1's builds. After attempt 1's frames showed the clipped badge, six count-badge analyses (16 evaluations) were added, with the summary and the two candidate `shows` lines that describe the badge; its steps, crops and other analyses are unchanged. This run needed no change to it.
+
+Observed outside the measured criteria:
+- At 18 pt in 461 × 490, the 156 px inspector leaves room for "Change…" alone beside the count.
+- At 18 pt in 461 × 490 Compare's diff still gets no line in either build, and History's table shows only its search field; the vertical chrome is the next task.
+
+`qa.py privacy scan --redacted --jobs 4` with the local template set (28 templates) found all 36 committed crops clean on their committed bytes in the candidate's tree (34.5 s wall, 14:57 UTC), as did the run's own scan of the same bytes (46.1 s). The crops show only the fixture's `/tmp` path, the `GitTurtle QA` identity, fixture commit text and app labels, and each was viewed at full size.
+
+Not covered natively:
+- the base's overlap as a negative distance: a clearance cannot be negative, so the base's 461 × 490 values record 0 px, while the frames show Hash's ink below the border, over the label;
+- the files header at widths below 461 px, where the label and then the count leave, and a two-digit count: the view test covers both, while the fixture's HEAD changes three files;
+- the inspector maximum yielding to a scaled minimum at a desktop text scale of 1.25;
+- AT-SPI: the view test asserts the compact Copy message's accessible name, which was not read natively;
+- the compact Copy message's tooltip and the inspector's resize handle, which cannot resize the inspector while it is pinned;
+- macOS, native Wayland, Hyprland and fractional scale factors.
+
+The 13 pt base frames, the 13 pt focused states at every size, and the marks stay uncommitted in the run's bundle.
+
+Design review (design-reviewer, 2026-10-04): pass with follow-ups. All 36 crops were viewed at full size against DESIGN.md: at 18 pt in 461 × 490 the count badge is whole, paging is whole, the toolbar is clear of "Changed files" and the filter field is inside the window, and the entry's frames and values match `analysis.json`; read against the badge's own fill, the digit is 5.91:1 in Midnight and 4.96:1 in Porcelain. Follow-ups: a 16 × 2 px scrollbar strip above the message panel's border at 18 pt in 461 × 490, with Compare's diff, History's table, Changes' Stage and Unstage row and the 560 × 600 message title left to `narrow-large-text-compact-chrome`.
+
 ## October 3 Refresh opens All history when the scoped branch is gone
 
 Task `history-vanished-scope-refresh`, attempt 2. History scoped to a local branch that has since been deleted no longer reports the repository unavailable on an explicit Refresh (Ctrl+R). The worker resolves the scope again, finds it gone and reads All history. The page then lists the repository's commits, the tab has no "· unavailable" suffix, and one polite status names the vanished branch and ends "Showing All history." The base reopened with the stale scope, so the whole snapshot failed: "Could not open repository" and a tab marked unavailable until All history was chosen. A worktree scope behaves the same way. Quiet refresh still keeps the displayed history with its explanation, but reports a vanished scope once: after it is dismissed, later quiet refreshes and accepted writes do not raise it again. History search under a vanished scope reports the scope change instead of a failed read. The status wraps beside its Dismiss action instead of being cut. `crates/app/docs/navigation-and-refresh.md` states the explicit-Refresh rule beside the quiet one.
