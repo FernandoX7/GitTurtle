@@ -65,6 +65,110 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 4 the desktop code font row waits for a cold fontconfig lookup
+
+Task `code-font-cold-launch-wait`, attempt 1, candidate `effdb2c` on base `b5b6dad`. With **Use the desktop's monospace font** on, a cold fontconfig cache made `fc-match` outlive the 500 ms `FAMILY_WAIT`. The lookup was then killed and the row said "fontconfig did not answer." until a window activation looked again ([September 29 record](#september-29-desktop-code-font-at-a-cold-launch)). The candidate keeps the row pending, "Looking up the desktop's monospace font…", while the lookup runs under a 4 s bound, and applies the family when it answers, through the existing generation check. The bound was chosen from that record's cold timings, as about five times the quiet scan. The row says unavailable only when the 4 s bound also runs out. Each query's pipe is read on the executor's timer rather than by a blocked worker thread, and one `fc-match` runs at a time. A query whose setting is turned off, or off and on, is killed and reaped at once. The output byte bound is unchanged.
+
+Automated, in `cargo test --locked -p gitturtle`, run by the candidate's gates (the controller parks a candidate for evidence only after they pass):
+- `settings::picker_tests::the_code_font_row_stays_pending_through_a_slow_lookup` is new. It uses a stand-in for `fc-match` on the test clock:
+  - The row stays pending 1.5 s into a lookup and then shows the family, which code then uses.
+  - A lookup whose setting is turned off and on stops, and the earlier generation's late answer is dropped.
+  - A lookup that never answers keeps the row pending until 50 ms before the bound, and at the bound the row says "fontconfig did not answer."
+  - Every stand-in process is reaped.
+- In `desktop_text`, three tests are new: `a_late_code_font_answer_is_used_and_queries_never_overlap`, `a_code_font_query_past_the_bound_is_killed_and_unavailable` and `a_code_font_query_for_a_changed_setting_stops`. `fontconfig_child_output_and_lifetime_are_bounded` now runs on the executor's clock.
+
+Native evidence, full tier: base and candidate in one session, as the criterion asks. Let `$EVIDENCE` be `/tmp/gitturtle-evidence`.
+- **Builds:** base `b5b6dad`, the candidate's parent (sha256 `12861797036bde8dcecd9e6511916162b8048c8d5976fd7eb51417efa1f92943`), and candidate `effdb2c` (sha256 `1018c6836e987429ed8200066a25dffdbd0093c5cac57df4f41a92bb8c197fb5`). Both are release builds of clean trees, `x86_64-unknown-linux-gnu`, rustc 1.99.0; `qa.py identity` accepted the pair. Each was built by `scripts/operator/build-release.sh` in its own fresh `CARGO_TARGET_DIR`, deleted after the copy. `b5b6dad` is the run's accepted head when the task started, the base the controller gives this candidate.
+- **Host:** 2026-10-04, Ubuntu 26.04.1 LTS, GNOME 50.1, Linux X11 through XWayland `:0` at scale factor 1, `--input mutter`: input went through Mutter RemoteDesktop with X focus verified, never XTest.
+  - `qa.py display-check` found the desktop unlocked and no other QA process before the run and after it.
+  - The unattended loop was idle, with a load average of 0.09 before the run.
+  - Windows 1000 × 680 at 13 pt and 1000 × 1000 at 18 pt, in Midnight and Porcelain.
+- **Cold cache.** On this host a fresh HOME and `XDG_CACHE_HOME` do not make the lookup cold. The stock `/etc/fonts/fonts.conf` also names `/var/cache/fontconfig`, which covers every font directory, so `fc-match` answers from it and writes nothing. Cold therefore follows the method of the [September 29 record](benchmarks/2026-09-29-code-font-cold-launch.md):
+  - Each launch's HOME holds `fontconfig-qa/fonts.conf`, a copy of the host's unmodified `/etc/fonts/fonts.conf` (fontconfig 2.17.1, `fontconfig-config 2.17.1-3ubuntu1`). In the copy the `conf.d` include is made absolute, and the only cache directory is `<cachedir prefix="xdg">fontconfig</cachedir>`, the launch's fresh `XDG_CACHE_HOME/fontconfig`.
+  - `FONTCONFIG_FILE=~/fontconfig-qa/fonts.conf` points the app's `fc-match` at that copy. The binary does not link fontconfig, so only `fc-match` writes that cache.
+  - Warm means a HOME file that includes the stock configuration, with its system cache.
+  - Checked on 2026-10-04 outside the app: with a fresh HOME and `XDG_CACHE_HOME` and the stock configuration, `fc-match --format %{family} monospace` answered "DejaVu Sans Mono" in 9 ms and wrote no cache file. With the copy it took 336–347 ms in four runs and wrote 30 cache files, as many as `/var/cache/fontconfig` holds.
+  - On this host, then, a cold lookup takes about 340–415 ms (a standalone cold `fc-match` with the copied configuration 336–347 ms; in the app 370–394 ms after Space in this run, and up to 415 ms in the exploration run), mostly inside the base's 500 ms bound, so the base's row usually names the family too. The base's timeout reproduced once, in the exploration run below, at 18 pt under a probe that grabbed the whole 1000 × 1000 window back to back. Nothing in this evidence adds load or slows the lookup to make the base fail.
+- **Run:** `qa.py scenario run` of `docs/evidence/code-font-cold-launch-wait/scenario.json` (sha256 `2f06d6b2…`) with both builds into `$EVIDENCE/runs/code-font-cold-launch-wait-effdb2c-2`, 2026-10-04 from 16:53:38 to 17:04:33 UTC. It used the tooling on `main` at `9b632fe`; the candidate tree's own tooling, from its base, rejects the spec's `atspi` and `home` keys. It exited 0:
+  - 14 launches with no warnings, and all 50 guards passed;
+  - 65 of 65 evaluations of the 16 analyses as expected, 23 of them recorded only;
+  - the 8 `toggle-timeline*` analyses, recorded without a verdict, list every frame of a probe against the settled row, the knob's spring frames included, so their "passed: false" (for example "16 of 17 frames … failed") is that listing and not a failure;
+  - none of the 14 crops matched a privacy template (1.8 s).
+- **Earlier runs:** an earlier run with the same steps (`$EVIDENCE/runs/code-font-cold-launch-wait-effdb2c`, 16:33:50 to 16:44:45 UTC, spec sha256 `90f4df33…`) also passed, and its 14 crops are byte-identical to these. It was rerun because two candidate `shows` lines and the limitations prose gave the capture and the pending times wrongly. The spec was calibrated by an exploration run of the same builds (`$EVIDENCE/runs/code-font-cold-launch-wait-probe-1`, nothing committed). That run settled Tab 34, the 18 pt positions and the pending row's length; the draft spec had captured the pending row, and this one records it by probe instead.
+- **Fixture:** the spec's recipe at `$EVIDENCE/fixtures/code-font-cold-launch-wait/repo`, one commit under the QA identity for Settings to open over, unchanged by every launch.
+  - Each launch had its own HOME and XDG directories, a generated store with Follow system off, and the `GitTurtle QA` identity.
+  - Each launch set `org.a11y.Status IsEnabled` for AT-SPI; the earlier value was restored and read back after the launch.
+- **Route, the same input in both builds:**
+  1. The launch settles on History; Ctrl+, opens Settings with nothing focused, and a guard checks that it opened.
+  2. The wheel scrolls the code-font row into view: 24 steps at 13 pt, 23 at 18 pt.
+     - The pointer is parked off the window before any key.
+     - Guards check that the Switch and the row's text lie inside their crop boxes (`row-off`, not committed).
+  3. Tab 34 times focuses the Switch (`row-off-focused`, not committed). AT-SPI reads it focused and off, and a guard lets Space go only to that node.
+  4. Space, as the probe `toggle` (`toggle-18` at 18 pt), turns the setting on and starts the launch's first fontconfig query. The probe keeps every distinct frame of the row until it has been still for 4.6 s, past the candidate's 4 s bound.
+  5. AT-SPI reads the Switch focused and on. The settled row is captured (`row-applied`), about 7 s after Space, and AT-SPI reads focus again.
+  6. With the setting on at launch (`midnight-13pt-code-font-on`, cold) and with a warm cache (`*-warm-cache`), the launch runs steps 1 and 2 only, then the row is captured (`row-launch`, `row-warm`).
+- **Latency:** the first window change after each key, from the run's flow logs, was alike in both builds. Ctrl+, opened Settings in 50–69 ms. Space first changed the row 18–25 ms after the press: the knob's spring, with the pending description already drawn.
+
+Frames in [`evidence/code-font-cold-launch-wait/`](evidence/code-font-cold-launch-wait/): 14 crops of the row inside the card's left and right borders, from above the title to just below the row's separator. They are 960 × 74 at 13 pt in 1000 × 680, and 944 × 101 at 18 pt in 1000 × 1000. The spec beside them is the run's byte for byte. Every base crop is byte-identical to its candidate crop.
+- `base-midnight-13pt-1000x680-row-applied.png`, `candidate-midnight-13pt-1000x680-row-applied.png`, `base-porcelain-13pt-1000x680-row-applied.png`, `candidate-porcelain-13pt-1000x680-row-applied.png`: the row once the lookup had answered, after Space turned the setting on with a cold cache. It reads "Code uses DejaVu Sans Mono, the desktop's monospace font.", with the Switch on. AT-SPI read the Switch focused before and after the capture, and the frame shows no focus indicator.
+- `base-midnight-18pt-1000x1000-row-applied.png`, `candidate-midnight-18pt-1000x1000-row-applied.png`, `base-porcelain-18pt-1000x1000-row-applied.png`, `candidate-porcelain-18pt-1000x1000-row-applied.png`: the same at 18 pt, the description on one line.
+- `base-midnight-13pt-code-font-on-1000x680-row-launch.png`, `candidate-midnight-13pt-code-font-on-1000x680-row-launch.png`: after a cold launch with the setting already on, the row once Settings is open: the family, with nothing focused.
+- `base-midnight-13pt-warm-cache-1000x680-row-warm.png`, `candidate-midnight-13pt-warm-cache-1000x680-row-warm.png`, `base-porcelain-13pt-warm-cache-1000x680-row-warm.png`, `candidate-porcelain-13pt-warm-cache-1000x680-row-warm.png`: the same with a warm cache.
+
+The pending state is recorded by the probe frames named below. Those eight frames are committed, byte-identical to the bundle's, under [`evidence/code-font-cold-launch-wait/probes/`](evidence/code-font-cold-launch-wait/probes/): `{base,candidate}-{midnight,porcelain}-13pt-1000x680-row-pending.png` and `{base,candidate}-{midnight,porcelain}-18pt-1000x1000-row-pending.png`, each base file equal to its candidate file. They sit in a subdirectory because the set's top level holds exactly the scenario's own crops. The probe frames are in the bundle, under `$EVIDENCE/runs/code-font-cold-launch-wait-effdb2c-2/<role>/<variant>/probes/`, and their times count from the end of Space's send.
+- **The spring:** in every launch of both builds, the frames from the first change to about 200 ms are the knob's spring with "Looking up the desktop's monospace font…" already drawn. Each launch's first frame, `001-01.png`, matches its pending frame outside the Switch, with 0 differing pixels.
+- **The pending frame:** the last spring frame is followed by the settled pending row: the Switch on and at rest, and the description pending on one line, at 18 pt as well. It differs from the answer only in the description line (x 36–337, y 127–139 at 13 pt; x 50–467, y 294–309 at 18 pt), and the family replaced it at the next frame.
+
+Each line below gives the pending frame, the grabs that first and last showed it, and the first grab that showed the family:
+- Midnight 13 pt: base `toggle/001-16.png` 200.0–393.2 ms, family at 393.6 ms; candidate `toggle/001-16.png` 203.7–369.4 ms, family at 369.8 ms.
+- Porcelain 13 pt: base `toggle/001-16.png` 202.4–375.6 ms, family at 376.0 ms; candidate `toggle/001-17.png` 196.2–370.5 ms, family at 370.9 ms.
+- Midnight 18 pt: base `toggle-18/001-15.png` 197.6–377.2 ms, family at 377.6 ms; candidate `toggle-18/001-16.png` 199.7–370.9 ms, family at 371.3 ms.
+- Porcelain 18 pt: base `toggle-18/001-15.png` 200.1–387.3 ms, family at 387.7 ms; candidate `toggle-18/001-15.png` 198.8–370.0 ms, family at 370.4 ms.
+
+The probes grabbed the row every 0.24–0.31 ms at the median, with no gap over 15.7 ms. The pending row thus held still for 166–194 ms once the knob settled, in both builds.
+
+Measured values, from the 65 evaluations:
+- **Focus, AT-SPI, in each of the 8 launches with Space:**
+  - Before Space, "Use the desktop's monospace font for code" (toggle button) was focused and not pressed (`switch-focused-before-the-toggle`).
+  - After the probe it was focused and pressed (`switch-keeps-focus-through-the-lookup`).
+  - After the applied capture its name, role and states were unchanged (`switch-focused-at-the-applied-capture`).
+  - No other input came between the readings, so every probe frame, the pending ones included, was drawn with the Switch focused: that is the focused+pending state.
+- **The focused Switch draws nothing:** in all 8 launches, the row before Tab and the row with the Switch focused differ by 0 px (`focus-draws-no-indicator*`, recorded).
+- **The answer replaced the Off row.** Against the focused Off row:
+  - The applied description differs by 2,545 px in Midnight and 2,546 px in Porcelain at 13 pt (x 89–574, y 127–139), and by 4,326 px in both at 18 pt (x 123–795, y 294–309). At least 1 px is required.
+  - The Switch differs by 652 px at both sizes (x 928–964, y 111–131 at 13 pt; x 914–950, y 275–295 at 18 pt). At least 40 px are required.
+- **Base against candidate, recorded:** 0 px for the four applied rows (`applied-candidate-against-base*`) and for the cold launch with the setting on (`cold-launch-candidate-against-base`).
+- **Warm cache:** `warm-row-identical-to-base`, the criterion's `compare --mask status-timing` of the row, found 0 differing pixels in Midnight and in Porcelain, with 0 px under the mask. The whole windows were identical as well (`warm-window-against-base`, recorded).
+- **Cold caches:** after each launch, the launch's own `XDG_CACHE_HOME/fontconfig` held 30 cache files in all 10 cold launches, and none in the 4 warm ones.
+
+`qa.py privacy scan --redacted --jobs 4` with the local template set (28 templates) found all 14 committed crops clean on their committed bytes in the candidate's tree (1.9 s wall, 17:14 UTC). The run's own scan of the same bytes agreed (1.8 s). The crops show only app labels and the Switch, and each distinct image was viewed at full size. The run does not scan probe frames, so the coordinator scanned the 8 committed pending frames on their committed bytes (`--redacted --templates .local/privacy/templates`, 17:35 UTC): the four at 18 pt are clean, and the four at 13 pt match one local template over the glyphs "monos" of "monospace" in the pending description, as two exploration-run frames did. Ruling (coordinator): a false positive. Viewed at full size, each frame shows only the row's title, the description "Looking up the desktop's monospace font…", which is the app's own string (`crates/app/src/settings.rs:591`), and the Switch, so it shows no private detail.
+
+Limitations:
+- **The base cannot be told from the candidate on this host.**
+  - A cold lookup here takes about 340–415 ms (sources above), mostly inside the base's 500 ms bound. In the run, both builds showed the same pending row and then the family 370–394 ms after Space.
+  - The base's late "fontconfig did not answer." and the candidate's 4 s bound are therefore covered by the tests above, not by frames.
+  - The base's timeout reproduced only in the exploration run, under a whole-window probe. Nothing here adds load or slows the lookup.
+- **The pending frames are probe frames.**
+  - A capture takes its frame only after two identical grabs 0.12 s apart and one grab more, at times fixed by that 0.12 s sleep.
+  - The pending row holds still only for the 166–194 ms between the knob settling and the answer. Whether a capture caught it would be chance, and a `qa.py recheck` could not reproduce it.
+  - The pending and focused+pending states are therefore the probe frames named above, committed under `probes/`; `qa.py recheck` does not re-check them.
+- **No focus indicator.**
+  - In either build, the keyboard-focused Switch draws no focus indicator, against `DESIGN.md`'s rule that controls show a visible accent outline. This was found on [September 29](#september-29-desktop-code-font-row-states).
+  - Here, the 13 pt `*-row-applied` crops were taken with the Switch focused. Each is byte-identical to the unfocused `*-code-font-on-*-row-launch` and `*-warm-cache-*-row-warm` crops of its palette.
+  - The cause is the vendored Switch (`vendor/gpui-component/src/switch.rs`), which sets no focus-visible style. That is outside this task, and the coordinator has queued it as a follow-up. Focus is shown by AT-SPI.
+- **The family's name is the bundled one.** The desktop's `monospace` family here is DejaVu Sans Mono, the bundled family's name, so applying it changes only the row's description, not code glyphs.
+- **No wrap at 18 pt.** In the 1000 × 1000 window every description fits on one line, the pending one included, so a wrapped description was not exercised.
+- **Probe load.** The probes' back-to-back grabs load XWayland, so frames under a probe may come later than without one.
+- **Not covered natively:** the candidate's unavailable state at its 4 s bound; turning the setting off during a lookup; a launch without window activation; a screen reader; and macOS, native Wayland, Hyprland and fractional scale factors.
+
+### Performance
+
+The [October 4 cold-launch record](benchmarks/2026-10-04-code-font-cold-launch-wait.md) measured 24 launches per cell of base `b5b6dad` and candidate `effdb2c`, pinned with `taskset -c 0-7`, with each launch's fontconfig cache absent (cold) and with the system cache (warm). The family applied in 24 of 24 cold candidate launches, and in 24 of 24 cold base launches too, because this host's cold scan ended 360.6 to 377.2 ms after spawn, inside the base's 500 ms bound; so the record shows no launch cost, not the late family arriving. Cold, base against candidate, p50 / p95 / max: window 493.7 / 512.9 / 514.0 against 492.8 / 508.7 / 519.0 ms, and lookup end 364.0 / 368.8 / 369.8 against 365.7 / 367.0 / 377.2 ms. Warm, both are unchanged within noise: window 485.5 / 495.7 / 499.9 against 488.5 / 505.1 / 514.2 ms, with paired differences from −16.3 to +24.3 ms, and lookup end 21.9 / 22.7 / 22.7 against 21.9 / 22.4 / 22.6 ms.
+
+### Design review
+
+Design review (design-reviewer, 2026-10-04): the 4 distinct committed crops and the 8 pending probe frames match DESIGN.md in Midnight and Porcelain at 13 and 18 pt, with one-line descriptions, no clipping, description contrast of at least 6.3:1, and base and candidate pixel-identical. The review failed the evidence only while the pending and focused+pending states were uncommitted probe frames, and set as its condition for a pass with follow-ups that they be committed, scanned on their committed bytes with any match ruled on, and named here, which the coordinator then did. Follow-ups, not caused by this change: the keyboard-focused Switch draws no visible focus ring (DESIGN.md, Buttons and controls), from the vendored Switch, queued separately; and the Switch knob reads 1.92:1 (Porcelain) and 1.37:1 (Midnight) against its on track, a matter of taste.
+
 ## October 4 narrow windows at 18 pt keep History's paging, the inspector and its file count whole
 
 Task `narrow-large-text-minimums`, attempt 2. In a narrow window, the repository page's column and inspector minimums now scale with the interface text size (`appearance::ui_size`), as the 44 px rail already did. At 18 pt in a 461 × 490 window, History's column is 244 px instead of a fixed 176 px, so Columns, Latest, Previous and Older all fit in it. The inspector takes exactly the 156 px left beside the column and cannot be resized there. Its message toolbar is laid out for that width. Where the labelled Copy message does not fit, only its icon remains, as a 28 px compact control: it keeps the accessible name "Copy full commit message", and its tooltip leads with "Copy message". The message panel reserves the rows the toolbar wraps to, so Hash is no longer drawn over "Changed files" in History or Compare. The "Changed files" header keeps its count whole: in the 156 px inspector the label truncates with an ellipsis beside the count, and in an inspector pinned narrower still the label leaves, then the count, so neither is clipped. Attempt 1 (candidate `dc8c379`, 2026-10-03) clipped the count badge at the inspector's right edge, which its frames showed and no analysis then covered; this attempt's spec measures it. In Changes, the filter field and its clipped placeholder stay inside the window. Where a scaled inspector minimum passes the 480 px maximum, as at 18 pt with a desktop text scale of 1.25, the maximum yields to it. At the default 13 pt nothing moves. `DESIGN.md` describes the scaled minimums, the reserved toolbar rows and the files header. The vertical chrome is the next task, `narrow-large-text-compact-chrome`.
