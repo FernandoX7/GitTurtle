@@ -755,9 +755,8 @@ impl GitTurtle {
             )
         }
         .into();
-        // The column can be up to a pixel narrower than the width
-        // `history_width` last recorded.
-        let column = px(self.history_width - 1.);
+        // The width `history_width` last recorded, exactly.
+        let column = px(self.history_width);
         let compact = column < labelled_scope_toolbar_width(&count, &scope, window);
         // A control's name, what it does, and the tooltip the compact toolbar
         // gives it, which leads with that name: static text, so a render
@@ -1038,6 +1037,7 @@ impl GitTurtle {
                 let id = column.id;
                 let width = column.width;
                 div()
+                    .debug_selector(move || format!("history-column-{}", id as usize))
                     .relative()
                     .w(px(width))
                     .h_full()
@@ -1106,10 +1106,17 @@ impl GitTurtle {
             .flex()
             .flex_col()
             .bg(rgb(colors.canvas))
+            // Layout snaps this width to device pixels, so one window width
+            // always measures the same. Keep it exactly: a tolerance would
+            // keep a nearby stale width, and Subject takes the leftover, so
+            // the columns would land somewhere else after navigation is
+            // hidden and shown again. An unchanged width lays nothing out.
             .on_prepaint(move |bounds, _, cx| {
                 let _ = view.update(cx, |this, cx| {
                     let width = f32::from(bounds.size.width);
-                    if (this.history_width - width).abs() > 1. {
+                    if this.history_width != width {
+                        #[cfg(test)]
+                        HISTORY_WIDTHS.with(|count| count.set(count.get() + 1));
                         this.history_width = width;
                         cx.notify();
                     }
@@ -2306,6 +2313,9 @@ thread_local! {
 thread_local! {
     /// Lines [`line_widths`] has asked the text system to lay out.
     pub(crate) static LINE_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Widths History has taken from its measured bounds, each of which
+    /// notifies so its columns are laid out again.
+    static HISTORY_WIDTHS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// The accessible name each control of a compact layout was given since
     /// the map was last cleared, by debug selector
     /// (`compact_controls_carry_their_accessible_names`).
@@ -4396,6 +4406,106 @@ mod tests {
         assert!(cx.debug_bounds("history-sidebar").is_none());
         resize(cx, 1000., 680.);
         assert!(cx.debug_bounds("history-sidebar").is_some());
+    }
+
+    /// The boundaries of History's visible column headers, left to right, and
+    /// the width History last recorded.
+    fn history_columns(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> (f32, Vec<(Pixels, Pixels)>) {
+        // The selector each header draws: `history-column-` and its
+        // `ColumnId` discriminant.
+        const HEADERS: [&str; columns::ColumnId::ALL.len()] = [
+            "history-column-0",
+            "history-column-1",
+            "history-column-2",
+            "history-column-3",
+            "history-column-4",
+            "history-column-5",
+        ];
+        let boundaries = HEADERS
+            .into_iter()
+            .filter_map(|header| cx.debug_bounds(header))
+            .map(|bounds| (bounds.left(), bounds.right()))
+            .collect();
+        (app.read_with(cx, |app, _| app.history_width), boundaries)
+    }
+
+    /// Hiding navigation with the shortcut and showing it again leaves
+    /// History's columns exactly where they were: the same window width gives
+    /// the same layout, at the test window's scale factor and at fractional
+    /// ones, from the navigation's default width and from a dragged,
+    /// fractional one.
+    #[gpui::test]
+    async fn history_columns_return_after_toggling_navigation(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, cx| {
+            crate::shortcuts::bind_keys(cx);
+            let focus = app.read(cx).app_focus.clone();
+            window.focus(&focus, cx);
+        });
+        let toggle = if cfg!(target_os = "macos") {
+            "cmd-b"
+        } else {
+            "ctrl-b"
+        };
+        // 1398 px at 1.25 is where a width kept within a pixel moved Subject's
+        // right edge, and every column after it, by 0.8 px.
+        for width in [1000., 1480., 1398.] {
+            for scale in [2., 1., 1.25, 1.5] {
+                cx.simulate_resize(size(px(width), px(800.)));
+                cx.update(|window, _| window.set_scale_factor(scale));
+                draw(cx);
+                let before = history_columns(&app, cx);
+                assert!(cx.debug_bounds("history-sidebar").is_some());
+                assert!(!before.1.is_empty(), "History draws its column headers");
+                cx.simulate_keystrokes(toggle);
+                draw(cx);
+                assert!(cx.debug_bounds("history-sidebar").is_none());
+                cx.simulate_keystrokes(toggle);
+                draw(cx);
+                assert!(cx.debug_bounds("history-sidebar").is_some());
+                assert_eq!(
+                    history_columns(&app, cx),
+                    before,
+                    "at {width} px and scale factor {scale}"
+                );
+            }
+        }
+    }
+
+    /// History records a new width, and so lays its columns out again, only
+    /// when the width it measures changes: frames at an unchanged width,
+    /// including at a fractional scale factor, notify nothing.
+    #[gpui::test]
+    async fn history_lays_out_again_only_for_a_new_width(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        let taken = || HISTORY_WIDTHS.with(std::cell::Cell::get);
+        let width = |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.history_width);
+        for scale in [2., 1.25] {
+            for window in [1398., 1213.] {
+                let at = format!("at {window} px and scale factor {scale}");
+                let before = taken();
+                cx.simulate_resize(size(px(window), px(800.)));
+                cx.update(|window, _| window.set_scale_factor(scale));
+                draw(cx);
+                // The resize measures at the test window's own factor
+                // before the fractional one applies, so it may take two.
+                assert!(taken() > before, "a new width {at}");
+                let measured = width(cx);
+                let before = taken();
+                for _ in 0..4 {
+                    cx.update(|window, _| window.refresh());
+                    draw(cx);
+                }
+                assert_eq!(
+                    (taken() - before, width(cx)),
+                    (0, measured),
+                    "no layout for an unchanged width {at}"
+                );
+            }
+        }
     }
 
     /// Toggle Sidebar in a History window too narrow for navigation changes

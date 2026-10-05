@@ -1,0 +1,473 @@
+{
+ "version": 1,
+ "task": "history-columns-steady-after-toggle",
+ "summary": "Hiding navigation with Ctrl+B and showing it again leaves History's column boundaries exactly where they were: History keeps its measured width exactly, so the same window width lays the columns out the same way",
+ "limitations": "Linux X11 under XWayland with Mutter input. This scenario runs at scale factor 1, where every layout width is a whole pixel; a scenario cannot set the scale factor, so the frames at 1.25 were taken with qa.py launch --scale 1.25 at 2003 x 1000 (logical 1602.4 x 800, where History is 1271 device px wide at 13 pt and 1179 at 18 pt, 1016.8 and 943.2 logical), outside the scenario, and qa.py recheck does not re-check them. On X11 the base's frames before and after Ctrl+B twice are identical too, so the shift the change removes is carried by the GPUI view test history_columns_return_after_toggling_navigation (1398 px at scale factor 1.25), not by these frames. The window is 1600 x 800, wider than History's house size, because at 1480 x 800 the 18 pt inspector leaves History narrower than its columns and Commit message takes no leftover. On both builds the first frame after Ctrl+B hides navigation keeps the header and the list's frame at the earlier width while the rows use the new one, and X11 does not redraw it; it is committed as context. Escape is pressed before the first capture only to enter keyboard mode, so both compared frames draw the list's focus ring. The scope toolbar's switch to its labelled row 1 px of window width sooner does not arise at this width: both builds draw the labelled toolbar. Native Wayland, macOS and a dragged navigation width are not covered",
+ "window": [
+  1600,
+  800
+ ],
+ "roles": [
+  "base",
+  "cand"
+ ],
+ "fixture": {
+  "name": "history-columns-steady-after-toggle",
+  "description": "19 commits on main: three, then feature/steady-columns with two commits merged with --no-ff after two more on main, then eleven more; release/0.2 at the commit tagged v0.2.0, v0.1.0 at the third commit; so References, Graph, Commit message, Author, Date and SHA all have content in the first rows",
+  "repository": "repo",
+  "branch": "main",
+  "clock": {
+   "start": "2026-10-04T09:00:00Z",
+   "step": 300
+  },
+  "operations": [
+   {
+    "commit": "Initial commit",
+    "files": {
+     "README.md": "# Column fixture\n\nDisposable QA repository for History's columns.\n"
+    }
+   },
+   {
+    "commit": "Add the column layout notes",
+    "files": {
+     "docs/columns.md": "# Columns\n\n- References\n- Graph\n- Commit message\n- Author\n- Date\n- SHA\n"
+    }
+   },
+   {
+    "commit": "Describe the history toolbar",
+    "files": {
+     "docs/toolbar.md": "# Toolbar\n\nScope, search and columns.\n"
+    }
+   },
+   {
+    "tag": "v0.1.0",
+    "at": "@2",
+    "message": "First preview"
+   },
+   {
+    "checkout": "feature/steady-columns",
+    "create": true
+   },
+   {
+    "commit": "Measure the history width exactly",
+    "files": {
+     "src/width.txt": "width: exact\n"
+    }
+   },
+   {
+    "commit": "Give the leftover to the subject column",
+    "files": {
+     "src/subject.txt": "subject: leftover\n"
+    }
+   },
+   {
+    "checkout": "main"
+   },
+   {
+    "commit": "Document the keyboard shortcuts",
+    "files": {
+     "docs/shortcuts.md": "# Shortcuts\n\n- Ctrl+B toggles navigation\n"
+    }
+   },
+   {
+    "commit": "Note the navigation toggle",
+    "files": {
+     "docs/navigation.md": "# Navigation\n\nHidden and shown with Ctrl+B.\n"
+    }
+   },
+   {
+    "merge": "feature/steady-columns",
+    "message": "Merge branch 'feature/steady-columns'"
+   },
+   {
+    "commit": "Tidy the README",
+    "files": {
+     "README.md": "# Column fixture\n\nA disposable QA repository for History's columns.\n"
+    }
+   },
+   {
+    "commit": "Add a changelog",
+    "files": {
+     "CHANGELOG.md": "# Changelog\n\n## 0.2.0\n\n- Steady columns\n"
+    }
+   },
+   {
+    "commit": "Explain the column widths",
+    "files": {
+     "docs/columns.md": "# Columns\n\nSubject takes the leftover width.\n"
+    }
+   },
+   {
+    "tag": "v0.2.0",
+    "at": "HEAD",
+    "message": "Second preview"
+   },
+   {
+    "branch": "release/0.2",
+    "at": "HEAD"
+   },
+   {
+    "commit": "Start the next cycle",
+    "files": {
+     "CHANGELOG.md": "# Changelog\n\n## Unreleased\n\n## 0.2.0\n\n- Steady columns\n"
+    }
+   },
+   {
+    "commit": "List the supported palettes",
+    "files": {
+     "docs/palettes.md": "# Palettes\n\n- Midnight\n- Porcelain\n"
+    }
+   },
+   {
+    "commit": "Describe the text sizes",
+    "files": {
+     "docs/text.md": "# Text sizes\n\n11 to 18 pt.\n"
+    }
+   },
+   {
+    "commit": "Add the date column notes",
+    "files": {
+     "docs/date.md": "# Date\n\nRelative and absolute.\n"
+    }
+   },
+   {
+    "commit": "Add the author column notes",
+    "files": {
+     "docs/author.md": "# Author\n\nName only.\n"
+    }
+   },
+   {
+    "commit": "Add the SHA column notes",
+    "files": {
+     "docs/sha.md": "# SHA\n\nAbbreviated object names.\n"
+    }
+   },
+   {
+    "commit": "Mention the inspector",
+    "files": {
+     "docs/inspector.md": "# Inspector\n\nChanged files of the selected commit.\n"
+    }
+   },
+   {
+    "commit": "Prepare the next preview",
+    "files": {
+     "CHANGELOG.md": "# Changelog\n\n## Unreleased\n\n- Exact widths\n\n## 0.2.0\n\n- Steady columns\n"
+    }
+   }
+  ],
+  "expect": {
+   "@0": "9d7822770346fc7038b1c09e00fcfbb34c770825",
+   "HEAD": "700dec8b1afc8ed430c0a7541cd34108d5a7e510"
+  }
+ },
+ "variants": {
+  "palettes": [
+   "midnight",
+   "porcelain"
+  ],
+  "text_sizes": [
+   13,
+   18
+  ]
+ },
+ "crops": {
+  "history-13": [
+   0,
+   136,
+   1256,
+   421
+  ],
+  "history-18": [
+   0,
+   187,
+   1183,
+   579
+  ]
+ },
+ "steps": [
+  {
+   "stable": 12.0,
+   "quiet": 1.15,
+   "note": "the launch settles on All history"
+  },
+  {
+   "capture": "rest",
+   "commit": false
+  },
+  {
+   "key": "Escape",
+   "await_change": 2.0,
+   "wait_after": 0.3,
+   "note": "Escape (Clear Search) with an empty search changes nothing on screen but the input mode: the window enters keyboard mode, so before and after both draw the list's focus ring (rest-to-before-only-the-ring)"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15
+  },
+  {
+   "capture": "before",
+   "crop": "history-13",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "at 13 pt, 1600 x 800, scale factor 1: History at rest with navigation shown, in keyboard mode after Escape (the list's focus ring drawn): the scope bar, search, the six column headers and the first five rows, Commit message taking the leftover width"
+  },
+  {
+   "capture": "before",
+   "crop": "history-18",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "shows": "at 18 pt, 1600 x 800, scale factor 1: History at rest with navigation shown, in keyboard mode after Escape (the list's focus ring drawn): the scope bar, search, the six column headers and the first five rows, Commit message taking the leftover width"
+  },
+  {
+   "key": "b",
+   "mods": [
+    "Control_L"
+   ],
+   "await_change": 3.0,
+   "wait_after": 0.3,
+   "note": "Ctrl+B hides navigation"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "before",
+    "b": "@now",
+    "region": [
+     0,
+     140,
+     220,
+     700
+    ],
+    "min_pixels": 2000
+   },
+   "note": "navigation gave way to the rail"
+  },
+  {
+   "capture": "hidden",
+   "crop": "history-13",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "roles": [
+    "cand"
+   ],
+   "shows": "at 13 pt, after the first Ctrl+B, navigation hidden: the frame X11 keeps, the same on both builds. Scope bar and search widen, but the header row and the list's frame keep the earlier widths while rows use the new ones: Author text right of its header, Date and SHA cut off"
+  },
+  {
+   "capture": "hidden",
+   "crop": "history-18",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "roles": [
+    "cand"
+   ],
+   "shows": "at 18 pt, after the first Ctrl+B, navigation hidden: the frame X11 keeps, the same on both builds. Scope bar and search widen, but the header row and the list's frame keep the earlier widths while rows use the new ones: Author text right of its header, Date and SHA cut off"
+  },
+  {
+   "key": "b",
+   "mods": [
+    "Control_L"
+   ],
+   "await_change": 3.0,
+   "wait_after": 0.3,
+   "note": "Ctrl+B shows navigation again"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "hidden",
+    "b": "@now",
+    "region": [
+     0,
+     140,
+     220,
+     700
+    ],
+    "min_pixels": 2000
+   },
+   "note": "navigation is back"
+  },
+  {
+   "capture": "after",
+   "crop": "history-13",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "shows": "at 13 pt, after the second Ctrl+B, navigation shown again: History as at rest, every column boundary where it was (before-after-identical: the whole window is pixel-identical to the frame at rest)"
+  },
+  {
+   "capture": "after",
+   "crop": "history-18",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "shows": "at 18 pt, after the second Ctrl+B, navigation shown again: History as at rest, every column boundary where it was (before-after-identical: the whole window is pixel-identical to the frame at rest)"
+  }
+ ],
+ "analyses": [
+  {
+   "name": "before-after-identical",
+   "kind": "compare",
+   "a": "before",
+   "b": "after",
+   "max_pixels": 0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the whole window after Ctrl+B twice against the window at rest, both in keyboard mode, no mask: the candidate must be identical; the base is recorded, to say whether it shifts on X11"
+  },
+  {
+   "name": "rest-to-before-only-the-ring",
+   "kind": "compare",
+   "a": "rest",
+   "b": "before",
+   "expect": "record",
+   "note": "what Escape changed: the list's focus ring only (keyboard mode), recorded"
+  },
+  {
+   "name": "before-same-on-both-13pt",
+   "kind": "compare",
+   "a": "base:before",
+   "b": "cand:before",
+   "crop": "history-13",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "expect": "record",
+   "note": "base against candidate at rest, inside the committed crop (no per-launch text there), recorded"
+  },
+  {
+   "name": "hidden-same-on-both-13pt",
+   "kind": "compare",
+   "a": "base:hidden",
+   "b": "cand:hidden",
+   "crop": "history-13",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "expect": "record",
+   "note": "base against candidate with navigation hidden, inside the committed crop (no per-launch text there), recorded"
+  },
+  {
+   "name": "after-same-on-both-13pt",
+   "kind": "compare",
+   "a": "base:after",
+   "b": "cand:after",
+   "crop": "history-13",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "expect": "record",
+   "note": "base against candidate after Ctrl+B twice, inside the committed crop (no per-launch text there), recorded"
+  },
+  {
+   "name": "window-before-same-on-both-13pt",
+   "kind": "compare",
+   "a": "base:before",
+   "b": "cand:before",
+   "masks": [
+    "status-timing"
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "expect": "record",
+   "note": "base against candidate at rest over the whole window, the status bar's per-launch timing masked, recorded"
+  },
+  {
+   "name": "before-same-on-both-18pt",
+   "kind": "compare",
+   "a": "base:before",
+   "b": "cand:before",
+   "crop": "history-18",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "expect": "record",
+   "note": "base against candidate at rest, inside the committed crop (no per-launch text there), recorded"
+  },
+  {
+   "name": "hidden-same-on-both-18pt",
+   "kind": "compare",
+   "a": "base:hidden",
+   "b": "cand:hidden",
+   "crop": "history-18",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "expect": "record",
+   "note": "base against candidate with navigation hidden, inside the committed crop (no per-launch text there), recorded"
+  },
+  {
+   "name": "after-same-on-both-18pt",
+   "kind": "compare",
+   "a": "base:after",
+   "b": "cand:after",
+   "crop": "history-18",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "expect": "record",
+   "note": "base against candidate after Ctrl+B twice, inside the committed crop (no per-launch text there), recorded"
+  },
+  {
+   "name": "window-before-same-on-both-18pt",
+   "kind": "compare",
+   "a": "base:before",
+   "b": "cand:before",
+   "masks": [
+    [
+     150,
+     774,
+     240,
+     792
+    ]
+   ],
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "expect": "record",
+   "note": "base against candidate at rest over the whole window, the status bar's per-launch timing masked (its 18 pt position), recorded"
+  }
+ ]
+}
