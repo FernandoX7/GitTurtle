@@ -1,0 +1,47 @@
+== plan (written before the first recorded launch; amended once before any launch)
+Plan fixed at 2026-10-05T19:48:53Z, before the first recorded launch of this round.
+Base (designated by the coordinator at 19:29 UTC): .local/evidence/shared-base/gitturtle-base-e5afb22 sha256 cb4ba80ab60961ef677b88ed26aa6e82a029a9825a1eab38442f52b1ff942b0d
+Candidate: .local/evidence/editor-highlights-keep-syntax-readable/gitturtle-cand-3761488 sha256 06ba761b949293ed6891541c59719ed9765adff424274dbae9065321e7a75fff
+Driver theme_switch_x11.py sha256 c660023f0279d8c837d83e1ec2b10e778c5f7af5106707839b738c1054a1aab3
+Fixture /tmp/gitturtle-evidence/editor-highlights-perf/demo HEAD 79cc1067d345bf3230f657e19c44aed73ad3b583
+1. builtin  B,C,C,B,B,C,C,B  (4 warm-up + 80 recorded switches + 5 idle per launch)
+2. omarchy  C,B,B,C,C,B,B,C  (4 warm-up + 40 recorded switches + 5 idle per launch)
+3. harness (after every native launch has exited): run.sh, 10 steady processes per build in B C C B order on CPU 2, 5 first-call processes per build and case
+Harness executables: base 3f697452661e5eeb… cand 086be967b7bb5d4a… (built 19:35-19:45 UTC, targets deleted)
+Amended at 2026-10-05T19:49:19Z, before any recorded launch (the first attempt at 19:48:57Z stopped on a NameError in the run metadata before launching): driver sha256 f3228ad79e1aa4ad33ce24f1e45a764affd3f94fa6e2184800bcee89a6abaa71
+
+== driver output, built-in block
+fixture HEAD/status/index unchanged: True
+{"n": 0, "build": "base", "trace_ms": 3.699, "frame_ms": 16.651, "cpu_to_frame_ms": 10.341, "cpu_ms": 93.923, "frames": 25, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.380859375, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 1, "build": "cand", "trace_ms": 3.924, "frame_ms": 16.3, "cpu_to_frame_ms": 10.417, "cpu_ms": 96.465, "frames": 26, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.16357421875, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 2, "build": "cand", "trace_ms": 3.413, "frame_ms": 15.876, "cpu_to_frame_ms": 10.556, "cpu_ms": 97.133, "frames": 26, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.2421875, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 3, "build": "base", "trace_ms": 3.752, "frame_ms": 16.253, "cpu_to_frame_ms": 10.209, "cpu_ms": 95.926, "frames": 26, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.02490234375, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 4, "build": "base", "trace_ms": 3.579, "frame_ms": 16.38, "cpu_to_frame_ms": 10.243, "cpu_ms": 94.851, "frames": 26, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.0390625, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 5, "build": "cand", "trace_ms": 3.86, "frame_ms": 16.485, "cpu_to_frame_ms": 10.396, "cpu_ms": 96.21, "frames": 26, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.001953125, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 6, "build": "cand", "trace_ms": 4.047, "frame_ms": 16.335, "cpu_to_frame_ms": 10.269, "cpu_ms": 94.709, "frames": 26, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.04052734375, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 7, "build": "base", "trace_ms": 3.646, "frame_ms": 16.335, "cpu_to_frame_ms": 10.356, "cpu_ms": 94.598, "frames": 24, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.08447265625, "exit": -15, "fixture_unchanged": true}
+
+== driver output, Omarchy block
+fixture HEAD/status/index unchanged: True
+{"n": 0, "build": "cand", "trace_ms": 3.803, "frame_ms": 263.512, "cpu_to_frame_ms": 7.372, "cpu_ms": 9.541, "frames": 1, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.2060546875, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 1, "build": "base", "trace_ms": 3.594, "frame_ms": 263.647, "cpu_to_frame_ms": 7.168, "cpu_ms": 9.423, "frames": 1, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.38525390625, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 2, "build": "base", "trace_ms": 3.43, "frame_ms": 263.809, "cpu_to_frame_ms": 7.138, "cpu_ms": 9.431, "frames": 1, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.169921875, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 3, "build": "cand", "trace_ms": 3.257, "frame_ms": 262.957, "cpu_to_frame_ms": 7.461, "cpu_ms": 9.772, "frames": 1, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.12255859375, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 4, "build": "cand", "trace_ms": 3.945, "frame_ms": 263.832, "cpu_to_frame_ms": 7.458, "cpu_ms": 9.894, "frames": 1, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.0224609375, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 5, "build": "base", "trace_ms": 3.408, "frame_ms": 263.758, "cpu_to_frame_ms": 7.167, "cpu_ms": 9.392, "frames": 1, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.07666015625, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 6, "build": "base", "trace_ms": 4.038, "frame_ms": 263.886, "cpu_to_frame_ms": 7.194, "cpu_ms": 9.388, "frames": 1, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.37158203125, "exit": -15, "fixture_unchanged": true}
+fixture HEAD/status/index unchanged: True
+{"n": 7, "build": "cand", "trace_ms": 3.359, "frame_ms": 263.504, "cpu_to_frame_ms": 7.485, "cpu_ms": 9.813, "frames": 1, "missing_frame": 0, "traces_not_one": 0, "mismatched_store": 0, "load1": 0.11474609375, "exit": -15, "fixture_unchanged": true}

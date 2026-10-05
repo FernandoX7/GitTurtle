@@ -1,0 +1,6626 @@
+{
+ "version": 1,
+ "task": "editor-highlights-keep-syntax-readable",
+ "summary": "Editor highlights fitted to the palette keep text and every syntax colour readable: in Compare's unified Diff and Split views, the text selection in the focused editor, Find's other and current matches and the added and removed changed-word tints are drawn in colours fitted per palette, so text, every syntax colour (keyword, identifier, type, function, field, string, number, comment) and the unified patch's hunk, added and removed colours reach 4.5:1 or more on each, sampled from the frames in Midnight, Daylight, Porcelain and Omarchy Tokyo Night at interface 13 pt with code 12 pt and in Midnight with code 18 pt, while the base draws the selection and Find on the palette's selected and the word tints on origin's strong tint; the inspector's selected row, which keeps selected, is identical in both builds",
+ "limitations": "Linux X11 under XWayland at scale factor 1 only, on display :0 with Mutter RemoteDesktop input; windows 1200x800 (code 12 pt) and 1700x900 (code 18 pt); four palettes, one Omarchy theme (Tokyo Night, seeded into each launch's HOME from the app's own test fixture). The caret of the focused editor (selection frames) and of the Find field (Find frames) blinks every 500 ms, so a re-check can differ at the caret alone. Compare's editors draw no active line, so the panel colour the fitting also keeps highlights apart from is sampled from the Find bar and the split headers, which the palette's panel fills, not from an editor line. The glyph analyses report the peak ink colour of each box: anti-aliasing can keep thin strokes (a single 'w', 's' or '/') from showing their colour unblended, so those peaks are lower bounds of the colour drawn. The distinctness measure (ΔEOK, Euclidean distance in OKLab) has no analysis kind: the fill analyses record each highlight's and each line's colour, and ΔEOK is computed from those recorded colours. Find's current match on the unified patch carries only text (context line 10) and its other match only the added colour; the hunk and removed colours on the selection are shown in unified-selection. macOS, native Wayland, fractional scales, the Before/After source tabs, the editor's active line and the other built-in and Omarchy palettes are not covered",
+ "window": [
+  1200,
+  800
+ ],
+ "roles": [
+  "base",
+  "cand"
+ ],
+ "fixture": {
+  "name": "editor-highlights-keep-syntax-readable",
+  "description": "two commits on main: the first adds src/strip.rs, a short Rust file; the second replaces its lines 11 and 12 (let v: Grid = cut(s.pad, \"off\", 7); // down and return v;) with let mut w: Span = fit(s.gap, \"on\", 42); // ups and w, so the removed and added lines carry word-level changes in every syntax role (keyword, identifier, type, function, field, string, number and comment), and the added line repeats context line 10 up to its comment, which the Find query matches twice",
+  "repository": "repo",
+  "branch": "main",
+  "clock": {
+   "start": "2026-10-05T09:00:00Z",
+   "step": 60
+  },
+  "operations": [
+   {
+    "commit": "Add the strip layout",
+    "files": {
+     "src/strip.rs": "// Strip layout.\nuse crate::grid::{Grid, Span};\n\nstruct Strip {\n  gap: u32,\n  pad: u32,\n}\n\nfn new(s: &Strip) -> Span {\n  let mut w: Span = fit(s.gap, \"on\", 42); // up\n  let v: Grid = cut(s.pad, \"off\", 7); // down\n  return v;\n}\n"
+    }
+   },
+   {
+    "commit": "Fit the strip",
+    "files": {
+     "src/strip.rs": "// Strip layout.\nuse crate::grid::{Grid, Span};\n\nstruct Strip {\n  gap: u32,\n  pad: u32,\n}\n\nfn new(s: &Strip) -> Span {\n  let mut w: Span = fit(s.gap, \"on\", 42); // up\n  let mut w: Span = fit(s.gap, \"on\", 42); // ups\n  w\n}\n"
+    }
+   }
+  ],
+  "expect": {
+   "@0": "3af1f53d4ae6b09433ed4336c8fe4bc4fdfc41cc",
+   "HEAD": "7b9ea14ab26845fb6a2f234250a607a56331b23e"
+  }
+ },
+ "variants": [
+  {
+   "palette": "midnight",
+   "text_size": 13,
+   "window": [
+    1200,
+    800
+   ]
+  },
+  {
+   "palette": "daylight",
+   "text_size": 13,
+   "window": [
+    1200,
+    800
+   ]
+  },
+  {
+   "palette": "porcelain",
+   "text_size": 13,
+   "window": [
+    1200,
+    800
+   ]
+  },
+  {
+   "palette": "omarchy",
+   "text_size": 13,
+   "id": "omarchy-13pt-tokyo-night",
+   "window": [
+    1200,
+    800
+   ],
+   "home": {
+    ".local/state/omarchy/current/theme/colors.toml": "mode = \"dark\"\n\naccent = \"#7aa2f7\"\nselection = \"#292e42\"\nmuted = \"#414868\"\n\nbackground = \"#1a1b26\"\ndark_background = \"#13141c\"\ndarker_background = \"#0e0e14\"\nlighter_background = \"#24283b\"\n\nforeground = \"#a9b1d6\"\ndark_foreground = \"#565f89\"\nlight_foreground = \"#b4bee6\"\nbright_foreground = \"#c0caf5\"\n\nred = \"#f7768e\"\nyellow = \"#e0af68\"\norange = \"#eb927b\"\ngreen = \"#9ece6a\"\ncyan = \"#449dab\"\nblue = \"#7aa2f7\"\nmagenta = \"#ad8ee6\"\nbrown = \"#75493d\"\n\nbright_red = \"#ff7a93\"\nbright_yellow = \"#ff9e64\"\nbright_green = \"#b9f27c\"\nbright_cyan = \"#0db9d7\"\nbright_blue = \"#7da6ff\"\nbright_magenta = \"#bb9af7\"\n",
+    ".local/state/omarchy/current/theme.name": "tokyo-night\n"
+   }
+  },
+  {
+   "palette": "midnight",
+   "text_size": 13,
+   "id": "midnight-13pt-code-18pt",
+   "window": [
+    1700,
+    900
+   ],
+   "settings": {
+    "code_text_size": 18
+   }
+  }
+ ],
+ "crops": {
+  "unified-12": [
+   44,
+   205,
+   919,
+   470
+  ],
+  "split-12": [
+   44,
+   205,
+   919,
+   530
+  ],
+  "unified-18": [
+   44,
+   205,
+   1331,
+   580
+  ],
+  "split-18": [
+   44,
+   205,
+   1331,
+   600
+  ]
+ },
+ "steps": [
+  {
+   "stable": 12.0,
+   "quiet": 1.15,
+   "note": "the launch settles on History, All history, with HEAD (Fit the strip) and its one changed file, src/strip.rs, selected"
+  },
+  {
+   "click": [
+    525,
+    266
+   ],
+   "note": "the HEAD row, Fit the strip, so the History list holds focus"
+  },
+  {
+   "park": true
+  },
+  {
+   "stable": 8.0,
+   "quiet": 1.15
+  },
+  {
+   "mark": "history"
+  },
+  {
+   "key": "Return",
+   "await_change": 5.0,
+   "wait_after": 0.0,
+   "note": "Return opens the selected changed file in Compare, in Diff (unified), its default mode"
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "history",
+    "b": "@now",
+    "region": [
+     190,
+     210,
+     900,
+     600
+    ],
+    "min_pixels": 40001
+   },
+   "note": "Compare's patch replaced History's commit graph"
+  },
+  {
+   "mark": "unified-rest"
+  },
+  {
+   "glide": [
+    205,
+    257
+   ],
+   "settle": 0.5,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the hunk header, between '-8,6 ' and '+8,6 @@'"
+  },
+  {
+   "press": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   }
+  },
+  {
+   "glide": [
+    291,
+    365
+   ],
+   "settle": 0.5,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "added line 11, after 'let mut w: Span ='"
+  },
+  {
+   "release": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the drag selects from the hunk header through context, both removed lines and the start of added line 11 in the focused patch editor"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "unified-rest",
+    "b": "@now",
+    "region": [
+     127,
+     206,
+     918,
+     469
+    ],
+    "min_pixels": 2001
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the selection is drawn over the patch"
+  },
+  {
+   "capture": "unified-selection",
+   "crop": "unified-12",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "shows": {
+    "base": "base, unified Diff of src/strip.rs, focused patch editor: a drag selection from '+8,6 @@' through context lines 8-10, removed lines 11-12 and added line 11 to 'Span =', in the palette's selected; the rest of the added lines shows the word tints at rest; caret at the selection's end",
+    "cand": "candidate, unified Diff of src/strip.rs, focused patch editor: a drag selection from '+8,6 @@' through context lines 8-10, removed lines 11-12 and added line 11 to 'Span =', in the fitted selection; the rest of the added lines shows the fitted word tints at rest; caret at the selection's end"
+   }
+  },
+  {
+   "glide": [
+    275,
+    280
+   ],
+   "settle": 0.5,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the hunk header, between '-8,6 ' and '+8,6 @@'"
+  },
+  {
+   "press": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   }
+  },
+  {
+   "glide": [
+    404,
+    442
+   ],
+   "settle": 0.5,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "added line 11, after 'let mut w: Span ='"
+  },
+  {
+   "release": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the drag selects from the hunk header through context, both removed lines and the start of added line 11 in the focused patch editor"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "unified-rest",
+    "b": "@now",
+    "region": [
+     168,
+     206,
+     1330,
+     579
+    ],
+    "min_pixels": 2001
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the selection is drawn over the patch"
+  },
+  {
+   "capture": "unified-selection",
+   "crop": "unified-18",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "shows": {
+    "base": "base, unified Diff of src/strip.rs, focused patch editor: a drag selection from '+8,6 @@' through context lines 8-10, removed lines 11-12 and added line 11 to 'Span =', in the palette's selected; the rest of the added lines shows the word tints at rest; caret at the selection's end",
+    "cand": "candidate, unified Diff of src/strip.rs, focused patch editor: a drag selection from '+8,6 @@' through context lines 8-10, removed lines 11-12 and added line 11 to 'Span =', in the fitted selection; the rest of the added lines shows the fitted word tints at rest; caret at the selection's end"
+   }
+  },
+  {
+   "mark": "unified-selected"
+  },
+  {
+   "key": "f",
+   "mods": [
+    "Control_L"
+   ],
+   "wait_after": 1.0,
+   "note": "Find in Editor"
+  },
+  {
+   "type": "let mut w: Span = fit(s.gap, \"on\", 42)"
+  },
+  {
+   "key": "semicolon",
+   "note": "the type step has no keysym for ';', so it is sent as a key"
+  },
+  {
+   "type": " // up"
+  },
+  {
+   "wait": 1.0
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "unified-selected",
+    "b": "@now",
+    "region": [
+     127,
+     206,
+     918,
+     469
+    ],
+    "min_pixels": 5001
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "Find's bar and matches replaced the selection"
+  },
+  {
+   "capture": "unified-find",
+   "crop": "unified-12",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "shows": {
+    "base": "base, unified Diff with Find open (1/2): the current match on context line 10, accent-underlined, and the other match on added line 11, both in the palette's selected; removed lines 11-12 show their word tints at rest; the Find field's caret blinks",
+    "cand": "candidate, unified Diff with Find open (1/2): the current match on context line 10 in the fitted current background, accent-underlined, and the other match on added line 11 in the fitted match background; removed lines 11-12 show the fitted word tints at rest"
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "unified-selected",
+    "b": "@now",
+    "region": [
+     168,
+     206,
+     1330,
+     579
+    ],
+    "min_pixels": 5001
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "Find's bar and matches replaced the selection"
+  },
+  {
+   "capture": "unified-find",
+   "crop": "unified-18",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "shows": {
+    "base": "base, unified Diff with Find open (1/2): the current match on context line 10, accent-underlined, and the other match on added line 11, both in the palette's selected; removed lines 11-12 show their word tints at rest; the Find field's caret blinks",
+    "cand": "candidate, unified Diff with Find open (1/2): the current match on context line 10 in the fitted current background, accent-underlined, and the other match on added line 11 in the fitted match background; removed lines 11-12 show the fitted word tints at rest"
+   }
+  },
+  {
+   "key": "Escape",
+   "await_change": 3.0,
+   "wait_after": 0.5,
+   "note": "Escape closes Find"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15
+  },
+  {
+   "mark": "unified-closed"
+  },
+  {
+   "click": [
+    775,
+    157
+   ],
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Split, beside Diff in Compare's toolbar"
+  },
+  {
+   "click": [
+    1208,
+    157
+   ],
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Split, beside Diff in Compare's toolbar"
+  },
+  {
+   "park": true
+  },
+  {
+   "stable": 8.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "unified-closed",
+    "b": "@now",
+    "region": [
+     190,
+     240,
+     900,
+     520
+    ],
+    "min_pixels": 20001
+   },
+   "note": "the split view's Before and After editors replaced the unified patch"
+  },
+  {
+   "mark": "split-rest"
+  },
+  {
+   "click": [
+    700,
+    249
+   ],
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the After editor, past the end of an unchanged line above the change, which puts its cursor there"
+  },
+  {
+   "click": [
+    1300,
+    258
+   ],
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the After editor, past the end of an unchanged line above the change, which puts its cursor there"
+  },
+  {
+   "key": "f",
+   "mods": [
+    "Control_L"
+   ],
+   "wait_after": 1.0,
+   "note": "Find in Editor, in the After editor"
+  },
+  {
+   "type": "let mut w: Span = fit(s.gap, \"on\", 42)"
+  },
+  {
+   "key": "semicolon"
+  },
+  {
+   "type": " // up"
+  },
+  {
+   "wait": 1.0
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "split-rest",
+    "b": "@now",
+    "region": [
+     45,
+     237,
+     918,
+     529
+    ],
+    "min_pixels": 5001
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "Find's bar and matches are drawn in the After editor"
+  },
+  {
+   "capture": "split-find",
+   "crop": "split-12",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "shows": {
+    "base": "base, Split with Find open in After (1/2): the current match on line 10, underlined, and the other on added line 11 carry every syntax colour on the palette's selected; Before's removed lines 11-12 show their word tints at rest in every syntax colour",
+    "cand": "candidate, Split with Find open in After (1/2): the current match on line 10 (fitted current background, underlined) and the other on added line 11 (fitted match background) carry every syntax colour; Before's removed lines show the fitted word tints at rest"
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "split-rest",
+    "b": "@now",
+    "region": [
+     45,
+     237,
+     1330,
+     599
+    ],
+    "min_pixels": 5001
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "Find's bar and matches are drawn in the After editor"
+  },
+  {
+   "capture": "split-find",
+   "crop": "split-18",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "shows": {
+    "base": "base, Split with Find open in After (1/2): the current match on line 10, underlined, and the other on added line 11 carry every syntax colour on the palette's selected; Before's removed lines 11-12 show their word tints at rest in every syntax colour",
+    "cand": "candidate, Split with Find open in After (1/2): the current match on line 10 (fitted current background, underlined) and the other on added line 11 (fitted match background) carry every syntax colour; Before's removed lines show the fitted word tints at rest"
+   }
+  },
+  {
+   "key": "Escape",
+   "await_change": 3.0,
+   "wait_after": 0.5,
+   "note": "Escape closes Find"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15
+  },
+  {
+   "mark": "split-closed"
+  },
+  {
+   "glide": [
+    199,
+    411
+   ],
+   "settle": 0.5,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Before line 10, before 'Span'"
+  },
+  {
+   "press": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   }
+  },
+  {
+   "glide": [
+    199,
+    429
+   ],
+   "settle": 0.5,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Before line 11 (removed), after 'let v: Grid'"
+  },
+  {
+   "release": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the drag selects the rest of unchanged line 10 and the start of removed line 11 in the focused Before editor"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "split-closed",
+    "b": "@now",
+    "region": [
+     45,
+     237,
+     918,
+     529
+    ],
+    "min_pixels": 1001
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the selection is drawn in the Before editor"
+  },
+  {
+   "capture": "split-selection",
+   "crop": "split-12",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "shows": {
+    "base": "base, Split: a drag selection in the focused Before editor from 'Span' on line 10 to after 'let v: Grid' on removed line 11, over every syntax colour, in the palette's selected; After's added lines 11-12 show their word tints at rest; caret at the selection's end",
+    "cand": "candidate, Split: a drag selection in the focused Before editor from 'Span' on line 10 to after 'let v: Grid' on removed line 11, over every syntax colour, in the fitted selection; After's added lines 11-12 show the fitted word tints at rest; caret at the selection's end"
+   }
+  },
+  {
+   "glide": [
+    268,
+    420
+   ],
+   "settle": 0.5,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Before line 10, before 'Span'"
+  },
+  {
+   "press": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   }
+  },
+  {
+   "glide": [
+    268,
+    447
+   ],
+   "settle": 0.5,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Before line 11 (removed), after 'let v: Grid'"
+  },
+  {
+   "release": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the drag selects the rest of unchanged line 10 and the start of removed line 11 in the focused Before editor"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "split-closed",
+    "b": "@now",
+    "region": [
+     45,
+     237,
+     1330,
+     599
+    ],
+    "min_pixels": 1001
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the selection is drawn in the Before editor"
+  },
+  {
+   "capture": "split-selection",
+   "crop": "split-18",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "shows": {
+    "base": "base, Split: a drag selection in the focused Before editor from 'Span' on line 10 to after 'let v: Grid' on removed line 11, over every syntax colour, in the palette's selected; After's added lines 11-12 show their word tints at rest; caret at the selection's end",
+    "cand": "candidate, Split: a drag selection in the focused Before editor from 'Span' on line 10 to after 'let v: Grid' on removed line 11, over every syntax colour, in the fitted selection; After's added lines 11-12 show the fitted word tints at rest; caret at the selection's end"
+   }
+  }
+ ],
+ "analyses": [
+  {
+   "name": "g12-split-find-current-keyword-let",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    558,
+    453,
+    578,
+    466
+   ],
+   "surface": {
+    "region": [
+     557,
+     452,
+     882,
+     466
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "keyword 'let' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g12-split-find-other-keyword-let",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    558,
+    471,
+    578,
+    487
+   ],
+   "surface": {
+    "region": [
+     557,
+     470,
+     882,
+     488
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "keyword 'let' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g12-split-find-current-keyword-mut",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    587,
+    453,
+    607,
+    466
+   ],
+   "surface": {
+    "region": [
+     557,
+     452,
+     882,
+     466
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "keyword 'mut' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g12-split-find-other-keyword-mut",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    587,
+    471,
+    607,
+    487
+   ],
+   "surface": {
+    "region": [
+     557,
+     470,
+     882,
+     488
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "keyword 'mut' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g12-split-find-current-text-w",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    616,
+    453,
+    621,
+    466
+   ],
+   "surface": {
+    "region": [
+     557,
+     452,
+     882,
+     466
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text 'w' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g12-split-find-other-text-w",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    616,
+    471,
+    621,
+    487
+   ],
+   "surface": {
+    "region": [
+     557,
+     470,
+     882,
+     488
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text 'w' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g12-split-find-current-type-span",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    638,
+    453,
+    665,
+    466
+   ],
+   "surface": {
+    "region": [
+     557,
+     452,
+     882,
+     466
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "type 'Span' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g12-split-find-other-type-span",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    638,
+    471,
+    665,
+    487
+   ],
+   "surface": {
+    "region": [
+     557,
+     470,
+     882,
+     488
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "type 'Span' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g12-split-find-current-function-fit",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    688,
+    453,
+    708,
+    466
+   ],
+   "surface": {
+    "region": [
+     557,
+     452,
+     882,
+     466
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "function 'fit' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g12-split-find-other-function-fit",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    688,
+    471,
+    708,
+    487
+   ],
+   "surface": {
+    "region": [
+     557,
+     470,
+     882,
+     488
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "function 'fit' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g12-split-find-current-text-s",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    717,
+    453,
+    723,
+    466
+   ],
+   "surface": {
+    "region": [
+     557,
+     452,
+     882,
+     466
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text 's' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g12-split-find-other-text-s",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    717,
+    471,
+    723,
+    487
+   ],
+   "surface": {
+    "region": [
+     557,
+     470,
+     882,
+     488
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text 's' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g12-split-find-current-markup-gap",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    732,
+    453,
+    751,
+    466
+   ],
+   "surface": {
+    "region": [
+     557,
+     452,
+     882,
+     466
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "markup 'gap' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g12-split-find-other-markup-gap",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    732,
+    471,
+    751,
+    487
+   ],
+   "surface": {
+    "region": [
+     557,
+     470,
+     882,
+     488
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "markup 'gap' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g12-split-find-current-string-on",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    768,
+    453,
+    795,
+    466
+   ],
+   "surface": {
+    "region": [
+     557,
+     452,
+     882,
+     466
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "string '\"on\"' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g12-split-find-other-string-on",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    768,
+    471,
+    795,
+    487
+   ],
+   "surface": {
+    "region": [
+     557,
+     470,
+     882,
+     488
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "string '\"on\"' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g12-split-find-current-constant-42",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    811,
+    453,
+    824,
+    466
+   ],
+   "surface": {
+    "region": [
+     557,
+     452,
+     882,
+     466
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "constant '42' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g12-split-find-other-constant-42",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    811,
+    471,
+    824,
+    487
+   ],
+   "surface": {
+    "region": [
+     557,
+     470,
+     882,
+     488
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "constant '42' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g12-split-find-current-comment-up",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    847,
+    453,
+    881,
+    466
+   ],
+   "surface": {
+    "region": [
+     557,
+     452,
+     882,
+     466
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "comment '// up' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g12-split-find-other-comment-up",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    847,
+    471,
+    881,
+    487
+   ],
+   "surface": {
+    "region": [
+     557,
+     470,
+     882,
+     488
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "comment '// up' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g12-split-find-removed-word-text-v-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    149,
+    470,
+    154,
+    486
+   ],
+   "surface": {
+    "region": [
+     148,
+     469,
+     155,
+     487
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text 'v' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g12-split-find-removed-word-type-grid-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    171,
+    470,
+    198,
+    486
+   ],
+   "surface": {
+    "region": [
+     170,
+     469,
+     199,
+     487
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "type 'Grid' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g12-split-find-removed-word-function-cut-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    221,
+    470,
+    241,
+    486
+   ],
+   "surface": {
+    "region": [
+     220,
+     469,
+     242,
+     487
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "function 'cut' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g12-split-find-removed-word-markup-pad-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    265,
+    470,
+    284,
+    486
+   ],
+   "surface": {
+    "region": [
+     264,
+     469,
+     285,
+     487
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "markup 'pad' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g12-split-find-removed-word-string-off-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    308,
+    470,
+    328,
+    486
+   ],
+   "surface": {
+    "region": [
+     307,
+     469,
+     329,
+     487
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "string 'off' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g12-split-find-removed-word-constant-7-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    351,
+    470,
+    357,
+    486
+   ],
+   "surface": {
+    "region": [
+     350,
+     469,
+     358,
+     487
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "constant '7' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g12-split-find-removed-word-comment-down-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    402,
+    470,
+    429,
+    486
+   ],
+   "surface": {
+    "region": [
+     401,
+     469,
+     430,
+     487
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "comment 'down' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g12-split-find-removed-word-keyword-return-l12",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    120,
+    488,
+    162,
+    504
+   ],
+   "surface": {
+    "region": [
+     119,
+     487,
+     184,
+     505
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "keyword 'return' on the removed changed-word tint at rest, Before line 12"
+  },
+  {
+   "name": "g12-split-find-removed-word-text-v-l12",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    171,
+    488,
+    176,
+    504
+   ],
+   "surface": {
+    "region": [
+     119,
+     487,
+     184,
+     505
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text 'v' on the removed changed-word tint at rest, Before line 12"
+  },
+  {
+   "name": "g12-split-find-current-vs-canvas",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    557,
+    452,
+    882,
+    466
+   ],
+   "reference": {
+    "region": [
+     340,
+     300,
+     470,
+     380
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's current match background against canvas (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-find-current-vs-panel",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    557,
+    452,
+    882,
+    466
+   ],
+   "reference": {
+    "region": [
+     482,
+     236,
+     919,
+     284
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's current match background against panel (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-find-current-vs-added-bg",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    557,
+    452,
+    882,
+    466
+   ],
+   "reference": {
+    "region": [
+     543,
+     488,
+     557,
+     506
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's current match background against added-bg (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-find-current-vs-removed-bg",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    557,
+    452,
+    882,
+    466
+   ],
+   "reference": {
+    "region": [
+     105,
+     487,
+     119,
+     505
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's current match background against removed-bg (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-find-other-vs-canvas",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    557,
+    470,
+    882,
+    488
+   ],
+   "reference": {
+    "region": [
+     340,
+     300,
+     470,
+     380
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's other match background against canvas (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-find-other-vs-panel",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    557,
+    470,
+    882,
+    488
+   ],
+   "reference": {
+    "region": [
+     482,
+     236,
+     919,
+     284
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's other match background against panel (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-find-other-vs-added-bg",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    557,
+    470,
+    882,
+    488
+   ],
+   "reference": {
+    "region": [
+     543,
+     488,
+     557,
+     506
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's other match background against added-bg (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-find-other-vs-removed-bg",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    557,
+    470,
+    882,
+    488
+   ],
+   "reference": {
+    "region": [
+     105,
+     487,
+     119,
+     505
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's other match background against removed-bg (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-find-current-vs-other",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    557,
+    452,
+    882,
+    466
+   ],
+   "reference": {
+    "region": [
+     557,
+     470,
+     882,
+     488
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's current match against its other match; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-find-removed-word-vs-removed-bg",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    119,
+    487,
+    184,
+    505
+   ],
+   "reference": {
+    "region": [
+     105,
+     487,
+     119,
+     505
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the removed changed-word tint (return v;, Before line 12) against its line tint; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-selection-type-span-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    200,
+    406,
+    227,
+    422
+   ],
+   "surface": {
+    "region": [
+     199,
+     405,
+     444,
+     423
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "type 'Span' on the text selection, Before line 10"
+  },
+  {
+   "name": "g12-split-selection-text-equals-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    236,
+    406,
+    241,
+    422
+   ],
+   "surface": {
+    "region": [
+     199,
+     405,
+     444,
+     423
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text '=' on the text selection, Before line 10"
+  },
+  {
+   "name": "g12-split-selection-function-fit-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    250,
+    406,
+    270,
+    422
+   ],
+   "surface": {
+    "region": [
+     199,
+     405,
+     444,
+     423
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "function 'fit' on the text selection, Before line 10"
+  },
+  {
+   "name": "g12-split-selection-text-s-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    279,
+    406,
+    284,
+    422
+   ],
+   "surface": {
+    "region": [
+     199,
+     405,
+     444,
+     423
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text 's' on the text selection, Before line 10"
+  },
+  {
+   "name": "g12-split-selection-markup-gap-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    294,
+    406,
+    313,
+    422
+   ],
+   "surface": {
+    "region": [
+     199,
+     405,
+     444,
+     423
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "markup 'gap' on the text selection, Before line 10"
+  },
+  {
+   "name": "g12-split-selection-string-on-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    330,
+    406,
+    357,
+    422
+   ],
+   "surface": {
+    "region": [
+     199,
+     405,
+     444,
+     423
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "string '\"on\"' on the text selection, Before line 10"
+  },
+  {
+   "name": "g12-split-selection-constant-42-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    373,
+    406,
+    385,
+    422
+   ],
+   "surface": {
+    "region": [
+     199,
+     405,
+     444,
+     423
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "constant '42' on the text selection, Before line 10"
+  },
+  {
+   "name": "g12-split-selection-comment-up-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    409,
+    406,
+    443,
+    422
+   ],
+   "surface": {
+    "region": [
+     199,
+     405,
+     444,
+     423
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "comment '// up' on the text selection, Before line 10"
+  },
+  {
+   "name": "g12-split-selection-keyword-let-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    120,
+    424,
+    140,
+    440
+   ],
+   "surface": {
+    "region": [
+     105,
+     423,
+     191,
+     441
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "keyword 'let' on the text selection, Before line 11"
+  },
+  {
+   "name": "g12-split-selection-text-v-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    149,
+    424,
+    154,
+    440
+   ],
+   "surface": {
+    "region": [
+     105,
+     423,
+     191,
+     441
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text 'v' on the text selection, Before line 11"
+  },
+  {
+   "name": "g12-split-selection-added-word-keyword-mut-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    587,
+    424,
+    607,
+    440
+   ],
+   "surface": {
+    "region": [
+     586,
+     423,
+     622,
+     441
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "keyword 'mut' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g12-split-selection-added-word-text-w-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    616,
+    424,
+    621,
+    440
+   ],
+   "surface": {
+    "region": [
+     586,
+     423,
+     622,
+     441
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text 'w' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g12-split-selection-added-word-type-span-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    638,
+    424,
+    665,
+    440
+   ],
+   "surface": {
+    "region": [
+     637,
+     423,
+     666,
+     441
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "type 'Span' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g12-split-selection-added-word-function-fit-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    688,
+    424,
+    708,
+    440
+   ],
+   "surface": {
+    "region": [
+     687,
+     423,
+     709,
+     441
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "function 'fit' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g12-split-selection-added-word-markup-gap-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    732,
+    424,
+    751,
+    440
+   ],
+   "surface": {
+    "region": [
+     731,
+     423,
+     752,
+     441
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "markup 'gap' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g12-split-selection-added-word-string-on-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    775,
+    424,
+    788,
+    440
+   ],
+   "surface": {
+    "region": [
+     774,
+     423,
+     789,
+     441
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "string 'on' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g12-split-selection-added-word-constant-42-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    811,
+    424,
+    824,
+    440
+   ],
+   "surface": {
+    "region": [
+     810,
+     423,
+     825,
+     441
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "constant '42' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g12-split-selection-added-word-comment-ups-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    869,
+    424,
+    889,
+    440
+   ],
+   "surface": {
+    "region": [
+     868,
+     423,
+     890,
+     441
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "comment 'ups' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g12-split-selection-added-word-text-w-l12",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    558,
+    442,
+    564,
+    458
+   ],
+   "surface": {
+    "region": [
+     557,
+     441,
+     565,
+     459
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text 'w' on the added changed-word tint at rest, After line 12"
+  },
+  {
+   "name": "g12-split-selection-selection-vs-canvas",
+   "kind": "fill",
+   "frame": "split-selection",
+   "region": [
+    199,
+    405,
+    444,
+    423
+   ],
+   "reference": {
+    "region": [
+     340,
+     300,
+     470,
+     380
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the text selection against canvas; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-selection-selection-vs-panel",
+   "kind": "fill",
+   "frame": "split-selection",
+   "region": [
+    199,
+    405,
+    444,
+    423
+   ],
+   "reference": {
+    "region": [
+     120,
+     207,
+     470,
+     233
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the text selection against panel; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-selection-selection-vs-added-bg",
+   "kind": "fill",
+   "frame": "split-selection",
+   "region": [
+    199,
+    405,
+    444,
+    423
+   ],
+   "reference": {
+    "region": [
+     543,
+     441,
+     557,
+     459
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the text selection against added-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-selection-selection-vs-removed-bg",
+   "kind": "fill",
+   "frame": "split-selection",
+   "region": [
+    199,
+    405,
+    444,
+    423
+   ],
+   "reference": {
+    "region": [
+     105,
+     441,
+     119,
+     459
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the text selection against removed-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-split-selection-added-word-vs-added-bg",
+   "kind": "fill",
+   "frame": "split-selection",
+   "region": [
+    637,
+    423,
+    666,
+    441
+   ],
+   "reference": {
+    "region": [
+     543,
+     441,
+     557,
+     459
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the added changed-word tint (Span, After line 11) against its line tint; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-selection-hunk",
+   "kind": "glyph_contrast",
+   "frame": "unified-selection",
+   "box": [
+    206,
+    250,
+    254,
+    266
+   ],
+   "surface": {
+    "region": [
+     205,
+     249,
+     255,
+     267
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "hunk '+8,6 @@' on the text selection, patch row 2"
+  },
+  {
+   "name": "g12-unified-selection-text",
+   "kind": "glyph_contrast",
+   "frame": "unified-selection",
+   "box": [
+    155,
+    286,
+    348,
+    302
+   ],
+   "surface": {
+    "region": [
+     147,
+     285,
+     349,
+     303
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text 'fn new(s: &Strip) -> Span {' on the text selection, patch row 4"
+  },
+  {
+   "name": "g12-unified-selection-removed",
+   "kind": "glyph_contrast",
+   "frame": "unified-selection",
+   "box": [
+    170,
+    322,
+    478,
+    338
+   ],
+   "surface": {
+    "region": [
+     147,
+     321,
+     479,
+     339
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "removed 'let v: Grid = cut(s.pad, \"off\", 7); // down' on the text selection, patch row 6"
+  },
+  {
+   "name": "g12-unified-selection-added",
+   "kind": "glyph_contrast",
+   "frame": "unified-selection",
+   "box": [
+    170,
+    358,
+    276,
+    374
+   ],
+   "surface": {
+    "region": [
+     147,
+     357,
+     284,
+     375
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "added 'let mut w: Span' on the text selection, patch row 8"
+  },
+  {
+   "name": "g12-unified-selection-added-word-fit",
+   "kind": "glyph_contrast",
+   "frame": "unified-selection",
+   "box": [
+    300,
+    358,
+    319,
+    374
+   ],
+   "surface": {
+    "region": [
+     299,
+     357,
+     320,
+     375
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "added 'fit' on the added changed-word tint at rest, added line 11"
+  },
+  {
+   "name": "g12-unified-selection-added-word-ups",
+   "kind": "glyph_contrast",
+   "frame": "unified-selection",
+   "box": [
+    480,
+    358,
+    500,
+    374
+   ],
+   "surface": {
+    "region": [
+     479,
+     357,
+     501,
+     375
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "added 'ups' on the added changed-word tint at rest, added line 11"
+  },
+  {
+   "name": "g12-unified-find-current-text",
+   "kind": "glyph_contrast",
+   "frame": "unified-find",
+   "box": [
+    170,
+    351,
+    493,
+    364
+   ],
+   "surface": {
+    "region": [
+     169,
+     350,
+     494,
+     364
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "text, context line 10, on Find's current match above its accent underline"
+  },
+  {
+   "name": "g12-unified-find-other-added",
+   "kind": "glyph_contrast",
+   "frame": "unified-find",
+   "box": [
+    170,
+    405,
+    493,
+    421
+   ],
+   "surface": {
+    "region": [
+     169,
+     404,
+     494,
+     422
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "added, added line 11, on Find's other match"
+  },
+  {
+   "name": "g12-unified-find-removed-word-grid",
+   "kind": "glyph_contrast",
+   "frame": "unified-find",
+   "box": [
+    220,
+    369,
+    247,
+    385
+   ],
+   "surface": {
+    "region": [
+     219,
+     368,
+     248,
+     386
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "removed 'Grid' on the removed changed-word tint at rest, removed line 11"
+  },
+  {
+   "name": "g12-unified-find-removed-word-down",
+   "kind": "glyph_contrast",
+   "frame": "unified-find",
+   "box": [
+    451,
+    369,
+    478,
+    385
+   ],
+   "surface": {
+    "region": [
+     450,
+     368,
+     479,
+     386
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "removed 'down' on the removed changed-word tint at rest, removed line 11"
+  },
+  {
+   "name": "g12-unified-find-current-vs-canvas",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    169,
+    350,
+    494,
+    364
+   ],
+   "reference": {
+    "region": [
+     560,
+     300,
+     900,
+     460
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's current match background against canvas; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-find-current-vs-panel",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    169,
+    350,
+    494,
+    364
+   ],
+   "reference": {
+    "region": [
+     44,
+     205,
+     919,
+     252
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's current match background against panel; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-find-current-vs-added-bg",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    169,
+    350,
+    494,
+    364
+   ],
+   "reference": {
+    "region": [
+     154,
+     422,
+     169,
+     440
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's current match background against added-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-find-current-vs-removed-bg",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    169,
+    350,
+    494,
+    364
+   ],
+   "reference": {
+    "region": [
+     154,
+     386,
+     169,
+     404
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's current match background against removed-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-find-other-vs-canvas",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    169,
+    404,
+    494,
+    422
+   ],
+   "reference": {
+    "region": [
+     560,
+     300,
+     900,
+     460
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's other match background against canvas; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-find-other-vs-panel",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    169,
+    404,
+    494,
+    422
+   ],
+   "reference": {
+    "region": [
+     44,
+     205,
+     919,
+     252
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's other match background against panel; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-find-other-vs-added-bg",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    169,
+    404,
+    494,
+    422
+   ],
+   "reference": {
+    "region": [
+     154,
+     422,
+     169,
+     440
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's other match background against added-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-find-other-vs-removed-bg",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    169,
+    404,
+    494,
+    422
+   ],
+   "reference": {
+    "region": [
+     154,
+     386,
+     169,
+     404
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's other match background against removed-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-find-current-vs-other",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    169,
+    350,
+    494,
+    364
+   ],
+   "reference": {
+    "region": [
+     169,
+     404,
+     494,
+     422
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "Find's current match against its other match; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-find-removed-word-vs-removed-bg",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    169,
+    386,
+    234,
+    404
+   ],
+   "reference": {
+    "region": [
+     154,
+     386,
+     169,
+     404
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the removed changed-word tint (return v;) against its line tint; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-selection-selection-vs-canvas",
+   "kind": "fill",
+   "frame": "unified-selection",
+   "region": [
+    147,
+    285,
+    349,
+    303
+   ],
+   "reference": {
+    "region": [
+     560,
+     300,
+     900,
+     460
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the text selection against canvas; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-selection-selection-vs-panel",
+   "kind": "fill",
+   "frame": "unified-selection",
+   "region": [
+    147,
+    285,
+    349,
+    303
+   ],
+   "reference": {
+    "region": [
+     44,
+     205,
+     919,
+     252
+    ],
+    "frame": "unified-find"
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the text selection against panel; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-selection-selection-vs-added-bg",
+   "kind": "fill",
+   "frame": "unified-selection",
+   "region": [
+    147,
+    285,
+    349,
+    303
+   ],
+   "reference": {
+    "region": [
+     154,
+     375,
+     169,
+     393
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the text selection against added-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-selection-selection-vs-removed-bg",
+   "kind": "fill",
+   "frame": "unified-selection",
+   "region": [
+    147,
+    285,
+    349,
+    303
+   ],
+   "reference": {
+    "region": [
+     154,
+     386,
+     169,
+     404
+    ],
+    "frame": "unified-find"
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the text selection against removed-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-selection-added-word-vs-added-bg",
+   "kind": "fill",
+   "frame": "unified-selection",
+   "region": [
+    299,
+    357,
+    320,
+    375
+   ],
+   "reference": {
+    "region": [
+     154,
+     375,
+     169,
+     393
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the added changed-word tint (fit) against its line tint; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-find-current-keyword-let",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    793,
+    455,
+    823,
+    475
+   ],
+   "surface": {
+    "region": [
+     792,
+     454,
+     1279,
+     475
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "keyword 'let' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g18-split-find-other-keyword-let",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    793,
+    482,
+    823,
+    507
+   ],
+   "surface": {
+    "region": [
+     792,
+     481,
+     1279,
+     508
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "keyword 'let' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g18-split-find-current-keyword-mut",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    836,
+    455,
+    867,
+    475
+   ],
+   "surface": {
+    "region": [
+     792,
+     454,
+     1279,
+     475
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "keyword 'mut' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g18-split-find-other-keyword-mut",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    836,
+    482,
+    867,
+    507
+   ],
+   "surface": {
+    "region": [
+     792,
+     481,
+     1279,
+     508
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "keyword 'mut' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g18-split-find-current-text-w",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    880,
+    455,
+    888,
+    475
+   ],
+   "surface": {
+    "region": [
+     792,
+     454,
+     1279,
+     475
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text 'w' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g18-split-find-other-text-w",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    880,
+    482,
+    888,
+    507
+   ],
+   "surface": {
+    "region": [
+     792,
+     481,
+     1279,
+     508
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text 'w' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g18-split-find-current-type-span",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    912,
+    455,
+    953,
+    475
+   ],
+   "surface": {
+    "region": [
+     792,
+     454,
+     1279,
+     475
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "type 'Span' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g18-split-find-other-type-span",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    912,
+    482,
+    953,
+    507
+   ],
+   "surface": {
+    "region": [
+     792,
+     481,
+     1279,
+     508
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "type 'Span' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g18-split-find-current-function-fit",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    988,
+    455,
+    1018,
+    475
+   ],
+   "surface": {
+    "region": [
+     792,
+     454,
+     1279,
+     475
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "function 'fit' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g18-split-find-other-function-fit",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    988,
+    482,
+    1018,
+    507
+   ],
+   "surface": {
+    "region": [
+     792,
+     481,
+     1279,
+     508
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "function 'fit' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g18-split-find-current-text-s",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    1031,
+    455,
+    1040,
+    475
+   ],
+   "surface": {
+    "region": [
+     792,
+     454,
+     1279,
+     475
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text 's' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g18-split-find-other-text-s",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    1031,
+    482,
+    1040,
+    507
+   ],
+   "surface": {
+    "region": [
+     792,
+     481,
+     1279,
+     508
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text 's' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g18-split-find-current-markup-gap",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    1053,
+    455,
+    1083,
+    475
+   ],
+   "surface": {
+    "region": [
+     792,
+     454,
+     1279,
+     475
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "markup 'gap' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g18-split-find-other-markup-gap",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    1053,
+    482,
+    1083,
+    507
+   ],
+   "surface": {
+    "region": [
+     792,
+     481,
+     1279,
+     508
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "markup 'gap' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g18-split-find-current-string-on",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    1107,
+    455,
+    1148,
+    475
+   ],
+   "surface": {
+    "region": [
+     792,
+     454,
+     1279,
+     475
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "string '\"on\"' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g18-split-find-other-string-on",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    1107,
+    482,
+    1148,
+    507
+   ],
+   "surface": {
+    "region": [
+     792,
+     481,
+     1279,
+     508
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "string '\"on\"' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g18-split-find-current-constant-42",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    1172,
+    455,
+    1192,
+    475
+   ],
+   "surface": {
+    "region": [
+     792,
+     454,
+     1279,
+     475
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "constant '42' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g18-split-find-other-constant-42",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    1172,
+    482,
+    1192,
+    507
+   ],
+   "surface": {
+    "region": [
+     792,
+     481,
+     1279,
+     508
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "constant '42' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g18-split-find-current-comment-up",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    1226,
+    455,
+    1278,
+    475
+   ],
+   "surface": {
+    "region": [
+     792,
+     454,
+     1279,
+     475
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "comment '// up' on Find's current match, After line 10, above its accent underline"
+  },
+  {
+   "name": "g18-split-find-other-comment-up",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    1226,
+    482,
+    1278,
+    507
+   ],
+   "surface": {
+    "region": [
+     792,
+     481,
+     1279,
+     508
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "comment '// up' on Find's other match, After line 11 (an added line)"
+  },
+  {
+   "name": "g18-split-find-removed-word-text-v-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    192,
+    481,
+    201,
+    506
+   ],
+   "surface": {
+    "region": [
+     191,
+     480,
+     202,
+     507
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text 'v' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g18-split-find-removed-word-type-grid-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    225,
+    481,
+    266,
+    506
+   ],
+   "surface": {
+    "region": [
+     224,
+     480,
+     267,
+     507
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "type 'Grid' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g18-split-find-removed-word-function-cut-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    300,
+    481,
+    331,
+    506
+   ],
+   "surface": {
+    "region": [
+     299,
+     480,
+     332,
+     507
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "function 'cut' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g18-split-find-removed-word-markup-pad-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    365,
+    481,
+    396,
+    506
+   ],
+   "surface": {
+    "region": [
+     364,
+     480,
+     397,
+     507
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "markup 'pad' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g18-split-find-removed-word-string-off-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    430,
+    481,
+    461,
+    506
+   ],
+   "surface": {
+    "region": [
+     429,
+     480,
+     462,
+     507
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "string 'off' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g18-split-find-removed-word-constant-7-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    495,
+    481,
+    504,
+    506
+   ],
+   "surface": {
+    "region": [
+     494,
+     480,
+     505,
+     507
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "constant '7' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g18-split-find-removed-word-comment-down-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    571,
+    481,
+    613,
+    506
+   ],
+   "surface": {
+    "region": [
+     570,
+     480,
+     614,
+     507
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "comment 'down' on the removed changed-word tint at rest, Before line 11"
+  },
+  {
+   "name": "g18-split-find-removed-word-keyword-return-l12",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    149,
+    508,
+    212,
+    533
+   ],
+   "surface": {
+    "region": [
+     148,
+     507,
+     245,
+     534
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "keyword 'return' on the removed changed-word tint at rest, Before line 12"
+  },
+  {
+   "name": "g18-split-find-removed-word-text-v-l12",
+   "kind": "glyph_contrast",
+   "frame": "split-find",
+   "box": [
+    225,
+    508,
+    233,
+    533
+   ],
+   "surface": {
+    "region": [
+     148,
+     507,
+     245,
+     534
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text 'v' on the removed changed-word tint at rest, Before line 12"
+  },
+  {
+   "name": "g18-split-find-current-vs-canvas",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    792,
+    454,
+    1279,
+    475
+   ],
+   "reference": {
+    "region": [
+     470,
+     300,
+     680,
+     400
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's current match background against canvas (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-find-current-vs-panel",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    792,
+    454,
+    1279,
+    475
+   ],
+   "reference": {
+    "region": [
+     700,
+     236,
+     1331,
+     284
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's current match background against panel (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-find-current-vs-added-bg",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    792,
+    454,
+    1279,
+    475
+   ],
+   "reference": {
+    "region": [
+     770,
+     508,
+     792,
+     535
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's current match background against added-bg (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-find-current-vs-removed-bg",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    792,
+    454,
+    1279,
+    475
+   ],
+   "reference": {
+    "region": [
+     126,
+     507,
+     148,
+     534
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's current match background against removed-bg (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-find-other-vs-canvas",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    792,
+    481,
+    1279,
+    508
+   ],
+   "reference": {
+    "region": [
+     470,
+     300,
+     680,
+     400
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's other match background against canvas (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-find-other-vs-panel",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    792,
+    481,
+    1279,
+    508
+   ],
+   "reference": {
+    "region": [
+     700,
+     236,
+     1331,
+     284
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's other match background against panel (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-find-other-vs-added-bg",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    792,
+    481,
+    1279,
+    508
+   ],
+   "reference": {
+    "region": [
+     770,
+     508,
+     792,
+     535
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's other match background against added-bg (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-find-other-vs-removed-bg",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    792,
+    481,
+    1279,
+    508
+   ],
+   "reference": {
+    "region": [
+     126,
+     507,
+     148,
+     534
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's other match background against removed-bg (ΔEOK from the two recorded colours); recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-find-current-vs-other",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    792,
+    454,
+    1279,
+    475
+   ],
+   "reference": {
+    "region": [
+     792,
+     481,
+     1279,
+     508
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's current match against its other match; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-find-removed-word-vs-removed-bg",
+   "kind": "fill",
+   "frame": "split-find",
+   "region": [
+    148,
+    507,
+    245,
+    534
+   ],
+   "reference": {
+    "region": [
+     126,
+     507,
+     148,
+     534
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the removed changed-word tint (return v;, Before line 12) against its line tint; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-selection-type-span-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    268,
+    408,
+    309,
+    433
+   ],
+   "surface": {
+    "region": [
+     267,
+     407,
+     635,
+     434
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "type 'Span' on the text selection, Before line 10"
+  },
+  {
+   "name": "g18-split-selection-text-equals-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    322,
+    408,
+    331,
+    433
+   ],
+   "surface": {
+    "region": [
+     267,
+     407,
+     635,
+     434
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text '=' on the text selection, Before line 10"
+  },
+  {
+   "name": "g18-split-selection-function-fit-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    344,
+    408,
+    374,
+    433
+   ],
+   "surface": {
+    "region": [
+     267,
+     407,
+     635,
+     434
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "function 'fit' on the text selection, Before line 10"
+  },
+  {
+   "name": "g18-split-selection-text-s-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    387,
+    408,
+    396,
+    433
+   ],
+   "surface": {
+    "region": [
+     267,
+     407,
+     635,
+     434
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text 's' on the text selection, Before line 10"
+  },
+  {
+   "name": "g18-split-selection-markup-gap-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    409,
+    408,
+    439,
+    433
+   ],
+   "surface": {
+    "region": [
+     267,
+     407,
+     635,
+     434
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "markup 'gap' on the text selection, Before line 10"
+  },
+  {
+   "name": "g18-split-selection-string-on-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    463,
+    408,
+    504,
+    433
+   ],
+   "surface": {
+    "region": [
+     267,
+     407,
+     635,
+     434
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "string '\"on\"' on the text selection, Before line 10"
+  },
+  {
+   "name": "g18-split-selection-constant-42-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    528,
+    408,
+    548,
+    433
+   ],
+   "surface": {
+    "region": [
+     267,
+     407,
+     635,
+     434
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "constant '42' on the text selection, Before line 10"
+  },
+  {
+   "name": "g18-split-selection-comment-up-l10",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    582,
+    408,
+    634,
+    433
+   ],
+   "surface": {
+    "region": [
+     267,
+     407,
+     635,
+     434
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "comment '// up' on the text selection, Before line 10"
+  },
+  {
+   "name": "g18-split-selection-keyword-let-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    149,
+    435,
+    179,
+    460
+   ],
+   "surface": {
+    "region": [
+     126,
+     434,
+     256,
+     461
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "keyword 'let' on the text selection, Before line 11"
+  },
+  {
+   "name": "g18-split-selection-text-v-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    192,
+    435,
+    201,
+    460
+   ],
+   "surface": {
+    "region": [
+     126,
+     434,
+     256,
+     461
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text 'v' on the text selection, Before line 11"
+  },
+  {
+   "name": "g18-split-selection-added-word-keyword-mut-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    836,
+    435,
+    867,
+    460
+   ],
+   "surface": {
+    "region": [
+     835,
+     434,
+     889,
+     461
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "keyword 'mut' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g18-split-selection-added-word-text-w-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    880,
+    435,
+    888,
+    460
+   ],
+   "surface": {
+    "region": [
+     835,
+     434,
+     889,
+     461
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text 'w' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g18-split-selection-added-word-type-span-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    912,
+    435,
+    953,
+    460
+   ],
+   "surface": {
+    "region": [
+     911,
+     434,
+     954,
+     461
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "type 'Span' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g18-split-selection-added-word-function-fit-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    988,
+    435,
+    1018,
+    460
+   ],
+   "surface": {
+    "region": [
+     987,
+     434,
+     1019,
+     461
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "function 'fit' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g18-split-selection-added-word-markup-gap-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    1053,
+    435,
+    1083,
+    460
+   ],
+   "surface": {
+    "region": [
+     1052,
+     434,
+     1084,
+     461
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "markup 'gap' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g18-split-selection-added-word-string-on-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    1118,
+    435,
+    1138,
+    460
+   ],
+   "surface": {
+    "region": [
+     1117,
+     434,
+     1139,
+     461
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "string 'on' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g18-split-selection-added-word-constant-42-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    1172,
+    435,
+    1192,
+    460
+   ],
+   "surface": {
+    "region": [
+     1171,
+     434,
+     1193,
+     461
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "constant '42' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g18-split-selection-added-word-comment-ups-l11",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    1259,
+    435,
+    1289,
+    460
+   ],
+   "surface": {
+    "region": [
+     1258,
+     434,
+     1290,
+     461
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "comment 'ups' on the added changed-word tint at rest, After line 11"
+  },
+  {
+   "name": "g18-split-selection-added-word-text-w-l12",
+   "kind": "glyph_contrast",
+   "frame": "split-selection",
+   "box": [
+    793,
+    462,
+    802,
+    487
+   ],
+   "surface": {
+    "region": [
+     792,
+     461,
+     803,
+     488
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text 'w' on the added changed-word tint at rest, After line 12"
+  },
+  {
+   "name": "g18-split-selection-selection-vs-canvas",
+   "kind": "fill",
+   "frame": "split-selection",
+   "region": [
+    267,
+    407,
+    635,
+    434
+   ],
+   "reference": {
+    "region": [
+     470,
+     300,
+     680,
+     400
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the text selection against canvas; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-selection-selection-vs-panel",
+   "kind": "fill",
+   "frame": "split-selection",
+   "region": [
+    267,
+    407,
+    635,
+    434
+   ],
+   "reference": {
+    "region": [
+     150,
+     207,
+     680,
+     233
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the text selection against panel; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-selection-selection-vs-added-bg",
+   "kind": "fill",
+   "frame": "split-selection",
+   "region": [
+    267,
+    407,
+    635,
+    434
+   ],
+   "reference": {
+    "region": [
+     770,
+     461,
+     792,
+     488
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the text selection against added-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-selection-selection-vs-removed-bg",
+   "kind": "fill",
+   "frame": "split-selection",
+   "region": [
+    267,
+    407,
+    635,
+    434
+   ],
+   "reference": {
+    "region": [
+     126,
+     461,
+     148,
+     488
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the text selection against removed-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-split-selection-added-word-vs-added-bg",
+   "kind": "fill",
+   "frame": "split-selection",
+   "region": [
+    911,
+    434,
+    954,
+    461
+   ],
+   "reference": {
+    "region": [
+     770,
+     461,
+     792,
+     488
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the added changed-word tint (Span, After line 11) against its line tint; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-selection-hunk",
+   "kind": "glyph_contrast",
+   "frame": "unified-selection",
+   "box": [
+    276,
+    268,
+    350,
+    293
+   ],
+   "surface": {
+    "region": [
+     275,
+     267,
+     351,
+     294
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "hunk '+8,6 @@' on the text selection, patch row 2"
+  },
+  {
+   "name": "g18-unified-selection-text",
+   "kind": "glyph_contrast",
+   "frame": "unified-selection",
+   "box": [
+    200,
+    322,
+    490,
+    347
+   ],
+   "surface": {
+    "region": [
+     188,
+     321,
+     491,
+     348
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text 'fn new(s: &Strip) -> Span {' on the text selection, patch row 4"
+  },
+  {
+   "name": "g18-unified-selection-removed",
+   "kind": "glyph_contrast",
+   "frame": "unified-selection",
+   "box": [
+    222,
+    376,
+    685,
+    401
+   ],
+   "surface": {
+    "region": [
+     188,
+     375,
+     686,
+     402
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "removed 'let v: Grid = cut(s.pad, \"off\", 7); // down' on the text selection, patch row 6"
+  },
+  {
+   "name": "g18-unified-selection-added",
+   "kind": "glyph_contrast",
+   "frame": "unified-selection",
+   "box": [
+    222,
+    430,
+    382,
+    455
+   ],
+   "surface": {
+    "region": [
+     188,
+     429,
+     394,
+     456
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "added 'let mut w: Span' on the text selection, patch row 8"
+  },
+  {
+   "name": "g18-unified-selection-added-word-fit",
+   "kind": "glyph_contrast",
+   "frame": "unified-selection",
+   "box": [
+    417,
+    430,
+    447,
+    455
+   ],
+   "surface": {
+    "region": [
+     416,
+     429,
+     448,
+     456
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "added 'fit' on the added changed-word tint at rest, added line 11"
+  },
+  {
+   "name": "g18-unified-selection-added-word-ups",
+   "kind": "glyph_contrast",
+   "frame": "unified-selection",
+   "box": [
+    687,
+    430,
+    718,
+    455
+   ],
+   "surface": {
+    "region": [
+     686,
+     429,
+     719,
+     456
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "added 'ups' on the added changed-word tint at rest, added line 11"
+  },
+  {
+   "name": "g18-unified-find-current-text",
+   "kind": "glyph_contrast",
+   "frame": "unified-find",
+   "box": [
+    222,
+    396,
+    707,
+    416
+   ],
+   "surface": {
+    "region": [
+     221,
+     395,
+     708,
+     416
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "text, context line 10, on Find's current match above its accent underline"
+  },
+  {
+   "name": "g18-unified-find-other-added",
+   "kind": "glyph_contrast",
+   "frame": "unified-find",
+   "box": [
+    222,
+    477,
+    707,
+    502
+   ],
+   "surface": {
+    "region": [
+     221,
+     476,
+     708,
+     503
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "added, added line 11, on Find's other match"
+  },
+  {
+   "name": "g18-unified-find-removed-word-grid",
+   "kind": "glyph_contrast",
+   "frame": "unified-find",
+   "box": [
+    297,
+    423,
+    339,
+    448
+   ],
+   "surface": {
+    "region": [
+     296,
+     422,
+     340,
+     449
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "removed 'Grid' on the removed changed-word tint at rest, removed line 11"
+  },
+  {
+   "name": "g18-unified-find-removed-word-down",
+   "kind": "glyph_contrast",
+   "frame": "unified-find",
+   "box": [
+    644,
+    423,
+    685,
+    448
+   ],
+   "surface": {
+    "region": [
+     643,
+     422,
+     686,
+     449
+    ]
+   },
+   "min_contrast": 4.5,
+   "allow_edge": true,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "removed 'down' on the removed changed-word tint at rest, removed line 11"
+  },
+  {
+   "name": "g18-unified-find-current-vs-canvas",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    221,
+    395,
+    708,
+    416
+   ],
+   "reference": {
+    "region": [
+     800,
+     300,
+     1300,
+     560
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's current match background against canvas; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-find-current-vs-panel",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    221,
+    395,
+    708,
+    416
+   ],
+   "reference": {
+    "region": [
+     44,
+     205,
+     1331,
+     252
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's current match background against panel; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-find-current-vs-added-bg",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    221,
+    395,
+    708,
+    416
+   ],
+   "reference": {
+    "region": [
+     199,
+     503,
+     221,
+     530
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's current match background against added-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-find-current-vs-removed-bg",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    221,
+    395,
+    708,
+    416
+   ],
+   "reference": {
+    "region": [
+     199,
+     449,
+     221,
+     476
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's current match background against removed-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-find-other-vs-canvas",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    221,
+    476,
+    708,
+    503
+   ],
+   "reference": {
+    "region": [
+     800,
+     300,
+     1300,
+     560
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's other match background against canvas; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-find-other-vs-panel",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    221,
+    476,
+    708,
+    503
+   ],
+   "reference": {
+    "region": [
+     44,
+     205,
+     1331,
+     252
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's other match background against panel; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-find-other-vs-added-bg",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    221,
+    476,
+    708,
+    503
+   ],
+   "reference": {
+    "region": [
+     199,
+     503,
+     221,
+     530
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's other match background against added-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-find-other-vs-removed-bg",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    221,
+    476,
+    708,
+    503
+   ],
+   "reference": {
+    "region": [
+     199,
+     449,
+     221,
+     476
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's other match background against removed-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-find-current-vs-other",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    221,
+    395,
+    708,
+    416
+   ],
+   "reference": {
+    "region": [
+     221,
+     476,
+     708,
+     503
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "Find's current match against its other match; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-find-removed-word-vs-removed-bg",
+   "kind": "fill",
+   "frame": "unified-find",
+   "region": [
+    221,
+    449,
+    318,
+    476
+   ],
+   "reference": {
+    "region": [
+     199,
+     449,
+     221,
+     476
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the removed changed-word tint (return v;) against its line tint; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-selection-selection-vs-canvas",
+   "kind": "fill",
+   "frame": "unified-selection",
+   "region": [
+    188,
+    321,
+    491,
+    348
+   ],
+   "reference": {
+    "region": [
+     800,
+     300,
+     1300,
+     560
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the text selection against canvas; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-selection-selection-vs-panel",
+   "kind": "fill",
+   "frame": "unified-selection",
+   "region": [
+    188,
+    321,
+    491,
+    348
+   ],
+   "reference": {
+    "region": [
+     44,
+     205,
+     1331,
+     252
+    ],
+    "frame": "unified-find"
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the text selection against panel; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-selection-selection-vs-added-bg",
+   "kind": "fill",
+   "frame": "unified-selection",
+   "region": [
+    188,
+    321,
+    491,
+    348
+   ],
+   "reference": {
+    "region": [
+     199,
+     456,
+     221,
+     483
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the text selection against added-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-selection-selection-vs-removed-bg",
+   "kind": "fill",
+   "frame": "unified-selection",
+   "region": [
+    188,
+    321,
+    491,
+    348
+   ],
+   "reference": {
+    "region": [
+     199,
+     449,
+     221,
+     476
+    ],
+    "frame": "unified-find"
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the text selection against removed-bg; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g18-unified-selection-added-word-vs-added-bg",
+   "kind": "fill",
+   "frame": "unified-selection",
+   "region": [
+    416,
+    429,
+    448,
+    456
+   ],
+   "reference": {
+    "region": [
+     199,
+     456,
+     221,
+     483
+    ]
+   },
+   "min_contrast": 1.0,
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the added changed-word tint (fit) against its line tint; recorded for both colours, not judged (min_contrast 1.0 always holds)"
+  },
+  {
+   "name": "g12-unified-selection-base-vs-cand",
+   "kind": "compare",
+   "a": "base:unified-selection",
+   "b": "cand:unified-selection",
+   "crop": "unified-12",
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "where the candidate's crop differs from the base's: the fitted highlights only"
+  },
+  {
+   "name": "g12-unified-selection-inspector-unchanged",
+   "kind": "compare",
+   "a": "base:unified-selection",
+   "b": "cand:unified-selection",
+   "region": [
+    921,
+    137,
+    1200,
+    770
+   ],
+   "max_pixels": 0,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the inspector beside Compare, its selected changed-file row in the palette's selected, is identical in both builds: rows and lists keep selected"
+  },
+  {
+   "name": "g12-unified-find-base-vs-cand",
+   "kind": "compare",
+   "a": "base:unified-find",
+   "b": "cand:unified-find",
+   "crop": "unified-12",
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "where the candidate's crop differs from the base's: the fitted highlights only"
+  },
+  {
+   "name": "g12-unified-find-inspector-unchanged",
+   "kind": "compare",
+   "a": "base:unified-find",
+   "b": "cand:unified-find",
+   "region": [
+    921,
+    137,
+    1200,
+    770
+   ],
+   "max_pixels": 0,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the inspector beside Compare, its selected changed-file row in the palette's selected, is identical in both builds: rows and lists keep selected"
+  },
+  {
+   "name": "g12-split-find-base-vs-cand",
+   "kind": "compare",
+   "a": "base:split-find",
+   "b": "cand:split-find",
+   "crop": "split-12",
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "where the candidate's crop differs from the base's: the fitted highlights only"
+  },
+  {
+   "name": "g12-split-find-inspector-unchanged",
+   "kind": "compare",
+   "a": "base:split-find",
+   "b": "cand:split-find",
+   "region": [
+    921,
+    137,
+    1200,
+    770
+   ],
+   "max_pixels": 0,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the inspector beside Compare, its selected changed-file row in the palette's selected, is identical in both builds: rows and lists keep selected"
+  },
+  {
+   "name": "g12-split-selection-base-vs-cand",
+   "kind": "compare",
+   "a": "base:split-selection",
+   "b": "cand:split-selection",
+   "crop": "split-12",
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "where the candidate's crop differs from the base's: the fitted highlights only"
+  },
+  {
+   "name": "g12-split-selection-inspector-unchanged",
+   "kind": "compare",
+   "a": "base:split-selection",
+   "b": "cand:split-selection",
+   "region": [
+    921,
+    137,
+    1200,
+    770
+   ],
+   "max_pixels": 0,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "daylight-13pt",
+     "porcelain-13pt",
+     "omarchy-13pt-tokyo-night"
+    ]
+   },
+   "note": "the inspector beside Compare, its selected changed-file row in the palette's selected, is identical in both builds: rows and lists keep selected"
+  },
+  {
+   "name": "g18-unified-selection-base-vs-cand",
+   "kind": "compare",
+   "a": "base:unified-selection",
+   "b": "cand:unified-selection",
+   "crop": "unified-18",
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "where the candidate's crop differs from the base's: the fitted highlights only"
+  },
+  {
+   "name": "g18-unified-selection-inspector-unchanged",
+   "kind": "compare",
+   "a": "base:unified-selection",
+   "b": "cand:unified-selection",
+   "region": [
+    1333,
+    137,
+    1700,
+    870
+   ],
+   "max_pixels": 0,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the inspector beside Compare, its selected changed-file row in the palette's selected, is identical in both builds: rows and lists keep selected"
+  },
+  {
+   "name": "g18-unified-find-base-vs-cand",
+   "kind": "compare",
+   "a": "base:unified-find",
+   "b": "cand:unified-find",
+   "crop": "unified-18",
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "where the candidate's crop differs from the base's: the fitted highlights only"
+  },
+  {
+   "name": "g18-unified-find-inspector-unchanged",
+   "kind": "compare",
+   "a": "base:unified-find",
+   "b": "cand:unified-find",
+   "region": [
+    1333,
+    137,
+    1700,
+    870
+   ],
+   "max_pixels": 0,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the inspector beside Compare, its selected changed-file row in the palette's selected, is identical in both builds: rows and lists keep selected"
+  },
+  {
+   "name": "g18-split-find-base-vs-cand",
+   "kind": "compare",
+   "a": "base:split-find",
+   "b": "cand:split-find",
+   "crop": "split-18",
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "where the candidate's crop differs from the base's: the fitted highlights only"
+  },
+  {
+   "name": "g18-split-find-inspector-unchanged",
+   "kind": "compare",
+   "a": "base:split-find",
+   "b": "cand:split-find",
+   "region": [
+    1333,
+    137,
+    1700,
+    870
+   ],
+   "max_pixels": 0,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the inspector beside Compare, its selected changed-file row in the palette's selected, is identical in both builds: rows and lists keep selected"
+  },
+  {
+   "name": "g18-split-selection-base-vs-cand",
+   "kind": "compare",
+   "a": "base:split-selection",
+   "b": "cand:split-selection",
+   "crop": "split-18",
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "where the candidate's crop differs from the base's: the fitted highlights only"
+  },
+  {
+   "name": "g18-split-selection-inspector-unchanged",
+   "kind": "compare",
+   "a": "base:split-selection",
+   "b": "cand:split-selection",
+   "region": [
+    1333,
+    137,
+    1700,
+    870
+   ],
+   "max_pixels": 0,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt"
+    ]
+   },
+   "note": "the inspector beside Compare, its selected changed-file row in the palette's selected, is identical in both builds: rows and lists keep selected"
+  }
+ ]
+}
