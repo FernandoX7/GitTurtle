@@ -1081,13 +1081,19 @@ impl Panel {
                 .child(label("github-patch-unavailable", reason.clone()))
                 .into_any_element();
         }
+        // One width for every row of the file: its widest line number in the code font.
+        let widest = file
+            .rows
+            .iter()
+            .flat_map(|row| [row.old, row.new])
+            .flatten()
+            .max()
+            .unwrap_or(0);
+        let gutter = line_number_width(widest, appearance::code_digit_width(cx));
         div().id("github-patch-focus").key_context("GitTurtleGithubPatch").on_action(cx.listener(|this,_:&ReviewUp,window,cx|{this.review_key("up",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewDown,window,cx|{this.review_key("down",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewHome,window,cx|{this.review_key("home",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewEnd,window,cx|{this.review_key("end",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageUp,window,cx|{this.review_key("pageup",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageDown,window,cx|{this.review_key("pagedown",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendUp,window,cx|{this.review_key("up",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendDown,window,cx|{this.review_key("down",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewAccept,window,cx|{this.review_key("enter",false,window,cx);cx.stop_propagation();})).h(px(246.)).min_w_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().tab_stop(true).track_focus(&self.review.line_focus).focus_visible(|style|style.border_color(rgb(p.accent))).role(Role::ListBox).aria_label("Captured pull request patch lines").aria_description("Up and Down move through lines. Shift extends a same-side range. Return starts an inline comment. Source offers exact text selection and Find.")
 
-            .child(uniform_list("github-patch-rows",file.rows.len(),cx.processor(|this,range:std::ops::Range<usize>,_,cx|range.map(|index|{let file=&this.review.files[this.review.selected_file.expect("visible file")];let row=&file.rows[index];let selected=this.review.anchor.zip(this.review.selected_row).is_some_and(|(a,b)|(a.min(b)..=a.max(b)).contains(&index));let p=palette(cx);let background=if selected{p.selected}else{match row.kind{b'+'=>p.added_background,b'-'=>p.removed_background,b'@'=>p.subtle,_=>p.canvas}};let row_label=format!("Before {} · After {} · {}",row.old.map(|n|n.to_string()).unwrap_or_default(),row.new.map(|n|n.to_string()).unwrap_or_default(),row.text);
-                patch_line(index,cx).w_full().h(px(f32::from(appearance::code_text())*1.65)).px_2().flex().items_center().gap_2().bg(rgb(background)).border_l_2().border_color(rgb(if selected{p.accent}else{background})).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
-                    .child(div().w(px(36.)).flex_shrink_0().text_color(rgb(p.muted)).child(row.old.map(|n|n.to_string()).unwrap_or_default()))
-                    .child(div().w(px(36.)).flex_shrink_0().text_color(rgb(p.muted)).child(row.new.map(|n|n.to_string()).unwrap_or_default()))
-                    .child(div().min_w_0().flex_1().truncate().text_color(rgb(if row.kind==b'@'{p.hunk}else{p.text})).child(row.text.clone()))
+            .child(uniform_list("github-patch-rows",file.rows.len(),cx.processor(move|this,range:std::ops::Range<usize>,_,cx|range.map(|index|{let file=&this.review.files[this.review.selected_file.expect("visible file")];let row=&file.rows[index];let selected=this.review.anchor.zip(this.review.selected_row).is_some_and(|(a,b)|(a.min(b)..=a.max(b)).contains(&index));let p=palette(cx);let background=if selected{p.selected}else{match row.kind{b'+'=>p.added_background,b'-'=>p.removed_background,b'@'=>p.subtle,_=>p.canvas}};let row_label=format!("Before {} · After {} · {}",row.old.map(|n|n.to_string()).unwrap_or_default(),row.new.map(|n|n.to_string()).unwrap_or_default(),row.text);
+                patch_row(index,row,gutter,cx).bg(rgb(background)).border_l_2().border_color(rgb(if selected{p.accent}else{background})).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
                     .on_click(cx.listener(move|this,event:&ClickEvent,window,cx|this.select_review_line(index,event.modifiers().shift,window,cx))).into_any_element()
             }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll)).into_any_element()
     }
@@ -1111,6 +1117,50 @@ fn patch_line(index: usize, cx: &App) -> Stateful<Div> {
         .code_font(cx)
 }
 
+/// The line-number column width before the code size followed the code font;
+/// the default code size keeps at least this width.
+const MIN_LINE_NUMBER_WIDTH: f32 = 36.;
+
+/// The width of a line-number column that fits `widest` in code digits `digit` wide.
+fn line_number_width(widest: u32, digit: Pixels) -> Pixels {
+    let digits = widest.checked_ilog10().unwrap_or(0) + 1;
+    px((f32::from(digit) * digits as f32)
+        .ceil()
+        .max(MIN_LINE_NUMBER_WIDTH))
+}
+
+/// One patch row's layout: the old and new line numbers in `gutter`-wide
+/// columns, then the line's text.
+fn patch_row(index: usize, row: &model::PatchRow, gutter: Pixels, cx: &App) -> Stateful<Div> {
+    let p = palette(cx);
+    let number = |side: &'static str, number: Option<u32>| {
+        div()
+            .debug_selector(move || format!("github-patch-{side}-{index}"))
+            .w(gutter)
+            .flex_shrink_0()
+            .text_color(rgb(p.muted))
+            .child(number.map(|n| n.to_string()).unwrap_or_default())
+    };
+    patch_line(index, cx)
+        .w_full()
+        .h(px(f32::from(appearance::code_text()) * 1.65))
+        .px_2()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(number("old", row.old))
+        .child(number("new", row.new))
+        .child(
+            div()
+                .debug_selector(move || format!("github-patch-text-{index}"))
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .text_color(rgb(if row.kind == b'@' { p.hunk } else { p.text }))
+                .child(row.text.clone()),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1126,6 +1176,87 @@ mod tests {
         assert_eq!(font.family, "Desktop Mono");
         assert_eq!(font.features.is_calt_enabled(), Some(false));
         assert!(font.features.tag_value_list().contains(&("liga".into(), 0)));
+    }
+
+    /// At every code size Settings offers, the line-number columns fit the
+    /// file's widest number in the code font, and the patch text starts after
+    /// both; the default size keeps the earlier 36 px columns.
+    #[gpui::test]
+    fn line_numbers_fit_the_widest_number_at_every_code_size(cx: &mut TestAppContext) {
+        struct Rows(model::PatchRow);
+        impl Render for Rows {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let widest = self.0.old.max(self.0.new).unwrap_or(0);
+                let gutter = line_number_width(widest, appearance::code_digit_width(cx));
+                div().w(px(900.)).child(patch_row(0, &self.0, gutter, cx))
+            }
+        }
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            gpui_kit::component::Theme::global_mut(cx).mono_font_family = "Desktop Mono".into();
+        });
+        let row = model::PatchRow {
+            old: Some(99_999),
+            new: Some(12_345),
+            kind: b' ',
+            text: "context".into(),
+            hunk: 0,
+        };
+        let (_, cx) = cx.add_window_view(move |_, _| Rows(row));
+        let measure = |code: u8, cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| {
+                appearance::apply_text_sizes(13, code, window, cx);
+                window.draw(cx).clear(cx);
+            });
+            let bounds = |selector, cx: &mut gpui_kit::VisualTestContext| {
+                cx.debug_bounds(selector).expect(selector)
+            };
+            let old = bounds("github-patch-old-0", cx);
+            let new = bounds("github-patch-new-0", cx);
+            let text = bounds("github-patch-text-0", cx);
+            // The number as the column's text element shapes it.
+            let number = cx.update(|window, cx| {
+                let family = gpui_kit::component::Theme::global(cx)
+                    .mono_font_family
+                    .clone();
+                let font = gpui_kit::Font {
+                    features: appearance::code_font_features_for(&family),
+                    ..gpui_kit::font(family)
+                };
+                let run = TextRun {
+                    len: "99999".len(),
+                    font,
+                    color: gpui_kit::black(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                window
+                    .text_system()
+                    .shape_line("99999".into(), appearance::code_text(), &[run], None)
+                    .width
+            });
+            assert!(
+                old.size.width >= number,
+                "{code} pt: {old:?} clips {number:?}"
+            );
+            assert_eq!(old.size.width, new.size.width, "{code} pt");
+            assert!(
+                old.right() <= new.left(),
+                "{code} pt: {old:?} overlaps {new:?}"
+            );
+            assert!(
+                new.right() < text.left(),
+                "{code} pt: {new:?} overlaps {text:?}"
+            );
+            old.size.width
+        };
+        assert!(measure(appearance::DEFAULT_CODE_TEXT_SIZE, cx) >= px(36.));
+        assert!(measure(24, cx) > px(36.));
+        for code in appearance::CODE_TEXT_RANGE {
+            measure(code, cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     #[gpui::test]
