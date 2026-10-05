@@ -1,0 +1,76 @@
+
+// ---- editor-highlights-keep-syntax-readable harness (appended by bench/harness/build.sh; never committed) ----
+#[cfg(test)]
+pub(crate) mod highlights_bench {
+    use super::*;
+    use gpui_kit::component::highlighter::HighlightTheme;
+    use std::hint::black_box;
+    use std::io::Write as _;
+    use std::time::Instant;
+
+    fn fresh(is_light: bool) -> Theme {
+        Theme {
+            highlight_theme: if is_light {
+                HighlightTheme::default_light()
+            } else {
+                HighlightTheme::default_dark()
+            },
+            ..Theme::default()
+        }
+    }
+
+    /// One call of the work `Palette::apply` does on the theme, timed in ns; the fresh theme
+    /// (whose highlight theme is the mode's shared default `Arc`, cloned by `make_mut` as after
+    /// `Theme::change`) is built before the clock starts and dropped after it stops.
+    fn timed_apply(palette: Palette, is_light: bool) -> u64 {
+        let mut theme = fresh(is_light);
+        let start = Instant::now();
+        apply_work(black_box(palette), is_light, &mut theme);
+        let ns = start.elapsed().as_nanos() as u64;
+        black_box(&theme);
+        ns
+    }
+
+    fn timed_fit(palette: Palette) -> Option<u64> {
+        let start = Instant::now();
+        let fitted = fit_only(black_box(palette))?;
+        let ns = start.elapsed().as_nanos() as u64;
+        black_box(fitted);
+        Some(ns)
+    }
+
+    /// BENCH_OUT: the JSON-lines file to append to. BENCH_MODE: `first` (one call of the case
+    /// named by BENCH_CASE, first thing in the process) or `steady` (every case: WARMUP untimed
+    /// calls, then N timed calls of the apply work and, where the build has it, of the fit
+    /// alone). BENCH_PROC: a process label.
+    pub(crate) fn run(cases: Vec<(String, Palette, bool)>) {
+        let env = |key: &str| std::env::var(key).unwrap_or_default();
+        let (out, mode, proc_) = (env("BENCH_OUT"), env("BENCH_MODE"), env("BENCH_PROC"));
+        let build = BUILD;
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&out).expect("BENCH_OUT");
+        if mode == "first" {
+            let want = env("BENCH_CASE");
+            let (name, palette, is_light) = cases.into_iter().find(|c| c.0 == want).expect("BENCH_CASE");
+            let ns = timed_apply(palette, is_light);
+            writeln!(file, "{{\"build\":\"{build}\",\"mode\":\"first\",\"proc\":\"{proc_}\",\"case\":\"{name}\",\"apply_ns\":[{ns}]}}").unwrap();
+            return;
+        }
+        let warmup: usize = env("BENCH_WARMUP").parse().unwrap_or(200);
+        let n: usize = env("BENCH_N").parse().unwrap_or(1000);
+        for (name, palette, is_light) in cases {
+            for _ in 0..warmup {
+                timed_apply(palette, is_light);
+                timed_fit(palette);
+            }
+            let apply: Vec<u64> = (0..n).map(|_| timed_apply(palette, is_light)).collect();
+            let fit: Vec<u64> = (0..n).filter_map(|_| timed_fit(palette)).collect();
+            let join = |v: &[u64]| v.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+            writeln!(
+                file,
+                "{{\"build\":\"{build}\",\"mode\":\"steady\",\"proc\":\"{proc_}\",\"case\":\"{name}\",\"is_light\":{is_light},\"apply_ns\":[{}],\"fit_ns\":[{}]}}",
+                join(&apply),
+                join(&fit)
+            )
+            .unwrap();
+        }
+    }

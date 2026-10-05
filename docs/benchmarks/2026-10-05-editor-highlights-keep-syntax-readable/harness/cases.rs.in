@@ -1,0 +1,30 @@
+
+// ---- editor-highlights-keep-syntax-readable harness cases (appended by bench/harness/build.sh) ----
+#[cfg(test)]
+mod highlights_bench_cases {
+    use super::palette::{map, parse};
+    use crate::appearance::ThemeChoice;
+
+    #[test]
+    #[ignore]
+    fn bench_highlights() {
+        let mut cases: Vec<(String, crate::appearance::Palette, bool)> = ThemeChoice::ALL
+            .into_iter()
+            .map(|choice| (format!("{choice:?}"), choice.palette(), choice.is_light()))
+            .collect();
+        for (name, bytes) in [
+            ("Omarchy tokyo-night", &include_bytes!("../../tests/fixtures/omarchy/tokyo-night.toml")[..]),
+            ("Omarchy catppuccin-latte", &include_bytes!("../../tests/fixtures/omarchy/catppuccin-latte.toml")[..]),
+        ] {
+            let mapped = map(&parse(bytes, false).unwrap());
+            cases.push((name.to_string(), mapped.palette, mapped.is_light));
+        }
+        // Stress cases (supplementary run): custom palettes whose `text` misses the text rule on the
+        // editor background, so no highlight candidate reads and every search runs to its end.
+        let midnight = ThemeChoice::Midnight.palette();
+        cases.push(("Stress dark".into(), crate::appearance::Palette { text: 0x3a4250, ..midnight }, false));
+        let porcelain = ThemeChoice::Porcelain.palette();
+        cases.push(("Stress light".into(), crate::appearance::Palette { text: 0xd8dbe4, ..porcelain }, true));
+        crate::appearance::highlights_bench::run(cases);
+    }
+}
