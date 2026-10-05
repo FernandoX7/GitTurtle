@@ -3,7 +3,11 @@ use crate::*;
 use focus_reveal::{FocusReveal, Trigger};
 use gitturtle_core::{RemoteConfig, Tag, TagCommand, TagDetails, TagList, WriteCommand};
 use gpui_kit::{
-    component::{WindowExt, dialog::DialogButtonProps},
+    component::{
+        WindowExt,
+        dialog::DialogButtonProps,
+        scroll::{Scrollbar, ScrollbarHandle, ScrollbarMode},
+    },
     prelude::FluentBuilder,
 };
 
@@ -12,6 +16,115 @@ const PREPARING: &str = "Reading tags…";
 /// default 16 px padding. A dialog whose body keeps the focus ring's room
 /// below its last control gives the room back by narrowing this gap.
 pub(crate) const DIALOG_FOOTER_GAP: Pixels = px(16.);
+
+/// The always-visible scrollbar a scrolling list of tab-stop rows cues the
+/// rows beyond its edge with, as the review dialogs cue theirs: the branch
+/// chooser, the remote manager, Tags and the tag inspector's Push to… list.
+///
+/// While the list overflows, its rows keep a gutter at their right, and the
+/// scrollbar paints its track there, over the column the rows lie in: inside
+/// the list, clear of the room it keeps around its rows for their focus
+/// rings, so the track covers no row and no ring, and clear of the dialog's
+/// side padding, where the dialog's own scrollbar runs. The gutter is the
+/// scrollbar's width plus the room of the ring every palette installs, so a
+/// row's ring ends where the track begins, and neither the rows nor the track
+/// move with the ring's room, which the list gives back. A list whose rows
+/// fit keeps no gutter and draws no scrollbar, so its rows keep their width.
+///
+/// GPUI lays a frame out before it knows whether the list overflows, so the
+/// gutter follows the overflow the list's scroll handle kept from the last
+/// frame. A frame whose layout overflows the other way draws once more after
+/// it is painted; each frame draws the gutter and the scrollbar together or
+/// neither, so a thumb never paints over a row.
+pub(crate) struct ScrollCue {
+    rows: RowColumn,
+    /// Whether this frame draws the gutter and the scrollbar.
+    cued: bool,
+}
+
+impl ScrollCue {
+    /// The cue for the list `scroll` tracks, which keeps `room` around its
+    /// rows for their rings, for the frame being rendered.
+    pub(crate) fn new(scroll: &ScrollHandle, room: Pixels) -> Self {
+        Self {
+            rows: RowColumn {
+                scroll: scroll.clone(),
+                room,
+            },
+            cued: overflows(scroll),
+        }
+    }
+
+    /// For the list's `on_children_prepainted`: runs `prepainted`, then draws
+    /// once more when this frame's layout overflows otherwise than the cue
+    /// assumed.
+    pub(crate) fn observe(
+        &self,
+        prepainted: impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        let scroll = self.rows.scroll.clone();
+        let cued = self.cued;
+        move |bounds, window, cx| {
+            prepainted(bounds, window, cx);
+            if overflows(&scroll) != cued {
+                window.defer(cx, |window, _| window.refresh());
+            }
+        }
+    }
+
+    /// `list`, with the gutter and the scrollbar `id` while it overflows.
+    pub(crate) fn list(&self, list: Stateful<Div>, id: &'static str) -> Div {
+        let ring = appearance::BUTTON_FOCUS_RING;
+        let gutter = Scrollbar::width() + ring.gap + ring.width;
+        let room = self.rows.room;
+        div()
+            .flex()
+            .flex_col()
+            .child(list.when(self.cued, |list| list.pr(room + gutter)))
+            .when(self.cued, |cue| {
+                cue.child(
+                    Scrollbar::vertical(&self.rows)
+                        .id(id)
+                        .mode(ScrollbarMode::Always),
+                )
+            })
+    }
+}
+
+/// A list's scroll as its scrollbar reads it: over the column its rows lie
+/// in, the list's bounds less the room it keeps around them, which scrolls
+/// as far as the list does.
+#[derive(Clone)]
+struct RowColumn {
+    scroll: ScrollHandle,
+    room: Pixels,
+}
+
+impl ScrollbarHandle for RowColumn {
+    fn viewport_bounds(&self) -> Bounds<Pixels> {
+        self.scroll.bounds().dilate(-self.room)
+    }
+
+    fn offset(&self) -> Point<Pixels> {
+        self.scroll.offset()
+    }
+
+    fn set_offset(&self, offset: Point<Pixels>) {
+        self.scroll.set_offset(offset);
+    }
+
+    fn content_size(&self) -> Size<Pixels> {
+        let viewport = self.viewport_bounds().size;
+        let reach = self.scroll.max_offset();
+        size(viewport.width + reach.x, viewport.height + reach.y)
+    }
+}
+
+/// Whether the list `scroll` tracks overflowed when last laid out, as the
+/// kit's scrollbar judges it before painting a thumb.
+fn overflows(scroll: &ScrollHandle) -> bool {
+    scroll.max_offset().y > Pixels::ZERO
+}
 
 fn static_text(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
     let value = value.into();
@@ -160,6 +273,8 @@ impl GitTurtle {
             let room = appearance::button_ring_room(cx);
             let pushes: Vec<_> = (0..remotes.len()).map(|index| list.focus(("push-tag-remote", index), cx)).collect();
             let reveal = list.items(pushes.clone(), room);
+            // Past its height the list cues the rest with its scrollbar.
+            let cue = ScrollCue::new(list.scroll(), room);
             let content = div().flex().flex_col().gap_3().pb(room)
                 .child(static_text("tag-target-identity", format!("{} · {} {}", if tag.annotated { "Annotated tag" } else { "Lightweight tag" }, tag.target_kind, tag.target_oid)).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
                 .child(static_text("tag-object-identity", format!("Tag object: {}", tag.oid)).text_size(crate::appearance::ui_text(11.)))
@@ -178,7 +293,7 @@ impl GitTurtle {
                     })))
                 .child(static_text("tag-push-heading", "Push this tag").text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM))
                 .child(static_text("tag-push-consequences", "Choose one remote, then review. No other tags or branches are pushed. Existing remote tags are never replaced.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
-                .child(div().on_children_prepainted(reveal).id("tag-remote-list").debug_selector(|| "tag-remote-list".into()).max_h(px(160.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(list.scroll()).flex().flex_col().gap_1().children(remotes.iter().zip(pushes).enumerate().map(|(index, (remote, focus))| {
+                .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("tag-remote-list").debug_selector(|| "tag-remote-list".into()).max_h(px(160.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(list.scroll()).flex().flex_col().gap_1().children(remotes.iter().zip(pushes).enumerate().map(|(index, (remote, focus))| {
                     let remote = remote.clone(); let tag = tag.clone(); let owner = owner.clone(); let path = path.clone();
                     button(("push-tag-remote", index), format!("Push to {}…", remote.name), "", false).track_focus(&focus).debug_selector(move || format!("push-tag-remote-{index}")).on_click(move |_, window, cx| {
                         let _ = owner.update(cx, |this, cx| {
@@ -190,7 +305,7 @@ impl GitTurtle {
                             }
                         });
                     })
-                })).when(remotes.is_empty(), |element| element.child(static_text("tag-remotes-empty", "No remotes configured. Add a remote from the branch menu to push a tag.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))));
+                })).when(remotes.is_empty(), |element| element.child(static_text("tag-remotes-empty", "No remotes configured. Add a remote from the branch menu to push a tag.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "tag-remote-scrollbar"));
             dialog.title(static_text("tag-inspector-title", details.tag.name.clone())).width(px(640.)).gap(DIALOG_FOOTER_GAP - room).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
         });
     }
@@ -338,15 +453,17 @@ impl Render for TagBrowser {
             .map(|index| self.rows.focus(("tag-row", index), cx))
             .collect();
         let reveal = self.rows.items(rows.clone(), room);
+        // Past its height the list cues the rest with its scrollbar.
+        let cue = ScrollCue::new(self.rows.scroll(), room);
         div().flex().flex_col().gap_3().py(room)
             .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true))).child(button("create-tag", "Create tag…", "plus", false).debug_selector(|| "create-tag".into()).on_click(cx.listener(|this, _, window, cx| {
                 let _ = this.owner.update(cx, |owner, cx| { if owner.path == this.path && owner.operation_busy.is_none() { window.close_dialog(cx); owner.open_create_tag(window, cx); } });
             }))))
             .child(static_text("tag-list-summary", format!("{} local tags · Select to inspect, delete locally, or push one named tag.", self.list.tags.len())).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
-            .child(div().on_children_prepainted(reveal).id("tags-list").debug_selector(|| "tags-list".into()).max_h(px(360.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap_1().children(matches.iter().zip(rows).enumerate().map(|(index, (tag, focus))| {
+            .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("tags-list").debug_selector(|| "tags-list".into()).max_h(px(360.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap_1().children(matches.iter().zip(rows).enumerate().map(|(index, (tag, focus))| {
                 let tag = (*tag).clone(); let label = format!("{} · {} · {}", tag.name, if tag.annotated { "Annotated" } else { "Lightweight" }, short_oid(&tag.target_oid));
                 Button::new(("tag-row", index)).track_focus(&focus).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).label(label.clone()).accessibility_label(label).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
-            })).when(matches.is_empty(), |element| element.child(static_text("tag-list-empty", if self.list.tags.is_empty() { "No local tags yet. Create a tag to name a commit." } else { "No tags match this filter." }).p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
+            })).when(matches.is_empty(), |element| element.child(static_text("tag-list-empty", if self.list.tags.is_empty() { "No local tags yet. Create a tag to name a commit." } else { "No tags match this filter." }).p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "tags-scrollbar"))
             .when(matches.len() > 100, |element| element.child(static_text("tag-list-match-limit", "Showing 100 matches. Narrow the filter to find another tag.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .when(self.list.truncated, |element| element.child(static_text("tag-list-load-limit", "Loaded the first 10,000 local tags by name. Additional tags are outside this bounded browser.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
     }
@@ -784,6 +901,170 @@ pub(crate) mod tests {
         install_ring(cx, app, installed);
     }
 
+    /// Applies `interface` as the interface text size, as Settings does.
+    pub(crate) fn set_interface_text_size(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        interface: u8,
+    ) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.interface_text_size = interface;
+                let code = app.settings.code_text_size;
+                appearance::apply_text_sizes(interface, code, window, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+        park_pointer(cx);
+    }
+
+    /// Where the list `list`, which keeps `room` around its rows, paints its
+    /// scrollbar's track while it overflows: a strip as wide as the scrollbar
+    /// at the right of the rows' column, its full height.
+    fn scrollbar_track(
+        cx: &mut VisualTestContext,
+        list: &'static str,
+        room: Pixels,
+    ) -> Bounds<Pixels> {
+        let column = rendered(cx, list).dilate(-room);
+        Bounds::from_corners(
+            point(column.right() - Scrollbar::width(), column.top()),
+            column.bottom_right(),
+        )
+    }
+
+    /// The scrollbar thumb the last frame painted in `track`: the one filled
+    /// quad inside it shorter than the track, which a track's own fill is
+    /// not.
+    fn painted_thumb(cx: &mut VisualTestContext, track: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+        let thumbs: Vec<_> = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| !quad.background.is_transparent())
+                .map(|quad| logical(quad.bounds, scale))
+                .filter(|fill| {
+                    holds(track, *fill) && fill.size.height < track.size.height - px(0.5)
+                })
+                .collect()
+        });
+        assert!(thumbs.len() <= 1, "one thumb in {track:?}, not {thumbs:?}");
+        thumbs.first().copied()
+    }
+
+    /// Scrolls the list `scroll` tracks to `fraction` of its reach.
+    fn scroll_list_to(cx: &mut VisualTestContext, scroll: &ScrollHandle, fraction: f32) {
+        let end = scroll.max_offset().y;
+        scroll.set_offset(point(px(0.), -end * fraction));
+        cx.update(|window, _| window.refresh());
+        draw(cx);
+        park_pointer(cx);
+    }
+
+    /// At 13 and 18 pt, the list `list`, which keeps `room` around its rows
+    /// and whose `rows` overflow it, paints its scrollbar's thumb at the
+    /// right of the rows' column, where the thumb follows the list's offset:
+    /// it starts with the track at the top, lies in proportion between, and
+    /// ends with the track at the end. The track overlaps no row and no row's
+    /// ring, its bounds grown by the installed Button focus ring's gap plus
+    /// width.
+    pub(crate) fn assert_scroll_cue(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        scroll: &ScrollHandle,
+        list: &'static str,
+        room: Pixels,
+        rows: &[&'static str],
+    ) {
+        let ring = cx.read(|cx| Theme::global(cx).button_focus_ring);
+        assert_eq!(ring, appearance::BUTTON_FOCUS_RING);
+        let footprint = ring.gap + ring.width;
+        for size in [13, 18] {
+            set_interface_text_size(cx, app, size);
+            scroll_list_to(cx, scroll, 0.);
+            assert!(
+                scroll.max_offset().y > px(0.),
+                "at {size} pt the rows of {list} overflow it"
+            );
+            let track = scrollbar_track(cx, list, room);
+            let covered: Vec<_> = rows
+                .iter()
+                .map(|row| (row, rendered(cx, row).dilate(footprint)))
+                .filter(|(_, ring)| {
+                    ring.intersects(&track) && ring.right() > track.left() + px(0.01)
+                })
+                .collect();
+            assert!(
+                covered.is_empty(),
+                "at {size} pt the track {track:?} of {list} overlaps rings {covered:?}"
+            );
+
+            let top = painted_thumb(cx, track)
+                .unwrap_or_else(|| panic!("at {size} pt {list} paints a thumb at its top"));
+            // The kit insets its thumb from the track's ends.
+            let inset = top.top() - track.top();
+            assert!(
+                inset >= px(0.) && inset < px(8.),
+                "at its top the thumb {top:?} starts with the track {track:?} of {list}"
+            );
+            for fraction in [0.5, 1.] {
+                scroll_list_to(cx, scroll, fraction);
+                let thumb = painted_thumb(cx, track).unwrap_or_else(|| {
+                    panic!("at {size} pt {list} paints a thumb scrolled to {fraction}")
+                });
+                let travel = track.size.height - thumb.size.height - inset * 2.;
+                let along = (thumb.top() - track.top() - inset) / travel;
+                assert!(
+                    (along - fraction).abs() < 0.02,
+                    "at {size} pt, scrolled to {fraction} of its reach, the thumb {thumb:?} of \
+                     {list} lies {along} along its track {track:?}"
+                );
+            }
+            let end = painted_thumb(cx, track).expect("a thumb at the end");
+            assert!(
+                (track.bottom() - end.bottom() - inset).abs() < px(0.5),
+                "at its end the thumb {end:?} ends with the track {track:?} of {list}"
+            );
+            scroll_list_to(cx, scroll, 0.);
+        }
+        set_interface_text_size(cx, app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+    }
+
+    /// At 13 and 18 pt, the list `list`, which keeps `room` around its rows
+    /// and whose `rows` fit it, paints no thumb and keeps no gutter: each row
+    /// lies `room` inside the list's left and right edges, as it did before
+    /// lists drew a scrollbar.
+    pub(crate) fn assert_no_scroll_cue(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        list: &'static str,
+        room: Pixels,
+        rows: &[&'static str],
+    ) {
+        let inset = room;
+        for size in [13, 18] {
+            set_interface_text_size(cx, app, size);
+            let track = scrollbar_track(cx, list, room);
+            assert_eq!(
+                painted_thumb(cx, track),
+                None,
+                "at {size} pt {list} paints a thumb"
+            );
+            let bounds = rendered(cx, list);
+            for row in rows {
+                let row_bounds = rendered(cx, row);
+                assert!(
+                    (row_bounds.left() - bounds.left() - inset).abs() < px(0.01)
+                        && (bounds.right() - row_bounds.right() - inset).abs() < px(0.01),
+                    "at {size} pt {row} {row_bounds:?} lies {inset:?} inside {list} {bounds:?}"
+                );
+            }
+        }
+        set_interface_text_size(cx, app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+    }
+
     /// The gap the kit's dialog leaves between its body and its footer when
     /// nothing overrides it, measured on a dialog of its own.
     pub(crate) fn kit_dialog_footer_gap(cx: &mut TestAppContext) -> Pixels {
@@ -981,5 +1262,119 @@ pub(crate) mod tests {
         assert_tab_reveals(cx, &list, "tag-remote-list", &pushes);
         app.update(cx, |app, _| app.operation_busy = Some("Testing"));
         assert_steady(cx, &list, "tag-remote-list", &pushes);
+    }
+
+    /// Adds `count` local bare remotes, `remote-00` onwards, to `repo`: the
+    /// lists only show them, and nothing is fetched or pushed.
+    pub(crate) fn add_remotes(fixture: &std::path::Path, repo: &GitRepository, count: usize) {
+        for index in 0..count {
+            let bare = fixture.join(format!("remote-{index:02}.git"));
+            git(
+                fixture,
+                &["init", "--quiet", "--bare", bare.to_str().unwrap()],
+            );
+            git(
+                repo.path(),
+                &[
+                    "remote",
+                    "add",
+                    &format!("remote-{index:02}"),
+                    bare.to_str().unwrap(),
+                ],
+            );
+        }
+    }
+
+    /// The selectors `name-0` to `name-{count - 1}`.
+    pub(crate) fn selectors(name: &str, count: usize) -> Vec<&'static str> {
+        (0..count)
+            .map(|index| &*format!("{name}-{index}").leak())
+            .collect()
+    }
+
+    /// Tags of `tags` rows open at 1000 × 680, and its list.
+    async fn open_tags_list<'a>(
+        cx: &'a mut TestAppContext,
+        fixture: &std::path::Path,
+        tags: usize,
+    ) -> (Entity<GitTurtle>, FocusReveal, &'a mut VisualTestContext) {
+        let (_repo, app, cx) = small_window_with_tags(cx, fixture, tags.saturating_sub(3));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        let read = app.update(cx, |app, _| app.tag_actions.task.take());
+        read.expect("the tags are read").await;
+        draw(cx);
+        let list = app
+            .read_with(cx, |app, _| app.tag_actions.list.clone())
+            .expect("the Tags list");
+        (app, list, cx)
+    }
+
+    /// The tag inspector of a repository with `remotes` remotes open at
+    /// 1000 × 680, and its Push to… list.
+    async fn open_push_list<'a>(
+        cx: &'a mut TestAppContext,
+        fixture: &std::path::Path,
+        remotes: usize,
+    ) -> (Entity<GitTurtle>, FocusReveal, &'a mut VisualTestContext) {
+        let (repo, app, cx) = small_window_with_tags(cx, fixture, 0);
+        add_remotes(fixture, &repo, remotes);
+        let tag = repo.tags().unwrap().tags[0].clone();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.inspect_tag(tag, window, cx)));
+        let read = app.update(cx, |app, _| app.tag_actions.task.take());
+        read.expect("the tag is read").await;
+        draw(cx);
+        let list = app
+            .read_with(cx, |app, _| app.tag_actions.list.clone())
+            .expect("the Push to… list");
+        (app, list, cx)
+    }
+
+    /// Tags' 30 rows overflow its list at 1000 × 680, and its scrollbar's
+    /// thumb follows the list's offset in a gutter clear of every ring.
+    #[gpui::test]
+    async fn tags_list_cues_rows_beyond_its_edge(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (app, list, cx) = open_tags_list(cx, fixture.path(), 30).await;
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let rows = selectors("tag-row", 30);
+        assert_scroll_cue(cx, &app, list.scroll(), "tags-list", room, &rows);
+    }
+
+    /// Tags' three rows fit its list: it paints no thumb, and its rows keep
+    /// their width.
+    #[gpui::test]
+    async fn tags_list_that_fits_paints_no_thumb(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (app, _list, cx) = open_tags_list(cx, fixture.path(), 3).await;
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        assert_no_scroll_cue(cx, &app, "tags-list", room, &selectors("tag-row", 3));
+    }
+
+    /// Ten Push to… buttons overflow the tag inspector's list at
+    /// 1000 × 680, and its scrollbar's thumb follows the list's offset in a
+    /// gutter clear of every ring.
+    #[gpui::test]
+    async fn push_list_cues_buttons_beyond_its_edge(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (app, list, cx) = open_push_list(cx, fixture.path(), 10).await;
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let pushes = selectors("push-tag-remote", 10);
+        assert_scroll_cue(cx, &app, list.scroll(), "tag-remote-list", room, &pushes);
+    }
+
+    /// Two Push to… buttons fit the tag inspector's list: it paints no
+    /// thumb, and the buttons keep their width.
+    #[gpui::test]
+    async fn push_list_that_fits_paints_no_thumb(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (app, _list, cx) = open_push_list(cx, fixture.path(), 2).await;
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        assert_no_scroll_cue(
+            cx,
+            &app,
+            "tag-remote-list",
+            room,
+            &selectors("push-tag-remote", 2),
+        );
     }
 }

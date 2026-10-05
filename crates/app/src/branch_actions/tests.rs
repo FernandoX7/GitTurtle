@@ -3,8 +3,8 @@ use crate::focus_reveal::tests::{
     assert_every_frame_reveals, assert_steady, assert_tab_reveals, control, focus_filter,
 };
 use crate::tags::tests::{
-    assert_rings_whole, assert_room_moves_nothing, draw, git, rendered, scroll_down,
-    tagged_repository, window,
+    add_remotes, assert_no_scroll_cue, assert_rings_whole, assert_room_moves_nothing,
+    assert_scroll_cue, draw, git, rendered, scroll_down, selectors, tagged_repository, window,
 };
 use ::core::prelude::v1::test;
 
@@ -165,4 +165,112 @@ async fn tab_reveals_every_remote_manager_control(cx: &mut TestAppContext) {
     assert_tab_reveals(cx, &list, "remote-manager-list", &controls);
     app.update(cx, |app, _| app.operation_busy = Some("Testing"));
     assert_steady(cx, &list, "remote-manager-list", &controls);
+}
+
+/// The branch chooser of `main` and `branches` more open at 1000 × 680, and
+/// its list.
+async fn open_branch_chooser<'a>(
+    cx: &'a mut TestAppContext,
+    fixture: &std::path::Path,
+    branches: usize,
+) -> (Entity<GitTurtle>, FocusReveal, &'a mut VisualTestContext) {
+    let (_repo, app, cx) = small_window_with_branches(cx, fixture, branches);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.choose_branch(ChoicePurpose::Manage, window, cx)
+        })
+    });
+    let read = app.update(cx, |app, _| app.branch_actions.task.take());
+    read.expect("the branches are read").await;
+    draw(cx);
+    let list = app
+        .read_with(cx, |app, _| app.branch_actions.list.clone())
+        .expect("the chooser's list");
+    (app, list, cx)
+}
+
+/// The remote manager of `remotes` remotes open at 1000 × 680, and its list.
+async fn open_remote_manager<'a>(
+    cx: &'a mut TestAppContext,
+    fixture: &std::path::Path,
+    remotes: usize,
+) -> (Entity<GitTurtle>, FocusReveal, &'a mut VisualTestContext) {
+    let (repo, app, cx) = small_window_with_branches(cx, fixture, 0);
+    add_remotes(fixture, &repo, remotes);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_remote_manager(window, cx)));
+    let read = app.update(cx, |app, _| app.branch_actions.task.take());
+    read.expect("the remotes are read").await;
+    draw(cx);
+    let list = app
+        .read_with(cx, |app, _| app.branch_actions.list.clone())
+        .expect("the manager's list");
+    (app, list, cx)
+}
+
+/// The branch chooser's 30 rows overflow its list at 1000 × 680, and its
+/// scrollbar's thumb follows the list's offset in a gutter clear of every
+/// ring.
+#[gpui::test]
+async fn branch_chooser_cues_rows_beyond_its_edge(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (app, list, cx) = open_branch_chooser(cx, fixture.path(), 29).await;
+    let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+    let rows = selectors("branch-choice", 30);
+    assert_scroll_cue(cx, &app, list.scroll(), "branch-chooser-list", room, &rows);
+}
+
+/// The branch chooser's three rows fit its list: it paints no thumb, and its
+/// rows keep their width.
+#[gpui::test]
+async fn branch_chooser_that_fits_paints_no_thumb(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (app, _list, cx) = open_branch_chooser(cx, fixture.path(), 2).await;
+    let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+    assert_no_scroll_cue(
+        cx,
+        &app,
+        "branch-chooser-list",
+        room,
+        &selectors("branch-choice", 3),
+    );
+}
+
+/// Twelve remotes overflow the remote manager's list at 1000 × 680, and its
+/// scrollbar's thumb follows the list's offset in a gutter clear of every
+/// remote and its ring room.
+#[gpui::test]
+async fn remote_manager_cues_remotes_beyond_its_edge(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (app, list, cx) = open_remote_manager(cx, fixture.path(), 12).await;
+    let controls = [
+        selectors("managed-remote", 12),
+        selectors("edit-remote", 12),
+        selectors("remove-remote", 12),
+    ]
+    .concat();
+    // Each remote keeps its controls' ring room inside it; the list keeps
+    // none around the remotes.
+    assert_scroll_cue(
+        cx,
+        &app,
+        list.scroll(),
+        "remote-manager-list",
+        px(0.),
+        &controls,
+    );
+}
+
+/// Two remotes fit the remote manager's list: it paints no thumb, and each
+/// remote keeps the list's full width.
+#[gpui::test]
+async fn remote_manager_that_fits_paints_no_thumb(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (app, _list, cx) = open_remote_manager(cx, fixture.path(), 2).await;
+    assert_no_scroll_cue(
+        cx,
+        &app,
+        "remote-manager-list",
+        px(0.),
+        &selectors("managed-remote", 2),
+    );
 }
