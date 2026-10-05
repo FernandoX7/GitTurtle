@@ -1,0 +1,1410 @@
+{
+ "version": 1,
+ "task": "code-font-blame-conflicts-review-gutter",
+ "summary": "Blame's source lines and the conflict editor's result draft draw in the code font, and the PR review's line-number columns are sized from the code font's digit width at the current code size. With Settings' desktop monospace row on and fontconfig's monospace set to JetBrains Mono: Blame of HEAD's src/cursor.rs, the conflict editor of the same file paused in a merge with its result draft focused, and the offline review fixture's PR #42 Changes rows scrolled to their widest line numbers, in Midnight and Porcelain at interface 13 pt with code 12 and 18 pt, and the review also at code 24 pt; masked base-versus-candidate compares of each, AT-SPI's focused node, and the clearance from each line-number column's ink to the next ink on its row",
+ "limitations": "Linux under XWayland on GNOME 50 at scale factor 1, display :0, Mutter input; 1000 x 680 for Blame and the review and 1000 x 900 for the conflict editor, whose stack (sides, block actions, a 160 px draft) needs the height. The desktop monospace family is JetBrains Mono through a FONTCONFIG_FILE that prefers it for monospace before including the host's stock /etc/fonts/fonts.conf (warm system cache); it is not the owner's desktop configuration. The fixture is built outside the spec, since a recipe cannot leave a conflicted merge, and opened with --fixture at /tmp/gitturtle-evidence/fixtures/code-font-blame-conflicts-review-gutter/repo: edcd7466 'Add the review cursor', topic 22e1f0ec 'Skip folded lines', HEAD 83de13c1 'Clamp the cursor to the last line', then git merge topic stopped with src/cursor.rs conflicted (UU, stages b8e8a824, 46ad7be2, 662b1dd1); every commit by GitTurtle QA at a fixed 2026-10-05 UTC minute. Blame's source follows the interface size (11 pt scaled), not the code size, in both builds, so its code 18 pt frames show the family only. The offline review fixture's widest line number is 25: two digits fit the 36 px floor at every code size up to 24 pt (2 x 14.4 px in JetBrains Mono at 24 pt), so the candidate's columns equal the base's and no frame can show a number wider than 36 px; that case is the unit test's (five digits at 24 pt). The result draft's caret blinks with a 1 s period; each capture is whichever phase two grabs 1 s apart agreed on, and the compares mask the draft. The ligature switch-off is not shown against a ligature-drawing build: the base draws Blame in DejaVu Sans Mono and the draft in the interface font, neither of which joins characters. macOS, native Wayland, fractional scales, hover, live GitHub and Compare's gutter are not covered",
+ "window": [
+  1000,
+  680
+ ],
+ "roles": [
+  "base",
+  "cand"
+ ],
+ "atspi": true,
+ "env": {
+  "GITTURTLE_GITHUB_FIXTURE": "review",
+  "FONTCONFIG_FILE": "~/fontconfig-qa/fonts.conf"
+ },
+ "home": {
+  "fontconfig-qa/fonts.conf": "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n<!-- The desktop's monospace family for this run: JetBrains Mono, which has programming ligatures, preferred before the host's stock configuration; that configuration and its system cache follow. -->\n<fontconfig>\n\t<alias binding=\"strong\">\n\t\t<family>monospace</family>\n\t\t<prefer><family>JetBrains Mono</family></prefer>\n\t</alias>\n\t<include ignore_missing=\"no\">/etc/fonts/fonts.conf</include>\n</fontconfig>\n"
+ },
+ "settings": {
+  "system_code_font": true
+ },
+ "variants": [
+  {
+   "palette": "midnight",
+   "text_size": 13
+  },
+  {
+   "palette": "porcelain",
+   "text_size": 13
+  },
+  {
+   "palette": "midnight",
+   "text_size": 13,
+   "id": "midnight-13pt-code-18pt",
+   "settings": {
+    "code_text_size": 18
+   }
+  },
+  {
+   "palette": "porcelain",
+   "text_size": 13,
+   "id": "porcelain-13pt-code-18pt",
+   "settings": {
+    "code_text_size": 18
+   }
+  },
+  {
+   "palette": "midnight",
+   "text_size": 13,
+   "id": "midnight-13pt-code-24pt",
+   "settings": {
+    "code_text_size": 24
+   }
+  },
+  {
+   "palette": "porcelain",
+   "text_size": 13,
+   "id": "porcelain-13pt-code-24pt",
+   "settings": {
+    "code_text_size": 24
+   }
+  }
+ ],
+ "crops": {
+  "blame": [
+   44,
+   190,
+   720,
+   654
+  ],
+  "blame-source": [
+   288,
+   289,
+   720,
+   558
+  ],
+  "conflict": [
+   44,
+   190,
+   720,
+   874
+  ],
+  "draft": [
+   55,
+   651,
+   709,
+   809
+  ],
+  "review": [
+   255,
+   134,
+   966,
+   447
+  ],
+  "review-box": [
+   262,
+   195,
+   958,
+   439
+  ]
+ },
+ "steps": [
+  {
+   "stable": 12.0,
+   "quiet": 1.15,
+   "note": "the launch settles on History: HEAD 83de13c1 with its one changed file, src/cursor.rs, selected; the desktop monospace lookup has answered JetBrains Mono"
+  },
+  {
+   "mark": "history"
+  },
+  {
+   "palette": "show selected file attribution",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "Show selected file attribution: Blame of src/cursor.rs at HEAD"
+  },
+  {
+   "stable": 8.0,
+   "quiet": 1.15,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "history",
+    "b": "@now",
+    "region": [
+     44,
+     190,
+     720,
+     654
+    ],
+    "min_pixels": 20001
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "Blame replaced History's commit graph"
+  },
+  {
+   "atspi_focus": "blame-focus",
+   "within": 5,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "AT-SPI's focused node in Blame, recorded with its label"
+  },
+  {
+   "capture": "blame",
+   "crop": "blame",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt"
+    ]
+   },
+   "shows": {
+    "cand": "on the candidate at code 12 pt, Blame of src/cursor.rs at HEAD 83de13c1, line 1 selected: each line's number, commit and author, then its source in the desktop monospace family, JetBrains Mono, with ->, >=, <=, && and => drawn as typed",
+    "base": "on the base at code 12 pt, the same Blame with its source in the fixed bundled DejaVu Sans Mono, although the desktop monospace font is on"
+   }
+  },
+  {
+   "capture": "blame",
+   "crop": "blame",
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "shows": {
+    "cand": "on the candidate at code 18 pt, the same Blame in JetBrains Mono at the same size as at 12 pt: Blame's source follows the interface size, not the code size",
+    "base": "on the base at code 18 pt, the same Blame in DejaVu Sans Mono, also at the interface size"
+   }
+  },
+  {
+   "resize": [
+    1000,
+    900
+   ],
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "room for the conflict editor's stack: sides, block actions and the 160 px result draft"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   }
+  },
+  {
+   "palette": "go to working changes",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "Go to Working Changes: Blame closes and the working list takes focus with nothing selected"
+  },
+  {
+   "stable": 8.0,
+   "quiet": 1.15,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   }
+  },
+  {
+   "mark": "changes",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   }
+  },
+  {
+   "key": "Home",
+   "await_change": 5.0,
+   "wait_after": 0.0,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "First List Row: the only working file, src/cursor.rs, conflicted"
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "the conflict view reads the sides, finds one block and opens the result draft"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "changes",
+    "b": "@now",
+    "region": [
+     44,
+     190,
+     720,
+     874
+    ],
+    "min_pixels": 50001
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "the conflict view replaced 'Choose a file'"
+  },
+  {
+   "click": [
+    380,
+    666
+   ],
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "into the result draft's first line (y 660-676 at both sizes), which focuses the textarea"
+  },
+  {
+   "key": "Home",
+   "wait_after": 0.5,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "the caret to the start of line 1, which has no indent, so its x does not depend on the font"
+  },
+  {
+   "atspi_focus": "draft-focus",
+   "within": 5,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "AT-SPI's focused node: the result draft"
+  },
+  {
+   "guard": {
+    "kind": "atspi_focus",
+    "focus": "draft-focus",
+    "node": "Manual conflict resolution result",
+    "states": [
+     "focused"
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "the result draft holds focus"
+  },
+  {
+   "capture": "conflict",
+   "crop": "conflict",
+   "quiet": 1.0,
+   "stable_within": 12.0,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt"
+    ]
+   },
+   "shows": {
+    "cand": "on the candidate at code 12 pt, the conflict editor of src/cursor.rs paused in the merge of topic: the current and incoming sides in the code font, and the focused result draft, its markers and both versions of line 2 in the same JetBrains Mono, drawn as typed, the caret at the start of line 1",
+    "base": "on the base at code 12 pt, the same conflict editor: the sides in the code font, the focused result draft in the interface's proportional font"
+   }
+  },
+  {
+   "capture": "conflict",
+   "crop": "conflict",
+   "quiet": 1.0,
+   "stable_within": 12.0,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "shows": {
+    "cand": "on the candidate at code 18 pt, the same conflict editor: the sides' rows grown with the code size, the focused draft's text in JetBrains Mono at 18 pt on the 16 px line pitch it also has at 12 pt",
+    "base": "on the base at code 18 pt, the same conflict editor, the focused draft in the interface's proportional font at 18 pt"
+   }
+  },
+  {
+   "resize": [
+    1000,
+    680
+   ],
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "back to the review's window"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   }
+  },
+  {
+   "palette": "github pull requests",
+   "note": "GitHub pull requests…, the offline review fixture"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "mark": "panel"
+  },
+  {
+   "click": [
+    400,
+    163
+   ],
+   "note": "Refresh fixture PRs: the offline fixture's list, no network"
+  },
+  {
+   "park": true
+  },
+  {
+   "stable": 8.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "panel",
+    "b": "@now",
+    "region": [
+     41,
+     180,
+     959,
+     330
+    ],
+    "min_pixels": 3001
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the fixture's PR list shows #42"
+  },
+  {
+   "mark": "list"
+  },
+  {
+   "click": [
+    300,
+    235
+   ],
+   "note": "#42 · Keep review context through repository changes, the fixture's only PR"
+  },
+  {
+   "park": true
+  },
+  {
+   "stable": 8.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "list",
+    "b": "@now",
+    "region": [
+     41,
+     180,
+     959,
+     560
+    ],
+    "min_pixels": 20001
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "#42's Overview"
+  },
+  {
+   "mark": "overview"
+  },
+  {
+   "click": [
+    145,
+    257
+   ],
+   "note": "the Files · 4 tab"
+  },
+  {
+   "park": true
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "overview",
+    "b": "@now",
+    "region": [
+     41,
+     280,
+     959,
+     560
+    ],
+    "min_pixels": 20001
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "Files shows its list with no file chosen, the list holding focus; otherwise stop before Return"
+  },
+  {
+   "mark": "files"
+  },
+  {
+   "key": "Return",
+   "await_change": 4.0,
+   "wait_after": 0.0,
+   "note": "Return on the focused file list with no file chosen selects file 0, src/review/session.rs"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "files",
+    "b": "@now",
+    "region": [
+     263,
+     280,
+     959,
+     560
+    ],
+    "min_pixels": 10001
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the file's Changes rows"
+  },
+  {
+   "wheel": [
+    257,
+    450
+   ],
+   "steps": 10,
+   "note": "the dialog body to its end, from the gap beside the patch box so neither the file list nor the rows take the wheel"
+  },
+  {
+   "park": true
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "mark": "rows-top",
+   "note": "the Changes rows from the hunk header down"
+  },
+  {
+   "wheel": [
+    610,
+    317
+   ],
+   "steps": 12,
+   "note": "the patch rows to their end, so the second hunk's two-digit numbers, the file's widest, are in view at every size"
+  },
+  {
+   "park": true
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "rows-top",
+    "b": "@now",
+    "crop": "review-box",
+    "min_pixels": 2001
+   },
+   "note": "the rows scrolled"
+  },
+  {
+   "atspi_focus": "review-focus",
+   "within": 5,
+   "note": "AT-SPI's focused node in the review, recorded with its label"
+  },
+  {
+   "capture": "review",
+   "crop": "review",
+   "shows": {
+    "cand": "on the candidate at code 12 pt, PR #42's Changes rows of src/review/session.rs scrolled to their end: the first hunk's last rows and the second hunk, old 20-22 and new 22-25, the file's widest numbers, in columns sized from the code font's digit width, here the 36 px minimum",
+    "base": "on the base at code 12 pt, the same rows in fixed 36 px columns"
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt"
+    ]
+   }
+  },
+  {
+   "capture": "review",
+   "crop": "review",
+   "shows": {
+    "cand": "on the candidate at code 18 pt, the same rows scrolled to their end, the two-digit numbers in 36 px columns clear of each other and of the patch text",
+    "base": "on the base at code 18 pt, the same rows in fixed 36 px columns"
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   }
+  },
+  {
+   "capture": "review",
+   "crop": "review",
+   "shows": {
+    "cand": "on the candidate at code 24 pt, the second hunk from its header to the file's last row: old 20-22 and new 22-25, two digits 26 px wide in 36 px columns, clear of each other and of the patch text",
+    "base": "on the base at code 24 pt, the same rows in fixed 36 px columns"
+   },
+   "when": {
+    "variant": [
+     "midnight-13pt-code-24pt",
+     "porcelain-13pt-code-24pt"
+    ]
+   }
+  }
+ ],
+ "analyses": [
+  {
+   "name": "blame-source-changes",
+   "kind": "compare",
+   "a": "base:blame",
+   "b": "cand:blame",
+   "crop": "blame-source",
+   "min_pixels": 500,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "Blame's source column differs: the candidate draws the desktop monospace family, the base the bundled DejaVu Sans Mono; identical frames would mean the desktop family was not applied"
+  },
+  {
+   "name": "blame-outside-source-identical",
+   "kind": "compare",
+   "a": "base:blame",
+   "b": "cand:blame",
+   "crop": "blame",
+   "masks": [
+    [
+     288,
+     289,
+     720,
+     558
+    ]
+   ],
+   "max_pixels": 0,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "masked compare: outside the source column, Blame draws the same in both builds"
+  },
+  {
+   "name": "blame-window",
+   "kind": "compare",
+   "a": "base:blame",
+   "b": "cand:blame",
+   "masks": [
+    "status-timing",
+    [
+     288,
+     289,
+     720,
+     558
+    ]
+   ],
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "the whole window outside the source column and the status timing, recorded"
+  },
+  {
+   "name": "draft-changes",
+   "kind": "compare",
+   "a": "base:conflict",
+   "b": "cand:conflict",
+   "crop": "draft",
+   "min_pixels": 500,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "the result draft's text differs: the candidate draws it in the code font, the base in the interface font"
+  },
+  {
+   "name": "conflict-outside-draft-identical",
+   "kind": "compare",
+   "a": "base:conflict",
+   "b": "cand:conflict",
+   "crop": "conflict",
+   "masks": [
+    [
+     55,
+     651,
+     709,
+     809
+    ]
+   ],
+   "max_pixels": 2,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt"
+    ]
+   },
+   "note": "Masked, code 12 pt. Ruled 22:33 UTC on run 1: glyph atlas order (JetBrains Mono enters first), not variance. (128,214) '/' foot in 'src/cursor.rs': M (54,59,69) base vs (53,59,68), P (215,218,227) vs (216,218,226); (571,409) '&&' edge: M (60,67,79) vs (59,66,78), P (223,225,229) vs (224,225,229)"
+  },
+  {
+   "name": "conflict-outside-draft-identical-code-18pt",
+   "kind": "compare",
+   "a": "base:conflict",
+   "b": "cand:conflict",
+   "crop": "conflict",
+   "masks": [
+    [
+     55,
+     651,
+     709,
+     809
+    ]
+   ],
+   "max_pixels": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "Masked, code 18 pt. Ruled 22:33 UTC on run 1: glyph atlas order (JetBrains Mono enters first), not variance. (128,214) '/' foot in 'src/cursor.rs': Midnight (54,59,69) base vs (53,59,68) candidate, Porcelain (215,218,227) vs (216,218,226)"
+  },
+  {
+   "name": "conflict-window",
+   "kind": "compare",
+   "a": "base:conflict",
+   "b": "cand:conflict",
+   "masks": [
+    "status-timing",
+    [
+     55,
+     651,
+     709,
+     809
+    ]
+   ],
+   "expect": "record",
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "the whole window outside the result draft and the status timing, recorded"
+  },
+  {
+   "name": "draft-focused",
+   "kind": "atspi_focus",
+   "focus": "draft-focus",
+   "node": "Manual conflict resolution result",
+   "states": [
+    "focused"
+   ],
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "the captured draft held keyboard focus"
+  },
+  {
+   "name": "review-identical",
+   "kind": "compare",
+   "a": "base:review",
+   "b": "cand:review",
+   "crop": "review",
+   "max_pixels": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt",
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "Code 12 and 18 pt; 25 fits the 36 px floor. Ruled 22:33 UTC on run 1: glyph atlas order, not variance; the 24 pt review-first launch draws it identically. (276,148) '/' foot in 'src/review/session.rs': M (54,59,69) base vs (53,59,68), P (215,218,227) vs (216,218,226)"
+  },
+  {
+   "name": "review-identical-code-24pt",
+   "kind": "compare",
+   "a": "base:review",
+   "b": "cand:review",
+   "crop": "review",
+   "max_pixels": 0,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-24pt",
+     "porcelain-13pt-code-24pt"
+    ]
+   },
+   "note": "Code 24 pt, review opened first: identical. The widest number, 25, fits the 36 px floor (2 x 14.4 px), so the candidate's columns equal the base's"
+  },
+  {
+   "name": "review-window",
+   "kind": "compare",
+   "a": "base:review",
+   "b": "cand:review",
+   "masks": [
+    "status-timing"
+   ],
+   "expect": "record",
+   "note": "the whole window outside the status timing, recorded"
+  },
+  {
+   "name": "review-old-to-new-wide-code-12pt",
+   "kind": "clearance",
+   "frame": "review",
+   "rect": [
+    270,
+    344,
+    284,
+    353
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     309,
+     348
+    ]
+   },
+   "at": [
+    344,
+    345,
+    346,
+    347,
+    348,
+    349,
+    350,
+    351,
+    352
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt"
+    ]
+   },
+   "note": "code 12 pt, row '20 22 fn refresh_review() {': surface pixels from the old number's rightmost ink (x 283) to the new number's ink, on 9 lines across the digits (y 344-352); one or more means they do not overlap"
+  },
+  {
+   "name": "review-new-to-text-wide-code-12pt",
+   "kind": "clearance",
+   "frame": "review",
+   "rect": [
+    312,
+    344,
+    326,
+    353
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     309,
+     348
+    ]
+   },
+   "at": [
+    344,
+    345,
+    346,
+    347,
+    348,
+    349,
+    350,
+    351,
+    352
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt"
+    ]
+   },
+   "note": "code 12 pt, row '20 22 fn refresh_review() {': surface pixels from the new number's rightmost ink (x 325) to the patch text's ink, on 9 lines across the digits (y 344-352); one or more means they do not overlap"
+  },
+  {
+   "name": "review-old-to-new-end-code-12pt",
+   "kind": "clearance",
+   "frame": "review",
+   "rect": [
+    270,
+    424,
+    284,
+    433
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     309,
+     428
+    ]
+   },
+   "at": [
+    424,
+    425,
+    426,
+    427,
+    428,
+    429,
+    430,
+    431,
+    432
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt"
+    ]
+   },
+   "note": "code 12 pt, row '22 25 }': surface pixels from the old number's rightmost ink (x 283) to the new number's ink, on 9 lines across the digits (y 424-432); one or more means they do not overlap"
+  },
+  {
+   "name": "review-new-to-text-end-code-12pt",
+   "kind": "clearance",
+   "frame": "review",
+   "rect": [
+    312,
+    424,
+    326,
+    433
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     309,
+     428
+    ]
+   },
+   "at": [
+    424,
+    425,
+    426,
+    427,
+    428,
+    429,
+    430,
+    431,
+    432
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt",
+     "porcelain-13pt"
+    ]
+   },
+   "note": "code 12 pt, row '22 25 }': surface pixels from the new number's rightmost ink (x 325) to the patch text's ink, on 9 lines across the digits (y 424-432); one or more means they do not overlap"
+  },
+  {
+   "name": "review-old-to-new-wide-code-18pt",
+   "kind": "clearance",
+   "frame": "review",
+   "rect": [
+    270,
+    297,
+    291,
+    310
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     309,
+     303
+    ]
+   },
+   "at": [
+    297,
+    298,
+    299,
+    300,
+    301,
+    302,
+    303,
+    304,
+    305,
+    306,
+    307,
+    308,
+    309
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "code 18 pt, row '20 22 fn refresh_review() {': surface pixels from the old number's rightmost ink (x 290) to the new number's ink, on 13 lines across the digits (y 297-309); one or more means they do not overlap"
+  },
+  {
+   "name": "review-new-to-text-wide-code-18pt",
+   "kind": "clearance",
+   "frame": "review",
+   "rect": [
+    312,
+    297,
+    333,
+    310
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     309,
+     303
+    ]
+   },
+   "at": [
+    297,
+    298,
+    299,
+    300,
+    301,
+    302,
+    303,
+    304,
+    305,
+    306,
+    307,
+    308,
+    309
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "code 18 pt, row '20 22 fn refresh_review() {': surface pixels from the new number's rightmost ink (x 332) to the patch text's ink, on 13 lines across the digits (y 297-309); one or more means they do not overlap"
+  },
+  {
+   "name": "review-old-to-new-end-code-18pt",
+   "kind": "clearance",
+   "frame": "review",
+   "rect": [
+    270,
+    417,
+    291,
+    430
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     309,
+     423
+    ]
+   },
+   "at": [
+    417,
+    418,
+    419,
+    420,
+    421,
+    422,
+    423,
+    424,
+    425,
+    426,
+    427,
+    428,
+    429
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "code 18 pt, row '22 25 }': surface pixels from the old number's rightmost ink (x 290) to the new number's ink, on 13 lines across the digits (y 417-429); one or more means they do not overlap"
+  },
+  {
+   "name": "review-new-to-text-end-code-18pt",
+   "kind": "clearance",
+   "frame": "review",
+   "rect": [
+    312,
+    417,
+    332,
+    430
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     309,
+     423
+    ]
+   },
+   "at": [
+    417,
+    418,
+    419,
+    420,
+    421,
+    422,
+    423,
+    424,
+    425,
+    426,
+    427,
+    428,
+    429
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-18pt",
+     "porcelain-13pt-code-18pt"
+    ]
+   },
+   "note": "code 18 pt, row '22 25 }': surface pixels from the new number's rightmost ink (x 331) to the patch text's ink, on 13 lines across the digits (y 417-429); one or more means they do not overlap"
+  },
+  {
+   "name": "review-old-to-new-wide-code-24pt",
+   "kind": "clearance",
+   "frame": "review",
+   "rect": [
+    270,
+    249,
+    297,
+    267
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     309,
+     257
+    ]
+   },
+   "at": [
+    249,
+    250,
+    251,
+    252,
+    254,
+    255,
+    256,
+    257,
+    258,
+    259,
+    260,
+    261,
+    263,
+    264,
+    265,
+    266
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-24pt",
+     "porcelain-13pt-code-24pt"
+    ]
+   },
+   "note": "code 24 pt, row '20 22 fn refresh_review() {': surface pixels from the old number's rightmost ink (x 296) to the new number's ink, on 16 lines across the digits (y 249-266); one or more means they do not overlap"
+  },
+  {
+   "name": "review-new-to-text-wide-code-24pt",
+   "kind": "clearance",
+   "frame": "review",
+   "rect": [
+    312,
+    249,
+    340,
+    267
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     309,
+     257
+    ]
+   },
+   "at": [
+    249,
+    250,
+    251,
+    252,
+    254,
+    255,
+    256,
+    257,
+    258,
+    259,
+    260,
+    261,
+    263,
+    264,
+    265,
+    266
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-24pt",
+     "porcelain-13pt-code-24pt"
+    ]
+   },
+   "note": "code 24 pt, row '20 22 fn refresh_review() {': surface pixels from the new number's rightmost ink (x 339) to the patch text's ink, on 16 lines across the digits (y 249-266); one or more means they do not overlap"
+  },
+  {
+   "name": "review-old-to-new-end-code-24pt",
+   "kind": "clearance",
+   "frame": "review",
+   "rect": [
+    270,
+    409,
+    298,
+    427
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     309,
+     417
+    ]
+   },
+   "at": [
+    409,
+    410,
+    411,
+    412,
+    414,
+    415,
+    416,
+    417,
+    418,
+    419,
+    420,
+    421,
+    423,
+    424,
+    425,
+    426
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-24pt",
+     "porcelain-13pt-code-24pt"
+    ]
+   },
+   "note": "code 24 pt, row '22 25 }': surface pixels from the old number's rightmost ink (x 297) to the new number's ink, on 16 lines across the digits (y 409-426); one or more means they do not overlap"
+  },
+  {
+   "name": "review-new-to-text-end-code-24pt",
+   "kind": "clearance",
+   "frame": "review",
+   "rect": [
+    312,
+    409,
+    339,
+    427
+   ],
+   "side": "right",
+   "surface": {
+    "at": [
+     309,
+     417
+    ]
+   },
+   "at": [
+    409,
+    410,
+    411,
+    412,
+    414,
+    415,
+    416,
+    417,
+    418,
+    419,
+    420,
+    421,
+    423,
+    424,
+    425,
+    426
+   ],
+   "limit": 80,
+   "min_px": 1,
+   "when": {
+    "variant": [
+     "midnight-13pt-code-24pt",
+     "porcelain-13pt-code-24pt"
+    ]
+   },
+   "note": "code 24 pt, row '22 25 }': surface pixels from the new number's rightmost ink (x 338) to the patch text's ink, on 16 lines across the digits (y 409-426); one or more means they do not overlap"
+  }
+ ]
+}
