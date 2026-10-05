@@ -1,0 +1,8 @@
+    const BUILD: &str = "base";
+    fn apply_work(palette: Palette, is_light: bool, theme: &mut Theme) {
+        palette.configure(is_light, theme);
+    }
+    fn fit_only(_: Palette) -> Option<()> {
+        None
+    }
+}

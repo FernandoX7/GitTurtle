@@ -1,0 +1,12 @@
+    const BUILD: &str = "cand";
+    /// What `Palette::apply` does on the theme in this build: fit the syntax roles and the
+    /// editor highlights, then configure.
+    fn apply_work(palette: Palette, is_light: bool, theme: &mut Theme) {
+        let roles = palette.syntax_roles();
+        let highlights = EditorHighlights::fit(palette, roles);
+        palette.configure(is_light, roles, highlights, theme);
+    }
+    fn fit_only(palette: Palette) -> Option<EditorHighlights> {
+        Some(EditorHighlights::fit(palette, palette.syntax_roles()))
+    }
+}
