@@ -272,17 +272,37 @@ pub fn parse_hex(value: &str) -> Option<u32> {
 
 /// WCAG relative luminance of an `0xrrggbb` color.
 pub fn luminance(rgb: u32) -> f64 {
-    let linear = |channel: u32| {
-        let value = f64::from(channel) / 255.;
+    0.2126 * linear_channel((rgb >> 16) & 255)
+        + 0.7152 * linear_channel((rgb >> 8) & 255)
+        + 0.0722 * linear_channel(rgb & 255)
+}
+
+/// Each 8-bit sRGB channel value in linear light, built once: the editor highlight fitting
+/// measures thousands of candidates.
+static LINEAR: std::sync::LazyLock<[f64; 256]> = std::sync::LazyLock::new(|| {
+    std::array::from_fn(|channel| {
+        let value = channel as f64 / 255.;
         if value <= 0.04045 {
             value / 12.92
         } else {
             ((value + 0.055) / 1.055).powf(2.4)
         }
-    };
-    0.2126 * linear((rgb >> 16) & 255)
-        + 0.7152 * linear((rgb >> 8) & 255)
-        + 0.0722 * linear(rgb & 255)
+    })
+});
+
+/// An 8-bit sRGB channel value (the low byte of `channel`) in linear light, from 0 to 1.
+pub fn linear_channel(channel: u32) -> f64 {
+    LINEAR[(channel & 0xff) as usize]
+}
+
+/// The 8-bit sRGB channel value nearest a linear-light value, which is clipped to 0..=1.
+pub fn encode_linear(linear: f64) -> u32 {
+    let above = LINEAR.partition_point(|&value| value < linear).min(255);
+    if above > 0 && linear - LINEAR[above - 1] < LINEAR[above] - linear {
+        above as u32 - 1
+    } else {
+        above as u32
+    }
 }
 
 /// WCAG contrast ratio between two `0xrrggbb` colors, from 1 to 21.

@@ -160,6 +160,7 @@ pub fn refresh_theme(
 
 fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDecoration> {
     let palette = palette(cx);
+    let highlights = crate::appearance::editor_highlights(cx);
     presentation
         .ranges
         .iter()
@@ -169,7 +170,7 @@ fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDeco
                     color: Some(rgb(palette.added).into()),
                     background_color: Some(
                         rgb(if decoration.kind == Kind::AddedWord {
-                            strong_tint(palette.added_background, palette.added)
+                            highlights.added_word
                         } else {
                             palette.added_background
                         })
@@ -181,7 +182,7 @@ fn theme_decorations(presentation: &PatchPresentation, cx: &App) -> Vec<TextDeco
                     color: Some(rgb(palette.removed).into()),
                     background_color: Some(
                         rgb(if decoration.kind == Kind::RemovedWord {
-                            strong_tint(palette.removed_background, palette.removed)
+                            highlights.removed_word
                         } else {
                             palette.removed_background
                         })
@@ -221,13 +222,6 @@ enum Kind {
 struct DiffRange {
     range: Range<usize>,
     kind: Kind,
-}
-
-pub(crate) fn strong_tint(background: u32, foreground: u32) -> u32 {
-    [0, 8, 16].into_iter().fold(0, |value, shift| {
-        let channel = (((background >> shift) & 255) * 3 + ((foreground >> shift) & 255)) / 4;
-        value | channel << shift
-    })
 }
 
 /// One shared work allowance per file, never quadratic in unbounded line size.

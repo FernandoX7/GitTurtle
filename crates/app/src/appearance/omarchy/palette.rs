@@ -1839,6 +1839,11 @@ mod tests {
             if fit.readability_issues().is_empty() {
                 fitted += 1;
             }
+            crate::appearance::tests::assert_editor_highlights_read([(
+                format!("case {case}"),
+                mapped.palette,
+                mapped.is_light,
+            )]);
         }
         assert_eq!(under_the_floor, [524, 66], "off the canvas, off the panel");
         assert!(
@@ -2123,6 +2128,22 @@ mod tests {
     /// The Omarchy half of `appearance::tests::syntax_colors_read_on_every_editor_background`:
     /// every bundled and generated fixture as it maps. On origin/main these were the toolkit's
     /// default highlight theme's colors.
+    /// The Omarchy half of `appearance::tests::syntax_reads_on_every_editor_highlight`: every
+    /// bundled and generated fixture as it maps. On origin/main the lowest was 2.58:1, Solitude's
+    /// `attribute` on its added word tint, and 3.78:1 on `selected`, Flexoki Light's
+    /// `constructor`.
+    #[test]
+    fn fixture_syntax_reads_on_every_editor_highlight() {
+        let like = crate::appearance::tests::assert_editor_highlights_read(
+            fixtures().into_iter().map(|(name, colors)| {
+                let mapped = map(&colors);
+                (format!("Omarchy {name}"), mapped.palette, mapped.is_light)
+            }),
+        );
+        // Its accent underline marks the current match where its background cannot stand apart.
+        assert_eq!(like, ["Omarchy white"]);
+    }
+
     #[test]
     fn fixture_syntax_colors_read_on_every_editor_background() {
         crate::appearance::tests::assert_syntax_colors_read(fixtures().into_iter().map(

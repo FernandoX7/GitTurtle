@@ -209,14 +209,24 @@ pub(crate) fn align_rows(sources: &[Vec<&str>; 2], patch: &PatchPresentation) ->
     rows
 }
 
+/// Each side's changed-line tint and changed-word tint, old side first, from the applied
+/// palette and its fitted editor highlights.
+fn side_tints(cx: &App) -> [(u32, u32); 2] {
+    let (colors, highlights) = (palette(cx), crate::appearance::editor_highlights(cx));
+    [
+        (colors.removed_background, highlights.removed_word),
+        (colors.added_background, highlights.added_word),
+    ]
+}
+
 impl SplitSide {
-    fn decorations(&self, color: u32, foreground: u32) -> Vec<TextDecoration> {
+    fn decorations(&self, (line, word): (u32, u32)) -> Vec<TextDecoration> {
         let style = HighlightStyle {
-            background_color: Some(rgb(color).into()),
+            background_color: Some(rgb(line).into()),
             ..Default::default()
         };
         let emphasized = HighlightStyle {
-            background_color: Some(rgb(crate::text::strong_tint(color, foreground)).into()),
+            background_color: Some(rgb(word).into()),
             ..Default::default()
         };
         let mut result = Vec::new();
@@ -311,7 +321,6 @@ pub fn new(
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<SplitView> {
-    let colors = palette(cx);
     let editors: [_; 2] = std::array::from_fn(|side| {
         cx.new(|cx| {
             EditorState::new(window, cx)
@@ -325,22 +334,11 @@ pub fn new(
     for editor in &editors {
         crate::editor_find::reserve_highlight_layer(editor, cx);
     }
+    let tints = side_tints(cx);
     let decorations = std::array::from_fn(|side| {
-        let color = if side == 0 {
-            colors.removed_background
-        } else {
-            colors.added_background
-        };
         crate::editor_find::patch_decorations(
             &editors[side],
-            presentation.sides[side].decorations(
-                color,
-                if side == 0 {
-                    colors.removed
-                } else {
-                    colors.added
-                },
-            ),
+            presentation.sides[side].decorations(tints[side]),
             cx,
         )
     });
@@ -467,22 +465,8 @@ impl SplitView {
     }
 
     pub fn refresh_theme(&mut self, cx: &mut Context<Self>) {
-        let colors = palette(cx);
-        for (side, color) in [colors.removed_background, colors.added_background]
-            .into_iter()
-            .enumerate()
-        {
-            self.decorations[side].set(
-                self.presentation.sides[side].decorations(
-                    color,
-                    if side == 0 {
-                        colors.removed
-                    } else {
-                        colors.added
-                    },
-                ),
-                cx,
-            );
+        for (side, tints) in side_tints(cx).into_iter().enumerate() {
+            self.decorations[side].set(self.presentation.sides[side].decorations(tints), cx);
         }
         cx.notify();
     }
@@ -495,10 +479,9 @@ impl SplitView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let colors = palette(cx);
         self.initial_row = None;
         self.change_index = None;
-        for side in 0..2 {
+        for (side, tints) in side_tints(cx).into_iter().enumerate() {
             crate::text::refresh_editor(
                 &self.editors[side],
                 &presentation.sides[side].text,
@@ -506,22 +489,7 @@ impl SplitView {
                 window,
                 cx,
             );
-            let color = if side == 0 {
-                colors.removed_background
-            } else {
-                colors.added_background
-            };
-            self.decorations[side].set(
-                presentation.sides[side].decorations(
-                    color,
-                    if side == 0 {
-                        colors.removed
-                    } else {
-                        colors.added
-                    },
-                ),
-                cx,
-            );
+            self.decorations[side].set(presentation.sides[side].decorations(tints), cx);
             let numbers = Arc::clone(&presentation.sides[side].numbers);
             let digits = numbers
                 .iter()
