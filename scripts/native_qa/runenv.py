@@ -45,7 +45,7 @@ STORE = "preferences.json"  # written by `prepare` itself, generated or supplied
 # Files a scenario seeds beside the store (`app_config`): plain names, with the caps of HOME files.
 APP_CONFIG_FILES = HOME_FILES
 APP_CONFIG_FILE_BYTES = HOME_FILE_BYTES
-NAME_MAX = 255
+NAME_MAX = 255  # bytes Linux allows one name in a path (a component), however many characters encode to them
 
 
 class Refusal(SystemExit):
@@ -166,15 +166,33 @@ def prepare(run_dir: Path | str, preferences: bytes, home: Path | None = None,
     return dirs
 
 
+# ---------- names of seeded files ----------
+def name_problem(part: str) -> str | None:
+    """Why the file system cannot take `part` as one name in a path, or None: it must encode as strict UTF-8 (a lone
+    surrogate from a JSON escape names no file, and `os.fsencode` would fail on most or write a stray byte for the
+    rest), and its encoding must fit the NAME_MAX bytes Linux allows a name, which characters do not measure."""
+    try:
+        part.encode("utf-8")
+        encoded = os.fsencode(part)
+    except UnicodeEncodeError:
+        return f"{part!r} cannot be encoded as a file name; give the name in valid UTF-8"
+    if len(encoded) > NAME_MAX:
+        return f"{part!r} is {len(encoded)} bytes as a file name; at most {NAME_MAX}"
+    return None
+
+
 # ---------- files seeded into HOME ----------
 def home_file_problem(value) -> str | None:
     """Why `value` cannot name a file seeded under a launch's HOME, or None: a relative POSIX path that stays
-    under HOME and is not the run's own Git identity."""
+    under HOME and is not the run's own Git identity, each of whose names the file system can take."""
     if not isinstance(value, str) or not value or len(value) > 300 or "\0" in value:
         return f"expected a non-empty path of at most 300 characters, got {value!r}"
     parts = value.split("/")
     if value.startswith("/") or "\\" in value or any(part in ("", ".", "..") for part in parts):
         return f"{value!r} must be a relative POSIX path under HOME without empty, . or .. parts"
+    problem = next(filter(None, map(name_problem, parts)), None)
+    if problem is not None:
+        return f"{value!r}: {problem}"
     if parts[0] in HOME_OWN:
         return f"{value!r} is the run's own Git identity, which every launch writes itself"
     return None
@@ -258,11 +276,14 @@ def seed_files(root: Path, files: dict[str, bytes], what: str) -> dict[str, str]
 # ---------- files seeded beside the store ----------
 def app_config_file_problem(value) -> str | None:
     """Why `value` cannot name a file seeded in a launch's app configuration directory, or None: a plain file name
-    there, other than the store, which every launch writes itself."""
-    if not isinstance(value, str) or not value or len(value) > NAME_MAX or "\0" in value:
-        return f"expected a non-empty file name of at most {NAME_MAX} characters, got {value!r}"
+    there that the file system can take (`name_problem`), other than the store, which every launch writes itself."""
+    if not isinstance(value, str) or not value or "\0" in value:
+        return f"expected a non-empty file name, got {value!r}"
     if "/" in value or "\\" in value or value in (".", ".."):
         return f"{value!r} must be a plain file name in the app's configuration directory, without / or \\"
+    problem = name_problem(value)
+    if problem is not None:
+        return problem
     if value == STORE:
         return f"{value!r} is the preference store, which every launch writes itself from the variants and settings"
     return None

@@ -234,11 +234,14 @@ class HomeFilesTest(unittest.TestCase):
         self.scratch.cleanup()
 
     def test_paths_are_validated(self) -> None:
-        for good in (".local/state/omarchy/current/theme/colors.toml", "notes.txt", ".config/x/y", "a..b/c"):
+        for good in (".local/state/omarchy/current/theme/colors.toml", "notes.txt", ".config/x/y", "a..b/c",
+                     "x" * 255, "é" * 127 + "x/y"):
             with self.subTest(good=good):
                 self.assertIsNone(runenv.home_file_problem(good))
+        # A part's bytes, not its characters, meet the file system's limit; a lone surrogate encodes to no name.
         for bad in ("", "/etc/passwd", "../outside", "a/../../b", ".", "a/./b", "a//b", "a/", "a\\b", ".gitconfig",
-                    ".gitconfig/x", "x\0y", None, 3, "x" * 301):
+                    ".gitconfig/x", "x\0y", None, 3, "x" * 301, "x" * 256, "a/" + "é" * 128, "é" * 200 + "/b",
+                    "a/\ud800", "\udc80/b"):
             with self.subTest(bad=bad):
                 self.assertIsNotNone(runenv.home_file_problem(bad))
         self.assertIsNone(runenv.home_overlap(["a/b", "a/c", "ab"]))
@@ -319,13 +322,42 @@ class AppConfigFilesTest(unittest.TestCase):
         self.scratch.cleanup()
 
     def test_names_are_validated(self) -> None:
-        for good in ("recovery-drafts.json", "activity.json", ".hidden", "a..b", "x" * runenv.NAME_MAX):
+        for good in ("recovery-drafts.json", "activity.json", ".hidden", "a..b", "x" * runenv.NAME_MAX,
+                     "é" * 127 + "x"):
             with self.subTest(good=good):
                 self.assertIsNone(runenv.app_config_file_problem(good))
-        for bad in ("", ".", "..", "a/b", "/abs", "a/", "a\\b", "x\0y", None, 3, "x" * (runenv.NAME_MAX + 1)):
+        for bad in ("", ".", "..", "a/b", "/abs", "a/", "a\\b", "x\0y", None, 3, "x" * (runenv.NAME_MAX + 1),
+                    "é" * 128, "\ud800", "\udc80.json"):
             with self.subTest(bad=bad):
                 self.assertIsNotNone(runenv.app_config_file_problem(bad))
         self.assertIn("the preference store", runenv.app_config_file_problem("preferences.json"))
+        # 200 characters that are 400 bytes: Linux refuses the name, so validation does, before any launch.
+        self.assertEqual(runenv.app_config_file_problem("é" * 200),
+                         f"{'é' * 200!r} is 400 bytes as a file name; at most 255")
+        self.assertEqual(runenv.app_config_file_problem("\ud800"),
+                         "'\\ud800' cannot be encoded as a file name; give the name in valid UTF-8")
+
+    def test_the_longest_names_validation_allows_are_written(self) -> None:
+        directory = self.root / "gitturtle"
+        directory.mkdir()
+        names = {"x" * runenv.NAME_MAX: b"x", "é" * 127 + "x": b"e"}  # 255 bytes each, the file system's limit
+        self.assertIsNone(runenv.app_config_files_problem(names))
+        runenv.seed_app_config(directory, names)
+        self.assertEqual({path.name: path.read_bytes() for path in directory.iterdir()}, names)
+        home = self.root / "home"
+        home.mkdir()
+        runenv.seed_home(home, {"é" * 127 + "x/" + "x" * 30: b"h"})
+        self.assertEqual((home / ("é" * 127 + "x") / ("x" * 30)).read_bytes(), b"h")
+
+    def test_names_the_file_system_refuses_never_reach_a_launch(self) -> None:
+        for files in ({"é" * 200: b"x"}, {"\ud800": b"x"}):
+            with self.subTest(files=list(files)), self.assertRaisesRegex(runenv.Refusal, "app configuration files: "):
+                runenv.prepare(self.root / "run", b"{}", home=self.operator, app_config_files=files)
+            self.assertFalse((self.root / "run").exists())
+        for files in ({"a/" + "é" * 200: b"x"}, {"a/\ud800": b"x"}):
+            with self.subTest(files=list(files)), self.assertRaisesRegex(runenv.Refusal, "HOME files: "):
+                runenv.prepare(self.root / "run", b"{}", home=self.operator, home_files=files)
+            self.assertFalse((self.root / "run").exists())
 
     def test_prepare_seeds_the_files_beside_the_store(self) -> None:
         dirs = runenv.prepare(self.root / "run", b'{"version": 6}', home=self.operator, app_config_files=DRAFTS)

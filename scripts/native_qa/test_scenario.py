@@ -554,6 +554,9 @@ class SpecTest(unittest.TestCase):
                 (dict(home={"a": {"base64": 7}}), r"\$\.home\['a'\]\.base64: expected a base64 string"),
                 (dict(home={"a": {"text": "x"}}), r"\$\.home\['a'\]: unknown key\(s\) text"),
                 (dict(home={"a": "\ud800"}), "not valid UTF-8"),
+                (dict(home={"a/" + "é" * 200 + "/b": "x"}), r"\$\.home: 'a/é{200}/b': 'é{200}' is 400 bytes as a "
+                                                           r"file name; at most 255"),
+                (dict(home={"a/\ud800": "x"}), r"\$\.home: 'a/\\ud800': '\\ud800' cannot be encoded as a file name"),
                 (dict(home={f"f{i}": "" for i in range(65)}), "65 files; at most 64"),
                 (dict(home={"big": "x" * 1_000_001}), "1000001 bytes; at most 1000000"),
                 (dict(variants=[{"palette": "midnight", "home": good}]),
@@ -609,7 +612,13 @@ class SpecTest(unittest.TestCase):
                 (dict(app_config={"a\\b": "x"}), "must be a plain file name"),
                 (dict(app_config={"..": "x"}), "must be a plain file name"),
                 (dict(app_config={"": "x"}), "expected a non-empty file name"),
-                (dict(app_config={"x" * 256: "x"}), "at most 255 characters"),
+                (dict(app_config={"x" * 256: "x"}), "is 256 bytes as a file name; at most 255"),
+                # Characters do not measure a name: 200 of them can be 400 bytes, which Linux refuses at launch.
+                (dict(app_config={"é" * 200: "x"}), r"\$\.app_config: 'é{200}' is 400 bytes as a file name; at most "
+                                                    r"255"),
+                (dict(app_config={"\ud800.json": "x"}), r"\$\.app_config: '\\ud800\.json' cannot be encoded as a "
+                                                         r"file name"),
+                (dict(app_config={"\udc80.json": "x"}), "cannot be encoded as a file name"),
                 (dict(app_config={"a": 7}), r"\$\.app_config\['a'\]: expected an object, got int"),
                 (dict(app_config={"a": {"base64": "!!"}}), r"\$\.app_config\['a'\]\.base64: not base64"),
                 (dict(app_config={"a": {"json": {}}}), r"\$\.app_config\['a'\]: unknown key\(s\) json"),
