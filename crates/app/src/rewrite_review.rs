@@ -60,6 +60,8 @@ struct SeriesBrowser {
     selected_file: Option<usize>,
     content: Option<Arc<Content>>,
     editor: Option<Entity<EditorState>>,
+    /// The patch editor's decorations, kept for its life like Compare's.
+    decoration: Option<crate::editor_find::PatchDecorations>,
     patch: Option<Entity<diff_view::DiffView>>,
     text_mode: usize,
     pending: bool,
@@ -113,6 +115,7 @@ impl SeriesBrowser {
             selected_file: None,
             content: None,
             editor: None,
+            decoration: None,
             patch: None,
             text_mode: 0,
             pending: false,
@@ -186,8 +189,24 @@ impl SeriesBrowser {
     fn clear_content(&mut self) {
         self.content = None;
         self.editor = None;
+        self.decoration = None;
         self.patch = None;
         self.selected_file = None;
+    }
+    /// CPU bytes the open preview retains: its prepared content, which includes the patch
+    /// presentation, with the same reserve for native editors as a repository tab, plus the
+    /// patch editor's decorations. This transient review has no retained-bytes bound of its
+    /// own, and a modal stays out of the repository tabs' bound because tabs cannot switch
+    /// while it is open; its preview worker's cache bounds the content separately.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn preview_retained_bytes(&self) -> usize {
+        self.content
+            .as_ref()
+            .map_or(0, |content| content.bytes().saturating_mul(4))
+            + self
+                .decoration
+                .as_ref()
+                .map_or(0, crate::editor_find::PatchDecorations::retained_bytes)
     }
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_read();
@@ -360,13 +379,14 @@ impl SeriesBrowser {
             return;
         };
         let value = [patch, old, new][self.text_mode];
-        let editor = text::editor(
+        let (editor, decoration) = text::editor_with_decorations(
             value,
             if self.text_mode == 0 { "diff" } else { "text" },
             (self.text_mode == 0).then_some(presentation.as_ref()),
             window,
             cx,
         );
+        self.decoration = decoration;
         self.patch =
             (self.text_mode == 0).then(|| diff_view::new(editor.clone(), presentation, window, cx));
         self.editor = Some(editor);
@@ -695,5 +715,72 @@ impl Render for SeriesBrowser {
                 .child(div().flex_1().min_h(px(100.)).border_1().border_color(rgb(p.border)).overflow_hidden().child(self.render_content(cx))))
             .when(self.pending, |element| element.child(div().text_color(rgb(p.muted)).child("Reading captured local history…")))
             .when_some(self.error.as_ref(), |element, error| element.child(div().max_h(px(100.)).id("series-review-error").overflow_y_scroll().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    /// The series review's unified patch keeps its decorations for the editor's life, and its
+    /// preview figure counts them along with the presentation they were built from.
+    #[gpui::test]
+    async fn series_patch_preview_counts_its_decorations_and_presentation(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let repository = GitRepository::init(fixture.path().join("repository"), "main").unwrap();
+        cx.update(gpui_kit::init);
+        let captured: std::rc::Rc<std::cell::RefCell<Option<Entity<SeriesBrowser>>>> =
+            Default::default();
+        let output = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let browser = cx.new(|cx| {
+                SeriesBrowser::new(
+                    WeakEntity::new_invalid(),
+                    repository,
+                    "origin".into(),
+                    "main".into(),
+                    window,
+                    cx,
+                )
+            });
+            *output.borrow_mut() = Some(browser.clone());
+            gpui_kit::component::Root::new(browser, window, cx)
+        });
+        cx.run_until_parked();
+        let browser = captured.borrow().as_ref().unwrap().clone();
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.content = Some(Arc::new(text::decorated_patch_content()));
+                browser.text_mode = 0;
+                browser.prepare_editor(window, cx);
+                let Some(Content::Text { presentation, .. }) = browser.content.as_deref() else {
+                    unreachable!()
+                };
+                let presentation = presentation.retained_bytes();
+                let decoration = browser.decoration.clone().expect("kept with the editor");
+                let decorated = decoration.retained_bytes();
+                assert!(decorated > 0, "a patch with changes has decorations");
+
+                let with = browser.preview_retained_bytes();
+                browser.decoration = None;
+                let without = browser.preview_retained_bytes();
+                assert_eq!(with - without, decorated);
+                browser.content = None;
+                assert!(without - browser.preview_retained_bytes() >= presentation);
+
+                // A source mode replaces the patch editor and releases its decorations.
+                browser.content = Some(Arc::new(text::decorated_patch_content()));
+                browser.decoration = Some(decoration);
+                browser.text_mode = 1;
+                browser.prepare_editor(window, cx);
+                assert!(browser.decoration.is_none());
+                browser.clear_content();
+                assert_eq!(browser.preview_retained_bytes(), 0);
+            })
+        });
     }
 }

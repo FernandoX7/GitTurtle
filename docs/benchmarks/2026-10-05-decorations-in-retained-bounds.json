@@ -1,0 +1,4079 @@
+{
+ "record": "2026-10-05-decorations-in-retained-bounds",
+ "designation": {
+  "by": "coordinator",
+  "at_utc": "2026-10-05T16:33:00Z",
+  "base": {
+   "revision": "7323988ef9508c8ba68688babf9927827e70f543",
+   "binary": "gitturtle-base-7323988",
+   "sha256": "4d14284730d495eb22e6325f4fbcdc3be36e555e194abb5822abe7255b7bba00"
+  },
+  "candidate": {
+   "revision": "c9e12222e2cf458a547de03be2277783038a69fb",
+   "binary": "gitturtle-cand-c9e1222",
+   "sha256": "a79234e1d457b656ae9d238ad46e07718857e1fa52c05e8f85559ba6e983d7cb"
+  }
+ },
+ "plans": {
+  "main": [
+   "Plan fixed at 2026-10-05T16:44:09Z, before the first recorded launch.",
+   "compare: B,C,C,B,C,B,B,C,B,C,C,B,C,B,B,C (16 launches, 8 per build, 40 recorded opens each)",
+   "stash: C,B,B,C,B,C,C,B,C,B,B,C (12 launches, 6 per build, 40 recorded opens each), run right after compare",
+   "driver sha256 19364090153d9358cd56ec52acf73c00e6247084e20b48063b2c75025f7d1cb6",
+   "fixture script sha256 6b44d5fb22b8e5e032efffd74695697f006b496863a305867a4c8369ee4a372e",
+   "load: 0.06 0.20 1.27 2/1150 2480974"
+  ],
+  "supplementary": [
+   "Supplementary plan fixed at 2026-10-05T17:13:36Z, before its first launch, after the main run's analysis showed a candidate p95 shift clustered in launches 4, 7 and 10.",
+   "compare-supp: C,B,B,C,C,B,B,C (8 launches, 4 per build, 40 recorded opens each), same driver, fixture and builds; a per-CPU busy sampler (0.5 s, /proc/stat) runs pinned to CPU 9 alongside",
+   "load: 0.04 0.05 0.24 2/1156 2514784"
+  ]
+ },
+ "fixture": {
+  "script": "make_compare_fixture.py",
+  "script_sha256": "6b44d5fb22b8e5e032efffd74695697f006b496863a305867a4c8369ee4a372e",
+  "head": "b6d97c5afc39efd5d63864394dbdbf64e9687d30",
+  "stash": "6b3181b97246c689edaa4e05db1586df379d20a7",
+  "git": "2.53.0"
+ },
+ "driver": {
+  "script": "compare_open_x11.py",
+  "sha256": "19364090153d9358cd56ec52acf73c00e6247084e20b48063b2c75025f7d1cb6"
+ },
+ "raw_samples": {
+  "compare": "2026-10-05-decorations-in-retained-bounds-compare.csv",
+  "compare_supplementary": "2026-10-05-decorations-in-retained-bounds-compare-supplementary.csv",
+  "stash": "2026-10-05-decorations-in-retained-bounds-stash.csv",
+  "cpu_sampler_supplementary": "2026-10-05-decorations-in-retained-bounds-cpu-supplementary.txt"
+ },
+ "runs": {
+  "compare": {
+   "host": {
+    "kernel": "7.0.0-34-generic",
+    "cpu": "Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz",
+    "logical_cpus": 20,
+    "governor": "powersave",
+    "epp": "performance",
+    "no_turbo": "0",
+    "driver_affinity": [
+     8,
+     9
+    ],
+    "display": ":0",
+    "session": "wayland",
+    "desktop": "ubuntu:GNOME"
+   },
+   "builds": {
+    "base": {
+     "binary": "gitturtle-base-7323988",
+     "sha256": "4d14284730d495eb22e6325f4fbcdc3be36e555e194abb5822abe7255b7bba00",
+     "build_info": {
+      "application": "GitTurtle",
+      "version": "0.1.0",
+      "source_revision": "7323988ef9508c8ba68688babf9927827e70f543",
+      "source_tree": "clean",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "build_unix_seconds": "1791216948"
+     }
+    },
+    "cand": {
+     "binary": "gitturtle-cand-c9e1222",
+     "sha256": "a79234e1d457b656ae9d238ad46e07718857e1fa52c05e8f85559ba6e983d7cb",
+     "build_info": {
+      "application": "GitTurtle",
+      "version": "0.1.0",
+      "source_revision": "c9e12222e2cf458a547de03be2277783038a69fb",
+      "source_tree": "clean",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "build_unix_seconds": "1791217086"
+     }
+    }
+   },
+   "fixture": "compare",
+   "fixture_head": "b6d97c5afc39efd5d63864394dbdbf64e9687d30",
+   "plan": "B,C,C,B,C,B,B,C,B,C,C,B,C,B,B,C",
+   "mode": "compare",
+   "pinning": "taskset -c 0-7",
+   "period_ms": 700.0,
+   "size": [
+    1480,
+    800
+   ],
+   "phases": {
+    "cold": 1,
+    "warmup": 6,
+    "recorded": 40,
+    "idle": 5
+   },
+   "percentile": "nearest rank",
+   "started_utc": "2026-10-05T16:44:14Z",
+   "load_before": [
+    0.05078125,
+    0.19677734375,
+    1.25927734375
+   ],
+   "driver_sha256": "19364090153d9358cd56ec52acf73c00e6247084e20b48063b2c75025f7d1cb6",
+   "ended_utc": "2026-10-05T16:58:31Z",
+   "load_after": [
+    0.142578125,
+    0.1650390625,
+    0.59228515625
+   ],
+   "summary": {
+    "recorded patch_ms": {
+     "base": {
+      "n": 320,
+      "p50": 25.541,
+      "p95": 26.618,
+      "max": 44.54,
+      "mean": 25.695,
+      "launch_p50": [
+       25.696,
+       25.697,
+       25.356,
+       25.669,
+       25.496,
+       25.343,
+       25.355,
+       25.498
+      ]
+     },
+     "cand": {
+      "n": 320,
+      "p50": 25.551,
+      "p95": 27.213,
+      "max": 119.494,
+      "mean": 26.341,
+      "launch_p50": [
+       25.747,
+       25.647,
+       25.538,
+       25.651,
+       25.497,
+       25.663,
+       25.371,
+       25.32
+      ]
+     },
+     "delta_p50": {
+      "delta": 0.01,
+      "ci95": [
+       -0.172,
+       0.19
+      ]
+     },
+     "delta_p95": {
+      "delta": 0.595,
+      "ci95": [
+       -0.422,
+       11.914
+      ]
+     }
+    },
+    "recorded app_patch_ms": {
+     "base": {
+      "n": 320,
+      "p50": 24.447,
+      "p95": 25.424,
+      "max": 27.04,
+      "mean": 24.487,
+      "launch_p50": [
+       24.557,
+       24.583,
+       24.373,
+       24.686,
+       24.329,
+       24.246,
+       24.267,
+       24.446
+      ]
+     },
+     "cand": {
+      "n": 320,
+      "p50": 24.433,
+      "p95": 25.747,
+      "max": 37.751,
+      "mean": 24.667,
+      "launch_p50": [
+       24.679,
+       24.481,
+       24.387,
+       24.515,
+       24.391,
+       24.491,
+       24.322,
+       24.292
+      ]
+     },
+     "delta_p50": {
+      "delta": -0.014,
+      "ci95": [
+       -0.151,
+       0.176
+      ]
+     },
+     "delta_p95": {
+      "delta": 0.323,
+      "ci95": [
+       -0.333,
+       1.529
+      ]
+     }
+    },
+    "recorded trace_ms": {
+     "base": {
+      "n": 320,
+      "p50": 17.019,
+      "p95": 17.718,
+      "max": 20.573,
+      "mean": 16.899,
+      "launch_p50": [
+       16.954,
+       17.083,
+       17.014,
+       17.206,
+       17.022,
+       17.045,
+       16.805,
+       17.09
+      ]
+     },
+     "cand": {
+      "n": 320,
+      "p50": 17.009,
+      "p95": 18.46,
+      "max": 29.851,
+      "mean": 17.023,
+      "launch_p50": [
+       17.011,
+       16.908,
+       17.198,
+       17.088,
+       16.996,
+       17.189,
+       16.903,
+       16.989
+      ]
+     },
+     "delta_p50": {
+      "delta": -0.01,
+      "ci95": [
+       -0.09,
+       0.122
+      ]
+     },
+     "delta_p95": {
+      "delta": 0.742,
+      "ci95": [
+       -0.117,
+       1.476
+      ]
+     }
+    },
+    "recorded cpu_to_patch_ms": {
+     "base": {
+      "n": 320,
+      "p50": 20.486,
+      "p95": 21.489,
+      "max": 23.851,
+      "mean": 20.558,
+      "launch_p50": [
+       20.47,
+       20.541,
+       20.452,
+       20.677,
+       20.37,
+       20.48,
+       20.344,
+       20.541
+      ]
+     },
+     "cand": {
+      "n": 320,
+      "p50": 20.49,
+      "p95": 22.395,
+      "max": 35.205,
+      "mean": 20.819,
+      "launch_p50": [
+       20.496,
+       20.356,
+       20.715,
+       20.516,
+       20.428,
+       20.719,
+       20.374,
+       20.379
+      ]
+     },
+     "delta_p50": {
+      "delta": 0.004,
+      "ci95": [
+       -0.115,
+       0.158
+      ]
+     },
+     "delta_p95": {
+      "delta": 0.906,
+      "ci95": [
+       0.014,
+       2.051
+      ]
+     }
+    },
+    "recorded cpu_ms": {
+     "base": {
+      "n": 320,
+      "p50": 21.741,
+      "p95": 22.804,
+      "max": 26.84,
+      "mean": 21.882,
+      "launch_p50": [
+       21.816,
+       21.76,
+       21.618,
+       21.996,
+       21.536,
+       21.752,
+       21.586,
+       21.778
+      ]
+     },
+     "cand": {
+      "n": 320,
+      "p50": 21.752,
+      "p95": 23.857,
+      "max": 36.667,
+      "mean": 22.165,
+      "launch_p50": [
+       21.772,
+       21.617,
+       22.087,
+       21.765,
+       21.701,
+       21.902,
+       21.747,
+       21.613
+      ]
+     },
+     "delta_p50": {
+      "delta": 0.011,
+      "ci95": [
+       -0.139,
+       0.189
+      ]
+     },
+     "delta_p95": {
+      "delta": 1.053,
+      "ci95": [
+       -0.248,
+       3.326
+      ]
+     }
+    },
+    "recorded proc_cpu_ms": {
+     "base": {
+      "n": 320,
+      "p50": 22.743,
+      "p95": 23.823,
+      "max": 28.348,
+      "mean": 22.891,
+      "launch_p50": [
+       22.754,
+       22.876,
+       22.511,
+       23.033,
+       22.613,
+       22.619,
+       22.657,
+       22.953
+      ]
+     },
+     "cand": {
+      "n": 320,
+      "p50": 22.769,
+      "p95": 24.749,
+      "max": 37.588,
+      "mean": 23.152,
+      "launch_p50": [
+       22.752,
+       22.818,
+       23.011,
+       22.856,
+       22.693,
+       22.904,
+       22.709,
+       22.579
+      ]
+     },
+     "delta_p50": {
+      "delta": 0.026,
+      "ci95": [
+       -0.174,
+       0.242
+      ]
+     },
+     "delta_p95": {
+      "delta": 0.926,
+      "ci95": [
+       -0.352,
+       3.079
+      ]
+     }
+    },
+    "recorded last_ms_settle": {
+     "base": {
+      "n": 320,
+      "p50": 25.541,
+      "p95": 26.726,
+      "max": 44.54,
+      "mean": 25.831,
+      "launch_p50": [
+       25.696,
+       25.697,
+       25.356,
+       25.687,
+       25.496,
+       25.343,
+       25.355,
+       25.498
+      ]
+     },
+     "cand": {
+      "n": 320,
+      "p50": 25.551,
+      "p95": 28.201,
+      "max": 119.494,
+      "mean": 26.503,
+      "launch_p50": [
+       25.747,
+       25.647,
+       25.538,
+       25.651,
+       25.497,
+       25.663,
+       25.371,
+       25.32
+      ]
+     },
+     "delta_p50": {
+      "delta": 0.01,
+      "ci95": [
+       -0.173,
+       0.19
+      ]
+     },
+     "delta_p95": {
+      "delta": 1.475,
+      "ci95": [
+       -0.65,
+       11.816
+      ]
+     }
+    },
+    "recorded app_last_ms": {
+     "base": {
+      "n": 320,
+      "p50": 24.447,
+      "p95": 25.547,
+      "max": 38.055,
+      "mean": 24.623,
+      "launch_p50": [
+       24.557,
+       24.583,
+       24.373,
+       24.686,
+       24.329,
+       24.246,
+       24.267,
+       24.446
+      ]
+     },
+     "cand": {
+      "n": 320,
+      "p50": 24.433,
+      "p95": 26.197,
+      "max": 37.751,
+      "mean": 24.829,
+      "launch_p50": [
+       24.679,
+       24.481,
+       24.387,
+       24.515,
+       24.391,
+       24.491,
+       24.322,
+       24.292
+      ]
+     },
+     "delta_p50": {
+      "delta": -0.014,
+      "ci95": [
+       -0.151,
+       0.176
+      ]
+     },
+     "delta_p95": {
+      "delta": 0.65,
+      "ci95": [
+       -0.45,
+       3.797
+      ]
+     }
+    },
+    "recorded first_ms": {
+     "base": {
+      "n": 320,
+      "p50": 25.502,
+      "p95": 26.571,
+      "max": 44.54,
+      "mean": 25.279,
+      "launch_p50": [
+       25.672,
+       25.697,
+       25.356,
+       25.669,
+       25.431,
+       25.303,
+       25.316,
+       25.498
+      ]
+     },
+     "cand": {
+      "n": 320,
+      "p50": 25.524,
+      "p95": 26.991,
+      "max": 119.494,
+      "mean": 25.863,
+      "launch_p50": [
+       25.662,
+       25.524,
+       25.538,
+       25.631,
+       25.497,
+       25.598,
+       25.324,
+       25.32
+      ]
+     }
+    },
+    "recorded raw_ms": {
+     "base": {
+      "n": 320,
+      "p50": 1.089,
+      "p95": 1.303,
+      "max": 20.008,
+      "mean": 1.208,
+      "launch_p50": [
+       1.157,
+       1.1,
+       1.039,
+       1.054,
+       1.119,
+       1.089,
+       1.143,
+       1.042
+      ]
+     },
+     "cand": {
+      "n": 320,
+      "p50": 1.094,
+      "p95": 1.323,
+      "max": 93.747,
+      "mean": 1.674,
+      "launch_p50": [
+       1.115,
+       1.062,
+       1.12,
+       1.121,
+       1.099,
+       1.128,
+       1.054,
+       1.03
+      ]
+     }
+    },
+    "recorded wait_ms": {
+     "base": {
+      "n": 320,
+      "p50": 0.011,
+      "p95": 0.07,
+      "max": 2.298,
+      "mean": 0.034,
+      "launch_p50": [
+       0.011,
+       0.009,
+       0.012,
+       0.006,
+       0.01,
+       0.015,
+       0.014,
+       0.017
+      ]
+     },
+     "cand": {
+      "n": 320,
+      "p50": 0.008,
+      "p95": 0.056,
+      "max": 0.261,
+      "mean": 0.016,
+      "launch_p50": [
+       0.007,
+       0.005,
+       0.016,
+       0.011,
+       0.012,
+       0.005,
+       0.006,
+       0.006
+      ]
+     }
+    },
+    "cold patch_ms": {
+     "base": {
+      "n": 8,
+      "p50": 304.166,
+      "p95": 307.698,
+      "max": 307.698,
+      "mean": 304.732,
+      "launch_p50": [
+       305.545,
+       303.95,
+       307.698,
+       304.166,
+       303.362,
+       306.094,
+       301.811,
+       305.233
+      ]
+     },
+     "cand": {
+      "n": 8,
+      "p50": 302.374,
+      "p95": 307.496,
+      "max": 307.496,
+      "mean": 303.324,
+      "launch_p50": [
+       301.486,
+       303.957,
+       307.496,
+       302.374,
+       301.464,
+       303.158,
+       301.417,
+       305.239
+      ]
+     }
+    },
+    "cold app_patch_ms": {
+     "base": {
+      "n": 8,
+      "p50": 303.024,
+      "p95": 306.478,
+      "max": 306.478,
+      "mean": 303.534,
+      "launch_p50": [
+       304.199,
+       302.703,
+       306.478,
+       303.024,
+       302.119,
+       304.958,
+       300.612,
+       304.18
+      ]
+     },
+     "cand": {
+      "n": 8,
+      "p50": 301.273,
+      "p95": 306.401,
+      "max": 306.401,
+      "mean": 302.216,
+      "launch_p50": [
+       300.408,
+       302.815,
+       306.401,
+       301.273,
+       300.411,
+       301.974,
+       300.273,
+       304.177
+      ]
+     }
+    },
+    "cold trace_ms": {
+     "base": {
+      "n": 8,
+      "p50": 281.328,
+      "p95": 284.607,
+      "max": 284.607,
+      "mean": 281.574,
+      "launch_p50": [
+       281.967,
+       281.328,
+       284.607,
+       280.399,
+       280.326,
+       282.305,
+       279.189,
+       282.474
+      ]
+     },
+     "cand": {
+      "n": 8,
+      "p50": 279.425,
+      "p95": 284.354,
+      "max": 284.354,
+      "mean": 280.647,
+      "launch_p50": [
+       278.962,
+       280.726,
+       284.354,
+       279.425,
+       278.698,
+       281.009,
+       279.055,
+       282.946
+      ]
+     }
+    },
+    "cold cpu_to_patch_ms": {
+     "base": {
+      "n": 8,
+      "p50": 24.39,
+      "p95": 25.781,
+      "max": 25.781,
+      "mean": 24.438,
+      "launch_p50": [
+       25.781,
+       24.696,
+       25.107,
+       23.543,
+       23.581,
+       23.84,
+       24.567,
+       24.39
+      ]
+     },
+     "cand": {
+      "n": 8,
+      "p50": 23.849,
+      "p95": 25.25,
+      "max": 25.25,
+      "mean": 24.168,
+      "launch_p50": [
+       23.849,
+       24.937,
+       25.25,
+       23.937,
+       24.567,
+       23.417,
+       23.824,
+       23.559
+      ]
+     }
+    },
+    "cold cpu_ms": {
+     "base": {
+      "n": 8,
+      "p50": 27.952,
+      "p95": 29.866,
+      "max": 29.866,
+      "mean": 28.179,
+      "launch_p50": [
+       29.866,
+       27.323,
+       28.403,
+       28.163,
+       28.103,
+       27.952,
+       27.823,
+       27.797
+      ]
+     },
+     "cand": {
+      "n": 8,
+      "p50": 27.507,
+      "p95": 28.392,
+      "max": 28.392,
+      "mean": 27.813,
+      "launch_p50": [
+       27.339,
+       28.392,
+       28.356,
+       28.259,
+       27.874,
+       27.378,
+       27.507,
+       27.397
+      ]
+     }
+    },
+    "cold proc_cpu_ms": {
+     "base": {
+      "n": 8,
+      "p50": 302.054,
+      "p95": 303.871,
+      "max": 303.871,
+      "mean": 302.452,
+      "launch_p50": [
+       303.871,
+       301.423,
+       303.824,
+       302.226,
+       302.443,
+       302.054,
+       301.893,
+       301.879
+      ]
+     },
+     "cand": {
+      "n": 8,
+      "p50": 301.773,
+      "p95": 303.149,
+      "max": 303.149,
+      "mean": 302.075,
+      "launch_p50": [
+       301.711,
+       302.802,
+       303.149,
+       302.419,
+       301.836,
+       301.33,
+       301.773,
+       301.578
+      ]
+     }
+    },
+    "cold last_ms_settle": {
+     "base": {
+      "n": 8,
+      "p50": 310.979,
+      "p95": 317.113,
+      "max": 317.113,
+      "mean": 311.989,
+      "launch_p50": [
+       316.033,
+       307.511,
+       310.979,
+       314.681,
+       314.285,
+       317.113,
+       305.922,
+       309.385
+      ]
+     },
+     "cand": {
+      "n": 8,
+      "p50": 307.988,
+      "p95": 312.313,
+      "max": 312.313,
+      "mean": 308.695,
+      "launch_p50": [
+       307.988,
+       307.401,
+       311.309,
+       310.229,
+       306.033,
+       309.36,
+       304.929,
+       312.313
+      ]
+     }
+    },
+    "cold app_last_ms": {
+     "base": {
+      "n": 8,
+      "p50": 309.759,
+      "p95": 315.977,
+      "max": 315.977,
+      "mean": 310.79,
+      "launch_p50": [
+       314.687,
+       306.264,
+       309.759,
+       313.539,
+       313.042,
+       315.977,
+       304.723,
+       308.332
+      ]
+     },
+     "cand": {
+      "n": 8,
+      "p50": 306.91,
+      "p95": 311.251,
+      "max": 311.251,
+      "mean": 307.588,
+      "launch_p50": [
+       306.91,
+       306.259,
+       310.214,
+       309.128,
+       304.98,
+       308.176,
+       303.785,
+       311.251
+      ]
+     }
+    },
+    "cold first_ms": {
+     "base": {
+      "n": 8,
+      "p50": 11.877,
+      "p95": 13.119,
+      "max": 13.119,
+      "mean": 12.036,
+      "launch_p50": [
+       13.119,
+       11.636,
+       11.877,
+       12.004,
+       11.84,
+       11.898,
+       11.76,
+       12.155
+      ]
+     },
+     "cand": {
+      "n": 8,
+      "p50": 12.186,
+      "p95": 14.093,
+      "max": 14.093,
+      "mean": 12.446,
+      "launch_p50": [
+       12.816,
+       12.186,
+       12.167,
+       14.093,
+       12.422,
+       11.737,
+       12.394,
+       11.752
+      ]
+     }
+    },
+    "cold raw_ms": {
+     "base": {
+      "n": 8,
+      "p50": 1.199,
+      "p95": 1.346,
+      "max": 1.346,
+      "mean": 1.198,
+      "launch_p50": [
+       1.346,
+       1.247,
+       1.22,
+       1.142,
+       1.243,
+       1.136,
+       1.199,
+       1.053
+      ]
+     },
+     "cand": {
+      "n": 8,
+      "p50": 1.095,
+      "p95": 1.184,
+      "max": 1.184,
+      "mean": 1.107,
+      "launch_p50": [
+       1.078,
+       1.142,
+       1.095,
+       1.101,
+       1.053,
+       1.184,
+       1.144,
+       1.062
+      ]
+     }
+    },
+    "cold wait_ms": {
+     "base": {
+      "n": 8,
+      "p50": 0.021,
+      "p95": 0.744,
+      "max": 0.744,
+      "mean": 0.128,
+      "launch_p50": [
+       0.021,
+       0.047,
+       0.099,
+       0.013,
+       0.744,
+       0.013,
+       0.002,
+       0.082
+      ]
+     },
+     "cand": {
+      "n": 8,
+      "p50": 0.009,
+      "p95": 0.044,
+      "max": 0.044,
+      "mean": 0.013,
+      "launch_p50": [
+       0.044,
+       0.0,
+       0.011,
+       0.01,
+       0.022,
+       0.005,
+       0.0,
+       0.009
+      ]
+     }
+    },
+    "base counts": {
+     "launches": 8,
+     "recorded": 320,
+     "missing_patch": 0,
+     "patch_differs_from_alt": 6,
+     "traces_not_one": 0,
+     "frames": {
+      "1": 313,
+      "2": 1,
+      "3": 6
+     },
+     "idle_frames": 0,
+     "idle_cpu_p50": 1.273,
+     "mhz_p50": 5292,
+     "mhz_p5": 5062,
+     "mhz_max": 5317,
+     "cpus": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "load1_before": [
+      0.05078125,
+      0.1455078125,
+      0.24365234375,
+      0.3876953125,
+      0.12646484375,
+      0.34814453125,
+      0.1064453125,
+      0.07568359375
+     ],
+     "exits": [
+      -15,
+      -15,
+      -15,
+      -15,
+      -15,
+      -15,
+      -15,
+      -15
+     ],
+     "fixture_unchanged": true
+    },
+    "cand counts": {
+     "launches": 8,
+     "recorded": 320,
+     "missing_patch": 0,
+     "patch_differs_from_alt": 7,
+     "traces_not_one": 0,
+     "frames": {
+      "1": 312,
+      "3": 8
+     },
+     "idle_frames": 0,
+     "idle_cpu_p50": 1.279,
+     "mhz_p50": 5282,
+     "mhz_p5": 5000,
+     "mhz_max": 5320,
+     "cpus": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "load1_before": [
+      0.06689453125,
+      0.12255859375,
+      0.10546875,
+      0.18798828125,
+      0.19189453125,
+      0.1923828125,
+      0.24853515625,
+      0.0771484375
+     ],
+     "exits": [
+      -15,
+      -15,
+      -15,
+      -15,
+      -15,
+      -15,
+      -15,
+      -15
+     ],
+     "fixture_unchanged": true
+    }
+   },
+   "launches": [
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "00-B",
+     "started_utc": "2026-10-05T16:44:14Z",
+     "load1_before": 0.05078125,
+     "pid": 2481012,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:45:06Z",
+     "load1_after": 0.0732421875,
+     "n": 0,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "01-C",
+     "started_utc": "2026-10-05T16:45:08Z",
+     "load1_before": 0.06689453125,
+     "pid": 2481672,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:45:59Z",
+     "load1_after": 0.13330078125,
+     "n": 1,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "02-C",
+     "started_utc": "2026-10-05T16:46:01Z",
+     "load1_before": 0.12255859375,
+     "pid": 2482404,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:46:53Z",
+     "load1_after": 0.1455078125,
+     "n": 2,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "03-B",
+     "started_utc": "2026-10-05T16:46:55Z",
+     "load1_before": 0.1455078125,
+     "pid": 2486622,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:47:46Z",
+     "load1_after": 0.10546875,
+     "n": 3,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "04-C",
+     "started_utc": "2026-10-05T16:47:48Z",
+     "load1_before": 0.10546875,
+     "pid": 2487713,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:48:40Z",
+     "load1_after": 0.177734375,
+     "n": 4,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "05-B",
+     "started_utc": "2026-10-05T16:48:42Z",
+     "load1_before": 0.24365234375,
+     "pid": 2490354,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:49:33Z",
+     "load1_after": 0.3876953125,
+     "n": 5,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "06-B",
+     "started_utc": "2026-10-05T16:49:36Z",
+     "load1_before": 0.3876953125,
+     "pid": 2494199,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:50:27Z",
+     "load1_after": 0.18798828125,
+     "n": 6,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "07-C",
+     "started_utc": "2026-10-05T16:50:29Z",
+     "load1_before": 0.18798828125,
+     "pid": 2495206,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:51:21Z",
+     "load1_after": 0.1376953125,
+     "n": 7,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "08-B",
+     "started_utc": "2026-10-05T16:51:23Z",
+     "load1_before": 0.12646484375,
+     "pid": 2496193,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:52:14Z",
+     "load1_after": 0.12109375,
+     "n": 8,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "09-C",
+     "started_utc": "2026-10-05T16:52:16Z",
+     "load1_before": 0.19189453125,
+     "pid": 2497217,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:53:08Z",
+     "load1_after": 0.1923828125,
+     "n": 9,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "10-C",
+     "started_utc": "2026-10-05T16:53:10Z",
+     "load1_before": 0.1923828125,
+     "pid": 2497881,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:54:01Z",
+     "load1_after": 0.34814453125,
+     "n": 10,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "11-B",
+     "started_utc": "2026-10-05T16:54:04Z",
+     "load1_before": 0.34814453125,
+     "pid": 2502045,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:54:55Z",
+     "load1_after": 0.2705078125,
+     "n": 11,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "12-C",
+     "started_utc": "2026-10-05T16:54:57Z",
+     "load1_before": 0.24853515625,
+     "pid": 2503638,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:55:48Z",
+     "load1_after": 0.1064453125,
+     "n": 12,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "13-B",
+     "started_utc": "2026-10-05T16:55:51Z",
+     "load1_before": 0.1064453125,
+     "pid": 2504217,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:56:42Z",
+     "load1_after": 0.07568359375,
+     "n": 13,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "14-B",
+     "started_utc": "2026-10-05T16:56:44Z",
+     "load1_before": 0.07568359375,
+     "pid": 2504727,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:57:36Z",
+     "load1_after": 0.083984375,
+     "n": 14,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "15-C",
+     "started_utc": "2026-10-05T16:57:38Z",
+     "load1_before": 0.0771484375,
+     "pid": 2505244,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:58:29Z",
+     "load1_after": 0.1552734375,
+     "n": 15,
+     "build": "cand"
+    }
+   ]
+  },
+  "compare_supplementary": {
+   "host": {
+    "kernel": "7.0.0-34-generic",
+    "cpu": "Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz",
+    "logical_cpus": 20,
+    "governor": "powersave",
+    "epp": "performance",
+    "no_turbo": "0",
+    "driver_affinity": [
+     8,
+     9
+    ],
+    "display": ":0",
+    "session": "wayland",
+    "desktop": "ubuntu:GNOME"
+   },
+   "builds": {
+    "base": {
+     "binary": "gitturtle-base-7323988",
+     "sha256": "4d14284730d495eb22e6325f4fbcdc3be36e555e194abb5822abe7255b7bba00",
+     "build_info": {
+      "application": "GitTurtle",
+      "version": "0.1.0",
+      "source_revision": "7323988ef9508c8ba68688babf9927827e70f543",
+      "source_tree": "clean",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "build_unix_seconds": "1791216948"
+     }
+    },
+    "cand": {
+     "binary": "gitturtle-cand-c9e1222",
+     "sha256": "a79234e1d457b656ae9d238ad46e07718857e1fa52c05e8f85559ba6e983d7cb",
+     "build_info": {
+      "application": "GitTurtle",
+      "version": "0.1.0",
+      "source_revision": "c9e12222e2cf458a547de03be2277783038a69fb",
+      "source_tree": "clean",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "build_unix_seconds": "1791217086"
+     }
+    }
+   },
+   "fixture": "compare",
+   "fixture_head": "b6d97c5afc39efd5d63864394dbdbf64e9687d30",
+   "plan": "C,B,B,C,C,B,B,C",
+   "mode": "compare",
+   "pinning": "taskset -c 0-7",
+   "period_ms": 700.0,
+   "size": [
+    1480,
+    800
+   ],
+   "phases": {
+    "cold": 1,
+    "warmup": 6,
+    "recorded": 40,
+    "idle": 5
+   },
+   "percentile": "nearest rank",
+   "started_utc": "2026-10-05T17:13:41Z",
+   "load_before": [
+    0.1845703125,
+    0.08447265625,
+    0.25244140625
+   ],
+   "driver_sha256": "19364090153d9358cd56ec52acf73c00e6247084e20b48063b2c75025f7d1cb6",
+   "ended_utc": "2026-10-05T17:20:50Z",
+   "load_after": [
+    0.34765625,
+    0.19580078125,
+    0.2412109375
+   ],
+   "summary": {
+    "recorded patch_ms": {
+     "base": {
+      "n": 160,
+      "p50": 25.558,
+      "p95": 26.566,
+      "max": 27.397,
+      "mean": 25.61,
+      "launch_p50": [
+       25.875,
+       25.467,
+       25.753,
+       25.251
+      ]
+     },
+     "cand": {
+      "n": 160,
+      "p50": 25.442,
+      "p95": 26.643,
+      "max": 51.763,
+      "mean": 25.735,
+      "launch_p50": [
+       25.679,
+       25.545,
+       25.093,
+       25.45
+      ]
+     },
+     "delta_p50": {
+      "delta": -0.116,
+      "ci95": [
+       -0.46,
+       0.157
+      ]
+     },
+     "delta_p95": {
+      "delta": 0.077,
+      "ci95": [
+       -0.595,
+       1.095
+      ]
+     }
+    },
+    "recorded app_patch_ms": {
+     "base": {
+      "n": 160,
+      "p50": 24.518,
+      "p95": 25.458,
+      "max": 26.199,
+      "mean": 24.538,
+      "launch_p50": [
+       24.618,
+       24.338,
+       24.723,
+       24.271
+      ]
+     },
+     "cand": {
+      "n": 160,
+      "p50": 24.356,
+      "p95": 25.386,
+      "max": 36.953,
+      "mean": 24.492,
+      "launch_p50": [
+       24.703,
+       24.432,
+       24.013,
+       24.28
+      ]
+     },
+     "delta_p50": {
+      "delta": -0.162,
+      "ci95": [
+       -0.448,
+       0.162
+      ]
+     },
+     "delta_p95": {
+      "delta": -0.072,
+      "ci95": [
+       -0.615,
+       0.421
+      ]
+     }
+    },
+    "recorded trace_ms": {
+     "base": {
+      "n": 160,
+      "p50": 16.903,
+      "p95": 17.442,
+      "max": 18.208,
+      "mean": 16.602,
+      "launch_p50": [
+       16.822,
+       16.887,
+       16.923,
+       16.911
+      ]
+     },
+     "cand": {
+      "n": 160,
+      "p50": 16.889,
+      "p95": 17.376,
+      "max": 28.892,
+      "mean": 16.886,
+      "launch_p50": [
+       16.956,
+       16.929,
+       16.763,
+       16.913
+      ]
+     },
+     "delta_p50": {
+      "delta": -0.014,
+      "ci95": [
+       -0.136,
+       0.134
+      ]
+     },
+     "delta_p95": {
+      "delta": -0.066,
+      "ci95": [
+       -0.423,
+       0.299
+      ]
+     }
+    },
+    "recorded cpu_to_patch_ms": {
+     "base": {
+      "n": 160,
+      "p50": 20.391,
+      "p95": 21.16,
+      "max": 22.206,
+      "mean": 20.447,
+      "launch_p50": [
+       20.34,
+       20.39,
+       20.471,
+       20.384
+      ]
+     },
+     "cand": {
+      "n": 160,
+      "p50": 20.295,
+      "p95": 20.919,
+      "max": 33.671,
+      "mean": 20.436,
+      "launch_p50": [
+       20.352,
+       20.228,
+       20.175,
+       20.323
+      ]
+     },
+     "delta_p50": {
+      "delta": -0.096,
+      "ci95": [
+       -0.227,
+       0.007
+      ]
+     },
+     "delta_p95": {
+      "delta": -0.241,
+      "ci95": [
+       -0.593,
+       0.831
+      ]
+     }
+    },
+    "recorded cpu_ms": {
+     "base": {
+      "n": 160,
+      "p50": 21.625,
+      "p95": 22.713,
+      "max": 26.13,
+      "mean": 21.789,
+      "launch_p50": [
+       21.593,
+       21.578,
+       21.689,
+       21.595
+      ]
+     },
+     "cand": {
+      "n": 160,
+      "p50": 21.527,
+      "p95": 22.355,
+      "max": 35.171,
+      "mean": 21.724,
+      "launch_p50": [
+       21.563,
+       21.549,
+       21.428,
+       21.538
+      ]
+     },
+     "delta_p50": {
+      "delta": -0.098,
+      "ci95": [
+       -0.2,
+       0.0
+      ]
+     },
+     "delta_p95": {
+      "delta": -0.358,
+      "ci95": [
+       -2.862,
+       1.454
+      ]
+     }
+    },
+    "recorded proc_cpu_ms": {
+     "base": {
+      "n": 160,
+      "p50": 22.607,
+      "p95": 23.588,
+      "max": 27.298,
+      "mean": 22.798,
+      "launch_p50": [
+       22.491,
+       22.562,
+       22.73,
+       22.747
+      ]
+     },
+     "cand": {
+      "n": 160,
+      "p50": 22.603,
+      "p95": 23.512,
+      "max": 36.026,
+      "mean": 22.803,
+      "launch_p50": [
+       22.594,
+       22.647,
+       22.651,
+       22.521
+      ]
+     },
+     "delta_p50": {
+      "delta": -0.004,
+      "ci95": [
+       -0.173,
+       0.16
+      ]
+     },
+     "delta_p95": {
+      "delta": -0.076,
+      "ci95": [
+       -2.464,
+       1.683
+      ]
+     }
+    },
+    "recorded last_ms_settle": {
+     "base": {
+      "n": 160,
+      "p50": 25.581,
+      "p95": 26.626,
+      "max": 38.264,
+      "mean": 25.931,
+      "launch_p50": [
+       25.875,
+       25.467,
+       25.753,
+       25.298
+      ]
+     },
+     "cand": {
+      "n": 160,
+      "p50": 25.442,
+      "p95": 26.658,
+      "max": 51.763,
+      "mean": 25.786,
+      "launch_p50": [
+       25.679,
+       25.545,
+       25.093,
+       25.45
+      ]
+     },
+     "delta_p50": {
+      "delta": -0.139,
+      "ci95": [
+       -0.466,
+       0.144
+      ]
+     },
+     "delta_p95": {
+      "delta": 0.032,
+      "ci95": [
+       -8.556,
+       3.906
+      ]
+     }
+    },
+    "recorded app_last_ms": {
+     "base": {
+      "n": 160,
+      "p50": 24.524,
+      "p95": 25.586,
+      "max": 37.025,
+      "mean": 24.859,
+      "launch_p50": [
+       24.618,
+       24.338,
+       24.723,
+       24.279
+      ]
+     },
+     "cand": {
+      "n": 160,
+      "p50": 24.356,
+      "p95": 25.386,
+      "max": 36.953,
+      "mean": 24.542,
+      "launch_p50": [
+       24.703,
+       24.432,
+       24.013,
+       24.28
+      ]
+     },
+     "delta_p50": {
+      "delta": -0.168,
+      "ci95": [
+       -0.454,
+       0.15
+      ]
+     },
+     "delta_p95": {
+      "delta": -0.2,
+      "ci95": [
+       -9.794,
+       0.92
+      ]
+     }
+    },
+    "recorded first_ms": {
+     "base": {
+      "n": 160,
+      "p50": 25.546,
+      "p95": 26.393,
+      "max": 27.0,
+      "mean": 24.907,
+      "launch_p50": [
+       25.743,
+       25.43,
+       25.747,
+       25.201
+      ]
+     },
+     "cand": {
+      "n": 160,
+      "p50": 25.412,
+      "p95": 26.616,
+      "max": 51.763,
+      "mean": 25.504,
+      "launch_p50": [
+       25.541,
+       25.493,
+       25.093,
+       25.45
+      ]
+     }
+    },
+    "recorded raw_ms": {
+     "base": {
+      "n": 160,
+      "p50": 1.074,
+      "p95": 1.26,
+      "max": 1.397,
+      "mean": 1.072,
+      "launch_p50": [
+       1.116,
+       1.101,
+       1.04,
+       1.019
+      ]
+     },
+     "cand": {
+      "n": 160,
+      "p50": 1.091,
+      "p95": 1.305,
+      "max": 26.377,
+      "mean": 1.243,
+      "launch_p50": [
+       1.0,
+       1.147,
+       1.098,
+       1.09
+      ]
+     }
+    },
+    "recorded wait_ms": {
+     "base": {
+      "n": 160,
+      "p50": 0.011,
+      "p95": 0.078,
+      "max": 0.229,
+      "mean": 0.024,
+      "launch_p50": [
+       0.011,
+       0.015,
+       0.01,
+       0.01
+      ]
+     },
+     "cand": {
+      "n": 160,
+      "p50": 0.01,
+      "p95": 0.058,
+      "max": 0.351,
+      "mean": 0.019,
+      "launch_p50": [
+       0.011,
+       0.008,
+       0.008,
+       0.012
+      ]
+     }
+    },
+    "cold patch_ms": {
+     "base": {
+      "n": 4,
+      "p50": 305.32,
+      "p95": 310.923,
+      "max": 310.923,
+      "mean": 306.623,
+      "launch_p50": [
+       305.32,
+       304.325,
+       310.923,
+       305.926
+      ]
+     },
+     "cand": {
+      "n": 4,
+      "p50": 301.737,
+      "p95": 303.499,
+      "max": 303.499,
+      "mean": 302.284,
+      "launch_p50": [
+       301.132,
+       303.499,
+       301.737,
+       302.769
+      ]
+     }
+    },
+    "cold app_patch_ms": {
+     "base": {
+      "n": 4,
+      "p50": 303.186,
+      "p95": 304.763,
+      "max": 304.763,
+      "mean": 303.368,
+      "launch_p50": [
+       304.124,
+       303.186,
+       301.397,
+       304.763
+      ]
+     },
+     "cand": {
+      "n": 4,
+      "p50": 300.504,
+      "p95": 302.343,
+      "max": 302.343,
+      "mean": 301.151,
+      "launch_p50": [
+       300.132,
+       302.343,
+       300.504,
+       301.627
+      ]
+     }
+    },
+    "cold trace_ms": {
+     "base": {
+      "n": 4,
+      "p50": 281.466,
+      "p95": 283.351,
+      "max": 283.351,
+      "mean": 281.58,
+      "launch_p50": [
+       282.659,
+       281.466,
+       278.843,
+       283.351
+      ]
+     },
+     "cand": {
+      "n": 4,
+      "p50": 278.737,
+      "p95": 280.325,
+      "max": 280.325,
+      "mean": 279.373,
+      "launch_p50": [
+       278.645,
+       280.325,
+       278.737,
+       279.785
+      ]
+     }
+    },
+    "cold cpu_to_patch_ms": {
+     "base": {
+      "n": 4,
+      "p50": 23.897,
+      "p95": 24.874,
+      "max": 24.874,
+      "mean": 24.198,
+      "launch_p50": [
+       23.589,
+       24.874,
+       23.897,
+       24.434
+      ]
+     },
+     "cand": {
+      "n": 4,
+      "p50": 23.52,
+      "p95": 24.923,
+      "max": 24.923,
+      "mean": 23.905,
+      "launch_p50": [
+       23.52,
+       24.923,
+       23.656,
+       23.52
+      ]
+     }
+    },
+    "cold cpu_ms": {
+     "base": {
+      "n": 4,
+      "p50": 27.408,
+      "p95": 27.877,
+      "max": 27.877,
+      "mean": 27.594,
+      "launch_p50": [
+       27.691,
+       27.408,
+       27.877,
+       27.399
+      ]
+     },
+     "cand": {
+      "n": 4,
+      "p50": 27.687,
+      "p95": 28.09,
+      "max": 28.09,
+      "mean": 27.765,
+      "launch_p50": [
+       27.687,
+       28.09,
+       27.852,
+       27.432
+      ]
+     }
+    },
+    "cold proc_cpu_ms": {
+     "base": {
+      "n": 4,
+      "p50": 301.903,
+      "p95": 302.181,
+      "max": 302.181,
+      "mean": 301.806,
+      "launch_p50": [
+       302.181,
+       301.167,
+       301.903,
+       301.972
+      ]
+     },
+     "cand": {
+      "n": 4,
+      "p50": 301.245,
+      "p95": 302.018,
+      "max": 302.018,
+      "mean": 301.498,
+      "launch_p50": [
+       301.245,
+       302.018,
+       301.198,
+       301.53
+      ]
+     }
+    },
+    "cold last_ms_settle": {
+     "base": {
+      "n": 4,
+      "p50": 310.216,
+      "p95": 320.524,
+      "max": 320.524,
+      "mean": 313.745,
+      "launch_p50": [
+       316.529,
+       307.713,
+       320.524,
+       310.216
+      ]
+     },
+     "cand": {
+      "n": 4,
+      "p50": 307.451,
+      "p95": 310.691,
+      "max": 310.691,
+      "mean": 308.815,
+      "launch_p50": [
+       310.23,
+       307.451,
+       310.691,
+       306.89
+      ]
+     }
+    },
+    "cold app_last_ms": {
+     "base": {
+      "n": 4,
+      "p50": 309.053,
+      "p95": 315.333,
+      "max": 315.333,
+      "mean": 310.49,
+      "launch_p50": [
+       315.333,
+       306.574,
+       310.998,
+       309.053
+      ]
+     },
+     "cand": {
+      "n": 4,
+      "p50": 306.295,
+      "p95": 309.458,
+      "max": 309.458,
+      "mean": 307.683,
+      "launch_p50": [
+       309.23,
+       306.295,
+       309.458,
+       305.748
+      ]
+     }
+    },
+    "cold first_ms": {
+     "base": {
+      "n": 4,
+      "p50": 12.134,
+      "p95": 20.924,
+      "max": 20.924,
+      "mean": 14.352,
+      "launch_p50": [
+       12.013,
+       12.339,
+       20.924,
+       12.134
+      ]
+     },
+     "cand": {
+      "n": 4,
+      "p50": 11.992,
+      "p95": 12.354,
+      "max": 12.354,
+      "mean": 12.071,
+      "launch_p50": [
+       11.992,
+       12.354,
+       11.917,
+       12.022
+      ]
+     }
+    },
+    "cold raw_ms": {
+     "base": {
+      "n": 4,
+      "p50": 1.163,
+      "p95": 9.526,
+      "max": 9.526,
+      "mean": 3.256,
+      "launch_p50": [
+       1.196,
+       1.139,
+       9.526,
+       1.163
+      ]
+     },
+     "cand": {
+      "n": 4,
+      "p50": 1.142,
+      "p95": 1.233,
+      "max": 1.233,
+      "mean": 1.133,
+      "launch_p50": [
+       1.0,
+       1.156,
+       1.233,
+       1.142
+      ]
+     }
+    },
+    "cold wait_ms": {
+     "base": {
+      "n": 4,
+      "p50": 0.005,
+      "p95": 0.015,
+      "max": 0.015,
+      "mean": 0.009,
+      "launch_p50": [
+       0.012,
+       0.005,
+       0.015,
+       0.003
+      ]
+     },
+     "cand": {
+      "n": 4,
+      "p50": 0.007,
+      "p95": 0.012,
+      "max": 0.012,
+      "mean": 0.007,
+      "launch_p50": [
+       0.008,
+       0.007,
+       0.0,
+       0.012
+      ]
+     }
+    },
+    "base counts": {
+     "launches": 4,
+     "recorded": 160,
+     "missing_patch": 0,
+     "patch_differs_from_alt": 5,
+     "traces_not_one": 0,
+     "frames": {
+      "1": 154,
+      "3": 6
+     },
+     "idle_frames": 0,
+     "idle_cpu_p50": 1.25,
+     "mhz_p50": 5296,
+     "mhz_p5": 5100,
+     "mhz_max": 5321,
+     "cpus": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "load1_before": [
+      0.34033203125,
+      0.20361328125,
+      0.1240234375,
+      0.046875
+     ],
+     "exits": [
+      -15,
+      -15,
+      -15,
+      -15
+     ],
+     "fixture_unchanged": true
+    },
+    "cand counts": {
+     "launches": 4,
+     "recorded": 160,
+     "missing_patch": 0,
+     "patch_differs_from_alt": 2,
+     "traces_not_one": 0,
+     "frames": {
+      "1": 158,
+      "3": 2
+     },
+     "idle_frames": 0,
+     "idle_cpu_p50": 1.198,
+     "mhz_p50": 5289,
+     "mhz_p5": 5088,
+     "mhz_max": 5321,
+     "cpus": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "load1_before": [
+      0.1845703125,
+      0.2255859375,
+      0.095703125,
+      0.27099609375
+     ],
+     "exits": [
+      -15,
+      -15,
+      -15,
+      -15
+     ],
+     "fixture_unchanged": true
+    }
+   },
+   "launches": [
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "00-C",
+     "started_utc": "2026-10-05T17:13:42Z",
+     "load1_before": 0.1845703125,
+     "pid": 2514893,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:14:33Z",
+     "load1_after": 0.34033203125,
+     "n": 0,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "01-B",
+     "started_utc": "2026-10-05T17:14:35Z",
+     "load1_before": 0.34033203125,
+     "pid": 2515404,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:15:27Z",
+     "load1_after": 0.20361328125,
+     "n": 1,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "02-B",
+     "started_utc": "2026-10-05T17:15:29Z",
+     "load1_before": 0.20361328125,
+     "pid": 2515965,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:16:20Z",
+     "load1_after": 0.24560546875,
+     "n": 2,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "03-C",
+     "started_utc": "2026-10-05T17:16:22Z",
+     "load1_before": 0.2255859375,
+     "pid": 2516522,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:17:14Z",
+     "load1_after": 0.095703125,
+     "n": 3,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "04-C",
+     "started_utc": "2026-10-05T17:17:16Z",
+     "load1_before": 0.095703125,
+     "pid": 2517081,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:18:07Z",
+     "load1_after": 0.1240234375,
+     "n": 4,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "05-B",
+     "started_utc": "2026-10-05T17:18:10Z",
+     "load1_before": 0.1240234375,
+     "pid": 2517587,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:19:01Z",
+     "load1_after": 0.05126953125,
+     "n": 5,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "06-B",
+     "started_utc": "2026-10-05T17:19:03Z",
+     "load1_before": 0.046875,
+     "pid": 2518093,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:19:55Z",
+     "load1_after": 0.20751953125,
+     "n": 6,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "07-C",
+     "started_utc": "2026-10-05T17:19:57Z",
+     "load1_before": 0.27099609375,
+     "pid": 2518667,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 48,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:20:48Z",
+     "load1_after": 0.34765625,
+     "n": 7,
+     "build": "cand"
+    }
+   ]
+  },
+  "stash": {
+   "host": {
+    "kernel": "7.0.0-34-generic",
+    "cpu": "Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz",
+    "logical_cpus": 20,
+    "governor": "powersave",
+    "epp": "performance",
+    "no_turbo": "0",
+    "driver_affinity": [
+     8,
+     9
+    ],
+    "display": ":0",
+    "session": "wayland",
+    "desktop": "ubuntu:GNOME"
+   },
+   "builds": {
+    "base": {
+     "binary": "gitturtle-base-7323988",
+     "sha256": "4d14284730d495eb22e6325f4fbcdc3be36e555e194abb5822abe7255b7bba00",
+     "build_info": {
+      "application": "GitTurtle",
+      "version": "0.1.0",
+      "source_revision": "7323988ef9508c8ba68688babf9927827e70f543",
+      "source_tree": "clean",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "build_unix_seconds": "1791216948"
+     }
+    },
+    "cand": {
+     "binary": "gitturtle-cand-c9e1222",
+     "sha256": "a79234e1d457b656ae9d238ad46e07718857e1fa52c05e8f85559ba6e983d7cb",
+     "build_info": {
+      "application": "GitTurtle",
+      "version": "0.1.0",
+      "source_revision": "c9e12222e2cf458a547de03be2277783038a69fb",
+      "source_tree": "clean",
+      "target": "x86_64-unknown-linux-gnu",
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "build_unix_seconds": "1791217086"
+     }
+    }
+   },
+   "fixture": "compare",
+   "fixture_head": "b6d97c5afc39efd5d63864394dbdbf64e9687d30",
+   "plan": "C,B,B,C,B,C,C,B,C,B,B,C",
+   "mode": "stash",
+   "pinning": "taskset -c 0-7",
+   "period_ms": 700.0,
+   "size": [
+    1480,
+    800
+   ],
+   "phases": {
+    "cold": 1,
+    "warmup": 6,
+    "recorded": 40,
+    "idle": 5
+   },
+   "percentile": "nearest rank",
+   "started_utc": "2026-10-05T16:58:32Z",
+   "load_before": [
+    0.142578125,
+    0.1650390625,
+    0.59228515625
+   ],
+   "driver_sha256": "19364090153d9358cd56ec52acf73c00e6247084e20b48063b2c75025f7d1cb6",
+   "ended_utc": "2026-10-05T17:11:02Z",
+   "load_after": [
+    0.046875,
+    0.0712890625,
+    0.28515625
+   ],
+   "summary": {
+    "recorded patch_ms": {
+     "base": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     },
+     "cand": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     }
+    },
+    "recorded app_patch_ms": {
+     "base": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     },
+     "cand": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     }
+    },
+    "recorded trace_ms": {
+     "base": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     },
+     "cand": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     }
+    },
+    "recorded cpu_to_patch_ms": {
+     "base": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     },
+     "cand": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     }
+    },
+    "recorded cpu_ms": {
+     "base": {
+      "n": 240,
+      "p50": 22.627,
+      "p95": 24.106,
+      "max": 28.364,
+      "mean": 22.839,
+      "launch_p50": [
+       22.429,
+       22.626,
+       22.844,
+       22.488,
+       22.517,
+       22.711
+      ]
+     },
+     "cand": {
+      "n": 240,
+      "p50": 22.644,
+      "p95": 23.377,
+      "max": 28.06,
+      "mean": 22.804,
+      "launch_p50": [
+       22.724,
+       22.461,
+       22.779,
+       22.587,
+       22.52,
+       22.751
+      ]
+     },
+     "delta_p50": {
+      "delta": 0.017,
+      "ci95": [
+       -0.133,
+       0.193
+      ]
+     },
+     "delta_p95": {
+      "delta": -0.729,
+      "ci95": [
+       -3.8,
+       3.125
+      ]
+     }
+    },
+    "recorded proc_cpu_ms": {
+     "base": {
+      "n": 240,
+      "p50": 23.66,
+      "p95": 25.345,
+      "max": 30.088,
+      "mean": 23.924,
+      "launch_p50": [
+       23.66,
+       23.608,
+       24.007,
+       23.63,
+       23.55,
+       23.642
+      ]
+     },
+     "cand": {
+      "n": 240,
+      "p50": 23.681,
+      "p95": 24.633,
+      "max": 29.569,
+      "mean": 23.83,
+      "launch_p50": [
+       23.754,
+       23.553,
+       23.784,
+       23.646,
+       23.551,
+       23.681
+      ]
+     },
+     "delta_p50": {
+      "delta": 0.021,
+      "ci95": [
+       -0.144,
+       0.128
+      ]
+     },
+     "delta_p95": {
+      "delta": -0.712,
+      "ci95": [
+       -3.592,
+       3.094
+      ]
+     }
+    },
+    "recorded last_ms_settle": {
+     "base": {
+      "n": 240,
+      "p50": 26.926,
+      "p95": 29.595,
+      "max": 55.469,
+      "mean": 27.512,
+      "launch_p50": [
+       26.824,
+       26.876,
+       27.047,
+       26.705,
+       27.127,
+       26.881
+      ]
+     },
+     "cand": {
+      "n": 240,
+      "p50": 26.945,
+      "p95": 28.054,
+      "max": 41.524,
+      "mean": 27.337,
+      "launch_p50": [
+       27.22,
+       26.58,
+       27.342,
+       26.788,
+       26.838,
+       26.986
+      ]
+     },
+     "delta_p50": {
+      "delta": 0.019,
+      "ci95": [
+       -0.213,
+       0.312
+      ]
+     },
+     "delta_p95": {
+      "delta": -1.541,
+      "ci95": [
+       -10.31,
+       9.323
+      ]
+     }
+    },
+    "recorded app_last_ms": {
+     "base": {
+      "n": 240,
+      "p50": 25.85,
+      "p95": 27.618,
+      "max": 38.39,
+      "mean": 26.315,
+      "launch_p50": [
+       25.783,
+       25.8,
+       26.019,
+       25.721,
+       25.897,
+       25.762
+      ]
+     },
+     "cand": {
+      "n": 240,
+      "p50": 25.952,
+      "p95": 26.936,
+      "max": 39.361,
+      "mean": 26.262,
+      "launch_p50": [
+       26.139,
+       25.471,
+       26.228,
+       25.672,
+       25.825,
+       26.102
+      ]
+     },
+     "delta_p50": {
+      "delta": 0.102,
+      "ci95": [
+       -0.229,
+       0.325
+      ]
+     },
+     "delta_p95": {
+      "delta": -0.682,
+      "ci95": [
+       -10.215,
+       9.284
+      ]
+     }
+    },
+    "recorded first_ms": {
+     "base": {
+      "n": 240,
+      "p50": 26.881,
+      "p95": 28.185,
+      "max": 55.469,
+      "mean": 26.545,
+      "launch_p50": [
+       26.744,
+       26.819,
+       27.001,
+       26.704,
+       26.976,
+       26.881
+      ]
+     },
+     "cand": {
+      "n": 240,
+      "p50": 26.912,
+      "p95": 27.84,
+      "max": 31.913,
+      "mean": 26.46,
+      "launch_p50": [
+       27.161,
+       26.58,
+       27.307,
+       26.718,
+       26.826,
+       26.98
+      ]
+     }
+    },
+    "recorded raw_ms": {
+     "base": {
+      "n": 240,
+      "p50": 1.061,
+      "p95": 1.248,
+      "max": 30.438,
+      "mean": 1.197,
+      "launch_p50": [
+       1.063,
+       1.031,
+       1.022,
+       0.983,
+       1.106,
+       1.111
+      ]
+     },
+     "cand": {
+      "n": 240,
+      "p50": 1.062,
+      "p95": 1.237,
+      "max": 8.057,
+      "mean": 1.074,
+      "launch_p50": [
+       1.109,
+       1.027,
+       1.101,
+       1.053,
+       1.067,
+       0.874
+      ]
+     }
+    },
+    "recorded wait_ms": {
+     "base": {
+      "n": 240,
+      "p50": 0.008,
+      "p95": 0.071,
+      "max": 0.851,
+      "mean": 0.023,
+      "launch_p50": [
+       0.006,
+       0.009,
+       0.01,
+       0.01,
+       0.006,
+       0.011
+      ]
+     },
+     "cand": {
+      "n": 240,
+      "p50": 0.01,
+      "p95": 0.058,
+      "max": 0.507,
+      "mean": 0.02,
+      "launch_p50": [
+       0.014,
+       0.008,
+       0.008,
+       0.012,
+       0.008,
+       0.011
+      ]
+     }
+    },
+    "cold patch_ms": {
+     "base": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     },
+     "cand": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     }
+    },
+    "cold app_patch_ms": {
+     "base": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     },
+     "cand": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     }
+    },
+    "cold trace_ms": {
+     "base": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     },
+     "cand": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     }
+    },
+    "cold cpu_to_patch_ms": {
+     "base": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     },
+     "cand": {
+      "n": 0,
+      "p50": null,
+      "p95": null,
+      "max": null,
+      "mean": null,
+      "launch_p50": [
+       null,
+       null,
+       null,
+       null,
+       null,
+       null
+      ]
+     }
+    },
+    "cold cpu_ms": {
+     "base": {
+      "n": 6,
+      "p50": 30.065,
+      "p95": 30.814,
+      "max": 30.814,
+      "mean": 30.314,
+      "launch_p50": [
+       30.576,
+       30.064,
+       30.814,
+       30.577,
+       29.79,
+       30.065
+      ]
+     },
+     "cand": {
+      "n": 6,
+      "p50": 29.329,
+      "p95": 29.696,
+      "max": 29.696,
+      "mean": 29.356,
+      "launch_p50": [
+       29.329,
+       29.406,
+       29.696,
+       29.125,
+       29.214,
+       29.367
+      ]
+     }
+    },
+    "cold proc_cpu_ms": {
+     "base": {
+      "n": 6,
+      "p50": 304.447,
+      "p95": 305.298,
+      "max": 305.298,
+      "mean": 304.474,
+      "launch_p50": [
+       305.298,
+       304.447,
+       304.456,
+       304.754,
+       303.633,
+       304.254
+      ]
+     },
+     "cand": {
+      "n": 6,
+      "p50": 303.322,
+      "p95": 304.196,
+      "max": 304.196,
+      "mean": 303.383,
+      "launch_p50": [
+       304.196,
+       303.42,
+       303.498,
+       303.216,
+       302.646,
+       303.322
+      ]
+     }
+    },
+    "cold last_ms_settle": {
+     "base": {
+      "n": 6,
+      "p50": 313.373,
+      "p95": 316.248,
+      "max": 316.248,
+      "mean": 313.572,
+      "launch_p50": [
+       313.418,
+       315.208,
+       316.248,
+       313.373,
+       310.34,
+       312.847
+      ]
+     },
+     "cand": {
+      "n": 6,
+      "p50": 314.602,
+      "p95": 318.344,
+      "max": 318.344,
+      "mean": 314.897,
+      "launch_p50": [
+       318.344,
+       316.918,
+       314.602,
+       312.234,
+       310.468,
+       316.815
+      ]
+     }
+    },
+    "cold app_last_ms": {
+     "base": {
+      "n": 6,
+      "p50": 312.178,
+      "p95": 315.097,
+      "max": 315.097,
+      "mean": 312.429,
+      "launch_p50": [
+       312.324,
+       314.147,
+       315.097,
+       312.178,
+       309.194,
+       311.635
+      ]
+     },
+     "cand": {
+      "n": 6,
+      "p50": 313.557,
+      "p95": 317.226,
+      "max": 317.226,
+      "mean": 313.815,
+      "launch_p50": [
+       317.226,
+       315.876,
+       313.557,
+       311.14,
+       309.286,
+       315.802
+      ]
+     }
+    },
+    "cold first_ms": {
+     "base": {
+      "n": 6,
+      "p50": 14.73,
+      "p95": 15.014,
+      "max": 15.014,
+      "mean": 14.7,
+      "launch_p50": [
+       14.801,
+       14.786,
+       14.73,
+       14.568,
+       14.298,
+       15.014
+      ]
+     },
+     "cand": {
+      "n": 6,
+      "p50": 14.38,
+      "p95": 15.597,
+      "max": 15.597,
+      "mean": 14.556,
+      "launch_p50": [
+       14.167,
+       14.098,
+       14.574,
+       15.597,
+       14.38,
+       14.52
+      ]
+     }
+    },
+    "cold raw_ms": {
+     "base": {
+      "n": 6,
+      "p50": 1.146,
+      "p95": 1.212,
+      "max": 1.212,
+      "mean": 1.143,
+      "launch_p50": [
+       1.094,
+       1.061,
+       1.151,
+       1.195,
+       1.146,
+       1.212
+      ]
+     },
+     "cand": {
+      "n": 6,
+      "p50": 1.045,
+      "p95": 1.182,
+      "max": 1.182,
+      "mean": 1.082,
+      "launch_p50": [
+       1.118,
+       1.042,
+       1.045,
+       1.094,
+       1.182,
+       1.013
+      ]
+     }
+    },
+    "cold wait_ms": {
+     "base": {
+      "n": 6,
+      "p50": 0.007,
+      "p95": 0.126,
+      "max": 0.126,
+      "mean": 0.025,
+      "launch_p50": [
+       0.007,
+       0.007,
+       0.005,
+       0.007,
+       0.0,
+       0.126
+      ]
+     },
+     "cand": {
+      "n": 6,
+      "p50": 0.009,
+      "p95": 0.032,
+      "max": 0.032,
+      "mean": 0.012,
+      "launch_p50": [
+       0.009,
+       0.011,
+       0.004,
+       0.007,
+       0.012,
+       0.032
+      ]
+     }
+    },
+    "base counts": {
+     "launches": 6,
+     "recorded": 240,
+     "missing_patch": 240,
+     "patch_differs_from_alt": 0,
+     "traces_not_one": 240,
+     "frames": {
+      "1": 232,
+      "3": 8
+     },
+     "idle_frames": 0,
+     "idle_cpu_p50": 1.297,
+     "mhz_p50": null,
+     "mhz_p5": null,
+     "mhz_max": null,
+     "cpus": [],
+     "load1_before": [
+      0.05078125,
+      0.01513671875,
+      0.04736328125,
+      0.10595703125,
+      0.0966796875,
+      0.0302734375
+     ],
+     "exits": [
+      -15,
+      -15,
+      -15,
+      -15,
+      -15,
+      -15
+     ],
+     "fixture_unchanged": true
+    },
+    "cand counts": {
+     "launches": 6,
+     "recorded": 240,
+     "missing_patch": 240,
+     "patch_differs_from_alt": 0,
+     "traces_not_one": 240,
+     "frames": {
+      "1": 232,
+      "2": 1,
+      "3": 7
+     },
+     "idle_frames": 0,
+     "idle_cpu_p50": 1.316,
+     "mhz_p50": null,
+     "mhz_p5": null,
+     "mhz_max": null,
+     "cpus": [],
+     "load1_before": [
+      0.142578125,
+      0.00390625,
+      0.177734375,
+      0.0576171875,
+      0.03369140625,
+      0.05078125
+     ],
+     "exits": [
+      -15,
+      -15,
+      -15,
+      -15,
+      -15,
+      -15
+     ],
+     "fixture_unchanged": true
+    }
+   },
+   "launches": [
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "00-C",
+     "started_utc": "2026-10-05T16:58:32Z",
+     "load1_before": 0.142578125,
+     "pid": 2505831,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 0,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T16:59:32Z",
+     "load1_after": 0.05078125,
+     "n": 0,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "01-B",
+     "started_utc": "2026-10-05T16:59:34Z",
+     "load1_before": 0.05078125,
+     "pid": 2506485,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 0,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:00:35Z",
+     "load1_after": 0.0166015625,
+     "n": 1,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "02-B",
+     "started_utc": "2026-10-05T17:00:37Z",
+     "load1_before": 0.01513671875,
+     "pid": 2507097,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 0,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:01:37Z",
+     "load1_after": 0.00390625,
+     "n": 2,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "03-C",
+     "started_utc": "2026-10-05T17:01:40Z",
+     "load1_before": 0.00390625,
+     "pid": 2507883,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 0,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:02:40Z",
+     "load1_after": 0.0517578125,
+     "n": 3,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "04-B",
+     "started_utc": "2026-10-05T17:02:42Z",
+     "load1_before": 0.04736328125,
+     "pid": 2508519,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 0,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:03:43Z",
+     "load1_after": 0.177734375,
+     "n": 4,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "05-C",
+     "started_utc": "2026-10-05T17:03:45Z",
+     "load1_before": 0.177734375,
+     "pid": 2509139,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 0,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:04:45Z",
+     "load1_after": 0.06298828125,
+     "n": 5,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "06-C",
+     "started_utc": "2026-10-05T17:04:47Z",
+     "load1_before": 0.0576171875,
+     "pid": 2509826,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 0,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:05:48Z",
+     "load1_after": 0.10595703125,
+     "n": 6,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "07-B",
+     "started_utc": "2026-10-05T17:05:50Z",
+     "load1_before": 0.10595703125,
+     "pid": 2510453,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 0,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:06:50Z",
+     "load1_after": 0.037109375,
+     "n": 7,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "08-C",
+     "started_utc": "2026-10-05T17:06:52Z",
+     "load1_before": 0.03369140625,
+     "pid": 2511094,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 0,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:07:53Z",
+     "load1_after": 0.0966796875,
+     "n": 8,
+     "build": "cand"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "09-B",
+     "started_utc": "2026-10-05T17:07:55Z",
+     "load1_before": 0.0966796875,
+     "pid": 2511723,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 0,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:08:55Z",
+     "load1_after": 0.033203125,
+     "n": 9,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-base-7323988",
+     "run_dir": "10-B",
+     "started_utc": "2026-10-05T17:08:58Z",
+     "load1_before": 0.0302734375,
+     "pid": 2512365,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 0,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:09:58Z",
+     "load1_after": 0.05078125,
+     "n": 10,
+     "build": "base"
+    },
+    {
+     "binary": "gitturtle-cand-c9e1222",
+     "run_dir": "11-C",
+     "started_utc": "2026-10-05T17:10:00Z",
+     "load1_before": 0.05078125,
+     "pid": 2512999,
+     "exe_ok": true,
+     "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "window": [
+      1480,
+      800
+     ],
+     "raw_event_types": [
+      13
+     ],
+     "trace_lines": 0,
+     "exit": -15,
+     "fixture_unchanged": true,
+     "ended_utc": "2026-10-05T17:11:00Z",
+     "load1_after": 0.05126953125,
+     "n": 11,
+     "build": "cand"
+    }
+   ]
+  }
+ }
+}
