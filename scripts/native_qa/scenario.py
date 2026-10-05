@@ -5,7 +5,8 @@ and, for a route that writes, the changes each launch makes to its own copy of
 it (`writes.py`), the window size and, below the app's own minimum, the
 WM_NORMAL_HINTS minimum each launch lowers it to (`window_minimum`), the
 variants (palette x interface text size, each optionally with its own store
-settings, HOME files, window and minimum), one ordered list of steps that
+settings, HOME files, files beside the store such as the app's recovery
+drafts, window and minimum), one ordered list of steps that
 every build role runs identically, named crop boxes (one box, or several side
 by side, optionally magnified), the captures to commit, the probes (every
 frame drawn after a key or a click, analysed but never committed) and the
@@ -57,7 +58,7 @@ RECORD = "record"     # an expectation that measures and writes an analysis with
 
 TOP_LEVEL = ({"version", "task", "variants", "steps"},
              {"summary", "limitations", "window", "window_minimum", "roles", "fixture", "settings", "env", "crops",
-              "analyses", "home", "atspi", "writes"})
+              "analyses", "home", "app_config", "atspi", "writes"})
 WINDOW_RANGE = (200, 8192)  # px, for a window, a resize and a window minimum
 # Each step has exactly one action key; these are the options each action takes beside `note` and `when`.
 # No option shares an action's name, so a normalised step still names exactly one action.
@@ -136,13 +137,16 @@ class Variant:
     home: dict = field(default_factory=dict, hash=False)  # HOME files (path: bytes) over the spec's, for this variant
     window: tuple[int, int] | None = None  # its launches' window, over the spec's
     window_minimum: tuple[int, int] | None = None  # the WM_NORMAL_HINTS minimum its launches lower to, over the spec's
+    # Files (name: bytes) seeded beside the store in the app's configuration directory, over the spec's
+    app_config: dict = field(default_factory=dict, hash=False)
 
     @property
     def label(self) -> str:
         """The variant's part of a committed name: `midnight`, or `midnight-13pt` with a text size; a variant with
-        its own settings or HOME files uses its id, which extends that with what they change
-        (`midnight-13pt-code-18pt`). Its own window needs no part: every name carries the capture's window size."""
-        if self.settings or self.home:
+        its own settings, HOME files or app configuration files uses its id, which extends that with what they
+        change (`midnight-13pt-code-18pt`). Its own window needs no part: every name carries the capture's window
+        size."""
+        if self.settings or self.home or self.app_config:
             return self.id
         return palette_label(self.palette, self.text_size)
 
@@ -152,6 +156,8 @@ class Variant:
             described["settings"] = self.settings
         if self.home:
             described["home"] = sorted(self.home)
+        if self.app_config:
+            described["app_config"] = sorted(self.app_config)
         if self.window:
             described["window"] = list(self.window)
         if self.window_minimum:
@@ -637,26 +643,48 @@ def home_entry(value, path: str) -> dict[str, bytes]:
         problem = runenv.home_file_problem(name)
         if problem is not None:
             fail(path, problem)
-        where = f"{path}[{name!r}]"
-        if isinstance(content, str):  # an empty file, such as Omarchy's light.mode marker, is allowed
-            try:
-                data = content.encode()
-            except UnicodeEncodeError:
-                fail(where, "the text is not valid UTF-8; give {\"base64\": ...} instead")
-        else:
-            encoded = obj(content, where, {"base64"})["base64"]
-            if not isinstance(encoded, str):
-                fail(f"{where}.base64", f"expected a base64 string, got {encoded!r}")
-            try:
-                data = base64.b64decode(encoded, validate=True)
-            except binascii.Error as error:
-                fail(f"{where}.base64", f"not base64 ({error})")
-        if len(data) > runenv.HOME_FILE_BYTES:
-            fail(where, f"{len(data)} bytes; at most {runenv.HOME_FILE_BYTES}")
-        seeded[name] = data
+        seeded[name] = file_content(content, f"{path}[{name!r}]", runenv.HOME_FILE_BYTES)
     problem = runenv.home_overlap(seeded)
     if problem is not None:
         fail(path, problem)
+    return seeded
+
+
+def file_content(content, where: str, limit: int) -> bytes:
+    """A seeded file's bytes: its text, or `{"base64": ...}`, at most `limit` bytes."""
+    if isinstance(content, str):  # an empty file, such as Omarchy's light.mode marker, is allowed
+        try:
+            data = content.encode()
+        except UnicodeEncodeError:
+            fail(where, "the text is not valid UTF-8; give {\"base64\": ...} instead")
+    else:
+        encoded = obj(content, where, {"base64"})["base64"]
+        if not isinstance(encoded, str):
+            fail(f"{where}.base64", f"expected a base64 string, got {encoded!r}")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except binascii.Error as error:
+            fail(f"{where}.base64", f"not base64 ({error})")
+    if len(data) > limit:
+        fail(where, f"{len(data)} bytes; at most {limit}")
+    return data
+
+
+def app_config_entry(value, path: str) -> dict[str, bytes]:
+    """Files seeded beside the preference store in each launch's app configuration directory, the spec's or a
+    variant's: a plain file name to its text, or to `{"base64": ...}`; never the store itself, which comes from the
+    variants and `settings`."""
+    files = mapping(value, path)
+    if not files:
+        fail(path, "no files; leave \"app_config\" out instead")
+    if len(files) > runenv.APP_CONFIG_FILES:
+        fail(path, f"{len(files)} files; at most {runenv.APP_CONFIG_FILES}")
+    seeded = {}
+    for name, content in files.items():
+        problem = runenv.app_config_file_problem(name)
+        if problem is not None:
+            fail(path, problem)
+        seeded[name] = file_content(content, f"{path}[{name!r}]", runenv.APP_CONFIG_FILE_BYTES)
     return seeded
 
 
@@ -674,7 +702,8 @@ def variant_list(value, path: str) -> list[Variant]:
     variants = []
     for index, item in enumerate(items):
         where = f"{path}[{index}]"
-        obj(item, where, {"palette"}, {"text_size", "id", "settings", "home", "window", "window_minimum"})
+        obj(item, where, {"palette"}, {"text_size", "id", "settings", "home", "app_config", "window",
+                                       "window_minimum"})
         size = item.get("text_size")
         if size is not None:
             integer(size, f"{where}.text_size", TEXT_SIZES.start, TEXT_SIZES.stop - 1)
@@ -686,8 +715,9 @@ def variant_list(value, path: str) -> list[Variant]:
             if not settings:
                 fail(f"{where}.settings", "no settings; leave \"settings\" out instead")
         home = home_entry(item["home"], f"{where}.home") if "home" in item else {}
-        if settings or home:
-            what = "settings" if settings else "HOME files"
+        app_config = app_config_entry(item["app_config"], f"{where}.app_config") if "app_config" in item else {}
+        if settings or home or app_config:
+            what = "settings" if settings else "HOME files" if home else "app configuration files"
             ident = item.get("id")
             own = ident[len(default) + 1:] if isinstance(ident, str) and ident.startswith(f"{default}-") else ""
             if not own:
@@ -700,7 +730,7 @@ def variant_list(value, path: str) -> list[Variant]:
         window = window_size(item["window"], f"{where}.window") if "window" in item else None
         minimum = window_size(item["window_minimum"], f"{where}.window_minimum") if "window_minimum" in item else None
         variants.append(Variant(text(item.get("id", default), f"{where}.id", VARIANT_ID), palette, size, settings,
-                                home, window, minimum))
+                                home, window, minimum, app_config))
     ids = [variant.id for variant in variants]
     duplicate = sorted({i for i in ids if ids.count(i) > 1})
     if duplicate:
@@ -1153,12 +1183,16 @@ def validate(data, sha256: str = "") -> dict:
         text(item, f"$.env.{key}", limit=500)
     spec["env"] = env
     spec["home"] = home_entry(data["home"], "$.home") if "home" in data else {}
+    spec["app_config"] = app_config_entry(data["app_config"], "$.app_config") if "app_config" in data else {}
     spec["atspi"] = boolean(data.get("atspi", False), "$.atspi")
     spec["variants"] = variant_list(data["variants"], "$.variants")
     for index, variant in enumerate(spec["variants"]):  # what each launch would seed, as Session checks it
         problem = runenv.home_files_problem(home_files(spec, variant))
         if problem is not None:
             fail(f"$.variants[{index}].home", f"with the spec's own HOME files, {problem}")
+        problem = runenv.app_config_files_problem(app_config_files(spec, variant))
+        if problem is not None:
+            fail(f"$.variants[{index}].app_config", f"with the spec's own app configuration files, {problem}")
     steps = array(data["steps"], "$.steps", 1, 2000)
     # Every launch window (the spec's only where a variant has none of its own) and every resize target.
     spec["bounds"] = extent([*(window_for(spec, v) for v in spec["variants"]), *resize_targets(steps)])
@@ -1499,3 +1533,8 @@ def store_settings(spec: dict, variant: Variant) -> dict:
 def home_files(spec: dict, variant: Variant) -> dict[str, bytes]:
     """The files seeded under a launch's HOME: the spec's, with the variant's own over them path by path."""
     return {**spec["home"], **variant.home}
+
+
+def app_config_files(spec: dict, variant: Variant) -> dict[str, bytes]:
+    """The files seeded beside a launch's store: the spec's, with the variant's own over them name by name."""
+    return {**spec["app_config"], **variant.app_config}

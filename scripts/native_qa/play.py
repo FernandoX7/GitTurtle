@@ -92,9 +92,12 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
 
     store = stores.store_text(variant.palette, settings=scenario.store_settings(spec, variant))
     home = scenario.home_files(spec, variant)
-    # The digests flow-log.json's header records too: the merged store and HOME files this launch starts from.
+    app_config = scenario.app_config_files(spec, variant)
+    # The digests flow-log.json's header records too: the merged store, HOME files and files beside the store this
+    # launch starts from.
     record = dict(role=role, variant=variant.id, run_dir=str(run_dir), store_sha256=identity.sha256_bytes(store),
                   home_sha256={path: identity.sha256_bytes(data) for path, data in sorted(home.items())},
+                  app_config_sha256={name: identity.sha256_bytes(data) for name, data in sorted(app_config.items())},
                   error=None, refusal=False)
     width, height = scenario.window_for(spec, variant)
     copy = None
@@ -108,7 +111,8 @@ def launch(spec: dict, role: str, variant: scenario.Variant, binary: Path, fixtu
         run = session.Session(binary, fixture if copy is None else copy.repository, run_dir, store, width=width,
                               height=height, display=options["display"], scale="1", for_commit=True,
                               extra_env=spec["env"], settle=options["settle"], backend=options["backend"],
-                              home_files=home, window_minimum=scenario.minimum_for(spec, variant))
+                              home_files=home, window_minimum=scenario.minimum_for(spec, variant),
+                              app_config_files=app_config)
     except (SystemExit, Exception) as error:
         unused = writes.discard(copy) if copy is not None else None
         return dict(record, error="; ".join(filter(None, [reason(error), unused])), refusal=True, started_utc=utc(),

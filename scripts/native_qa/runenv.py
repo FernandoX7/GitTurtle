@@ -38,6 +38,14 @@ READ_ONLY_ROOTS = tuple(sub for name, sub in LAYOUT.items() if name != "HOME")
 HOME_FILES = 64
 HOME_FILE_BYTES = 1_000_000
 HOME_OWN = (".gitconfig",)  # written by `prepare` itself: the run's Git identity
+# The app's configuration directory under the run's XDG_CONFIG_HOME (`settings_path` in crates/app/src/preferences.rs),
+# where it keeps the preference store and the stores beside it, such as recovery-drafts.json.
+APP_CONFIG = "gitturtle"
+STORE = "preferences.json"  # written by `prepare` itself, generated or supplied: never an `app_config` file
+# Files a scenario seeds beside the store (`app_config`): plain names, with the caps of HOME files.
+APP_CONFIG_FILES = HOME_FILES
+APP_CONFIG_FILE_BYTES = HOME_FILE_BYTES
+NAME_MAX = 255  # bytes Linux allows one name in a path (a component), however many characters encode to them
 
 
 class Refusal(SystemExit):
@@ -54,8 +62,13 @@ class RunDirs:
     paths: dict[str, Path]
 
     @property
+    def app_config(self) -> Path:
+        """The app's configuration directory, which holds the store and the files `app_config` seeds."""
+        return self.paths["XDG_CONFIG_HOME"] / APP_CONFIG
+
+    @property
     def preferences(self) -> Path:
-        return self.paths["XDG_CONFIG_HOME"] / "gitturtle" / "preferences.json"
+        return self.app_config / STORE
 
 
 def operator_home() -> Path:
@@ -127,9 +140,12 @@ def check_commit_run_dir(run_dir: Path) -> None:
 
 
 def prepare(run_dir: Path | str, preferences: bytes, home: Path | None = None,
-            home_files: dict[str, bytes] | None = None) -> RunDirs:
-    """Create the empty run directory, its HOME/XDG tree, the Git identity, the seeded HOME files and store."""
+            home_files: dict[str, bytes] | None = None,
+            app_config_files: dict[str, bytes] | None = None) -> RunDirs:
+    """Create the empty run directory, its HOME/XDG tree, the Git identity, the seeded HOME files, the store and
+    the files seeded beside it."""
     check_home_files(home_files or {})
+    check_app_config_files(app_config_files or {})
     run_dir = check_run_dir(run_dir, home)
     run_dir.mkdir(parents=True, exist_ok=True)
     started = time.time()
@@ -142,23 +158,41 @@ def prepare(run_dir: Path | str, preferences: bytes, home: Path | None = None,
         paths[name] = path
     (paths["HOME"] / ".gitconfig").write_text(GITCONFIG)
     seed_home(paths["HOME"], home_files or {})
-    store = paths["XDG_CONFIG_HOME"] / "gitturtle" / "preferences.json"
-    store.parent.mkdir()
-    store.write_bytes(preferences)
-    captures = run_dir / "captures"
-    captures.mkdir()
-    return RunDirs(run_dir, captures, paths)
+    dirs = RunDirs(run_dir, run_dir / "captures", paths)
+    dirs.app_config.mkdir()
+    dirs.preferences.write_bytes(preferences)
+    seed_app_config(dirs.app_config, app_config_files or {})  # after the store, which O_EXCL then keeps
+    dirs.captures.mkdir()
+    return dirs
+
+
+# ---------- names of seeded files ----------
+def name_problem(part: str) -> str | None:
+    """Why the file system cannot take `part` as one name in a path, or None: it must encode as strict UTF-8 (a lone
+    surrogate from a JSON escape names no file, and `os.fsencode` would fail on most or write a stray byte for the
+    rest), and its encoding must fit the NAME_MAX bytes Linux allows a name, which characters do not measure."""
+    try:
+        part.encode("utf-8")
+        encoded = os.fsencode(part)
+    except UnicodeEncodeError:
+        return f"{part!r} cannot be encoded as a file name; give the name in valid UTF-8"
+    if len(encoded) > NAME_MAX:
+        return f"{part!r} is {len(encoded)} bytes as a file name; at most {NAME_MAX}"
+    return None
 
 
 # ---------- files seeded into HOME ----------
 def home_file_problem(value) -> str | None:
     """Why `value` cannot name a file seeded under a launch's HOME, or None: a relative POSIX path that stays
-    under HOME and is not the run's own Git identity."""
+    under HOME and is not the run's own Git identity, each of whose names the file system can take."""
     if not isinstance(value, str) or not value or len(value) > 300 or "\0" in value:
         return f"expected a non-empty path of at most 300 characters, got {value!r}"
     parts = value.split("/")
     if value.startswith("/") or "\\" in value or any(part in ("", ".", "..") for part in parts):
         return f"{value!r} must be a relative POSIX path under HOME without empty, . or .. parts"
+    problem = next(filter(None, map(name_problem, parts)), None)
+    if problem is not None:
+        return f"{value!r}: {problem}"
     if parts[0] in HOME_OWN:
         return f"{value!r} is the run's own Git identity, which every launch writes itself"
     return None
@@ -197,18 +231,23 @@ def check_home_files(files: dict[str, bytes]) -> dict[str, bytes]:
 
 
 def seed_home(home: Path, files: dict[str, bytes]) -> dict[str, str]:
-    """Write each file under `home` without following a link; each one's sha256 by path.
+    """Write each file under `home` without following a link; each one's sha256 by path (`seed_files`)."""
+    check_home_files(files)
+    return seed_files(home, files, "HOME file")
+
+
+def seed_files(root: Path, files: dict[str, bytes], what: str) -> dict[str, str]:
+    """Write each file under `root` without following a link; each one's sha256 by path.
 
     Every directory on the way is opened relative to its parent with
     O_NOFOLLOW and every file is created with O_EXCL, so a symbolic link or
     an existing file is refused rather than followed or replaced, and nothing
-    lands outside `home`.
+    lands outside `root`. The caller has checked the paths and sizes.
     """
-    check_home_files(files)
     digests = {}
     for relative in sorted(files):
         *directories, name = relative.split("/")
-        fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             for depth, part in enumerate(directories):
                 try:
@@ -219,19 +258,64 @@ def seed_home(home: Path, files: dict[str, bytes]) -> dict[str, str]:
                     child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
                 except OSError as error:
                     where = "/".join(directories[:depth + 1])
-                    raise Refusal(f"HOME file {relative}: {where} is not a plain directory ({error})") from None
+                    raise Refusal(f"{what} {relative}: {where} is not a plain directory ({error})") from None
                 os.close(fd)
                 fd = child
             try:
                 out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=fd)
             except OSError as error:
-                raise Refusal(f"HOME file {relative}: cannot create it in {home} ({error})") from None
+                raise Refusal(f"{what} {relative}: cannot create it in {root} ({error})") from None
             with os.fdopen(out, "wb") as handle:
                 handle.write(files[relative])
         finally:
             os.close(fd)
         digests[relative] = hashlib.sha256(files[relative]).hexdigest()
     return digests
+
+
+# ---------- files seeded beside the store ----------
+def app_config_file_problem(value) -> str | None:
+    """Why `value` cannot name a file seeded in a launch's app configuration directory, or None: a plain file name
+    there that the file system can take (`name_problem`), other than the store, which every launch writes itself."""
+    if not isinstance(value, str) or not value or "\0" in value:
+        return f"expected a non-empty file name, got {value!r}"
+    if "/" in value or "\\" in value or value in (".", ".."):
+        return f"{value!r} must be a plain file name in the app's configuration directory, without / or \\"
+    problem = name_problem(value)
+    if problem is not None:
+        return problem
+    if value == STORE:
+        return f"{value!r} is the preference store, which every launch writes itself from the variants and settings"
+    return None
+
+
+def app_config_files_problem(files: dict[str, bytes]) -> str | None:
+    """Why `seed_app_config` would not write this whole set of files, or None: too many, a bad name or a file too
+    large."""
+    if len(files) > APP_CONFIG_FILES:
+        return f"{len(files)} files; at most {APP_CONFIG_FILES}"
+    for name, data in files.items():
+        problem = app_config_file_problem(name)
+        if problem is not None:
+            return problem
+        if not isinstance(data, bytes) or len(data) > APP_CONFIG_FILE_BYTES:
+            return f"{name}: expected at most {APP_CONFIG_FILE_BYTES} bytes"
+    return None
+
+
+def check_app_config_files(files: dict[str, bytes]) -> dict[str, bytes]:
+    """Refuse, before anything is created, app configuration files `seed_app_config` would not write."""
+    problem = app_config_files_problem(files)
+    if problem is not None:
+        raise Refusal(f"app configuration files: {problem}")
+    return files
+
+
+def seed_app_config(directory: Path, files: dict[str, bytes]) -> dict[str, str]:
+    """Write each file into the app's configuration `directory`, never through a link or over an existing file (the
+    store included); each one's sha256 by name."""
+    check_app_config_files(files)
+    return seed_files(directory, files, "app configuration file")
 
 
 def read_only_problem(value) -> str | None:

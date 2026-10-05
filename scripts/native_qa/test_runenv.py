@@ -234,11 +234,14 @@ class HomeFilesTest(unittest.TestCase):
         self.scratch.cleanup()
 
     def test_paths_are_validated(self) -> None:
-        for good in (".local/state/omarchy/current/theme/colors.toml", "notes.txt", ".config/x/y", "a..b/c"):
+        for good in (".local/state/omarchy/current/theme/colors.toml", "notes.txt", ".config/x/y", "a..b/c",
+                     "x" * 255, "é" * 127 + "x/y"):
             with self.subTest(good=good):
                 self.assertIsNone(runenv.home_file_problem(good))
+        # A part's bytes, not its characters, meet the file system's limit; a lone surrogate encodes to no name.
         for bad in ("", "/etc/passwd", "../outside", "a/../../b", ".", "a/./b", "a//b", "a/", "a\\b", ".gitconfig",
-                    ".gitconfig/x", "x\0y", None, 3, "x" * 301):
+                    ".gitconfig/x", "x\0y", None, 3, "x" * 301, "x" * 256, "a/" + "é" * 128, "é" * 200 + "/b",
+                    "a/\ud800", "\udc80/b"):
             with self.subTest(bad=bad):
                 self.assertIsNotNone(runenv.home_file_problem(bad))
         self.assertIsNone(runenv.home_overlap(["a/b", "a/c", "ab"]))
@@ -301,6 +304,109 @@ class HomeFilesTest(unittest.TestCase):
         linked.symlink_to(home)
         with self.assertRaises(OSError):
             runenv.seed_home(linked, {"x": b"x"})  # HOME itself is never reached through a link
+
+
+DRAFTS = {"recovery-drafts.json": b'{"version": 1, "drafts": []}', "activity.json": b""}
+
+
+class AppConfigFilesTest(unittest.TestCase):
+    """Files seeded beside the preference store, in the app's configuration directory."""
+
+    def setUp(self) -> None:
+        self.scratch = tempfile.TemporaryDirectory()
+        self.root = Path(self.scratch.name).resolve()
+        self.operator = self.root / "operator"
+        self.operator.mkdir()
+
+    def tearDown(self) -> None:
+        self.scratch.cleanup()
+
+    def test_names_are_validated(self) -> None:
+        for good in ("recovery-drafts.json", "activity.json", ".hidden", "a..b", "x" * runenv.NAME_MAX,
+                     "é" * 127 + "x"):
+            with self.subTest(good=good):
+                self.assertIsNone(runenv.app_config_file_problem(good))
+        for bad in ("", ".", "..", "a/b", "/abs", "a/", "a\\b", "x\0y", None, 3, "x" * (runenv.NAME_MAX + 1),
+                    "é" * 128, "\ud800", "\udc80.json"):
+            with self.subTest(bad=bad):
+                self.assertIsNotNone(runenv.app_config_file_problem(bad))
+        self.assertIn("the preference store", runenv.app_config_file_problem("preferences.json"))
+        # 200 characters that are 400 bytes: Linux refuses the name, so validation does, before any launch.
+        self.assertEqual(runenv.app_config_file_problem("é" * 200),
+                         f"{'é' * 200!r} is 400 bytes as a file name; at most 255")
+        self.assertEqual(runenv.app_config_file_problem("\ud800"),
+                         "'\\ud800' cannot be encoded as a file name; give the name in valid UTF-8")
+
+    def test_the_longest_names_validation_allows_are_written(self) -> None:
+        directory = self.root / "gitturtle"
+        directory.mkdir()
+        names = {"x" * runenv.NAME_MAX: b"x", "é" * 127 + "x": b"e"}  # 255 bytes each, the file system's limit
+        self.assertIsNone(runenv.app_config_files_problem(names))
+        runenv.seed_app_config(directory, names)
+        self.assertEqual({path.name: path.read_bytes() for path in directory.iterdir()}, names)
+        home = self.root / "home"
+        home.mkdir()
+        runenv.seed_home(home, {"é" * 127 + "x/" + "x" * 30: b"h"})
+        self.assertEqual((home / ("é" * 127 + "x") / ("x" * 30)).read_bytes(), b"h")
+
+    def test_names_the_file_system_refuses_never_reach_a_launch(self) -> None:
+        for files in ({"é" * 200: b"x"}, {"\ud800": b"x"}):
+            with self.subTest(files=list(files)), self.assertRaisesRegex(runenv.Refusal, "app configuration files: "):
+                runenv.prepare(self.root / "run", b"{}", home=self.operator, app_config_files=files)
+            self.assertFalse((self.root / "run").exists())
+        for files in ({"a/" + "é" * 200: b"x"}, {"a/\ud800": b"x"}):
+            with self.subTest(files=list(files)), self.assertRaisesRegex(runenv.Refusal, "HOME files: "):
+                runenv.prepare(self.root / "run", b"{}", home=self.operator, home_files=files)
+            self.assertFalse((self.root / "run").exists())
+
+    def test_prepare_seeds_the_files_beside_the_store(self) -> None:
+        dirs = runenv.prepare(self.root / "run", b'{"version": 6}', home=self.operator, app_config_files=DRAFTS)
+        self.assertEqual(dirs.app_config, dirs.paths["XDG_CONFIG_HOME"] / "gitturtle")
+        self.assertEqual(dirs.preferences.parent, dirs.app_config)
+        for name, data in DRAFTS.items():
+            with self.subTest(name=name):
+                path = dirs.app_config / name
+                self.assertTrue(path.is_file() and not path.is_symlink())
+                self.assertEqual(path.read_bytes(), data)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o644 & ~HomeFilesTest.umask())
+        self.assertEqual(dirs.preferences.read_bytes(), b'{"version": 6}')
+        self.assertEqual(sorted(p.name for p in dirs.app_config.iterdir()), sorted([*DRAFTS, "preferences.json"]))
+        self.assertTrue(dirs.captures.is_dir())
+
+    def test_bad_files_are_refused_before_anything_is_created(self) -> None:
+        for files, reason in (({"preferences.json": b"{}"}, "app configuration files: 'preferences.json' is the "
+                                                            "preference store"),
+                              ({"a/b": b"x"}, "must be a plain file name"),
+                              ({"..": b"x"}, "must be a plain file name"),
+                              ({"big": b"x" * (runenv.APP_CONFIG_FILE_BYTES + 1)}, "big: expected at most 1000000"),
+                              ({f"f{i}": b"" for i in range(runenv.APP_CONFIG_FILES + 1)}, "65 files; at most 64")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(runenv.Refusal, reason):
+                runenv.prepare(self.root / "run", b"{}", home=self.operator, app_config_files=files)
+            self.assertFalse((self.root / "run").exists())
+
+    def test_a_link_or_an_existing_file_is_refused_not_followed(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        directory = self.root / "gitturtle"
+        directory.mkdir()
+        self.assertEqual(runenv.seed_app_config(directory, DRAFTS),
+                         {name: stores.sha256(data) for name, data in DRAFTS.items()})
+        (directory / "linked.json").symlink_to(outside / "linked.json")
+        with self.assertRaisesRegex(runenv.Refusal, "app configuration file linked.json: cannot create it"):
+            runenv.seed_app_config(directory, {"linked.json": b"x"})
+        self.assertFalse((outside / "linked.json").exists())
+        (directory / "preferences.json").write_text("kept")
+        with self.assertRaisesRegex(runenv.Refusal, "'preferences.json' is the preference store"):
+            runenv.seed_app_config(directory, {"preferences.json": b"replaced"})
+        with self.assertRaisesRegex(runenv.Refusal, "app configuration file activity.json: cannot create it"):
+            runenv.seed_app_config(directory, {"activity.json": b"replaced"})
+        self.assertEqual((directory / "activity.json").read_bytes(), b"")
+        self.assertEqual((directory / "preferences.json").read_text(), "kept")
+        linked = self.root / "linked-config"
+        linked.symlink_to(directory)
+        with self.assertRaises(OSError):
+            runenv.seed_app_config(linked, {"x": b"x"})  # the directory itself is never reached through a link
+        self.assertFalse((directory / "x").exists())
 
 
 class SnapshotTest(unittest.TestCase):
