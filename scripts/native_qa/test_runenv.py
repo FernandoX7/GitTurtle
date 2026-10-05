@@ -303,6 +303,80 @@ class HomeFilesTest(unittest.TestCase):
             runenv.seed_home(linked, {"x": b"x"})  # HOME itself is never reached through a link
 
 
+DRAFTS = {"recovery-drafts.json": b'{"version": 1, "drafts": []}', "activity.json": b""}
+
+
+class AppConfigFilesTest(unittest.TestCase):
+    """Files seeded beside the preference store, in the app's configuration directory."""
+
+    def setUp(self) -> None:
+        self.scratch = tempfile.TemporaryDirectory()
+        self.root = Path(self.scratch.name).resolve()
+        self.operator = self.root / "operator"
+        self.operator.mkdir()
+
+    def tearDown(self) -> None:
+        self.scratch.cleanup()
+
+    def test_names_are_validated(self) -> None:
+        for good in ("recovery-drafts.json", "activity.json", ".hidden", "a..b", "x" * runenv.NAME_MAX):
+            with self.subTest(good=good):
+                self.assertIsNone(runenv.app_config_file_problem(good))
+        for bad in ("", ".", "..", "a/b", "/abs", "a/", "a\\b", "x\0y", None, 3, "x" * (runenv.NAME_MAX + 1)):
+            with self.subTest(bad=bad):
+                self.assertIsNotNone(runenv.app_config_file_problem(bad))
+        self.assertIn("the preference store", runenv.app_config_file_problem("preferences.json"))
+
+    def test_prepare_seeds_the_files_beside_the_store(self) -> None:
+        dirs = runenv.prepare(self.root / "run", b'{"version": 6}', home=self.operator, app_config_files=DRAFTS)
+        self.assertEqual(dirs.app_config, dirs.paths["XDG_CONFIG_HOME"] / "gitturtle")
+        self.assertEqual(dirs.preferences.parent, dirs.app_config)
+        for name, data in DRAFTS.items():
+            with self.subTest(name=name):
+                path = dirs.app_config / name
+                self.assertTrue(path.is_file() and not path.is_symlink())
+                self.assertEqual(path.read_bytes(), data)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o644 & ~HomeFilesTest.umask())
+        self.assertEqual(dirs.preferences.read_bytes(), b'{"version": 6}')
+        self.assertEqual(sorted(p.name for p in dirs.app_config.iterdir()), sorted([*DRAFTS, "preferences.json"]))
+        self.assertTrue(dirs.captures.is_dir())
+
+    def test_bad_files_are_refused_before_anything_is_created(self) -> None:
+        for files, reason in (({"preferences.json": b"{}"}, "app configuration files: 'preferences.json' is the "
+                                                            "preference store"),
+                              ({"a/b": b"x"}, "must be a plain file name"),
+                              ({"..": b"x"}, "must be a plain file name"),
+                              ({"big": b"x" * (runenv.APP_CONFIG_FILE_BYTES + 1)}, "big: expected at most 1000000"),
+                              ({f"f{i}": b"" for i in range(runenv.APP_CONFIG_FILES + 1)}, "65 files; at most 64")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(runenv.Refusal, reason):
+                runenv.prepare(self.root / "run", b"{}", home=self.operator, app_config_files=files)
+            self.assertFalse((self.root / "run").exists())
+
+    def test_a_link_or_an_existing_file_is_refused_not_followed(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        directory = self.root / "gitturtle"
+        directory.mkdir()
+        self.assertEqual(runenv.seed_app_config(directory, DRAFTS),
+                         {name: stores.sha256(data) for name, data in DRAFTS.items()})
+        (directory / "linked.json").symlink_to(outside / "linked.json")
+        with self.assertRaisesRegex(runenv.Refusal, "app configuration file linked.json: cannot create it"):
+            runenv.seed_app_config(directory, {"linked.json": b"x"})
+        self.assertFalse((outside / "linked.json").exists())
+        (directory / "preferences.json").write_text("kept")
+        with self.assertRaisesRegex(runenv.Refusal, "'preferences.json' is the preference store"):
+            runenv.seed_app_config(directory, {"preferences.json": b"replaced"})
+        with self.assertRaisesRegex(runenv.Refusal, "app configuration file activity.json: cannot create it"):
+            runenv.seed_app_config(directory, {"activity.json": b"replaced"})
+        self.assertEqual((directory / "activity.json").read_bytes(), b"")
+        self.assertEqual((directory / "preferences.json").read_text(), "kept")
+        linked = self.root / "linked-config"
+        linked.symlink_to(directory)
+        with self.assertRaises(OSError):
+            runenv.seed_app_config(linked, {"x": b"x"})  # the directory itself is never reached through a link
+        self.assertFalse((directory / "x").exists())
+
+
 class SnapshotTest(unittest.TestCase):
     """`stores.snapshot` on a real file, with a clock that advances one poll per sleep."""
 

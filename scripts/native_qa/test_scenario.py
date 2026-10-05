@@ -571,6 +571,68 @@ class SpecTest(unittest.TestCase):
             with self.subTest(match=match), self.assertRaisesRegex(scenario.SpecError, match):
                 scenario.validate(spec(**changes))
 
+    def test_app_config_files_are_seeded_from_the_spec_and_each_variant(self) -> None:
+        drafts = '{"version": 1, "drafts": []}'
+        loaded = scenario.validate(spec(app_config={"recovery-drafts.json": drafts, "bin.dat": {"base64": "AAEC/w=="},
+                                                    "activity.json": ""}, variants=[
+            {"palette": "midnight"},
+            {"palette": "midnight", "id": "midnight-rewrite", "app_config": {"recovery-drafts.json": "{}"}},
+            {"palette": "porcelain", "text_size": 13, "id": "porcelain-13pt-extra", "app_config": {"extra.json": "x"},
+             "home": {"notes.txt": "x"}}]))
+        plain, rewrite, extra = loaded["variants"]
+        self.assertEqual(scenario.app_config_files(loaded, plain), {
+            "recovery-drafts.json": drafts.encode(), "bin.dat": b"\x00\x01\x02\xff", "activity.json": b""})
+        self.assertEqual(scenario.app_config_files(loaded, rewrite)["recovery-drafts.json"], b"{}")  # the variant's own
+        self.assertEqual(sorted(scenario.app_config_files(loaded, extra)),
+                         ["activity.json", "bin.dat", "extra.json", "recovery-drafts.json"])
+        self.assertEqual(scenario.home_files(loaded, extra), {"notes.txt": b"x"})
+        # A variant with its own files beside the store commits under its id, and describes them by name only.
+        self.assertEqual([c.name for c in scenario.committed(loaded, roles=("cand",))], [
+            "candidate-midnight-1000x680-focus.png", "candidate-midnight-rewrite-1000x680-focus.png",
+            "candidate-porcelain-13pt-extra-1000x680-focus.png"])
+        self.assertEqual(rewrite.describe(), dict(id="midnight-rewrite", palette="midnight", text_size=None,
+                                                  app_config=["recovery-drafts.json"]))
+        self.assertEqual(extra.describe()["home"], ["notes.txt"])
+        self.assertNotIn("app_config", plain.describe())
+        self.assertEqual(scenario.validate(spec())["app_config"], {})
+
+    def test_bad_app_config_files(self) -> None:
+        good = {"recovery-drafts.json": "{}"}
+        for changes, match in (
+                (dict(app_config={}), r"\$\.app_config: no files; leave \"app_config\" out instead"),
+                (dict(app_config=["recovery-drafts.json"]), r"\$\.app_config: expected an object"),
+                (dict(app_config={"preferences.json": "{}"}),
+                 r"\$\.app_config: 'preferences.json' is the preference store, which every launch writes itself"),
+                (dict(app_config={"/etc/passwd": "x"}), r"\$\.app_config: '/etc/passwd' must be a plain file name"),
+                (dict(app_config={"../escape": "x"}), "must be a plain file name"),
+                (dict(app_config={"sub/file": "x"}), "must be a plain file name"),
+                (dict(app_config={"a\\b": "x"}), "must be a plain file name"),
+                (dict(app_config={"..": "x"}), "must be a plain file name"),
+                (dict(app_config={"": "x"}), "expected a non-empty file name"),
+                (dict(app_config={"x" * 256: "x"}), "at most 255 characters"),
+                (dict(app_config={"a": 7}), r"\$\.app_config\['a'\]: expected an object, got int"),
+                (dict(app_config={"a": {"base64": "!!"}}), r"\$\.app_config\['a'\]\.base64: not base64"),
+                (dict(app_config={"a": {"json": {}}}), r"\$\.app_config\['a'\]: unknown key\(s\) json"),
+                (dict(app_config={"a": "\ud800"}), "not valid UTF-8"),
+                (dict(app_config={f"f{i}": "" for i in range(65)}), "65 files; at most 64"),
+                (dict(app_config={"big": "x" * 1_000_001}), "1000001 bytes; at most 1000000"),
+                (dict(variants=[{"palette": "midnight", "app_config": good}]),
+                 r"\$\.variants\[0\]\.id: a variant with app configuration files needs an \"id\" that extends "
+                 r"'midnight-'"),
+                (dict(variants=[{"palette": "midnight", "text_size": 13, "id": "midnight-13pt-18pt",
+                                 "app_config": good}]),
+                 r"names an interface size after 'midnight-13pt-' that only \"text_size\" sets; extend "
+                 r"'midnight-13pt-' with what the app configuration files change"),
+                (dict(variants=[{"palette": "midnight", "id": "midnight-x", "app_config": {"preferences.json": ""}}]),
+                 r"\$\.variants\[0\]\.app_config: 'preferences.json' is the preference store"),
+                # Within the cap apart, over it merged: refused here, not by the launch's Session mid-run.
+                (dict(app_config={f"spec-{i}": "" for i in range(40)}, variants=[
+                    {"palette": "midnight"},
+                    {"palette": "midnight", "id": "midnight-more", "app_config": {f"own-{i}": "" for i in range(30)}}]),
+                 r"\$\.variants\[1\]\.app_config: with the spec's own app configuration files, 70 files; at most 64")):
+            with self.subTest(match=match), self.assertRaisesRegex(scenario.SpecError, match):
+                scenario.validate(spec(**changes))
+
     def test_readings_and_their_analyses(self) -> None:
         steps = SPEC["steps"] + [
             {"atspi_focus": "switch", "note": "the Switch holds focus"},
@@ -825,6 +887,27 @@ class SpecTest(unittest.TestCase):
                                capture_output=True, text=True)
         self.assertNotIn("HOME files", plain.stdout)
         self.assertNotIn("IsEnabled", plain.stdout)
+        self.assertNotIn("app configuration files", plain.stdout)
+
+    def test_cli_check_names_the_app_config_files(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "spec.json"
+            path.write_text(json.dumps(spec(app_config={"recovery-drafts.json": "{}"}, variants=[
+                {"palette": "midnight"},
+                {"palette": "midnight", "id": "midnight-activity", "app_config": {"activity.json": "[]"}}])))
+            result = subprocess.run([sys.executable, "-B", str(QA), "scenario", "check", str(path)],
+                                    capture_output=True, text=True)
+            bad = Path(scratch) / "bad.json"
+            bad.write_text(json.dumps(spec(app_config={"preferences.json": "{}"})))
+            refused = subprocess.run([sys.executable, "-B", str(QA), "scenario", "check", str(bad)],
+                                     capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("  app configuration files seeded beside config/gitturtle/preferences.json before each launch: "
+                      "activity.json, recovery-drafts.json\n", result.stdout)
+        self.assertIn("candidate-midnight-activity-1000x680-focus.png", result.stdout)
+        self.assertNotIn("HOME files", result.stdout)
+        self.assertEqual(refused.returncode, 2, refused.stdout)
+        self.assertIn("$.app_config: 'preferences.json' is the preference store", refused.stderr)
 
     def test_scaled_and_composed_crops_and_a_glyph_contrast(self) -> None:
         loaded = scenario.validate(glyph_spec())
@@ -1560,6 +1643,27 @@ class LaunchRecordTest(unittest.TestCase):
         self.assertEqual(session.log["scenario"]["variant"]["home"], ["c.txt"])
         record, session = self.launch(scenario.validate(spec(steps=[{"wait": 0}], analyses=[]), "f" * 64), plain)
         self.assertEqual((record["home_sha256"], session.kwargs["home_files"]), ({}, {}))
+
+    def test_a_launch_seeds_its_variants_app_config_files_and_records_their_digests(self) -> None:
+        loaded = scenario.validate(spec(app_config={"recovery-drafts.json": "spec", "activity.json": "spec"}, variants=[
+            {"palette": "midnight"},
+            {"palette": "midnight", "id": "midnight-own", "app_config": {"recovery-drafts.json": "own"}}],
+            steps=[{"wait": 0}], analyses=[]), "f" * 64)
+        plain, own = loaded["variants"]
+        record, session = self.launch(loaded, own)
+        self.assertEqual(session.kwargs["app_config_files"], {"activity.json": b"spec", "recovery-drafts.json": b"own"})
+        sha = evidence.identity.sha256_bytes
+        self.assertEqual(record["app_config_sha256"],
+                         {"activity.json": sha(b"spec"), "recovery-drafts.json": sha(b"own")})
+        self.assertEqual(list(record["app_config_sha256"]), ["activity.json", "recovery-drafts.json"])  # by name
+        self.assertEqual(session.log["scenario"]["variant"]["app_config"], ["recovery-drafts.json"])
+        self.assertEqual(record["home_sha256"], {})
+        record, session = self.launch(loaded, plain)
+        self.assertEqual(record["app_config_sha256"],
+                         {"activity.json": sha(b"spec"), "recovery-drafts.json": sha(b"spec")})
+        self.assertNotIn("app_config", session.log["scenario"]["variant"])
+        record, session = self.launch(scenario.validate(spec(steps=[{"wait": 0}], analyses=[]), "f" * 64), plain)
+        self.assertEqual((record["app_config_sha256"], session.kwargs["app_config_files"]), ({}, {}))
 
     def test_isenabled_is_set_for_each_launch_and_restored_however_it_ends(self) -> None:
         from native_qa import a11y

@@ -614,6 +614,49 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(json.loads((self.root / "run" / "flow-log.json").read_text())["header"]["home_files"], digests)
         self.assertEqual(self.open_session(run_dir=self.root / "plain").log["header"]["home_files"], {})
 
+    def test_app_config_files_are_seeded_beside_the_store_and_their_digests_logged(self) -> None:
+        files = {"recovery-drafts.json": b'{"version": 1, "drafts": []}', "activity.json": b"[]"}
+        run = self.open_session(app_config_files=files)
+        for name, data in files.items():
+            self.assertEqual((run.dirs.preferences.parent / name).read_bytes(), data)
+        self.assertEqual(json.loads(run.dirs.preferences.read_bytes())["settings"]["theme"], "midnight")
+        digests = {name: stores.sha256(data) for name, data in sorted(files.items())}
+        self.assertEqual(run.log["header"]["app_config_files"], digests)
+        with contextlib.redirect_stdout(io.StringIO()):
+            run.close()
+        log = json.loads((self.root / "run" / "flow-log.json").read_text())
+        self.assertEqual(log["header"]["app_config_files"], digests)
+        self.assertEqual(self.open_session(run_dir=self.root / "plain").log["header"]["app_config_files"], {})
+
+    def test_cli_launch_seeds_app_config_files_from_paths(self) -> None:
+        from native_qa import mutter, qa
+
+        drafts = self.root / "drafts.json"
+        drafts.write_bytes(b'{"version": 1, "drafts": []}')
+        run_dir = self.root / "run"
+        seen = []
+
+        def captured(*args, **kwargs):
+            seen.append(kwargs)
+            raise runenv.Refusal("stopped by the test before anything is created")
+
+        argv = ["launch", "--binary", str(self.binary), "--fixture", str(self.fixture), "--run-dir", str(run_dir),
+                "--input", "xtest"]
+        with mock.patch.object(mutter, "process_argvs", return_value=[]), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            with mock.patch.object(session, "Session", captured):
+                self.assertEqual(qa.main([*argv, "--app-config", f"recovery-drafts.json={drafts}"]), 2)
+            self.assertEqual(seen[0]["app_config_files"], {"recovery-drafts.json": drafts.read_bytes()})
+            for extra, reason in (
+                    (["--app-config", f"preferences.json={drafts}"], "'preferences.json' is the preference store"),
+                    (["--app-config", f"a/b={drafts}"], "must be a plain file name"),
+                    (["--app-config", f"x={drafts}", "--app-config", f"x={drafts}"], "--app-config x is given twice"),
+                    (["--app-config", f"x={self.root / 'absent'}"], "--app-config x: cannot read")):
+                with self.subTest(reason=reason):
+                    self.assertEqual(qa.main([*argv, *extra]), 2)
+                    self.assertIn(reason, err.getvalue())
+                    self.assertFalse(run_dir.exists())
+
     def test_reading_steps_send_nothing_and_keep_their_readings(self) -> None:
         focused = dict(name="Follow system appearance", role="toggle button", states=["focused", "focusable"],
                        depth=5)
@@ -674,7 +717,8 @@ class SessionTest(unittest.TestCase):
 
     def test_refusals_leave_no_run_directory(self) -> None:
         for kwargs in (dict(for_commit=True), dict(extra_env={"XDG_CONFIG_HOME": "/x"}),
-                       dict(home_files={"../outside": b"x"}), dict(home_files={".gitconfig": b"[user]"})):
+                       dict(home_files={"../outside": b"x"}), dict(home_files={".gitconfig": b"[user]"}),
+                       dict(app_config_files={"preferences.json": b"{}"}), dict(app_config_files={"../x": b"x"})):
             with self.subTest(kwargs=kwargs), self.assertRaises(SystemExit):
                 session.Session(self.binary, self.fixture, self.root / "run", b'{"version": 6}', **kwargs)
             self.assertFalse((self.root / "run").exists())

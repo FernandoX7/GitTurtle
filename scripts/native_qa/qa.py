@@ -46,6 +46,21 @@ def key_value(text: str) -> tuple[str, str]:
     return key, value
 
 
+def app_config_files(pairs: list[tuple[str, str]]) -> dict[str, bytes]:
+    """`--app-config NAME=PATH` pairs as files to seed beside the store; at most one byte over the cap is read, so
+    the session's own check refuses a larger file by its size."""
+    files = {}
+    for name, source in pairs:
+        if name in files:
+            raise SystemExit(f"refusing: --app-config {name} is given twice")
+        try:
+            with open(source, "rb") as handle:
+                files[name] = handle.read(runenv.APP_CONFIG_FILE_BYTES + 1)
+        except OSError as error:
+            raise SystemExit(f"refusing: --app-config {name}: cannot read {source} ({error})") from None
+    return files
+
+
 def write_json(path: Path | None, payload) -> None:
     if path is not None:
         path.write_text(json.dumps(payload, indent=1))
@@ -74,6 +89,9 @@ def scenario_check(args) -> int:
     seeded = sorted({path for variant in spec["variants"] for path in scenario.home_files(spec, variant)})
     if seeded:
         print(f"  HOME files seeded before each launch: {', '.join(seeded)}")
+    beside = sorted({name for variant in spec["variants"] for name in scenario.app_config_files(spec, variant)})
+    if beside:
+        print(f"  app configuration files seeded beside {stores.PREFERENCES} before each launch: {', '.join(beside)}")
     if spec["atspi"]:
         print("  org.a11y.Status IsEnabled set true for each launch, then restored and read back")
     minimums = sorted({minimum for variant in spec["variants"]
@@ -167,7 +185,7 @@ def launch(args) -> int:
     run = session.Session(args.binary, args.fixture, args.run_dir, preferences, width=width, height=height,
                           display=args.display, scale=args.scale, for_commit=args.for_commit,
                           extra_env=dict(args.env), settle=args.settle, backend=backend,
-                          window_minimum=args.window_minimum)
+                          window_minimum=args.window_minimum, app_config_files=app_config_files(args.app_config))
     if args.scenario:
         run.log["header"]["scenario"] = dict(path=str(args.scenario),
                                              sha256=identity.sha256_file(args.scenario), steps=steps)
@@ -352,6 +370,9 @@ def parser() -> argparse.ArgumentParser:
     store.add_argument("--preferences", type=Path, help="a preferences.json to seed byte for byte")
     p.add_argument("--project", action="append", default=[], metavar="PATH[=NAME]",
                    help="add a project to the generated store (repeatable)")
+    p.add_argument("--app-config", type=key_value, action="append", default=[], metavar="NAME=PATH",
+                   help="seed the file PATH as NAME beside the store, in config/gitturtle/, for example "
+                        "recovery-drafts.json=/abs/drafts.json (repeatable; not preferences.json)")
     p.add_argument("--scenario", type=Path, help="JSON list of steps (default: settle, park, capture 00-launch)")
     p.add_argument("--size", type=size, default=(1000, 680), help="window size, default 1000x680")
     p.add_argument("--window-minimum", type=size, metavar="WxH",
