@@ -1,3 +1,4 @@
+use crate::appearance::CodeFont;
 use crate::*;
 use gitturtle_core::{
     ConflictBlockChoice, ConflictContent, ConflictPreview, ConflictResolution, IntegrationCommand,
@@ -710,7 +711,7 @@ impl Render for ConflictView {
                         .on_click(cx.listener(|this, _, window, cx| this.open_resolution_editor(window, cx)))))
                 .children(self.resolution.as_ref().map(|editor| div().capture_action(cx.listener(Self::check_paste))
                     .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Result draft · block choices and manual edits stay here until you explicitly save"))
-                    .child(Textarea::new(editor).h(px(160.)).text_size(crate::appearance::code_text()).aria_label("Manual conflict resolution result"))))
+                    .child(resolution_textarea(editor, cx))))
                 .children(self.draft_error.map(|issue| div().id("conflict-draft-error").role(Role::Alert).aria_label(issue.explanation()).a11y_synthetic_children(native_accessibility::assertive).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.explanation())))
                 .child(div().flex().flex_wrap().items_center().gap_2()
                     .child(button("mark-conflict-resolved", "Stage edited file…", "", false).disabled(cannot_stage_working).tooltip("Stage the saved working file. Refresh after external editing.").on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::MarkResolved)))))
@@ -721,6 +722,15 @@ impl Render for ConflictView {
                         cx.emit(ConflictEvent::Resolve(ConflictResolution::Manual { bytes: this.accepted_draft.as_bytes().to_vec() }));
                     }))))))
     }
+}
+
+/// The manual result draft's editable text, drawn in the code font.
+fn resolution_textarea(editor: &Entity<TextareaState>, cx: &App) -> Textarea {
+    Textarea::new(editor)
+        .h(px(160.))
+        .text_size(crate::appearance::code_text())
+        .code_font(cx)
+        .aria_label("Manual conflict resolution result")
 }
 
 impl GitTurtle {
@@ -829,6 +839,25 @@ mod tests {
     use core::prelude::v1::test;
     use gitturtle_core::ConflictSide;
     use std::{cell::RefCell, rc::Rc};
+
+    /// The manual result draft is code: it draws in the code family with its
+    /// features, as the read-only panes' editors do.
+    #[gpui::test]
+    fn resolution_textarea_uses_the_code_font(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            gpui_kit::component::Theme::global_mut(cx).mono_font_family = "Desktop Mono".into();
+        });
+        let cx = cx.add_empty_window();
+        let text = cx.update(|window, cx| {
+            let editor = cx.new(|cx| TextareaState::new(window, cx));
+            resolution_textarea(&editor, cx).style().text.clone()
+        });
+        assert_eq!(text.font_family.as_deref(), Some("Desktop Mono"));
+        let features = text.font_features.expect("code features");
+        assert_eq!(features.is_calt_enabled(), Some(false));
+        assert!(features.tag_value_list().contains(&("liga".into(), 0)));
+    }
 
     fn snapshot() -> ConflictPreview {
         let side = |label: &str, oid: char, bytes: &[u8]| ConflictSide {

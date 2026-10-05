@@ -168,6 +168,27 @@ pub trait CodeFont: Styled + Sized {
 }
 impl<T: Styled> CodeFont for T {}
 
+/// The widest digit advance of code text at the current code size, so a
+/// line-number column can fit its numbers in the [`CodeFont`] family as the
+/// code size changes. Glyph advances come from the text system's cache.
+pub fn code_digit_width(cx: &App) -> Pixels {
+    let family = Theme::global(cx).mono_font_family.clone();
+    let font = gpui_kit::Font {
+        features: code_font_features_for(&family),
+        ..gpui_kit::font(family)
+    };
+    let text = cx.text_system();
+    let face = text.resolve_font(&font);
+    let size = code_text();
+    ('0'..='9')
+        .filter_map(|digit| text.advance(face, size, digit).ok())
+        .map(|advance| advance.width)
+        .fold(
+            px(0.),
+            |widest, width| if width > widest { width } else { widest },
+        )
+}
+
 /// Store the text sizes and project them onto the toolkit theme and the
 /// window's rem geometry, leaving invalidation to the caller.
 ///

@@ -1,4 +1,5 @@
 //! Transient attribution with retained comparison state and replaceable reads.
+use crate::appearance::CodeFont;
 use crate::*;
 use gitturtle_core::{Blame, BlameTarget, LineHistory};
 use gpui_kit::prelude::FluentBuilder;
@@ -590,13 +591,7 @@ impl GitTurtle {
                     .child(label),
             )
             .child(
-                div()
-                    .id(("blame-source", index))
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .font_family(mono())
-                    .text_size(crate::appearance::ui_text(11.))
+                blame_source(index, cx)
                     .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                     .child(full),
             )
@@ -605,6 +600,17 @@ impl GitTurtle {
             )
             .into_any_element()
     }
+}
+
+/// A Blame line's source text, drawn in the code font.
+fn blame_source(index: usize, cx: &App) -> Stateful<Div> {
+    div()
+        .id(("blame-source", index))
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .code_font(cx)
+        .text_size(crate::appearance::ui_text(11.))
 }
 
 /// Stable Label nodes expose the same meaningful copy to assistive technology.
@@ -631,7 +637,18 @@ fn display_excerpt(source: &str, limit: usize) -> String {
 mod tests {
     use super::{Pending, State};
     use gitturtle_core::BlameTarget;
+    use gpui_kit::{IntoElement as _, ParentElement as _};
     use std::path::Path;
+
+    #[gpui_kit::test]
+    fn blame_source_uses_the_code_font(cx: &mut gpui_kit::TestAppContext) {
+        let font = crate::shaped_code_font(cx, |probe, cx| {
+            super::blame_source(0, cx).child(probe).into_any_element()
+        });
+        assert_eq!(font.family, "Desktop Mono");
+        assert_eq!(font.features.is_calt_enabled(), Some(false));
+        assert!(font.features.tag_value_list().contains(&("liga".into(), 0)));
+    }
     #[test]
     fn scaling_preserves_active_and_nested_attribution_rows() {
         use crate::settings::ListScales;
