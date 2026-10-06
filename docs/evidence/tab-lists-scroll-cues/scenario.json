@@ -1,0 +1,9406 @@
+{
+ "version": 1,
+ "task": "tab-lists-scroll-cues",
+ "summary": "The branch chooser, the remote manager, Tags and the tag inspector's Push to... list cue rows beyond their edge with the always-visible scrollbar in a gutter right of their rows: at the top, the middle and the end, hovered and dragged, beside a focused and a focused+hovered row, and none where the rows fit",
+ "limitations": "the Push to... list's thumb is hovered but never pressed, since on the base its place is a Push to... button, and its no-thumb case is covered by its view test only (the fixture's 13 remotes always overflow it); the middle and end are reached by Tab, so a row is focused there; wheel, track clicks and keyboard paging, 11 pt and other text sizes and window sizes, macOS, native Wayland and fractional scale factors are not covered",
+ "window": [
+  1000,
+  680
+ ],
+ "roles": [
+  "base",
+  "cand"
+ ],
+ "fixture": {
+  "name": "tab-lists-scroll-cues",
+  "description": "the tab-reveals fixture (five commits; 30 local branches, main and topic-01 to topic-29; 30 tags v1.00 to v1.29, the even ones annotated; a local bare origin holding main, so its objects and refs are the same) and twelve more local bare remotes, mirror-01 to mirror-12, holding nothing, so the remote manager lists 13 remotes and the tag inspector 13 Push to... buttons. Nothing is fetched or pushed by the route",
+  "repository": "repo",
+  "branch": "main",
+  "operations": [
+   {
+    "commit": "Commit 1: update README.md",
+    "date": "2026-09-01T09:21:00Z",
+    "files": {
+     "README.md": "# Tab reveal fixture\n\nDisposable QA repository.\n"
+    }
+   },
+   {
+    "commit": "Commit 2: update src/lib.txt",
+    "date": "2026-09-01T09:35:00Z",
+    "files": {
+     "src/lib.txt": "first line\n"
+    }
+   },
+   {
+    "commit": "Commit 3: update src/lib.txt",
+    "date": "2026-09-01T10:49:00Z",
+    "files": {
+     "src/lib.txt": "first line\nsecond line\n"
+    }
+   },
+   {
+    "commit": "Commit 4: update notes/plan.md",
+    "date": "2026-09-01T10:03:00Z",
+    "files": {
+     "notes/plan.md": "- chooser\n- tags\n"
+    }
+   },
+   {
+    "commit": "Commit 5: update src/lib.txt",
+    "date": "2026-09-01T10:17:00Z",
+    "files": {
+     "src/lib.txt": "first line\nsecond line\nthird\n"
+    }
+   },
+   {
+    "branch": "topic-01",
+    "at": "@1",
+    "date": "2026-09-01T11:24:00Z"
+   },
+   {
+    "branch": "topic-02",
+    "at": "@2",
+    "date": "2026-09-01T11:31:00Z"
+   },
+   {
+    "branch": "topic-03",
+    "at": "@3",
+    "date": "2026-09-01T11:38:00Z"
+   },
+   {
+    "branch": "topic-04",
+    "at": "@4",
+    "date": "2026-09-01T11:45:00Z"
+   },
+   {
+    "branch": "topic-05",
+    "at": "@0",
+    "date": "2026-09-01T11:52:00Z"
+   },
+   {
+    "branch": "topic-06",
+    "at": "@1",
+    "date": "2026-09-01T11:59:00Z"
+   },
+   {
+    "branch": "topic-07",
+    "at": "@2",
+    "date": "2026-09-01T12:06:00Z"
+   },
+   {
+    "branch": "topic-08",
+    "at": "@3",
+    "date": "2026-09-01T12:13:00Z"
+   },
+   {
+    "branch": "topic-09",
+    "at": "@4",
+    "date": "2026-09-01T12:20:00Z"
+   },
+   {
+    "branch": "topic-10",
+    "at": "@0",
+    "date": "2026-09-01T12:27:00Z"
+   },
+   {
+    "branch": "topic-11",
+    "at": "@1",
+    "date": "2026-09-01T12:34:00Z"
+   },
+   {
+    "branch": "topic-12",
+    "at": "@2",
+    "date": "2026-09-01T12:41:00Z"
+   },
+   {
+    "branch": "topic-13",
+    "at": "@3",
+    "date": "2026-09-01T13:48:00Z"
+   },
+   {
+    "branch": "topic-14",
+    "at": "@4",
+    "date": "2026-09-01T13:55:00Z"
+   },
+   {
+    "branch": "topic-15",
+    "at": "@0",
+    "date": "2026-09-01T13:02:00Z"
+   },
+   {
+    "branch": "topic-16",
+    "at": "@1",
+    "date": "2026-09-01T13:09:00Z"
+   },
+   {
+    "branch": "topic-17",
+    "at": "@2",
+    "date": "2026-09-01T13:16:00Z"
+   },
+   {
+    "branch": "topic-18",
+    "at": "@3",
+    "date": "2026-09-01T13:23:00Z"
+   },
+   {
+    "branch": "topic-19",
+    "at": "@4",
+    "date": "2026-09-01T14:30:00Z"
+   },
+   {
+    "branch": "topic-20",
+    "at": "@0",
+    "date": "2026-09-01T14:37:00Z"
+   },
+   {
+    "branch": "topic-21",
+    "at": "@1",
+    "date": "2026-09-01T14:44:00Z"
+   },
+   {
+    "branch": "topic-22",
+    "at": "@2",
+    "date": "2026-09-01T14:51:00Z"
+   },
+   {
+    "branch": "topic-23",
+    "at": "@3",
+    "date": "2026-09-01T14:58:00Z"
+   },
+   {
+    "branch": "topic-24",
+    "at": "@4",
+    "date": "2026-09-01T14:05:00Z"
+   },
+   {
+    "branch": "topic-25",
+    "at": "@0",
+    "date": "2026-09-01T15:12:00Z"
+   },
+   {
+    "branch": "topic-26",
+    "at": "@1",
+    "date": "2026-09-01T15:19:00Z"
+   },
+   {
+    "branch": "topic-27",
+    "at": "@2",
+    "date": "2026-09-01T15:26:00Z"
+   },
+   {
+    "branch": "topic-28",
+    "at": "@3",
+    "date": "2026-09-01T15:33:00Z"
+   },
+   {
+    "branch": "topic-29",
+    "at": "@4",
+    "date": "2026-09-02T09:40:00Z"
+   },
+   {
+    "tag": "v1.00",
+    "at": "@0",
+    "message": "Release 1.00",
+    "date": "2026-09-02T09:47:00Z"
+   },
+   {
+    "tag": "v1.01",
+    "at": "@1",
+    "date": "2026-09-02T09:54:00Z"
+   },
+   {
+    "tag": "v1.02",
+    "at": "@2",
+    "message": "Release 1.02",
+    "date": "2026-09-02T09:01:00Z"
+   },
+   {
+    "tag": "v1.03",
+    "at": "@3",
+    "date": "2026-09-02T09:08:00Z"
+   },
+   {
+    "tag": "v1.04",
+    "at": "@4",
+    "message": "Release 1.04",
+    "date": "2026-09-02T09:15:00Z"
+   },
+   {
+    "tag": "v1.05",
+    "at": "@0",
+    "date": "2026-09-02T10:22:00Z"
+   },
+   {
+    "tag": "v1.06",
+    "at": "@1",
+    "message": "Release 1.06",
+    "date": "2026-09-02T10:29:00Z"
+   },
+   {
+    "tag": "v1.07",
+    "at": "@2",
+    "date": "2026-09-02T10:36:00Z"
+   },
+   {
+    "tag": "v1.08",
+    "at": "@3",
+    "message": "Release 1.08",
+    "date": "2026-09-02T10:43:00Z"
+   },
+   {
+    "tag": "v1.09",
+    "at": "@4",
+    "date": "2026-09-02T10:50:00Z"
+   },
+   {
+    "tag": "v1.10",
+    "at": "@0",
+    "message": "Release 1.10",
+    "date": "2026-09-02T10:57:00Z"
+   },
+   {
+    "tag": "v1.11",
+    "at": "@1",
+    "date": "2026-09-02T11:04:00Z"
+   },
+   {
+    "tag": "v1.12",
+    "at": "@2",
+    "message": "Release 1.12",
+    "date": "2026-09-02T11:11:00Z"
+   },
+   {
+    "tag": "v1.13",
+    "at": "@3",
+    "date": "2026-09-02T11:18:00Z"
+   },
+   {
+    "tag": "v1.14",
+    "at": "@4",
+    "message": "Release 1.14",
+    "date": "2026-09-02T11:25:00Z"
+   },
+   {
+    "tag": "v1.15",
+    "at": "@0",
+    "date": "2026-09-02T11:32:00Z"
+   },
+   {
+    "tag": "v1.16",
+    "at": "@1",
+    "message": "Release 1.16",
+    "date": "2026-09-02T11:39:00Z"
+   },
+   {
+    "tag": "v1.17",
+    "at": "@2",
+    "date": "2026-09-02T12:46:00Z"
+   },
+   {
+    "tag": "v1.18",
+    "at": "@3",
+    "message": "Release 1.18",
+    "date": "2026-09-02T12:53:00Z"
+   },
+   {
+    "tag": "v1.19",
+    "at": "@4",
+    "date": "2026-09-02T12:00:00Z"
+   },
+   {
+    "tag": "v1.20",
+    "at": "@0",
+    "message": "Release 1.20",
+    "date": "2026-09-02T12:07:00Z"
+   },
+   {
+    "tag": "v1.21",
+    "at": "@1",
+    "date": "2026-09-02T12:14:00Z"
+   },
+   {
+    "tag": "v1.22",
+    "at": "@2",
+    "message": "Release 1.22",
+    "date": "2026-09-02T12:21:00Z"
+   },
+   {
+    "tag": "v1.23",
+    "at": "@3",
+    "date": "2026-09-02T13:28:00Z"
+   },
+   {
+    "tag": "v1.24",
+    "at": "@4",
+    "message": "Release 1.24",
+    "date": "2026-09-02T13:35:00Z"
+   },
+   {
+    "tag": "v1.25",
+    "at": "@0",
+    "date": "2026-09-02T13:42:00Z"
+   },
+   {
+    "tag": "v1.26",
+    "at": "@1",
+    "message": "Release 1.26",
+    "date": "2026-09-02T13:49:00Z"
+   },
+   {
+    "tag": "v1.27",
+    "at": "@2",
+    "date": "2026-09-02T13:56:00Z"
+   },
+   {
+    "tag": "v1.28",
+    "at": "@3",
+    "message": "Release 1.28",
+    "date": "2026-09-02T13:03:00Z"
+   },
+   {
+    "tag": "v1.29",
+    "at": "@4",
+    "date": "2026-09-02T14:10:00Z"
+   },
+   {
+    "remote": "origin",
+    "bare": "remotes/origin.git",
+    "date": "2026-09-02T14:24:00Z"
+   },
+   {
+    "push": "origin",
+    "refs": [
+     "main"
+    ],
+    "date": "2026-09-02T14:31:00Z"
+   },
+   {
+    "remote": "mirror-01",
+    "bare": "remotes/mirror-01.git",
+    "date": "2026-09-02T14:33:00Z"
+   },
+   {
+    "remote": "mirror-02",
+    "bare": "remotes/mirror-02.git",
+    "date": "2026-09-02T14:35:00Z"
+   },
+   {
+    "remote": "mirror-03",
+    "bare": "remotes/mirror-03.git",
+    "date": "2026-09-02T14:37:00Z"
+   },
+   {
+    "remote": "mirror-04",
+    "bare": "remotes/mirror-04.git",
+    "date": "2026-09-02T14:39:00Z"
+   },
+   {
+    "remote": "mirror-05",
+    "bare": "remotes/mirror-05.git",
+    "date": "2026-09-02T14:41:00Z"
+   },
+   {
+    "remote": "mirror-06",
+    "bare": "remotes/mirror-06.git",
+    "date": "2026-09-02T14:43:00Z"
+   },
+   {
+    "remote": "mirror-07",
+    "bare": "remotes/mirror-07.git",
+    "date": "2026-09-02T14:45:00Z"
+   },
+   {
+    "remote": "mirror-08",
+    "bare": "remotes/mirror-08.git",
+    "date": "2026-09-02T14:47:00Z"
+   },
+   {
+    "remote": "mirror-09",
+    "bare": "remotes/mirror-09.git",
+    "date": "2026-09-02T14:49:00Z"
+   },
+   {
+    "remote": "mirror-10",
+    "bare": "remotes/mirror-10.git",
+    "date": "2026-09-02T14:51:00Z"
+   },
+   {
+    "remote": "mirror-11",
+    "bare": "remotes/mirror-11.git",
+    "date": "2026-09-02T14:53:00Z"
+   },
+   {
+    "remote": "mirror-12",
+    "bare": "remotes/mirror-12.git",
+    "date": "2026-09-02T14:55:00Z"
+   }
+  ],
+  "expect": {
+   "@0": "00ee7cec9ebe0916ba521537a3508b573e85b3e0",
+   "@1": "d3be1c8ef7f9e9364e2a3566e5f7577f9fc3a021",
+   "@2": "2f3bc2f80e353a9e58f9ef7b98ef537d4ada9fa4",
+   "@3": "479457995ae4928dbf84103ef97cec2daa57dde7",
+   "HEAD": "75842dff84b20dde31970e44331da8c9ed3d41fa"
+  }
+ },
+ "variants": {
+  "palettes": [
+   "midnight",
+   "porcelain"
+  ],
+  "text_sizes": [
+   13,
+   18
+  ]
+ },
+ "steps": [
+  {
+   "stable": 12.0,
+   "quiet": 1.15,
+   "note": "the launch settles"
+  },
+  {
+   "mark": "page-chooser"
+  },
+  {
+   "click": [
+    55,
+    112
+   ],
+   "note": "the toolbar's current-branch button",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "click": [
+    60,
+    156
+   ],
+   "note": "the toolbar's current-branch button",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "park": true
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "page-chooser",
+    "b": "@now",
+    "min_pixels": 20001
+   },
+   "note": "the branch menu opened"
+  },
+  {
+   "key": "Up",
+   "await_change": 2.5,
+   "wait_after": 0.5,
+   "note": "the menu's last item, Manage remotes..."
+  },
+  {
+   "stable": 4.0,
+   "quiet": 0.8
+  },
+  {
+   "mark": "menu-up1-chooser"
+  },
+  {
+   "key": "Up",
+   "repeat": 11,
+   "await_change": 2.5,
+   "wait_after": 0.15,
+   "note": "up to Manage another branch..."
+  },
+  {
+   "stable": 4.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "menu-up1-chooser",
+    "b": "@now",
+    "region": [
+     0,
+     0,
+     190,
+     680
+    ],
+    "band_min": 21,
+    "bands": [
+     [
+      309,
+      326
+     ],
+     [
+      545,
+      562
+     ]
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "the highlight moved from Manage remotes... to Manage another branch... and nowhere else; otherwise Escape and stop"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "menu-up1-chooser",
+    "b": "@now",
+    "region": [
+     0,
+     0,
+     190,
+     680
+    ],
+    "band_min": 21,
+    "bands": [
+     [
+      274,
+      298
+     ],
+     [
+      587,
+      611
+     ]
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the highlight moved from Manage remotes... to Manage another branch... and nowhere else; otherwise Escape and stop"
+  },
+  {
+   "mark": "menu-chosen-chooser"
+  },
+  {
+   "key": "Return",
+   "await_change": 5.0,
+   "wait_after": 0.0,
+   "note": "Manage another branch..."
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "menu-chosen-chooser",
+    "b": "@now",
+    "min_pixels": 50001
+   },
+   "note": "Manage a local branch opened"
+  },
+  {
+   "capture": "chooser-top",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "chooser-13",
+   "shows": {
+    "base": "on the base, Manage a local branch at its top, nothing in the list focused: no cue that more rows lie below",
+    "cand": "on the candidate, Manage a local branch at its top, nothing in the list focused: the thumb at the top of its track in the gutter right of the rows"
+   }
+  },
+  {
+   "capture": "chooser-top",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "chooser-18",
+   "shows": {
+    "base": "on the base, Manage a local branch at its top, nothing in the list focused: no cue that more rows lie below",
+    "cand": "on the candidate, Manage a local branch at its top, nothing in the list focused: the thumb at the top of its track in the gutter right of the rows"
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 1,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "the filter"
+  },
+  {
+   "mark": "chooser-before-filter"
+  },
+  {
+   "type": "9",
+   "note": "filter Manage a local branch to a few rows"
+  },
+  {
+   "stable": 4.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "chooser-before-filter",
+    "b": "@now",
+    "region": [
+     230,
+     122,
+     770,
+     510
+    ],
+    "min_pixels": 2000
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the typing reached the filter: the list changed"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "chooser-before-filter",
+    "b": "@now",
+    "region": [
+     230,
+     168,
+     770,
+     569
+    ],
+    "min_pixels": 2000
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the typing reached the filter: the list changed"
+  },
+  {
+   "key": "Tab",
+   "repeat": 1,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "from the filter to the first row"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     244,
+     166,
+     756,
+     206
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the first control of the filtered list focused at full width in both builds"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     244,
+     225,
+     756,
+     278
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the first control of the filtered list focused at full width in both builds"
+  },
+  {
+   "capture": "chooser-fits",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "chooser-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, Manage a local branch filtered to '9': the rows fit, no thumb, and the rows keep the base's full width"
+   }
+  },
+  {
+   "capture": "chooser-fits",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "chooser-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, Manage a local branch filtered to '9': the rows fit, no thumb, and the rows keep the base's full width"
+   }
+  },
+  {
+   "key": "Tab",
+   "mods": [
+    "Shift_L"
+   ],
+   "repeat": 1,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "back to the filter"
+  },
+  {
+   "key": "BackSpace",
+   "repeat": 1,
+   "await_change": 2.5,
+   "wait_after": 0.2,
+   "note": "clear the filter: every row again"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15
+  },
+  {
+   "key": "Tab",
+   "repeat": 1,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "from the filter to row 0"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     244,
+     166,
+     737,
+     206
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "the first row focused at the top, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     244,
+     225,
+     737,
+     278
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the first row focused at the top, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "capture": "chooser-focus",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "chooser-13",
+   "shows": {
+    "base": "on the base, Manage a local branch at its top with the first row focused, its ring at full width",
+    "cand": "on the candidate, Manage a local branch at its top with the first row focused: its ring whole and clear of the thumb beside it"
+   }
+  },
+  {
+   "capture": "chooser-focus",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "chooser-18",
+   "shows": {
+    "base": "on the base, Manage a local branch at its top with the first row focused, its ring at full width",
+    "cand": "on the candidate, Manage a local branch at its top with the first row focused: its ring whole and clear of the thumb beside it"
+   }
+  },
+  {
+   "glide": [
+    490,
+    186
+   ],
+   "note": "onto the focused row",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    490,
+    251
+   ],
+   "note": "onto the focused row",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "chooser-focus-hover",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "chooser-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the first row focused and hovered: its hover and ring beside the thumb at rest"
+   },
+   "keep_pointer": true
+  },
+  {
+   "capture": "chooser-focus-hover",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "chooser-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the first row focused and hovered: its hover and ring beside the thumb at rest"
+   },
+   "keep_pointer": true
+  },
+  {
+   "glide": [
+    745,
+    217
+   ],
+   "note": "onto the thumb at the top of the track",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    745,
+    263
+   ],
+   "note": "onto the thumb at the top of the track",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "chooser-thumb-hover",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "chooser-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the pointer on Manage a local branch's thumb: it widens to 8 px in the muted colour, clear of the focused row's ring"
+   },
+   "keep_pointer": true
+  },
+  {
+   "capture": "chooser-thumb-hover",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "chooser-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the pointer on Manage a local branch's thumb: it widens to 8 px in the muted colour, clear of the focused row's ring"
+   },
+   "keep_pointer": true
+  },
+  {
+   "park": true,
+   "note": "in mouse mode, so the scrollbar sees the pointer leave its thumb"
+  },
+  {
+   "key": "Tab",
+   "repeat": 18,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the row whose reveal scrolls the list nearest half its reach",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 17,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the row whose reveal scrolls the list nearest half its reach",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     244,
+     462,
+     737,
+     502
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the middle: the row Tab reached is whole at the lower edge"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     244,
+     508,
+     737,
+     561
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the middle: the row Tab reached is whole at the lower edge"
+  },
+  {
+   "capture": "chooser-middle",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "chooser-13",
+   "shows": {
+    "base": "on the base, the same scroll: no cue above or below",
+    "cand": "on the candidate, Manage a local branch scrolled by Tab to about half its reach: the thumb in the middle of the track, the focused row whole at the lower edge"
+   }
+  },
+  {
+   "capture": "chooser-middle",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "chooser-18",
+   "shows": {
+    "base": "on the base, the same scroll: no cue above or below",
+    "cand": "on the candidate, Manage a local branch scrolled by Tab to about half its reach: the thumb in the middle of the track, the focused row whole at the lower edge"
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 11,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the last row",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 12,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the last row",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     244,
+     462,
+     737,
+     502
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "the last row focused at the end, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     244,
+     508,
+     737,
+     561
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the last row focused at the end, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "capture": "chooser-end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "chooser-13",
+   "shows": {
+    "base": "on the base, Manage a local branch at its end with the last row focused: no cue that rows lie above",
+    "cand": "on the candidate, Manage a local branch at its end with the last row focused: the thumb at the bottom of the track, beside its ring"
+   }
+  },
+  {
+   "capture": "chooser-end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "chooser-18",
+   "shows": {
+    "base": "on the base, Manage a local branch at its end with the last row focused: no cue that rows lie above",
+    "cand": "on the candidate, Manage a local branch at its end with the last row focused: the thumb at the bottom of the track, beside its ring"
+   }
+  },
+  {
+   "glide": [
+    745,
+    450
+   ],
+   "note": "onto the thumb at the end of the track",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "press": 1,
+   "note": "the button down on the thumb (on the base, on a row's right end, which refuses focus and fires no click unless released on it)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "move": [
+    745,
+    400
+   ],
+   "note": "dragging",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "move": [
+    745,
+    350
+   ],
+   "note": "dragged 100 px up, button held",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    745,
+    522
+   ],
+   "note": "onto the thumb at the end of the track",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "press": 1,
+   "note": "the button down on the thumb (on the base, on a row's right end, which refuses focus and fires no click unless released on it)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "move": [
+    745,
+    472
+   ],
+   "note": "dragging",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "move": [
+    745,
+    422
+   ],
+   "note": "dragged 100 px up, button held",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "chooser-thumb-drag",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "chooser-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, Manage a local branch's thumb pressed and dragged 100 px up from the end with the button held: the list follows"
+   },
+   "keep_pointer": true
+  },
+  {
+   "capture": "chooser-thumb-drag",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "chooser-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, Manage a local branch's thumb pressed and dragged 100 px up from the end with the button held: the list follows"
+   },
+   "keep_pointer": true
+  },
+  {
+   "release": 1,
+   "note": "released 100 px from the press, over another row on the base"
+  },
+  {
+   "park": true
+  },
+  {
+   "key": "Escape",
+   "await_change": 3.0,
+   "wait_after": 0.0,
+   "note": "close the chooser"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "page-chooser",
+    "b": "@now",
+    "max_pixels": 20000
+   },
+   "note": "the dialog closed: the page is back, but for focus edges"
+  },
+  {
+   "mark": "page-remotes",
+   "park_first": true
+  },
+  {
+   "click": [
+    55,
+    112
+   ],
+   "note": "the toolbar's current-branch button",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "click": [
+    60,
+    156
+   ],
+   "note": "the toolbar's current-branch button",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "park": true
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "page-remotes",
+    "b": "@now",
+    "min_pixels": 20001
+   },
+   "note": "the branch menu opened"
+  },
+  {
+   "key": "Up",
+   "await_change": 2.5,
+   "wait_after": 0.5,
+   "note": "the menu's last item, Manage remotes..."
+  },
+  {
+   "stable": 4.0,
+   "quiet": 0.8
+  },
+  {
+   "mark": "menu-up1-remotes"
+  },
+  {
+   "key": "Up",
+   "repeat": 11,
+   "await_change": 2.5,
+   "wait_after": 0.15,
+   "note": "up to Manage another branch..."
+  },
+  {
+   "stable": 4.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "menu-up1-remotes",
+    "b": "@now",
+    "region": [
+     0,
+     0,
+     190,
+     680
+    ],
+    "band_min": 21,
+    "bands": [
+     [
+      309,
+      326
+     ],
+     [
+      545,
+      562
+     ]
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "the highlight moved from Manage remotes... to Manage another branch... and nowhere else; otherwise Escape and stop"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "menu-up1-remotes",
+    "b": "@now",
+    "region": [
+     0,
+     0,
+     190,
+     680
+    ],
+    "band_min": 21,
+    "bands": [
+     [
+      274,
+      298
+     ],
+     [
+      587,
+      611
+     ]
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the highlight moved from Manage remotes... to Manage another branch... and nowhere else; otherwise Escape and stop"
+  },
+  {
+   "key": "Down",
+   "repeat": 11,
+   "await_change": 2.5,
+   "wait_after": 0.15,
+   "note": "back down to Manage remotes..."
+  },
+  {
+   "stable": 4.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "menu-up1-remotes",
+    "b": "@now",
+    "region": [
+     0,
+     0,
+     185,
+     680
+    ],
+    "max_pixels": 0
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the menu as after the first Up, left of its own scrollbar (which fades with time): the highlight is back on Manage remotes..."
+  },
+  {
+   "mark": "menu-chosen-remotes"
+  },
+  {
+   "key": "Return",
+   "await_change": 5.0,
+   "wait_after": 0.0,
+   "note": "Manage remotes..."
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "menu-chosen-remotes",
+    "b": "@now",
+    "min_pixels": 50001
+   },
+   "note": "Remotes opened"
+  },
+  {
+   "capture": "remotes-top",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "remotes-13",
+   "shows": {
+    "base": "on the base, Remotes at its top, nothing in the list focused: no cue that more rows lie below",
+    "cand": "on the candidate, Remotes at its top, nothing in the list focused: the thumb at the top of its track in the gutter right of the rows"
+   }
+  },
+  {
+   "capture": "remotes-top",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "remotes-18",
+   "shows": {
+    "base": "on the base, Remotes at its top, nothing in the list focused: no cue that more rows lie below",
+    "cand": "on the candidate, Remotes at its top, nothing in the list focused: the thumb at the top of its track in the gutter right of the rows"
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 1,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "the filter"
+  },
+  {
+   "mark": "remotes-before-filter"
+  },
+  {
+   "type": "2",
+   "note": "filter Remotes to a few rows"
+  },
+  {
+   "stable": 4.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "remotes-before-filter",
+    "b": "@now",
+    "region": [
+     210,
+     96,
+     790,
+     539
+    ],
+    "min_pixels": 2000
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the typing reached the filter: the list changed"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "remotes-before-filter",
+    "b": "@now",
+    "region": [
+     210,
+     104,
+     790,
+     599
+    ],
+    "min_pixels": 2000
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the typing reached the filter: the list changed"
+  },
+  {
+   "key": "Tab",
+   "repeat": 3,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "from the filter to the first row"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     683,
+     196,
+     765,
+     230
+    ],
+    "sides": [
+     "top",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the first control of the filtered list focused at full width in both builds"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     650,
+     266,
+     761,
+     311
+    ],
+    "sides": [
+     "top",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the first control of the filtered list focused at full width in both builds"
+  },
+  {
+   "capture": "remotes-fits",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "remotes-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, Remotes filtered to '2': the rows fit, no thumb, and the rows keep the base's full width"
+   }
+  },
+  {
+   "capture": "remotes-fits",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "remotes-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, Remotes filtered to '2': the rows fit, no thumb, and the rows keep the base's full width"
+   }
+  },
+  {
+   "key": "Tab",
+   "mods": [
+    "Shift_L"
+   ],
+   "repeat": 3,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "back to the filter"
+  },
+  {
+   "key": "BackSpace",
+   "repeat": 1,
+   "await_change": 2.5,
+   "wait_after": 0.2,
+   "note": "clear the filter: every row again"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15
+  },
+  {
+   "key": "Tab",
+   "repeat": 3,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "from the filter past Add remote... and the first Edit... to the first Remove..."
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     683,
+     196,
+     746,
+     230
+    ],
+    "sides": [
+     "top",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "the first Remove... focused at the top, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     650,
+     266,
+     743,
+     311
+    ],
+    "sides": [
+     "top",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the first Remove... focused at the top, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "capture": "remotes-focus",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "remotes-13",
+   "shows": {
+    "base": "on the base, Remotes at its top with the first Remove... focused, its ring at full width",
+    "cand": "on the candidate, Remotes at its top with the first Remove... focused: its ring whole and clear of the thumb beside it"
+   }
+  },
+  {
+   "capture": "remotes-focus",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "remotes-18",
+   "shows": {
+    "base": "on the base, Remotes at its top with the first Remove... focused, its ring at full width",
+    "cand": "on the candidate, Remotes at its top with the first Remove... focused: its ring whole and clear of the thumb beside it"
+   }
+  },
+  {
+   "glide": [
+    705,
+    213
+   ],
+   "note": "onto the focused Remove...",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    687,
+    288
+   ],
+   "note": "onto the focused Remove...",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "remotes-focus-hover",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "remotes-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the first Remove... focused and hovered: its hover and ring beside the thumb at rest"
+   },
+   "keep_pointer": true
+  },
+  {
+   "capture": "remotes-focus-hover",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "remotes-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the first Remove... focused and hovered: its hover and ring beside the thumb at rest"
+   },
+   "keep_pointer": true
+  },
+  {
+   "glide": [
+    765,
+    226
+   ],
+   "note": "onto the thumb at the top of the track",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    765,
+    271
+   ],
+   "note": "onto the thumb at the top of the track",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "remotes-thumb-hover",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "remotes-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the pointer on Remotes's thumb: it widens to 8 px in the muted colour, clear of the focused Remove...'s ring"
+   },
+   "keep_pointer": true
+  },
+  {
+   "capture": "remotes-thumb-hover",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "remotes-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the pointer on Remotes's thumb: it widens to 8 px in the muted colour, clear of the focused Remove...'s ring"
+   },
+   "keep_pointer": true
+  },
+  {
+   "park": true,
+   "note": "in mouse mode, so the scrollbar sees the pointer leave its thumb"
+  },
+  {
+   "key": "Tab",
+   "repeat": 16,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the Remove... whose reveal scrolls the list nearest half its reach",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 14,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the Remove... whose reveal scrolls the list nearest half its reach",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     683,
+     497,
+     746,
+     531
+    ],
+    "sides": [
+     "top",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the middle: the Remove... Tab reached is whole at the lower edge"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     650,
+     546,
+     743,
+     591
+    ],
+    "sides": [
+     "top",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the middle: the Remove... Tab reached is whole at the lower edge"
+  },
+  {
+   "capture": "remotes-middle",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "remotes-13",
+   "shows": {
+    "base": "on the base, the same scroll: no cue above or below",
+    "cand": "on the candidate, Remotes scrolled by Tab to about half its reach: the thumb in the middle of the track, the focused Remove... whole at the lower edge"
+   }
+  },
+  {
+   "capture": "remotes-middle",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "remotes-18",
+   "shows": {
+    "base": "on the base, the same scroll: no cue above or below",
+    "cand": "on the candidate, Remotes scrolled by Tab to about half its reach: the thumb in the middle of the track, the focused Remove... whole at the lower edge"
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 8,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the last Remove...",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 10,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the last Remove...",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "wheel": [
+    307,
+    351
+   ],
+   "steps": 3,
+   "note": "the last Remove... is revealed with its ring room only; a wheel step takes the list to its true end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "wheel": [
+    307,
+    411
+   ],
+   "steps": 3,
+   "note": "the last Remove... is revealed with its ring room only; a wheel step takes the list to its true end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     683,
+     472,
+     746,
+     506
+    ],
+    "sides": [
+     "top",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "the last Remove... focused at the end, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     650,
+     511,
+     743,
+     556
+    ],
+    "sides": [
+     "top",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the last Remove... focused at the end, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "capture": "remotes-end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "remotes-13",
+   "shows": {
+    "base": "on the base, Remotes at its end with the last Remove... focused: no cue that rows lie above",
+    "cand": "on the candidate, Remotes at its end with the last Remove... focused: the thumb at the bottom of the track, beside its ring"
+   }
+  },
+  {
+   "capture": "remotes-end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "remotes-18",
+   "shows": {
+    "base": "on the base, Remotes at its end with the last Remove... focused: no cue that rows lie above",
+    "cand": "on the candidate, Remotes at its end with the last Remove... focused: the thumb at the bottom of the track, beside its ring"
+   }
+  },
+  {
+   "glide": [
+    765,
+    475
+   ],
+   "note": "onto the thumb at the end of the track",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "press": 1,
+   "note": "the button down on the thumb (on the base, on a row's right end, which refuses focus and fires no click unless released on it)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "move": [
+    765,
+    425
+   ],
+   "note": "dragging",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "move": [
+    765,
+    375
+   ],
+   "note": "dragged 100 px up, button held",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    765,
+    550
+   ],
+   "note": "onto the thumb at the end of the track",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "press": 1,
+   "note": "the button down on the thumb (on the base, on a row's right end, which refuses focus and fires no click unless released on it)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "move": [
+    765,
+    500
+   ],
+   "note": "dragging",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "move": [
+    765,
+    450
+   ],
+   "note": "dragged 100 px up, button held",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "remotes-thumb-drag",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "remotes-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, Remotes's thumb pressed and dragged 100 px up from the end with the button held: the list follows"
+   },
+   "keep_pointer": true
+  },
+  {
+   "capture": "remotes-thumb-drag",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "remotes-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, Remotes's thumb pressed and dragged 100 px up from the end with the button held: the list follows"
+   },
+   "keep_pointer": true
+  },
+  {
+   "release": 1,
+   "note": "released 100 px from the press, over another row on the base"
+  },
+  {
+   "park": true
+  },
+  {
+   "key": "Escape",
+   "await_change": 3.0,
+   "wait_after": 0.0,
+   "note": "close the remote manager"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "page-remotes",
+    "b": "@now",
+    "max_pixels": 20000
+   },
+   "note": "the dialog closed: the page is back, but for focus edges"
+  },
+  {
+   "mark": "page-tags",
+   "park_first": true
+  },
+  {
+   "palette": "browse and manage tags"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "page-tags",
+    "b": "@now",
+    "min_pixels": 30001
+   },
+   "note": "Tags opened"
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15
+  },
+  {
+   "capture": "tags-top",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "tags-13",
+   "shows": {
+    "base": "on the base, Tags at its top, nothing in the list focused: no cue that more rows lie below",
+    "cand": "on the candidate, Tags at its top, nothing in the list focused: the thumb at the top of its track in the gutter right of the rows"
+   }
+  },
+  {
+   "capture": "tags-top",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "tags-18",
+   "shows": {
+    "base": "on the base, Tags at its top, nothing in the list focused: no cue that more rows lie below",
+    "cand": "on the candidate, Tags at its top, nothing in the list focused: the thumb at the top of its track in the gutter right of the rows"
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 3,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "the filter, Create tag..., row 0"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     214,
+     167,
+     767,
+     207
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "the first row focused at the top, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     214,
+     199,
+     767,
+     252
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the first row focused at the top, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "capture": "tags-focus",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "tags-13",
+   "shows": {
+    "base": "on the base, Tags at its top with the first row focused, its ring at full width",
+    "cand": "on the candidate, Tags at its top with the first row focused: its ring whole and clear of the thumb beside it"
+   }
+  },
+  {
+   "capture": "tags-focus",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "tags-18",
+   "shows": {
+    "base": "on the base, Tags at its top with the first row focused, its ring at full width",
+    "cand": "on the candidate, Tags at its top with the first row focused: its ring whole and clear of the thumb beside it"
+   }
+  },
+  {
+   "glide": [
+    490,
+    187
+   ],
+   "note": "onto the focused row",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    490,
+    225
+   ],
+   "note": "onto the focused row",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "tags-focus-hover",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "tags-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the first row focused and hovered: its hover and ring beside the thumb at rest"
+   },
+   "keep_pointer": true
+  },
+  {
+   "capture": "tags-focus-hover",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "tags-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the first row focused and hovered: its hover and ring beside the thumb at rest"
+   },
+   "keep_pointer": true
+  },
+  {
+   "glide": [
+    775,
+    228
+   ],
+   "note": "onto the thumb at the top of the track",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    775,
+    244
+   ],
+   "note": "onto the thumb at the top of the track",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "tags-thumb-hover",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "tags-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the pointer on Tags's thumb: it widens to 8 px in the muted colour, clear of the focused row's ring"
+   },
+   "keep_pointer": true
+  },
+  {
+   "capture": "tags-thumb-hover",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "tags-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the pointer on Tags's thumb: it widens to 8 px in the muted colour, clear of the focused row's ring"
+   },
+   "keep_pointer": true
+  },
+  {
+   "park": true,
+   "note": "in mouse mode, so the scrollbar sees the pointer leave its thumb"
+  },
+  {
+   "key": "Tab",
+   "repeat": 19,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the row whose reveal scrolls the list nearest half its reach",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 18,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the row whose reveal scrolls the list nearest half its reach",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     214,
+     493,
+     767,
+     533
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the middle: the row Tab reached is whole at the lower edge"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     214,
+     512,
+     767,
+     565
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the middle: the row Tab reached is whole at the lower edge"
+  },
+  {
+   "capture": "tags-middle",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "tags-13",
+   "shows": {
+    "base": "on the base, the same scroll: no cue above or below",
+    "cand": "on the candidate, Tags scrolled by Tab to about half its reach: the thumb in the middle of the track, the focused row whole at the lower edge"
+   }
+  },
+  {
+   "capture": "tags-middle",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "tags-18",
+   "shows": {
+    "base": "on the base, the same scroll: no cue above or below",
+    "cand": "on the candidate, Tags scrolled by Tab to about half its reach: the thumb in the middle of the track, the focused row whole at the lower edge"
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 10,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the last row",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 11,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the last row",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     214,
+     493,
+     767,
+     533
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "the last row focused at the end, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     214,
+     512,
+     767,
+     565
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the last row focused at the end, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "capture": "tags-end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "tags-13",
+   "shows": {
+    "base": "on the base, Tags at its end with the last row focused: no cue that rows lie above",
+    "cand": "on the candidate, Tags at its end with the last row focused: the thumb at the bottom of the track, beside its ring"
+   }
+  },
+  {
+   "capture": "tags-end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "tags-18",
+   "shows": {
+    "base": "on the base, Tags at its end with the last row focused: no cue that rows lie above",
+    "cand": "on the candidate, Tags at its end with the last row focused: the thumb at the bottom of the track, beside its ring"
+   }
+  },
+  {
+   "glide": [
+    775,
+    471
+   ],
+   "note": "onto the thumb at the end of the track",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "press": 1,
+   "note": "the button down on the thumb (on the base, on a row's right end, which refuses focus and fires no click unless released on it)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "move": [
+    775,
+    421
+   ],
+   "note": "dragging",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "move": [
+    775,
+    371
+   ],
+   "note": "dragged 100 px up, button held",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    775,
+    519
+   ],
+   "note": "onto the thumb at the end of the track",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "press": 1,
+   "note": "the button down on the thumb (on the base, on a row's right end, which refuses focus and fires no click unless released on it)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "move": [
+    775,
+    469
+   ],
+   "note": "dragging",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "move": [
+    775,
+    419
+   ],
+   "note": "dragged 100 px up, button held",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "tags-thumb-drag",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "tags-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, Tags's thumb pressed and dragged 100 px up from the end with the button held: the list follows"
+   },
+   "keep_pointer": true
+  },
+  {
+   "capture": "tags-thumb-drag",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "tags-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, Tags's thumb pressed and dragged 100 px up from the end with the button held: the list follows"
+   },
+   "keep_pointer": true
+  },
+  {
+   "release": 1,
+   "note": "released 100 px from the press, over another row on the base"
+  },
+  {
+   "park": true
+  },
+  {
+   "key": "Tab",
+   "repeat": 31,
+   "await_change": 2.5,
+   "wait_after": 0.25,
+   "note": "Shift+Tab: rows 28 to 0, Create tag..., the filter",
+   "mods": [
+    "Shift_L"
+   ]
+  },
+  {
+   "stable": 6.0,
+   "quiet": 1.15
+  },
+  {
+   "mark": "tags-before-filter"
+  },
+  {
+   "type": "v1.01",
+   "note": "filter Tags to a few rows"
+  },
+  {
+   "stable": 4.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "tags-before-filter",
+    "b": "@now",
+    "region": [
+     200,
+     92,
+     800,
+     541
+    ],
+    "min_pixels": 2000
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the typing reached the filter: the list changed"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "tags-before-filter",
+    "b": "@now",
+    "region": [
+     200,
+     100,
+     800,
+     573
+    ],
+    "min_pixels": 2000
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the typing reached the filter: the list changed"
+  },
+  {
+   "key": "Tab",
+   "repeat": 2,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "from the filter to the first row"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     214,
+     167,
+     786,
+     207
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "v1.01, the only row, focused at full width in both builds; otherwise Escape and stop before Return"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     214,
+     199,
+     786,
+     252
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "v1.01, the only row, focused at full width in both builds; otherwise Escape and stop before Return"
+  },
+  {
+   "capture": "tags-fits",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "tags-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, Tags filtered to 'v1.01': the rows fit, no thumb, and the rows keep the base's full width"
+   }
+  },
+  {
+   "capture": "tags-fits",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "tags-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, Tags filtered to 'v1.01': the rows fit, no thumb, and the rows keep the base's full width"
+   }
+  },
+  {
+   "mark": "tags-before-inspect"
+  },
+  {
+   "click": [
+    500,
+    187
+   ],
+   "note": "v1.01, the only row: inspect it",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "click": [
+    500,
+    225
+   ],
+   "note": "v1.01, the only row: inspect it",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "stable": 10.0,
+   "quiet": 1.15
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "tags-before-inspect",
+    "b": "@now",
+    "min_pixels": 30001
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the Tags dialog is gone"
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "page-tags",
+    "b": "@now",
+    "min_pixels": 30001
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "a dialog is open over the page: the tag inspector"
+  },
+  {
+   "capture": "push-top",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "push-13",
+   "shows": {
+    "base": "on the base, the tag inspector's Push to... at its top, nothing in the list focused: no cue that more rows lie below",
+    "cand": "on the candidate, the tag inspector's Push to... at its top, nothing in the list focused: the thumb at the top of its track in the gutter right of the rows"
+   }
+  },
+  {
+   "capture": "push-top",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "push-18",
+   "shows": {
+    "base": "on the base, the tag inspector's Push to... at its top, nothing in the list focused: no cue that more rows lie below",
+    "cand": "on the candidate, the tag inspector's Push to... at its top, nothing in the list focused: the thumb at the top of its track in the gutter right of the rows"
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 3,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the first Push to... button (Copy object ID and Delete local tag... come first; nothing is pressed)"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     194,
+     253,
+     787,
+     287
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "the first button focused at the top, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     194,
+     342,
+     787,
+     387
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the first button focused at the top, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "capture": "push-focus",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "push-13",
+   "shows": {
+    "base": "on the base, the tag inspector's Push to... at its top with the first button focused, its ring at full width",
+    "cand": "on the candidate, the tag inspector's Push to... at its top with the first button focused: its ring whole and clear of the thumb beside it"
+   }
+  },
+  {
+   "capture": "push-focus",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "push-18",
+   "shows": {
+    "base": "on the base, the tag inspector's Push to... at its top with the first button focused, its ring at full width",
+    "cand": "on the candidate, the tag inspector's Push to... at its top with the first button focused: its ring whole and clear of the thumb beside it"
+   }
+  },
+  {
+   "glide": [
+    490,
+    270
+   ],
+   "note": "onto the focused button",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    490,
+    364
+   ],
+   "note": "onto the focused button",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "push-focus-hover",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "push-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the first button focused and hovered: its hover and ring beside the thumb at rest"
+   },
+   "keep_pointer": true
+  },
+  {
+   "capture": "push-focus-hover",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "push-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the first button focused and hovered: its hover and ring beside the thumb at rest"
+   },
+   "keep_pointer": true
+  },
+  {
+   "glide": [
+    795,
+    287
+   ],
+   "note": "onto the thumb at the top of the track",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "glide": [
+    795,
+    369
+   ],
+   "note": "onto the thumb at the top of the track",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "capture": "push-thumb-hover",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "push-13",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the pointer on the tag inspector's Push to...'s thumb: it widens to 8 px in the muted colour, clear of the focused button's ring"
+   },
+   "keep_pointer": true
+  },
+  {
+   "capture": "push-thumb-hover",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "push-18",
+   "roles": [
+    "cand"
+   ],
+   "shows": {
+    "cand": "on the candidate, the pointer on the tag inspector's Push to...'s thumb: it widens to 8 px in the muted colour, clear of the focused button's ring"
+   },
+   "keep_pointer": true
+  },
+  {
+   "park": true,
+   "note": "in mouse mode, so the scrollbar sees the pointer leave its thumb"
+  },
+  {
+   "key": "Tab",
+   "repeat": 8,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the button whose reveal scrolls the list nearest half its reach",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 7,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the button whose reveal scrolls the list nearest half its reach",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     194,
+     385,
+     787,
+     419
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the middle: the button Tab reached is whole at the lower edge"
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     194,
+     463,
+     787,
+     508
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ],
+   "note": "the middle: the button Tab reached is whole at the lower edge"
+  },
+  {
+   "capture": "push-middle",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "push-13",
+   "shows": {
+    "base": "on the base, the same scroll: no cue above or below",
+    "cand": "on the candidate, the tag inspector's Push to... scrolled by Tab to about half its reach: the thumb in the middle of the track, the focused button whole at the lower edge"
+   }
+  },
+  {
+   "capture": "push-middle",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "push-18",
+   "shows": {
+    "base": "on the base, the same scroll: no cue above or below",
+    "cand": "on the candidate, the tag inspector's Push to... scrolled by Tab to about half its reach: the thumb in the middle of the track, the focused button whole at the lower edge"
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 4,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the last button",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "key": "Tab",
+   "repeat": 5,
+   "await_change": 2.5,
+   "wait_after": 0.3,
+   "note": "to the last button",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     194,
+     385,
+     787,
+     419
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "note": "the last button focused at the end, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "guard": {
+    "kind": "ring",
+    "frame": "@now",
+    "rect": [
+     194,
+     463,
+     787,
+     508
+    ],
+    "sides": [
+     "top",
+     "left",
+     "bottom"
+    ]
+   },
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "note": "the last button focused at the end, its ring where the geometry puts it",
+   "on_fail": [
+    {
+     "key": "Escape"
+    }
+   ]
+  },
+  {
+   "capture": "push-end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   },
+   "crop": "push-13",
+   "shows": {
+    "base": "on the base, the tag inspector's Push to... at its end with the last button focused: no cue that rows lie above",
+    "cand": "on the candidate, the tag inspector's Push to... at its end with the last button focused: the thumb at the bottom of the track, beside its ring"
+   }
+  },
+  {
+   "capture": "push-end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   },
+   "crop": "push-18",
+   "shows": {
+    "base": "on the base, the tag inspector's Push to... at its end with the last button focused: no cue that rows lie above",
+    "cand": "on the candidate, the tag inspector's Push to... at its end with the last button focused: the thumb at the bottom of the track, beside its ring"
+   }
+  },
+  {
+   "key": "Escape",
+   "await_change": 3.0,
+   "wait_after": 0.0,
+   "note": "close the tag inspector; no Push to... button was ever pressed"
+  },
+  {
+   "stable": 6.0,
+   "quiet": 0.8
+  },
+  {
+   "guard": {
+    "kind": "compare",
+    "a": "page-tags",
+    "b": "@now",
+    "max_pixels": 20000
+   },
+   "note": "the dialog closed: the page is back, but for focus edges"
+  }
+ ],
+ "analyses": [
+  {
+   "name": "chooser-top-thumb-13",
+   "kind": "fill",
+   "frame": "chooser-top",
+   "region": [
+    744,
+    179,
+    748,
+    256
+   ],
+   "reference": {
+    "region": [
+     234,
+     177,
+     242,
+     491
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the resting thumb's fill against the list's surface (border on canvas)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-top-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "chooser-top",
+   "box": [
+    738,
+    169,
+    752,
+    499
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-top-only-the-list-13",
+   "kind": "compare",
+   "a": "base:chooser-top",
+   "b": "cand:chooser-top",
+   "crop": "chooser-13",
+   "masks": [
+    [
+     242,
+     164,
+     758,
+     504
+    ]
+   ],
+   "note": "outside the list the dialog is the same in both builds",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-top-only-the-thumb-13",
+   "kind": "compare",
+   "a": "base:chooser-top",
+   "b": "cand:chooser-top",
+   "crop": "chooser-13",
+   "masks": [
+    [
+     738,
+     169,
+     753,
+     499
+    ]
+   ],
+   "note": "rows are left-aligned and transparent at rest, so only the thumb differs",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-top-thumb-18",
+   "kind": "fill",
+   "frame": "chooser-top",
+   "region": [
+    744,
+    238,
+    748,
+    288
+   ],
+   "reference": {
+    "region": [
+     234,
+     236,
+     242,
+     550
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the resting thumb's fill against the list's surface (border on canvas)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-top-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "chooser-top",
+   "box": [
+    738,
+    228,
+    752,
+    558
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-top-only-the-list-18",
+   "kind": "compare",
+   "a": "base:chooser-top",
+   "b": "cand:chooser-top",
+   "crop": "chooser-18",
+   "masks": [
+    [
+     242,
+     223,
+     758,
+     563
+    ]
+   ],
+   "note": "outside the list the dialog is the same in both builds",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-top-only-the-thumb-18",
+   "kind": "compare",
+   "a": "base:chooser-top",
+   "b": "cand:chooser-top",
+   "crop": "chooser-18",
+   "masks": [
+    [
+     738,
+     228,
+     753,
+     558
+    ]
+   ],
+   "note": "rows are left-aligned and transparent at rest, so only the thumb differs",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-fits-no-thumb-13",
+   "kind": "fill",
+   "frame": "chooser-fits",
+   "region": [
+    744,
+    173,
+    748,
+    256
+   ],
+   "reference": {
+    "region": [
+     234,
+     173,
+     242,
+     256
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "no thumb where the overflowing list draws one",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-fits-same-as-base-13",
+   "kind": "compare",
+   "a": "base:chooser-fits",
+   "b": "cand:chooser-fits",
+   "crop": "chooser-13",
+   "masks": [],
+   "note": "a list whose rows fit draws exactly as the base: no gutter, no track, rows at full width",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-fits-no-thumb-18",
+   "kind": "fill",
+   "frame": "chooser-fits",
+   "region": [
+    744,
+    232,
+    748,
+    288
+   ],
+   "reference": {
+    "region": [
+     234,
+     232,
+     242,
+     288
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "no thumb where the overflowing list draws one",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-fits-same-as-base-18",
+   "kind": "compare",
+   "a": "base:chooser-fits",
+   "b": "cand:chooser-fits",
+   "crop": "chooser-18",
+   "masks": [],
+   "note": "a list whose rows fit draws exactly as the base: no gutter, no track, rows at full width",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-ring-13",
+   "kind": "ring",
+   "frame": "chooser-focus",
+   "rect": [
+    244,
+    166,
+    737,
+    206
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the first row's ring whole on all four sides beside the thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-ring-base-13",
+   "kind": "ring",
+   "frame": "chooser-focus",
+   "rect": [
+    244,
+    166,
+    756,
+    206
+   ],
+   "min_contrast": 3.0,
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "note": "the base's ring of the same control, at full width",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-clearance-13",
+   "kind": "clearance",
+   "frame": "chooser-focus",
+   "rect": [
+    244,
+    166,
+    737,
+    206
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    186
+   ],
+   "surface": {
+    "at": [
+     739,
+     186
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring's right edge and the thumb at rest (expected 6 px)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-thumb-13",
+   "kind": "fill",
+   "frame": "chooser-focus",
+   "region": [
+    744,
+    179,
+    748,
+    256
+   ],
+   "reference": {
+    "region": [
+     234,
+     177,
+     242,
+     491
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the top of the track beside the focused control: its fill against the list's surface",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "chooser-focus",
+   "box": [
+    738,
+    169,
+    752,
+    499
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-ring-18",
+   "kind": "ring",
+   "frame": "chooser-focus",
+   "rect": [
+    244,
+    225,
+    737,
+    278
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the first row's ring whole on all four sides beside the thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-ring-base-18",
+   "kind": "ring",
+   "frame": "chooser-focus",
+   "rect": [
+    244,
+    225,
+    756,
+    278
+   ],
+   "min_contrast": 3.0,
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "note": "the base's ring of the same control, at full width",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-clearance-18",
+   "kind": "clearance",
+   "frame": "chooser-focus",
+   "rect": [
+    244,
+    225,
+    737,
+    278
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    251
+   ],
+   "surface": {
+    "at": [
+     739,
+     251
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring's right edge and the thumb at rest (expected 6 px)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-thumb-18",
+   "kind": "fill",
+   "frame": "chooser-focus",
+   "region": [
+    744,
+    238,
+    748,
+    288
+   ],
+   "reference": {
+    "region": [
+     234,
+     236,
+     242,
+     550
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the top of the track beside the focused control: its fill against the list's surface",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "chooser-focus",
+   "box": [
+    738,
+    228,
+    752,
+    558
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-hover-ring-13",
+   "kind": "ring",
+   "frame": "chooser-focus-hover",
+   "rect": [
+    244,
+    166,
+    737,
+    206
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered focused control's ring whole beside the thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-hover-clearance-13",
+   "kind": "clearance",
+   "frame": "chooser-focus-hover",
+   "rect": [
+    244,
+    166,
+    737,
+    206
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    186
+   ],
+   "surface": {
+    "at": [
+     739,
+     186
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the same clearance with the control hovered",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-hover-ring-18",
+   "kind": "ring",
+   "frame": "chooser-focus-hover",
+   "rect": [
+    244,
+    225,
+    737,
+    278
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered focused control's ring whole beside the thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-focus-hover-clearance-18",
+   "kind": "clearance",
+   "frame": "chooser-focus-hover",
+   "rect": [
+    244,
+    225,
+    737,
+    278
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    251
+   ],
+   "surface": {
+    "at": [
+     739,
+     251
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the same clearance with the control hovered",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-hover-fill-13",
+   "kind": "fill",
+   "frame": "chooser-thumb-hover",
+   "region": [
+    742,
+    179,
+    748,
+    256
+   ],
+   "reference": {
+    "region": [
+     234,
+     177,
+     242,
+     491
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered thumb's fill against the list's surface",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-hover-ring-13",
+   "kind": "ring",
+   "frame": "chooser-thumb-hover",
+   "rect": [
+    244,
+    166,
+    737,
+    206
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused control's ring whole beside the hovered thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-hover-clearance-13",
+   "kind": "clearance",
+   "frame": "chooser-thumb-hover",
+   "rect": [
+    244,
+    166,
+    737,
+    206
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    186
+   ],
+   "surface": {
+    "at": [
+     739,
+     186
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring (or card) and the hovered, wider thumb (expected 4 px; 7 px from a card)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-hover-box-13",
+   "kind": "glyph_contrast",
+   "frame": "chooser-thumb-hover",
+   "box": [
+    738,
+    169,
+    752,
+    499
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-hover-fill-18",
+   "kind": "fill",
+   "frame": "chooser-thumb-hover",
+   "region": [
+    742,
+    238,
+    748,
+    288
+   ],
+   "reference": {
+    "region": [
+     234,
+     236,
+     242,
+     550
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered thumb's fill against the list's surface",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-hover-ring-18",
+   "kind": "ring",
+   "frame": "chooser-thumb-hover",
+   "rect": [
+    244,
+    225,
+    737,
+    278
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused control's ring whole beside the hovered thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-hover-clearance-18",
+   "kind": "clearance",
+   "frame": "chooser-thumb-hover",
+   "rect": [
+    244,
+    225,
+    737,
+    278
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    251
+   ],
+   "surface": {
+    "at": [
+     739,
+     251
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring (or card) and the hovered, wider thumb (expected 4 px; 7 px from a card)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-hover-box-18",
+   "kind": "glyph_contrast",
+   "frame": "chooser-thumb-hover",
+   "box": [
+    738,
+    228,
+    752,
+    558
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-middle-thumb-13",
+   "kind": "fill",
+   "frame": "chooser-middle",
+   "region": [
+    744,
+    289,
+    748,
+    367
+   ],
+   "reference": {
+    "region": [
+     234,
+     177,
+     242,
+     491
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb where the offset (0.48 of the reach) puts it",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-middle-left-top-13",
+   "kind": "fill",
+   "frame": "chooser-middle",
+   "region": [
+    744,
+    179,
+    748,
+    256
+   ],
+   "reference": {
+    "region": [
+     234,
+     177,
+     242,
+     491
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track any more: the thumb followed the offset",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-middle-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "chooser-middle",
+   "box": [
+    738,
+    169,
+    752,
+    499
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-middle-thumb-18",
+   "kind": "fill",
+   "frame": "chooser-middle",
+   "region": [
+    744,
+    365,
+    748,
+    415
+   ],
+   "reference": {
+    "region": [
+     234,
+     236,
+     242,
+     550
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb where the offset (0.49 of the reach) puts it",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-middle-left-top-18",
+   "kind": "fill",
+   "frame": "chooser-middle",
+   "region": [
+    744,
+    238,
+    748,
+    288
+   ],
+   "reference": {
+    "region": [
+     234,
+     236,
+     242,
+     550
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track any more: the thumb followed the offset",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-middle-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "chooser-middle",
+   "box": [
+    738,
+    228,
+    752,
+    558
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-end-thumb-13",
+   "kind": "fill",
+   "frame": "chooser-end",
+   "region": [
+    744,
+    411,
+    748,
+    489
+   ],
+   "reference": {
+    "region": [
+     234,
+     177,
+     242,
+     491
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the bottom of the track at the list's end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-end-left-top-13",
+   "kind": "fill",
+   "frame": "chooser-end",
+   "region": [
+    744,
+    179,
+    748,
+    256
+   ],
+   "reference": {
+    "region": [
+     234,
+     177,
+     242,
+     491
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track at the end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-end-ring-13",
+   "kind": "ring",
+   "frame": "chooser-end",
+   "rect": [
+    244,
+    462,
+    737,
+    502
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the last row's ring whole at the list's lower edge beside the thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-end-clearance-13",
+   "kind": "clearance",
+   "frame": "chooser-end",
+   "rect": [
+    244,
+    462,
+    737,
+    502
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    482
+   ],
+   "surface": {
+    "at": [
+     739,
+     482
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the last control's ring (or card) and the thumb at the end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-end-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "chooser-end",
+   "box": [
+    738,
+    169,
+    752,
+    499
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-end-thumb-18",
+   "kind": "fill",
+   "frame": "chooser-end",
+   "region": [
+    744,
+    497,
+    748,
+    548
+   ],
+   "reference": {
+    "region": [
+     234,
+     236,
+     242,
+     550
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the bottom of the track at the list's end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-end-left-top-18",
+   "kind": "fill",
+   "frame": "chooser-end",
+   "region": [
+    744,
+    238,
+    748,
+    288
+   ],
+   "reference": {
+    "region": [
+     234,
+     236,
+     242,
+     550
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track at the end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-end-ring-18",
+   "kind": "ring",
+   "frame": "chooser-end",
+   "rect": [
+    244,
+    508,
+    737,
+    561
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the last row's ring whole at the list's lower edge beside the thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-end-clearance-18",
+   "kind": "clearance",
+   "frame": "chooser-end",
+   "rect": [
+    244,
+    508,
+    737,
+    561
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    534
+   ],
+   "surface": {
+    "at": [
+     739,
+     534
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the last control's ring (or card) and the thumb at the end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-end-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "chooser-end",
+   "box": [
+    738,
+    228,
+    752,
+    558
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-drag-fill-13",
+   "kind": "fill",
+   "frame": "chooser-thumb-drag",
+   "region": [
+    742,
+    311,
+    748,
+    389
+   ],
+   "reference": {
+    "region": [
+     234,
+     177,
+     242,
+     491
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the pressed thumb 100 px above the end, against the list's surface",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-drag-scrolled-13",
+   "kind": "compare",
+   "a": "chooser-end",
+   "b": "chooser-thumb-drag",
+   "region": [
+    247,
+    169,
+    734,
+    499
+   ],
+   "min_pixels": 1000,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the rows moved with the drag on the candidate; on the base only the pressed row changed",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-drag-box-13",
+   "kind": "glyph_contrast",
+   "frame": "chooser-thumb-drag",
+   "box": [
+    738,
+    169,
+    752,
+    499
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-drag-fill-18",
+   "kind": "fill",
+   "frame": "chooser-thumb-drag",
+   "region": [
+    742,
+    397,
+    748,
+    448
+   ],
+   "reference": {
+    "region": [
+     234,
+     236,
+     242,
+     550
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the pressed thumb 100 px above the end, against the list's surface",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-drag-scrolled-18",
+   "kind": "compare",
+   "a": "chooser-end",
+   "b": "chooser-thumb-drag",
+   "region": [
+    247,
+    228,
+    734,
+    558
+   ],
+   "min_pixels": 1000,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the rows moved with the drag on the candidate; on the base only the pressed row changed",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "chooser-thumb-drag-box-18",
+   "kind": "glyph_contrast",
+   "frame": "chooser-thumb-drag",
+   "box": [
+    738,
+    228,
+    752,
+    558
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-top-thumb-13",
+   "kind": "fill",
+   "frame": "remotes-top",
+   "region": [
+    764,
+    181,
+    768,
+    271
+   ],
+   "reference": {
+    "region": [
+     214,
+     179,
+     225,
+     523
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the resting thumb's fill against the list's surface (border on canvas)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-top-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "remotes-top",
+   "box": [
+    758,
+    171,
+    772,
+    531
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-top-only-the-list-13",
+   "kind": "compare",
+   "a": "base:remotes-top",
+   "b": "cand:remotes-top",
+   "crop": "remotes-13",
+   "masks": [
+    [
+     225,
+     169,
+     775,
+     533
+    ]
+   ],
+   "note": "outside the list the dialog is the same in both builds",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-top-rows-13",
+   "kind": "compare",
+   "a": "base:remotes-top",
+   "b": "cand:remotes-top",
+   "crop": "remotes-13",
+   "masks": [
+    [
+     758,
+     171,
+     773,
+     531
+    ]
+   ],
+   "note": "centred labels or bordered cards move with the narrower rows; recorded",
+   "expect": "record",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-top-thumb-18",
+   "kind": "fill",
+   "frame": "remotes-top",
+   "region": [
+    764,
+    241,
+    768,
+    301
+   ],
+   "reference": {
+    "region": [
+     214,
+     239,
+     225,
+     583
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the resting thumb's fill against the list's surface (border on canvas)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-top-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "remotes-top",
+   "box": [
+    758,
+    231,
+    772,
+    591
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-top-only-the-list-18",
+   "kind": "compare",
+   "a": "base:remotes-top",
+   "b": "cand:remotes-top",
+   "crop": "remotes-18",
+   "masks": [
+    [
+     225,
+     229,
+     775,
+     593
+    ]
+   ],
+   "note": "outside the list the dialog is the same in both builds",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-top-rows-18",
+   "kind": "compare",
+   "a": "base:remotes-top",
+   "b": "cand:remotes-top",
+   "crop": "remotes-18",
+   "masks": [
+    [
+     758,
+     231,
+     773,
+     591
+    ]
+   ],
+   "note": "centred labels or bordered cards move with the narrower rows; recorded",
+   "expect": "record",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-fits-no-thumb-13",
+   "kind": "fill",
+   "frame": "remotes-fits",
+   "region": [
+    764,
+    175,
+    768,
+    271
+   ],
+   "reference": {
+    "region": [
+     214,
+     175,
+     225,
+     271
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "no thumb where the overflowing list draws one",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-fits-same-as-base-13",
+   "kind": "compare",
+   "a": "base:remotes-fits",
+   "b": "cand:remotes-fits",
+   "crop": "remotes-13",
+   "masks": [],
+   "note": "a list whose rows fit draws exactly as the base: no gutter, no track, rows at full width",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-fits-no-thumb-18",
+   "kind": "fill",
+   "frame": "remotes-fits",
+   "region": [
+    764,
+    235,
+    768,
+    301
+   ],
+   "reference": {
+    "region": [
+     214,
+     235,
+     225,
+     301
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "no thumb where the overflowing list draws one",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-fits-same-as-base-18",
+   "kind": "compare",
+   "a": "base:remotes-fits",
+   "b": "cand:remotes-fits",
+   "crop": "remotes-18",
+   "masks": [],
+   "note": "a list whose rows fit draws exactly as the base: no gutter, no track, rows at full width",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-ring-13",
+   "kind": "ring",
+   "frame": "remotes-focus",
+   "rect": [
+    664,
+    196,
+    746,
+    230
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the first Remove...'s ring whole on all four sides beside the thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-ring-base-13",
+   "kind": "ring",
+   "frame": "remotes-focus",
+   "rect": [
+    683,
+    196,
+    765,
+    230
+   ],
+   "min_contrast": 3.0,
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "note": "the base's ring of the same control, at full width",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-clearance-to-card-13",
+   "kind": "clearance",
+   "frame": "remotes-focus",
+   "rect": [
+    664,
+    196,
+    746,
+    230
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    213
+   ],
+   "surface": {
+    "at": [
+     751,
+     213
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused Remove...'s ring to its card's right border",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-clearance-13",
+   "kind": "clearance",
+   "frame": "remotes-focus",
+   "rect": [
+    227,
+    171,
+    754,
+    256
+   ],
+   "side": "right",
+   "at": [
+    213
+   ],
+   "surface": {
+    "at": [
+     759,
+     213
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused remote's card and the thumb at rest (expected 9 px)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-thumb-13",
+   "kind": "fill",
+   "frame": "remotes-focus",
+   "region": [
+    764,
+    181,
+    768,
+    271
+   ],
+   "reference": {
+    "region": [
+     214,
+     179,
+     225,
+     523
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the top of the track beside the focused control: its fill against the list's surface",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "remotes-focus",
+   "box": [
+    758,
+    171,
+    772,
+    531
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-ring-18",
+   "kind": "ring",
+   "frame": "remotes-focus",
+   "rect": [
+    631,
+    266,
+    743,
+    311
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the first Remove...'s ring whole on all four sides beside the thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-ring-base-18",
+   "kind": "ring",
+   "frame": "remotes-focus",
+   "rect": [
+    650,
+    266,
+    761,
+    311
+   ],
+   "min_contrast": 3.0,
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "note": "the base's ring of the same control, at full width",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-clearance-to-card-18",
+   "kind": "clearance",
+   "frame": "remotes-focus",
+   "rect": [
+    631,
+    266,
+    743,
+    311
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    288
+   ],
+   "surface": {
+    "at": [
+     751,
+     288
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused Remove...'s ring to its card's right border",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-clearance-18",
+   "kind": "clearance",
+   "frame": "remotes-focus",
+   "rect": [
+    227,
+    231,
+    754,
+    346
+   ],
+   "side": "right",
+   "at": [
+    288
+   ],
+   "surface": {
+    "at": [
+     759,
+     288
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused remote's card and the thumb at rest (expected 9 px)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-thumb-18",
+   "kind": "fill",
+   "frame": "remotes-focus",
+   "region": [
+    764,
+    241,
+    768,
+    301
+   ],
+   "reference": {
+    "region": [
+     214,
+     239,
+     225,
+     583
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the top of the track beside the focused control: its fill against the list's surface",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "remotes-focus",
+   "box": [
+    758,
+    231,
+    772,
+    591
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-hover-ring-13",
+   "kind": "ring",
+   "frame": "remotes-focus-hover",
+   "rect": [
+    664,
+    196,
+    746,
+    230
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered focused control's ring whole beside the thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-hover-clearance-to-card-13",
+   "kind": "clearance",
+   "frame": "remotes-focus-hover",
+   "rect": [
+    664,
+    196,
+    746,
+    230
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    213
+   ],
+   "surface": {
+    "at": [
+     751,
+     213
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused Remove...'s ring to its card's right border",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-hover-clearance-13",
+   "kind": "clearance",
+   "frame": "remotes-focus-hover",
+   "rect": [
+    227,
+    171,
+    754,
+    256
+   ],
+   "side": "right",
+   "at": [
+    213
+   ],
+   "surface": {
+    "at": [
+     759,
+     213
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the same clearance with the control hovered",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-hover-ring-18",
+   "kind": "ring",
+   "frame": "remotes-focus-hover",
+   "rect": [
+    631,
+    266,
+    743,
+    311
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered focused control's ring whole beside the thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-hover-clearance-to-card-18",
+   "kind": "clearance",
+   "frame": "remotes-focus-hover",
+   "rect": [
+    631,
+    266,
+    743,
+    311
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    288
+   ],
+   "surface": {
+    "at": [
+     751,
+     288
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused Remove...'s ring to its card's right border",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-focus-hover-clearance-18",
+   "kind": "clearance",
+   "frame": "remotes-focus-hover",
+   "rect": [
+    227,
+    231,
+    754,
+    346
+   ],
+   "side": "right",
+   "at": [
+    288
+   ],
+   "surface": {
+    "at": [
+     759,
+     288
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the same clearance with the control hovered",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-hover-fill-13",
+   "kind": "fill",
+   "frame": "remotes-thumb-hover",
+   "region": [
+    762,
+    181,
+    768,
+    271
+   ],
+   "reference": {
+    "region": [
+     214,
+     179,
+     225,
+     523
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered thumb's fill against the list's surface",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-hover-ring-13",
+   "kind": "ring",
+   "frame": "remotes-thumb-hover",
+   "rect": [
+    664,
+    196,
+    746,
+    230
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused control's ring whole beside the hovered thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-hover-clearance-to-card-13",
+   "kind": "clearance",
+   "frame": "remotes-thumb-hover",
+   "rect": [
+    664,
+    196,
+    746,
+    230
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    213
+   ],
+   "surface": {
+    "at": [
+     751,
+     213
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused Remove...'s ring to its card's right border",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-hover-clearance-13",
+   "kind": "clearance",
+   "frame": "remotes-thumb-hover",
+   "rect": [
+    227,
+    171,
+    754,
+    256
+   ],
+   "side": "right",
+   "at": [
+    213
+   ],
+   "surface": {
+    "at": [
+     759,
+     213
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring (or card) and the hovered, wider thumb (expected 4 px; 7 px from a card)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-hover-box-13",
+   "kind": "glyph_contrast",
+   "frame": "remotes-thumb-hover",
+   "box": [
+    758,
+    171,
+    772,
+    531
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-hover-fill-18",
+   "kind": "fill",
+   "frame": "remotes-thumb-hover",
+   "region": [
+    762,
+    241,
+    768,
+    301
+   ],
+   "reference": {
+    "region": [
+     214,
+     239,
+     225,
+     583
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered thumb's fill against the list's surface",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-hover-ring-18",
+   "kind": "ring",
+   "frame": "remotes-thumb-hover",
+   "rect": [
+    631,
+    266,
+    743,
+    311
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused control's ring whole beside the hovered thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-hover-clearance-to-card-18",
+   "kind": "clearance",
+   "frame": "remotes-thumb-hover",
+   "rect": [
+    631,
+    266,
+    743,
+    311
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    288
+   ],
+   "surface": {
+    "at": [
+     751,
+     288
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused Remove...'s ring to its card's right border",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-hover-clearance-18",
+   "kind": "clearance",
+   "frame": "remotes-thumb-hover",
+   "rect": [
+    227,
+    231,
+    754,
+    346
+   ],
+   "side": "right",
+   "at": [
+    288
+   ],
+   "surface": {
+    "at": [
+     759,
+     288
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring (or card) and the hovered, wider thumb (expected 4 px; 7 px from a card)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-hover-box-18",
+   "kind": "glyph_contrast",
+   "frame": "remotes-thumb-hover",
+   "box": [
+    758,
+    231,
+    772,
+    591
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-middle-thumb-13",
+   "kind": "fill",
+   "frame": "remotes-middle",
+   "region": [
+    764,
+    311,
+    768,
+    401
+   ],
+   "reference": {
+    "region": [
+     214,
+     179,
+     225,
+     523
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb where the offset (0.52 of the reach) puts it",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-middle-left-top-13",
+   "kind": "fill",
+   "frame": "remotes-middle",
+   "region": [
+    764,
+    181,
+    768,
+    271
+   ],
+   "reference": {
+    "region": [
+     214,
+     179,
+     225,
+     523
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track any more: the thumb followed the offset",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-middle-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "remotes-middle",
+   "box": [
+    758,
+    171,
+    772,
+    531
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-middle-thumb-18",
+   "kind": "fill",
+   "frame": "remotes-middle",
+   "region": [
+    764,
+    372,
+    768,
+    433
+   ],
+   "reference": {
+    "region": [
+     214,
+     239,
+     225,
+     583
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb where the offset (0.47 of the reach) puts it",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-middle-left-top-18",
+   "kind": "fill",
+   "frame": "remotes-middle",
+   "region": [
+    764,
+    241,
+    768,
+    301
+   ],
+   "reference": {
+    "region": [
+     214,
+     239,
+     225,
+     583
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track any more: the thumb followed the offset",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-middle-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "remotes-middle",
+   "box": [
+    758,
+    231,
+    772,
+    591
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-end-thumb-13",
+   "kind": "fill",
+   "frame": "remotes-end",
+   "region": [
+    764,
+    430,
+    768,
+    521
+   ],
+   "reference": {
+    "region": [
+     214,
+     179,
+     225,
+     523
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the bottom of the track at the list's end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-end-left-top-13",
+   "kind": "fill",
+   "frame": "remotes-end",
+   "region": [
+    764,
+    181,
+    768,
+    271
+   ],
+   "reference": {
+    "region": [
+     214,
+     179,
+     225,
+     523
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track at the end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-end-ring-13",
+   "kind": "ring",
+   "frame": "remotes-end",
+   "rect": [
+    664,
+    472,
+    746,
+    506
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the last Remove...'s ring whole at the list's lower edge beside the thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-end-clearance-to-card-13",
+   "kind": "clearance",
+   "frame": "remotes-end",
+   "rect": [
+    664,
+    472,
+    746,
+    506
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    489
+   ],
+   "surface": {
+    "at": [
+     751,
+     489
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused Remove...'s ring to its card's right border",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-end-clearance-13",
+   "kind": "clearance",
+   "frame": "remotes-end",
+   "rect": [
+    227,
+    446,
+    754,
+    531
+   ],
+   "side": "right",
+   "at": [
+    489
+   ],
+   "surface": {
+    "at": [
+     759,
+     489
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the last control's ring (or card) and the thumb at the end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-end-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "remotes-end",
+   "box": [
+    758,
+    171,
+    772,
+    531
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-end-thumb-18",
+   "kind": "fill",
+   "frame": "remotes-end",
+   "region": [
+    764,
+    520,
+    768,
+    581
+   ],
+   "reference": {
+    "region": [
+     214,
+     239,
+     225,
+     583
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the bottom of the track at the list's end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-end-left-top-18",
+   "kind": "fill",
+   "frame": "remotes-end",
+   "region": [
+    764,
+    241,
+    768,
+    301
+   ],
+   "reference": {
+    "region": [
+     214,
+     239,
+     225,
+     583
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track at the end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-end-ring-18",
+   "kind": "ring",
+   "frame": "remotes-end",
+   "rect": [
+    631,
+    511,
+    743,
+    556
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the last Remove...'s ring whole at the list's lower edge beside the thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-end-clearance-to-card-18",
+   "kind": "clearance",
+   "frame": "remotes-end",
+   "rect": [
+    631,
+    511,
+    743,
+    556
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    533
+   ],
+   "surface": {
+    "at": [
+     751,
+     533
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused Remove...'s ring to its card's right border",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-end-clearance-18",
+   "kind": "clearance",
+   "frame": "remotes-end",
+   "rect": [
+    227,
+    476,
+    754,
+    591
+   ],
+   "side": "right",
+   "at": [
+    533
+   ],
+   "surface": {
+    "at": [
+     759,
+     533
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the last control's ring (or card) and the thumb at the end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-end-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "remotes-end",
+   "box": [
+    758,
+    231,
+    772,
+    591
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-drag-fill-13",
+   "kind": "fill",
+   "frame": "remotes-thumb-drag",
+   "region": [
+    762,
+    330,
+    768,
+    421
+   ],
+   "reference": {
+    "region": [
+     214,
+     179,
+     225,
+     523
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the pressed thumb 100 px above the end, against the list's surface",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-drag-scrolled-13",
+   "kind": "compare",
+   "a": "remotes-end",
+   "b": "remotes-thumb-drag",
+   "region": [
+    227,
+    171,
+    754,
+    531
+   ],
+   "min_pixels": 1000,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the rows moved with the drag on the candidate; on the base only the pressed row changed",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-drag-box-13",
+   "kind": "glyph_contrast",
+   "frame": "remotes-thumb-drag",
+   "box": [
+    758,
+    171,
+    772,
+    531
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-drag-fill-18",
+   "kind": "fill",
+   "frame": "remotes-thumb-drag",
+   "region": [
+    762,
+    420,
+    768,
+    481
+   ],
+   "reference": {
+    "region": [
+     214,
+     239,
+     225,
+     583
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the pressed thumb 100 px above the end, against the list's surface",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-drag-scrolled-18",
+   "kind": "compare",
+   "a": "remotes-end",
+   "b": "remotes-thumb-drag",
+   "region": [
+    227,
+    231,
+    754,
+    591
+   ],
+   "min_pixels": 1000,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the rows moved with the drag on the candidate; on the base only the pressed row changed",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "remotes-thumb-drag-box-18",
+   "kind": "glyph_contrast",
+   "frame": "remotes-thumb-drag",
+   "box": [
+    758,
+    231,
+    772,
+    591
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-top-thumb-13",
+   "kind": "fill",
+   "frame": "tags-top",
+   "region": [
+    774,
+    180,
+    778,
+    276
+   ],
+   "reference": {
+    "region": [
+     204,
+     178,
+     212,
+     522
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the resting thumb's fill against the list's surface (border on canvas)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-top-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "tags-top",
+   "box": [
+    768,
+    170,
+    782,
+    530
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-top-only-the-list-13",
+   "kind": "compare",
+   "a": "base:tags-top",
+   "b": "cand:tags-top",
+   "crop": "tags-13",
+   "masks": [
+    [
+     212,
+     165,
+     788,
+     535
+    ]
+   ],
+   "note": "outside the list the dialog is the same in both builds",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-top-rows-13",
+   "kind": "compare",
+   "a": "base:tags-top",
+   "b": "cand:tags-top",
+   "crop": "tags-13",
+   "masks": [
+    [
+     768,
+     170,
+     783,
+     530
+    ]
+   ],
+   "note": "centred labels or bordered cards move with the narrower rows; recorded",
+   "expect": "record",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-top-thumb-18",
+   "kind": "fill",
+   "frame": "tags-top",
+   "region": [
+    774,
+    212,
+    778,
+    276
+   ],
+   "reference": {
+    "region": [
+     204,
+     210,
+     212,
+     554
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the resting thumb's fill against the list's surface (border on canvas)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-top-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "tags-top",
+   "box": [
+    768,
+    202,
+    782,
+    562
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-top-only-the-list-18",
+   "kind": "compare",
+   "a": "base:tags-top",
+   "b": "cand:tags-top",
+   "crop": "tags-18",
+   "masks": [
+    [
+     212,
+     197,
+     788,
+     567
+    ]
+   ],
+   "note": "outside the list the dialog is the same in both builds",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-top-rows-18",
+   "kind": "compare",
+   "a": "base:tags-top",
+   "b": "cand:tags-top",
+   "crop": "tags-18",
+   "masks": [
+    [
+     768,
+     202,
+     783,
+     562
+    ]
+   ],
+   "note": "centred labels or bordered cards move with the narrower rows; recorded",
+   "expect": "record",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-ring-13",
+   "kind": "ring",
+   "frame": "tags-focus",
+   "rect": [
+    214,
+    167,
+    767,
+    207
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the first row's ring whole on all four sides beside the thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-ring-base-13",
+   "kind": "ring",
+   "frame": "tags-focus",
+   "rect": [
+    214,
+    167,
+    786,
+    207
+   ],
+   "min_contrast": 3.0,
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "note": "the base's ring of the same control, at full width",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-clearance-13",
+   "kind": "clearance",
+   "frame": "tags-focus",
+   "rect": [
+    214,
+    167,
+    767,
+    207
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    187
+   ],
+   "surface": {
+    "at": [
+     769,
+     187
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring's right edge and the thumb at rest (expected 6 px)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-thumb-13",
+   "kind": "fill",
+   "frame": "tags-focus",
+   "region": [
+    774,
+    180,
+    778,
+    276
+   ],
+   "reference": {
+    "region": [
+     204,
+     178,
+     212,
+     522
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the top of the track beside the focused control: its fill against the list's surface",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "tags-focus",
+   "box": [
+    768,
+    170,
+    782,
+    530
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-ring-18",
+   "kind": "ring",
+   "frame": "tags-focus",
+   "rect": [
+    214,
+    199,
+    767,
+    252
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the first row's ring whole on all four sides beside the thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-ring-base-18",
+   "kind": "ring",
+   "frame": "tags-focus",
+   "rect": [
+    214,
+    199,
+    786,
+    252
+   ],
+   "min_contrast": 3.0,
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "note": "the base's ring of the same control, at full width",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-clearance-18",
+   "kind": "clearance",
+   "frame": "tags-focus",
+   "rect": [
+    214,
+    199,
+    767,
+    252
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    225
+   ],
+   "surface": {
+    "at": [
+     769,
+     225
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring's right edge and the thumb at rest (expected 6 px)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-thumb-18",
+   "kind": "fill",
+   "frame": "tags-focus",
+   "region": [
+    774,
+    212,
+    778,
+    276
+   ],
+   "reference": {
+    "region": [
+     204,
+     210,
+     212,
+     554
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the top of the track beside the focused control: its fill against the list's surface",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "tags-focus",
+   "box": [
+    768,
+    202,
+    782,
+    562
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-hover-ring-13",
+   "kind": "ring",
+   "frame": "tags-focus-hover",
+   "rect": [
+    214,
+    167,
+    767,
+    207
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered focused control's ring whole beside the thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-hover-clearance-13",
+   "kind": "clearance",
+   "frame": "tags-focus-hover",
+   "rect": [
+    214,
+    167,
+    767,
+    207
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    187
+   ],
+   "surface": {
+    "at": [
+     769,
+     187
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the same clearance with the control hovered",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-hover-ring-18",
+   "kind": "ring",
+   "frame": "tags-focus-hover",
+   "rect": [
+    214,
+    199,
+    767,
+    252
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered focused control's ring whole beside the thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-focus-hover-clearance-18",
+   "kind": "clearance",
+   "frame": "tags-focus-hover",
+   "rect": [
+    214,
+    199,
+    767,
+    252
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    225
+   ],
+   "surface": {
+    "at": [
+     769,
+     225
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the same clearance with the control hovered",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-hover-fill-13",
+   "kind": "fill",
+   "frame": "tags-thumb-hover",
+   "region": [
+    772,
+    180,
+    778,
+    276
+   ],
+   "reference": {
+    "region": [
+     204,
+     178,
+     212,
+     522
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered thumb's fill against the list's surface",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-hover-ring-13",
+   "kind": "ring",
+   "frame": "tags-thumb-hover",
+   "rect": [
+    214,
+    167,
+    767,
+    207
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused control's ring whole beside the hovered thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-hover-clearance-13",
+   "kind": "clearance",
+   "frame": "tags-thumb-hover",
+   "rect": [
+    214,
+    167,
+    767,
+    207
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    187
+   ],
+   "surface": {
+    "at": [
+     769,
+     187
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring (or card) and the hovered, wider thumb (expected 4 px; 7 px from a card)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-hover-box-13",
+   "kind": "glyph_contrast",
+   "frame": "tags-thumb-hover",
+   "box": [
+    768,
+    170,
+    782,
+    530
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-hover-fill-18",
+   "kind": "fill",
+   "frame": "tags-thumb-hover",
+   "region": [
+    772,
+    212,
+    778,
+    276
+   ],
+   "reference": {
+    "region": [
+     204,
+     210,
+     212,
+     554
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered thumb's fill against the list's surface",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-hover-ring-18",
+   "kind": "ring",
+   "frame": "tags-thumb-hover",
+   "rect": [
+    214,
+    199,
+    767,
+    252
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused control's ring whole beside the hovered thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-hover-clearance-18",
+   "kind": "clearance",
+   "frame": "tags-thumb-hover",
+   "rect": [
+    214,
+    199,
+    767,
+    252
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    225
+   ],
+   "surface": {
+    "at": [
+     769,
+     225
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring (or card) and the hovered, wider thumb (expected 4 px; 7 px from a card)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-hover-box-18",
+   "kind": "glyph_contrast",
+   "frame": "tags-thumb-hover",
+   "box": [
+    768,
+    202,
+    782,
+    562
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-middle-thumb-13",
+   "kind": "fill",
+   "frame": "tags-middle",
+   "region": [
+    774,
+    303,
+    778,
+    399
+   ],
+   "reference": {
+    "region": [
+     204,
+     178,
+     212,
+     522
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb where the offset (0.51 of the reach) puts it",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-middle-left-top-13",
+   "kind": "fill",
+   "frame": "tags-middle",
+   "region": [
+    774,
+    180,
+    778,
+    276
+   ],
+   "reference": {
+    "region": [
+     204,
+     178,
+     212,
+     522
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track any more: the thumb followed the offset",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-middle-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "tags-middle",
+   "box": [
+    768,
+    170,
+    782,
+    530
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-middle-thumb-18",
+   "kind": "fill",
+   "frame": "tags-middle",
+   "region": [
+    774,
+    355,
+    778,
+    419
+   ],
+   "reference": {
+    "region": [
+     204,
+     210,
+     212,
+     554
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb where the offset (0.52 of the reach) puts it",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-middle-left-top-18",
+   "kind": "fill",
+   "frame": "tags-middle",
+   "region": [
+    774,
+    212,
+    778,
+    276
+   ],
+   "reference": {
+    "region": [
+     204,
+     210,
+     212,
+     554
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track any more: the thumb followed the offset",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-middle-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "tags-middle",
+   "box": [
+    768,
+    202,
+    782,
+    562
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-end-thumb-13",
+   "kind": "fill",
+   "frame": "tags-end",
+   "region": [
+    774,
+    423,
+    778,
+    520
+   ],
+   "reference": {
+    "region": [
+     204,
+     178,
+     212,
+     522
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the bottom of the track at the list's end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-end-left-top-13",
+   "kind": "fill",
+   "frame": "tags-end",
+   "region": [
+    774,
+    180,
+    778,
+    276
+   ],
+   "reference": {
+    "region": [
+     204,
+     178,
+     212,
+     522
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track at the end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-end-ring-13",
+   "kind": "ring",
+   "frame": "tags-end",
+   "rect": [
+    214,
+    493,
+    767,
+    533
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the last row's ring whole at the list's lower edge beside the thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-end-clearance-13",
+   "kind": "clearance",
+   "frame": "tags-end",
+   "rect": [
+    214,
+    493,
+    767,
+    533
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    513
+   ],
+   "surface": {
+    "at": [
+     769,
+     513
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the last control's ring (or card) and the thumb at the end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-end-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "tags-end",
+   "box": [
+    768,
+    170,
+    782,
+    530
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-end-thumb-18",
+   "kind": "fill",
+   "frame": "tags-end",
+   "region": [
+    774,
+    487,
+    778,
+    552
+   ],
+   "reference": {
+    "region": [
+     204,
+     210,
+     212,
+     554
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the bottom of the track at the list's end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-end-left-top-18",
+   "kind": "fill",
+   "frame": "tags-end",
+   "region": [
+    774,
+    212,
+    778,
+    276
+   ],
+   "reference": {
+    "region": [
+     204,
+     210,
+     212,
+     554
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track at the end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-end-ring-18",
+   "kind": "ring",
+   "frame": "tags-end",
+   "rect": [
+    214,
+    512,
+    767,
+    565
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the last row's ring whole at the list's lower edge beside the thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-end-clearance-18",
+   "kind": "clearance",
+   "frame": "tags-end",
+   "rect": [
+    214,
+    512,
+    767,
+    565
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    538
+   ],
+   "surface": {
+    "at": [
+     769,
+     538
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the last control's ring (or card) and the thumb at the end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-end-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "tags-end",
+   "box": [
+    768,
+    202,
+    782,
+    562
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-drag-fill-13",
+   "kind": "fill",
+   "frame": "tags-thumb-drag",
+   "region": [
+    772,
+    323,
+    778,
+    420
+   ],
+   "reference": {
+    "region": [
+     204,
+     178,
+     212,
+     522
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the pressed thumb 100 px above the end, against the list's surface",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-drag-scrolled-13",
+   "kind": "compare",
+   "a": "tags-end",
+   "b": "tags-thumb-drag",
+   "region": [
+    217,
+    170,
+    764,
+    530
+   ],
+   "min_pixels": 1000,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the rows moved with the drag on the candidate; on the base only the pressed row changed",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-drag-box-13",
+   "kind": "glyph_contrast",
+   "frame": "tags-thumb-drag",
+   "box": [
+    768,
+    170,
+    782,
+    530
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-drag-fill-18",
+   "kind": "fill",
+   "frame": "tags-thumb-drag",
+   "region": [
+    772,
+    387,
+    778,
+    452
+   ],
+   "reference": {
+    "region": [
+     204,
+     210,
+     212,
+     554
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the pressed thumb 100 px above the end, against the list's surface",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-drag-scrolled-18",
+   "kind": "compare",
+   "a": "tags-end",
+   "b": "tags-thumb-drag",
+   "region": [
+    217,
+    202,
+    764,
+    562
+   ],
+   "min_pixels": 1000,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the rows moved with the drag on the candidate; on the base only the pressed row changed",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-thumb-drag-box-18",
+   "kind": "glyph_contrast",
+   "frame": "tags-thumb-drag",
+   "box": [
+    768,
+    202,
+    782,
+    562
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-fits-no-thumb-13",
+   "kind": "fill",
+   "frame": "tags-fits",
+   "region": [
+    774,
+    174,
+    778,
+    200
+   ],
+   "reference": {
+    "region": [
+     204,
+     174,
+     212,
+     200
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "no thumb where the overflowing list draws one",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-fits-same-as-base-13",
+   "kind": "compare",
+   "a": "base:tags-fits",
+   "b": "cand:tags-fits",
+   "crop": "tags-13",
+   "masks": [],
+   "note": "a list whose rows fit draws exactly as the base: no gutter, no track, rows at full width",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "tags-fits-no-thumb-18",
+   "kind": "fill",
+   "frame": "tags-fits",
+   "region": [
+    774,
+    206,
+    778,
+    245
+   ],
+   "reference": {
+    "region": [
+     204,
+     206,
+     212,
+     245
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "no thumb where the overflowing list draws one",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "tags-fits-same-as-base-18",
+   "kind": "compare",
+   "a": "base:tags-fits",
+   "b": "cand:tags-fits",
+   "crop": "tags-18",
+   "masks": [],
+   "note": "a list whose rows fit draws exactly as the base: no gutter, no track, rows at full width",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-top-thumb-13",
+   "kind": "fill",
+   "frame": "push-top",
+   "region": [
+    794,
+    266,
+    798,
+    309
+   ],
+   "reference": {
+    "region": [
+     184,
+     264,
+     192,
+     408
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the resting thumb's fill against the list's surface (border on canvas)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-top-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "push-top",
+   "box": [
+    788,
+    256,
+    802,
+    416
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-top-only-the-list-13",
+   "kind": "compare",
+   "a": "base:push-top",
+   "b": "cand:push-top",
+   "crop": "push-13",
+   "masks": [
+    [
+     192,
+     251,
+     808,
+     421
+    ]
+   ],
+   "note": "outside the list the dialog is the same in both builds",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-top-rows-13",
+   "kind": "compare",
+   "a": "base:push-top",
+   "b": "cand:push-top",
+   "crop": "push-13",
+   "masks": [
+    [
+     788,
+     256,
+     803,
+     416
+    ]
+   ],
+   "note": "centred labels or bordered cards move with the narrower rows; recorded",
+   "expect": "record",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-top-thumb-18",
+   "kind": "fill",
+   "frame": "push-top",
+   "region": [
+    794,
+    355,
+    798,
+    383
+   ],
+   "reference": {
+    "region": [
+     184,
+     353,
+     192,
+     497
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the resting thumb's fill against the list's surface (border on canvas)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-top-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "push-top",
+   "box": [
+    788,
+    345,
+    802,
+    505
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-top-only-the-list-18",
+   "kind": "compare",
+   "a": "base:push-top",
+   "b": "cand:push-top",
+   "crop": "push-18",
+   "masks": [
+    [
+     192,
+     340,
+     808,
+     510
+    ]
+   ],
+   "note": "outside the list the dialog is the same in both builds",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-top-rows-18",
+   "kind": "compare",
+   "a": "base:push-top",
+   "b": "cand:push-top",
+   "crop": "push-18",
+   "masks": [
+    [
+     788,
+     345,
+     803,
+     505
+    ]
+   ],
+   "note": "centred labels or bordered cards move with the narrower rows; recorded",
+   "expect": "record",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-focus-ring-13",
+   "kind": "ring",
+   "frame": "push-focus",
+   "rect": [
+    194,
+    253,
+    787,
+    287
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the first button's ring whole on all four sides beside the thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-focus-ring-base-13",
+   "kind": "ring",
+   "frame": "push-focus",
+   "rect": [
+    194,
+    253,
+    806,
+    287
+   ],
+   "min_contrast": 3.0,
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "note": "the base's ring of the same control, at full width",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-focus-clearance-13",
+   "kind": "clearance",
+   "frame": "push-focus",
+   "rect": [
+    194,
+    253,
+    787,
+    287
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    270
+   ],
+   "surface": {
+    "at": [
+     789,
+     270
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring's right edge and the thumb at rest (expected 6 px)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-focus-thumb-13",
+   "kind": "fill",
+   "frame": "push-focus",
+   "region": [
+    794,
+    266,
+    798,
+    309
+   ],
+   "reference": {
+    "region": [
+     184,
+     264,
+     192,
+     408
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the top of the track beside the focused control: its fill against the list's surface",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-focus-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "push-focus",
+   "box": [
+    788,
+    256,
+    802,
+    416
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-focus-ring-18",
+   "kind": "ring",
+   "frame": "push-focus",
+   "rect": [
+    194,
+    342,
+    787,
+    387
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the first button's ring whole on all four sides beside the thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-focus-ring-base-18",
+   "kind": "ring",
+   "frame": "push-focus",
+   "rect": [
+    194,
+    342,
+    806,
+    387
+   ],
+   "min_contrast": 3.0,
+   "roles": [
+    "base"
+   ],
+   "expect": "record",
+   "note": "the base's ring of the same control, at full width",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-focus-clearance-18",
+   "kind": "clearance",
+   "frame": "push-focus",
+   "rect": [
+    194,
+    342,
+    787,
+    387
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    364
+   ],
+   "surface": {
+    "at": [
+     789,
+     364
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring's right edge and the thumb at rest (expected 6 px)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-focus-thumb-18",
+   "kind": "fill",
+   "frame": "push-focus",
+   "region": [
+    794,
+    355,
+    798,
+    383
+   ],
+   "reference": {
+    "region": [
+     184,
+     353,
+     192,
+     497
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the top of the track beside the focused control: its fill against the list's surface",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-focus-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "push-focus",
+   "box": [
+    788,
+    345,
+    802,
+    505
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-focus-hover-ring-13",
+   "kind": "ring",
+   "frame": "push-focus-hover",
+   "rect": [
+    194,
+    253,
+    787,
+    287
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered focused control's ring whole beside the thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-focus-hover-clearance-13",
+   "kind": "clearance",
+   "frame": "push-focus-hover",
+   "rect": [
+    194,
+    253,
+    787,
+    287
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    270
+   ],
+   "surface": {
+    "at": [
+     789,
+     270
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the same clearance with the control hovered",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-focus-hover-ring-18",
+   "kind": "ring",
+   "frame": "push-focus-hover",
+   "rect": [
+    194,
+    342,
+    787,
+    387
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered focused control's ring whole beside the thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-focus-hover-clearance-18",
+   "kind": "clearance",
+   "frame": "push-focus-hover",
+   "rect": [
+    194,
+    342,
+    787,
+    387
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    364
+   ],
+   "surface": {
+    "at": [
+     789,
+     364
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the same clearance with the control hovered",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-thumb-hover-fill-13",
+   "kind": "fill",
+   "frame": "push-thumb-hover",
+   "region": [
+    792,
+    266,
+    798,
+    309
+   ],
+   "reference": {
+    "region": [
+     184,
+     264,
+     192,
+     408
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered thumb's fill against the list's surface",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-thumb-hover-ring-13",
+   "kind": "ring",
+   "frame": "push-thumb-hover",
+   "rect": [
+    194,
+    253,
+    787,
+    287
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused control's ring whole beside the hovered thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-thumb-hover-clearance-13",
+   "kind": "clearance",
+   "frame": "push-thumb-hover",
+   "rect": [
+    194,
+    253,
+    787,
+    287
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    270
+   ],
+   "surface": {
+    "at": [
+     789,
+     270
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring (or card) and the hovered, wider thumb (expected 4 px; 7 px from a card)",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-thumb-hover-box-13",
+   "kind": "glyph_contrast",
+   "frame": "push-thumb-hover",
+   "box": [
+    788,
+    256,
+    802,
+    416
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-thumb-hover-fill-18",
+   "kind": "fill",
+   "frame": "push-thumb-hover",
+   "region": [
+    792,
+    355,
+    798,
+    383
+   ],
+   "reference": {
+    "region": [
+     184,
+     353,
+     192,
+     497
+    ]
+   },
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the hovered thumb's fill against the list's surface",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-thumb-hover-ring-18",
+   "kind": "ring",
+   "frame": "push-thumb-hover",
+   "rect": [
+    194,
+    342,
+    787,
+    387
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the focused control's ring whole beside the hovered thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-thumb-hover-clearance-18",
+   "kind": "clearance",
+   "frame": "push-thumb-hover",
+   "rect": [
+    194,
+    342,
+    787,
+    387
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    364
+   ],
+   "surface": {
+    "at": [
+     789,
+     364
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the focused ring (or card) and the hovered, wider thumb (expected 4 px; 7 px from a card)",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-thumb-hover-box-18",
+   "kind": "glyph_contrast",
+   "frame": "push-thumb-hover",
+   "box": [
+    788,
+    345,
+    802,
+    505
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-middle-thumb-13",
+   "kind": "fill",
+   "frame": "push-middle",
+   "region": [
+    794,
+    312,
+    798,
+    356
+   ],
+   "reference": {
+    "region": [
+     184,
+     264,
+     192,
+     408
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb where the offset (0.49 of the reach) puts it",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-middle-left-top-13",
+   "kind": "fill",
+   "frame": "push-middle",
+   "region": [
+    794,
+    266,
+    798,
+    309
+   ],
+   "reference": {
+    "region": [
+     184,
+     264,
+     192,
+     408
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track any more: the thumb followed the offset",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-middle-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "push-middle",
+   "box": [
+    788,
+    256,
+    802,
+    416
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-middle-thumb-18",
+   "kind": "fill",
+   "frame": "push-middle",
+   "region": [
+    794,
+    406,
+    798,
+    434
+   ],
+   "reference": {
+    "region": [
+     184,
+     353,
+     192,
+     497
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb where the offset (0.46 of the reach) puts it",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-middle-left-top-18",
+   "kind": "fill",
+   "frame": "push-middle",
+   "region": [
+    794,
+    355,
+    798,
+    383
+   ],
+   "reference": {
+    "region": [
+     184,
+     353,
+     192,
+     497
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track any more: the thumb followed the offset",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-middle-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "push-middle",
+   "box": [
+    788,
+    345,
+    802,
+    505
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-end-thumb-13",
+   "kind": "fill",
+   "frame": "push-end",
+   "region": [
+    794,
+    362,
+    798,
+    406
+   ],
+   "reference": {
+    "region": [
+     184,
+     264,
+     192,
+     408
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the bottom of the track at the list's end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-end-left-top-13",
+   "kind": "fill",
+   "frame": "push-end",
+   "region": [
+    794,
+    266,
+    798,
+    309
+   ],
+   "reference": {
+    "region": [
+     184,
+     264,
+     192,
+     408
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track at the end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-end-ring-13",
+   "kind": "ring",
+   "frame": "push-end",
+   "rect": [
+    194,
+    385,
+    787,
+    419
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the last button's ring whole at the list's lower edge beside the thumb",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-end-clearance-13",
+   "kind": "clearance",
+   "frame": "push-end",
+   "rect": [
+    194,
+    385,
+    787,
+    419
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    402
+   ],
+   "surface": {
+    "at": [
+     789,
+     402
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the last control's ring (or card) and the thumb at the end",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-end-thumb-box-13",
+   "kind": "glyph_contrast",
+   "frame": "push-end",
+   "box": [
+    788,
+    256,
+    802,
+    416
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     13
+    ]
+   }
+  },
+  {
+   "name": "push-end-thumb-18",
+   "kind": "fill",
+   "frame": "push-end",
+   "region": [
+    794,
+    467,
+    798,
+    495
+   ],
+   "reference": {
+    "region": [
+     184,
+     353,
+     192,
+     497
+    ]
+   },
+   "min_contrast": 1.3,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the thumb at the bottom of the track at the list's end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-end-left-top-18",
+   "kind": "fill",
+   "frame": "push-end",
+   "region": [
+    794,
+    355,
+    798,
+    383
+   ],
+   "reference": {
+    "region": [
+     184,
+     353,
+     192,
+     497
+    ]
+   },
+   "max_contrast": 1.1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "nothing at the top of the track at the end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-end-ring-18",
+   "kind": "ring",
+   "frame": "push-end",
+   "rect": [
+    194,
+    463,
+    787,
+    508
+   ],
+   "min_contrast": 3.0,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "the last button's ring whole at the list's lower edge beside the thumb",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-end-clearance-18",
+   "kind": "clearance",
+   "frame": "push-end",
+   "rect": [
+    194,
+    463,
+    787,
+    508
+   ],
+   "side": "right",
+   "ring": "detect",
+   "at": [
+    485
+   ],
+   "surface": {
+    "at": [
+     789,
+     485
+    ]
+   },
+   "min_px": 1,
+   "expect": {
+    "base": "record",
+    "cand": true
+   },
+   "note": "surface between the last control's ring (or card) and the thumb at the end",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  },
+  {
+   "name": "push-end-thumb-box-18",
+   "kind": "glyph_contrast",
+   "frame": "push-end",
+   "box": [
+    788,
+    345,
+    802,
+    505
+   ],
+   "min_contrast": 1.0,
+   "allow_edge": true,
+   "expect": "record",
+   "note": "the thumb's box (its ink in the track column), from which the track's left edge is derived",
+   "when": {
+    "text_size": [
+     18
+    ]
+   }
+  }
+ ],
+ "crops": {
+  "chooser-13": [
+   230,
+   122,
+   770,
+   510
+  ],
+  "chooser-18": [
+   230,
+   168,
+   770,
+   569
+  ],
+  "remotes-13": [
+   210,
+   96,
+   790,
+   539
+  ],
+  "remotes-18": [
+   210,
+   104,
+   790,
+   599
+  ],
+  "tags-13": [
+   200,
+   92,
+   800,
+   541
+  ],
+  "tags-18": [
+   200,
+   100,
+   800,
+   573
+  ],
+  "push-13": [
+   180,
+   198,
+   820,
+   427
+  ],
+  "push-18": [
+   180,
+   244,
+   820,
+   516
+  ]
+ }
+}
