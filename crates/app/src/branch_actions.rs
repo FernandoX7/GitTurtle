@@ -1036,10 +1036,12 @@ impl Render for BranchChooser {
         let reveal = self
             .list
             .items(rows.iter().map(|(_, focus)| focus.clone()).collect(), room);
+        // Past its height the list cues the rest with its scrollbar.
+        let cue = tags::ScrollCue::new(self.list.scroll(), room);
         div().flex().flex_col().gap_3().pb(room)
             .child(div().debug_selector(|| "branch-chooser-detail".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(detail))
             .child(Input::new(&self.query).cleanable(true).prefix(Icon::default().path("icons/search.svg").size(px(14.))))
-            .child(div().on_children_prepainted(reveal).id("branch-chooser-list").debug_selector(|| "branch-chooser-list".into()).max_h(px(330.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.list.scroll()).flex().flex_col().gap_1()
+            .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("branch-chooser-list").debug_selector(|| "branch-chooser-list".into()).max_h(px(330.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.list.scroll()).flex().flex_col().gap_1()
                 .children(rows.into_iter().map(|(index, focus)| {
                     let choice = &self.choices[index];
                     Button::new(("branch-choice", index)).track_focus(&focus).debug_selector(move || format!("branch-choice-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.))
@@ -1050,7 +1052,7 @@ impl Render for BranchChooser {
                         .tooltip(format!("{} · {}", choice.reference, short_oid(&choice.oid)))
                         .on_click(cx.listener(move |this, _, window, cx| this.activate(index, window, cx)))
                 }))
-                .when(matching.is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.choices.is_empty() { "No branches are available for this action. Fetch explicitly to update remote branches." } else { "No branches match this search." }))))
+                .when(matching.is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.choices.is_empty() { "No branches are available for this action. Fetch explicitly to update remote branches." } else { "No branches match this search." }))), "branch-chooser-scrollbar"))
             .when(matching.len() > CHOICE_LIMIT, |element| element.child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Showing 40 matches. Narrow the search to find another branch.")))
     }
 }
@@ -1242,13 +1244,17 @@ impl Render for RemoteManager {
             .take(CHOICE_LIMIT + 1)
             .collect();
         // An Edit… or Remove… Tab moves onto scrolls into view with its ring.
+        // Past its height the list cues the rest with its scrollbar. Each
+        // remote keeps its controls' ring room inside its own padding, so the
+        // list keeps none around the remotes.
         let room = appearance::button_ring_room(cx);
+        let cue = tags::ScrollCue::new(self.list.scroll(), Pixels::ZERO);
         div().flex().flex_col().gap_3()
             .child(div().flex().items_center().gap_2()
                 .child(div().flex_1().child(Input::new(&self.query).cleanable(true)))
                 .child(dialog_action("add-remote", "Add remote…", &self.owner, &self.path, false, |this, window, cx| this.open_remote_form(None, window, cx))))
             .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Configure local destinations. Network activity starts only when you explicitly fetch, pull, or push."))
-            .child(div().on_children_prepainted(self.list.observe()).id("remote-manager-list").debug_selector(|| "remote-manager-list".into()).max_h(px(360.)).overflow_y_scroll().track_scroll(self.list.scroll()).flex().flex_col().gap_2()
+            .child(cue.list(div().on_children_prepainted(cue.observe(self.list.observe())).id("remote-manager-list").debug_selector(|| "remote-manager-list".into()).max_h(px(360.)).overflow_y_scroll().track_scroll(self.list.scroll()).flex().flex_col().gap_2()
                 .children(matches.iter().take(CHOICE_LIMIT).map(|(index, choice)| {
                     let edit_focus = self.list.focus(("edit-remote", *index), cx);
                     let remove_focus = self.list.focus(("remove-remote", *index), cx);
@@ -1258,7 +1264,7 @@ impl Render for RemoteManager {
                     let owner = self.owner.clone(); let path = self.path.clone();
                     let remove_owner = self.owner.clone(); let remove_path = self.path.clone();
                     let remote = &choice.config;
-                    div().on_children_prepainted(reveal).id(("managed-remote", *index)).p_3().rounded(px(8.)).border_1().border_color(rgb(p.border)).flex().items_center().gap_3()
+                    div().on_children_prepainted(reveal).id(("managed-remote", *index)).debug_selector({ let index = *index; move || format!("managed-remote-{index}") }).p_3().rounded(px(8.)).border_1().border_color(rgb(p.border)).flex().items_center().gap_3()
                         .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
                             .child(div().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::MEDIUM).child(remote.name.clone()))
                             .child(div().truncate().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(remote.urls.first().map_or("No fetch URL configured".into(), |url| workspace::display_remote_url(url))))
@@ -1270,7 +1276,7 @@ impl Render for RemoteManager {
                             let _ = remove_owner.update(cx, |this, cx| { if this.path == remove_path && this.page == AppPage::Repository && this.operation_busy.is_none() { window.close_dialog(cx); this.prepare_remote_remove(Arc::clone(&remove), window, cx); } });
                         }))
                 }))
-                .when(matches.is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.remotes.is_empty() { "No remotes configured. Add a destination to fetch or publish your work." } else { "No remotes match this search." }))))
+                .when(matches.is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(if self.remotes.is_empty() { "No remotes configured. Add a destination to fetch or publish your work." } else { "No remotes match this search." }))), "remote-manager-scrollbar"))
             .when(matches.len() > CHOICE_LIMIT, |element| element.child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Showing 40 matches. Narrow the search to find another remote.")))
     }
 }
