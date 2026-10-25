@@ -69,17 +69,17 @@ python3 dist/gitturtle-linux-x86_64/install.py
 
 Run the installer without `sudo`, then open **GitTurtle** from your applications. The bundle installs under your home directory and needs a Wayland or X11 desktop with working graphics drivers. It is a local, unsigned build, not a distribution package. The [Linux guide](docs/linux.md) covers bundle transfer, checksums, upgrades, rollback, troubleshooting and uninstalling.
 
-### Omarchy and Arch Linux · x86-64
+### Omarchy and Arch Linux · x86-64 and AArch64
 
 Omarchy already ships the libraries GitTurtle needs. Add three build tools, then use the same packaging script and installer:
 
 ```sh
 sudo pacman -S --needed rustup python-pillow cmake
 ./scripts/package-linux.sh
-python3 dist/gitturtle-linux-x86_64/install.py
+python3 dist/gitturtle-linux-$(uname -m)/install.py
 ```
 
-On another Arch system, first install the [additional packages](docs/linux.md#arch-linux-and-omarchy) listed in the Linux guide. Hyprland draws no title bar, so GitTurtle shows no window buttons there: quit with **Ctrl+Q** or close the window with your compositor binding. To match your desktop, choose the **Omarchy** theme in **Settings**.
+The packager builds for the machine it runs on, so the same steps work on an Apple Silicon Mac running Omarchy on [Asahi Linux](docs/linux.md#aarch64-and-asahi-linux). On another Arch system, first install the [additional packages](docs/linux.md#arch-linux-and-omarchy) listed in the Linux guide. Hyprland draws no title bar, so GitTurtle shows no window buttons there: quit with **Ctrl+Q** or close the window with your compositor binding. To match your desktop, choose the **Omarchy** theme in **Settings**.
 
 ### Open a repository
 
@@ -106,6 +106,7 @@ See [commands and keyboard navigation](docs/command-palette.md) for contextual a
 | **macOS · Apple Silicon** | The first platform. CI builds and tests every product change on macOS 15 and packages it on macOS 26. The newest appearance work, the theme picker and custom themes, has been checked natively on Linux but not yet on a Mac. |
 | **Ubuntu 24.04 · x86-64** | The reference Linux target. CI builds, tests, packages and installs every product change on Ubuntu 24.04, and a clean Ubuntu 24.04 build and installation has been checked. **A full pass on a physical Ubuntu GNOME desktop is still pending.** |
 | **Omarchy · Arch Linux with Hyprland** | Supported. Checked natively on Omarchy as a Wayland client: installation, launch, history, Quick Open, opening the folder picker, tiled windows, fractional scales of 1.25, 1.5 and 2, the desktop's monospace font, and the Omarchy theme following real `omarchy theme set` switches. CI builds and tests every product change against current Arch Linux packages. The [Linux guide](docs/linux.md#arch-linux-and-omarchy) lists what has not been checked yet, including other Arch-based desktops. |
+| **Omarchy on Asahi Linux · Apple Silicon (AArch64)** | Works. Checked natively on an Apple Silicon MacBook running Omarchy on Asahi Linux, as a Wayland client with the Asahi Vulkan driver: native build, packaging, installation, launch, history and image comparison. No CI job builds for AArch64 Linux, and other ARM Linux systems have no recorded check; see the [Linux guide](docs/linux.md#aarch64-and-asahi-linux). |
 
 Checks, builds and environments are recorded in [validation](docs/validation.md). A successful build or CI run does not stand in for a desktop check.
 

@@ -235,18 +235,26 @@ class BundlePayloadTests(unittest.TestCase):
             source = self.bundle / name
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_bytes(b"checksummed synthetic fixture payload")
+        self.write_payload("x86_64-unknown-linux-gnu", elf_machine=62)
+        self.binary.parent.mkdir(parents=True)
+        self.binary.write_bytes(b"preserved existing executable")
+        self.unrelated = self.data / "unrelated/settings.json"
+        self.unrelated.parent.mkdir(parents=True)
+        self.unrelated.write_text("preserved unrelated settings and drafts")
+
+    def write_payload(self, target, *, elf_machine):
         header = bytearray(32)
         header[:6] = b"\x7fELF\x02\x01"
-        header[18:20] = (62).to_bytes(2, "little")
+        header[18:20] = elf_machine.to_bytes(2, "little")
         (self.bundle / "bin/gitturtle").write_bytes(header)
         self.compiled = dict(application="GitTurtle", version="0.1.0", source_revision="a" * 40,
-                             source_tree="clean", target="x86_64-unknown-linux-gnu", profile="release",
+                             source_tree="clean", target=target, profile="release",
                              rustc="rustc 1.98.0", build_unix_seconds="1789492155")
-        inventory = dict(target=self.compiled["target"], cargo_lock_sha256="b" * 64,
+        inventory = dict(target=target, cargo_lock_sha256="b" * 64,
                          review_required=[], dependencies=[{"name": "fixture"}])
         (self.bundle / "licenses/dependencies.json").write_text(json.dumps(inventory))
         self.info = dict(format=2, application="GitTurtle", bundle_id=installer.APP_ID,
-                         distribution="development", target=self.compiled["target"],
+                         distribution="development", target=target,
                          compiled_identity=self.compiled,
                          packaged_from_revision=self.compiled["source_revision"], packaging_tree_status="clean",
                          binary_sha256=installer.digest_file(self.bundle / "bin/gitturtle"),
@@ -256,18 +264,14 @@ class BundlePayloadTests(unittest.TestCase):
                          license_review_required=[], signing="unsigned")
         (self.bundle / "build-info.json").write_text(json.dumps(self.info))
         self.write_checksums()
-        self.binary.parent.mkdir(parents=True)
-        self.binary.write_bytes(b"preserved existing executable")
-        self.unrelated = self.data / "unrelated/settings.json"
-        self.unrelated.parent.mkdir(parents=True)
-        self.unrelated.write_text("preserved unrelated settings and drafts")
 
     def write_checksums(self):
         (self.bundle / "SHA256SUMS").write_text("".join(
             f"{installer.digest_file(self.bundle / name)}  {name}\n" for name in sorted(self.names)))
 
-    def native_doubles(self, *, compiled=None, dependencies=None):
+    def native_doubles(self, *, compiled=None, dependencies=None, machine="x86_64"):
         stack = contextlib.ExitStack()
+        stack.enter_context(patch.object(installer.platform, "machine", return_value=machine))
         stack.enter_context(patch.object(installer, "__file__", str(self.bundle / "install.py")))
         stack.enter_context(patch.object(installer, "package_tools", return_value=package_identity))
         probe = stack.enter_context(patch.object(package_identity, "probe", return_value=compiled or self.compiled))
@@ -340,6 +344,18 @@ class BundlePayloadTests(unittest.TestCase):
         probe.assert_not_called()
         self.assert_preserved()
 
+    def test_bundle_installs_only_on_its_own_architecture(self):
+        self.write_payload("aarch64-unknown-linux-gnu", elf_machine=183)
+        context, probe = self.native_doubles(machine="x86_64")
+        with context, self.assertRaisesRegex(RuntimeError, "needs x86_64-unknown-linux-gnu"):
+            installer.install_bundle(self.home, self.data)
+        probe.assert_not_called()
+        self.assert_preserved()
+        context, _ = self.native_doubles(machine="aarch64")
+        with context:
+            installer.install_bundle(self.home, self.data)
+        self.assertEqual(self.binary.read_bytes(), (self.bundle / "bin/gitturtle").read_bytes())
+
     def test_unchecked_license_is_refused_before_installation(self):
         (self.bundle / "licenses/extra-notice.txt").write_text("unchecked")
         context, probe = self.native_doubles()
@@ -400,11 +416,11 @@ class InstallationLockTests(unittest.TestCase):
         self.support = self.data / "gitturtle"
         self.support.mkdir(parents=True)
 
-    def invoke(self):
+    def invoke(self, machine="x86_64"):
         with (patch.object(installer.Path, "home", return_value=self.home),
               patch.object(installer, "data_path", return_value=self.data),
               patch.object(installer.platform, "system", return_value="Linux"),
-              patch.object(installer.platform, "machine", return_value="x86_64"),
+              patch.object(installer.platform, "machine", return_value=machine),
               patch.object(sys, "argv", ["install.py"]),
               patch.object(installer, "install_bundle") as install):
             try:
@@ -417,6 +433,11 @@ class InstallationLockTests(unittest.TestCase):
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with self.assertRaisesRegex(RuntimeError, "Another GitTurtle installation"):
                 self.invoke()
+
+    def test_unsupported_architecture_is_refused_before_locking(self):
+        with self.assertRaisesRegex(RuntimeError, "x86-64 or AArch64"):
+            self.invoke(machine="riscv64")
+        self.assertFalse((self.support / "install.lock").exists())
 
     def test_symlink_lock_is_refused_without_touching_target(self):
         marker = self.root / "unrelated"

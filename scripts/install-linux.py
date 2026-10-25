@@ -19,6 +19,7 @@ import time
 
 APP_ID = "com.gitturtle.desktop"
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256, 512)
+MACHINE_TARGETS = {"x86_64": "x86_64-unknown-linux-gnu", "aarch64": "aarch64-unknown-linux-gnu"}
 
 
 def fail(message):
@@ -267,8 +268,8 @@ def rollback(home, data):
 def install():
     if sys.argv[1:] not in ([], ["--rollback"]):
         fail("Usage: python3 install.py [--rollback] (current user only; run without sudo)")
-    if platform.system() != "Linux" or platform.machine() != "x86_64":
-        fail("This bundle targets Linux x86-64. Build from source for another platform.")
+    if platform.system() != "Linux" or platform.machine() not in MACHINE_TARGETS:
+        fail("GitTurtle bundles target Linux x86-64 or AArch64. Build from source for another platform.")
     home, data = Path.home(), data_path()
     if not home.is_absolute():
         fail("HOME must be an absolute path.")
@@ -325,6 +326,10 @@ def install_bundle(home, data):
     tools = package_tools(bundle)
     info = tools.read_json(bundle / "build-info.json")
     tools.validate_manifest(info, bundle / "bin/gitturtle", bundle / "licenses")
+    expected_target = MACHINE_TARGETS.get(platform.machine())
+    if info["target"] != expected_target:
+        fail(f"This bundle targets {info['target']}, but this computer needs {expected_target}. "
+             "Package GitTurtle on a computer with this architecture.")
     for command in ("git", "ldd", "desktop-file-validate", "update-desktop-database"):
         if not shutil.which(command):
             fail(f"Missing {command}; install the runtime packages listed in README.md.")

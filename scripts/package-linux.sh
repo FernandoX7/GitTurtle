@@ -4,7 +4,7 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build=true
 distribution=false
-executable="$project_root/target/x86_64-unknown-linux-gnu/release/gitturtle"
+executable=""
 binary_explicit=false
 identity_args=()
 bundle=""
@@ -25,13 +25,17 @@ while [[ "$#" -gt 0 ]]; do
       bundle="$1"; shift ;;
   esac
 done
-if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
-  echo "This package requires Linux x86-64." >&2; exit 1
-fi
+# The bundle always matches the packaging machine's architecture.
+case "$(uname -s) $(uname -m)" in
+  "Linux x86_64") target=x86_64-unknown-linux-gnu ;;
+  "Linux aarch64") target=aarch64-unknown-linux-gnu ;;
+  *) echo "This package requires Linux x86-64 or AArch64." >&2; exit 1 ;;
+esac
 if [[ "$binary_explicit" == true && "$build" == true ]]; then
   echo "--binary requires --no-build." >&2; exit 1
 fi
-bundle="${bundle:-$project_root/dist/gitturtle-linux-x86_64}"
+executable="${executable:-$project_root/target/$target/release/gitturtle}"
+bundle="${bundle:-$project_root/dist/gitturtle-linux-${target%%-*}}"
 for output in "$bundle" "$bundle.tar.gz" "$bundle.tar.gz.sha256" "$bundle.tar.gz.manifest.json"; do
   if [[ -e "$output" || -L "$output" ]]; then
     echo "Output already exists: $output. Choose a new output directory." >&2; exit 1
@@ -54,7 +58,7 @@ if [[ "$build" == true ]]; then
   fi
   # Force the packaged target, even if the user's Cargo configuration selects
   # another target. Never build one path and silently ship an older executable.
-  (cd "$project_root" && cargo build --release --locked -p gitturtle --target x86_64-unknown-linux-gnu --target-dir "$project_root/target")
+  (cd "$project_root" && cargo build --release --locked -p gitturtle --target "$target" --target-dir "$project_root/target")
 fi
 if [[ ! -x "$executable" ]]; then
   echo "Release executable missing. Run this script without --no-build." >&2
@@ -82,11 +86,11 @@ install -m644 "$project_root/docs/linux.md" "$staged_bundle/README.md"
 license_args=()
 if [[ "$distribution" == true ]]; then license_args+=(--require-complete); fi
 python3 "$project_root/scripts/collect-third-party-licenses.py" \
-  --target x86_64-unknown-linux-gnu "${license_args[@]}" "$staged_bundle/licenses"
+  --target "$target" "${license_args[@]}" "$staged_bundle/licenses"
 if [[ "$build" == true ]]; then identity_args+=(--built); fi
 python3 "$project_root/scripts/package-identity.py" \
   --root "$project_root" --binary "$staged_bundle/bin/gitturtle" \
-  --licenses "$staged_bundle/licenses" --target x86_64-unknown-linux-gnu \
+  --licenses "$staged_bundle/licenses" --target "$target" \
   --profile release --signing unsigned "${identity_args[@]}" \
   --output "$staged_bundle/build-info.json"
 python3 - "$project_root" "$staged_bundle" <<'PY'

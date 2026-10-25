@@ -46,6 +46,9 @@ tar -xzf gitturtle-linux-x86_64.tar.gz
 python3 gitturtle-linux-x86_64/install.py
 ```
 
+A bundle packaged on an AArch64 machine is named `gitturtle-linux-aarch64`
+instead. The installer refuses a bundle built for another architecture.
+
 Run the installer **without sudo**. It checks the required payload hashes,
 package/compiled identity, license inventory, linked libraries and desktop-entry
 syntax before installation, then atomically replaces the
@@ -123,18 +126,21 @@ cargo build --release --locked -p gitturtle --target x86_64-unknown-linux-gnu --
 ./scripts/package-linux.sh --no-build
 ```
 
+On an AArch64 machine, use `aarch64-unknown-linux-gnu` in these target paths.
+
 Alternatively, `./scripts/package-linux.sh` checks native development packages
 and builds the locked release itself. Both forms produce four outputs:
-`dist/gitturtle-linux-x86_64/`, its `.tar.gz`, `.tar.gz.sha256` and
-`.tar.gz.manifest.json`. The tarball uses neutral numeric owner/group IDs.
+`dist/gitturtle-linux-x86_64/` (`dist/gitturtle-linux-aarch64/` on AArch64),
+its `.tar.gz`, `.tar.gz.sha256` and `.tar.gz.manifest.json`. The tarball uses neutral numeric owner/group IDs.
 Choose another output directory on subsequent runs, for example
 `./scripts/package-linux.sh --no-build dist/ubuntu-test-2`; the packager refuses
 existing outputs, including dangling symlinks. Payload preparation and archive
 creation finish in a private staging directory before the final outputs appear.
 A failed license/identity check leaves no completed bundle or archive.
 
-Both modes use the explicit x86-64 target path, regardless of other Cargo target
-settings. `--no-build` requires a release from the packaging checkout's current
+Both modes use the packaging machine's explicit target path
+(`x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`), regardless of
+other Cargo target settings. `--no-build` requires a release from the packaging checkout's current
 commit and workspace version. To reuse a separately built artifact, pass its path
 explicitly, for example `--no-build --binary target/release/gitturtle`.
 The packager checks the ELF architecture and embedded source revision, version,
@@ -246,7 +252,7 @@ packaging script and installer as Ubuntu:
 ```sh
 sudo pacman -S --needed rustup python-pillow cmake
 ./scripts/package-linux.sh
-python3 dist/gitturtle-linux-x86_64/install.py
+python3 dist/gitturtle-linux-$(uname -m)/install.py
 ```
 
 `rustup` needs no default toolchain: the checkout's `rust-toolchain.toml`
@@ -295,6 +301,26 @@ On Hyprland:
   `xdg-desktop-portal-gtk`'s dialog, which Omarchy's portal configuration
   selects. The first open after login took about four seconds while that
   backend started.
+
+### AArch64 and Asahi Linux
+
+Checked on 2026-10-25 on an Apple Silicon MacBook running Omarchy 4.0.4 on
+Asahi Linux (Arch Linux ARM; Hyprland 0.56.2 on native Wayland; Mesa's Asahi
+Vulkan driver; a 3456 × 2160 panel at scale 2). The packager builds
+`aarch64-unknown-linux-gnu` there and writes `dist/gitturtle-linux-aarch64/`;
+the Omarchy steps above apply unchanged. Omarchy on Asahi already had every
+native library and `clang`. That check installed Rust and cmake through mise
+and Pillow into mise's Python instead of the pacman packages; either works, as
+long as the `python3` on `PATH` can import Pillow.
+
+The native release build, packaging, installation, launch from the installed
+executable, History and image comparison were checked, on a temporary
+1480 × 800 headless output at scale 1; see the
+[AArch64 record](validation.md#october-25-linux-aarch64-on-omarchy-on-asahi-linux).
+Not yet checked on AArch64: the folder picker, Git writes and network actions,
+fractional scaling, the Omarchy theme and the command palette. No CI job builds
+for AArch64 Linux, other ARM hardware and distributions have no recorded
+check, and a bundle built on AArch64 installs only on AArch64.
 
 ## Launch, state and troubleshooting
 

@@ -16,10 +16,13 @@ import tempfile
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parents[2]
+# The packager always targets the machine it runs on.
+TARGET, ELF_MACHINE = {"x86_64": ("x86_64-unknown-linux-gnu", 62),
+                       "aarch64": ("aarch64-unknown-linux-gnu", 183)}.get(platform.machine(), (None, None))
 
 
-@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "x86_64",
-                     "Linux packager entry point requires Linux x86-64")
+@unittest.skipUnless(platform.system() == "Linux" and TARGET,
+                     "Linux packager entry point requires Linux x86-64 or AArch64")
 class LinuxPackageRefusalTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="gitturtle-package-refusal-")
@@ -60,7 +63,7 @@ out = pathlib.Path(args[-1]); out.mkdir()
 (out / "REVIEW_REQUIRED.md").write_text("Fixture missing upstream notice\\n")
 root = pathlib.Path(__file__).resolve().parents[1]
 (out / "dependencies.json").write_text(json.dumps(dict(
- target="x86_64-unknown-linux-gnu", cargo_lock_sha256=hashlib.sha256((root/"Cargo.lock").read_bytes()).hexdigest(),
+ target=args[args.index("--target") + 1], cargo_lock_sha256=hashlib.sha256((root/"Cargo.lock").read_bytes()).hexdigest(),
  review_required=["fixture-0.1.0"], dependencies=[{"name":"fixture"}])))
 if "--require-complete" in args:
     sys.stderr.write("Fixture unresolved notices block distribution\\n")
@@ -74,7 +77,7 @@ if "--require-complete" in args:
         self.binary = self.root / "fixture executable"
         header = bytearray(32)
         header[:6] = b"\x7fELF\x02\x01"
-        header[18:20] = (62).to_bytes(2, "little")
+        header[18:20] = ELF_MACHINE.to_bytes(2, "little")
         self.binary.write_bytes(header)
         self.binary.chmod(0o755)
         self.output = self.root / "output with spaces" / "gitturtle"
@@ -174,8 +177,26 @@ if "--require-complete" in args:
         result = self.run_package(no_build=False)
         self.assertEqual(result.returncode, 73)
         command = self.events.read_text()
-        self.assertIn("build --release --locked -p gitturtle --target x86_64-unknown-linux-gnu", command)
+        self.assertIn(f"build --release --locked -p gitturtle --target {TARGET}", command)
         self.assertIn(f"--target-dir {self.source}/target", command)
+        self.assert_no_output()
+
+    def test_default_bundle_is_named_for_the_host_architecture(self):
+        default = self.source / "dist" / f"gitturtle-linux-{platform.machine()}"
+        default.mkdir(parents=True)
+        result = subprocess.run(["bash", str(self.scripts / "package-linux.sh"), "--no-build",
+                                 "--binary", str(self.binary)], env=self.environment,
+                                text=True, capture_output=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(f"Output already exists: {default}.", result.stderr)
+        self.assertFalse(self.events.exists())
+
+    def test_wrong_architecture_for_the_host_is_rejected(self):
+        header = bytearray(self.binary.read_bytes())
+        header[18:20] = (62 if ELF_MACHINE == 183 else 183).to_bytes(2, "little")
+        self.binary.write_bytes(header)
+        result = self.run_package()
+        self.assertIn(f"does not match {TARGET}", result.stderr)
         self.assert_no_output()
 
 
