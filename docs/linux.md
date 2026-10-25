@@ -302,6 +302,26 @@ On Hyprland:
   selects. The first open after login took about four seconds while that
   backend started.
 
+### AArch64 and Asahi Linux
+
+Checked on 2026-10-25 on an Apple Silicon MacBook running Omarchy 4.0.4 on
+Asahi Linux (Arch Linux ARM; Hyprland 0.56.2 on native Wayland; Mesa's Asahi
+Vulkan driver; a 3456 × 2160 panel at scale 2). The packager builds
+`aarch64-unknown-linux-gnu` there and writes `dist/gitturtle-linux-aarch64/`;
+the Omarchy steps above apply unchanged. Omarchy on Asahi already had every
+native library and `clang`. That check installed Rust and cmake through mise
+and Pillow into mise's Python instead of the pacman packages; either works, as
+long as the `python3` on `PATH` can import Pillow.
+
+The native release build, packaging, installation, launch from the installed
+executable, History and image comparison were checked, on a temporary
+1480 × 800 headless output at scale 1; see the
+[AArch64 record](validation.md#october-25-linux-aarch64-on-omarchy-on-asahi-linux).
+Not yet checked on AArch64: the folder picker, Git writes and network actions,
+fractional scaling, the Omarchy theme and the command palette. No CI job builds
+for AArch64 Linux, other ARM hardware and distributions have no recorded
+check, and a bundle built on AArch64 installs only on AArch64.
+
 ## Launch, state and troubleshooting
 
 ```sh
