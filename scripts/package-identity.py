@@ -24,7 +24,9 @@ import time
 import tomllib
 
 APP_ID = "com.gitturtle.desktop"
-TARGETS = ("x86_64-unknown-linux-gnu", "aarch64-apple-darwin")
+LINUX_TARGETS = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
+TARGETS = (*LINUX_TARGETS, "aarch64-apple-darwin")
+ELF_MACHINES = dict(zip(LINUX_TARGETS, (62, 183)))  # EM_X86_64, EM_AARCH64
 MAX_JSON = 8 * 1024 * 1024
 MAX_PROBE = 16384
 MAX_BINARY = 1024 * 1024 * 1024
@@ -144,9 +146,9 @@ def verify_architecture(binary: Path, target: str) -> None:
     regular(binary, MAX_BINARY)
     with binary.open("rb") as stream:
         header = stream.read(32)
-    if target == "x86_64-unknown-linux-gnu":
+    if target in LINUX_TARGETS:
         valid = (len(header) == 32 and header[:6] == b"\x7fELF\x02\x01"
-                 and int.from_bytes(header[18:20], "little") == 62)
+                 and int.from_bytes(header[18:20], "little") == ELF_MACHINES[target])
     elif target == "aarch64-apple-darwin":
         valid = (len(header) == 32 and header[:4] == b"\xcf\xfa\xed\xfe"
                  and int.from_bytes(header[4:8], "little") == 0x0100000C)
@@ -271,11 +273,12 @@ def validate_manifest(value: dict, binary: Path, licenses: Path) -> None:
     if not isinstance(info, dict):
         raise PackageError("Compiled package identity is missing")
     distribution = value["distribution"] == "complete-notices"
+    linux = target in LINUX_TARGETS
     validate_identity(info, revision=value.get("packaged_from_revision", ""),
                       version=info.get("version"), target=target,
-                      profile="release" if target == TARGETS[0] else info.get("profile"),
+                      profile="release" if linux else info.get("profile"),
                       distribution=distribution)
-    expected_signing = "unsigned" if target == TARGETS[0] else "ad-hoc"
+    expected_signing = "unsigned" if linux else "ad-hoc"
     if value.get("signing") != expected_signing:
         raise PackageError("Package signing status is inconsistent")
     if value.get("packaging_tree_status") not in ("clean", "modified"):

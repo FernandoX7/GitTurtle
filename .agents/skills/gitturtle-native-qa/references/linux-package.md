@@ -1,10 +1,10 @@
 # Linux package and installation validation
 
-Read this for a Linux bundle, installer, launcher/icon or upgrade/recovery task. The [Linux runbook](../../../../docs/linux.md) owns supported targets, dependencies, commands and desktop limits; do not reproduce its installation checklist here. The local bundle targets Ubuntu 24.04 x86-64. A build on another userspace or architecture needs its own evidence.
+Read this for a Linux bundle, installer, launcher/icon or upgrade/recovery task. The [Linux runbook](../../../../docs/linux.md) owns supported targets, dependencies, commands and desktop limits; do not reproduce its installation checklist here. The reference bundle targets Ubuntu 24.04 x86-64; an AArch64 bundle is packaged on an AArch64 machine. A build on another userspace or architecture needs its own evidence.
 
 ## Establish the payload
 
-Verify an existing bundle without rebuilding or replacing it. A fresh [package](../../../../scripts/package-linux.sh) uses the explicit `x86_64-unknown-linux-gnu` target and refuses existing output paths. With `--no-build`, establish the reused executable's source identity separately; `--binary PATH` selects an alternate release path. The packaging revision alone does not identify that binary.
+Verify an existing bundle without rebuilding or replacing it. A fresh [package](../../../../scripts/package-linux.sh) uses the packaging machine's explicit target (`x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`) and refuses existing output paths; the installer refuses a bundle built for another architecture. With `--no-build`, establish the reused executable's source identity separately; `--binary PATH` selects an alternate release path. The packaging revision alone does not identify that binary.
 
 Compare the payload's `--build-info`, `build-info.json` compiled identity and binary SHA-256 with the source/patch and target actually built. Check the archive checksum and extracted `SHA256SUMS`, executable, installer, launcher resources, icons and retained license inventory. Report unresolved notice entries against the [public release checklist](../../../../docs/public-launch.md#before-a-public-binary-release); a locally installable archive is not distribution clearance.
 

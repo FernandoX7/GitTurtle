@@ -126,6 +126,29 @@ class IdentityTests(unittest.TestCase):
         with self.assertRaises(identity.PackageError):
             identity.verify_architecture(link, TARGET)
 
+    def test_linux_aarch64_uses_its_own_elf_machine_and_linux_rules(self):
+        target = "aarch64-unknown-linux-gnu"
+        with self.assertRaises(identity.PackageError):
+            identity.verify_architecture(self.binary, target)
+        header = bytearray(self.binary.read_bytes())
+        header[18:20] = (183).to_bytes(2, "little")
+        self.binary.write_bytes(header)
+        identity.verify_architecture(self.binary, target)
+        with self.assertRaises(identity.PackageError):
+            identity.verify_architecture(self.binary, TARGET)
+        self.value["target"] = self.inventory["target"] = target
+        self.write_inventory()
+        with mock.patch.object(identity, "probe", return_value=self.value):
+            valid = identity.create_manifest(binary=self.binary, licenses=self.licenses,
+                                             root=self.source, target=target)
+        self.assertEqual(valid["signing"], "unsigned")
+        identity.validate_manifest(valid, self.binary, self.licenses)
+        debug = copy.deepcopy(valid)
+        debug["compiled_identity"]["profile"] = "debug"
+        for changed in (debug, dict(valid, signing="ad-hoc")):
+            with self.subTest(changed=changed["signing"]), self.assertRaises(identity.PackageError):
+                identity.validate_manifest(changed, self.binary, self.licenses)
+
     def test_duplicate_json_fields_fail(self):
         path = self.licenses / "dependencies.json"
         path.write_text('{"target":"expected","target":"wrong"}')
