@@ -380,7 +380,17 @@ pub(super) struct EditTrace {
     pub(super) draw: usize,
 }
 
-gpui::actions!(theme_editor, [NextThemeAction, PreviousThemeAction]);
+gpui::actions!(
+    theme_editor,
+    [
+        NextThemeAction,
+        PreviousThemeAction,
+        PageUpAction,
+        PageDownAction,
+        PageTopAction,
+        PageBottomAction
+    ]
+);
 
 /// The Settings page's key context, deeper than the toolkit root's, so the
 /// bindings of [`init`] are tried first and fall through when they do not
@@ -390,10 +400,20 @@ pub(super) const SETTINGS_CONTEXT: &str = "GitTurtleSettings";
 /// Tab and Shift-Tab inside Settings walk the Your themes rows through
 /// [`GitTurtle::tab_theme_rows`] before the toolkit's own tab order, which
 /// knows only the rows drawn.
+///
+/// Page Up, Page Down, Home and End scroll the Settings page
+/// (`GitTurtle::scroll_settings_page`). They are bound at the app's root,
+/// which holds focus when Settings opens. A focused text field binds them in
+/// its own, deeper context, so they keep moving its caret, and on other pages
+/// the root passes them on to the focused view's own key handling.
 pub(super) fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", NextThemeAction, Some(SETTINGS_CONTEXT)),
         KeyBinding::new("shift-tab", PreviousThemeAction, Some(SETTINGS_CONTEXT)),
+        KeyBinding::new("pageup", PageUpAction, Some("GitTurtle")),
+        KeyBinding::new("pagedown", PageDownAction, Some("GitTurtle")),
+        KeyBinding::new("home", PageTopAction, Some("GitTurtle")),
+        KeyBinding::new("end", PageBottomAction, Some("GitTurtle")),
     ]);
 }
 
@@ -6910,6 +6930,50 @@ mod tests {
     /// (a boundary, so no strip), a reveal that fits moves nothing, a page
     /// scroll afterwards is left alone, and Settings entered again starts at
     /// its top.
+    /// Page Down, Page Up, End and Home scroll Settings from the focus the
+    /// page opens with, and the page is drawn at its new offset; a focused
+    /// text field keeps the keys for its caret.
+    #[gpui::test]
+    fn page_keys_scroll_the_settings_page(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, _| window.activate_window());
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        settle(cx);
+        let offset = |cx: &mut VisualTestContext| {
+            cx.read(|cx| app.read(cx).theme_editor.page_scroll().offset().y)
+        };
+        let picker = |cx: &mut VisualTestContext| bounds(cx, "settings-theme-picker".into()).top();
+        assert_eq!(offset(cx), Pixels::ZERO);
+        let resting = picker(cx);
+        cx.simulate_keystrokes("pagedown");
+        settle(cx);
+        let paged = offset(cx);
+        assert!(paged < Pixels::ZERO, "Page Down scrolled nothing");
+        assert_eq!(
+            picker(cx),
+            resting + paged,
+            "the page was not drawn at its offset"
+        );
+        cx.simulate_keystrokes("end");
+        settle(cx);
+        let bottom = -cx.read(|cx| app.read(cx).theme_editor.page_scroll().max_offset().y);
+        assert_eq!(offset(cx), bottom);
+        cx.simulate_keystrokes("pageup");
+        settle(cx);
+        assert!(offset(cx) > bottom);
+        cx.simulate_keystrokes("home");
+        settle(cx);
+        assert_eq!(offset(cx), Pixels::ZERO);
+        assert_eq!(picker(cx), resting);
+        cx.update(|window, cx| {
+            let input = app.read(cx).identity_name.focus_handle(cx);
+            window.focus(&input, cx);
+        });
+        cx.simulate_keystrokes("pagedown end");
+        settle(cx);
+        assert_eq!(offset(cx), Pixels::ZERO, "a text field gave up its keys");
+    }
+
     #[gpui::test]
     fn a_revealed_row_keeps_its_ring_inside_the_settings_page(cx: &mut TestAppContext) {
         let (app, cx) = open_app(cx);

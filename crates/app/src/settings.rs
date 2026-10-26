@@ -110,6 +110,15 @@ fn planned_rows_top(
     top
 }
 
+/// A Page Up, Page Down, Home or End in Settings (`scroll_settings_page`).
+#[derive(Clone, Copy)]
+pub(super) enum PageStep {
+    Up,
+    Down,
+    Top,
+    Bottom,
+}
+
 /// Scroll the Settings page the least that brings the span from window y
 /// `top` to `bottom`, measured at the page's current offset, inside the
 /// page's viewport, as the Your themes list's own Nearest reveal does inside
@@ -320,6 +329,27 @@ impl GitTurtle {
     /// any app method, including ones the page's own render calls.
     pub(super) fn notify_settings_page(&self, cx: &mut App) {
         App::notify(cx, self.settings_page.entity_id());
+    }
+
+    /// Page Up and Page Down move the Settings page by most of its viewport,
+    /// as they move the commit message; Home and End go to its top and
+    /// bottom. On another page the key goes on to the focused view.
+    pub(super) fn scroll_settings_page(&self, step: PageStep, cx: &mut Context<Self>) {
+        if self.page != AppPage::Settings {
+            cx.propagate();
+            return;
+        }
+        let page = self.theme_editor.page_scroll();
+        let offset = page.offset();
+        let bottom = -page.max_offset().y;
+        let y = match step {
+            PageStep::Up => offset.y + page.bounds().size.height * 0.85,
+            PageStep::Down => offset.y - page.bounds().size.height * 0.85,
+            PageStep::Top => Pixels::ZERO,
+            PageStep::Bottom => bottom,
+        };
+        page.set_offset(point(offset.x, y.max(bottom).min(Pixels::ZERO)));
+        self.notify_settings_page(cx);
     }
 
     /// What the page shows that other features change: the operation error

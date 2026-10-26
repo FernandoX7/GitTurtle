@@ -2733,6 +2733,18 @@ impl Render for GitTurtle {
             .relative()
             .track_focus(&self.app_focus)
             .key_context("GitTurtle")
+            .on_action(cx.listener(|this, _: &theme_editor::PageUpAction, _, cx| {
+                this.scroll_settings_page(settings::PageStep::Up, cx)
+            }))
+            .on_action(cx.listener(|this, _: &theme_editor::PageDownAction, _, cx| {
+                this.scroll_settings_page(settings::PageStep::Down, cx)
+            }))
+            .on_action(cx.listener(|this, _: &theme_editor::PageTopAction, _, cx| {
+                this.scroll_settings_page(settings::PageStep::Top, cx)
+            }))
+            .on_action(cx.listener(|this, _: &theme_editor::PageBottomAction, _, cx| {
+                this.scroll_settings_page(settings::PageStep::Bottom, cx)
+            }))
             .size_full()
             .flex()
             .flex_col()
