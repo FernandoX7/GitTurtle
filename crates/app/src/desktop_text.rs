@@ -7,7 +7,9 @@
 //! grayscale. This module reads the desktop preference through the XDG
 //! settings portal, falls back to fontconfig's resolved defaults when no portal
 //! answers or it does not publish GNOME's keys, and follows portal changes while the app
-//! runs. Returning to a window refreshes the snapshot and fontconfig fallback. On Wayland it also applies the desktop text scaling factor ("Large
+//! runs. Returning to a window, or a change to the user's fontconfig
+//! configuration (`user_fontconfig`), refreshes the snapshot and fontconfig
+//! fallback. On Wayland it also applies the desktop text scaling factor ("Large
 //! Text"), where the toolkit has no DPI source; the X11 backend already scales
 //! the whole window through `Xft.dpi`. Code uses the bundled DejaVu Sans Mono
 //! unless Settings asks for the desktop's fontconfig `monospace` family, which
@@ -17,6 +19,9 @@
 //! setting.
 
 use gpui_kit::AsyncApp;
+
+#[cfg(target_os = "linux")]
+mod user_fontconfig;
 
 /// Waits for the first applied desktop snapshot. After the startup deadline,
 /// launch uses the safe defaults already installed by `start`.
@@ -55,12 +60,21 @@ pub(super) fn start(system_code_font: bool, cx: &mut gpui_kit::App) -> Initial {
     let scales_text = gpui_kit::guess_compositor() == "Wayland";
     let executor = cx.background_executor().clone();
     let (cancel, cancellation) = futures::future::AbortHandle::new_pair();
+    let follow = user_fontconfig::config_home()
+        .map(|home| user_fontconfig::follow(home, refresh.clone(), executor.clone()));
     let worker = executor.clone().spawn(async move {
-        let _ = futures::future::Abortable::new(
-            portal::observe(scales_text, fontconfig, sender, requests, executor),
-            cancellation,
-        )
-        .await;
+        let observe = portal::observe(scales_text, fontconfig, sender, requests, executor);
+        let observing = async move {
+            match follow {
+                // Following never ends by itself; it stops with the reads it asks for.
+                Some(follow) => {
+                    futures::pin_mut!(observe, follow);
+                    futures::future::select(observe, follow).await;
+                }
+                None => observe.await,
+            }
+        };
+        let _ = futures::future::Abortable::new(observing, cancellation).await;
     });
     let updates = cx.spawn(async move |cx| {
         let mut ready = Some(ready);

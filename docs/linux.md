@@ -265,7 +265,8 @@ libx11 libxcb openssl zstd vulkan-icd-loader`, the Vulkan driver for your GPU,
 `xdg-desktop-portal` and a FileChooser backend. No font package is needed for
 code text, which uses the embedded DejaVu Sans Mono unless **Use the desktop's
 monospace font** is turned on in Settings, which follows Omarchy's font
-(JetBrainsMono Nerd Font by default). A first launch on Omarchy turns it on.
+(JetBrainsMono Nerd Font by default), and an open window changes with
+`omarchy font set` as soon as it is applied. A first launch on Omarchy turns it on.
 
 **Settings** offers an **Omarchy** theme in a **Desktop** group above the other
 themes, and a first launch on Omarchy (no saved preferences yet) selects it. It follows your current Omarchy theme, including each switch while it
