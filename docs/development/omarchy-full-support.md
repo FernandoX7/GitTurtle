@@ -86,6 +86,29 @@ cover current upstream x86-64 Omarchy.
      `com.gitturtle.GitTurtle` on every platform (Wayland app_id, X11 class, desktop
      file, macOS bundle identifier), reverse DNS on the project's domain as Flathub,
      GNOME and KDE expect. The installer replaces the old launcher and icons.
+   - **Approved by the owner on 2026-10-26, all to be done before distribution:**
+     1. List Copy in Working Changes and the file-history revision list.
+     2. Omarchy 4.5's Super+A (which sends Ctrl+A) does something sensible on every
+        surface: text fields, the commit message, Working Changes, and the lists.
+     3. `omarchy font set` reaches GitTurtle's code text, checked natively and fixed if
+        needed.
+     4. Every stock Omarchy theme (22 on 4.0.4-mac.1, light and unusual ones included)
+        reads well in History, Compare, Changes, Settings and dialogs; fix what does not.
+     5. Open in Editor uses the person's Omarchy editor (`omarchy launch editor`) when
+        no external editor is set.
+     6. An Open in Terminal action for the repository, in the desktop's default
+        terminal.
+     7. A README section for Omarchy users with a launch-or-focus key binding for
+        `~/.config/hypr/bindings.lua`.
+     8. The 2026-10-01 queue in `tasks.json` that has not landed (for example
+        `copy-actions-say-copied`, `switch-focus-ring-and-hover`,
+        `switch-checked-knob-and-disabled-label`, `settings-focus-reveal-and-steady-switch`,
+        `markdown-diff-fence-colours`, `review-file-preparation-lifecycle`,
+        `narrow-large-text-compact-chrome`, `review-arrow-buttons-hover`,
+        `menu-checked-items-accessible`, `builtin-light-hover-lift`); confirm each against
+        `main` first.
+     9. Any further UI or UX improvement found along the way: the owner wants a
+        first-class Omarchy app, good enough to be featured.
 4. **Distribution.** Publish versioned release bundles (x86-64 and AArch64, checksums,
    build identity). Resolve the two dependencies the packager flags for license review
    (`mac`, `ufbx`) before distributing. Then add an AUR package (`gitturtle-bin`) and
