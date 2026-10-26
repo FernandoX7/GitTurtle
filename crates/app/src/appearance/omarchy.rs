@@ -5,8 +5,10 @@
 //! wallpaper. `omarchy-theme-set` removes `theme/`, moves the next theme into place, and only
 //! then rewrites `theme.name`.
 //!
-//! Nothing here writes or spawns a process. Every read runs on the background executor: once
-//! at launch, when a window regains focus, when the theme is chosen (which applies only what
+//! Nothing here writes or spawns a process. Before the application starts, a first launch
+//! (no preference store) checks once, beside that store's own read, whether `colors.toml` is
+//! a file ([`desktop_runs_omarchy`]), and starts with the Omarchy theme when it is. Every
+//! other read runs on the background executor: once at launch, when a window regains focus, when the theme is chosen (which applies only what
 //! that read finds), when a watch starts, and, while the theme is selected or Settings is
 //! open (starting while it shows the card), once the writes of a switch settle under a
 //! non-recursive watch of `current/`.
@@ -48,6 +50,18 @@ fn default_root() -> Option<PathBuf> {
     let home = PathBuf::from(std::env::var_os("HOME")?);
     home.is_absolute()
         .then(|| home.join(".local/state/omarchy/current"))
+}
+
+/// Whether this desktop runs Omarchy: its current theme's `colors.toml` is a regular file,
+/// links followed, the rule that offers the card. One `stat`, for a first launch's defaults.
+pub(crate) fn desktop_runs_omarchy() -> bool {
+    default_root().is_some_and(|root| runs_omarchy(&root))
+}
+
+/// [`desktop_runs_omarchy`] for `root`, the directory standing in for `current/`.
+fn runs_omarchy(root: &Path) -> bool {
+    std::fs::metadata(root.join(THEME_DIRECTORY).join(COLORS_FILE))
+        .is_ok_and(|metadata| metadata.is_file())
 }
 
 /// What one read of `current/` found.
@@ -814,6 +828,41 @@ mod tests {
         // Bounded on a character boundary.
         let accented = display_name(&"é".repeat(40)).unwrap();
         assert!(accented.len() <= MAX_NAME_BYTES && accented.starts_with('É'));
+    }
+
+    /// A first launch takes Omarchy's defaults exactly when Settings would offer the card: a
+    /// regular `colors.toml`, linked or not, even an unusable one; never a missing file, a
+    /// directory, a FIFO, a dangling link or a missing `current/`.
+    #[test]
+    fn a_first_launch_finds_omarchy_where_the_card_is_offered() {
+        let fixture = tempfile::tempdir().unwrap();
+        assert!(!runs_omarchy(&fixture.path().join("current")));
+        let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
+        let colors = root.join(THEME_DIRECTORY).join(COLORS_FILE);
+        let agrees = |expected: bool| {
+            assert_eq!(runs_omarchy(&root), expected);
+            assert_eq!(read(&root).available, expected);
+        };
+        agrees(true);
+        std::fs::write(&colors, b"not = [toml").unwrap();
+        agrees(true);
+
+        let elsewhere = fixture.path().join("white.toml");
+        std::fs::write(&elsewhere, WHITE).unwrap();
+        std::fs::remove_file(&colors).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &colors).unwrap();
+        agrees(true);
+        std::fs::remove_file(&elsewhere).unwrap();
+        agrees(false);
+        std::fs::remove_file(&colors).unwrap();
+        agrees(false);
+
+        std::fs::create_dir(&colors).unwrap();
+        agrees(false);
+        std::fs::remove_dir(&colors).unwrap();
+        let fifo = std::ffi::CString::new(colors.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        agrees(false);
     }
 
     /// A readable theme is offered with its name; a missing, special, oversized, malformed or

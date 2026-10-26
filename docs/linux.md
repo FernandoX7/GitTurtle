@@ -262,10 +262,10 @@ libx11 libxcb openssl zstd vulkan-icd-loader`, the Vulkan driver for your GPU,
 `xdg-desktop-portal` and a FileChooser backend. No font package is needed for
 code text, which uses the embedded DejaVu Sans Mono unless **Use the desktop's
 monospace font** is turned on in Settings, which follows Omarchy's font
-(JetBrainsMono Nerd Font by default).
+(JetBrainsMono Nerd Font by default). A first launch on Omarchy turns it on.
 
 **Settings** offers an **Omarchy** theme in a **Desktop** group above the other
-themes. It follows your current Omarchy theme, including each switch while it
+themes, and a first launch on Omarchy (no saved preferences yet) selects it. It follows your current Omarchy theme, including each switch while it
 is selected, and turns **Follow system appearance** off while in use. GitTurtle
 reads `~/.local/state/omarchy/current/theme/colors.toml`, the `theme.name` file
 beside `theme/`, and whether the theme has a `light.mode` file. It reads them at

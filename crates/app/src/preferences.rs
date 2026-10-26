@@ -20,7 +20,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 const MAX_RECENT: usize = 10;
@@ -35,6 +38,9 @@ pub const MAX_CUSTOM_THEMES: usize = 32;
 /// The store version this build writes. Every earlier version still loads.
 const STORE_VERSION: u32 = 6;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// The settings a missing store stands for. Launch fixes them once for the desktop
+/// ([`Preferences::load`]); until then, and in tests, a missing store has the defaults.
+static FIRST_LAUNCH: OnceLock<AppSettings> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -84,6 +90,29 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// The settings a first launch starts with on this desktop. On a Linux desktop running
+    /// Omarchy they follow it ([`Self::omarchy_first_launch`]); elsewhere they are the
+    /// defaults.
+    pub fn for_first_launch() -> Self {
+        #[cfg(target_os = "linux")]
+        if crate::appearance::omarchy::desktop_runs_omarchy() {
+            return Self::omarchy_first_launch();
+        }
+        Self::default()
+    }
+
+    /// The defaults with the Omarchy theme and the desktop's monospace font, so the first
+    /// window already matches the desktop's colors and code font. Either can be changed in
+    /// Settings like any other default.
+    #[cfg(any(target_os = "linux", test))]
+    fn omarchy_first_launch() -> Self {
+        Self {
+            theme: ThemeSelection::Omarchy,
+            system_code_font: true,
+            ..Self::default()
+        }
+    }
+
     /// The theme to apply on this desktop: the rule of [`Self::resolve_selection`]
     /// for the selection the desktop honours (`ThemeSelection::on_desktop`), with the
     /// desktop's Omarchy palette on Linux.
@@ -528,12 +557,37 @@ impl StoredPath {
 }
 
 impl Preferences {
-    /// Missing, invalid, or unavailable preferences do not prevent startup.
-    /// Loading does not create a settings directory or modify a settings file.
+    /// Launch's read of the store. Missing, invalid, or unavailable preferences do not
+    /// prevent startup. Loading does not create a settings directory or modify a settings
+    /// file. A missing store is a first launch: it has `AppSettings::for_first_launch`, and
+    /// every later write that still finds no store keeps those settings, so the first save
+    /// records the desktop's defaults rather than the built-in ones.
     pub fn load() -> Self {
-        settings_path()
-            .and_then(|path| Self::load_from(&path))
-            .unwrap_or_default()
+        let Ok(path) = settings_path() else {
+            return Self::default();
+        };
+        Self::load_at_launch(&path, &FIRST_LAUNCH, AppSettings::for_first_launch)
+    }
+
+    /// [`Self::load`] from `path`, fixing `first_launch` with `desktop` when no store exists.
+    fn load_at_launch(
+        path: &Path,
+        first_launch: &OnceLock<AppSettings>,
+        desktop: impl FnOnce() -> AppSettings,
+    ) -> Self {
+        match Self::load_from(path) {
+            Ok(preferences) => preferences,
+            Err(error) if is_missing(&error) => Self::missing(first_launch.get_or_init(desktop)),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// A store that does not exist yet: nothing remembered, and `settings`.
+    fn missing(settings: &AppSettings) -> Self {
+        Self {
+            settings: settings.clone(),
+            ..Self::default()
+        }
     }
 
     pub fn last_repository(&self) -> Option<PathBuf> {
@@ -749,14 +803,15 @@ impl Preferences {
     }
 
     fn load_for_write(path: &Path) -> Result<Self> {
+        Self::load_for_write_with(path, FIRST_LAUNCH.get())
+    }
+
+    /// A missing store has the settings launch fixed for it, when it fixed any.
+    fn load_for_write_with(path: &Path, first_launch: Option<&AppSettings>) -> Result<Self> {
         match Self::load_from(path) {
             Ok(preferences) => Ok(preferences),
-            Err(error)
-                if error
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-            {
-                Ok(Self::default())
+            Err(error) if is_missing(&error) => {
+                Ok(first_launch.map_or_else(Self::default, Self::missing))
             }
             Err(error) => Err(error).context("Read current preferences before saving"),
         }
@@ -905,6 +960,13 @@ pub(super) fn home_directory() -> PathBuf {
     home.filter(|home| home.is_dir())
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// The store does not exist yet, as opposed to one that cannot be read or used.
+fn is_missing(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 #[cfg(not(test))]
@@ -1280,6 +1342,64 @@ mod tests {
                 ..saved.settings
             }
         );
+    }
+
+    /// A missing store is a first launch: it takes the desktop's settings, and a write that
+    /// still finds no store (opening the first repository, say) records those, not the
+    /// built-in defaults. An existing store, even one on the default theme, keeps its own
+    /// settings, and one that cannot be read starts with the defaults without fixing any.
+    #[test]
+    fn a_first_launch_takes_the_desktop_defaults_and_the_first_write_keeps_them() {
+        let directory = TestDirectory::new();
+        let path = directory.0.join("preferences.json");
+        let omarchy = AppSettings::omarchy_first_launch();
+        assert_eq!(omarchy.theme, ThemeSelection::Omarchy);
+        assert!(omarchy.system_code_font);
+        assert_eq!(
+            AppSettings {
+                theme: ThemeSelection::default(),
+                system_code_font: false,
+                ..omarchy.clone()
+            },
+            AppSettings::default()
+        );
+
+        let first_launch = OnceLock::new();
+        let launched = Preferences::load_at_launch(&path, &first_launch, || omarchy.clone());
+        assert_eq!(launched.settings, omarchy);
+        assert!(launched.recent_repositories.is_empty());
+        assert!(!path.exists(), "loading writes nothing");
+
+        let mut first_write = Preferences::load_for_write_with(&path, first_launch.get()).unwrap();
+        assert_eq!(first_write.settings, omarchy);
+        first_write.recent_repositories = vec![directory.0.clone()];
+        first_write.save_to(&path).unwrap();
+        let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["settings"]["theme"], "omarchy");
+        assert_eq!(stored["settings"]["system_code_font"], true);
+
+        // Before launch fixes anything, and in every other test, a missing store is the
+        // defaults.
+        fs::remove_file(&path).unwrap();
+        assert_eq!(
+            Preferences::load_for_write_with(&path, None)
+                .unwrap()
+                .settings,
+            AppSettings::default()
+        );
+
+        // An existing install keeps its stored theme, whatever the desktop runs.
+        Preferences::default().save_to(&path).unwrap();
+        let existing = OnceLock::new();
+        let launched = Preferences::load_at_launch(&path, &existing, || unreachable!());
+        assert_eq!(launched.settings, AppSettings::default());
+        assert!(existing.get().is_none());
+
+        fs::write(&path, b"{not json").unwrap();
+        let unreadable = OnceLock::new();
+        let launched = Preferences::load_at_launch(&path, &unreadable, || unreachable!());
+        assert_eq!(launched.settings, AppSettings::default());
+        assert!(unreadable.get().is_none());
     }
 
     /// Follow system never overrides the Omarchy theme on Linux; elsewhere the

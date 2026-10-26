@@ -32,7 +32,7 @@ Previews go beyond text: rendered Markdown with Mermaid diagrams, animated GIF c
 ## Make it yours
 
 - **Themes.** Choose from twenty built-in light and dark themes, follow the system's appearance, or design up to 32 themes of your own in a live editor and share them as files.
-- **Omarchy.** On an Omarchy desktop, the Omarchy theme takes its colors from your current Omarchy theme and changes with it when you switch, adjusting them where needed so text and diffs stay readable.
+- **Omarchy.** On an Omarchy desktop, GitTurtle starts with the Omarchy theme, which takes its colors from your current Omarchy theme and changes with it when you switch, adjusting them where needed so text and diffs stay readable. Code uses your Omarchy monospace font. Either can be changed in **Settings**.
 - **Code as you typed it.** Diffs and source views turn ligatures off, so `->`, `!=` and `--` never merge into one glyph. On Linux, code uses a bundled DejaVu Sans Mono, or your desktop's monospace font when you turn on **Use the desktop's monospace font** in Settings.
 - **Sizes and spacing.** Set interface and code text sizes separately, and choose comfortable or compact density.
 
@@ -79,7 +79,7 @@ sudo pacman -S --needed rustup python-pillow cmake
 python3 dist/gitturtle-linux-$(uname -m)/install.py
 ```
 
-The packager builds for the machine it runs on, so the same steps work on an Apple Silicon Mac running Omarchy on [Asahi Linux](docs/linux.md#aarch64-and-asahi-linux). On another Arch system, first install the [additional packages](docs/linux.md#arch-linux-and-omarchy) listed in the Linux guide. Hyprland draws no title bar, so GitTurtle shows no window buttons there: quit with **Ctrl+Q** or close the window with your compositor binding. To match your desktop, choose the **Omarchy** theme in **Settings**.
+The packager builds for the machine it runs on, so the same steps work on an Apple Silicon Mac running Omarchy on [Asahi Linux](docs/linux.md#aarch64-and-asahi-linux). On another Arch system, first install the [additional packages](docs/linux.md#arch-linux-and-omarchy) listed in the Linux guide. Hyprland draws no title bar, so GitTurtle shows no window buttons there: quit with **Ctrl+Q** or close the window with your compositor binding. On Omarchy the first launch already matches your desktop: the **Omarchy** theme and your monospace font are selected, and **Settings** offers every other theme.
 
 ### Open a repository
 
