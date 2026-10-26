@@ -37,16 +37,17 @@ conservatively include additional packages. This is a metadata inventory, not
 a claim about every linked object. Test fixtures are not packaged.
 
 Some published crates omit their license files. [Supplemental notices](docs/licenses/README.md)
-preserve inspected upstream texts with immutable source URLs and hashes. Six
+preserve inspected upstream texts with immutable source URLs and hashes. Five
 wrappers/libraries still require attribution review: `block`, `objc_exception`,
-`mac`, `leak`, `leaky-cow`, and the Rust `ufbx` wrapper. Their Cargo manifests
+`mac`, `leak` and `leaky-cow`. Their Cargo manifests
 declare licenses; a declaration alone does not establish that every required
 notice has been collected. The [native ufbx notice](docs/licenses/assets/ufbx-native-LICENSE)
 is retained separately. The target-specific `REVIEW_REQUIRED.md` lists only the
 affected packages actually selected for that package.
 The [Linux notice review](docs/licenses/linux-notice-review.md) ties `mac` 0.1.1
-and `ufbx` 0.11.3 to their exact upstream source and records the remaining
-attribution questions and prepared maintainer follow-ups.
+to its exact upstream source and records the remaining attribution question and
+prepared maintainer follow-up, and how the Rust `ufbx` wrapper's notice was
+resolved by its 0.11.5 release.
 
 Local development packages include this report and remain unpublished. Before
 a public binary release, resolve those notices and run the collector with
