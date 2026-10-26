@@ -150,7 +150,7 @@ jobs:
           umask 077
           python3 scripts/release/workflow.py prepare --target "$RELEASE_TARGET" --directory "$RUNNER_TEMP/release-package"
       - name: Preserve only verified complete-notice package bytes
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-package-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-package/upload/
@@ -189,7 +189,7 @@ jobs:
         env:
           GITTURTLE_SIGNING_CONTEXT: ${{ vars.GITTURTLE_SIGNING_CONTEXT }}
         run: python3 scripts/release/workflow.py activate-signing
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-package-aarch64-apple-darwin-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-signing-input
@@ -225,7 +225,7 @@ jobs:
           python3 scripts/release/workflow.py finish-signing --directory "$RUNNER_TEMP/release-signing-input" \
             --signing "$RUNNER_TEMP/release-signing" --output "$RUNNER_TEMP/release-signed-upload"
       - name: Preserve only completed signed output
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-signed-aarch64-apple-darwin-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-signed-upload/
@@ -236,7 +236,7 @@ jobs:
           overwrite: false
       - name: Preserve sanitized signing state after failure or cancellation
         if: failure() || cancelled()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-signing-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-signing/signing-result.json
@@ -262,12 +262,12 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-package-*-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-inputs
           digest-mismatch: error
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: inputs.macos_signing == 'notarized'
         with:
           pattern: release-signed-*-${{ github.run_id }}-${{ github.run_attempt }}
@@ -282,7 +282,7 @@ jobs:
           printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
           cat "$RUNNER_TEMP/release-assembly/RELEASE_NOTES.md" >> "$GITHUB_STEP_SUMMARY"
           printf '\nManifest SHA-256: `%s`\n' "$digest" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assembly-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-assembly/
@@ -310,7 +310,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-assembly-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-publication
@@ -326,7 +326,7 @@ jobs:
           python3 scripts/release/workflow.py publish --directory "$RUNNER_TEMP/release-publication" --report "$RUNNER_TEMP/release-publication-result.json"
       - name: Preserve publication state for success, failure or cancellation
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-publication-state-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-publication-result.json
