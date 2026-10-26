@@ -975,14 +975,14 @@
   },
   {
     "name": "tree-sitter-md",
-    "version": "0.5.3",
+    "version": "0.5.4",
     "license": "MIT",
     "repository": "tree-sitter-grammars/tree-sitter-markdown",
-    "revision": "f969cd3ae3f9fbd4e43205431d0ae286014c05b5",
+    "revision": "41ff24a6c775492c543b09228aeb98d1cd2b3a0f",
     "files": [
       {
         "path": "texts/52ec8a1bf8256511e2a92613e0bb41ffefba3897f16fa958d7bb28c466dd4804.txt",
-        "url": "https://raw.githubusercontent.com/tree-sitter-grammars/tree-sitter-markdown/f969cd3ae3f9fbd4e43205431d0ae286014c05b5/LICENSE",
+        "url": "https://raw.githubusercontent.com/tree-sitter-grammars/tree-sitter-markdown/41ff24a6c775492c543b09228aeb98d1cd2b3a0f/LICENSE",
         "sha256": "52ec8a1bf8256511e2a92613e0bb41ffefba3897f16fa958d7bb28c466dd4804"
       }
     ]
@@ -1026,6 +1026,20 @@
         "path": "texts/49bf33cf78ef5897e4e161ce1517df7de1ae5042a65b6bcfd44401e0fc606559.txt",
         "url": "https://raw.githubusercontent.com/tree-sitter/tree-sitter-typescript/f975a621f4e7f532fe322e13c4f79495e0a7b2e7/LICENSE",
         "sha256": "49bf33cf78ef5897e4e161ce1517df7de1ae5042a65b6bcfd44401e0fc606559"
+      }
+    ]
+  },
+  {
+    "name": "ufbx",
+    "version": "0.11.5",
+    "license": "MIT OR Unlicense",
+    "repository": "ufbx/ufbx-rust",
+    "revision": "856c76840977cd504f053bf17ab4948b675b981a",
+    "files": [
+      {
+        "path": "texts/0dd48ebadf52273c736256325c8f078c03c8bb4facee22a4122de0ad3f615391.txt",
+        "url": "https://raw.githubusercontent.com/ufbx/ufbx-rust/856c76840977cd504f053bf17ab4948b675b981a/LICENSE",
+        "sha256": "0dd48ebadf52273c736256325c8f078c03c8bb4facee22a4122de0ad3f615391"
       }
     ]
   },
