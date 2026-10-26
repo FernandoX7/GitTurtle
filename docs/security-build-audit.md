@@ -81,6 +81,15 @@ left unchanged: icu_normalizer 2.4.0 fixes unsound functions nothing here calls,
 cost of thirteen updated crates, and json5's three October releases carry no
 notes or advisory.
 
+These had accumulated because nothing hosted checked the catalog: Dependabot
+covers only GitHub's curated database, and the gate's deny and audit stages
+are skipped where the tools are not installed. The [advisory
+workflow](../.github/workflows/advisories.yml) now runs `cargo deny --locked
+check` daily and when dependency inputs change. It is deliberately not a
+required check, so a newly published advisory turns it red without blocking
+unrelated pull requests. Dependabot now also covers the composite setup action
+and holds version updates for seven days; security updates are not delayed.
+
 `block` 0.1.6 is the one accepted future-incompatibility report. On macOS it
 arrives through `cocoa` 0.26 and `cocoa-foundation` (from `gpui-pre-apple` and
 the vendored `gpui-pre-macos`) and through `core-graphics2`/`core-video` (from
