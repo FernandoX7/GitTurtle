@@ -60,7 +60,11 @@ cover current upstream x86-64 Omarchy.
      ignoring dispatched keys until it was restarted. The owner's physical check,
      2026-10-26: Super+V pastes into text fields; nothing in the commit message could
      be selected or copied, because no read-only text in the app was selectable.
-     Selectable commit message and metadata text is in progress.
+     Fixed: the commit message and its metadata select and copy like ordinary text,
+     and list Copy works in History and the changed-file list
+     ([validation entry](../validation.md#october-26-selectable-commit-text-the-new-application-id-and-omarchy-polish)).
+     Open: a physical Super+C in the commit message, and Working Changes and the
+     file-history revision list, which still ignore list Copy.
    - **Lists.** Outside text fields, dispatched keys reach GitTurtle. Ctrl+C on a
      selected History commit or changed file copies nothing: the shortcut sheet lists
      "Copy Selected List Item" (Ctrl+C), but only Blame handles it. What a copied commit
