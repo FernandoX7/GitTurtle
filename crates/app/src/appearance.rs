@@ -582,6 +582,15 @@ impl Palette {
         })
     }
 
+    /// A sidebar row's label and icon colors. The label stays `text`, which
+    /// reads at the text rule on every row state, and selection marks the icon
+    /// in `accent`, a graphic at 3:1, beside the selected surface: `accent` is
+    /// fitted only to 3:1, which left a selected label at 3.0:1 in Omarchy
+    /// Solitude.
+    pub fn sidebar_row(self, active: bool) -> (u32, u32) {
+        (self.text, if active { self.accent } else { self.muted })
+    }
+
     /// `color` as a small label on every one of `surfaces`: badges, chips and
     /// gutter numbers at 10 to 12 px render about 0.2 below their token, so
     /// `color` stays only where it clears the text rule with the margin tuned
@@ -3503,6 +3512,39 @@ mod tests {
             }
         }
         assert!(lanes_below > 0, "some lane needs its label fitted");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A selected sidebar row (repository navigation and the project list)
+    /// labels itself in `text` at the text rule on the selected and hovered
+    /// selected rows, where `accent`, fitted only to 3:1, fell to 3.0:1 in
+    /// Omarchy Solitude; its icon keeps `accent` at 3:1 as a graphic. Unselected
+    /// rows read on the panel and its hover.
+    #[test]
+    fn every_palette_labels_a_selected_sidebar_row_in_readable_text() {
+        let mut failures = Vec::new();
+        let mut accent_below = false;
+        for (name, palette) in test_palettes() {
+            for (active, rows) in [
+                (true, [palette.selected, palette.row_hover(true)]),
+                (false, [palette.panel, palette.hover]),
+            ] {
+                let (label, icon) = palette.sidebar_row(active);
+                for row in rows {
+                    let (text, graphic) = (contrast(label, row), contrast(icon, row));
+                    if text < LABEL_RULE || graphic < custom::GRAPHIC {
+                        failures.push(format!(
+                            "{name} active {active} on {row:06x}: label {text:.2}:1, icon {graphic:.2}:1"
+                        ));
+                    }
+                    accent_below |= active && contrast(palette.accent, row) < LABEL_RULE;
+                }
+            }
+        }
+        assert!(
+            accent_below,
+            "accent alone would miss the text rule somewhere"
+        );
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

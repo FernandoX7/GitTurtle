@@ -1050,11 +1050,7 @@ impl GitTurtle {
                     .gap_2()
                     // A project carries the turtle mark; only a group keeps the
                     // folder, so the two never look alike.
-                    .child(icon(
-                        "turtle",
-                        15.,
-                        if active { colors.accent } else { colors.muted },
-                    ))
+                    .child(icon("turtle", 15., colors.sidebar_row(active).1))
                     .child(div().min_w_0().truncate().child(name.clone()))
                     .children(detail.as_ref().map(|detail| {
                         div()
@@ -1111,7 +1107,8 @@ impl GitTurtle {
             .text_size(crate::appearance::ui_text(12.))
             .overflow_hidden()
             .bg(rgb(surface))
-            .text_color(rgb(if active { colors.accent } else { colors.text }))
+            .text_color(rgb(colors.sidebar_row(active).0))
+            .when(active, |row| row.font_weight(FontWeight::MEDIUM))
             .when(dimmed, |row| row.opacity(0.6))
             .when(!dimmed, |row| {
                 row.cursor_pointer()

@@ -653,12 +653,9 @@ impl GitTurtle {
             }))
             .hover(|s| s.bg(rgb(colors.row_hover(active))))
             .active(|s| s.bg(rgb(colors.selected)))
-            .text_color(rgb(if active { colors.accent } else { colors.text }))
-            .child(icon(
-                symbol,
-                15.,
-                if active { colors.accent } else { colors.muted },
-            ))
+            .text_color(rgb(colors.sidebar_row(active).0))
+            .when(active, |row| row.font_weight(FontWeight::MEDIUM))
+            .child(icon(symbol, 15., colors.sidebar_row(active).1))
             .child(div().flex_1().min_w_0().truncate().child(name))
             .on_click(
                 cx.listener(move |this, _, window, cx| this.activate_navigation(index, window, cx)),
