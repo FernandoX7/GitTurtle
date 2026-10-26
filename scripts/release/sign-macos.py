@@ -30,6 +30,7 @@ import time
 import uuid
 
 
+APP_ID = "com.gitturtle.GitTurtle"
 MAX_OUTPUT = 2 * 1024 * 1024
 TARGETS = {"aarch64-apple-darwin": "arm64"}
 MACHO = {b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",
@@ -145,7 +146,7 @@ def validate_bundle(app: Path, args) -> Path:
         info = plistlib.loads(regular_file(app / "Contents/Info.plist", 256 * 1024))
     except (ValueError, plistlib.InvalidFileException):
         raise SigningError("Invalid app property list") from None
-    expected = {"CFBundleIdentifier": "com.gitturtle.desktop",
+    expected = {"CFBundleIdentifier": APP_ID,
                 "CFBundleExecutable": "gitturtle", "CFBundlePackageType": "APPL",
                 "CFBundleShortVersionString": args.version, "CFBundleVersion": args.version}
     if not isinstance(info, dict) or any(info.get(k) != v for k, v in expected.items()):
@@ -327,7 +328,7 @@ def verify_signature(command, app: Path, args) -> dict:
         key, separator, value = line.partition("=")
         if separator:
             fields.setdefault(key, []).append(value)
-    if fields.get("TeamIdentifier") != [args.team_id] or fields.get("Identifier") != ["com.gitturtle.desktop"]:
+    if fields.get("TeamIdentifier") != [args.team_id] or fields.get("Identifier") != [APP_ID]:
         raise SigningError("Signature identity mismatch")
     authority = fields.get("Authority", [""])[0]
     if not authority.startswith("Developer ID Application: ") or not authority.endswith(f"({args.team_id})"):

@@ -235,7 +235,7 @@ class PayloadTests(unittest.TestCase):
         for name, data in {"LICENSE": b"project notice", "THIRD_PARTY_NOTICES.md": b"index", "fixture-LICENSE": b"full notice"}.items():
             (self.payload / "licenses" / name).write_bytes(data)
         (self.payload / "licenses/dependencies.json").write_text(json.dumps(self.inventory))
-        self.package = dict(format=2, application="GitTurtle", bundle_id="com.gitturtle.desktop",
+        self.package = dict(format=2, application="GitTurtle", bundle_id="com.gitturtle.GitTurtle",
                             target=self.compiled["target"], compiled_identity=self.compiled,
                             packaged_from_revision="a" * 40, packaging_tree_status="clean", release_built_by_packager=False,
                             binary_sha256=sha(self.binary), input_binary_sha256=sha(self.binary), cargo_lock_sha256="b" * 64,

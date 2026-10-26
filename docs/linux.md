@@ -60,7 +60,10 @@ a symlink, but managed descendants, payload paths, backups and the installation
 lock must not redirect through symlinks.
 
 Open **GitTurtle** in the application menu. Its desktop file is
-`applications/com.gitturtle.desktop.desktop`, matching the application ID.
+`applications/com.gitturtle.GitTurtle.desktop`, named after the application ID,
+so `gtk-launch com.gitturtle.GitTurtle` also opens it. Installing over a bundle
+from before 2026-10-26 removes that bundle's `com.gitturtle.desktop` entry and
+icons, and `--rollback` restores them.
 The entry uses an absolute executable and icon path, with `Terminal=false`;
 no shell initialization, checkout working directory, `LIBRARY_PATH`,
 `LD_LIBRARY_PATH`, or Cargo installation is needed. The original 1024-pixel
@@ -295,8 +298,13 @@ On Hyprland:
   collapses its navigation to the rail and the header keeps only icons for
   Projects and the profile; the inspector stays whole down to about 600 px.
   Float the window (Omarchy: **Super+T**) or widen its split for the full layout.
-- The window class and Wayland app ID are `com.gitturtle.desktop`, for window
-  rules and the launcher entry's `StartupWMClass`.
+- The window class and Wayland app ID are `com.gitturtle.GitTurtle`, for window
+  rules and the launcher entry's `StartupWMClass`; bundles before 2026-10-26 used
+  `com.gitturtle.desktop`. GitTurtle keeps Omarchy's default window opacity
+  (0.985 focused, 0.96 unfocused), as terminals and editors do. For a fully
+  opaque window, add this line below the personal configuration comment in
+  `~/.config/hypr/hyprland.lua`:
+  `o.window("^com\\.gitturtle\\.GitTurtle$", { tag = "-default-opacity", opacity = "1 1" })`.
 - `xdg-desktop-portal-hyprland` has no file chooser; the repository picker is
   `xdg-desktop-portal-gtk`'s dialog, which Omarchy's portal configuration
   selects. The first open after login took about four seconds while that
@@ -455,8 +463,8 @@ GPU/driver, session type and scale setting with the result.
   Enter a draft, navigate away, quit and reopen, then verify exact draft text.
 
 To uninstall the user-local app, remove `~/.local/bin/gitturtle`, the installed
-`applications/com.gitturtle.desktop.desktop`, `icons/com.gitturtle.desktop.png`
-and the eight `icons/hicolor/SIZExSIZE/apps/com.gitturtle.desktop.png` files
+`applications/com.gitturtle.GitTurtle.desktop`, `icons/com.gitturtle.GitTurtle.png`
+and the eight `icons/hicolor/SIZExSIZE/apps/com.gitturtle.GitTurtle.png` files
 and `gitturtle/licenses/`, `gitturtle/build-info.json`, `gitturtle/install.py`,
 `gitturtle/install.lock`, `gitturtle/previous-installation.json` and any unwanted
 `gitturtle/install-backups/` under the data directory used at installation. Leave other icons and the

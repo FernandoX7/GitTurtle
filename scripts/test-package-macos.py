@@ -54,7 +54,7 @@ class PackageFixtures(unittest.TestCase):
         self.reviews = []
         self.generated = dict(CFBundleIconFile="AppIcon", CFBundleIconName="AppIcon")
         self.xcode = "Xcode 26.0\nBuild version FIXTURE\n"
-        self.signature = "Executable=/private/fixture/GitTurtle.app/Contents/MacOS/gitturtle\nSignature=adhoc\nIdentifier=com.gitturtle.desktop\n"
+        self.signature = "Executable=/private/fixture/GitTurtle.app/Contents/MacOS/gitturtle\nSignature=adhoc\nIdentifier=com.gitturtle.GitTurtle\n"
         self.catalog = '[{"Name": "AppIcon", "AssetType": "Icon Stack"}]'
         self.probe = mock.patch.object(package.identity, "probe", side_effect=lambda path: dict(self.compiled))
         self.probe.start()

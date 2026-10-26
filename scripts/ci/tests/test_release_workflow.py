@@ -153,7 +153,7 @@ class Fixture(unittest.TestCase):
         release.write_json(licenses / "dependencies.json", inventory)
         if gaps:
             (licenses / "REVIEW_REQUIRED.md").write_text("Fixture gap\n")
-        package = {"format": 2, "application": "GitTurtle", "bundle_id": "com.gitturtle.desktop", "target": target,
+        package = {"format": 2, "application": "GitTurtle", "bundle_id": "com.gitturtle.GitTurtle", "target": target,
             "packaged_from_revision": SHA, "packaging_tree_status": "clean", "release_built_by_packager": False,
             "binary_sha256": release.package_id.digest(binary), "input_binary_sha256": release.package_id.digest(binary),
             "compiled_identity": {"application": "GitTurtle", "source_revision": SHA, "version": "0.1.0",

@@ -36,8 +36,10 @@ cover current upstream x86-64 Omarchy.
   PRs), or from an Install-menu entry added by PR (`omarchy-menu.jsonc` plus an
   `omarchy-install-*` script).
 - **Window rules** in `default/hypr/apps/*.lua` match on the Wayland app_id. GitTurtle's
-  is `com.gitturtle.desktop`, the same as its desktop entry's `StartupWMClass`. Every window
-  gets Omarchy's default opacity (0.985 active, 0.96 inactive) unless a rule removes it.
+  is `com.gitturtle.GitTurtle` (until 2026-10-26, `com.gitturtle.desktop`), the same as its
+  desktop entry's name and `StartupWMClass`. Every window gets Omarchy's default opacity
+  (0.985 active, 0.96 inactive) unless a rule removes it; Omarchy exempts browsers, video,
+  games, password managers and virtual machines, not terminals or editors.
 
 ## Phases
 
@@ -66,13 +68,15 @@ cover current upstream x86-64 Omarchy.
      clipped at the list's right edge ("Searc…").
    - Page Down does not scroll Settings.
    - Omarchy's default 0.985 active opacity lets text behind a floating window show
-     through diffs. Browsers opt out with a rule (`opacity = "1.0 0.985"`). Decide
-     whether to document a user rule or propose one upstream.
-   - Omarchy scripts launch apps with `gtk-launch <id>`. `gtk-launch com.gitturtle.desktop`
-     reports "no such application", because the desktop file is
-     `com.gitturtle.desktop.desktop`; only the full file name works. Settle the
-     application ID before distribution, since window rules match on it and changing it
-     later breaks them.
+     through diffs. Decided 2026-10-26: keep the desktop's default, as terminals and
+     editors do, and document an opt-out rule in the
+     [Linux guide](../linux.md#arch-linux-and-omarchy).
+   - Omarchy scripts launch apps with `gtk-launch <id>`, which failed for the old
+     `com.gitturtle.desktop` ID because the desktop file was
+     `com.gitturtle.desktop.desktop`. Decided 2026-10-26: the application ID is
+     `com.gitturtle.GitTurtle` on every platform (Wayland app_id, X11 class, desktop
+     file, macOS bundle identifier), reverse DNS on the project's domain as Flathub,
+     GNOME and KDE expect. The installer replaces the old launcher and icons.
 4. **Distribution.** Publish versioned release bundles (x86-64 and AArch64, checksums,
    build identity). Resolve the two dependencies the packager flags for license review
    (`mac`, `ufbx`) before distributing. Then add an AUR package (`gitturtle-bin`) and

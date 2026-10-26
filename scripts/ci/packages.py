@@ -326,7 +326,7 @@ def platform_checks(payload, binary, package, directory):
         installed = home / ".local/bin/gitturtle"
         if identity.digest(installed) != identity.digest(binary) or identity.probe(installed) != package["compiled_identity"]:
             raise Error("Installed executable differs from the downloaded package")
-        run(["desktop-file-validate", home / ".local/share/applications/com.gitturtle.desktop.desktop"])
+        run(["desktop-file-validate", home / f".local/share/applications/{identity.APP_ID}.desktop"])
         _, linked = run(["ldd", installed])
         if "not found" in linked:
             raise Error("Installed package has unresolved native libraries")

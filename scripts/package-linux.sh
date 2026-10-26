@@ -108,7 +108,7 @@ readme.write_text(readme.read_text().replace(
 ))
 with Image.open(bundle / "icons/app-icon.png") as image:
     for size in (16, 24, 32, 48, 64, 128, 256, 512):
-        path = bundle / f"icons/hicolor/{size}x{size}/apps/com.gitturtle.desktop.png"
+        path = bundle / f"icons/hicolor/{size}x{size}/apps/com.gitturtle.GitTurtle.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         image.resize((size, size), Image.Resampling.LANCZOS).save(path)
 files = sorted(path for path in bundle.rglob("*") if path.is_file())

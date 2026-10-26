@@ -2092,7 +2092,7 @@ fn main() {
                         ..Default::default()
                     }),
                     window_min_size: Some(size(px(1000.), px(680.))),
-                    app_id: Some("com.gitturtle.desktop".into()),
+                    app_id: Some("com.gitturtle.GitTurtle".into()),
                     ..Default::default()
                 },
                 |window, cx| {
