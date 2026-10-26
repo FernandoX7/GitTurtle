@@ -1,9 +1,14 @@
 version: 2
 updates:
   - package-ecosystem: github-actions
-    directory: /
+    # "/" covers .github/workflows; the composite actions pin their own steps.
+    directories: ["/", "/.github/actions/*"]
     schedule:
       interval: weekly
+    # Let a new release age before it is proposed, so a compromised or
+    # retracted tag is usually caught first. Security updates are not delayed.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 2
     groups:
       actions-minor-and-patch:
