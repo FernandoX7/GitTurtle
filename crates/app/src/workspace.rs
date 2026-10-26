@@ -965,6 +965,9 @@ impl GitTurtle {
             .child(
                 div().id("working-pane").role(Role::ListBox).aria_label("Working tree files")
                     .tab_stop(true).key_context("GitTurtleList").track_focus(&self.file_focus)
+                    .on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, window, cx| {
+                        this.copy_list_item(crate::views::ListCopy::WorkingPaths, window, cx)
+                    }))
                     .border_1().border_color(rgb(p.border)).focus_visible(|style| style.border_color(rgb(p.accent)))
                     .relative().flex_1().min_h_0().overflow_hidden()
                     .when(total > 0, |el| el.child(list))

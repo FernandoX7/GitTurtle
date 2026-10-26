@@ -2,7 +2,7 @@
 use crate::*;
 use gitturtle_core::{ChangeArea, RepositoryStatus, WriteCommand};
 use gpui_kit::prelude::FluentBuilder;
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, path::Path};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Key {
@@ -53,6 +53,17 @@ impl Selection {
     pub(super) fn clear(&mut self) {
         self.selected.clear();
         self.anchor = None;
+    }
+    /// The selected paths in `visible` order, each once: a file selected in
+    /// both Staged and Unstaged is one path.
+    fn paths<'a>(&self, visible: &'a [Key]) -> Vec<&'a Path> {
+        let mut seen = BTreeSet::new();
+        visible
+            .iter()
+            .filter(|key| self.selected.contains(*key))
+            .map(|key| key.path.as_path())
+            .filter(|path| seen.insert(*path))
+            .collect()
     }
     fn retain_visible(&mut self, visible: &[Key]) {
         let visible: BTreeSet<_> = visible.iter().collect();
@@ -184,6 +195,24 @@ impl GitTurtle {
         }
         let visible = self.visible_working_keys();
         self.working_selection.retain_visible(&visible);
+    }
+    /// What Copy Selected List Item takes from Working Changes: the selected
+    /// files' repository paths, one per line, else the highlighted row's.
+    pub(super) fn working_copy_paths(&self) -> Option<String> {
+        let visible = self.visible_working_keys();
+        let paths = self.working_selection.paths(&visible);
+        if !paths.is_empty() {
+            return Some(
+                paths
+                    .iter()
+                    .map(|path| path.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+        let (index, _) = self.working_selected?;
+        let entry = self.work_status.as_ref()?.entries.get(index)?;
+        Some(entry.path.to_string_lossy().into_owned())
     }
     pub(super) fn working_is_selected(&self, index: usize, area: ChangeArea) -> bool {
         self.work_status
@@ -752,6 +781,26 @@ mod tests {
         s.clear();
         assert!(s.selected.is_empty());
         assert!(s.anchor.is_none());
+    }
+    #[test]
+    fn copied_paths_follow_the_list_once_each() {
+        let key = |path: &str, area| Key::new(path.into(), area);
+        let visible = [
+            key("b", ChangeArea::Staged),
+            key("a", ChangeArea::Unstaged),
+            key("b", ChangeArea::Unstaged),
+            key("c", ChangeArea::Unstaged),
+        ];
+        let mut selection = Selection::default();
+        assert!(selection.paths(&visible).is_empty());
+        for index in [3, 2, 0] {
+            selection.choose(visible[index].clone(), &visible, true, false);
+        }
+        let paths: Vec<_> = selection.paths(&visible);
+        assert_eq!(
+            paths,
+            [std::path::Path::new("b"), std::path::Path::new("c")]
+        );
     }
     #[test]
     fn staged_and_unstaged_versions_are_distinct_and_removed_rows_are_dropped() {

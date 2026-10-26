@@ -2205,6 +2205,11 @@ pub(super) enum ListCopy {
     CommitHash,
     /// Changed files: the repository-relative path, as Copy file path writes it.
     FilePath,
+    /// Working Changes: each selected file's repository-relative path, once,
+    /// one per line in list order.
+    WorkingPaths,
+    /// File history: the selected revision's full commit hash.
+    RevisionHash,
 }
 
 impl GitTurtle {
@@ -2237,6 +2242,10 @@ impl GitTurtle {
                 .selected_file
                 .and_then(|index| self.files.get(index))
                 .map(|file| file.path().to_string_lossy().into_owned()),
+            ListCopy::WorkingPaths => self.working_copy_paths(),
+            ListCopy::RevisionHash => self
+                .file_history_entry()
+                .map(|entry| entry.commit.oid.clone()),
         };
         if let Some(text) = text {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -5300,5 +5309,62 @@ mod tests {
             let tab = &app.repository_tabs.tabs[app.repository_tabs.active.unwrap()];
             assert_eq!(tab.error, None);
         });
+    }
+
+    /// With Working Changes focused, Copy Selected List Item takes every
+    /// selected file's path once, in list order; a message selection made in
+    /// History before opening Working Changes no longer wins.
+    #[gpui::test]
+    async fn working_list_copy_takes_the_selected_paths(cx: &mut TestAppContext) {
+        use crate::commit_message::tests::{copy_chord, message_selection};
+        use gitturtle_core::ChangeArea;
+        let (_fixture, app, cx) = history_window(cx).await;
+        let root = cx.read(|cx| app.read(cx).repository.as_ref().unwrap().path().to_owned());
+        std::fs::write(root.join("notes.txt"), "staged\n").unwrap();
+        let added = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", "notes.txt"])
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap();
+        assert!(added.status.success());
+        std::fs::write(root.join("notes.txt"), "staged\nand edited\n").unwrap();
+        std::fs::create_dir(root.join("dir")).unwrap();
+        std::fs::write(root.join("dir/東京 notes.txt"), "new\n").unwrap();
+
+        cx.update(|_, cx| shortcuts::bind_keys(cx));
+        let selection = message_selection(&app, cx);
+        cx.update(|window, cx| selection.select_all(window, cx));
+        draw(cx);
+        assert_eq!(copy_chord(cx), "fixture notes");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        let choose = |cx: &mut VisualTestContext, path: &str, area: ChangeArea, toggle: bool| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    let index = app
+                        .work_status
+                        .as_ref()
+                        .unwrap()
+                        .entries
+                        .iter()
+                        .position(|entry| entry.path == std::path::Path::new(path))
+                        .unwrap();
+                    app.choose_working_selection(index, area, toggle, false, window, cx);
+                    window.focus(&app.file_focus, cx);
+                })
+            });
+            draw(cx);
+        };
+
+        choose(cx, "notes.txt", ChangeArea::Unstaged, false);
+        assert_eq!(copy_chord(cx), "notes.txt");
+        choose(cx, "notes.txt", ChangeArea::Staged, true);
+        choose(cx, "dir/東京 notes.txt", ChangeArea::Unstaged, true);
+        assert_eq!(copy_chord(cx), "notes.txt\ndir/東京 notes.txt");
     }
 }

@@ -864,7 +864,10 @@ pub(crate) mod tests {
         });
     }
 
-    fn message_selection(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Selection {
+    pub(crate) fn message_selection(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> Selection {
         cx.read(|cx| {
             let state = app.read(cx).inspector_message.0.borrow();
             state.as_ref().unwrap().selection.clone()
@@ -901,7 +904,7 @@ pub(crate) mod tests {
 
     /// The platform's copy chord through the keymap, then the clipboard; a
     /// chord that copies nothing leaves the sentinel.
-    fn copy_chord(cx: &mut VisualTestContext) -> String {
+    pub(crate) fn copy_chord(cx: &mut VisualTestContext) -> String {
         cx.update(|_, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string("nothing copied".into()))
         });

@@ -62,8 +62,11 @@ Focused text inputs keep GPUI's editing bindings. Linux Redo is Ctrl+Y in the
 current toolkit, and Ctrl+H remains text Replace; application Hide bindings are
 macOS-only. List-only Copy, Select All Working Changes and Search stay scoped to
 lists. With the History or changed-file list focused, Copy Selected List Item
-copies the selected row's full commit hash or repository path, unless text such
-as part of the commit message is selected, which is copied instead. With Blame
+copies the selected row's full commit hash or repository path; with Working
+Changes focused, every selected file's repository path, one per line in list
+order and each file once; with File History's revision list focused, the
+selected revision's full hash. Text that is selected, such as part of the commit
+message, is copied instead. With Blame
 focused, Copy acts on Blame's selected line. Select All Message Text is scoped
 to the focused commit message. Repository writes remain in their existing
 explicitly reviewed workflows.

@@ -872,6 +872,11 @@ impl GitTurtle {
                     .tab_stop(true)
                     .key_context("GitTurtleList")
                     .track_focus(&self.file_focus)
+                    .on_action(cx.listener(
+                        |this, _: &gpui_kit::component::input::Copy, window, cx| {
+                            this.copy_list_item(crate::views::ListCopy::RevisionHash, window, cx)
+                        },
+                    ))
                     .flex_1()
                     .min_h_0()
                     .child(if count == 0 {
@@ -1260,6 +1265,44 @@ mod tests {
                 "Original history\n\nOriginal body"
             )
         });
+    }
+
+    /// With the revision list focused, Copy Selected List Item takes the
+    /// selected revision's full hash, unless message text is selected.
+    #[gpui::test]
+    fn list_copy_takes_the_selected_revision_hash(cx: &mut TestAppContext) {
+        use crate::commit_message::tests::{commit, copy_chord, draw, fixture, message_selection};
+        let (_, app, cx) = fixture(cx, vec![commit("a", "Original history", "")]);
+        cx.update(|window, cx| {
+            shortcuts::bind_keys(cx);
+            app.update(cx, |app, cx| {
+                let retained = app.take_inspection_context(window, cx);
+                let mut lineage = lineage();
+                let request = lineage.begin(0, Position::First);
+                assert!(lineage.accept(request, page(&lineage, 5, None)));
+                lineage.selected = Some(3);
+                app.file_history = State {
+                    lineage: Some(lineage),
+                    retained: Some(Box::new(retained)),
+                    ..State::default()
+                };
+            })
+        });
+        draw(cx);
+        let focus = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let focus = app.read(cx).file_focus.clone();
+                window.focus(&focus, cx);
+            });
+            draw(cx);
+        };
+        focus(cx);
+        assert_eq!(copy_chord(cx), format!("{:040x}", 3));
+
+        let selection = message_selection(&app, cx);
+        cx.update(|window, cx| selection.select_all(window, cx));
+        focus(cx);
+        assert_eq!(copy_chord(cx), "Revision 3");
     }
 
     #[test]
