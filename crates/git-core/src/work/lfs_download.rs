@@ -4,6 +4,12 @@ use super::*;
 
 pub const MAX_LFS_PREVIEW_DOWNLOAD: u64 = 32 * 1024 * 1024;
 
+/// Earlier Git LFS lets a repository's `.lfsconfig` or submodule configuration
+/// choose a command that runs while fetching (CVE-2026-105802, CVE-2026-105803),
+/// with no workaround short of upgrading, so older tooling is refused before it
+/// reads the repository's configuration.
+const MIN_LFS_VERSION: (u64, u64, u64) = (3, 8, 1);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LfsDownloadTarget {
     pub path: PathBuf,
@@ -100,6 +106,15 @@ impl GitRepository {
         );
         let directories = self.git_directories()?;
         let storage = self.preview_lfs_storage()?;
+        let mut version = normal_command(&self.path);
+        version.args(["lfs", "version"]);
+        let output = bounded_output(version, GIT_TIMEOUT)?;
+        ensure!(
+            output.status.success(),
+            "Git LFS tooling is unavailable. Install Git LFS 3.8.1 or newer, then review this download again. {}",
+            redact_diagnostic(&text(&output.stderr))
+        );
+        require_patched_lfs(&text(&output.stdout))?;
         // `git lfs env` creates storage directories, even though it is a config
         // query. Redirect that side effect into our private temporary directory.
         let temporary = LfsTemporary::new()?;
@@ -227,6 +242,36 @@ pub(crate) fn lfs_storage_config(path: &Path) -> Result<Output> {
     bounded_output(command, GIT_TIMEOUT)
 }
 
+/// Accepts `git lfs version` output naming an exact release at or above
+/// [`MIN_LFS_VERSION`]; anything unrecognized is refused rather than assumed.
+fn require_patched_lfs(output: &str) -> Result<()> {
+    let found = output
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("git-lfs/"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_default();
+    let parts = found
+        .split('.')
+        .map(|part| {
+            part.bytes()
+                .all(|b| b.is_ascii_digit())
+                .then(|| part.parse::<u64>().ok())
+                .flatten()
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(&[major, minor, patch]) = parts.as_deref() else {
+        bail!(
+            "Cannot determine the installed Git LFS version. Install Git LFS 3.8.1 or newer, then review this download again."
+        );
+    };
+    ensure!(
+        (major, minor, patch) >= MIN_LFS_VERSION,
+        "Git LFS {major}.{minor}.{patch} can run a command chosen by a repository's configuration while fetching (CVE-2026-105802, CVE-2026-105803). Update Git LFS to 3.8.1 or newer, then review this download again."
+    );
+    Ok(())
+}
+
 fn config_path(key: &str, path: &Path) -> OsString {
     let mut value = OsString::from(key);
     value.push("=");
@@ -312,5 +357,43 @@ impl LfsTemporary {
 impl Drop for LfsTemporary {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_patched_lfs;
+
+    #[test]
+    fn lfs_downloads_require_a_release_with_the_configuration_command_fixes() {
+        for patched in [
+            "git-lfs/3.8.1 (GitHub; darwin arm64; go 1.25.3)\n",
+            "git-lfs/3.9.0 (GitHub; linux amd64; go 1.26.1)",
+            "git-lfs/3.10.0 (Debian; linux arm64; go 1.26.2)",
+            "git-lfs/4.0.0",
+        ] {
+            assert!(require_patched_lfs(patched).is_ok(), "{patched}");
+        }
+        for vulnerable in [
+            "git-lfs/3.8.0 (GitHub; linux amd64; go 1.25.1)",
+            "git-lfs/3.7.12 (GitHub; darwin arm64; go 1.24.6)",
+            "git-lfs/2.13.3 (GitHub; linux amd64; go 1.16.2)",
+        ] {
+            let error = require_patched_lfs(vulnerable).unwrap_err().to_string();
+            assert!(error.contains("CVE-2026-105803"), "{error}");
+            assert!(error.contains("3.8.1 or newer"), "{error}");
+        }
+        for unknown in [
+            "",
+            "git version 2.55.0",
+            "git-lfs/3.8.1-pre (GitHub; linux amd64)",
+            "git-lfs/3.8 (GitHub)",
+            "git-lfs/3.8.1.1",
+            "git-lfs/+3.8.1",
+            "xgit-lfs/3.8.1",
+        ] {
+            let error = require_patched_lfs(unknown).unwrap_err().to_string();
+            assert!(error.starts_with("Cannot determine"), "{unknown}: {error}");
+        }
     }
 }

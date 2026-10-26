@@ -24,16 +24,17 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Option<Self> {
-        if !Command::new("git")
-            .args(["lfs", "version"])
-            .output()
-            .ok()?
-            .status
-            .success()
-        {
-            eprintln!("Git LFS unavailable; local transfer fixture not run");
+        // Downloads refuse releases before 3.8.1, which
+        // `git_lfs_before_3_8_1_is_refused_before_any_transfer` covers instead.
+        if installed_lfs()? < (3, 8, 1) {
+            eprintln!(
+                "Git LFS older than 3.8.1 is refused for downloads; local transfer fixture not run"
+            );
             return None;
         }
+        Some(Self::create())
+    }
+    fn create() -> Self {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("work");
         let remote = temp.path().join("remote.git");
@@ -64,7 +65,7 @@ impl Fixture {
         let storage = object(&remote.join("lfs"), &oid);
         fs::create_dir_all(storage.parent().unwrap()).unwrap();
         fs::write(storage, &payload).unwrap();
-        Some(Self {
+        Self {
             _temp: temp,
             root,
             remote,
@@ -72,7 +73,7 @@ impl Fixture {
             payload,
             oid,
             blob,
-        })
+        }
     }
     fn repo(&self) -> GitRepository {
         GitRepository::open(&self.root).unwrap()
@@ -109,6 +110,52 @@ fn git(root: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).trim_end().into()
+}
+/// The installed `git-lfs` release, or None when it is unavailable.
+fn installed_lfs() -> Option<(u64, u64, u64)> {
+    let version = Command::new("git").args(["lfs", "version"]).output().ok();
+    let release = version
+        .filter(|version| version.status.success())
+        .and_then(|version| {
+            let output = String::from_utf8_lossy(&version.stdout).into_owned();
+            let parts = output
+                .split_whitespace()
+                .next()?
+                .strip_prefix("git-lfs/")?
+                .split('.')
+                .map(str::parse::<u64>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            Some((*parts.first()?, *parts.get(1)?, *parts.get(2)?))
+        });
+    if release.is_none() {
+        eprintln!("Git LFS unavailable; local transfer fixture not run");
+    }
+    release
+}
+
+#[test]
+fn git_lfs_before_3_8_1_is_refused_before_any_transfer() {
+    let Some(release) = installed_lfs() else {
+        return;
+    };
+    if release >= (3, 8, 1) {
+        eprintln!("Git LFS {release:?} is patched; refusal fixture not run");
+        return;
+    }
+    let fixture = Fixture::create();
+    let error = fixture
+        .repo()
+        .lfs_download_plan(&fixture.target(), "origin")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("CVE-2026-105803"), "{error}");
+    assert!(
+        error.contains("Update Git LFS to 3.8.1 or newer"),
+        "{error}"
+    );
+    // No Git LFS command ran against the repository, so nothing created its storage.
+    assert!(!fixture.root.join(".git/lfs").exists());
 }
 
 #[test]
