@@ -1282,7 +1282,8 @@ impl GitTurtle {
         let active = self.selected_commit == Some(index);
         let columns = self.history_column_layout();
         let lane_colors = graph::colors(cx);
-        let color = lane_colors[self.graph[index].color % lane_colors.len()];
+        let lane = self.graph[index].color % lane_colors.len();
+        let color = lane_colors[lane];
         let refs_width = self.settings.columns.refs.width;
         let mut references = div()
             .w(px(refs_width))
@@ -1310,8 +1311,8 @@ impl GitTurtle {
                         .py_0p5()
                         .rounded(px(3.))
                         .text_size(crate::appearance::ui_text(10.))
-                        .text_color(rgb(color))
-                        .bg(rgba((color << 8) | 0x1e))
+                        .text_color(rgb(crate::appearance::labels(cx).refs[lane]))
+                        .bg(rgba((color << 8) | crate::appearance::REF_TINT_ALPHA))
                         .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
                         .child(name.clone()),
                 );

@@ -577,16 +577,27 @@ impl Palette {
         } else {
             0xffffff
         };
-        (0..=32)
-            .map(|step| {
-                [16, 8, 0].into_iter().fold(0, |color, shift| {
-                    let from = (self.text >> shift) & 0xff;
-                    let to = (extreme >> shift) & 0xff;
-                    color | (((from * (32 - step) + to * step) / 32) << shift)
-                })
-            })
-            .find(|&label| readable(label, LABEL_RULE + LABEL_MARGIN))
-            .unwrap_or(extreme)
+        toward_extreme(self.text, extreme, |label| {
+            readable(label, LABEL_RULE + LABEL_MARGIN)
+        })
+    }
+
+    /// `color` as a small label on every one of `surfaces`: badges, chips and
+    /// gutter numbers at 10 to 12 px render about 0.2 below their token, so
+    /// `color` stays only where it clears the text rule with the margin tuned
+    /// tokens keep. Otherwise it takes the first step toward black in a light
+    /// palette and white in a dark one that does, which keeps its hue.
+    pub fn small_label(self, color: u32, surfaces: &[u32]) -> u32 {
+        let readable = |label| {
+            surfaces
+                .iter()
+                .all(|&surface| custom::contrast(label, surface) >= LABEL_RULE + LABEL_MARGIN)
+        };
+        if readable(color) {
+            return color;
+        }
+        let extreme = if self.is_light() { 0x000000 } else { 0xffffff };
+        toward_extreme(color, extreme, readable)
     }
 
     /// The shared button's colors: transparent at rest with its label in
@@ -618,6 +629,66 @@ impl Palette {
 /// at 1x renders about 0.2 lower (DESIGN.md, semantic palette ownership).
 const LABEL_RULE: f64 = 4.5;
 const LABEL_MARGIN: f64 = 0.25;
+
+/// The first of 32 even steps from `from` to `extreme`, `from` included, that
+/// `accepts`, or `extreme`.
+fn toward_extreme(from: u32, extreme: u32, accepts: impl Fn(u32) -> bool) -> u32 {
+    (0..=32)
+        .map(|step| {
+            [16, 8, 0].into_iter().fold(0, |color, shift| {
+                let from = (from >> shift) & 0xff;
+                let to = (extreme >> shift) & 0xff;
+                color | (((from * (32 - step) + to * step) / 32) << shift)
+            })
+        })
+        .find(|&label| accepts(label))
+        .unwrap_or(extreme)
+}
+
+/// The alpha of a History reference badge's tint: its lane color over the row.
+pub const REF_TINT_ALPHA: u32 = 0x1e;
+
+/// Small labels fitted once per palette, so the rows and gutters that draw them
+/// read a color instead of fitting one every frame. [`Palette::apply`]
+/// installs them; [`labels`] refits for a palette applied some other way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Labels {
+    palette: Palette,
+    /// A History reference badge's label for each graph lane, on the lane's
+    /// tint over every History row surface: the canvas, hovered, selected and
+    /// hovered selected rows.
+    pub refs: [u32; 6],
+}
+
+impl Global for Labels {}
+
+impl Labels {
+    pub fn fit(palette: Palette) -> Self {
+        let rows = [
+            palette.canvas,
+            palette.hover,
+            palette.selected,
+            palette.row_hover(true),
+        ];
+        let refs = crate::graph::palette_colors(palette).map(|lane| {
+            let tint = Rgba {
+                a: REF_TINT_ALPHA as f32 / 255.,
+                ..rgb(lane)
+            };
+            palette.small_label(lane, &rows.map(|row| composite(tint, row)))
+        });
+        Self { palette, refs }
+    }
+}
+
+/// The applied palette's [`Labels`].
+pub fn labels(cx: &App) -> Labels {
+    let palette = palette(cx);
+    cx.try_global::<Labels>()
+        .copied()
+        .filter(|labels| labels.palette == palette)
+        .unwrap_or_else(|| Labels::fit(palette))
+}
 
 /// Composite a translucent layer over an opaque surface as GPUI's renderers
 /// blend a quad: on the gamma-encoded values of their non-sRGB targets.
@@ -1377,6 +1448,7 @@ impl Palette {
             selected_hover: self.row_hover(true),
         }));
         cx.set_global(highlights);
+        cx.set_global(Labels::fit(self));
         cx.set_global(self);
         Theme::sync_base(cx);
         if let Some(window) = window {
@@ -3363,6 +3435,74 @@ mod tests {
                 failures.push(format!("{name} {faded:.2}:1 against {enabled:.2}:1"));
             }
         }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Every pair of a small label and a surface it sits on that falls below
+    /// the text rule with its rasterization margin, as `name label on surface
+    /// ratio`.
+    fn small_label_failures(
+        name: &str,
+        what: &str,
+        label: u32,
+        surfaces: &[u32],
+    ) -> Option<String> {
+        let low = surfaces
+            .iter()
+            .map(|&surface| (surface, contrast(label, surface)))
+            .filter(|&(_, ratio)| ratio < LABEL_RULE + LABEL_MARGIN)
+            .map(|(surface, ratio)| format!("{surface:06x} {ratio:.2}:1"))
+            .collect::<Vec<_>>();
+        (!low.is_empty()).then(|| format!("{name} {what} {label:06x} on {}", low.join(", ")))
+    }
+
+    /// History's reference badge draws its label in its graph lane's color on a
+    /// tint of that color, and the lanes are fitted only as graphics, to 3:1:
+    /// on the selected row Omarchy Catppuccin Latte's first lane read 2.95:1.
+    /// Every palette's badge labels clear the text rule with the margin on
+    /// their tint over each History row surface, and a lane that already does
+    /// keeps its own color. The applied palette installs them.
+    #[gpui::test]
+    fn every_palette_fits_history_reference_labels_on_their_tint(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut failures = Vec::new();
+        let mut lanes_below = 0;
+        for (name, palette) in test_palettes() {
+            let labels = cx.update(|cx| {
+                palette.apply(palette.is_light(), None, cx);
+                super::labels(cx)
+            });
+            assert_eq!(labels, Labels::fit(palette), "{name} installs its labels");
+            let rows = [
+                palette.canvas,
+                palette.hover,
+                palette.selected,
+                palette.row_hover(true),
+            ];
+            for (lane, (color, label)) in crate::graph::palette_colors(palette)
+                .into_iter()
+                .zip(labels.refs)
+                .enumerate()
+            {
+                let tint = Rgba {
+                    a: REF_TINT_ALPHA as f32 / 255.,
+                    ..rgb(color)
+                };
+                let badges = rows.map(|row| composite(tint, row));
+                let own = small_label_failures(name.as_str(), "", color, &badges);
+                lanes_below += usize::from(own.is_some());
+                if own.is_none() {
+                    assert_eq!(label, color, "{name} lane {lane} keeps its color");
+                }
+                failures.extend(small_label_failures(
+                    &name,
+                    &format!("lane {lane}"),
+                    label,
+                    &badges,
+                ));
+            }
+        }
+        assert!(lanes_below > 0, "some lane needs its label fitted");
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }
