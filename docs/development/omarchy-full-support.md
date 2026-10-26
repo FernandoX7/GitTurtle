@@ -119,5 +119,5 @@ cover current upstream x86-64 Omarchy.
 7. **Upstream, optional.** Once a package exists, propose an Install-menu entry
    (`omarchy-install-*` plus `omarchy-menu.jsonc`). GitTurtle needs no theme template.
 
-The announcement waits for phases 1 to 5. Phase 7 depends on maintainers and is not
+The announcement waits for phases 1 to 5. Owner decision, 2026-10-26: every Omarchy feature is finished before distribution (phase 4) starts. Phase 7 depends on maintainers and is not
 required for the claim.
