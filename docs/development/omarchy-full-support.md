@@ -64,7 +64,8 @@ cover current upstream x86-64 Omarchy.
      and list Copy works in History and the changed-file list
      ([validation entry](../validation.md#october-26-selectable-commit-text-the-new-application-id-and-omarchy-polish)).
      The owner confirmed copying and pasting with a physical keyboard on 2026-10-26.
-     Open: Working Changes and the file-history revision list still ignore list Copy.
+     Working Changes and the file-history revision list followed on 2026-10-26
+     ([validation entry](../validation.md#october-26-list-copy-in-working-changes-and-file-history-and-select-all-everywhere)).
    - **Lists.** Outside text fields, dispatched keys reach GitTurtle. Ctrl+C on a
      selected History commit or changed file copies nothing: the shortcut sheet lists
      "Copy Selected List Item" (Ctrl+C), but only Blame handles it. What a copied commit
@@ -87,9 +88,18 @@ cover current upstream x86-64 Omarchy.
      file, macOS bundle identifier), reverse DNS on the project's domain as Flathub,
      GNOME and KDE expect. The installer replaces the old launcher and icons.
    - **Approved by the owner on 2026-10-26, all to be done before distribution:**
-     1. List Copy in Working Changes and the file-history revision list.
+     1. List Copy in Working Changes and the file-history revision list. Done: the
+        selected files' paths, one per line in list order, and the revision's full
+        hash ([validation entry](../validation.md#october-26-list-copy-in-working-changes-and-file-history-and-select-all-everywhere)).
      2. Omarchy 4.5's Super+A (which sends Ctrl+A) does something sensible on every
         surface: text fields, the commit message, Working Changes, and the lists.
+        Done, checked natively with no code change: text fields, the focused message
+        and the Compare diff select all their text and Working Changes selects every
+        visible row. Lists that hold one selection (History, changed files,
+        revisions, Blame, navigation) and pages without a text field ignore it.
+        Decided 2026-10-26: that is GTK's and macOS's behaviour for single-selection
+        lists, and a list that cannot select more must not move focus or select
+        something else.
      3. `omarchy font set` reaches GitTurtle's code text, checked natively and fixed if
         needed.
      4. Every stock Omarchy theme (22 on 4.0.4-mac.1, light and unusual ones included)
