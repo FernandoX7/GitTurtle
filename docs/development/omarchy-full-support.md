@@ -63,8 +63,8 @@ cover current upstream x86-64 Omarchy.
      Fixed: the commit message and its metadata select and copy like ordinary text,
      and list Copy works in History and the changed-file list
      ([validation entry](../validation.md#october-26-selectable-commit-text-the-new-application-id-and-omarchy-polish)).
-     Open: a physical Super+C in the commit message, and Working Changes and the
-     file-history revision list, which still ignore list Copy.
+     The owner confirmed copying and pasting with a physical keyboard on 2026-10-26.
+     Open: Working Changes and the file-history revision list still ignore list Copy.
    - **Lists.** Outside text fields, dispatched keys reach GitTurtle. Ctrl+C on a
      selected History commit or changed file copies nothing: the shortcut sheet lists
      "Copy Selected List Item" (Ctrl+C), but only Blame handles it. What a copied commit
@@ -94,8 +94,9 @@ cover current upstream x86-64 Omarchy.
    owner's Developer ID ([release workflow](../releases.md#macos-developer-id-signing-component)
    covers signing and notarization), with automatic update checks. No updater exists
    yet, and an automatic check is a network action without user interaction, which the
-   [product rules](../../AGENTS.md) forbid today; the owner decides the exception (for
-   example, a check the person turns on) before an updater is built.
+   [product rules](../../AGENTS.md) forbid today. Owner decision, 2026-10-26: updates
+   and update checks are a later feature, after the app itself is done; they are not
+   part of this plan.
 5. **Current upstream verification.** On x86-64 Omarchy v4.0.6 and the 4.5 release
    candidate:
    - install;
