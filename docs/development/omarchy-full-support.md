@@ -120,7 +120,16 @@ cover current upstream x86-64 Omarchy.
         `markdown-diff-fence-colours`, `review-file-preparation-lifecycle`,
         `narrow-large-text-compact-chrome`, `review-arrow-buttons-hover`,
         `menu-checked-items-accessible`, `builtin-light-hover-lift`); confirm each against
-        `main` first.
+        `main` first. Checked 2026-10-26 against `origin/main` `a755d60`: landed are
+        `history-vanished-scope-refresh`, `auth-prompt-platform-wording`,
+        `editor-highlights-keep-syntax-readable`, `push-upstream-only-when-unset`,
+        `pr-source-gutter-like-compare`, `decorations-in-retained-bounds`,
+        `code-font-cold-launch-wait`, `code-font-blame-conflicts-review-gutter`,
+        `narrow-large-text-minimums` and `history-columns-steady-after-toggle`; still open
+        are the ten named above, plus `switch-focus-ring-and-hover` and
+        `settings-focus-reveal-and-steady-switch`, which are in that list. The stock-theme
+        sweep (item 4) found `switch-checked-knob-and-disabled-label`'s knob at 1.2–2.5:1
+        in six themes.
      9. Any further UI or UX improvement found along the way: the owner wants a
         first-class Omarchy app, good enough to be featured.
 4. **Distribution.** Publish versioned release bundles (x86-64 and AArch64, checksums,
