@@ -61,7 +61,12 @@ existing Command-T / Ctrl+T alias remains available for opening a tab.
 Focused text inputs keep GPUI's editing bindings. Linux Redo is Ctrl+Y in the
 current toolkit, and Ctrl+H remains text Replace; application Hide bindings are
 macOS-only. List-only Copy, Select All Working Changes and Search stay scoped to
-lists. Repository writes remain in their existing explicitly reviewed workflows.
+lists. With the History or changed-file list focused, Copy Selected List Item
+copies the selected row's full commit hash or repository path, unless text such
+as part of the commit message is selected, which is copied instead. With Blame
+focused, Copy acts on Blame's selected line. Select All Message Text is scoped
+to the focused commit message. Repository writes remain in their existing
+explicitly reviewed workflows.
 
 `cargo test --locked -p gitturtle shortcuts::` checks binding uniqueness, both
 platforms' key parsing, focused-list scope, platform labels, tab modifiers, and

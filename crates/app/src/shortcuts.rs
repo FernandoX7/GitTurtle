@@ -42,6 +42,7 @@ pub(super) enum ShortcutId {
     Back,
     Copy,
     SelectWorking,
+    SelectText,
     ExtendNext,
     ExtendPrevious,
     NextChange,
@@ -78,6 +79,9 @@ macro_rules! shortcut {
 
 const APP: Option<&str> = Some("GitTurtle");
 const LIST: Option<&str> = Some("GitTurtleList");
+/// Selectable read-only text, such as the commit message. Copy there is the
+/// toolkit root's binding of the same key.
+const TEXT: Option<&str> = Some("GitTurtleText");
 pub(super) const SHORTCUTS: &[Shortcut] = &[
     shortcut!(
         Palette,
@@ -355,6 +359,14 @@ pub(super) const SHORTCUTS: &[Shortcut] = &[
         "primary-a",
         SelectAllWorking,
         LIST
+    ),
+    shortcut!(
+        SelectText,
+        "Select All Message Text",
+        "Lists and Selection",
+        "primary-a",
+        gpui_kit::component::input::SelectAll,
+        TEXT
     ),
     shortcut!(
         ExtendNext,

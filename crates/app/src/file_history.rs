@@ -312,7 +312,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> ReturnContext {
         ReturnContext {
-            inspector_message: std::mem::take(&mut self.inspector_message),
+            inspector_message: self.inspector_message.take(cx),
             files: std::mem::take(&mut self.files),
             file_filter: self.file_filter.read(cx).value().to_string(),
             selected_file: self.selected_file.take(),
@@ -364,7 +364,8 @@ impl GitTurtle {
         self.file_filter.update(cx, |input, cx| {
             input.set_value(retained.file_filter.clone(), window, cx)
         });
-        self.inspector_message = retained.inspector_message;
+        self.inspector_message
+            .replace(retained.inspector_message, cx);
         self.files = retained.files;
         self.refresh_file_filter(cx);
         self.selected_file = retained.selected_file;
@@ -653,7 +654,7 @@ impl GitTurtle {
         else {
             return;
         };
-        self.inspector_message.select(&entry.commit.oid);
+        self.inspector_message.select(&entry.commit.oid, cx);
         let change = entry.change.clone();
         lineage.selected = Some(index);
         lineage.error = None;
@@ -970,9 +971,11 @@ impl GitTurtle {
             .into_any_element()
     }
 
+    /// Each line is selectable after the message in `selection`'s document.
     pub(super) fn render_revision_metadata(
         &self,
         entry: &FileHistoryEntry,
+        selection: &commit_message::Selection,
         cx: &App,
     ) -> AnyElement {
         let p = palette(cx);
@@ -986,6 +989,34 @@ impl GitTurtle {
             .new_path
             .as_ref()
             .map_or("Absent (deleted)".into(), |path| path.display().to_string());
+        let [author, revision, parent, paths] = selection.metadata([
+            format!(
+                "{} · {}",
+                commit_message::summary(&entry.commit.author),
+                full_date(entry.commit.timestamp)
+            )
+            .into(),
+            format!(
+                "{} · {}",
+                short_oid(&entry.commit.oid),
+                entry.change.status.label()
+            )
+            .into(),
+            entry
+                .parent_oid
+                .as_ref()
+                .map_or(
+                    "Root revision · compared with an empty tree".into(),
+                    |parent| format!("Compared with first parent {}", short_oid(parent)),
+                )
+                .into(),
+            if before == after {
+                before
+            } else {
+                format!("Before: {before}\nAfter: {after}")
+            }
+            .into(),
+        ]);
         div()
             .id("file-revision-details")
             .min_w_0()
@@ -995,25 +1026,10 @@ impl GitTurtle {
             .gap_2()
             .text_size(appearance::ui_text(11.))
             .text_color(rgb(p.muted))
-            .child(format!(
-                "{} · {}",
-                commit_message::summary(&entry.commit.author),
-                full_date(entry.commit.timestamp)
-            ))
-            .child(format!(
-                "{} · {}",
-                short_oid(&entry.commit.oid),
-                entry.change.status.label()
-            ))
-            .child(entry.parent_oid.as_ref().map_or(
-                "Root revision · compared with an empty tree".into(),
-                |parent| format!("Compared with first parent {}", short_oid(parent)),
-            ))
-            .child(div().text_color(rgb(p.text)).child(if before == after {
-                before
-            } else {
-                format!("Before: {before}\nAfter: {after}")
-            }))
+            .child(author)
+            .child(revision)
+            .child(parent)
+            .child(div().text_color(rgb(p.text)).child(paths))
             .into_any_element()
     }
 

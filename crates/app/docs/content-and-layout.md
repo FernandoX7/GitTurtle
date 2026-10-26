@@ -102,6 +102,28 @@ admission, including nested return contexts. Keyboard arrows, Page Up/Down and
 Home/End scroll the focused message; labelled native buttons provide message and
 hash copy. Native platform quality remains a separate validation requirement.
 
+The pieces and the selectable metadata lines (author, date and short hash, or a
+revision's lines) form one text document (`commit_message::selection`). The
+presentation owns one base `TextSelection` participant registered for the whole
+viewport, so the window layer's drag, auto-scroll, multi-click and clearing apply
+while pieces enter and leave the list. Its endpoints are content keys holding
+document byte offsets, resolved against the runs the previous frame painted;
+each piece records its offset in the full message. While a drag is held, each
+paint resolves the cursor again at the pointer, so a drag that auto-scrolls and
+is released without moving ends at the text then under it. Painting a run intersects one
+range, and copy slices the retained pieces between the offsets only on Copy,
+restoring the newlines between runs: a boundary's stripped newline, the blank
+line before the body and the breaks before and between metadata lines. Select
+All selects the message alone, so it copies exactly what **Copy message** does.
+Replacing the presentation (a new OID) or taking it into a return context or
+warm tab (`State::select`, `replace`, `take`) ends its selection at once, though
+the window keeps the participant until its next frame, and releases the shaped
+runs it and the participant kept; a click elsewhere clears the selection but
+keeps the runs, from which the same press resolves its new anchor. The highlight is the applied theme's fitted text selection
+(`EditorHighlights::selection`). A non-empty message selection wins over a
+focused list's Copy Selected List Item, which otherwise copies the History
+row's full hash or the changed file's path.
+
 ## Working composer
 
 Size the composer from the list/composer body's laid-out available height after the header, Targets, feedback, and wrapping path/selection controls. Reserve several file rows, share a very short body between files and composer, keep the commit footer outside the scrolling fields, and let additional guidance/errors scroll without clipping the action. Header geometry must not depend on the measured body height. When bounds or density change, bring the selected working row into view using its current identity, not the previous geometry's pixel offset. Layout observers notify only on changed bounds.

@@ -1190,6 +1190,11 @@ impl GitTurtle {
                             .tab_stop(true)
                             .key_context("GitTurtleList")
                             .track_focus(&self.focus)
+                            .on_action(cx.listener(
+                                |this, _: &gpui_kit::component::input::Copy, window, cx| {
+                                    this.copy_list_item(ListCopy::CommitHash, window, cx)
+                                },
+                            ))
                             .border_1()
                             .border_color(rgb(colors.border))
                             .focus_visible(|style| style.border_color(rgb(colors.accent)))
@@ -1490,9 +1495,12 @@ impl GitTurtle {
             .into_any_element()
     }
 
+    /// The author and the date and hash lines are selectable after the
+    /// message in `selection`'s document; parents and recovery stay controls.
     pub(super) fn render_commit_metadata(
         &self,
         commit: &Commit,
+        selection: &commit_message::Selection,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
@@ -1518,6 +1526,15 @@ impl GitTurtle {
         if commit.parents.is_empty() {
             parents = parents.child("Root commit · empty-tree comparison");
         }
+        let [author, date] = selection.metadata([
+            commit_message::summary(&commit.author).into(),
+            format!(
+                "{} · {}",
+                full_date(commit.timestamp),
+                short_oid(&commit.oid)
+            )
+            .into(),
+        ]);
         div()
             .id("commit-metadata")
             .role(Role::Group)
@@ -1529,12 +1546,8 @@ impl GitTurtle {
             .gap_2()
             .text_size(appearance::ui_text(11.))
             .text_color(rgb(colors.muted))
-            .child(div().child(commit_message::summary(&commit.author)))
-            .child(format!(
-                "{} · {}",
-                full_date(commit.timestamp),
-                short_oid(&commit.oid)
-            ))
+            .child(div().child(author))
+            .child(date)
             .child(parents)
             .child(self.render_commit_recovery_menu(commit, cx))
             .into_any_element()
@@ -1608,6 +1621,11 @@ impl GitTurtle {
                     .tab_stop(true)
                     .key_context("GitTurtleList")
                     .track_focus(&self.file_focus)
+                    .on_action(cx.listener(
+                        |this, _: &gpui_kit::component::input::Copy, window, cx| {
+                            this.copy_list_item(ListCopy::FilePath, window, cx)
+                        },
+                    ))
                     .border_1()
                     .border_color(rgb(colors.border))
                     .focus_visible(|style| style.border_color(rgb(colors.accent)))
@@ -2176,6 +2194,52 @@ impl ColumnMinimums {
             content: rail + content,
             inspector: inspector.min(left),
             pinned: left < inspector,
+        }
+    }
+}
+
+/// What Copy Selected List Item takes from a focused list's selected row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum ListCopy {
+    /// History: the full commit hash.
+    CommitHash,
+    /// Changed files: the repository-relative path, as Copy file path writes it.
+    FilePath,
+}
+
+impl GitTurtle {
+    /// Copy Selected List Item. A non-empty text selection wins, so text
+    /// selected in the message still copies after focus moves to a list: the
+    /// message's own selection byte for byte, any other through the toolkit
+    /// root. Otherwise the selected row's identity is copied.
+    pub(super) fn copy_list_item(
+        &self,
+        item: ListCopy,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.inspector_message.copy_selection(cx) {
+            return;
+        }
+        if !gpui_kit::base::TextSelection::selected_text(window, cx)
+            .trim()
+            .is_empty()
+        {
+            cx.propagate();
+            return;
+        }
+        let text = match item {
+            ListCopy::CommitHash => self
+                .selected_commit
+                .and_then(|index| self.commits.get(index))
+                .map(|commit| commit.oid.clone()),
+            ListCopy::FilePath => self
+                .selected_file
+                .and_then(|index| self.files.get(index))
+                .map(|file| file.path().to_string_lossy().into_owned()),
+        };
+        if let Some(text) = text {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
 }
@@ -2817,6 +2881,13 @@ impl Render for GitTurtle {
                 }
             }))
             .on_action(cx.listener(|this, _: &SelectAllWorking, _, cx| this.select_all_working(cx)))
+            // Selected commit-message text copies byte for byte wherever
+            // focus is; otherwise the toolkit root copies other selected text.
+            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, _, cx| {
+                if !this.inspector_message.copy_selection(cx) {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(|this, _: &ShowActivity, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
                     this.open_activity(window, cx);

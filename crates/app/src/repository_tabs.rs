@@ -1250,7 +1250,8 @@ impl GitTurtle {
             self.blame = blame::State::default();
             self.discard_history_search();
             self.commits.clear();
-            self.inspector_message = commit_message::State::default();
+            self.inspector_message
+                .replace(commit_message::State::default(), cx);
             self.graph.clear();
             self.visible.clear();
             self.files.clear();

@@ -3,6 +3,12 @@
 //! This is inspection state, moved with ReturnContext (including warm tabs),
 //! not a second message store or a repository reader. Only a newly selected
 //! immutable OID prepares text pieces; paints clone shared bounded pieces.
+//! The pieces and the metadata after them form one selectable document
+//! ([`selection`]).
+mod selection;
+
+pub(crate) use selection::Selection;
+
 use crate::views::{LineKey, cached_width, compact_control_name, line_widths};
 use crate::*;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
@@ -14,6 +20,8 @@ const PIECE_BYTES: usize = 1024;
 const PIECE_LINES: usize = 16;
 
 struct Piece {
+    /// Byte offset of `text` in [`full_message`].
+    start: usize,
     text: SharedString,
     title: bool,
     body_start: bool,
@@ -24,6 +32,7 @@ struct Presentation {
     pieces: Arc<Vec<Piece>>,
     scroll: ListState,
     focus: FocusHandle,
+    selection: Selection,
     scale: f32,
 }
 
@@ -96,10 +105,37 @@ impl State {
         self.1.set(toolbar);
     }
 
-    pub(super) fn select(&self, oid: &str) {
+    /// Drops a presentation of another OID, ending its text selection at once.
+    pub(super) fn select(&self, oid: &str, cx: &mut App) {
         let mut state = self.0.borrow_mut();
-        if state.as_ref().is_some_and(|state| state.oid != oid) {
-            *state = None;
+        if state.as_ref().is_some_and(|state| state.oid != oid)
+            && let Some(previous) = state.take()
+        {
+            previous.selection.detach(cx);
+        }
+    }
+
+    /// Moves the presentation out, as into a return context or warm tab: its
+    /// text selection ends and its painted runs are released.
+    pub(super) fn take(&mut self, cx: &mut App) -> Self {
+        self.detach(cx);
+        std::mem::take(self)
+    }
+
+    /// Replaces the presentation, ending the text selection of the one it had.
+    pub(super) fn replace(&mut self, next: Self, cx: &mut App) {
+        self.detach(cx);
+        *self = next;
+    }
+
+    fn detach(&self, cx: &mut App) {
+        let selection = self
+            .0
+            .borrow()
+            .as_ref()
+            .map(|state| state.selection.clone());
+        if let Some(selection) = selection {
+            selection.detach(cx);
         }
     }
 
@@ -109,29 +145,56 @@ impl State {
                 + state.pieces.iter().map(|piece| piece.text.len()).sum::<usize>()
                 // Reserve list tree/measurement bookkeeping as well as pieces.
                 + state.pieces.capacity() * (std::mem::size_of::<Piece>() + 256)
+                + state.selection.retained_bytes()
         })
+    }
+
+    /// Copies the presented message's selected text, byte for byte, and
+    /// reports whether there was any.
+    pub(super) fn copy_selection(&self, cx: &mut App) -> bool {
+        let selection = self
+            .0
+            .borrow()
+            .as_ref()
+            .map(|state| state.selection.clone());
+        selection.is_some_and(|selection| selection.copy(cx))
     }
 
     fn presentation(
         &self,
         commit: &Commit,
         cx: &mut App,
-    ) -> (Arc<Vec<Piece>>, ListState, FocusHandle) {
+    ) -> (Arc<Vec<Piece>>, ListState, FocusHandle, Selection) {
         let mut retained = self.0.borrow_mut();
         let scale = appearance::ui_scale();
         if retained
             .as_ref()
             .is_none_or(|state| state.oid != commit.oid)
         {
+            if let Some(previous) = retained.take() {
+                previous.selection.detach(cx);
+            }
             let mut pieces = Vec::new();
-            append_pieces(&mut pieces, &commit.subject, true);
-            append_pieces(&mut pieces, &commit.body, false);
+            append_pieces(&mut pieces, &commit.subject, true, 0);
+            let body = if commit.subject.is_empty() {
+                0
+            } else {
+                commit.subject.len() + 2
+            };
+            append_pieces(&mut pieces, &commit.body, false, body);
+            // The last piece always keeps its text's end.
+            let message_len = pieces
+                .last()
+                .map_or(0, |piece| piece.start + piece.text.len());
+            let pieces = Arc::new(pieces);
+            let focus = cx.focus_handle();
             *retained = Some(Presentation {
                 oid: commit.oid.clone(),
                 scroll: ListState::new(pieces.len() + 1, ListAlignment::Top, px(100.))
                     .with_uniform_item_height(appearance::ui_size(24.)),
-                pieces: Arc::new(pieces),
-                focus: cx.focus_handle(),
+                selection: Selection::new(pieces.clone(), message_len, focus.clone(), cx),
+                pieces,
+                focus,
                 scale,
             });
         }
@@ -144,6 +207,7 @@ impl State {
             state.pieces.clone(),
             state.scroll.clone(),
             state.focus.clone(),
+            state.selection.clone(),
         )
     }
 }
@@ -152,9 +216,12 @@ impl State {
 // Consecutive pieces continue a paragraph without extra vertical padding.
 // A single maliciously large grapheme can itself exceed the shaping budget;
 // split that exceptional cluster at UTF-8 boundaries. Literal copy never uses
-// this display segmentation and remains byte-for-byte the loaded model.
-fn append_pieces(pieces: &mut Vec<Piece>, mut text: &str, title: bool) {
+// this display segmentation and remains byte-for-byte the loaded model: each
+// piece records its offset in the full message, and copying a selection puts
+// back the newlines no piece displays. `base` is `text`'s offset there.
+fn append_pieces(pieces: &mut Vec<Piece>, mut text: &str, title: bool, base: usize) {
     let mut first = true;
+    let mut start = base;
     while !text.is_empty() {
         let limit = text.floor_char_boundary(PIECE_BYTES.min(text.len()));
         let prefix = &text[..limit];
@@ -194,11 +261,13 @@ fn append_pieces(pieces: &mut Vec<Piece>, mut text: &str, title: bool) {
             piece
         };
         pieces.push(Piece {
+            start,
             text: display.to_owned().into(),
             title,
             body_start: !title && first,
         });
         first = false;
+        start += end;
         text = &text[end..];
     }
 }
@@ -228,7 +297,7 @@ pub(super) fn summary(text: &str) -> String {
     }
 }
 
-fn render_piece(piece: &Piece, index: usize, cx: &App) -> impl IntoElement {
+fn render_piece(piece: &Piece, index: usize, selection: &Selection, cx: &App) -> impl IntoElement {
     let colors = palette(cx);
     div()
         .id(("commit-message-piece", index))
@@ -246,7 +315,7 @@ fn render_piece(piece: &Piece, index: usize, cx: &App) -> impl IntoElement {
         .line_height(relative(if piece.title { 1.35 } else { 1.5 }))
         .when(piece.title, |row| row.font_weight(FontWeight::MEDIUM))
         .min_h(appearance::ui_size(if piece.title { 20.25 } else { 18. }))
-        .child(piece.text.clone())
+        .child(selection.piece(piece))
 }
 
 impl GitTurtle {
@@ -270,12 +339,13 @@ impl GitTurtle {
         let colors = palette(cx);
         let toolbar = self.inspector_message.1.get();
         let compact = toolbar.is_some_and(|toolbar| toolbar.compact);
-        let (pieces, scroll, focus) = self.inspector_message.presentation(commit, cx);
+        let (pieces, scroll, focus, selection) = self.inspector_message.presentation(commit, cx);
         let owner = cx.entity().downgrade();
         let oid = commit.oid.clone();
+        let rows = selection.clone();
         let list = gpui_kit::list(scroll.clone(), move |index, _, cx| {
             if let Some(piece) = pieces.get(index) {
-                return render_piece(piece, index, cx).into_any_element();
+                return render_piece(piece, index, &rows, cx).into_any_element();
             }
             owner
                 .update(cx, |this, cx| {
@@ -286,14 +356,16 @@ impl GitTurtle {
                         return div().into_any_element();
                     }
                     if file_history {
-                        this.render_revision_metadata(this.file_history_entry().unwrap(), cx)
+                        this.render_revision_metadata(this.file_history_entry().unwrap(), &rows, cx)
                     } else {
-                        this.render_commit_metadata(this.message_commit(false).unwrap(), cx)
+                        this.render_commit_metadata(this.message_commit(false).unwrap(), &rows, cx)
                     }
                 })
                 .unwrap_or_else(|_| div().into_any_element())
         })
         .size_full();
+        let copy_selection = selection.clone();
+        let select_all = selection.clone();
         let copy_oid = commit.oid.clone();
         let hash = commit.oid.clone();
         let key_scroll = scroll.clone();
@@ -342,8 +414,15 @@ impl GitTurtle {
                 .role(Role::Document)
                 .aria_label("Commit message. Use arrow keys, Page Up, Page Down, Home or End to scroll.")
                 .tab_stop(true)
+                .key_context("GitTurtleText")
                 .track_focus(&focus)
                 .on_mouse_down(MouseButton::Left, move |_, window, cx| click_focus.focus(window, cx))
+                // Selected text copies byte for byte; without a selection,
+                // Copy continues to the window's handlers.
+                .on_action(move |_: &gpui_kit::component::input::Copy, _, cx| {
+                    if !copy_selection.copy(cx) { cx.propagate(); }
+                })
+                .on_action(move |_: &gpui_kit::component::input::SelectAll, window, cx| select_all.select_all(window, cx))
                 .on_key_down(move |event, _, cx| {
                     let modifiers = &event.keystroke.modifiers;
                     if modifiers.platform || modifiers.control || modifiers.alt { return; }
@@ -364,6 +443,7 @@ impl GitTurtle {
                 })
                 .relative().flex_1().min_h_0().min_w_0().overflow_hidden()
                 .child(list)
+                .child(selection.registrar(scroll.clone()))
                 .child(Scrollbar::vertical(&scroll).id("commit-message-scrollbar").mode(ScrollbarMode::Always))
             )
             .into_any_element()
@@ -410,7 +490,7 @@ pub(crate) mod tests {
             format!("x{}", "\u{301}".repeat(800_000)),
         ] {
             let mut pieces = Vec::new();
-            append_pieces(&mut pieces, &source, true);
+            append_pieces(&mut pieces, &source, true, 0);
             assert!(pieces.len() > 1);
             assert!(pieces.iter().all(|piece| piece.text.len() <= PIECE_BYTES));
             assert_eq!(
@@ -427,10 +507,11 @@ pub(crate) mod tests {
             .map(|(index, _)| index)
             .collect::<HashSet<_>>();
         let mut pieces = Vec::new();
-        append_pieces(&mut pieces, &source, false);
+        append_pieces(&mut pieces, &source, false, 0);
         let mut offset = 0;
         for piece in pieces {
             assert!(boundaries.contains(&offset));
+            assert_eq!(piece.start, offset);
             offset += piece.text.len();
         }
     }
@@ -441,7 +522,7 @@ pub(crate) mod tests {
             .map(|i| format!("Paragraph {i}: 東京.\n\n"))
             .collect::<String>();
         let mut pieces = Vec::new();
-        append_pieces(&mut pieces, &source, false);
+        append_pieces(&mut pieces, &source, false, 0);
         assert!(pieces.iter().all(|piece| piece.text.len() <= PIECE_BYTES));
         assert!(
             pieces.iter().all(
@@ -462,17 +543,32 @@ pub(crate) mod tests {
         pub(crate) app: Entity<GitTurtle>,
         width: f32,
         height: f32,
+        /// Also render the History list, left of the inspector.
+        history: bool,
     }
     impl Render for Probe {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div()
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let inspector = div()
                 .id("inspector-test")
                 .debug_selector(|| "inspector-test".into())
                 .w(px(self.width))
                 .h(px(self.height))
                 .child(self.app.update(cx, |app, cx| {
                     app.render_inspector(crate::views::FilesHeader::WHOLE, cx)
-                }))
+                }));
+            if !self.history {
+                return inspector.into_any_element();
+            }
+            div()
+                .flex()
+                .child(
+                    div().w(px(640.)).h(px(self.height)).child(
+                        self.app
+                            .update(cx, |app, cx| app.render_history(window, cx)),
+                    ),
+                )
+                .child(inspector)
+                .into_any_element()
         }
     }
 
@@ -515,6 +611,7 @@ pub(crate) mod tests {
                 app: app.clone(),
                 width: 280.,
                 height: 520.,
+                history: false,
             });
             *captured_app.borrow_mut() = Some(app);
             *captured_probe.borrow_mut() = Some(probe.clone());
@@ -544,11 +641,14 @@ pub(crate) mod tests {
                 .enumerate()
             {
                 let piece = Piece {
+                    start: 0,
                     text: text.to_owned().into(),
                     title: index == 0,
                     body_start: index == 1,
                 };
-                let element = render_piece(&piece, index, cx).into_element();
+                let focus = cx.focus_handle();
+                let selection = Selection::new(Arc::new(Vec::new()), 0, focus, cx);
+                let element = render_piece(&piece, index, &selection, cx).into_element();
                 let mut node = gpui::accesskit::Node::new(element.a11y_role().unwrap());
                 element.write_a11y_info(&mut node);
                 assert_eq!(node.role(), Role::Label);
@@ -726,7 +826,7 @@ pub(crate) mod tests {
         );
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
-                let (_, scroll, _) = app.inspector_message.presentation(&app.commits[0], cx);
+                let (_, scroll, _, _) = app.inspector_message.presentation(&app.commits[0], cx);
                 scroll.scroll_to(ListOffset {
                     item_ix: 5,
                     offset_in_item: px(20.),
@@ -745,7 +845,7 @@ pub(crate) mod tests {
                 assert_eq!(app.inspector_message.retained_bytes(), 0);
                 app.inspector_message.presentation(&app.commits[1], cx);
                 app.restore_inspection_context(retained, window, cx);
-                let (_, restored, _) = app.inspector_message.presentation(&app.commits[0], cx);
+                let (_, restored, _, _) = app.inspector_message.presentation(&app.commits[0], cx);
                 assert_eq!(
                     (
                         restored.logical_scroll_top().item_ix,
@@ -754,13 +854,541 @@ pub(crate) mod tests {
                     (before.item_ix, before.offset_in_item)
                 );
                 app.select_commit(1, window, cx);
-                let (_, next, _) = app.inspector_message.presentation(&app.commits[1], cx);
+                let (_, next, _, _) = app.inspector_message.presentation(&app.commits[1], cx);
                 assert_eq!(next.logical_scroll_top().item_ix, 0);
                 assert_eq!(next.logical_scroll_top().offset_in_item, px(0.));
                 app.select_commit(0, window, cx);
-                let (_, previous, _) = app.inspector_message.presentation(&app.commits[0], cx);
+                let (_, previous, _, _) = app.inspector_message.presentation(&app.commits[0], cx);
                 assert_eq!(previous.logical_scroll_top().item_ix, 0);
             })
         });
+    }
+
+    fn message_selection(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Selection {
+        cx.read(|cx| {
+            let state = app.read(cx).inspector_message.0.borrow();
+            state.as_ref().unwrap().selection.clone()
+        })
+    }
+
+    /// Each piece's document offset and displayed length.
+    fn piece_spans(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Vec<(usize, usize)> {
+        cx.read(|cx| {
+            let state = app.read(cx).inspector_message.0.borrow();
+            let state = state.as_ref().unwrap();
+            state
+                .pieces
+                .iter()
+                .map(|piece| (piece.start, piece.text.len()))
+                .collect()
+        })
+    }
+
+    fn message_focused(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> bool {
+        let focus = cx.read(|cx| {
+            let state = app.read(cx).inspector_message.0.borrow();
+            state.as_ref().unwrap().focus.clone()
+        });
+        cx.update(|window, _| focus.is_focused(window))
+    }
+
+    fn drag(cx: &mut VisualTestContext, from: Point<Pixels>, to: Point<Pixels>) {
+        cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        draw(cx);
+    }
+
+    /// The platform's copy chord through the keymap, then the clipboard; a
+    /// chord that copies nothing leaves the sentinel.
+    fn copy_chord(cx: &mut VisualTestContext) -> String {
+        cx.update(|_, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string("nothing copied".into()))
+        });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-c"
+        } else {
+            "ctrl-c"
+        });
+        cx.read(|cx| cx.read_from_clipboard().unwrap().text().unwrap())
+    }
+
+    fn has_text_selection(cx: &mut VisualTestContext) -> bool {
+        cx.update(gpui_kit::base::TextSelection::has_selection)
+    }
+
+    #[gpui::test]
+    fn dragging_within_a_piece_copies_exactly_the_selected_text(cx: &mut TestAppContext) {
+        let selected = commit("a", "Alpha bravo 東京 charlie", "Body paragraph.");
+        let message = full_message(&selected);
+        let (_, app, cx) = fixture(cx, vec![selected]);
+        let selection = message_selection(&app, cx);
+        let start = message.find("bravo").unwrap();
+        let end = message.find(" charlie").unwrap();
+        drag(
+            cx,
+            selection.point_at(start).unwrap(),
+            selection.point_at(end).unwrap(),
+        );
+        assert!(has_text_selection(cx));
+        // The gesture focuses the message, whose Copy handler takes the chord.
+        assert!(message_focused(&app, cx));
+        assert_eq!(copy_chord(cx), &message[start..end]);
+
+        // Double-click selects the word under the pointer.
+        let word = selection
+            .point_at(message.find("charlie").unwrap() + 2)
+            .unwrap();
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: word,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: word,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+        });
+        draw(cx);
+        assert_eq!(copy_chord(cx), "charlie");
+    }
+
+    #[gpui::test]
+    fn dragging_across_pieces_and_into_metadata_keeps_every_line_break(cx: &mut TestAppContext) {
+        let body = (0..40)
+            .map(|line| format!("Line {line:02} 東京\n"))
+            .collect::<String>();
+        let selected = commit("a", "Title 🐢", body.trim_end());
+        let message = full_message(&selected);
+        let (probe, app, cx) = fixture(cx, vec![selected]);
+        cx.update(|_, cx| {
+            probe.update(cx, |probe, cx| {
+                probe.height = 2_400.;
+                cx.notify();
+            })
+        });
+        draw(cx);
+        let selection = message_selection(&app, cx);
+        let pieces = piece_spans(&app, cx);
+        assert!(pieces.len() >= 4, "{pieces:?}");
+        let viewport = cx.debug_bounds("commit-message-viewport").unwrap();
+        let point = |offset| {
+            let point = selection.point_at(offset).unwrap();
+            assert!(
+                viewport.contains(&point),
+                "{offset} at {point:?} outside {viewport:?}"
+            );
+            point
+        };
+
+        // Across a virtualization boundary, whose newline neither piece shows,
+        // dragged upward.
+        let (first, second) = (pieces[1], pieces[2]);
+        assert_eq!(first.0 + first.1 + 1, second.0);
+        // Each line ends in "東京", six bytes.
+        let (start, end) = (first.0 + first.1 - 6, second.0 + 5);
+        drag(cx, point(end), point(start));
+        let copied = copy_chord(cx);
+        assert_eq!(copied, &message[start..end]);
+        assert!(copied.contains('\n'));
+
+        // From the title into the body keeps the blank line between them.
+        let end = pieces[1].0 + 4;
+        drag(cx, point(2), point(end));
+        assert_eq!(copy_chord(cx), &message[2..end]);
+
+        // From the body into the metadata after the message.
+        let date = cx.read(|cx| {
+            format!(
+                "{} · {}",
+                full_date(app.read(cx).commits[0].timestamp),
+                short_oid(&app.read(cx).commits[0].oid)
+            )
+        });
+        let author = commit_message_author();
+        let metadata = message.len() + 2;
+        let start = message.len() - 3;
+        let end = metadata + author.len() + 1 + 5;
+        drag(cx, point(start), point(end));
+        assert_eq!(
+            copy_chord(cx),
+            format!("{}\n\n{author}\n{}", &message[start..], &date[..5])
+        );
+    }
+
+    fn commit_message_author() -> String {
+        summary(&commit("a", "", "").author)
+    }
+
+    #[gpui::test]
+    fn select_all_copies_the_complete_loaded_message(cx: &mut TestAppContext) {
+        let body = "Paragraph 東京 🐢.\n\n  Keep indentation.\r\n".repeat(3_000);
+        let selected = commit("a", &"Long title ".repeat(200), &body);
+        let expected = full_message(&selected);
+        let (_, app, cx) = fixture(cx, vec![selected]);
+        cx.update(|_, cx| shortcuts::bind_keys(cx));
+        let viewport = cx.debug_bounds("commit-message-viewport").unwrap();
+        cx.simulate_click(viewport.center(), Modifiers::default());
+        assert!(message_focused(&app, cx));
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        });
+        draw(cx);
+        assert!(has_text_selection(cx));
+        let copied = copy_chord(cx);
+        assert!(
+            copied == expected,
+            "select all copied {} of {} bytes",
+            copied.len(),
+            expected.len()
+        );
+        // The visible pieces paint the selection without shaping the rest.
+        cx.read(|cx| {
+            let state = app.read(cx).inspector_message.0.borrow();
+            let state = state.as_ref().unwrap();
+            assert!(
+                state
+                    .scroll
+                    .bounds_for_item(state.pieces.len() / 2)
+                    .is_none()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_selection_copies_pieces_scrolled_out_of_view(cx: &mut TestAppContext) {
+        let body = (0..2_000)
+            .map(|line| format!("Line {line} 東京 🐢\n"))
+            .collect::<String>();
+        let selected = commit("a", "Title", &body);
+        let message = full_message(&selected);
+        let (_, app, cx) = fixture(cx, vec![selected]);
+        let selection = message_selection(&app, cx);
+        let pieces = piece_spans(&app, cx);
+        let viewport = cx.debug_bounds("commit-message-viewport").unwrap();
+        let start = pieces[1].0 + 3;
+        let from = selection.point_at(start).unwrap();
+        assert!(viewport.contains(&from));
+        cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(
+            from + point(px(20.), px(0.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        // With the button held, wheel steps scroll far past the anchor, as
+        // auto-scroll's synthesized steps do. The list measures the rows it
+        // reaches each frame.
+        for _ in 0..40 {
+            cx.simulate_event(ScrollWheelEvent {
+                position: viewport.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-300.))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            draw(cx);
+        }
+        let painted = selection.painted_starts();
+        assert!(!painted.contains(&pieces[1].0), "{painted:?}");
+        // A painted line well inside the viewport, clear of auto-scroll's edges.
+        let end = message
+            .match_indices('\n')
+            .map(|(index, _)| index + 1 + "Line ".len())
+            .find(|&offset| {
+                selection.point_at(offset).is_some_and(|point| {
+                    point.y > viewport.top() + px(40.) && point.y < viewport.bottom() - px(40.)
+                })
+            })
+            .unwrap();
+        let to = selection.point_at(end).unwrap();
+        cx.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        draw(cx);
+        let copied = copy_chord(cx);
+        assert!(copied == message[start..end], "copied {copied:?}");
+        let skipped = pieces
+            .iter()
+            .filter(|(piece, _)| (start..end).contains(piece) && !painted.contains(piece))
+            .count();
+        assert!(
+            skipped > 10,
+            "{skipped} pieces between the endpoints were never painted"
+        );
+    }
+
+    #[gpui::test]
+    fn dragging_past_the_viewport_auto_scrolls_and_extends_the_selection(cx: &mut TestAppContext) {
+        let body = (0..2_000)
+            .map(|line| format!("Line {line} 東京\n"))
+            .collect::<String>();
+        let selected = commit("a", "Title", &body);
+        let message = full_message(&selected);
+        let (_, app, cx) = fixture(cx, vec![selected]);
+        let selection = message_selection(&app, cx);
+        let pieces = piece_spans(&app, cx);
+        let viewport = cx.debug_bounds("commit-message-viewport").unwrap();
+        let start = pieces[1].0 + 1;
+        let from = selection.point_at(start).unwrap();
+        cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        let below = point(from.x, viewport.bottom() + px(30.));
+        cx.simulate_mouse_move(below, Some(MouseButton::Left), Modifiers::default());
+        for _ in 0..40 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            cx.run_until_parked();
+            draw(cx);
+        }
+        // Released without a move after the last scroll step.
+        cx.simulate_mouse_up(below, MouseButton::Left, Modifiers::default());
+        draw(cx);
+        let top = cx.read(|cx| {
+            let state = app.read(cx).inspector_message.0.borrow();
+            state.as_ref().unwrap().scroll.logical_scroll_top().item_ix
+        });
+        assert!(top > 2, "auto-scroll moved the list to piece {top}");
+        // The selection ends at the text under the pointer in the frame shown
+        // at release, not where the previous frame had it.
+        let pointer = cx.update(|window, _| window.mouse_position());
+        let end = selection.offset_at_window(pointer).unwrap();
+        assert!(end > pieces[2].0 + pieces[2].1, "{end}");
+        let copied = copy_chord(cx);
+        assert!(
+            copied == message[start..end],
+            "copied {} bytes, expected {}: ends {:?}",
+            copied.len(),
+            end - start,
+            &copied[copied.floor_char_boundary(copied.len().saturating_sub(12))..]
+        );
+    }
+
+    #[gpui::test]
+    fn another_commit_or_a_click_elsewhere_clears_the_selection(cx: &mut TestAppContext) {
+        let first = commit("a", "First commit title", "First body.");
+        let message = full_message(&first);
+        let (_, app, cx) = fixture(cx, vec![first, commit("b", "Second", "Body")]);
+        let selection = message_selection(&app, cx);
+        let select = |cx: &mut VisualTestContext| {
+            drag(
+                cx,
+                selection.point_at(0).unwrap(),
+                selection
+                    .point_at(message.find(" commit").unwrap())
+                    .unwrap(),
+            );
+            assert!(has_text_selection(cx));
+            assert_eq!(selection.selected_text(), "First");
+        };
+        select(cx);
+        let files = cx.debug_bounds("commit-inspector-files").unwrap();
+        cx.simulate_click(files.center(), Modifiers::default());
+        draw(cx);
+        assert!(!has_text_selection(cx));
+        assert_eq!(selection.selected_text(), "");
+
+        select(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(1, window, cx)));
+        draw(cx);
+        assert!(!has_text_selection(cx));
+        cx.update(|window, cx| {
+            assert_eq!(gpui_kit::base::TextSelection::selected_text(window, cx), "");
+            app.update(cx, |app, cx| {
+                assert!(!app.inspector_message.copy_selection(cx))
+            });
+        });
+    }
+
+    /// The window keeps a replaced or put-away presentation's participant
+    /// until its next frame; Copy in that gap must not return its text.
+    #[gpui::test]
+    fn copy_before_the_next_frame_never_returns_a_replaced_or_retained_message(
+        cx: &mut TestAppContext,
+    ) {
+        let (first, second) = (
+            commit("a", "First commit title", "First body."),
+            commit("b", "Second commit title", "Second body."),
+        );
+        let (first_message, second_message) = (full_message(&first), full_message(&second));
+        let (probe, app, cx) = fixture(cx, vec![first, second]);
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            app.update(cx, |app, _| {
+                app.graph = crate::graph::layout(&app.commits, || Ok::<_, ()>(())).unwrap();
+                app.visible = (0..app.commits.len()).collect();
+            });
+            probe.update(cx, |probe, cx| {
+                probe.history = true;
+                cx.notify();
+            });
+        });
+        draw(cx);
+        let select_title_word = |cx: &mut VisualTestContext, message: &str| {
+            let selection = message_selection(&app, cx);
+            let end = message.find(' ').unwrap();
+            drag(
+                cx,
+                selection.point_at(0).unwrap(),
+                selection.point_at(end).unwrap(),
+            );
+            assert_eq!(selection.selected_text(), &message[..end]);
+            selection
+        };
+        let focus_history = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let focus = app.read(cx).focus.clone();
+                window.focus(&focus, cx);
+            })
+        };
+
+        // Tests draw dirty windows when an update's effects flush, so each
+        // change and its Copy share one update, as a key press after Down
+        // shares the interval before the next frame.
+        let chord = Keystroke::parse(if cfg!(target_os = "macos") {
+            "cmd-c"
+        } else {
+            "ctrl-c"
+        })
+        .unwrap();
+        let sentinel = || ClipboardItem::new_string("nothing copied".into());
+        let clipboard = |cx: &mut VisualTestContext| {
+            cx.read(|cx| cx.read_from_clipboard().unwrap().text().unwrap())
+        };
+
+        // Down in History, then Copy before a frame shows the new commit.
+        let replaced = select_title_word(cx, &first_message);
+        focus_history(cx);
+        cx.update(|window, cx| {
+            cx.write_to_clipboard(sentinel());
+            app.update(cx, |app, cx| app.select_commit(1, window, cx));
+            assert_eq!(replaced.selected_text(), "");
+            assert!(replaced.painted_starts().is_empty());
+            window.dispatch_keystroke(chord.clone(), cx);
+        });
+        assert_eq!(clipboard(cx), "b".repeat(40));
+
+        // Put away into a return context, as Compare and warm tabs do: the
+        // participant keeps only its metadata lines.
+        let retained = select_title_word(cx, &second_message);
+        let painted_bytes = retained.retained_bytes();
+        assert!(!retained.painted_starts().is_empty());
+        focus_history(cx);
+        let context = cx.update(|window, cx| {
+            cx.write_to_clipboard(sentinel());
+            let context = app.update(cx, |app, cx| app.take_inspection_context(window, cx));
+            assert_eq!(retained.selected_text(), "");
+            assert!(retained.painted_starts().is_empty());
+            window.dispatch_keystroke(chord.clone(), cx);
+            context
+        });
+        assert_eq!(clipboard(cx), "b".repeat(40));
+        let date_line = cx.read(|cx| {
+            let commit = &app.read(cx).commits[1];
+            format!(
+                "{} · {}",
+                full_date(commit.timestamp),
+                short_oid(&commit.oid)
+            )
+        });
+        let metadata = commit_message_author().len() + date_line.len();
+        assert!(retained.retained_bytes() < painted_bytes);
+        assert_eq!(retained.retained_bytes(), metadata);
+
+        // Restored, it paints and selects again.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.restore_inspection_context(context, window, cx)
+            })
+        });
+        draw(cx);
+        assert!(!retained.painted_starts().is_empty());
+        select_title_word(cx, &second_message);
+        assert_eq!(copy_chord(cx), "Second");
+    }
+
+    #[gpui::test]
+    fn list_copy_takes_the_row_identity_unless_text_is_selected(cx: &mut TestAppContext) {
+        let selected = commit("a", "Selected title", "Body.");
+        let message = full_message(&selected);
+        let (probe, app, cx) = fixture(cx, vec![selected, commit("b", "Older", "")]);
+        let path = "dir/東京 notes.txt";
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            app.update(cx, |app, cx| {
+                app.graph = crate::graph::layout(&app.commits, || Ok::<_, ()>(())).unwrap();
+                app.visible = (0..app.commits.len()).collect();
+                app.files = ["first.txt", path]
+                    .into_iter()
+                    .map(|path| FileChange {
+                        old_path: Some(path.into()),
+                        new_path: Some(path.into()),
+                        old_oid: Some("a".repeat(40)),
+                        new_oid: Some("b".repeat(40)),
+                        old_mode: "100644".into(),
+                        new_mode: "100644".into(),
+                        status: gitturtle_core::ChangeStatus::Modified,
+                    })
+                    .collect();
+                app.selected_file = Some(1);
+                app.refresh_file_filter(cx);
+            });
+            probe.update(cx, |probe, cx| {
+                probe.history = true;
+                cx.notify();
+            });
+        });
+        draw(cx);
+        let focus = |cx: &mut VisualTestContext, files: bool| {
+            cx.update(|window, cx| {
+                let app = app.read(cx);
+                let focus = if files {
+                    app.file_focus.clone()
+                } else {
+                    app.focus.clone()
+                };
+                window.focus(&focus, cx);
+            });
+            draw(cx);
+        };
+
+        focus(cx, false);
+        assert_eq!(copy_chord(cx), "a".repeat(40));
+        focus(cx, true);
+        assert_eq!(copy_chord(cx), path);
+
+        // Selected message text wins over the focused row.
+        let selection = message_selection(&app, cx);
+        let end = message.find(" title").unwrap();
+        drag(
+            cx,
+            selection.point_at(0).unwrap(),
+            selection.point_at(end).unwrap(),
+        );
+        for files in [false, true] {
+            focus(cx, files);
+            assert_eq!(copy_chord(cx), &message[..end]);
+        }
+        cx.update(gpui_kit::base::TextSelection::clear);
+        focus(cx, false);
+        assert_eq!(copy_chord(cx), "a".repeat(40));
+    }
+
+    /// The selection is the applied theme's fitted text selection; message
+    /// text, and the muted metadata drawn on it, read on it in every built-in.
+    #[test]
+    fn selection_highlight_keeps_message_and_metadata_text_readable() {
+        use crate::appearance::{ThemeChoice, custom::contrast};
+        for choice in ThemeChoice::ALL {
+            let palette = choice.palette();
+            let selection = palette.editor_highlights().selection;
+            let (text, muted) = (
+                contrast(palette.text, selection),
+                contrast(palette.muted, selection),
+            );
+            assert!(text >= 4.5, "{choice:?}: text {text:.2}:1");
+            assert!(muted >= 4.5, "{choice:?}: metadata {muted:.2}:1");
+        }
     }
 }

@@ -1029,7 +1029,8 @@ impl GitTurtle {
             None
         };
         if self.path.as_ref() != Some(&path) {
-            self.inspector_message = commit_message::State::default();
+            self.inspector_message
+                .replace(commit_message::State::default(), cx);
             self.file_filter
                 .update(cx, |input, cx| input.set_value("", window, cx));
             self.automatic.reset();
@@ -1600,7 +1601,7 @@ impl GitTurtle {
             .selected_file
             .map(|i| self.files[i].path().to_owned())
             .or_else(|| self.preferred_file.take());
-        self.inspector_message.select(&self.commits[index].oid);
+        self.inspector_message.select(&self.commits[index].oid, cx);
         self.selected_commit = Some(index);
         self.reveal_graph_lane(index);
         self.parent = 0;
