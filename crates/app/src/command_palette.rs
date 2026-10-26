@@ -43,6 +43,7 @@ pub(super) enum CommandId {
     EarlierGraphLanes,
     LaterGraphLanes,
     Editor,
+    Terminal,
     Reveal,
     Help,
     Palette,
@@ -266,8 +267,14 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
     ),
     command!(
         Editor,
-        "Open repository in configured editor",
-        "external ide code",
+        "Open repository in editor",
+        "external ide code omarchy",
+        None
+    ),
+    command!(
+        Terminal,
+        "Open repository in terminal",
+        "shell console command line",
         None
     ),
     command!(
@@ -358,7 +365,7 @@ impl CommandId {
         if (self.workspace()
             || matches!(
                 self,
-                Self::History | Self::Changes | Self::Editor | Self::Reveal
+                Self::History | Self::Changes | Self::Editor | Self::Terminal | Self::Reveal
             ))
             && !context.repository
         {
@@ -681,6 +688,7 @@ impl GitTurtle {
                 cx.notify();
             }
             CommandId::Editor => self.open_external_editor(window, cx),
+            CommandId::Terminal => self.open_terminal(window, cx),
             CommandId::Reveal => {
                 if let Some(repo) = &self.repository {
                     cx.reveal_path(repo.path());
@@ -971,6 +979,7 @@ impl Render for Palette {
             .on_action(|_: &ShortcutHelp, _, cx| cx.stop_propagation())
             .on_action(|_: &RevealRepository, _, cx| cx.stop_propagation())
             .on_action(|_: &OpenEditor, _, cx| cx.stop_propagation())
+            .on_action(|_: &OpenTerminal, _, cx| cx.stop_propagation())
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 let delta = match event.keystroke.key.as_str() {
                     "down" => 1,

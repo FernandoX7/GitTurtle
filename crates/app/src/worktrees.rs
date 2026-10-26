@@ -158,36 +158,25 @@ impl GitTurtle {
 
     fn open_worktree_editor(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let editor = self.settings.external_editor.trim().to_owned();
-        if editor.is_empty() {
-            window.close_dialog(cx);
-            self.show_settings(window, cx);
-            self.operation_notice = Some(
-                "Choose an editor in Settings → Projects, then use Worktrees → Open in editor."
-                    .into(),
-            );
-            return;
-        }
-        let response = self.preferences_writer.submit_read(move || {
-            let mut command = if cfg!(target_os = "macos") { let mut command = std::process::Command::new("/usr/bin/open"); command.args(["-a", &editor, "--"]); command } else { std::process::Command::new(&editor) };
-            let mut child = command.arg(path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()?;
-            if cfg!(target_os = "macos") {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-                loop {
-                    if let Some(status) = child.try_wait()? { anyhow::ensure!(status.success(), "Could not open the configured editor. Check its application name in Settings."); break; }
-                    if std::time::Instant::now() >= deadline { let _ = child.kill(); let _ = child.wait(); anyhow::bail!("The editor launcher did not report a result. Check whether it opened before trying again."); }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-            } else { std::thread::spawn(move || { let _ = child.wait(); }); }
-            Ok(())
-        });
+        let response = self
+            .preferences_writer
+            .submit_read(move || platform_polish::open_in_editor(&editor, &path));
         cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
             let _ =
-                this.update_in(cx, |this, _, cx| {
+                this.update_in(cx, |this, window, cx| {
                     match result {
-                        Ok(Ok(())) => {
+                        Ok(Ok(Some(_))) => {
                             this.operation_notice =
                                 Some("Opened the selected worktree in your editor.".into())
+                        }
+                        Ok(Ok(None)) => {
+                            window.close_dialog(cx);
+                            this.show_settings(window, cx);
+                            this.operation_notice = Some(
+                                "Choose an editor in Settings → Projects, then use Worktrees → Open in editor."
+                                    .into(),
+                            );
                         }
                         Ok(Err(error)) => this.operation_error = Some(format!("{error:#}")),
                         Err(_) => this.operation_error = Some(

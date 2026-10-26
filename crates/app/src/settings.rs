@@ -2200,7 +2200,7 @@ impl GitTurtle {
             .flex_col()
             .gap_5()
             .child(div().flex().flex_col().gap_2()
-                .child(setting_description("External editor", "Application name on macOS; executable path on Linux. File → Open Repository in Editor opens the current folder.", cx))
+                .child(setting_description("External editor", if cfg!(target_os = "macos") { "Application name, such as Visual Studio Code. File → Open Repository in Editor opens the current folder." } else { "Executable name or path, such as code. Menu → Open repository in editor opens the current folder; left empty on Omarchy, your Omarchy editor opens it." }, cx))
                 .child(Input::new(&self.settings_editor).aria_label("Preferred external editor"))
                 .child(button("save-external-editor", "Save editor", "", false)
                     .disabled(self.settings_editor.read(cx).value().trim() == self.settings.external_editor)

@@ -536,7 +536,11 @@ impl GitTurtle {
         let settings_editor = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(settings.external_editor.clone())
-                .placeholder("Visual Studio Code")
+                .placeholder(if cfg!(target_os = "macos") {
+                    "Visual Studio Code"
+                } else {
+                    "code"
+                })
         });
         // A built-in's miniature never changes: it draws one built-in
         // palette. A custom miniature draws its saved palette until that theme

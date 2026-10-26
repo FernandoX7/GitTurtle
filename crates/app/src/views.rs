@@ -2941,6 +2941,9 @@ impl Render for GitTurtle {
                     this.open_external_editor(window, cx)
                 }),
             )
+            .on_action(cx.listener(|this, _: &OpenTerminal, window, cx| {
+                this.open_terminal(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ShortcutHelp, window, cx| {
                 if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
                     this.shortcut_help(window, cx);

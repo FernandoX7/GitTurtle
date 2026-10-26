@@ -4,6 +4,7 @@ use gpui_kit::component::{
     WindowExt,
     input::{Copy, Cut, Paste, Redo, SelectAll, Undo},
 };
+use std::path::Path;
 
 gpui_kit::actions!(
     gitturtle_platform,
@@ -11,6 +12,7 @@ gpui_kit::actions!(
         ShowHistory,
         RevealRepository,
         OpenEditor,
+        OpenTerminal,
         ShortcutHelp,
         MainMenu,
         MinimizeWindow,
@@ -69,6 +71,10 @@ impl PrimaryMenu {
             Some(CommandId::Changes),
             Some(CommandId::QuickOpen),
             Some(CommandId::Compare),
+            None,
+            Some(CommandId::Editor),
+            Some(CommandId::Terminal),
+            Some(CommandId::Reveal),
             None,
             Some(CommandId::Palette),
             Some(CommandId::Activity),
@@ -225,6 +231,11 @@ pub(super) fn menus(repository: bool, busy: bool, cx: &mut App) {
                 Box::new(OpenEditor),
                 repository,
             ),
+            action(
+                "Open Repository in Terminal",
+                Box::new(OpenTerminal),
+                repository,
+            ),
         ]),
         Menu::new("Edit").items([
             MenuItem::action("Undo", Undo),
@@ -324,33 +335,44 @@ impl GitTurtle {
         };
         let submitted_path = path.clone();
         let editor = self.settings.external_editor.trim().to_owned();
-        if editor.is_empty() {
-            self.show_settings(window, cx);
-            self.operation_notice = Some("Choose your editor in Settings → Projects. Use its application name on macOS or executable path on Linux.".into());
-            return;
-        }
-        let response = self.preferences_writer.submit_read(move || {
-            let mut command = if cfg!(target_os = "macos") { let mut cmd = std::process::Command::new("/usr/bin/open"); cmd.args(["-a", &editor, "--"]); cmd } else { std::process::Command::new(&editor) };
-            let mut child = command.arg(path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map_err(|error| anyhow::anyhow!("Could not open editor: {error}"))?;
-            if cfg!(target_os = "macos") {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-                loop {
-                    if let Some(status) = child.try_wait()? {
-                        anyhow::ensure!(status.success(), "macOS could not open the configured editor. Check its application name or choose the installed .app path in Settings.");
-                        break;
-                    }
-                    if std::time::Instant::now() >= deadline {
-                        let _ = child.kill(); let _ = child.wait();
-                        anyhow::bail!("The macOS editor launcher did not report a result. Check whether the editor opened before trying again.");
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
+        let response = self
+            .preferences_writer
+            .submit_read(move || open_in_editor(&editor, &path));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = response.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.repository.as_ref().map(|repo| repo.path())
+                    != Some(submitted_path.as_path())
+                {
+                    return;
                 }
-            } else {
-                // The external editor may intentionally keep running after handoff.
-                std::thread::spawn(move || { let _ = child.wait(); });
-            }
-            Ok(())
-        });
+                this.operation_notice = Some(match result {
+                    Ok(Ok(Some(Opened::Configured))) => {
+                        "Sent this repository to the configured editor.".into()
+                    }
+                    Ok(Ok(Some(Opened::Omarchy))) => {
+                        "Sent this repository to your Omarchy editor.".into()
+                    }
+                    Ok(Ok(None)) => {
+                        this.show_settings(window, cx);
+                        EDITOR_NEEDED.into()
+                    }
+                    Ok(Err(error)) => error.to_string(),
+                    Err(_) => "The editor launcher stopped before reporting a result.".into(),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+    pub(super) fn open_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.repository.as_ref().map(|repo| repo.path().to_owned()) else {
+            return;
+        };
+        let submitted_path = path.clone();
+        let response = self
+            .preferences_writer
+            .submit_read(move || open_terminal_at(&path));
         cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
             let _ = this.update_in(cx, |this, _, cx| {
@@ -360,9 +382,9 @@ impl GitTurtle {
                     return;
                 }
                 this.operation_notice = Some(match result {
-                    Ok(Ok(())) => "Sent this repository to the configured editor.".into(),
+                    Ok(Ok(())) => "Opened a terminal in this repository.".into(),
                     Ok(Err(error)) => error.to_string(),
-                    Err(_) => "The editor launcher stopped before reporting a result.".into(),
+                    Err(_) => "The terminal launcher stopped before reporting a result.".into(),
                 });
                 cx.notify();
             });
@@ -451,5 +473,319 @@ impl Render for AboutDetails {
                         cx.notify();
                     })),
             )
+    }
+}
+
+/// Where `open_in_editor` sent a folder.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Opened {
+    /// The editor named in Settings.
+    Configured,
+    /// The editor Omarchy launches (`omarchy launch editor`).
+    Omarchy,
+}
+
+/// Shown, with Settings, when no editor can open a folder.
+pub(super) const EDITOR_NEEDED: &str = if cfg!(target_os = "macos") {
+    "Choose your editor in Settings → Projects, using its application name."
+} else {
+    "Choose your editor in Settings → Projects, using its executable name or path."
+};
+
+/// Hands `path` to the person's editor: the one named in Settings, else on
+/// Omarchy the editor `omarchy launch editor` opens, which runs a terminal
+/// editor such as Neovim in the default terminal. `None` when neither is
+/// available. It searches the `PATH` and spawns, so it runs on a worker.
+pub(super) fn open_in_editor(configured: &str, path: &Path) -> anyhow::Result<Option<Opened>> {
+    let Some((command, opened)) = editor_command(configured, path, &LaunchEnvironment::current())
+    else {
+        return Ok(None);
+    };
+    launch(
+        command,
+        "Could not open editor",
+        "macOS could not open the configured editor. Check its application name or choose the installed .app path in Settings.",
+    )?;
+    Ok(Some(opened))
+}
+
+/// Opens a terminal in `path`: Terminal on macOS; on Linux the desktop's
+/// default terminal through `xdg-terminal-exec` (the default-terminal
+/// specification Omarchy and current GNOME follow), else `$TERMINAL`, else
+/// Debian's `x-terminal-emulator`. Runs on a worker.
+pub(super) fn open_terminal_at(path: &Path) -> anyhow::Result<()> {
+    launch(
+        terminal_command(path, &LaunchEnvironment::current())?,
+        "Could not open a terminal",
+        "macOS could not open Terminal.",
+    )
+}
+
+/// What a launcher reads from the process environment.
+struct LaunchEnvironment {
+    path: Option<std::ffi::OsString>,
+    terminal: Option<std::ffi::OsString>,
+    /// Where Omarchy 4 and 3 install their commands, for a `PATH` without them.
+    omarchy: Vec<PathBuf>,
+}
+
+impl LaunchEnvironment {
+    fn current() -> Self {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|home| home.is_absolute());
+        Self {
+            path: std::env::var_os("PATH"),
+            terminal: std::env::var_os("TERMINAL").filter(|value| !value.is_empty()),
+            omarchy: std::iter::once(PathBuf::from("/usr/share/omarchy/bin"))
+                .chain(home.map(|home| home.join(".local/share/omarchy/bin")))
+                .collect(),
+        }
+    }
+
+    /// The first executable named `program` in the `PATH`.
+    fn find(&self, program: &str) -> Option<PathBuf> {
+        std::env::split_paths(self.path.as_ref()?)
+            .filter(|directory| directory.is_absolute())
+            .map(|directory| directory.join(program))
+            .find(|candidate| is_executable(candidate))
+    }
+}
+
+fn editor_command(
+    configured: &str,
+    path: &Path,
+    environment: &LaunchEnvironment,
+) -> Option<(std::process::Command, Opened)> {
+    let (mut command, opened) = if !configured.is_empty() {
+        let command = if cfg!(target_os = "macos") {
+            let mut command = std::process::Command::new("/usr/bin/open");
+            command.args(["-a", configured, "--"]);
+            command
+        } else {
+            std::process::Command::new(configured)
+        };
+        (command, Opened::Configured)
+    } else {
+        (omarchy_editor(environment)?, Opened::Omarchy)
+    };
+    // A terminal editor such as Neovim works in its working directory.
+    command.arg(path).current_dir(path);
+    Some((command, opened))
+}
+
+fn terminal_command(
+    path: &Path,
+    environment: &LaunchEnvironment,
+) -> anyhow::Result<std::process::Command> {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = std::process::Command::new("/usr/bin/open");
+        command.args(["-a", "Terminal", "--"]).arg(path);
+        command
+    } else if let Some(program) = environment.find("xdg-terminal-exec") {
+        let mut command = std::process::Command::new(program);
+        let mut directory = std::ffi::OsString::from("--dir=");
+        directory.push(path);
+        command.arg(directory);
+        command
+    } else if let Some(terminal) = &environment.terminal {
+        std::process::Command::new(terminal)
+    } else if let Some(program) = environment.find("x-terminal-emulator") {
+        std::process::Command::new(program)
+    } else {
+        anyhow::bail!(
+            "No default terminal was found. Install xdg-terminal-exec, or set the TERMINAL environment variable."
+        );
+    };
+    command.current_dir(path);
+    Ok(command)
+}
+
+/// Starts `command` in its own process group with no standard streams. macOS's
+/// `open` reports within 10 s whether the application opened; on Linux the
+/// launched program may keep running, so it is only reaped.
+fn launch(
+    mut command: std::process::Command,
+    spawn_failure: &str,
+    macos_failure: &str,
+) -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt as _;
+    let mut child = command
+        .process_group(0)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| anyhow::anyhow!("{spawn_failure}: {error}"))?;
+    if cfg!(target_os = "macos") {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.try_wait()? {
+                anyhow::ensure!(status.success(), "{macos_failure}");
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!(
+                    "The macOS launcher did not report a result. Check whether it opened before trying again."
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// Omarchy's `omarchy-launch-editor`, which `omarchy launch editor` runs, on
+/// the `PATH` or where Omarchy 4 or 3 installs it. Its directory leads the
+/// child's `PATH`, since the script calls Omarchy's other commands.
+fn omarchy_editor(environment: &LaunchEnvironment) -> Option<std::process::Command> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    const LAUNCHER: &str = "omarchy-launch-editor";
+    let launcher = environment.find(LAUNCHER).or_else(|| {
+        environment
+            .omarchy
+            .iter()
+            .map(|directory| directory.join(LAUNCHER))
+            .find(|candidate| is_executable(candidate))
+    })?;
+    let mut command = std::process::Command::new(&launcher);
+    let inherited = environment.path.clone().unwrap_or_default();
+    let path = std::env::join_paths(
+        launcher
+            .parent()
+            .map(Path::to_owned)
+            .into_iter()
+            .chain(std::env::split_paths(&inherited)),
+    );
+    if let Ok(path) = path {
+        command.env("PATH", path);
+    }
+    Some(command)
+}
+
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod launcher_tests {
+    use super::*;
+    use core::prelude::v1::test;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    /// An executable shell script named `name` in `directory`.
+    fn program(directory: &Path, name: &str, body: &str) -> PathBuf {
+        std::fs::create_dir_all(directory).unwrap();
+        let path = directory.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn environment(path: &[&Path], omarchy: &[&Path]) -> LaunchEnvironment {
+        LaunchEnvironment {
+            path: Some(std::env::join_paths(path).unwrap()),
+            terminal: None,
+            omarchy: omarchy.iter().map(|path| path.to_path_buf()).collect(),
+        }
+    }
+
+    #[test]
+    fn the_configured_editor_wins_then_omarchy_then_settings() {
+        let root = tempfile::tempdir().unwrap();
+        let (bin, omarchy) = (root.path().join("bin"), root.path().join("omarchy"));
+        let repository = Path::new("/work/東京 repo");
+
+        let (command, opened) =
+            editor_command("code", repository, &environment(&[&bin], &[])).unwrap();
+        assert_eq!(opened, Opened::Configured);
+        assert_eq!(command.get_program(), "code");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), [repository]);
+
+        assert!(editor_command("", repository, &environment(&[&bin], &[&omarchy])).is_none());
+        // Not executable, so not a launcher.
+        std::fs::create_dir_all(&omarchy).unwrap();
+        std::fs::write(omarchy.join("omarchy-launch-editor"), "").unwrap();
+        assert!(editor_command("", repository, &environment(&[&bin], &[&omarchy])).is_none());
+
+        // Omarchy's own directory, outside the PATH, leads the launcher's PATH.
+        let launcher = program(&omarchy, "omarchy-launch-editor", "exit 0");
+        let (command, opened) =
+            editor_command("", repository, &environment(&[&bin], &[&omarchy])).unwrap();
+        assert_eq!(opened, Opened::Omarchy);
+        assert_eq!(command.get_program(), launcher.as_os_str());
+        assert_eq!(command.get_args().collect::<Vec<_>>(), [repository]);
+        assert_eq!(command.get_current_dir(), Some(repository));
+        let path = command
+            .get_envs()
+            .find(|(name, _)| *name == "PATH")
+            .and_then(|(_, value)| value)
+            .unwrap();
+        assert_eq!(
+            std::env::split_paths(path).collect::<Vec<_>>(),
+            [omarchy.clone(), bin.clone()]
+        );
+
+        // One on the PATH comes first.
+        let on_path = program(&bin, "omarchy-launch-editor", "exit 0");
+        let (command, _) =
+            editor_command("", repository, &environment(&[&bin], &[&omarchy])).unwrap();
+        assert_eq!(command.get_program(), on_path.as_os_str());
+    }
+
+    #[test]
+    fn the_terminal_is_the_desktop_default_then_terminal_then_debian_alternative() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        let repository = root.path().join("東京 repo");
+        std::fs::create_dir(&repository).unwrap();
+
+        let mut none = environment(&[&bin], &[]);
+        let error = terminal_command(&repository, &none).unwrap_err();
+        assert!(error.to_string().contains("xdg-terminal-exec"), "{error}");
+
+        let alternative = program(&bin, "x-terminal-emulator", "exit 0");
+        let command = terminal_command(&repository, &none).unwrap();
+        assert_eq!(command.get_program(), alternative.as_os_str());
+        assert_eq!(command.get_current_dir(), Some(repository.as_path()));
+
+        none.terminal = Some("foot".into());
+        assert_eq!(
+            terminal_command(&repository, &none).unwrap().get_program(),
+            "foot"
+        );
+
+        // The default terminal opens in the repository, by its argument and
+        // its working directory.
+        let record = root.path().join("record");
+        let launcher = program(
+            &bin,
+            "xdg-terminal-exec",
+            &format!(
+                "printf '%s\\n%s\\n' \"$*\" \"$PWD\" > '{}'",
+                record.display()
+            ),
+        );
+        let command = terminal_command(&repository, &none).unwrap();
+        assert_eq!(command.get_program(), launcher.as_os_str());
+        launch(command, "spawn", "macOS").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !record.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            std::fs::read_to_string(&record).unwrap(),
+            format!("--dir={0}\n{0}\n", repository.display())
+        );
     }
 }

@@ -268,6 +268,12 @@ monospace font** is turned on in Settings, which follows Omarchy's font
 (JetBrainsMono Nerd Font by default), and an open window changes with
 `omarchy font set` as soon as it is applied. A first launch on Omarchy turns it on.
 
+**Menu → Open repository in editor** opens the repository in your Omarchy editor
+(what `omarchy launch editor` opens; Neovim and other terminal editors run in your
+terminal) unless Settings → Projects names another editor, and **Open repository
+in terminal** opens your default terminal (`xdg-terminal-exec`, as Super+Return
+does) in the repository.
+
 **Settings** offers an **Omarchy** theme in a **Desktop** group above the other
 themes, and a first launch on Omarchy (no saved preferences yet) selects it. It follows your current Omarchy theme, including each switch while it
 is selected, and turns **Follow system appearance** off while in use. GitTurtle
