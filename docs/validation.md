@@ -65,6 +65,20 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 26 Omarchy editor, default terminal and a launch-or-focus binding
+
+With no editor in Settings, Open repository in editor now opens the Omarchy editor, a new Open repository in terminal opens the desktop's default terminal, and Linux's Menu offers both beside Reveal. The README's launch-or-focus binding was checked too.
+
+- **Host:** as in the entries below (Asahi Omarchy 4.0.4-mac.1, Hyprland 0.56.2, native Wayland). No `~/.local/state/omarchy/defaults/editor`, so Omarchy's editor is Neovim; `xdg-terminal-exec --print-id` answers `foot.desktop` from Omarchy's `hyprland-xdg-terminals.list`.
+- **Builds:** `cargo build --release --locked -p gitturtle` of `bb98a57`'s sources without the editor's working directory (executable sha256 `b0c66333…`) and with it (`dd7915a20f3f292a6d1d7b40e713564fe1c00465a8b98ddb141823e5c18afac9`), `rustc 1.99.0`, each launched with an empty absolute `XDG_CONFIG_HOME` on the demo fixture.
+- **Menu:** F10 showed Open repository in editor, Open repository in terminal and Reveal repository in file manager as a group after Compare revisions.
+- **Editor:** Open repository in editor opened a foot window of class `org.omarchy.nvim` running `nvim <fixture>` in its own `app-graphical.slice` scope, and the banner read "Sent this repository to your Omarchy editor." On the second build, from an instance whose `PATH` had no Omarchy directory, it found `/usr/share/omarchy/bin/omarchy-launch-editor` and opened Neovim the same way, with its working directory in the fixture (the first build left Neovim in GitTurtle's own working directory, the reason for the change).
+- **Terminal:** Open repository in terminal opened foot, titled with the fixture's path, whose `bash` had the fixture as its working directory.
+- **Settings:** the External editor field showed the placeholder `code` and the description "Executable name or path, such as code. Menu → Open repository in editor opens the current folder; left empty on Omarchy, your Omarchy editor opens it."
+- **Launch or focus:** with the QA window open and Chrome focused, `omarchy-launch-or-focus 'com.gitturtle.GitTurtle' 'uwsm-app -- gitturtle'`, what the README's binding runs, focused GitTurtle and started nothing. With no GitTurtle window, the same pattern with the QA build as its launch command (`uwsm-app -- env XDG_CONFIG_HOME=… PATH=… <build> <fixture>`) opened it. `gitturtle` itself is on the session's `PATH` (`~/.local/bin`, per `systemctl --user show-environment`). Super+Shift+T is unbound in `omarchy menu keybindings --print`.
+
+Not checked: macOS's Terminal handoff, a desktop without `xdg-terminal-exec`, a configured editor's working directory, and the binding typed as a physical key.
+
 ## October 26 omarchy font set reaches code text at once
 
 With **Use the desktop's monospace font** on, `omarchy font set` used to reach code text only when the GitTurtle window was focused again. Now it applies at once.

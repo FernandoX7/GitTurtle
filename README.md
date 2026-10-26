@@ -81,6 +81,16 @@ python3 dist/gitturtle-linux-$(uname -m)/install.py
 
 The packager builds for the machine it runs on, so the same steps work on an Apple Silicon Mac running Omarchy on [Asahi Linux](docs/linux.md#aarch64-and-asahi-linux). On another Arch system, first install the [additional packages](docs/linux.md#arch-linux-and-omarchy) listed in the Linux guide. Hyprland draws no title bar, so GitTurtle shows no window buttons there: quit with **Ctrl+Q** or close the window with your compositor binding. On Omarchy the first launch already matches your desktop: the **Omarchy** theme and your monospace font are selected, and **Settings** offers every other theme.
 
+### On Omarchy
+
+GitTurtle follows your desktop as it changes: `omarchy theme set` retints the open window, `omarchy font set` changes its code font, and Omarchy's Super+C, Super+V, Super+X and Super+A work in its text, with Super+C also copying a selected commit's hash or a file's path from its lists. With no editor chosen in **Settings**, **Menu → Open repository in editor** opens your Omarchy editor, and **Open repository in terminal** opens your default terminal in the repository.
+
+To open GitTurtle with a key, or focus it when it is already open, add this to `~/.config/hypr/bindings.lua` (Super+Shift+T is free in Omarchy 4.0's default bindings):
+
+```lua
+o.bind("SUPER + SHIFT + T", "GitTurtle", { launch = "gitturtle", focus = "com.gitturtle.GitTurtle" })
+```
+
 ### Open a repository
 
 Choose **Projects** to open, clone or create a repository, or launch directly from the checkout:

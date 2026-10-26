@@ -107,11 +107,13 @@ cover current upstream x86-64 Omarchy.
      4. Every stock Omarchy theme (22 on 4.0.4-mac.1, light and unusual ones included)
         reads well in History, Compare, Changes, Settings and dialogs; fix what does not.
      5. Open in Editor uses the person's Omarchy editor (`omarchy launch editor`) when
-        no external editor is set.
+        no external editor is set. Done, `bb98a57`
+        ([validation entry](../validation.md#october-26-omarchy-editor-default-terminal-and-a-launch-or-focus-binding)).
      6. An Open in Terminal action for the repository, in the desktop's default
-        terminal.
+        terminal. Done, `bb98a57`, with the editor, terminal and file-manager
+        handoffs added to Linux's Menu, where only the command palette had them.
      7. A README section for Omarchy users with a launch-or-focus key binding for
-        `~/.config/hypr/bindings.lua`.
+        `~/.config/hypr/bindings.lua`. Done: README's "On Omarchy" section.
      8. The 2026-10-01 queue in `tasks.json` that has not landed (for example
         `copy-actions-say-copied`, `switch-focus-ring-and-hover`,
         `switch-checked-knob-and-disabled-label`, `settings-focus-reveal-and-steady-switch`,
