@@ -36,6 +36,6 @@ return 1. The [top-level notices](../../THIRD_PARTY_NOTICES.md) explain scope an
 distribution requirements.
 
 The [Linux notice review](linux-notice-review.md) records exact package/source
-identity for the remaining `mac` and Rust `ufbx` gaps, the upstream findings,
-and prepared follow-ups. It supplies evidence and next steps, not replacement
+identity for the remaining `mac` gap and the Rust `ufbx` wrapper gap that its
+0.11.5 release resolved, the upstream findings, and prepared follow-ups. It supplies evidence and next steps, not replacement
 license text or release clearance.

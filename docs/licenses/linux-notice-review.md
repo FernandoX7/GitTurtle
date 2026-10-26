@@ -1,6 +1,7 @@
 # Linux notice review — September 14, 2026
 
-The locked Linux dependency inventory still has two unresolved notice records.
+The locked Linux dependency inventory had two unresolved notice records; the
+`ufbx` record was resolved on October 25, 2026, as its section describes.
 This review establishes package provenance and records the missing information;
 it does not assert that a public binary has completed license review. No upstream
 message was sent during this investigation.
@@ -34,7 +35,22 @@ Prepared follow-up for that existing issue:
 
 ## Rust `ufbx` wrapper 0.11.3
 
-The published Cargo archive has SHA-256
+**Resolved by 0.11.5, October 25, 2026.** The dependency moved to 0.11.5 for the
+native library's filename buffer overflow
+([GHSA-6j9m-9g7j-w7vg](https://github.com/ufbx/ufbx/security/advisories/GHSA-6j9m-9g7j-w7vg)).
+That archive (Cargo.lock checksum
+`260522f1eb74139f0e78b29dd82a58e5437d728c5498024a39e5af7282694240`) records
+commit `856c76840977cd504f053bf17ab4948b675b981a`, and its manifest declares
+`MIT OR Unlicense`. The archive still omits a license file, but that revision's
+[`LICENSE`](https://raw.githubusercontent.com/ufbx/ufbx-rust/856c76840977cd504f053bf17ab4948b675b981a/LICENSE),
+added upstream on September 16, 2026, offers MIT (copyright Samuli Raivio) or the
+Unlicense. It is byte-identical to the native notice (SHA-256
+`0dd48ebadf52273c736256325c8f078c03c8bb4facee22a4122de0ad3f615391`), which
+answers both questions below. It is recorded as a supplement in
+`dependencies.json`, so the wrapper no longer needs review and the prepared question
+is no longer needed. The 0.11.3 findings below are kept as the record of that version.
+
+The 0.11.3 published Cargo archive has SHA-256
 `e160c3af14ab5a02f206e3af48777cb20e09bc22a354aa77d4e5cf4acb4a11a0`.
 Its `.cargo_vcs_info.json` records commit
 `a78b5b848e28437aeed9536092fdc752cd0a73c8` in
@@ -73,6 +89,7 @@ that requires fresh dependency, native, and package validation.
 
 Regenerate the target-specific inventory with
 `python3 scripts/collect-third-party-licenses.py --require-complete --target x86_64-unknown-linux-gnu /tmp/gitturtle-release-licenses`
-using a new output directory. Until these records are resolved, the expected
-strict result is exit 2 with `mac-0.1.1` and `ufbx-0.11.3` listed. Other targets
+using a new output directory. Until the `mac` record is resolved, the expected
+strict result is exit 2 with `mac-0.1.1` listed (`ufbx-0.11.3` was also listed
+before the 0.11.5 update). Other targets
 have additional unresolved records and need their own review.

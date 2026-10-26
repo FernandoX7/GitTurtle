@@ -719,6 +719,25 @@ mod tests {
                 .to_string()
                 .contains("nesting")
         );
+        // roxmltree before 0.21.2 overflowed a 2 MiB stack while parsing about
+        // 3,500 nested elements, aborting the process before the depth check.
+        let deep = format!(
+            "<svg xmlns='http://www.w3.org/2000/svg' width='2' height='2'>{}{}</svg>",
+            "<g>".repeat(9_000),
+            "</g>".repeat(9_000)
+        );
+        let refused = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                decode_image(deep.as_bytes(), "test.svg", 100)
+                    .map(|_| ())
+                    .unwrap_err()
+                    .to_string()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(refused.contains("nesting"), "{refused}");
     }
 
     #[test]

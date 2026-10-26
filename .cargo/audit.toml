@@ -25,4 +25,10 @@ ignore = [
     "RUSTSEC-2026-0206",
     # ttf-parser 0.25.1: fontdb (cosmic-text, usvg) and the vendored Mermaid renderer.
     "RUSTSEC-2026-0192",
+    # zvariant, zvariant_derive and zbus_names 5.x/4.x were folded into zbus 6.
+    # Linux only: zbus 5 under the toolkit's accesskit_unix, atspi, oo7 and
+    # notify-rust, and the app's exact ashpd pin, none yet released on zbus 6.
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
 ]

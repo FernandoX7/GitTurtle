@@ -177,7 +177,11 @@ def collect(args):
             "Do not treat this generated bundle as completed license clearance. Resolve their required attribution before a public binary release. "
             "The dependency inventory preserves the actual declared license, authors and source location.\n\n"
             + "".join(f"- `{name}`\n" for name in missing)
-            + "\nThe native ufbx library notice is preserved in assets/ufbx-native-LICENSE; the Rust wrapper remains separately listed above.\n"
+            + (
+                "\nThe native ufbx library notice is preserved in assets/ufbx-native-LICENSE; the Rust wrapper remains separately listed above.\n"
+                if any(name.startswith("ufbx-") for name in missing)
+                else ""
+            )
         )
         print(f"License review required for {len(missing)} packages; see {destination / 'REVIEW_REQUIRED.md'}", file=sys.stderr)
     print(f"Collected {len(inventory)} dependency records for {args.target}")

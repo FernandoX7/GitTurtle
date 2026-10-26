@@ -38,6 +38,49 @@ vulnerability above all, still turns the audit stage red (a failure under
 `--strict`) until it is reviewed and recorded here; `deny.toml` keeps reporting unmaintained crates the workspace depends on
 directly.
 
+**Update, October 25, 2026 (cargo-audit 0.22.2 and cargo-deny 0.20.2, RustSec
+database commit `21d909e4c8bd4e14c7aea58bf980c881a0053ab1`, 1,352 advisories,
+updated October 24).** Thirteen vulnerabilities and one unsoundness advisory
+(tokio's) had matched the locked graph, all fixed here with lockfile updates:
+rustls 0.23.45 → 0.23.46
+(`RUSTSEC-2026-0346` to `-0349`), rustls-webpki 0.103.15 → 0.103.16
+(`RUSTSEC-2026-0382`), webpki-roots and webpki-root-certs 1.0.9 → 1.0.11
+(`RUSTSEC-2026-0381`/`-0383`; 1.0.11 also drops two further eMudhra roots),
+tokio 1.53.1 → 1.53.3 (`RUSTSEC-2026-0386`, the patched 1.53 line), quinn-proto
+0.11.17 → 0.11.19 (`RUSTSEC-2026-0338`/`-0340`/`-0343`), and zip 8.6.0 → 9.0.5
+(`RUSTSEC-2026-0367` to `-0369`). The TLS stack arrives only through the
+toolkit's reqwest adapter (GitHub requests use the separate CLI transport), and
+quinn-proto is locked but not compiled for any target. zip 9.0.5 is the oldest
+release patched for every advisory in the zip2 repository, including eight that
+were published only as GitHub advisories between October 17 and 24 and had
+not reached RustSec or GitHub's global database (so Dependabot raised none);
+9.1.x, released October 24 and 25, was left to age. None of the zip advisories
+reach the [3MF decoder](../crates/preview/src/model3d.rs), which reads bounded
+members in memory through `ZipArchive::by_name` and never calls `extract` or
+the streaming reader; the upgrade adds `nix` 0.31.3 (MIT). Three new
+maintenance advisories, `RUSTSEC-2026-0370` (zvariant), `-0371` (zbus_names) and
+`-0372` (zvariant_derive), record that zbus 6 absorbed those crates. They reach
+Linux builds through zbus 5.19 under the toolkit's accesskit_unix, atspi, oo7
+and notify-rust and the app's exact ashpd 0.13.13 pin, and the latest ashpd and
+oo7 releases still use zbus 5, so they are retained and listed by ID in
+`.cargo/audit.toml` under the October 2 decision.
+
+Upstream advisories and release notes that the catalog had not yet indexed
+added three fixes for content GitTurtle parses from repositories: ufbx 0.11.3 →
+0.11.5 ([GHSA-6j9m-9g7j-w7vg](https://github.com/ufbx/ufbx/security/advisories/GHSA-6j9m-9g7j-w7vg),
+a heap out-of-bounds write in the bundled C library that any FBX preview can
+reach), roxmltree 0.21.1 → 0.21.2 (a stack overflow that aborted the process on
+an SVG of about 3,500 nested elements, roughly 25 KB, before the preview's depth
+check; `svg_rejects_dtd_filters_and_excessive_nesting` now holds that on a
+2 MiB stack and aborts with 0.21.1), and tree-sitter-md 0.5.3 → 0.5.4 (a C
+scanner overflow on deeply nested Markdown, reached through syntax
+highlighting). quinn-udp moved to 0.5.16 (GHSA-6pp4-4cxf-xf88) though, like
+quinn-proto, nothing compiles it. The ufbx 0.11.5 wrapper also resolves its
+[license notice record](licenses/linux-notice-review.md). Two candidates were
+left unchanged: icu_normalizer 2.4.0 fixes unsound functions nothing here calls, at the
+cost of thirteen updated crates, and json5's three October releases carry no
+notes or advisory.
+
 `block` 0.1.6 is the one accepted future-incompatibility report. On macOS it
 arrives through `cocoa` 0.26 and `cocoa-foundation` (from `gpui-pre-apple` and
 the vendored `gpui-pre-macos`) and through `core-graphics2`/`core-video` (from
