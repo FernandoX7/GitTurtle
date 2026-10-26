@@ -101,7 +101,9 @@ cover current upstream x86-64 Omarchy.
         lists, and a list that cannot select more must not move focus or select
         something else.
      3. `omarchy font set` reaches GitTurtle's code text, checked natively and fixed if
-        needed.
+        needed. Done: it reached code text only on the next focus; GitTurtle now
+        follows the fontconfig directory and applies a change at once
+        ([validation entry](../validation.md#october-26-omarchy-font-set-reaches-code-text-at-once)).
      4. Every stock Omarchy theme (22 on 4.0.4-mac.1, light and unusual ones included)
         reads well in History, Compare, Changes, Settings and dialogs; fix what does not.
      5. Open in Editor uses the person's Omarchy editor (`omarchy launch editor`) when

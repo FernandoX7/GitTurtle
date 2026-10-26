@@ -65,6 +65,17 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 26 omarchy font set reaches code text at once
+
+With **Use the desktop's monospace font** on, `omarchy font set` used to reach code text only when the GitTurtle window was focused again. Now it applies at once.
+
+- **Host:** as in the entries below (Asahi Omarchy 4.0.4-mac.1, Hyprland 0.56.2, native Wayland, scale 2). Before the check the owner had no `~/.config/fontconfig/`; JetBrainsMono Nerd Font came from Omarchy's packaged default.
+- **Before, on `5647245`'s release build** (executable sha256 `3e70dff0…`): on a first launch (empty absolute `XDG_CONFIG_HOME`, whose `fontconfig` linked to `~/.config/fontconfig`, so `fc-match` read the owner's configuration) the Compare diff of `src/theme.css` drew JetBrains Mono. With Chrome focused, `omarchy font set "iA Writer Mono S"` left it in JetBrains Mono; focusing GitTurtle again switched it to iA Writer Mono S.
+- **After, on `2ecb52a`'s release build** (`cargo build --release --locked -p gitturtle`, executable sha256 `fa9fff7305e332e98b2ca3aaa048ab3c216494f0eb295c172bed0759c79a2869`, `rustc 1.99.0`), with an empty `~/.config/fontconfig/` created first so the QA link resolved: with Chrome focused throughout, `omarchy font set "iA Writer Mono S"` redrew the diff in iA Writer Mono S within 1.5 s, and `omarchy font set "JetBrainsMono Nerd Font"` redrew it in JetBrains Mono within 1.5 s. Sampling the app's child processes every 100 ms for 5 s after each switch found no `fc-match`, so the refresh's own read did not trigger another.
+- **Restored:** the terminal configurations `omarchy font set` rewrites (Alacritty, kitty, foot) were copied back from backups taken before the check, and the created `~/.config/fontconfig/` was removed; `fc-match monospace` answers JetBrainsMono Nerd Font again.
+
+`desktop_text::user_fontconfig::tests` cover a configuration home without `fontconfig/` (creating it with `fonts.conf`, as `omarchy font set` does, is a change, and so is a later rewrite) and that reads are not changes. Not checked natively: a desktop with no `fontconfig/` at launch (the QA link needs its target to exist), and a `font-set` hook.
+
 ## October 26 list Copy in Working Changes and file history, and Select All everywhere
 
 Copy Selected List Item now works in Working Changes and File History's revision list, and Ctrl+A, which Omarchy 4.5's Super+A sends, was checked on every surface.
