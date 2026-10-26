@@ -57,16 +57,21 @@ cover current upstream x86-64 Omarchy.
      field once while its input-method connection was inactive. With fcitx5 active it
      pasted nothing, and Nautilus's GTK4 location bar behaved the same way. Synthetic
      dispatch cannot hold Super the way a person does: holding it with `wtype` left fcitx5
-     ignoring dispatched keys until it was restarted. A physical Super+C/V/X check is
-     still open.
+     ignoring dispatched keys until it was restarted. The owner's physical check,
+     2026-10-26: Super+V pastes into text fields; nothing in the commit message could
+     be selected or copied, because no read-only text in the app was selectable.
+     Selectable commit message and metadata text is in progress.
    - **Lists.** Outside text fields, dispatched keys reach GitTurtle. Ctrl+C on a
      selected History commit or changed file copies nothing: the shortcut sheet lists
      "Copy Selected List Item" (Ctrl+C), but only Blame handles it. What a copied commit
-     or file holds (full hash, short hash and subject, path) is an owner decision.
+     or file holds was settled on 2026-10-26: the full hash for a commit, the
+     repository-relative path for a file.
 3. **Polish found on the way** (first-launch check, 2026-10-26):
-   - In a half-width tiled window (845 px wide), the empty History-search message is
-     clipped at the list's right edge ("Searc…").
-   - Page Down does not scroll Settings.
+   - In a half-width tiled window (845 px wide), the empty History-search message was
+     clipped at the list's right edge ("Searc…"). Fixed: it is centered in the visible
+     part of the list.
+   - Page Down did not scroll Settings. Fixed: Page Up, Page Down, Home and End scroll
+     it.
    - Omarchy's default 0.985 active opacity lets text behind a floating window show
      through diffs. Decided 2026-10-26: keep the desktop's default, as terminals and
      editors do, and document an opt-out rule in the
@@ -81,7 +86,12 @@ cover current upstream x86-64 Omarchy.
    build identity). Resolve the two dependencies the packager flags for license review
    (`mac`, `ufbx`) before distributing. Then add an AUR package (`gitturtle-bin`) and
    later propose GitTurtle to `omacom/omarchy-pkgs`, so `omarchy pkg add gitturtle`
-   works.
+   works. The owner also plans macOS downloads from gitturtle.com, signed with the
+   owner's Developer ID ([release workflow](../releases.md#macos-developer-id-signing-component)
+   covers signing and notarization), with automatic update checks. No updater exists
+   yet, and an automatic check is a network action without user interaction, which the
+   [product rules](../../AGENTS.md) forbid today; the owner decides the exception (for
+   example, a check the person turns on) before an updater is built.
 5. **Current upstream verification.** On x86-64 Omarchy v4.0.6 and the 4.5 release
    candidate:
    - install;
