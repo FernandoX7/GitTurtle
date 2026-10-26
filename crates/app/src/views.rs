@@ -1019,6 +1019,29 @@ impl GitTurtle {
             .track_scroll(&self.history_scroll)
             .into_any_element()
         };
+        // A narrow window scrolls the columns sideways; an empty state stays
+        // centered in the part of the list that is visible, not in all columns.
+        let history = if self.visible.is_empty() {
+            let visible = self.history_width.min(columns.content_width + 26.) - 2.;
+            div()
+                .debug_selector(|| "history-empty-state".into())
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .map(|state| {
+                    if visible > 0. {
+                        state
+                            .left(-self.history_horizontal.offset().x)
+                            .w(px(visible))
+                    } else {
+                        state.left_0().right_0()
+                    }
+                })
+                .child(history)
+                .into_any_element()
+        } else {
+            history
+        };
         let view = cx.entity().downgrade();
         let header = div()
             .h(crate::appearance::ui_size(34.))
@@ -5126,6 +5149,35 @@ mod tests {
             assert!(!app.commits.is_empty());
         });
         assert!(cx.debug_bounds("operation-error-summary").is_none());
+    }
+
+    #[gpui::test]
+    async fn a_narrow_window_centers_the_search_empty_state_in_view(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        // Half of a 1690 px tiled display, where the columns scroll sideways.
+        cx.simulate_resize(size(px(845.), px(980.)));
+        draw(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search.update(cx, |input, cx| {
+                    input.set_value("no such commit", window, cx)
+                });
+                app.history_query_changed(window, cx);
+            })
+        });
+        wait_until(cx, &app, "the search to finish", |app| {
+            app.history_search_empty()
+                .is_some_and(|(title, _)| title == "No matching commits")
+        });
+        app.read_with(cx, |app, _| {
+            assert!(app.history_column_layout().content_width + 26. > app.history_width);
+        });
+        let list = cx.debug_bounds("history-scope-toolbar").unwrap();
+        let state = cx.debug_bounds("history-empty-state").unwrap();
+        assert!(
+            state.left() >= list.left() && state.right() <= list.right(),
+            "empty state {state:?} outside the visible list {list:?}"
+        );
     }
 
     #[gpui::test]
