@@ -1,0 +1,70 @@
+name: Dependency advisories
+
+# RustSec publishes advisories against unchanged code, and GitHub's advisory
+# database (and so Dependabot) can lag it by days or miss GHSA-only crate
+# advisories, so the locked graph is checked daily as well as when dependency
+# inputs change. This is not a required check: a new advisory turns this
+# workflow red without blocking unrelated pull requests.
+on:
+  schedule:
+    - cron: "23 7 * * *"
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - deny.toml
+      - .cargo/audit.toml
+      - "vendor/**"
+      - rust-toolchain.toml
+      - .github/workflows/advisories.yml
+  pull_request:
+    paths:
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - deny.toml
+      - .cargo/audit.toml
+      - "vendor/**"
+      - rust-toolchain.toml
+      - .github/workflows/advisories.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: advisories-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  cargo-deny:
+    name: Advisories, licenses, bans and sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install cargo-deny 0.20.2
+        run: |
+          deny_dir="$RUNNER_TEMP/cargo-deny-0.20.2"
+          mkdir -p "$deny_dir"
+          curl --fail --location --silent --show-error --retry 2 --connect-timeout 15 --max-time 120 \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz \
+            --output "$deny_dir/cargo-deny.tar.gz"
+          printf '%s  %s\n' '9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f' \
+            "$deny_dir/cargo-deny.tar.gz" | sha256sum --check --status
+          tar -xzf "$deny_dir/cargo-deny.tar.gz" -C "$deny_dir" --strip-components=1 \
+            cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
+          "$deny_dir/cargo-deny" --version
+          printf '%s\n' "$deny_dir" >> "$GITHUB_PATH"
+      # rustup installs the pinned toolchain from rust-toolchain.toml for the
+      # metadata read; --locked refuses to rewrite Cargo.lock.
+      - name: Check the locked graph against deny.toml and the RustSec database
+        run: cargo-deny --locked check
