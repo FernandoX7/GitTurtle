@@ -1004,6 +1004,15 @@ fn from_hsl(h: f64, s: f64, l: f64) -> u32 {
     })
 }
 
+/// The palettes the embedded fixtures map to, by file name, for theme-wide tests elsewhere.
+#[cfg(test)]
+pub(crate) fn fixture_palettes() -> Vec<(&'static str, Palette)> {
+    tests::fixtures()
+        .into_iter()
+        .map(|(name, colors)| (name, map(&colors).palette))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1176,7 +1185,7 @@ mod tests {
     }
 
     /// Every bundled theme and the two generated from an `alacritty.toml`, by file name.
-    fn fixtures() -> Vec<(&'static str, Colors)> {
+    pub(super) fn fixtures() -> Vec<(&'static str, Colors)> {
         let generated = [
             (
                 "alacritty-dark",

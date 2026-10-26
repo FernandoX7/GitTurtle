@@ -236,6 +236,35 @@ in the real window still needs native inspection. Remove this part of the patch
 when upstream fades a disabled Switch's thumb with its track, and that
 regression passes without it.
 
+The checked-knob and disabled-label patch also modifies `src/switch.rs`.
+Upstream paints the thumb in `switch_thumb` whether the Switch is on or off,
+and a disabled Switch's label in `muted_foreground`. GitTurtle's palettes set
+`switch_thumb` to their text colour (`crates/app/src/appearance.rs`), so on the
+checked accent track the knob all but vanished: 1.37:1 in Midnight, and 1.0:1 in
+the Omarchy Kanagawa theme, whose accent is its text colour. And the Omarchy
+mapping may set secondary text as strong as text (Catppuccin Latte), so the
+disabled Follow system appearance label did not dim. The consumers are every
+Settings Switch (`crates/app/src/settings.rs`).
+
+A checked thumb now takes `primary_foreground`, the colour primary Buttons put
+on the accent (`thumb_color`); an unchecked thumb keeps `switch_thumb`. A
+disabled Switch's label takes `foreground` at the track's half strength
+(`disabled_label_color`). Both functions are public so the application's tests
+can read what the Switch paints with. Geometry, travel, activation, focus and
+the unchecked look are unchanged.
+
+`cargo test --locked -p gitturtle every_palette_paints_a_checked_switch_knob_that_reads_on_its_track`
+applies every built-in palette and every embedded Omarchy fixture's palette,
+draws a checked, an unchecked and a disabled checked Switch, and reads their
+track and thumb fills from the scene; the checked thumb is the accent's label at
+3:1 or more on its track. `every_palette_fades_a_disabled_switch_label` checks
+the disabled label colour in the same palettes; GPUI's test scene exposes quads
+but not glyph colours, so it reads the colour the Switch paints its label with
+rather than the painted glyphs. Native frames record the rendered result. Remove
+this part of the patch when upstream gives a checked thumb a colour that
+contrasts with the accent and fades a disabled label from the enabled one, and
+those tests pass without it.
+
 The `usize`-constant patch modifies `src/highlighter/highlighter.rs`. Upstream
 imports the `std::usize` module (`use std::{…, usize}`), so the `usize::MIN`
 and `usize::MAX` in `HighlightSummary`'s `Summary::zero` and in

@@ -5166,8 +5166,8 @@ mod picker_tests {
     /// A disabled Switch fades its thumb with its track. The Follow system
     /// switch, which the selected Omarchy theme disables, paints its track and
     /// its thumb (`switch_thumb`, the palette's text) at half strength; enabled
-    /// with Midnight selected, off and on, it paints both at full strength, as
-    /// before.
+    /// with Midnight selected, off and on, it paints both at full strength, the
+    /// checked thumb in the accent's label colour.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     fn a_disabled_switch_fades_its_thumb_with_its_track(cx: &mut TestAppContext) {
@@ -5243,7 +5243,7 @@ mod picker_tests {
             };
             (
                 fill(if checked { p.accent } else { p.border }),
-                fill(p.text),
+                fill(if checked { p.accent_foreground } else { p.text }),
             )
         };
 

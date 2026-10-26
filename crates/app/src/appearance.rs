@@ -635,6 +635,22 @@ fn composite(layer: Rgba, surface: u32) -> u32 {
     })
 }
 
+/// Every palette a theme-wide test judges: each built-in by its label and, on Linux, the
+/// palette each embedded Omarchy fixture maps to, as `Omarchy <file name>`.
+#[cfg(test)]
+pub(crate) fn test_palettes() -> Vec<(String, Palette)> {
+    let built_in = ThemeChoice::ALL
+        .into_iter()
+        .map(|choice| (choice.label().to_owned(), choice.palette()));
+    #[cfg(target_os = "linux")]
+    let omarchy = omarchy::fixture_palettes()
+        .into_iter()
+        .map(|(name, palette)| (format!("Omarchy {name}"), palette));
+    #[cfg(not(target_os = "linux"))]
+    let omarchy = std::iter::empty();
+    built_in.chain(omarchy).collect()
+}
+
 pub fn palette(cx: &App) -> Palette {
     cx.try_global::<Palette>()
         .copied()
@@ -3213,5 +3229,140 @@ mod tests {
         let font = code_text_font(cx, bundled);
         assert_eq!(font.family, bundled);
         assert!(font.features.tag_value_list().is_empty(), "{font:?}");
+    }
+
+    /// A checked Switch's knob reads on its accent track in every palette:
+    /// the thumb takes the accent's label colour (`accent_foreground`, the
+    /// primary Button's) at 3:1 or more, where `text` drew it at 1.0:1 in
+    /// Omarchy Kanagawa, whose accent is its text colour. An unchecked thumb
+    /// stays `text` on the `border` track, and a disabled checked Switch fades
+    /// its accent label with the track. Built-ins and every embedded Omarchy
+    /// fixture.
+    #[gpui::test]
+    fn every_palette_paints_a_checked_switch_knob_that_reads_on_its_track(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui_kit::component::Disableable as _;
+        use gpui_kit::component::switch::{self, Switch};
+        use gpui_kit::{
+            Bounds, Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+            ScaledPixels, Styled as _, div, point,
+        };
+
+        const SWITCHES: [(&str, bool, bool); 3] = [
+            ("switch-on", true, false),
+            ("switch-off", false, false),
+            ("switch-on-disabled", true, true),
+        ];
+        struct Switches;
+        impl Render for Switches {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .flex()
+                    .gap_4()
+                    .p_4()
+                    .children(SWITCHES.map(|(id, checked, disabled)| {
+                        div()
+                            .debug_selector(move || id.into())
+                            .child(Switch::new(id).checked(checked).disabled(disabled))
+                    }))
+            }
+        }
+        // The fills inside the switch at `id`: its track, then its thumb.
+        let painted = |cx: &mut gpui_kit::VisualTestContext, id: &'static str| {
+            let switch = cx.debug_bounds(id).expect("the switch");
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+                let fills = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| !quad.background.is_transparent())
+                    .filter(|quad| {
+                        let drawn = Bounds::from_corners(
+                            point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                            point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                        );
+                        switch.dilate(px(1.)).contains(&drawn.origin)
+                            && drawn.right() <= switch.right() + px(1.)
+                    })
+                    .map(|quad| quad.background)
+                    .collect::<Vec<_>>();
+                let [track, thumb] = fills[..] else {
+                    panic!("{id} paints a track and a thumb: {fills:?}");
+                };
+                (track, thumb)
+            })
+        };
+        let fill = |color: u32, faded: bool| {
+            let fill = Background::from(Hsla::from(rgb(color)));
+            if faded { fill.opacity(0.5) } else { fill }
+        };
+
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|_, _| Switches);
+        let mut failures = Vec::new();
+        for (name, palette) in test_palettes() {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert_eq!(
+                cx.update(|_, cx| switch::thumb_color(true, cx)),
+                Hsla::from(rgb(palette.accent_foreground)),
+                "{name}"
+            );
+            for (id, checked, disabled) in SWITCHES {
+                let track = if checked {
+                    palette.accent
+                } else {
+                    palette.border
+                };
+                let thumb = if checked {
+                    palette.accent_foreground
+                } else {
+                    palette.text
+                };
+                assert_eq!(
+                    painted(cx, id),
+                    (fill(track, disabled), fill(thumb, disabled)),
+                    "{name}: {id}"
+                );
+            }
+            let knob = contrast(palette.accent_foreground, palette.accent);
+            if knob < custom::GRAPHIC {
+                failures.push(format!("{name} {knob:.2}:1"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "checked knob below {}:1 on its track: {}",
+            custom::GRAPHIC,
+            failures.join(", ")
+        );
+    }
+
+    /// A disabled Switch's label fades to half of the enabled label's colour
+    /// in every palette, so it reads as unavailable even where the palette's
+    /// secondary text is as strong as its text (Omarchy Catppuccin Latte):
+    /// over the panel it keeps at most two thirds of the enabled label's
+    /// contrast, and stays at least 1.5:1 so it can still be read.
+    #[gpui::test]
+    fn every_palette_fades_a_disabled_switch_label(cx: &mut gpui::TestAppContext) {
+        use gpui_kit::component::switch;
+
+        cx.update(gpui_kit::init);
+        let mut failures = Vec::new();
+        for (name, palette) in test_palettes() {
+            let label = cx.update(|cx| {
+                palette.apply(palette.is_light(), None, cx);
+                switch::disabled_label_color(cx)
+            });
+            assert_eq!(label, Hsla::from(rgb(palette.text)).opacity(0.5), "{name}");
+            let enabled = contrast(palette.text, palette.panel);
+            let faded = contrast(composite(label.to_rgb(), palette.panel), palette.panel);
+            if !(1.5..=enabled * 2. / 3.).contains(&faded) {
+                failures.push(format!("{name} {faded:.2}:1 against {enabled:.2}:1"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

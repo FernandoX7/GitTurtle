@@ -17,6 +17,8 @@
 //! when what it holds changes, so a reread that finds the same theme applies nothing.
 
 mod palette;
+#[cfg(test)]
+pub(crate) use palette::fixture_palettes;
 
 use super::Palette;
 use super::custom::{ResolvedTheme, ThemeSelection};

@@ -111,6 +111,26 @@ impl Disableable for Switch {
     }
 }
 
+/// The thumb's fill. Unchecked, the thumb is `switch_thumb` on the `switch`
+/// track; checked, it sits on the accent, so it takes the colour primary
+/// Buttons put on the accent, `primary_foreground`. `switch_thumb` is a
+/// foreground in GitTurtle's palettes, and on the accent it can all but vanish:
+/// a theme whose accent is its text colour drew a 1:1 knob.
+pub fn thumb_color(checked: bool, cx: &App) -> Hsla {
+    if checked {
+        cx.theme().primary_foreground
+    } else {
+        cx.theme().switch_thumb
+    }
+}
+
+/// A disabled Switch's label: the enabled label's `foreground` at the track's
+/// half strength. `muted_foreground` cannot mark it, because a theme may set
+/// its secondary text as strong as its text.
+pub fn disabled_label_color(cx: &App) -> Hsla {
+    cx.theme().foreground.opacity(0.5)
+}
+
 impl RenderOnce for Switch {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let checked = self.checked;
@@ -133,9 +153,9 @@ impl RenderOnce for Switch {
         // which is accepted.
         let disabled_opacity = 0.5;
         let disabled_bg = if checked { checked_bg } else { unchecked_bg }.opacity(disabled_opacity);
-        let toggle_bg: Background = cx.theme().tokens.switch_thumb.into();
+        let toggle_bg: Background = thumb_color(checked, cx).into();
         let disabled_toggle_bg = toggle_bg.opacity(disabled_opacity);
-        let disabled_label_color = cx.theme().muted_foreground;
+        let disabled_label_color = disabled_label_color(cx);
 
         let (bg_width, bg_height) = match self.size {
             Size::XSmall | Size::Small => (px(28.), px(16.)),
