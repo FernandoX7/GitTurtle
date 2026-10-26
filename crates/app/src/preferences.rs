@@ -39,7 +39,8 @@ pub const MAX_CUSTOM_THEMES: usize = 32;
 const STORE_VERSION: u32 = 6;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// The settings a missing store stands for. Launch fixes them once for the desktop
-/// ([`Preferences::load`]); until then, and in tests, a missing store has the defaults.
+/// ([`Preferences::load_at_launch`]); until then, and in tests, a missing store has the
+/// defaults.
 static FIRST_LAUNCH: OnceLock<AppSettings> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -557,20 +558,30 @@ impl StoredPath {
 }
 
 impl Preferences {
-    /// Launch's read of the store. Missing, invalid, or unavailable preferences do not
-    /// prevent startup. Loading does not create a settings directory or modify a settings
-    /// file. A missing store is a first launch: it has `AppSettings::for_first_launch`, and
-    /// every later write that still finds no store keeps those settings, so the first save
-    /// records the desktop's defaults rather than the built-in ones.
-    pub fn load() -> Self {
+    /// Launch's read of the store, before the application starts; `main` is its only caller.
+    /// Missing, invalid, or unavailable preferences do not prevent startup. Loading does not
+    /// create a settings directory or modify a settings file. A missing store is a first
+    /// launch: it has `AppSettings::for_first_launch`, and every later write that still finds
+    /// no store keeps those settings, so the first save records the desktop's defaults rather
+    /// than the built-in ones.
+    pub fn load_at_launch() -> Self {
         let Ok(path) = settings_path() else {
             return Self::default();
         };
-        Self::load_at_launch(&path, &FIRST_LAUNCH, AppSettings::for_first_launch)
+        Self::load_at_launch_from(&path, &FIRST_LAUNCH, AppSettings::for_first_launch)
     }
 
-    /// [`Self::load`] from `path`, fixing `first_launch` with `desktop` when no store exists.
-    fn load_at_launch(
+    /// The store as tests left it, or the defaults; it never fixes the first-launch settings.
+    #[cfg(test)]
+    pub fn load() -> Self {
+        settings_path()
+            .and_then(|path| Self::load_from(&path))
+            .unwrap_or_default()
+    }
+
+    /// [`Self::load_at_launch`] from `path`, fixing `first_launch` with `desktop` when no
+    /// store exists.
+    fn load_at_launch_from(
         path: &Path,
         first_launch: &OnceLock<AppSettings>,
         desktop: impl FnOnce() -> AppSettings,
@@ -1365,7 +1376,7 @@ mod tests {
         );
 
         let first_launch = OnceLock::new();
-        let launched = Preferences::load_at_launch(&path, &first_launch, || omarchy.clone());
+        let launched = Preferences::load_at_launch_from(&path, &first_launch, || omarchy.clone());
         assert_eq!(launched.settings, omarchy);
         assert!(launched.recent_repositories.is_empty());
         assert!(!path.exists(), "loading writes nothing");
@@ -1391,13 +1402,13 @@ mod tests {
         // An existing install keeps its stored theme, whatever the desktop runs.
         Preferences::default().save_to(&path).unwrap();
         let existing = OnceLock::new();
-        let launched = Preferences::load_at_launch(&path, &existing, || unreachable!());
+        let launched = Preferences::load_at_launch_from(&path, &existing, || unreachable!());
         assert_eq!(launched.settings, AppSettings::default());
         assert!(existing.get().is_none());
 
         fs::write(&path, b"{not json").unwrap();
         let unreadable = OnceLock::new();
-        let launched = Preferences::load_at_launch(&path, &unreadable, || unreachable!());
+        let launched = Preferences::load_at_launch_from(&path, &unreadable, || unreachable!());
         assert_eq!(launched.settings, AppSettings::default());
         assert!(unreadable.get().is_none());
     }

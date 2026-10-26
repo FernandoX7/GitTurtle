@@ -266,7 +266,8 @@ impl GitTurtle {
         };
         let recent = self.begin_recent_project_save(&path);
         let response = self.preferences_writer.submit(move || {
-            let mut prefs = Preferences::load();
+            // Remembering rebuilds the whole store from disk; nothing is read here first.
+            let mut prefs = Preferences::default();
             prefs.remember_repository(&path)?;
             Ok(prefs)
         });

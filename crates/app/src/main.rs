@@ -2028,7 +2028,7 @@ fn main() {
         );
         std::process::exit(1);
     }
-    let preferences = Preferences::load();
+    let preferences = Preferences::load_at_launch();
     let system_code_font = preferences.settings.system_code_font;
     let activity = activity::State::load();
     let recovery_drafts = recovery_drafts::State::load();
