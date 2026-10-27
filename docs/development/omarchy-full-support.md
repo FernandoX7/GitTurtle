@@ -144,7 +144,26 @@ cover current upstream x86-64 Omarchy.
         first-class Omarchy app, good enough to be featured. Done so far: the Changes
         status bar counts the working tree instead of History's files, `8f2e8da`
         ([validation entry](../validation.md#october-27-the-changes-status-bar-counts-the-working-tree)),
-        and the navigation's section labels are 11 px medium, `25433f7`.
+        and the navigation's section labels are 11 px medium, `25433f7`. Owner
+        decision, 2026-10-27: take the recommendation on every taste item from the
+        theme sweep and the font reviews. Not started; each needs native evidence:
+        - Raise the command palette onto the menus' raised surface and edge; today it
+          is a dialog on the page background.
+        - Light-theme disabled text from about 2:1 to about 3:1, with one disabled dim
+          for Switch labels, Buttons and menus. Today there are two, though the theme
+          comment beside the disabled foreground claims one.
+        - The palette's highlight starts on the first enabled row.
+        - Disabled primary buttons (Lumon's Open command, the identity button) and
+          Retro-82's grey disabled Push take the neutral disabled fill.
+        - Popup edges fitted to 1.4:1 rather than exactly 1.3, so antialiasing and
+          fractional scales keep them above 1.3.
+        - Settings' Git identity Name and Email labels medium, like the Projects
+          titles beside them; disabled palette row titles Regular, so weight and
+          colour both mark them; theme-card names Medium rather than SemiBold.
+        - Reword the Changes empty state so "history." does not sit alone on a line
+          at 640 px.
+        - Kept as they are: Kanagawa's navy menus (the theme's own raised surface) and
+          light-theme menus equal to the canvas (their edge and shadow carry them).
 4. **Distribution.** Publish versioned release bundles (x86-64 and AArch64, checksums,
    build identity). Resolve the two dependencies the packager flags for license review
    (`mac`, `ufbx`) before distributing. Then add an AUR package (`gitturtle-bin`) and
