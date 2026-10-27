@@ -147,7 +147,11 @@ cover current upstream x86-64 Omarchy.
         and `review-file-preparation-lifecycle` (`ff7fc3c`,
         [validation entry](../validation.md#october-27-pr-review-files-prepare-without-a-copy-and-resume-on-reopen)),
         `review-arrow-buttons-hover` (`2ab3348`) and `menu-checked-items-accessible` (`f57a514`,
-        [validation entry](../validation.md#october-27-ghost-buttons-lift-on-hover-and-ticked-menu-items-are-check-items)).
+        [validation entry](../validation.md#october-27-ghost-buttons-lift-on-hover-and-ticked-menu-items-are-check-items)),
+        `builtin-light-hover-lift` (`63414e3`,
+        [validation entry](../validation.md#october-27-light-palettes-hover-stands-off-subtle-and-pressed-ghost-buttons-take-selected)),
+        and, awaiting native evidence, `narrow-large-text-compact-chrome` (`d1299fb`) and
+        `copy-actions-say-copied` (`2133809`).
      9. Any further UI or UX improvement found along the way: the owner wants a
         first-class Omarchy app, good enough to be featured. Done so far: the Changes
         status bar counts the working tree instead of History's files, `8f2e8da`
