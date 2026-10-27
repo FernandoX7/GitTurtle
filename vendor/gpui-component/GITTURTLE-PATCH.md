@@ -299,11 +299,13 @@ The diff-roles patch modifies `src/highlighter/registry.rs`,
 `src/highlighter/languages/diff/highlights.scm`. Upstream builds the diff
 language from tree-sitter-diff 0.1.0's own query, which captures added lines
 and `+++` as `string`, removed lines and `---` as `keyword`, and `@@` lines as
-`attribute`, so a ```` ```diff ```` fence in Markdown source drew a removed line
-in a theme's keyword colour. The bundled query is that query with the file
-headers, hunk locations and changed lines captured as `diff.header`,
-`diff.hunk`, `diff.minus` and `diff.plus`, and `SyntaxColors` gains those four
-fields (theme keys of the same names) and `HIGHLIGHT_NAMES` the four names; a
+`attribute`, and leaves context lines uncaptured, so a ```` ```diff ```` fence
+in Markdown source drew a removed line in a theme's keyword colour and context
+lines in the fence's code colour. The bundled query is that query with the
+context lines, file headers, hunk locations and changed lines captured as
+`diff.context`, `diff.header`, `diff.hunk`, `diff.minus` and `diff.plus`, and
+`SyntaxColors` gains those five fields (theme keys of the same names) and
+`HIGHLIGHT_NAMES` the five names; a
 theme that leaves them unset draws those lines in its editor foreground. No
 other grammar emits these names. The consumer is the application's syntax theme
 (`crates/app/src/appearance.rs`), which maps them to its patch colours, covered

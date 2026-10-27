@@ -1753,6 +1753,7 @@ impl SyntaxRoles {
             constant: restyle(kit.constant, constant),
             type_: restyle(kit.type_, type_),
             constructor: restyle(kit.constructor, type_),
+            diff_context: restyle(kit.diff_context, text),
             diff_header: restyle(kit.diff_header, text),
             diff_hunk: restyle(kit.diff_hunk, function),
             diff_minus: restyle(kit.diff_minus, removed),
@@ -2535,8 +2536,8 @@ mod tests {
             below.join("\n")
         );
         assert_eq!(uncolored, Vec::<String>::new());
-        // Forty-three colored fields and the editor foreground, on four backgrounds.
-        assert_eq!(measured, palettes * 44 * 4);
+        // Forty-four colored fields and the editor foreground, on four backgrounds.
+        assert_eq!(measured, palettes * 45 * 4);
     }
 
     /// Text, every syntax color and the unified patch's diff colors read at 4.5:1 on each
@@ -2686,11 +2687,13 @@ mod tests {
     /// colors sit just above the 3:1 status rule it is held to, read on every editor
     /// background; `omarchy::palette::tests` measures the Omarchy fixtures. On origin/main
     /// these were the toolkit's default highlight theme's colors.
-    /// A ```diff fence in Markdown source draws its file headers in `text` and its hunk,
+    /// A ```diff fence in Markdown source draws its file headers and context lines in `text`
+    /// and its hunk,
     /// removed and added lines in the fitted `hunk`, `removed` and `added` roles, in every
     /// built-in and Omarchy palette, each at 4.5:1 or more on the canvas and the panel. On
     /// origin/main a removed line took the keyword color (`renamed`), a hunk line the markup
-    /// color (`accent`) and the headers keyword and string. Markdown without a diff fence,
+    /// color (`accent`), the headers keyword and string, and a context line the fence's code
+    /// color (`text.literal`, `added`). Markdown without a diff fence,
     /// another language injected, draws exactly as before: no style it takes depends on the
     /// diff fields.
     #[test]
@@ -2699,8 +2702,7 @@ mod tests {
             combine_highlights,
             component::{Rope, highlighter::SyntaxHighlighter},
         };
-        let fence =
-            "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,2 +1,2 @@ intro\n-old line\n+new line\n";
+        let fence = "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@ intro\n kept line\n-old line\n+new line\n";
         let document = format!("# Notes\n\nThe change:\n\n```diff\n{fence}```\n");
         let without =
             "# Notes\n\nSome `code` and **bold**.\n\n```rust\nfn main() { let s = \"x\"; }\n```\n";
@@ -2718,7 +2720,10 @@ mod tests {
             for line in fence.split_inclusive('\n') {
                 let range = start..start + line.len() - 1;
                 start += line.len();
-                let (role, expected) = if line.starts_with("---") || line.starts_with("+++") {
+                let (role, expected) = if line.starts_with("---")
+                    || line.starts_with("+++")
+                    || line.starts_with(' ')
+                {
                     ("text", roles.text)
                 } else if line.starts_with("@@") {
                     ("hunk", roles.function)
@@ -2839,6 +2844,7 @@ mod tests {
                     "punctuation.list_marker",
                     "punctuation.special",
                     "primary",
+                    "diff.context",
                     "diff.header",
                     "editor foreground",
                 ],
@@ -2915,7 +2921,7 @@ mod tests {
             "fields off text:\n{}",
             off_text.join("\n")
         );
-        assert_eq!(drawn.len(), 46);
+        assert_eq!(drawn.len(), 47);
     }
 
     /// Tuned tokens clear their rule by this much: the rules are computed on declared colors,

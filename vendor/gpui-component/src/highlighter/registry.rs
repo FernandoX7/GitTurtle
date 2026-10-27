@@ -13,13 +13,14 @@ use crate::{
     highlighter::{Language, languages},
 };
 
-pub(super) const HIGHLIGHT_NAMES: [&str; 45] = [
+pub(super) const HIGHLIGHT_NAMES: [&str; 46] = [
     "attribute",
     "boolean",
     "comment",
     "comment.doc",
     "constant",
     "constructor",
+    "diff.context",
     "diff.header",
     "diff.hunk",
     "diff.minus",
@@ -119,9 +120,11 @@ pub struct SyntaxColors {
     pub comment_doc: Option<ThemeStyle>,
     pub constant: Option<ThemeStyle>,
     pub constructor: Option<ThemeStyle>,
-    /// GitTurtle patch: a unified diff's file header (`---`, `+++`), hunk
-    /// location (`@@`), and removed and added lines, which the bundled diff
-    /// query captures under names of their own.
+    /// GitTurtle patch: a unified diff's context lines, file header (`---`,
+    /// `+++`), hunk location (`@@`), and removed and added lines, which the
+    /// bundled diff query captures under names of their own.
+    #[serde(rename = "diff.context")]
+    pub diff_context: Option<ThemeStyle>,
     #[serde(rename = "diff.header")]
     pub diff_header: Option<ThemeStyle>,
     #[serde(rename = "diff.hunk")]
@@ -263,6 +266,7 @@ impl SyntaxColors {
             "comment.doc" => self.comment_doc,
             "constant" => self.constant,
             "constructor" => self.constructor,
+            "diff.context" => self.diff_context,
             "diff.header" => self.diff_header,
             "diff.hunk" => self.diff_hunk,
             "diff.minus" => self.diff_minus,

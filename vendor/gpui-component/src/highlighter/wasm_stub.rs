@@ -167,6 +167,8 @@ pub struct SyntaxColors {
     pub comment_doc: Option<ThemeStyle>,
     pub constant: Option<ThemeStyle>,
     pub constructor: Option<ThemeStyle>,
+    #[serde(rename = "diff.context")]
+    pub diff_context: Option<ThemeStyle>,
     #[serde(rename = "diff.header")]
     pub diff_header: Option<ThemeStyle>,
     #[serde(rename = "diff.hunk")]
@@ -242,6 +244,7 @@ impl SyntaxColors {
             "comment.doc" => self.comment_doc,
             "constant" => self.constant,
             "constructor" => self.constructor,
+            "diff.context" => self.diff_context,
             "diff.header" => self.diff_header,
             "diff.hunk" => self.diff_hunk,
             "diff.minus" => self.diff_minus,
@@ -295,14 +298,15 @@ impl SyntaxColors {
     }
 
     pub fn style_for_index(&self, index: usize) -> Option<HighlightStyle> {
-        const HIGHLIGHT_NAMES: [&str; 45] = [
+        const HIGHLIGHT_NAMES: [&str; 46] = [
             "attribute",
             "boolean",
             "comment",
             "comment.doc",
             "constant",
             "constructor",
-            "diff.header",
+            "diff.context",
+        "diff.header",
             "diff.hunk",
             "diff.minus",
             "diff.plus",
