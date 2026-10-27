@@ -143,7 +143,9 @@ cover current upstream x86-64 Omarchy.
         `settings-focus-reveal-and-steady-switch` (`959fe6b`,
         [validation entry](../validation.md#october-27-settings-keeps-keyboard-focus-in-view-and-switches-still))
         and `markdown-diff-fence-colours` (`fd551c6`, `278b822`,
-        [validation entry](../validation.md#october-27-diff-fences-in-markdown-source-take-the-patch-colours)).
+        [validation entry](../validation.md#october-27-diff-fences-in-markdown-source-take-the-patch-colours))
+        and `review-file-preparation-lifecycle` (`ff7fc3c`,
+        [validation entry](../validation.md#october-27-pr-review-files-prepare-without-a-copy-and-resume-on-reopen)).
      9. Any further UI or UX improvement found along the way: the owner wants a
         first-class Omarchy app, good enough to be featured. Done so far: the Changes
         status bar counts the working tree instead of History's files, `8f2e8da`
