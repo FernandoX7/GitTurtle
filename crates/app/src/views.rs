@@ -4411,6 +4411,68 @@ mod tests {
         assert_eq!(options(cx), Options::default());
     }
 
+    /// The fills painted exactly over a control's bounds.
+    fn painted_fills(
+        cx: &mut VisualTestContext,
+        selector: &'static str,
+    ) -> Vec<gpui_kit::Background> {
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let near = |device: gpui_kit::ScaledPixels, logical: Pixels| {
+                (device.as_f32() - logical.as_f32() * scale).abs() < 0.5
+            };
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    !quad.background.is_transparent()
+                        && near(quad.bounds.left(), bounds.left())
+                        && near(quad.bounds.top(), bounds.top())
+                        && near(quad.bounds.right(), bounds.right())
+                        && near(quad.bounds.bottom(), bounds.bottom())
+                })
+                .map(|quad| quad.background)
+                .collect()
+        })
+    }
+
+    /// A pressed ghost Button takes the shared controls' pressed layer, the
+    /// palette's `selected` over the panel, as a selected one keeps it.
+    #[gpui::test]
+    async fn pressed_ghost_buttons_take_the_selected_layer(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        for theme in [
+            crate::appearance::ThemeChoice::Midnight,
+            crate::appearance::ThemeChoice::Daylight,
+        ] {
+            cx.update(|_, cx| theme.apply(None, cx));
+            let pressed = cx.update(|_, cx| {
+                let p = palette(cx);
+                gpui_kit::Background::from(gpui_kit::Hsla::from(p.control_fill(p.selected)))
+            });
+            // The previous-change arrow held down.
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            let arrow = cx
+                .debug_bounds("previous-text-change")
+                .expect("the arrow")
+                .center();
+            cx.simulate_mouse_move(arrow, None, Modifiers::default());
+            cx.simulate_mouse_down(arrow, MouseButton::Left, Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                painted_fills(cx, "previous-text-change"),
+                vec![pressed],
+                "{theme:?} pressed arrow"
+            );
+            cx.simulate_mouse_up(arrow, MouseButton::Left, Modifiers::default());
+            draw(cx);
+        }
+    }
+
     /// The narrow review row's change arrows are the kit's ghost Buttons.
     /// Hovered and enabled they take the shared controls' hover fill, the
     /// palette's hover step over the panel; disabled, they paint none.
@@ -4420,28 +4482,7 @@ mod tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         settle(&app, cx).await;
         cx.simulate_resize(size(px(461.), px(490.)));
-        // The fills painted exactly over a control's bounds.
-        let fills = |cx: &mut VisualTestContext, selector: &'static str| {
-            let bounds = cx.debug_bounds(selector).expect(selector);
-            cx.update(|window, _| {
-                let scale = window.scale_factor();
-                let near = |device: gpui_kit::ScaledPixels, logical: Pixels| {
-                    (device.as_f32() - logical.as_f32() * scale).abs() < 0.5
-                };
-                window
-                    .painted_quads()
-                    .into_iter()
-                    .filter(|quad| {
-                        !quad.background.is_transparent()
-                            && near(quad.bounds.left(), bounds.left())
-                            && near(quad.bounds.top(), bounds.top())
-                            && near(quad.bounds.right(), bounds.right())
-                            && near(quad.bounds.bottom(), bounds.bottom())
-                    })
-                    .map(|quad| quad.background)
-                    .collect::<Vec<_>>()
-            })
-        };
+        let fills = painted_fills;
         let hover_over = |cx: &mut VisualTestContext, selector: &'static str| {
             let center = cx.debug_bounds(selector).expect(selector).center();
             cx.simulate_mouse_move(center, None, Modifiers::default());

@@ -1192,12 +1192,17 @@ impl ButtonVariant {
                     cx.theme().tokens.button_secondary_active.into()
                 }
             }
-            Self::Ghost => if cx.theme().mode.is_dark() {
-                cx.theme().secondary.lighten(0.2).opacity(0.8)
-            } else {
-                cx.theme().secondary.darken(0.2).opacity(0.8)
-            }
-            .into(),
+            Self::Ghost => cx
+                .theme()
+                .ghost_active
+                .unwrap_or_else(|| {
+                    if cx.theme().mode.is_dark() {
+                        cx.theme().secondary.lighten(0.2).opacity(0.8)
+                    } else {
+                        cx.theme().secondary.darken(0.2).opacity(0.8)
+                    }
+                })
+                .into(),
             Self::Danger => {
                 if outline {
                     self.outline_background(ButtonStyleState::Active, cx)

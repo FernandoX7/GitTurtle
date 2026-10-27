@@ -434,9 +434,16 @@ helper takes, where it installs the button ring (`crates/app/src/appearance.rs`)
 `cargo test --locked -p gitturtle narrow_review_arrows_lift_on_hover` hovers the
 narrow review arrows in Midnight and Daylight and reads the scene: no fill at
 rest, the shared hover fill when hovered, and none when an operation disables
-them. Remove this part of the patch when upstream derives the ghost hover so a
-dark `secondary` visibly lifts, or offers an equivalent setting, and that test
-passes without it.
+them. A pressed ghost Button, and a selected one, which keeps the pressed fill,
+take `Theme::ghost_active` the same way: upstream's `secondary` lightened or
+darkened by 20% at 80% drew a pressed ghost Button under its own hover in a dark
+theme and a selected one (the Reflog's current entry) almost invisibly. The app
+sets it to `Palette::control_fill(selected)`, the pressed layer its shared
+helper takes; `pressed_ghost_buttons_take_the_selected_layer` holds the narrow
+review arrow down in Midnight and Daylight and reads that fill. Remove this part
+of the patch when upstream derives the ghost hover and pressed fills so a dark
+`secondary` visibly lifts, or offers equivalent settings, and those tests pass
+without it.
 
 The checked-menu-item patch modifies `src/menu/popup_menu.rs` and
 `src/menu/menu_item.rs`. Upstream draws a checked item's tick only as an icon
