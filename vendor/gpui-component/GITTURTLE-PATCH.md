@@ -265,6 +265,30 @@ this part of the patch when upstream gives a checked thumb a colour that
 contrasts with the accent and fades a disabled label from the enabled one, and
 those tests pass without it.
 
+The disabled-foreground patch modifies `src/theme/mod.rs`,
+`src/button/button.rs`, `src/menu/menu_item.rs` and `src/menu/popup_menu.rs`.
+Upstream dims a disabled Button's label to `muted_foreground` at half strength
+but draws a disabled menu item's label in plain `muted_foreground` and its
+shortcut in the same `muted_foreground` as an enabled item's. GitTurtle's
+Omarchy mapping can set secondary text as strong as text (Catppuccin Latte), so
+a disabled item in the Linux Menu read like an available one. The consumers are
+the Linux Menu, every context menu with an unavailable action, and the
+application's command palette (`crates/app/src/command_palette.rs`), which
+draws its own rows.
+
+`Theme::disabled_foreground` is `muted_foreground` at half strength, the value
+disabled Buttons already used; Buttons now read it from there, a disabled menu
+item draws its label in it, and its shortcut takes it through the Kbd's
+caller style. Enabled items and every Button paint as before.
+
+`cargo test --locked -p gitturtle every_palette_dims_disabled_rows_well_below_enabled_text`
+applies every built-in and embedded Omarchy palette and checks the dim against
+enabled secondary text on the panel and the selected row. GPUI's test scene does
+not expose glyph colours, so native frames of the Menu and the command palette
+record the painted result. Remove this part of the patch when upstream gives
+disabled menu items and their shortcuts a disabled colour distinct from
+secondary text.
+
 The `usize`-constant patch modifies `src/highlighter/highlighter.rs`. Upstream
 imports the `std::usize` module (`use std::{…, usize}`), so the `usize::MIN`
 and `usize::MAX` in `HighlightSummary`'s `Summary::zero` and in

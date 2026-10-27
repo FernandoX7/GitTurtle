@@ -1264,7 +1264,12 @@ impl PopupMenu {
             } => {
                 let show_link_icon = *is_link && self.external_link_icon;
                 let action = action.as_ref().map(|action| action.boxed_clone());
-                let key = self.render_key_binding(action, window, cx);
+                // A disabled item dims its shortcut with its label.
+                let key = self.render_key_binding(action, window, cx).map(|key| {
+                    key.when(*disabled, |key| {
+                        key.text_color(cx.theme().disabled_foreground())
+                    })
+                });
 
                 this.when(!disabled, |this| {
                     this.on_click(

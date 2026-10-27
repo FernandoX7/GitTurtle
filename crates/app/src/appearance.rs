@@ -3592,4 +3592,34 @@ mod tests {
         assert!(moved > 0, "some palette needs a badge label fitted");
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
+
+    /// Disabled menu items with their shortcuts, disabled Buttons and disabled
+    /// command palette rows share the kit's `disabled_foreground`, `muted` at
+    /// half strength. Disabled rows used to take `muted`, which the Omarchy
+    /// mapping can lift to `text` (Catppuccin Latte), so an unavailable command
+    /// read like an available one. In every palette the dim keeps at most 60%
+    /// of enabled secondary text's contrast on the panel, the menu and palette
+    /// surface, and on the selected row, and stays at least 1.5:1.
+    #[gpui::test]
+    fn every_palette_dims_disabled_rows_well_below_enabled_text(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut failures = Vec::new();
+        for (name, palette) in test_palettes() {
+            let dim = cx.update(|cx| {
+                palette.apply(palette.is_light(), None, cx);
+                Theme::global(cx).disabled_foreground()
+            });
+            assert_eq!(dim, Hsla::from(rgb(palette.muted)).opacity(0.5), "{name}");
+            for surface in [palette.panel, palette.selected] {
+                let disabled = contrast(composite(dim.to_rgb(), surface), surface);
+                let enabled = contrast(palette.muted, surface);
+                if !(1.5..=enabled * 0.6).contains(&disabled) {
+                    failures.push(format!(
+                        "{name} on {surface:06x}: disabled {disabled:.2}:1, secondary text {enabled:.2}:1"
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
 }

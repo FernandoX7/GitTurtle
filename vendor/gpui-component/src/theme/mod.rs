@@ -413,6 +413,15 @@ impl Theme {
         }
     }
 
+    /// The label of a control that cannot be used: `muted_foreground` at half
+    /// strength. Disabled Buttons, menu items with their shortcuts, and callers
+    /// that draw their own disabled rows share it, so one dim marks every
+    /// unavailable action; `muted_foreground` alone can be as strong as
+    /// `foreground`.
+    pub fn disabled_foreground(&self) -> Hsla {
+        self.muted_foreground.opacity(0.5)
+    }
+
     /// Returns the next surface radius above the existing `xl` theme tier.
     ///
     /// Larger surface tiers derive from the same application-controlled base

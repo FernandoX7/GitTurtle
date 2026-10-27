@@ -1298,7 +1298,7 @@ impl ButtonVariant {
             Self::Secondary => cx.theme().tokens.button_secondary.background.opacity(1.5),
             Self::Custom(style) => style.color.opacity(0.15).into(),
         };
-        let fg = cx.theme().muted_foreground.opacity(0.5);
+        let fg = cx.theme().disabled_foreground();
         let (bg, border) = if outline {
             (
                 self.outline_background(ButtonStyleState::Normal, cx)

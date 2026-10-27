@@ -127,7 +127,7 @@ impl RenderOnce for MenuItemElement {
                 })
             })
             .when(self.disabled, |this| {
-                this.text_color(cx.theme().muted_foreground)
+                this.text_color(cx.theme().disabled_foreground())
             })
             .children(self.children)
     }

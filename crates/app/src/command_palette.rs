@@ -3,7 +3,7 @@
 use crate::shortcuts::ShortcutId;
 use crate::*;
 use gpui_kit::{
-    component::{WindowExt, dialog::DialogFooter},
+    component::{Theme, WindowExt, dialog::DialogFooter},
     prelude::FluentBuilder,
 };
 
@@ -879,11 +879,11 @@ impl Render for Palette {
                             } else {
                                 palette(cx).panel
                             }))
-                            .text_color(rgb(if disabled.is_some() {
-                                palette(cx).muted
+                            .text_color(if disabled.is_some() {
+                                Theme::global(cx).disabled_foreground()
                             } else {
-                                palette(cx).text
-                            }))
+                                rgb(palette(cx).text).into()
+                            })
                             .when(disabled.is_none(), |element| {
                                 element
                                     .cursor_pointer()
@@ -906,7 +906,11 @@ impl Render for Palette {
                                         div()
                                             .flex_shrink_0()
                                             .text_size(crate::appearance::ui_text(11.))
-                                            .text_color(rgb(palette(cx).muted))
+                                            .text_color(if disabled.is_some() {
+                                                Theme::global(cx).disabled_foreground()
+                                            } else {
+                                                rgb(palette(cx).muted).into()
+                                            })
                                             .child(shortcut),
                                     ),
                             )
