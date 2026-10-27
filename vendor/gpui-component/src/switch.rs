@@ -3,9 +3,9 @@ use crate::{
     text::Text, tooltip::ComponentTooltip,
 };
 use gpui::{
-    App, Background, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement as _,
-    RenderOnce, SharedString, StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _,
-    px,
+    App, Background, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement,
+    ParentElement as _, RenderOnce, SharedString, StyleRefinement, Styled, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_base::{Switch as BaseSwitch, SwitchThumb, SwitchTrack, spring};
 use std::rc::Rc;
@@ -28,6 +28,9 @@ pub struct Switch {
     size: Size,
     color: Option<Hsla>,
     tooltip: ComponentTooltip,
+    /// GitTurtle patch: a caller-owned focus handle, used instead of keyed
+    /// state.
+    focus_handle: Option<FocusHandle>,
 }
 
 impl Switch {
@@ -46,7 +49,16 @@ impl Switch {
             size: Size::Medium,
             color: None,
             tooltip: ComponentTooltip::default(),
+            focus_handle: None,
         }
+    }
+
+    /// Uses a caller-owned focus handle instead of creating keyed state, as
+    /// `Button::track_focus` does, so the caller can tell whether the Switch
+    /// holds focus.
+    pub fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
+        self.focus_handle = Some(focus_handle.clone());
+        self
     }
 
     /// Set the checked state of the switch.
@@ -196,10 +208,12 @@ impl RenderOnce for Switch {
         // GitTurtle patch: the wrapper owns the base Switch's focus handle,
         // so a focused enabled Switch can draw the Button focus ring around its
         // track; an enabled unchecked one lifts its track on hover.
-        let focus_handle = window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone();
+        let focus_handle = self.focus_handle.clone().unwrap_or_else(|| {
+            window
+                .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone()
+        });
         let focused = !self.disabled && focus_handle.is_focused(window);
         let hover_bg = cx
             .theme()

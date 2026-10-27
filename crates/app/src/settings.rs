@@ -613,12 +613,15 @@ impl GitTurtle {
         {
             use crate::desktop_text::{self, SystemCodeFont};
             let bundled = crate::mono();
-            let description: SharedString = match desktop_text::system_code_font(cx) {
-                SystemCodeFont::Off => format!(
-                    "Code uses the bundled {bundled}. Turn on to use fontconfig's monospace font when it is fixed-width."
-                )
-                .into(),
-                SystemCodeFont::Pending => "Looking up the desktop's monospace font…".into(),
+            let focus = self.page_focus("settings-system-code-font", cx);
+            let off: SharedString = format!(
+                "Code uses the bundled {bundled}. Turn on to use fontconfig's monospace font when it is fixed-width."
+            )
+            .into();
+            let pending: SharedString = "Looking up the desktop's monospace font…".into();
+            let description = match desktop_text::system_code_font(cx) {
+                SystemCodeFont::Off => off.clone(),
+                SystemCodeFont::Pending => pending.clone(),
                 SystemCodeFont::Loaded(family) => {
                     format!("Code uses {family}, the desktop's monospace font.").into()
                 }
@@ -633,24 +636,37 @@ impl GitTurtle {
                     .items_center()
                     .justify_between()
                     .gap_3()
-                    .child(setting_description(
+                    // Toggling shows the pending line, then the answer, and
+                    // turning off shows the off line: the row keeps the
+                    // height of the tallest, so neither the Switch nor the
+                    // rows below move when one replaces another.
+                    .child(steady_setting_description(
                         "Use the desktop's monospace font",
                         description,
+                        &[off, pending],
                         cx,
                     ))
                     .child(
-                        div().debug_selector(|| "code-font-switch".into()).child(
-                            Switch::new("settings-system-code-font")
-                                .accessibility_label("Use the desktop's monospace font for code")
-                                .checked(self.settings.system_code_font)
-                                .on_click(cx.listener(|this, checked: &bool, window, cx| {
-                                    if this.settings.system_code_font != *checked {
-                                        this.settings.system_code_font = *checked;
-                                        desktop_text::set_system_code_font(*checked, cx);
-                                        this.save_preferences(window, cx);
-                                    }
-                                })),
-                        ),
+                        div()
+                            .on_children_prepainted(
+                                self.keep_in_view(vec![Some(focus.clone())], cx),
+                            )
+                            .debug_selector(|| "code-font-switch".into())
+                            .child(
+                                Switch::new("settings-system-code-font")
+                                    .track_focus(&focus)
+                                    .accessibility_label(
+                                        "Use the desktop's monospace font for code",
+                                    )
+                                    .checked(self.settings.system_code_font)
+                                    .on_click(cx.listener(|this, checked: &bool, window, cx| {
+                                        if this.settings.system_code_font != *checked {
+                                            this.settings.system_code_font = *checked;
+                                            desktop_text::set_system_code_font(*checked, cx);
+                                            this.save_preferences(window, cx);
+                                        }
+                                    })),
+                            ),
                     )
                     .into_any_element(),
             )
@@ -676,6 +692,10 @@ impl GitTurtle {
             )
         };
         let p = palette(cx);
+        let index = usize::from(code);
+        let decrease = self.page_focus(("text-size-decrease", index), cx);
+        let increase = self.page_focus(("text-size-increase", index), cx);
+        let reset = self.page_focus(("text-size-reset", index), cx);
         div()
             .debug_selector(move || {
                 format!(
@@ -694,11 +714,21 @@ impl GitTurtle {
             )))
             .child(
                 div()
+                    .on_children_prepainted(self.keep_in_view(
+                        vec![
+                            Some(decrease.clone()),
+                            None,
+                            Some(increase.clone()),
+                            Some(reset.clone()),
+                        ],
+                        cx,
+                    ))
                     .flex()
                     .items_center()
                     .gap_1()
                     .child(
                         Button::new(("text-size-decrease", usize::from(code)))
+                            .track_focus(&decrease)
                             .small()
                             .ghost()
                             .label("−")
@@ -720,6 +750,7 @@ impl GitTurtle {
                     )
                     .child(
                         Button::new(("text-size-increase", usize::from(code)))
+                            .track_focus(&increase)
                             .small()
                             .ghost()
                             .label("+")
@@ -731,6 +762,7 @@ impl GitTurtle {
                     )
                     .child(
                         Button::new(("text-size-reset", usize::from(code)))
+                            .track_focus(&reset)
                             .small()
                             .ghost()
                             .label("Reset")
@@ -1060,8 +1092,26 @@ impl GitTurtle {
         );
     }
 
-    pub(super) fn render_columns_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// History's column controls, in Settings (`in_settings`) or History's
+    /// own Columns popover. In Settings the keyboard focusing one scrolls the
+    /// page to show it.
+    pub(super) fn render_columns_controls(
+        &self,
+        in_settings: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
+        let focus =
+            |id: ElementId, cx: &mut Context<Self>| in_settings.then(|| self.page_focus(id, cx));
+        // Outside Settings nothing records where the controls lie.
+        let keep_in_view = |handles: Vec<Option<FocusHandle>>, cx: &App| {
+            in_settings.then(|| self.keep_in_view(handles, cx))
+        };
+        let (less, more, reset) = (
+            focus("graph-spacing-less".into(), cx),
+            focus("graph-spacing-more".into(), cx),
+            focus("reset-history-columns".into(), cx),
+        );
         div()
             .flex()
             .flex_col()
@@ -1073,9 +1123,14 @@ impl GitTurtle {
                     .text_color(rgb(p.muted))
                     .child("Choose what appears in history. Drag a column divider to resize; scroll horizontally when your columns need more room."),
             )
-            .child(div().flex().items_center().flex_wrap().gap_2()
+            .child(div()
+                .when_some(keep_in_view(vec![None, less.clone(), None, more.clone()], cx), |row, reveal| {
+                    row.on_children_prepainted(reveal)
+                })
+                .flex().items_center().flex_wrap().gap_2()
                 .child(setting_description("Graph lane spacing", "Distinct lanes keep this spacing; wide histories scroll horizontally.", cx))
                 .child(button("graph-spacing-less", "−", "", false)
+                    .when_some(less.as_ref(), |button, focus| button.track_focus(focus))
                     .accessibility_label("Decrease graph lane spacing").disabled(self.settings.graph_spacing <= 12)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.settings.graph_spacing = this.settings.graph_spacing.saturating_sub(2).max(12);
@@ -1083,6 +1138,7 @@ impl GitTurtle {
                     })))
                 .child(div().min_w(px(38.)).text_center().child(format!("{} px", self.settings.graph_spacing)))
                 .child(button("graph-spacing-more", "+", "", false)
+                    .when_some(more.as_ref(), |button, focus| button.track_focus(focus))
                     .accessibility_label("Increase graph lane spacing").disabled(self.settings.graph_spacing >= 32)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.settings.graph_spacing = (this.settings.graph_spacing + 2).min(32);
@@ -1090,13 +1146,18 @@ impl GitTurtle {
                     }))))
             .children(ColumnId::ALL.into_iter().enumerate().map(|(index, id)| {
                 let setting = self.settings.columns.get(id);
+                let column = focus(("history-column", index).into(), cx);
                 div()
+                    .when_some(keep_in_view(vec![column.clone()], cx), |row, reveal| {
+                        row.on_children_prepainted(reveal)
+                    })
                     .flex()
                     .items_center()
                     .gap_3()
                     .min_h(crate::appearance::ui_size(32.))
                     .child(
                         Checkbox::new(("history-column", index))
+                            .when_some(column.as_ref(), |checkbox, focus| checkbox.track_focus(focus))
                             .label(id.label())
                             .checked(setting.visible)
                             .disabled(id == ColumnId::Subject)
@@ -1124,8 +1185,14 @@ impl GitTurtle {
                     )
             }))
             .child(
-                div().pt_2().child(
+                div()
+                    .when_some(keep_in_view(vec![reset.clone()], cx), |row, reveal| {
+                        row.on_children_prepainted(reveal)
+                    })
+                    .pt_2()
+                    .child(
                     button("reset-history-columns", "Reset column layout", "refresh", false)
+                        .when_some(reset.as_ref(), |button, focus| button.track_focus(focus))
                         .disabled(self.settings.columns == ColumnSettings::default())
                         .on_click(cx.listener(|this, _, window, cx| {
                             if this.settings.columns != ColumnSettings::default() {
@@ -1310,7 +1377,12 @@ impl GitTurtle {
                                     .child(title),
                             )
                             .children(cards.chunks(columns).map(|row| {
+                                let focus = row
+                                    .iter()
+                                    .map(|card| Some(self.theme_card_focus(card.selection).clone()))
+                                    .collect();
                                 div()
+                                    .on_children_prepainted(self.keep_in_view(focus, cx))
                                     .flex()
                                     .gap_3()
                                     .children(row.iter().map(|card| {
@@ -1482,6 +1554,8 @@ impl GitTurtle {
         // New theme… is named by its visible label, which the kit's button
         // exposes when no other name is given; Import… says what it opens.
         let (new_label, import_name) = ("New theme…", "Import a theme file");
+        let new_theme = self.page_focus("custom-themes-new", cx);
+        let import_theme = self.page_focus("custom-themes-import", cx);
         // At the bound both actions are disabled, so their tooltips are the
         // only place that says what to do, in the words the bound's own
         // refusals use (`open_theme_editor`, `add_imported_theme`).
@@ -1539,12 +1613,17 @@ impl GitTurtle {
                     ))
                     .child(
                         div()
+                            .on_children_prepainted(self.keep_in_view(
+                                vec![Some(new_theme.clone()), Some(import_theme.clone())],
+                                cx,
+                            ))
                             .flex()
                             .flex_shrink_0()
                             .items_center()
                             .gap_2()
                             .child(
                                 button("custom-themes-new", new_label, "plus", false)
+                                    .track_focus(&new_theme)
                                     .debug_selector(|| "custom-themes-new".into())
                                     .disabled(pending || full)
                                     .tooltip(new_tooltip)
@@ -1554,6 +1633,7 @@ impl GitTurtle {
                             )
                             .child(
                                 button("custom-themes-import", "Import…", "", false)
+                                    .track_focus(&import_theme)
                                     .debug_selector(|| "custom-themes-import".into())
                                     .accessibility_label(import_name)
                                     .disabled(pending || full)
@@ -2065,11 +2145,34 @@ impl GitTurtle {
         Some(row.into_any_element())
     }
 
+    /// The focus handle Settings control `id` tracks, the same in every
+    /// frame, so the page can tell when the keyboard focuses it.
+    fn page_focus(&self, id: impl Into<ElementId>, cx: &mut App) -> FocusHandle {
+        self.theme_editor.page().focus(id, cx)
+    }
+
+    /// For the `on_children_prepainted` of a Settings element whose children
+    /// include controls, `focus` holding each child's handle in order: the
+    /// keyboard focusing one scrolls the page by the least that shows it with
+    /// the focus ring's room.
+    fn keep_in_view<'a>(
+        &'a self,
+        focus: Vec<Option<FocusHandle>>,
+        cx: &App,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static + use<'a> {
+        self.theme_editor
+            .page()
+            .controls(focus, appearance::button_ring_room(cx))
+    }
+
     pub(super) fn render_settings(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        // A control the keyboard has focused scrolls into view in this frame.
+        self.theme_editor.page().reveal(window, cx);
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
         let compact = window.viewport_size().width < appearance::ui_size(1060.);
         let narrow = window.viewport_size().width < appearance::ui_size(720.);
+        let retry = self.page_focus("retry-save-settings", cx);
         let theme_columns = if narrow {
             2
         } else if compact {
@@ -2091,6 +2194,7 @@ impl GitTurtle {
         // cannot be turned on: the desktop decides the theme.
         let desktop_theme = self.follows_desktop_theme(cx);
         let follow_checked = self.settings.follow_system && !desktop_theme;
+        let follow = self.page_focus("follow-system", cx);
         let follow_description: SharedString = if desktop_theme {
             "Omarchy follows your desktop theme".into()
         } else {
@@ -2102,6 +2206,9 @@ impl GitTurtle {
             desktop_theme,
             follow_description.clone(),
         )));
+        let density_focus: Vec<_> = (0..Density::ALL.len())
+            .map(|index| self.page_focus(("settings-density", index), cx))
+            .collect();
         let appearance = div()
             .flex()
             .flex_col()
@@ -2119,9 +2226,13 @@ impl GitTurtle {
                     ))
                     .child(
                         div()
+                            .on_children_prepainted(
+                                self.keep_in_view(vec![Some(follow.clone())], cx),
+                            )
                             .debug_selector(|| "follow-system-switch".into())
                             .child(
                                 Switch::new("follow-system")
+                                    .track_focus(&follow)
                                     .checked(follow_checked)
                                     .disabled(desktop_theme)
                                     .label("Follow system appearance")
@@ -2159,6 +2270,10 @@ impl GitTurtle {
                     ))
                     .child(
                         div()
+                            .on_children_prepainted(self.keep_in_view(
+                                density_focus.iter().cloned().map(Some).collect(),
+                                cx,
+                            ))
                             .flex()
                             .gap_1()
                             .p_1()
@@ -2174,6 +2289,7 @@ impl GitTurtle {
                                     // surface, tinted on hover rather than faded, which
                                     // would fade the focus ring with it.
                                     Button::new(("settings-density", index))
+                                        .track_focus(&density_focus[index])
                                         .small()
                                         .with_variant(appearance::control_button_variant(selected))
                                         .label(density.label())
@@ -2195,18 +2311,30 @@ impl GitTurtle {
             )
             .into_any_element();
 
+        let save_editor = self.page_focus("save-external-editor", cx);
+        let reopen_last = self.page_focus("settings-reopen-last", cx);
+        let project_pane = self.page_focus("settings-project-pane", cx);
+        let save_branch = self.page_focus("save-default-branch", cx);
         let startup = div()
             .flex()
             .flex_col()
             .gap_5()
-            .child(div().flex().flex_col().gap_2()
+            .child(div()
+                .on_children_prepainted(self.keep_in_view(
+                    vec![None, Some(self.settings_editor.focus_handle(cx)), Some(save_editor.clone())],
+                    cx,
+                ))
+                .flex().flex_col().gap_2()
                 .child(setting_description("External editor", if cfg!(target_os = "macos") { "Application name, such as Visual Studio Code. File → Open Repository in Editor opens the current folder." } else { "Executable name or path, such as code. Menu → Open repository in editor opens the current folder; left empty on Omarchy, your Omarchy editor opens it." }, cx))
                 .child(Input::new(&self.settings_editor).aria_label("Preferred external editor"))
                 .child(button("save-external-editor", "Save editor", "", false)
+                    .track_focus(&save_editor)
                     .disabled(self.settings_editor.read(cx).value().trim() == self.settings.external_editor)
                     .on_click(cx.listener(|this, _, window, cx| { this.settings.external_editor = this.settings_editor.read(cx).value().trim().to_owned(); this.save_preferences(window, cx); }))))
             .child(
                 div()
+                    .on_children_prepainted(self.keep_in_view(vec![None, Some(reopen_last.clone())], cx))
+                    .debug_selector(|| "settings-reopen-last-row".into())
                     .flex()
                     .items_center()
                     .justify_between()
@@ -2218,6 +2346,7 @@ impl GitTurtle {
                     ))
                     .child(
                         Switch::new("settings-reopen-last")
+                            .track_focus(&reopen_last)
                             .accessibility_label("Restore repository tabs on startup")
                             .checked(self.settings.reopen_last)
                             .on_click(cx.listener(|this, checked: &bool, window, cx| {
@@ -2230,6 +2359,7 @@ impl GitTurtle {
             )
             .child(
                 div()
+                    .on_children_prepainted(self.keep_in_view(vec![None, Some(project_pane.clone())], cx))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -2241,6 +2371,7 @@ impl GitTurtle {
                     ))
                     .child(
                         Switch::new("settings-project-pane")
+                            .track_focus(&project_pane)
                             .accessibility_label("Show the project list")
                             .checked(self.settings.project_pane)
                             .on_click(cx.listener(|this, checked: &bool, window, cx| {
@@ -2263,6 +2394,10 @@ impl GitTurtle {
                     ))
                     .child(
                         div()
+                            .on_children_prepainted(self.keep_in_view(
+                                vec![Some(self.settings_branch.focus_handle(cx)), Some(save_branch.clone())],
+                                cx,
+                            ))
                             .flex()
                             .items_center()
                             .gap_2()
@@ -2274,6 +2409,7 @@ impl GitTurtle {
                             )
                             .child(
                                 Button::new("save-default-branch")
+                                    .track_focus(&save_branch)
                                     .label("Save")
                                     .disabled(!branch_edited)
                                     .tooltip("Save the default branch for new repositories")
@@ -2285,6 +2421,8 @@ impl GitTurtle {
             )
             .into_any_element();
 
+        let save_identity = self.page_focus("save-repository-identity", cx);
+        let reset_identity = self.page_focus("use-current-identity", cx);
         let identity = if let Some(repository_name) = repository_name {
             let repository_identity = format!(
                 "{}\n{}",
@@ -2294,7 +2432,22 @@ impl GitTurtle {
                     .map(|path| path.display().to_string())
                     .unwrap_or_default()
             );
+            let manage_profiles = self.page_focus("settings-manage-profiles", cx);
             div()
+                // The repository card, Name, Email, the signing line, the
+                // save buttons, the note and Manage named profiles….
+                .on_children_prepainted(self.keep_in_view(
+                    vec![
+                        None,
+                        Some(self.identity_name.focus_handle(cx)),
+                        Some(self.identity_email.focus_handle(cx)),
+                        None,
+                        None,
+                        None,
+                        Some(manage_profiles.clone()),
+                    ],
+                    cx,
+                ))
                 .flex()
                 .flex_col()
                 .gap_4()
@@ -2344,11 +2497,16 @@ impl GitTurtle {
                 )
                 .child(
                     div()
+                        .on_children_prepainted(self.keep_in_view(
+                            vec![Some(save_identity.clone()), Some(reset_identity.clone())],
+                            cx,
+                        ))
                         .flex()
                         .flex_wrap()
                         .gap_2()
                         .child(
                             Button::new("save-repository-identity")
+                                .track_focus(&save_identity)
                                 .primary()
                                 .icon(Icon::default().path("icons/check.svg").size(px(14.)))
                                 .label(if busy { "Working…" } else { "Save repository identity" })
@@ -2357,16 +2515,21 @@ impl GitTurtle {
                         )
                         .child(
                             button("use-current-identity", "Reset edits", "refresh", false)
+                                .track_focus(&reset_identity)
                                 .tooltip("Restore the repository’s current name and email")
                                 .disabled(busy || self.profile.is_none() || !identity_edited)
                                 .on_click(cx.listener(|this, _, window, cx| this.fill_identity_inputs(window, cx))),
                         ),
                 )
                 .child(div().text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(if self.profile.as_ref().is_some_and(|profile| profile.private_worktree) { "Name and email are saved only to this worktree’s existing private Git configuration." } else { "Name and email are saved to repository Git configuration shared by linked worktrees. Global identity is preserved." }))
-                .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))))
+                .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).track_focus(&manage_profiles).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))))
                 .into_any_element()
         } else {
+            let open_projects = self.page_focus("settings-open-projects", cx);
             div()
+                .on_children_prepainted(
+                    self.keep_in_view(vec![None, None, None, Some(open_projects.clone())], cx),
+                )
                 .flex()
                 .flex_col()
                 .items_start()
@@ -2391,6 +2554,7 @@ impl GitTurtle {
                         "folder",
                         false,
                     )
+                    .track_focus(&open_projects)
                     .on_click(cx.listener(|this, _, window, cx| this.show_projects(window, cx))),
                 )
                 .into_any_element()
@@ -2415,13 +2579,17 @@ impl GitTurtle {
             .text_color(rgb(p.text))
             .child(
                 div()
+                    // Record even focus outside the page, so returning to the
+                    // same control reveals it again.
+                    .on_children_prepainted(self.theme_editor.page().observe())
                     .id("settings-scroll")
                     .debug_selector(|| "settings-scroll".into())
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
                     // Tracked so that the Your themes row holding focus is
-                    // revealed here too (`reveal_in_page`).
+                    // revealed here too (`reveal_in_page`), as is every other
+                    // control the keyboard focuses (`keep_in_view`).
                     .track_scroll(self.theme_editor.page_scroll())
                     .p_6()
                     .when(narrow, |body| body.p_4())
@@ -2446,6 +2614,7 @@ impl GitTurtle {
                             .when_some(self.operation_error.as_ref(), |element, error| {
                                 element.child(
                                     div()
+                                        .on_children_prepainted(self.keep_in_view(vec![None, Some(retry.clone())], cx))
                                         .p_3()
                                         .rounded(px(8.))
                                         .bg(rgb(p.removed_background))
@@ -2456,7 +2625,7 @@ impl GitTurtle {
                                         .gap_3()
                                         .child(div().flex_1().min_w_0().child(error.clone()))
                                         .when(error.starts_with("Could not save settings:"), |notice| {
-                                            notice.child(Button::new("retry-save-settings").label("Retry save").on_click(cx.listener(|this, _, window, cx| this.save_preferences(window, cx))))
+                                            notice.child(Button::new("retry-save-settings").track_focus(&retry).label("Retry save").on_click(cx.listener(|this, _, window, cx| this.save_preferences(window, cx))))
                                         }),
                                 )
                             })
@@ -2485,7 +2654,7 @@ impl GitTurtle {
                                                 "History columns",
                                                 "columns",
                                                 "Keep the information you care about in view.",
-                                                self.render_columns_controls(cx),
+                                                self.render_columns_controls(true, cx),
                                                 cx,
                                             )),
                                     )
@@ -4070,6 +4239,19 @@ fn setting_description(
     description: impl Into<SharedString>,
     cx: &App,
 ) -> AnyElement {
+    steady_setting_description(title, description, &[], cx)
+}
+
+/// A setting's title and description, the description line as tall as the
+/// tallest of it and `reserve`, the other descriptions its row can show, so
+/// replacing one with another moves nothing. Only `description` is drawn and
+/// named.
+fn steady_setting_description(
+    title: &'static str,
+    description: impl Into<SharedString>,
+    reserve: &[SharedString],
+    cx: &App,
+) -> AnyElement {
     let p = palette(cx);
     let description = description.into();
     let label = format!("{title}. {description}");
@@ -4092,10 +4274,24 @@ fn setting_description(
         )
         .child(
             div()
+                .grid()
+                .grid_cols(1)
                 .text_size(crate::appearance::ui_text(11.))
                 .line_height(relative(1.5))
                 .text_color(rgb(p.muted))
-                .child(description),
+                .child(div().row_start(1).col_start(1).child(description.clone()))
+                .children(
+                    reserve
+                        .iter()
+                        .filter(|text| **text != description)
+                        .map(|text| {
+                            div()
+                                .row_start(1)
+                                .col_start(1)
+                                .invisible()
+                                .child(text.clone())
+                        }),
+                ),
         )
         .into_any_element()
 }
@@ -5266,6 +5462,261 @@ mod picker_tests {
             "the Omarchy theme applies its mapped palette"
         );
         assert_eq!(painted, expected(cx, false, true), "disabled");
+    }
+
+    /// Every quad the last frame painted, in logical pixels, in paint order.
+    fn painted_quads(cx: &mut VisualTestContext) -> Vec<Bounds<Pixels>> {
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .map(|quad| {
+                    let b = quad.bounds;
+                    Bounds::from_corners(
+                        point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                        point(
+                            px(b.right().as_f32() / scale),
+                            px(b.bottom().as_f32() / scale),
+                        ),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// Toggling a Settings Switch moves nothing: every Switch track and the
+    /// rows around them keep their bounds, at 0.875, 1 and 1.25 of
+    /// the desktop text scale (Linux) and at 18 pt, and through the code font
+    /// row's off, pending, found and unavailable descriptions, which wrap to
+    /// different line counts in a 1,000 px window. Show the project list is
+    /// left out: narrowing the page for its pane is what it does.
+    #[gpui::test]
+    fn toggling_a_settings_switch_moves_nothing(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let sizes: &[(u8, f32)] = if cfg!(target_os = "linux") {
+            &[(13, 0.875), (13, 1.0), (13, 1.25), (18, 1.0)]
+        } else {
+            &[(13, 1.0), (18, 1.0)]
+        };
+        let mut switches = vec!["follow-system-switch", "settings-reopen-last-row"];
+        let mut rows = vec![
+            "follow-system-switch",
+            "custom-themes-new",
+            "text-size-setting-interface",
+            "text-size-setting-code",
+            "settings-density-0",
+            "settings-reopen-last-row",
+            "settings-scroll",
+        ];
+        if cfg!(target_os = "linux") {
+            switches.push("code-font-switch");
+            rows.extend(["code-font-setting", "code-font-switch"]);
+        }
+        // Every Switch track, the toggled one's included, then each row.
+        let measure = |cx: &mut VisualTestContext| {
+            let mut bounds: Vec<_> = painted_quads(cx)
+                .into_iter()
+                .filter(|quad| quad.size == size(px(36.), px(20.)))
+                .collect();
+            // A checked track may paint in another order.
+            bounds.sort_by(|a, b| {
+                (a.top(), a.left())
+                    .partial_cmp(&(b.top(), b.left()))
+                    .unwrap()
+            });
+            for row in &rows {
+                bounds.push(shown(cx, row).unwrap_or_else(|| panic!("{row}")));
+            }
+            bounds
+        };
+        for &(interface, desktop) in sizes {
+            cx.simulate_resize(size(px(1000.), px(5000.)));
+            cx.update(|window, cx| {
+                #[cfg(target_os = "linux")]
+                appearance::set_desktop_text_scale(desktop, cx);
+                #[cfg(not(target_os = "linux"))]
+                assert_eq!(desktop, 1.0, "only Linux reports a desktop text scale");
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    app.apply_appearance(window, cx);
+                    cx.notify();
+                });
+            });
+            settle(cx);
+            let at = format!("{interface} pt at {desktop}");
+            let rest = painted_quads(cx);
+            for selector in &switches {
+                let holder = shown(cx, selector).unwrap_or_else(|| panic!("{selector}"));
+                let track = rest
+                    .iter()
+                    .copied()
+                    .find(|quad| {
+                        quad.size == size(px(36.), px(20.)) && holder.contains(&quad.center())
+                    })
+                    .unwrap_or_else(|| panic!("{at}: {selector} draws its track"));
+                let expected = measure(cx);
+                let assert_still = |cx: &mut VisualTestContext, state: &str| {
+                    let now = measure(cx);
+                    let moved: Vec<_> = expected
+                        .iter()
+                        .zip(&now)
+                        .filter(|(before, after)| before != after)
+                        .take(3)
+                        .collect();
+                    assert!(
+                        moved.is_empty() && now.len() == expected.len(),
+                        "{at}: {state} moved {moved:?} ({} bounds, then {})",
+                        expected.len(),
+                        now.len()
+                    );
+                };
+                let toggle = |cx: &mut VisualTestContext| {
+                    cx.simulate_click(track.center(), Modifiers::default());
+                    settle(cx);
+                };
+                toggle(cx);
+                assert_still(cx, &format!("turning {selector} on"));
+                #[cfg(target_os = "linux")]
+                if *selector == "code-font-switch" {
+                    use crate::desktop_text;
+                    let answer =
+                        |cx: &mut VisualTestContext, found: Result<SharedString, String>| {
+                            cx.update(|_, cx| {
+                                let lookup = desktop_text::code_font_lookup_generation(cx);
+                                desktop_text::answer_code_font_lookup(lookup, found, cx)
+                            });
+                            settle(cx);
+                        };
+                    answer(cx, Ok("Desktop Mono".into()));
+                    assert_still(cx, "the desktop's font found");
+                    toggle(cx);
+                    assert_still(cx, "turning the desktop's font off");
+                    toggle(cx);
+                    answer(cx, Err("Proportional Sans is not monospace.".into()));
+                    assert_still(cx, "the desktop's font unusable");
+                }
+                toggle(cx);
+                assert_still(cx, &format!("turning {selector} off again"));
+            }
+        }
+    }
+
+    /// Tab, then Shift-Tab, walk every Settings control in a 1,000 × 680
+    /// window, crossing the page viewport's lower edge and back, and in every
+    /// frame painted after each key the focused control, grown by the focus
+    /// ring's 3 px of room, lies inside the page's viewport.
+    #[gpui::test]
+    fn tab_keeps_every_settings_control_in_view(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        assert_tab_keeps_controls_in_view(&app, cx, 30);
+    }
+
+    /// As above, with a repository open, whose Git identity form, Name,
+    /// Email and its buttons, takes the place of Choose a project.
+    #[gpui::test]
+    fn tab_keeps_the_identity_form_in_view(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = crate::tags::tests::tagged_repository(fixture.path());
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| theme_editor::init(cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        assert_tab_keeps_controls_in_view(&app, cx, 33);
+    }
+
+    /// Tab walks Settings from its first control until focus returns to it,
+    /// then Shift-Tab walks back, through at least `controls` page controls.
+    fn assert_tab_keeps_controls_in_view(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        controls: usize,
+    ) {
+        use crate::tags::tests::draw;
+
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        settle(cx);
+        let page = cx.read(|cx| app.read(cx).theme_editor.page().clone());
+        let room = cx.read(appearance::button_ring_room);
+        // Takes one key and returns the control it focused, if that control
+        // is on the page rather than in the window's header.
+        let step = |cx: &mut VisualTestContext, key: &str| -> Option<FocusHandle> {
+            page.take_painted();
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            let (focused, on_page) = cx.update(|window, cx| {
+                let on_page = window
+                    .context_stack()
+                    .iter()
+                    .any(|context| context.contains(theme_editor::SETTINGS_CONTEXT));
+                (window.focused(cx).expect("{key} keeps focus"), on_page)
+            });
+            if !on_page {
+                return None;
+            }
+            let frames = page.take_painted();
+            assert!(!frames.is_empty(), "{key} paints the page");
+            let slack = px(0.01);
+            for (index, frame) in frames.iter().enumerate() {
+                let ring = frame
+                    .control
+                    .unwrap_or_else(|| {
+                        panic!("frame {index} after {key} draws the focused control")
+                    })
+                    .dilate(room);
+                assert!(
+                    ring.top() + slack >= frame.viewport.top()
+                        && ring.bottom() <= frame.viewport.bottom() + slack,
+                    "frame {index} after {key} paints the focused control with its ring, \
+                     {ring:?}, outside the page, {:?}",
+                    frame.viewport
+                );
+            }
+            Some(focused)
+        };
+        // With nothing focused a key reaches no binding; start the walk.
+        cx.update(|window, cx| window.focus_next(cx));
+        settle(cx);
+        let mut order: Vec<FocusHandle> = Vec::new();
+        let mut deepest = px(0.);
+        for _ in 0..200 {
+            let Some(focused) = step(cx, "tab") else {
+                continue;
+            };
+            if order.first() == Some(&focused) {
+                break;
+            }
+            order.push(focused);
+            deepest = deepest.min(page.scroll().offset().y);
+        }
+        assert!(
+            order.len() >= controls,
+            "Tab reached {} Settings controls",
+            order.len()
+        );
+        let viewport = page.scroll().bounds().size.height;
+        assert!(
+            deepest < -viewport,
+            "Tab scrolled the page past its first screen ({deepest:?}, {viewport:?} tall)"
+        );
+        // Back from the first control: Shift-Tab leaves the page for the
+        // header, then walks the page from its foot to its top.
+        let mut back: Vec<FocusHandle> = Vec::new();
+        let mut highest = deepest;
+        for _ in 0..200 {
+            if let Some(focused) = step(cx, "shift-tab") {
+                if back.first() == Some(&focused) {
+                    break;
+                }
+                back.push(focused);
+                highest = highest.max(page.scroll().offset().y);
+            }
+        }
+        back.reverse();
+        assert_eq!(back, order, "Shift-Tab walks the same controls back");
+        assert!(
+            highest > -viewport,
+            "Shift-Tab scrolled back to the page's first screen ({highest:?})"
+        );
     }
 
     /// A Tab-focused, enabled Settings Switch draws the Button focus ring, 2 px

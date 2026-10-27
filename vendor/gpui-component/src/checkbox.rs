@@ -6,9 +6,9 @@ use crate::{
 };
 use crate::{StyledExt as _, ThemeStyled as _};
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled, Window, div,
-    prelude::FluentBuilder as _, px, relative, rems, svg,
+    AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, StyleRefinement, Styled,
+    Window, div, prelude::FluentBuilder as _, px, relative, rems, svg,
 };
 use gpui_base::{CheckboxIndicator, spring};
 
@@ -32,6 +32,9 @@ pub struct Checkbox {
     tooltip: ComponentTooltip,
     role: RoleOverride,
     focus_ring_enabled: bool,
+    /// GitTurtle patch: a caller-owned focus handle, used instead of keyed
+    /// state.
+    focus_handle: Option<FocusHandle>,
 }
 
 impl Checkbox {
@@ -54,7 +57,16 @@ impl Checkbox {
             tooltip: ComponentTooltip::default(),
             role: RoleOverride::default(),
             focus_ring_enabled: true,
+            focus_handle: None,
         }
+    }
+
+    /// Uses a caller-owned focus handle instead of creating keyed state, as
+    /// `Button::track_focus` does, so the caller can tell whether the
+    /// Checkbox holds focus.
+    pub fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
+        self.focus_handle = Some(focus_handle.clone());
+        self
     }
 
     pub fn role(mut self, role: impl Into<RoleOverride>) -> Self {
@@ -214,10 +226,12 @@ impl RenderOnce for Checkbox {
             .accessibility_label
             .or_else(|| self.label.as_ref().map(|label| label.get_text(cx)));
         let on_click = self.on_click.clone();
-        let focus_handle = window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone();
+        let focus_handle = self.focus_handle.clone().unwrap_or_else(|| {
+            window
+                .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone()
+        });
         let is_focused = focus_handle.is_focused(window);
 
         let unchecked_border = cx.theme().input;

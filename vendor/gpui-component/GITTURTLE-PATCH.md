@@ -294,6 +294,21 @@ at least 6 of 255 in one channel in every palette. Remove this part of the
 patch when upstream Switch draws a focus indicator and a hover state, or offers
 equivalent settings, and those tests pass without it.
 
+The caller focus-handle patch also modifies `src/switch.rs` and
+`src/checkbox.rs`. Upstream Switch and Checkbox keep their focus handles in
+their own keyed state, so an application cannot tell whether one holds focus,
+and Settings could not scroll a Tab-focused Switch or History column Checkbox
+into view on its page. `Switch::track_focus` and `Checkbox::track_focus` now
+take a caller-owned handle, exactly as `Button::track_focus` does, and the
+control uses it in place of its keyed state; without one nothing changes. The
+consumers are the Settings Switches and column Checkboxes
+(`crates/app/src/settings.rs`), covered by
+`cargo test --locked -p gitturtle tab_keeps_every_settings_control_in_view` and
+`tab_keeps_the_identity_form_in_view`, which tab through the page in a
+1,000 × 680 window and require every focused control in view. Remove it when
+upstream Switch and Checkbox accept a caller focus handle or expose their
+focus state.
+
 The disabled-foreground patch modifies `src/theme/mod.rs`,
 `src/button/button.rs`, `src/menu/menu_item.rs` and `src/menu/popup_menu.rs`.
 Upstream dims a disabled Button's label to `muted_foreground` at half strength

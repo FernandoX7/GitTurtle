@@ -1168,7 +1168,7 @@ impl GitTurtle {
                         .p_3()
                         .border_b_1()
                         .border_color(rgb(colors.border))
-                        .child(self.render_columns_controls(cx)),
+                        .child(self.render_columns_controls(false, cx)),
                 )
             })
             .child(history_scroll_viewport(

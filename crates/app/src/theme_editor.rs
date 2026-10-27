@@ -21,6 +21,7 @@
 //! `docs/development/themes/spec.md` §Editor, §Import and export and §Failure
 //! and recovery, and `DESIGN.md` §Custom theme editor.
 
+use crate::focus_reveal::{FocusReveal, Trigger};
 use crate::*;
 use appearance::custom::{
     self, CustomTheme, ImportedTheme, ReadabilityIssue, ThemeSelection, TokenGroup, TokenKind,
@@ -35,6 +36,17 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder;
 use preferences::MAX_CUSTOM_THEMES;
+
+/// The Settings page's scroll, which reveals a control only when the
+/// keyboard moves focus onto it: a click on a partly visible control scrolls
+/// nothing.
+struct SettingsPage(FocusReveal);
+
+impl Default for SettingsPage {
+    fn default() -> Self {
+        Self(FocusReveal::new(Trigger::Keyboard))
+    }
+}
 
 #[derive(Default)]
 pub(super) struct State {
@@ -94,10 +106,11 @@ pub(super) struct State {
     revealed_row: std::cell::RefCell<Option<(usize, WeakFocusHandle)>>,
     /// The Settings page's own scroll (`settings.rs`), so that revealing the
     /// row holding focus also brings it, with its focus ring's room, into the
-    /// page's viewport and not only into the list's. The page starts at its
+    /// page's viewport and not only into the list's, and every other control
+    /// the keyboard focuses is revealed there too. The page starts at its
     /// top whenever Settings is entered (`settings_entered`), as it did while
     /// the offset lived in the page's element state.
-    page_scroll: ScrollHandle,
+    page: SettingsPage,
     /// The window y of the first Your themes row with the page and the list
     /// both at offset zero, recorded each time the page is prepainted: the
     /// page reveal places a row from it before the frame lays the page out.
@@ -341,7 +354,12 @@ impl State {
 
     /// The Settings page's scroll handle.
     pub(super) fn page_scroll(&self) -> &ScrollHandle {
-        &self.page_scroll
+        self.page.0.scroll()
+    }
+
+    /// Reveals a Settings control in the page when the keyboard focuses it.
+    pub(super) fn page(&self) -> &FocusReveal {
+        &self.page.0
     }
 
     /// Where the first Your themes row stands with the page and the list at
@@ -353,7 +371,7 @@ impl State {
     /// Settings was entered from another page: the page starts at its top and
     /// the rows' anchor waits for the page's first prepaint.
     pub(super) fn settings_entered(&self) {
-        self.page_scroll.set_offset(Point::default());
+        self.page_scroll().set_offset(Point::default());
         self.rows_anchor.set(None);
     }
 }
