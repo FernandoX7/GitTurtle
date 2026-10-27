@@ -106,6 +106,12 @@ cover current upstream x86-64 Omarchy.
         ([validation entry](../validation.md#october-26-omarchy-font-set-reaches-code-text-at-once)).
      4. Every stock Omarchy theme (22 on 4.0.4-mac.1, light and unusual ones included)
         reads well in History, Compare, Changes, Settings and dialogs; fix what does not.
+        Done: eight fixes (`1adbdf4` to `7553ddb`) and two the re-sweep prompted (menu
+        separators `9eb9a36`, the edge above the shadow `de4a8a2`), checked in all 22
+        themes ([validation entry](../validation.md#october-27-every-stock-omarchy-theme-after-the-contrast-fixes)).
+        Open: medium and heavier interface weights render as Regular on Linux, because
+        `.SystemUIFont` is IBM Plex Sans there and it is not installed; the owner chose
+        (2026-10-27) to fix it in the way best for Linux and the project, legally.
      5. Open in Editor uses the person's Omarchy editor (`omarchy launch editor`) when
         no external editor is set. Done, `bb98a57`
         ([validation entry](../validation.md#october-26-omarchy-editor-default-terminal-and-a-launch-or-focus-binding)).
