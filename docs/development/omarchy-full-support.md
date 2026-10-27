@@ -139,7 +139,10 @@ cover current upstream x86-64 Omarchy.
         sweep (item 4) found `switch-checked-knob-and-disabled-label`'s knob at 1.2–2.5:1
         in six themes.
      9. Any further UI or UX improvement found along the way: the owner wants a
-        first-class Omarchy app, good enough to be featured.
+        first-class Omarchy app, good enough to be featured. Done so far: the Changes
+        status bar counts the working tree instead of History's files, `8f2e8da`
+        ([validation entry](../validation.md#october-27-the-changes-status-bar-counts-the-working-tree)),
+        and the navigation's section labels are 11 px medium, `25433f7`.
 4. **Distribution.** Publish versioned release bundles (x86-64 and AArch64, checksums,
    build identity). Resolve the two dependencies the packager flags for license review
    (`mac`, `ufbx`) before distributing. Then add an AUR package (`gitturtle-bin`) and

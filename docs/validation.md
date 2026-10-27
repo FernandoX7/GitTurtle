@@ -65,6 +65,15 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 27 the Changes status bar counts the working tree
+
+Approved item 9 of [full Omarchy support](development/omarchy-full-support.md): Changes showed History's file-list figures until a preview arrived, and a working preview, whose file list holds only the previewed file, then read "1 changed files"; History kept that text after returning. `8f2e8da` sets the working summary when Changes is shown, refreshed or previewed, restores the commit's count in History, and makes changed-file and parent counts singular for one. `views::tests::changes_reports_the_working_tree_in_the_status_bar` fails on `25433f7` with "1 changed files · file list" and passes on `8f2e8da`; the fast gate passed.
+
+- **Host, fixture and capture:** as in [the interface font check](#october-27-the-linux-interface-draws-its-real-weights): floating at 1480 × 980, empty configuration, notifications silenced. History with commit `0739bd6` selected, then Ctrl+2, a click on the unstaged `src/ActivityFeed.tsx`, and Ctrl+1.
+- **Builds:** base `25433f7` (sha256 `90b78a37…`), candidate `8f2e8da` (`a97c3c868f8b97254babe0e8eeeaf93d635d684685bbb3c7365d6c343f482a2c`).
+- **Result:** the base read "2 changed files · file list 1.5 ms" in History and still in Changes, "1 changed files · content read 5.2 ms" after the preview, and that again back in History. The candidate reads "2 changed files · file list 3.1 ms", then "3 working changes · 1 staged", "3 working changes · 1 staged · content read 4.9 ms", and "2 changed files" back in History, untimed because nothing was measured.
+- **Evidence:** [`docs/evidence/changes-status-bar/`](evidence/changes-status-bar/), the four status strips of each build, top to bottom in that order; they hold only status text.
+
 ## October 27 the Linux interface draws its real weights
 
 The open finding of approved item 4 in [full Omarchy support](development/omarchy-full-support.md): every interface weight drew Regular on Linux. Owner decision, 2026-10-27: fix it in the way best for Linux and the project, legally. `ad04939` embeds six unmodified IBM Plex Sans 3.005 faces ([provenance](../assets/fonts/ibm-plex-sans/README.md)), the family the toolkit names `.SystemUIFont` on Linux; `25433f7` gives the History navigation's section labels the 11 px medium DESIGN.md asks for, which the Regular-only font had hidden.
