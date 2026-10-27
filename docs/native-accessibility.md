@@ -20,6 +20,8 @@ The pinned `gpui-base` Button previously prevented disabled activation but omitt
 
 Persistent presentation selection and semantic toggle state are separate toolkit properties. Apply `.toggled` only to real switches or modes, and explicit tab/selected roles for repository tabs. An action such as Fit or Reset must not be announced as an unchecked toggle merely because it is unselected visually.
 
+Menus follow the same rule. An item built with `PopupMenuItem::checked`, or through the kit's `menu_with_check` builders, is a check menu item (`Role::MenuItemCheckBox`) whose toggled state follows its tick; every other item stays a plain menu item, so a menu that ticks a choice marks each of its choices checkable (the branch chooser's other branches take `.checked(false)`), and a command beside them, such as the review Options menu's Context and Reset review, stays plain. The [component patch](../vendor/gpui-component/GITTURTLE-PATCH.md) supplies the role; groups are not announced as exclusive, because the kit's API does not say whether they are.
+
 The [macOS backend patch](../vendor/gpui-pre-macos/README.gitturtle.md#accessibility-responder-alignment) attaches AccessKit to GPUI's actual first-responder rendering view and initializes current host key-window state. The upstream adapter attached to its parent content view, which could expose the tree while focused controls still returned window-level fallback through AppKit. Native validation of the resulting binary remains necessary.
 
 ## Display preferences

@@ -40,6 +40,9 @@ pub enum PopupMenuItem {
         label: SharedString,
         disabled: bool,
         checked: bool,
+        /// GitTurtle patch: whether the item toggles a state, so it is
+        /// announced as a check menu item, ticked or not.
+        checkable: bool,
         is_link: bool,
         action: Option<Box<dyn Action>>,
         // For link item
@@ -50,6 +53,8 @@ pub enum PopupMenuItem {
         icon: Option<Icon>,
         disabled: bool,
         checked: bool,
+        /// GitTurtle patch: as for [`PopupMenuItem::Item`].
+        checkable: bool,
         action: Option<Box<dyn Action>>,
         render: Box<dyn Fn(&mut Window, &mut App) -> AnyElement + 'static>,
         handler: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
@@ -75,6 +80,7 @@ impl PopupMenuItem {
             label: label.into(),
             disabled: false,
             checked: false,
+            checkable: false,
             action: None,
             is_link: false,
             handler: None,
@@ -92,6 +98,7 @@ impl PopupMenuItem {
             icon: None,
             disabled: false,
             checked: false,
+            checkable: false,
             action: None,
             render: Box::new(move |window, cx| builder(window, cx).into_any_element()),
             handler: None,
@@ -178,13 +185,23 @@ impl PopupMenuItem {
     /// Set checked state for the menu item.
     ///
     /// NOTE: If `check_side` is [`Side::Left`], the icon will replace with a check icon.
+    ///
+    /// GitTurtle patch: this also makes the item checkable, so it is announced
+    /// as a check menu item whether it is ticked or not.
     pub fn checked(mut self, checked: bool) -> Self {
         match &mut self {
-            PopupMenuItem::Item { checked: c, .. } => {
-                *c = checked;
+            PopupMenuItem::Item {
+                checked: c,
+                checkable,
+                ..
             }
-            PopupMenuItem::ElementItem { checked: c, .. } => {
+            | PopupMenuItem::ElementItem {
+                checked: c,
+                checkable,
+                ..
+            } => {
                 *c = checked;
+                *checkable = true;
             }
             _ => {}
         }
@@ -219,6 +236,7 @@ impl PopupMenuItem {
             label: label.into(),
             disabled: false,
             checked: false,
+            checkable: false,
             action: None,
             is_link: true,
             handler: Some(Rc::new(move |_, _, cx| cx.open_url(&href))),
@@ -262,6 +280,19 @@ impl PopupMenuItem {
     }
 
     #[inline]
+    /// GitTurtle patch: `Some(checked)` for a checkable item, `None` otherwise.
+    fn check_state(&self) -> Option<bool> {
+        match self {
+            PopupMenuItem::Item {
+                checked, checkable, ..
+            }
+            | PopupMenuItem::ElementItem {
+                checked, checkable, ..
+            } => checkable.then_some(*checked),
+            _ => None,
+        }
+    }
+
     fn is_checked(&self) -> bool {
         match self {
             PopupMenuItem::Item { checked, .. } => *checked,
@@ -447,7 +478,7 @@ impl PopupMenu {
         action: Box<dyn Action>,
         enable: bool,
     ) -> Self {
-        self.add_menu_item(label, None, action, !enable, false);
+        self.add_menu_item(label, None, action, !enable, None);
         self
     }
 
@@ -458,7 +489,7 @@ impl PopupMenu {
         action: Box<dyn Action>,
         disabled: bool,
     ) -> Self {
-        self.add_menu_item(label, None, action, disabled, false);
+        self.add_menu_item(label, None, action, disabled, None);
         self
     }
 
@@ -531,7 +562,7 @@ impl PopupMenu {
         action: Box<dyn Action>,
         disabled: bool,
     ) -> Self {
-        self.add_menu_item(label, Some(icon.into()), action, disabled, false);
+        self.add_menu_item(label, Some(icon.into()), action, disabled, None);
         self
     }
 
@@ -553,7 +584,7 @@ impl PopupMenu {
         action: Box<dyn Action>,
         disabled: bool,
     ) -> Self {
-        self.add_menu_item(label, None, action, disabled, checked);
+        self.add_menu_item(label, None, action, disabled, Some(checked));
         self
     }
 
@@ -743,13 +774,15 @@ impl PopupMenu {
         icon: Option<Icon>,
         action: Box<dyn Action>,
         disabled: bool,
-        checked: bool,
+        // GitTurtle patch: `Some` for the check builders, which make the item
+        // checkable; `None` for a plain item.
+        checked: Option<bool>,
     ) -> &mut Self {
         self.menu_items.push(
             PopupMenuItem::new(label)
                 .when_some(icon, |item, icon| item.icon(icon))
                 .disabled(disabled)
-                .checked(checked)
+                .when_some(checked, |item, checked| item.checked(checked))
                 .action(action),
         );
         self
@@ -773,12 +806,18 @@ impl PopupMenu {
                     disabled,
                     ..
                 } => {
-                    self = self.menu_with_check_and_disabled(
-                        name,
-                        checked,
-                        action.boxed_clone(),
-                        disabled,
-                    )
+                    // GitTurtle patch: a platform menu action says only whether
+                    // it is ticked, so only a ticked one is announced as checkable.
+                    self = if checked {
+                        self.menu_with_check_and_disabled(
+                            name,
+                            checked,
+                            action.boxed_clone(),
+                            disabled,
+                        )
+                    } else {
+                        self.menu_with_disabled(name, action.boxed_clone(), disabled)
+                    }
                 }
                 OwnedMenuItem::Separator => {
                     self = self.separator();
@@ -1197,6 +1236,7 @@ impl PopupMenu {
             .rounded(radius)
             .items_center()
             .selected(selected)
+            .checked(item.check_state())
             .on_hover(cx.listener(move |this, hovered, _, cx| {
                 if *hovered {
                     this.selected_index = Some(ix);

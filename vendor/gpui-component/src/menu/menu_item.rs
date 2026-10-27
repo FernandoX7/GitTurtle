@@ -14,6 +14,9 @@ pub(crate) struct MenuItemElement {
     style: StyleRefinement,
     disabled: bool,
     selected: bool,
+    /// GitTurtle patch: `Some(checked)` for a checkable item, announced as a
+    /// check menu item with its state; `None` for a plain item.
+    checked: Option<bool>,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
     on_hover: Option<Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
     children: SmallVec<[AnyElement; 2]>,
@@ -30,6 +33,7 @@ impl MenuItemElement {
             style: StyleRefinement::default(),
             disabled: false,
             selected: false,
+            checked: None,
             on_click: None,
             on_hover: None,
             children: SmallVec::new(),
@@ -39,6 +43,12 @@ impl MenuItemElement {
     /// Set ListItem as the selected item style.
     pub(crate) fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// Make the item a check menu item in the given state, or a plain one.
+    pub(crate) fn checked(mut self, checked: Option<bool>) -> Self {
+        self.checked = checked;
         self
     }
 
@@ -92,9 +102,33 @@ impl ParentElement for MenuItemElement {
 
 impl RenderOnce for MenuItemElement {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let role = if self.checked.is_some() {
+            Role::MenuItemCheckBox
+        } else {
+            Role::MenuItem
+        };
+        let toggled = self.checked.map(|checked| {
+            if checked {
+                gpui::accesskit::Toggled::True
+            } else {
+                gpui::accesskit::Toggled::False
+            }
+        });
+        // GitTurtle patch: tests cannot read a menu's AccessKit nodes, so a
+        // test build names each item's role and state as it hands them over.
+        let selector = self.aria_label.as_ref().map(|label| {
+            format!(
+                "menu-item: {label} · {role:?}{}",
+                toggled.map_or(String::new(), |toggled| format!(" {toggled:?}"))
+            )
+        });
         h_flex()
             .id(self.id)
-            .role(Role::MenuItem)
+            .role(role)
+            .when_some(toggled, |this, toggled| this.aria_toggled(toggled))
+            .when_some(selector, |this, selector| {
+                this.debug_selector(move || selector.clone())
+            })
             .when_some(self.aria_label, |this, label| this.aria_label(label))
             .aria_selected(self.selected)
             .group(&self.group_name)

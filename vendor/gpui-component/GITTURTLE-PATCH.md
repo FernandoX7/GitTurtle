@@ -437,3 +437,32 @@ rest, the shared hover fill when hovered, and none when an operation disables
 them. Remove this part of the patch when upstream derives the ghost hover so a
 dark `secondary` visibly lifts, or offers an equivalent setting, and that test
 passes without it.
+
+The checked-menu-item patch modifies `src/menu/popup_menu.rs` and
+`src/menu/menu_item.rs`. Upstream draws a checked item's tick only as an icon
+and gives every item `Role::MenuItem` with `aria_selected`, so a ticked item is
+announced like any other and its state is lost. `PopupMenuItem::Item` and
+`ElementItem` now carry `checkable`, which `PopupMenuItem::checked` sets and the
+`menu_with_check*` builders reach through it; the plain builders no longer call
+`checked`, so their items stay plain. A checkable item renders as
+`Role::MenuItemCheckBox` with `aria_toggled` true or false; a plain item keeps
+`Role::MenuItem`. A platform menu action (`with_menu_items`) says only whether it
+is ticked, so only a ticked one becomes checkable. Radio semantics are not
+added: the API does not say whether a group is exclusive. Each item also names
+its role and state in a debug selector (`menu-item: <label> · <role>
+[<toggled>]`), because GPUI's test platform never activates accessibility and a
+test cannot read a menu's AccessKit nodes.
+
+The consumers are the app's menus that tick a choice: the review Options menu
+(`crates/app/src/text_review.rs`, Hide whitespace checkable, Context and Reset
+review plain), the branch chooser (`branch_actions.rs`, every branch), the model
+view and animation clip menus (`model_view.rs`, `model_view/playback.rs`), the
+project pane's Move to menu (`project_pane.rs`), the profile menu
+(`profiles.rs`), the repository tab list (`repository_tabs.rs`) and the theme
+editor's base theme menu (`theme_editor.rs`).
+`cargo test --locked -p gitturtle review_options_menu_announces_its_toggle_checked`
+opens the narrow review Options menu and reads Hide whitespace as a check menu
+item, unticked and then ticked, and Context and Reset review as plain items;
+`text_review::tests::collapsed_options_menu_keeps_each_buttons_state` pins which
+items are checkable. Remove this part of the patch when upstream exposes a
+checkable item's state to accessibility and those tests pass without it.

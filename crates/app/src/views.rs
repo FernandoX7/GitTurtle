@@ -4486,6 +4486,44 @@ mod tests {
         }
     }
 
+    /// The Options menu's toggle is a check menu item in its state, and its
+    /// commands stay plain menu items.
+    #[gpui::test]
+    async fn review_options_menu_announces_its_toggle_checked(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let open = |cx: &mut VisualTestContext| {
+            let menu = cx
+                .debug_bounds("text-review-menu")
+                .expect("the Options menu button");
+            cx.simulate_click(menu.center(), Modifiers::default());
+            draw(cx);
+        };
+        let items = |cx: &mut VisualTestContext, checked: bool| {
+            for item in [
+                if checked {
+                    "menu-item: Hide whitespace · MenuItemCheckBox True"
+                } else {
+                    "menu-item: Hide whitespace · MenuItemCheckBox False"
+                },
+                "menu-item: Context 3 + · MenuItem",
+                "menu-item: Reset review · MenuItem",
+            ] {
+                assert!(cx.debug_bounds(item).is_some(), "{item}");
+            }
+        };
+        open(cx);
+        items(cx, false);
+        cx.simulate_keystrokes("down enter");
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.review.options.hide_whitespace));
+        open(cx);
+        items(cx, true);
+    }
+
     /// "Original Git diff" and the other captions start where the buttons'
     /// labels do when they wrap to a line of their own, and keep to the
     /// Options row when the options collapse.

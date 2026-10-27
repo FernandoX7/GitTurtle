@@ -186,8 +186,11 @@ impl GitTurtle {
                     let path = path.clone();
                     let label = occupied
                         .map_or_else(|| name.clone(), |_| format!("{name} · another worktree"));
+                    // Choices beside the ticked current branch, announced as
+                    // unticked check items.
                     menu = menu.item(
                         PopupMenuItem::new(label)
+                            .checked(false)
                             .disabled(occupied.is_some())
                             .on_click(move |_, window, cx| {
                                 let _ = owner.update(cx, |this, cx| {

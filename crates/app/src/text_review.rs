@@ -18,7 +18,9 @@ use gpui_kit::{
         menu::{DropdownMenu, PopupMenuItem},
         tooltip::Tooltip,
     },
-    div, percentage, rgb,
+    div, percentage,
+    prelude::FluentBuilder,
+    rgb,
 };
 use std::{ops::Range, sync::Arc};
 
@@ -496,7 +498,7 @@ impl GitTurtle {
                         let owner = owner.clone();
                         menu.item(
                             PopupMenuItem::new(item.label)
-                                .checked(item.checked)
+                                .when_some(item.checked, PopupMenuItem::checked)
                                 .disabled(item.disabled)
                                 .on_click(move |_, window, cx| {
                                     let _ = owner.update(cx, |this, cx| {
@@ -563,7 +565,8 @@ impl GitTurtle {
 /// One item of the collapsed review options' menu.
 struct MenuItem {
     label: String,
-    checked: bool,
+    /// `Some` for an item that toggles, announced as a check menu item.
+    checked: Option<bool>,
     disabled: bool,
     /// The options it chooses, from those current when it is chosen.
     choose: fn(Options) -> Option<Options>,
@@ -583,7 +586,7 @@ fn options_menu(options: Options, busy: bool, reset_disabled: bool) -> [MenuItem
     [
         MenuItem {
             label: "Hide whitespace".into(),
-            checked: options.hide_whitespace,
+            checked: Some(options.hide_whitespace),
             disabled: busy,
             choose: |options| {
                 Some(Options {
@@ -594,13 +597,13 @@ fn options_menu(options: Options, busy: bool, reset_disabled: bool) -> [MenuItem
         },
         MenuItem {
             label: format!("Context {} +", options.context),
-            checked: false,
+            checked: None,
             disabled: busy || next_context(options).is_none(),
             choose: next_context,
         },
         MenuItem {
             label: "Reset review".into(),
-            checked: false,
+            checked: None,
             disabled: reset_disabled,
             choose: |_| Some(Options::default()),
         },
@@ -683,9 +686,9 @@ mod tests {
         assert_eq!(
             states(options_menu(original, false, true)),
             [
-                ("Hide whitespace".into(), false, false),
-                ("Context 3 +".into(), false, false),
-                ("Reset review".into(), false, true),
+                ("Hide whitespace".into(), Some(false), false),
+                ("Context 3 +".into(), None, false),
+                ("Reset review".into(), None, true),
             ]
         );
         let hidden = Options {
@@ -693,7 +696,7 @@ mod tests {
             context: 3,
         };
         let [whitespace, context, reset] = options_menu(hidden, false, false);
-        assert!(whitespace.checked && !reset.disabled);
+        assert!(whitespace.checked == Some(true) && !reset.disabled);
         assert_eq!((whitespace.choose)(hidden), Some(original));
         assert_eq!(
             (context.choose)(hidden),
