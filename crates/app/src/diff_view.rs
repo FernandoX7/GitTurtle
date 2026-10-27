@@ -678,6 +678,7 @@ fn paint_gutter(
     cx: &mut App,
 ) {
     let palette = palette(cx);
+    let labels = crate::appearance::labels(cx);
     window.paint_quad(fill(bounds, rgb(palette.panel)));
     for x in [column_width - 1., column_width * 2. - 1.]
         .into_iter()
@@ -725,8 +726,8 @@ fn paint_gutter(
             let numbers = rows[row];
             let (color, background) = match (numbers.old, numbers.new) {
                 _ if single_column => (palette.muted, None),
-                (Some(_), None) => (palette.removed, Some(palette.removed_background)),
-                (None, Some(_)) => (palette.added, Some(palette.added_background)),
+                (Some(_), None) => (labels.removed, Some(palette.removed_background)),
+                (None, Some(_)) => (labels.added, Some(palette.added_background)),
                 _ => (palette.line_number, None),
             };
             if let Some(background) = background {

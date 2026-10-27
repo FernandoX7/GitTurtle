@@ -669,8 +669,11 @@ pub struct Labels {
     pub refs: [u32; 6],
     /// The Unstaged badge's label: `modified` on `subtle`.
     pub unstaged: u32,
-    /// The Staged and "N staged" badges' label: `added` on `added_background`.
-    pub staged: u32,
+    /// `added` on its diff tile, `added_background`: the gutter numbers of
+    /// added lines and the Staged and "N staged" badges.
+    pub added: u32,
+    /// `removed` on its diff tile: the gutter numbers of removed lines.
+    pub removed: u32,
 }
 
 impl Global for Labels {}
@@ -694,7 +697,8 @@ impl Labels {
             palette,
             refs,
             unstaged: palette.small_label(palette.modified, &[palette.subtle]),
-            staged: palette.small_label(palette.added, &[palette.added_background]),
+            added: palette.small_label(palette.added, &[palette.added_background]),
+            removed: palette.small_label(palette.removed, &[palette.removed_background]),
         }
     }
 }
@@ -3578,7 +3582,7 @@ mod tests {
                 (
                     "staged",
                     palette.added,
-                    labels.staged,
+                    labels.added,
                     palette.added_background,
                 ),
             ] {
@@ -3620,6 +3624,42 @@ mod tests {
                 }
             }
         }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Compare's gutter numbers on added and removed lines are code-size text
+    /// on the diff tiles, in `added` and `removed`, which the palettes fit to
+    /// the text rule with no room: 4.51:1 and 4.57:1 in Omarchy Flexoki Light,
+    /// read natively at 4.32:1 and 4.43:1. Every palette's numbers clear the
+    /// rule with the margin on their tile, keeping a token that already does.
+    #[test]
+    fn every_palette_fits_gutter_numbers_on_the_diff_tiles() {
+        let mut failures = Vec::new();
+        let mut moved = 0;
+        for (name, palette) in test_palettes() {
+            let labels = Labels::fit(palette);
+            for (what, token, label, tile) in [
+                (
+                    "added",
+                    palette.added,
+                    labels.added,
+                    palette.added_background,
+                ),
+                (
+                    "removed",
+                    palette.removed,
+                    labels.removed,
+                    palette.removed_background,
+                ),
+            ] {
+                match small_label_failures(&name, what, token, &[tile]) {
+                    Some(_) => moved += 1,
+                    None => assert_eq!(label, token, "{name} keeps its {what} color"),
+                }
+                failures.extend(small_label_failures(&name, what, label, &[tile]));
+            }
+        }
+        assert!(moved > 0, "some palette needs its gutter numbers fitted");
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

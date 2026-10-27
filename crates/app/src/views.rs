@@ -1844,7 +1844,7 @@ impl GitTurtle {
                             .rounded(px(4.))
                             .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(if staged {
-                                labels.staged
+                                labels.added
                             } else {
                                 labels.unstaged
                             }))
