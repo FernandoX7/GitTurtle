@@ -176,6 +176,44 @@ cover current upstream x86-64 Omarchy.
           at 640 px.
         - Kept as they are: Kanagawa's navy menus (the theme's own raised surface) and
           light-theme menus equal to the canvas (their edge and shadow carry them).
+        Owner decision, 2026-10-27 evening: handle everything found during item 8 and take
+        every recommendation, aiming for an incredibly beautiful UI and a wonderful user
+        experience; do the Linux wording sweep first. Each item is one cohesive commit with
+        native evidence:
+        - Linux wording: no macOS store, shortcut or app name in text a Linux build shows
+          ("Drafts stay on this Mac", the conflict tooltips' "Command-Option-Up/Down",
+          `repository_access.rs`' "Command-O", and the GitHub Keychain messages wherever
+          Linux can reach them); shortcut text from `shortcuts.rs` labels; audit with
+          `grep -rnE '"[^"]*\b(Mac|macOS|Keychain|Finder|Command-|⌘)' crates/app/src`.
+        - Disabled menu items announce themselves disabled (the kit's menu item needs a
+          wrapper element that sets AccessKit's disabled flag, as gpui-base's Button does).
+        - Escape closing the GitHub panel returns visible focus to what opened it.
+        - The PR list row: title and second line share one left-aligned text column.
+        - The review panel's Source editor reaches the file list's bottom: no half row cut,
+          no empty dialog below it.
+        - "Context 3 +" becomes a verb-led label, such as "More context (3 lines)", in the
+          full row and the Options menu.
+        - The narrow review caption never shows a lone "Origin…": below the width where it
+          can show its words it leaves the row, its text kept in a tooltip or the menu.
+        - The changed-file list keeps its focus ring while it has keyboard focus, even after
+          the pointer moves.
+        - Under a modal dialog the status bar shows the dialog's hints, or none, not the
+          page's.
+        - Braden and Rosé Pine Dawn take a slightly darker `selected`, so pressing a
+          secondary control reads as a deeper press with margin over the pressed step.
+        - Copy feedback: a Hash "Copied" never carries to another commit selected within
+          the 1.5 s; check the dialog announcements with Orca; `copy_feedback.rs` in the
+          app crate guide's routing table.
+        - Compact chrome: the 18 pt composer heading reads "Commit to main" rather than
+          "C…"; the breakpoint counts Compare's need at large code sizes.
+        - Reflog: its text is not clipped at the left edge in a 461 px window.
+        - Evidence still owed (capture with the window forced opaque): a hovered row beside
+          the selected row in Braden and One Light, pressed Fetch in Braden and Rosé Pine
+          Dawn, the Reflog's current entry, and the toolkit's own ghost controls.
+        Owner decision, same evening: committed frames from before the interface-font change
+        `ad04939` stand as records of their builds and are not retaken for later changes.
+        Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
+        VoiceOver's reading of check menu items and of copy announcements from dialogs.
 4. **Distribution.** Publish versioned release bundles (x86-64 and AArch64, checksums,
    build identity). Resolve the two dependencies the packager flags for license review
    (`mac`, `ufbx`) before distributing. Then add an AUR package (`gitturtle-bin`) and
