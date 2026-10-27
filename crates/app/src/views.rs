@@ -1836,6 +1836,7 @@ impl GitTurtle {
                     .filter(|_| self.mode == WorkspaceMode::Working)
                     .map(|(_, area)| {
                         let staged = area == gitturtle_core::ChangeArea::Staged;
+                        let labels = crate::appearance::labels(cx);
                         div()
                             .flex_shrink_0()
                             .px_2()
@@ -1843,9 +1844,9 @@ impl GitTurtle {
                             .rounded(px(4.))
                             .text_size(crate::appearance::ui_text(10.))
                             .text_color(rgb(if staged {
-                                colors.added
+                                labels.staged
                             } else {
-                                colors.modified
+                                labels.unstaged
                             }))
                             .bg(rgb(if staged {
                                 colors.added_background

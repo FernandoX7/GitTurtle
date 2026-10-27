@@ -1011,7 +1011,7 @@ impl GitTurtle {
                             .child(if short { format!("Commit to {branch}") } else { "Create a commit".into() }))
                         .child(div().px_1p5().py_0p5().rounded(px(4.))
                             .bg(rgb(if staged > 0 { p.added_background } else { p.hover }))
-                            .text_size(crate::appearance::ui_text(10.)).text_color(rgb(if staged > 0 { p.added } else { p.muted }))
+                            .text_size(crate::appearance::ui_text(10.)).text_color(rgb(if staged > 0 { crate::appearance::labels(cx).staged } else { p.muted }))
                             .child(format!("{staged} staged"))))
                     .when(!short, |el| el.child(div().flex().items_center().gap_1p5().min_w_0().text_size(crate::appearance::ui_text(11.))
                         .text_color(rgb(p.muted)).child(icon("branch", 13., p.muted))

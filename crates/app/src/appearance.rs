@@ -667,6 +667,10 @@ pub struct Labels {
     /// tint over every History row surface: the canvas, hovered, selected and
     /// hovered selected rows.
     pub refs: [u32; 6],
+    /// The Unstaged badge's label: `modified` on `subtle`.
+    pub unstaged: u32,
+    /// The Staged and "N staged" badges' label: `added` on `added_background`.
+    pub staged: u32,
 }
 
 impl Global for Labels {}
@@ -686,7 +690,12 @@ impl Labels {
             };
             palette.small_label(lane, &rows.map(|row| composite(tint, row)))
         });
-        Self { palette, refs }
+        Self {
+            palette,
+            refs,
+            unstaged: palette.small_label(palette.modified, &[palette.subtle]),
+            staged: palette.small_label(palette.added, &[palette.added_background]),
+        }
     }
 }
 
@@ -3545,6 +3554,42 @@ mod tests {
             accent_below,
             "accent alone would miss the text rule somewhere"
         );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// The Unstaged badge (`modified` on `subtle`) and the Staged and "N
+    /// staged" badges (`added` on its diff tile) are 10 px labels whose tokens
+    /// keep only the text rule, and `modified` not even that: 4.1:1 in Omarchy
+    /// Rose Pine and 3.8:1 in Kanagawa Lotus. Every palette's badge labels
+    /// clear the rule with the margin, and a token that already does is kept.
+    #[test]
+    fn every_palette_fits_staged_and_unstaged_badge_labels() {
+        let mut failures = Vec::new();
+        let mut moved = 0;
+        for (name, palette) in test_palettes() {
+            let labels = Labels::fit(palette);
+            for (what, token, label, surface) in [
+                (
+                    "unstaged",
+                    palette.modified,
+                    labels.unstaged,
+                    palette.subtle,
+                ),
+                (
+                    "staged",
+                    palette.added,
+                    labels.staged,
+                    palette.added_background,
+                ),
+            ] {
+                match small_label_failures(&name, what, token, &[surface]) {
+                    Some(_) => moved += 1,
+                    None => assert_eq!(label, token, "{name} keeps its {what} color"),
+                }
+                failures.extend(small_label_failures(&name, what, label, &[surface]));
+            }
+        }
+        assert!(moved > 0, "some palette needs a badge label fitted");
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }
