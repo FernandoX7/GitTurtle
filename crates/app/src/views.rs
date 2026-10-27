@@ -99,9 +99,258 @@ impl GitTurtle {
         .inset_0()
     }
 
-    /// `compact` drops the Projects and profile labels in a narrow window,
-    /// keeping their icons, tooltips and accessible names.
-    pub(super) fn render_header(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// The page's one return action: Projects at root History, labelled
+    /// where `labelled`, otherwise a Back arrow naming its destination.
+    fn render_back_button(&self, labelled: bool, cx: &mut Context<Self>) -> Button {
+        let back_label = self.back_label();
+        let back_to_projects = back_label == "Back to Projects";
+        button(
+            "page-back",
+            if back_to_projects && labelled {
+                "Projects"
+            } else {
+                ""
+            },
+            if back_to_projects {
+                "folder"
+            } else {
+                "arrow-left"
+            },
+            false,
+        )
+        .debug_selector(|| "page-back".into())
+        .accessibility_label(back_label)
+        .disabled(self.operation_busy.is_some() && self.mode == WorkspaceMode::History)
+        .tooltip(format!("{back_label} · {}[", primary_label()))
+        .on_click(cx.listener(|this, _, window, cx| this.navigate_back(window, cx)))
+    }
+
+    /// The repository's name, or the app's before one opens.
+    fn repository_name(&self) -> String {
+        self.repository
+            .as_ref()
+            .map(|repo| self.project_name(repo.path()))
+            .unwrap_or("GitTurtle".into())
+    }
+
+    /// The header's repository identity, named with its path for assistive
+    /// technology and in its tooltip.
+    fn repository_heading(&self) -> Stateful<Div> {
+        div()
+            .id("repository-heading")
+            .debug_selector(|| "repository-heading".into())
+            .role(Role::Label)
+            .aria_label(format!(
+                "Repository {}. {}",
+                self.repository
+                    .as_ref()
+                    .map(|repo| self.project_name(repo.path()))
+                    .unwrap_or_default(),
+                self.path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default(),
+            ))
+            .tooltip({
+                let identity = self
+                    .path
+                    .as_ref()
+                    .map(|path| format!("{}\n{}", self.project_name(path), path.display()))
+                    .unwrap_or_else(|| "GitTurtle".into());
+                move |window, cx| Tooltip::new(identity.clone()).build(window, cx)
+            })
+    }
+
+    /// The Changes mode's name with its working-file count, as its tab and
+    /// its compact toggle's accessible name read it.
+    pub(super) fn changes_label(&self) -> String {
+        self.work_status
+            .as_ref()
+            .map(|status| {
+                if status.entries.is_empty() {
+                    "Changes".into()
+                } else {
+                    format!("Changes · {}", status.entries.len())
+                }
+            })
+            .unwrap_or_else(|| "Changes".into())
+    }
+
+    /// A running operation's progress, with its repository.
+    fn render_operation_progress(&self, label: &str, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let progress = self
+            .operation_progress()
+            .unwrap_or_else(|| label.to_owned());
+        let description = format!(
+            "{}{}",
+            progress,
+            self.operation_repository
+                .as_ref()
+                .map_or(String::new(), |path| format!(" in {}", path.display()))
+        );
+        div()
+            .id("operation-progress")
+            .role(Role::Status)
+            .aria_label(description.clone())
+            .tooltip(move |window, cx| Tooltip::new(description.clone()).build(window, cx))
+            .a11y_synthetic_children(|builder| {
+                builder.parent_node().set_live(gpui::accesskit::Live::Off)
+            })
+            .max_w(appearance::ui_size(180.))
+            .truncate()
+            .text_size(appearance::ui_text(11.))
+            .text_color(rgb(p.accent))
+            .child(
+                progress
+                    + &self
+                        .operation_repository
+                        .as_ref()
+                        .map_or(String::new(), |path| {
+                            format!(" · {}", self.project_name(path))
+                        }),
+            )
+            .into_any_element()
+    }
+
+    fn render_projects_button(&self, cx: &mut Context<Self>) -> Button {
+        button("projects", "", "folder", false)
+            .debug_selector(|| "projects".into())
+            .accessibility_label("Projects")
+            .tooltip("Open Projects")
+            .disabled(self.operation_busy.is_some())
+            .on_click(cx.listener(|this, _, window, cx| this.show_projects(window, cx)))
+    }
+
+    fn render_settings_button(&self, cx: &mut Context<Self>) -> Button {
+        button("settings", "", "settings", false)
+            .debug_selector(|| "settings".into())
+            .accessibility_label("Settings")
+            .tooltip(format!("Settings · {},", primary_label()))
+            .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx)))
+    }
+
+    /// The header's compact row (`Chrome::Compact`): the return action, the
+    /// turtle where it fits, the repository's name alone (its path stays in
+    /// the tooltip and accessible name), History and Changes as icon
+    /// toggles, Pull requests as "PRs", then Projects, the profile and
+    /// Settings, every control 28 px. The same controls in the same order as
+    /// the full header, each with its action, its accessible name and a
+    /// tooltip that leads with that name. The row keeps the room a focused
+    /// control's ring takes above and below it and draws no bottom rule:
+    /// the action bar's compact row follows it on the same surface.
+    fn render_compact_header(&self, turtle: bool, cx: &mut Context<Self>) -> AnyElement {
+        let p = palette(cx);
+        let busy = self.operation_busy.is_some();
+        let back_to_projects = self.back_label() == "Back to Projects";
+        let ring = appearance::button_ring_room(cx);
+        let history = self.mode != WorkspaceMode::Working;
+        let changes = self.changes_label();
+        div()
+            .debug_selector(|| "repository-header".into())
+            .flex_shrink_0()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .pt(ring)
+            .pb(ring)
+            .bg(rgb(p.panel))
+            .child(self.render_back_button(false, cx))
+            .when(turtle, |header| {
+                header.child(app_icon(f32::from(appearance::ui_size(28.))))
+            })
+            .child(
+                self.repository_heading()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(appearance::ui_text(14.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(self.repository_name()),
+            )
+            .when(self.repository.is_some(), |header| {
+                header
+                    .child(
+                        div()
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap_0p5()
+                            .rounded(appearance::ui_size(7.))
+                            .bg(rgb(p.subtle))
+                            .child(
+                                compact_control_name(
+                                    button("history-tab", "", "commit", history),
+                                    "history-tab",
+                                    "History",
+                                )
+                                .debug_selector(|| "history-tab".into())
+                                .toggled(history)
+                                .tooltip(format!("History · {}1", primary_label()))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.show_history(window, cx)
+                                    }),
+                                ),
+                            )
+                            .child(
+                                compact_control_label(
+                                    button("changes-tab", "", "changes", !history),
+                                    "changes-tab",
+                                    changes.clone(),
+                                )
+                                .debug_selector(|| "changes-tab".into())
+                                .toggled(!history)
+                                .tooltip(format!("{changes} · {}2", primary_label()))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.show_working(window, cx)
+                                    }),
+                                ),
+                            ),
+                    )
+                    .child(
+                        compact_control_name(
+                            button("pull-requests", COMPACT_PULL_REQUESTS, "", false),
+                            "pull-requests",
+                            "Pull requests",
+                        )
+                        .debug_selector(|| "pull-requests".into())
+                        .disabled(busy)
+                        .tooltip(
+                            "Pull requests · Discover pull requests and review captured changes",
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| this.open_github(window, cx))),
+                    )
+            })
+            .children(
+                self.operation_busy
+                    .map(|label| self.render_operation_progress(label, cx)),
+            )
+            .when(busy, |header| {
+                header.child(self.render_operation_cancel(cx))
+            })
+            .when(!back_to_projects, |header| {
+                header.child(self.render_projects_button(cx))
+            })
+            .child(self.render_profile_button(true, 28., cx))
+            .child(self.render_settings_button(cx))
+            .into_any_element()
+    }
+
+    /// The repository header in `chrome`'s form. The full form's `narrow`
+    /// drops the Projects and profile labels, keeping their icons, tooltips
+    /// and accessible names.
+    pub(super) fn render_header(&self, chrome: Chrome, cx: &mut Context<Self>) -> AnyElement {
+        let compact = match chrome {
+            Chrome::Compact { app_icon: turtle } if self.page == AppPage::Repository => {
+                return self.render_compact_header(turtle, cx);
+            }
+            Chrome::Compact { .. } => false,
+            Chrome::Full { narrow } => narrow,
+        };
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
         let back_label = self.back_label();
@@ -147,50 +396,10 @@ impl GitTurtle {
             .bg(rgb(p.panel))
             .border_b_1()
             .border_color(rgb(p.border))
-            .child(
-                button(
-                    "page-back",
-                    if back_to_projects && !compact {
-                        "Projects"
-                    } else {
-                        ""
-                    },
-                    if back_to_projects {
-                        "folder"
-                    } else {
-                        "arrow-left"
-                    },
-                    false,
-                )
-                .accessibility_label(back_label)
-                .disabled(busy && self.mode == WorkspaceMode::History)
-                .tooltip(format!("{back_label} · {}[", primary_label()))
-                .on_click(cx.listener(|this, _, window, cx| this.navigate_back(window, cx))),
-            )
+            .child(self.render_back_button(!compact, cx))
             .child(app_icon(f32::from(appearance::ui_size(28.))))
             .child(
-                div()
-                    .id("repository-heading")
-                    .role(Role::Label)
-                    .aria_label(format!(
-                        "Repository {}. {}",
-                        self.repository
-                            .as_ref()
-                            .map(|repo| self.project_name(repo.path()))
-                            .unwrap_or_default(),
-                        self.path
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_default(),
-                    ))
-                    .tooltip({
-                        let identity = self
-                            .path
-                            .as_ref()
-                            .map(|path| format!("{}\n{}", self.project_name(path), path.display()))
-                            .unwrap_or_else(|| "GitTurtle".into());
-                        move |window, cx| Tooltip::new(identity.clone()).build(window, cx)
-                    })
+                self.repository_heading()
                     .flex_1()
                     .max_w(appearance::ui_size(200.))
                     .min_w(appearance::ui_size(100.))
@@ -202,12 +411,7 @@ impl GitTurtle {
                             .text_size(appearance::ui_text(14.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
-                            .child(
-                                self.repository
-                                    .as_ref()
-                                    .map(|repo| self.project_name(repo.path()))
-                                    .unwrap_or("GitTurtle".into()),
-                            ),
+                            .child(self.repository_name()),
                     )
                     .child(
                         div()
@@ -240,6 +444,7 @@ impl GitTurtle {
                                     "",
                                     self.mode != WorkspaceMode::Working,
                                 )
+                                .debug_selector(|| "history-tab".into())
                                 .toggled(self.mode != WorkspaceMode::Working)
                                 .on_click(
                                     cx.listener(|this, _, window, cx| {
@@ -250,19 +455,11 @@ impl GitTurtle {
                             .child(
                                 button(
                                     "changes-tab",
-                                    self.work_status
-                                        .as_ref()
-                                        .map(|status| {
-                                            if status.entries.is_empty() {
-                                                "Changes".into()
-                                            } else {
-                                                format!("Changes · {}", status.entries.len())
-                                            }
-                                        })
-                                        .unwrap_or_else(|| "Changes".into()),
+                                    self.changes_label(),
                                     "",
                                     self.mode == WorkspaceMode::Working,
                                 )
+                                .debug_selector(|| "changes-tab".into())
                                 .toggled(self.mode == WorkspaceMode::Working)
                                 .on_click(
                                     cx.listener(|this, _, window, cx| {
@@ -273,6 +470,7 @@ impl GitTurtle {
                     )
                     .child(
                         button("pull-requests", "Pull requests", "", false)
+                            .debug_selector(|| "pull-requests".into())
                             .disabled(busy)
                             .tooltip("Discover pull requests and review captured changes")
                             .on_click(
@@ -281,60 +479,18 @@ impl GitTurtle {
                     )
             })
             .child(div().flex_1())
-            .children(self.operation_busy.map(|label| {
-                let progress = self
-                    .operation_progress()
-                    .unwrap_or_else(|| label.to_owned());
-                let description = format!(
-                    "{}{}",
-                    progress,
-                    self.operation_repository
-                        .as_ref()
-                        .map_or(String::new(), |path| format!(" in {}", path.display()))
-                );
-                div()
-                    .id("operation-progress")
-                    .role(Role::Status)
-                    .aria_label(description.clone())
-                    .tooltip(move |window, cx| Tooltip::new(description.clone()).build(window, cx))
-                    .a11y_synthetic_children(|builder| {
-                        builder.parent_node().set_live(gpui::accesskit::Live::Off)
-                    })
-                    .max_w(appearance::ui_size(180.))
-                    .truncate()
-                    .text_size(appearance::ui_text(11.))
-                    .text_color(rgb(p.accent))
-                    .child(
-                        progress
-                            + &self
-                                .operation_repository
-                                .as_ref()
-                                .map_or(String::new(), |path| {
-                                    format!(" · {}", self.project_name(path))
-                                }),
-                    )
-            }))
+            .children(
+                self.operation_busy
+                    .map(|label| self.render_operation_progress(label, cx)),
+            )
             .when(busy, |header| {
                 header.child(self.render_operation_cancel(cx))
             })
             .when(!back_to_projects, |header| {
-                header.child(
-                    button("projects", "", "folder", false)
-                        .accessibility_label("Projects")
-                        .tooltip("Open Projects")
-                        .disabled(busy)
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.show_projects(window, cx)),
-                        ),
-                )
+                header.child(self.render_projects_button(cx))
             })
-            .child(self.render_profile_button(compact, cx))
-            .child(
-                button("settings", "", "settings", false)
-                    .accessibility_label("Settings")
-                    .tooltip(format!("Settings · {},", primary_label()))
-                    .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
-            )
+            .child(self.render_profile_button(compact, 36., cx))
+            .child(self.render_settings_button(cx))
             .into_any_element()
     }
 
@@ -2310,6 +2466,375 @@ fn files_label_min_width(window: &Window) -> Pixels {
 /// Below this window width, at the interface text size, the header drops the
 /// Projects and profile labels so it stays on one row.
 const COMPACT_HEADER_WIDTH: f32 = 800.;
+/// Pull requests' label in the header's compact row.
+const COMPACT_PULL_REQUESTS: &str = "PRs";
+
+/// How the repository header and the Git action bar are drawn in a frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Chrome {
+    /// Their full forms, each wrapping onto further rows as the width
+    /// requires. `narrow`, below the scaled `COMPACT_HEADER_WIDTH`, drops the
+    /// header's Projects and profile labels.
+    Full { narrow: bool },
+    /// One row each of 28 px controls, where the full forms would leave
+    /// History less than its toolbars and three rows (`GitTurtle::chrome`).
+    /// `app_icon` is whether the turtle fits beside the repository name.
+    Compact { app_icon: bool },
+}
+
+impl Chrome {
+    pub(super) fn is_compact(self) -> bool {
+        matches!(self, Self::Compact { .. })
+    }
+}
+
+/// The text the full chrome lays out, other than its fixed labels.
+#[derive(Clone, Default, PartialEq)]
+struct ChromeText {
+    changes: String,
+    profile: String,
+    branch: String,
+    ahead: String,
+    behind: String,
+    operation: String,
+}
+
+/// The widths `ChromeText` and the chrome's fixed labels take, each as its
+/// control lays it out: at its size and weight, rounded up to a whole pixel.
+#[derive(Clone, Copy, Default)]
+struct ChromeWidths {
+    projects: Pixels,
+    history: Pixels,
+    changes: Pixels,
+    pull_requests: Pixels,
+    compact_pull_requests: Pixels,
+    profile: Pixels,
+    branch: Pixels,
+    ahead: Pixels,
+    behind: Pixels,
+    no_upstream: Pixels,
+    operation: Pixels,
+    fetch: Pixels,
+    pull: Pixels,
+    push: Pixels,
+    targets: Pixels,
+}
+
+impl ChromeWidths {
+    fn measure(text: &ChromeText, window: &Window) -> Self {
+        let regular = |text: &str, size: Pixels| line_widths(&[(text, size)], window);
+        let medium = |text: &str| {
+            shaped_width(text, appearance::ui_text(12.), FontWeight::MEDIUM, window).ceil()
+        };
+        let label = appearance::ui_text(12.);
+        let small = appearance::ui_text(11.);
+        Self {
+            projects: regular("Projects", label),
+            history: regular("History", label),
+            changes: regular(&text.changes, label),
+            pull_requests: regular("Pull requests", label),
+            compact_pull_requests: regular(COMPACT_PULL_REQUESTS, label),
+            // A medium kit Button's label is the rem size.
+            profile: regular(&text.profile, window.rem_size()),
+            branch: medium(&text.branch),
+            ahead: regular(&text.ahead, small),
+            behind: regular(&text.behind, small),
+            no_upstream: regular("No upstream", small),
+            operation: regular(&text.operation, small),
+            fetch: medium("Fetch"),
+            pull: medium("Pull"),
+            push: medium("Push"),
+            targets: regular("Targets", label),
+        }
+    }
+}
+
+thread_local! {
+    static CHROME_WIDTHS: RefCell<Option<(LineKey, ChromeText, ChromeWidths)>> =
+        const { RefCell::new(None) };
+}
+
+/// The height a wrapping flex row of `items`, each its width and height,
+/// takes in `room`, `gap` apart on both axes. Lines break as taffy breaks
+/// them, before the item that takes the line's length, gaps included, past
+/// `room`, and each line is as tall as its tallest item.
+fn wrapped_height(items: &[(Pixels, Pixels)], room: Pixels, gap: Pixels) -> Pixels {
+    let mut height = px(0.);
+    let (mut length, mut tallest) = (px(0.), px(0.));
+    for (index, &(width, item)) in items.iter().enumerate() {
+        if index > 0 && length + gap + width > room {
+            height += tallest + gap;
+            (length, tallest) = (width, item);
+        } else {
+            length += if index > 0 { gap } else { px(0.) } + width;
+            tallest = tallest.max(item);
+        }
+    }
+    height + tallest
+}
+
+/// The window's size inside a client-decorated frame: the toolkit's
+/// `window_paddings` and its 1 px border on each untiled side, as the theme
+/// editor measures it. Server decorations have neither.
+fn content_size(window: &Window) -> Size<Pixels> {
+    let viewport = window.viewport_size();
+    let Decorations::Client { tiling } = window.window_decorations() else {
+        return viewport;
+    };
+    let paddings = gpui_kit::component::window_paddings(window);
+    let border = |tiled: bool| if tiled { px(0.) } else { px(1.) };
+    size(
+        viewport.width
+            - paddings.left
+            - paddings.right
+            - border(tiling.left)
+            - border(tiling.right),
+        viewport.height
+            - paddings.top
+            - paddings.bottom
+            - border(tiling.top)
+            - border(tiling.bottom),
+    )
+}
+
+impl GitTurtle {
+    /// The chrome a Repository frame draws, decided before layout so no
+    /// frame shows the other form first. The full forms' heights are
+    /// predicted for this window: each control's width from the interface
+    /// font at the interface size and its fixed padding, icon and gaps, the
+    /// rows its header and action bar wrap to, and each row's tallest
+    /// control, every length snapped to device pixels as layout snaps it.
+    /// Where the window less the tab strip, the status bar and those
+    /// heights leaves History less than `history_minimum`, the chrome is
+    /// compact. Notices, banners, a running operation's progress and an
+    /// expanded Targets take their room from the content in either form and
+    /// do not decide it, so opening Targets never changes the form of the
+    /// control that opened it.
+    pub(super) fn chrome(&self, window: &Window, cx: &App) -> Chrome {
+        let viewport = window.viewport_size();
+        let narrow = viewport.width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+        if self.page != AppPage::Repository {
+            return Chrome::Full { narrow };
+        }
+        let content = content_size(window);
+        let widths = self.chrome_widths(window);
+        let (header, actions) = self.full_chrome_heights(&widths, window);
+        let full = header + actions;
+        let tabs = window.pixel_snap(repository_tabs::tab_strip_min_height(
+            appearance::button_ring_room(cx),
+        ));
+        let status = window.pixel_snap(appearance::ui_size(26.));
+        if content.height - tabs - status - full >= self.history_minimum(window) {
+            return Chrome::Full { narrow };
+        }
+        // The turtle shows where the name keeps the full header's minimum
+        // beside it and the compact row's other controls.
+        let rem = window.rem_size();
+        let control = window.pixel_snap(appearance::ui_size(28.));
+        let gap = window.pixel_snap(rem * 0.5);
+        let back_to_projects = self.back_label() == "Back to Projects";
+        let (mut fixed, mut items) = (control * 3., 4.);
+        if self.repository.is_some() {
+            fixed += control * 2.
+                + window.pixel_snap(rem * 0.125)
+                + self.labelled_width(widths.compact_pull_requests, false, window);
+            items += 2.;
+        }
+        if !back_to_projects {
+            fixed += control;
+            items += 1.;
+        }
+        let name = content.width - window.pixel_snap(rem * 0.75) * 2. - fixed - gap * (items - 1.);
+        Chrome::Compact {
+            app_icon: name - control - gap >= window.pixel_snap(appearance::ui_size(100.)),
+        }
+    }
+
+    /// The full header's and action bar's heights in this window: the header
+    /// spans the window, the action bar the repository page beside the
+    /// project pane.
+    fn full_chrome_heights(&self, widths: &ChromeWidths, window: &Window) -> (Pixels, Pixels) {
+        let content = content_size(window);
+        let narrow = window.viewport_size().width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+        // Beside the pane the page keeps its 520 px minimum (`render`).
+        let page = if self.settings.project_pane {
+            (content.width - self.project_pane_width(window)).max(px(520.))
+        } else {
+            content.width
+        };
+        (
+            self.full_header_height(content.width, narrow, widths, window),
+            self.full_actions_height(page, widths, window),
+        )
+    }
+
+    /// What History needs below the chrome to show three whole rows: its
+    /// scope toolbar, search row, the horizontal scrollbar's reserved track,
+    /// the column header, the list's border and three rows.
+    pub(super) fn history_minimum(&self, window: &Window) -> Pixels {
+        let scaled = |base: f32| window.pixel_snap(appearance::ui_size(base));
+        scaled(40.)
+            + scaled(38.)
+            + Scrollbar::width()
+            + scaled(34.)
+            + window.pixel_snap(px(1.)) * 2.
+            + window.pixel_snap(px(self.settings.density.history_row_height())) * 3.
+    }
+
+    /// `ChromeWidths` for the chrome's current text, measured again only when
+    /// the text, the font or the sizes change, so a steady render asks the
+    /// text system nothing.
+    fn chrome_widths(&self, window: &Window) -> ChromeWidths {
+        let status = self.work_status.as_ref();
+        let text = ChromeText {
+            changes: self.changes_label(),
+            profile: self.profile_title(),
+            branch: status
+                .and_then(|status| status.branch.clone())
+                .unwrap_or("Detached HEAD".into()),
+            ahead: status.map_or_else(String::new, |s| format!("{} ahead", s.ahead)),
+            behind: status.map_or_else(String::new, |s| format!("{} behind", s.behind)),
+            operation: status
+                .and_then(|s| s.operation.as_ref())
+                .map_or_else(String::new, |operation| format!("{operation} in progress")),
+        };
+        let key = LineKey::current(window);
+        CHROME_WIDTHS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            match &*cache {
+                Some((cached, cached_text, widths)) if *cached == key && *cached_text == text => {
+                    *widths
+                }
+                _ => {
+                    let widths = ChromeWidths::measure(&text, window);
+                    *cache = Some((key, text, widths));
+                    widths
+                }
+            }
+        })
+    }
+
+    /// The shared `button` helper's width around a `label` this wide: its
+    /// padding, and an icon and gap before the label where it has `icon`.
+    fn labelled_width(&self, label: Pixels, icon: bool, window: &Window) -> Pixels {
+        let scaled = |base: f32| window.pixel_snap(appearance::ui_size(base));
+        (scaled(10.) * 2.
+            + label
+            + if icon {
+                scaled(16.) + scaled(6.)
+            } else {
+                px(0.)
+            })
+        .max(scaled(28.))
+    }
+
+    /// The full header's height in a window `width` wide: `render_header`'s
+    /// controls in order, wrapped as layout wraps them.
+    fn full_header_height(
+        &self,
+        width: Pixels,
+        narrow: bool,
+        widths: &ChromeWidths,
+        window: &Window,
+    ) -> Pixels {
+        let rem = window.rem_size();
+        let snap = |length: Pixels| window.pixel_snap(length);
+        let scaled = |base: f32| snap(appearance::ui_size(base));
+        let line = |size: Pixels| snap(window.text_style().line_height.to_pixels(size.into(), rem));
+        let control = scaled(28.);
+        let back_to_projects = self.back_label() == "Back to Projects";
+        let back = if back_to_projects && !narrow {
+            self.labelled_width(widths.projects, true, window)
+        } else {
+            control
+        };
+        let mut items = vec![
+            (back, control),
+            (control, control),
+            // The identity takes its minimum until the row's lines are set,
+            // above its path.
+            (
+                scaled(100.),
+                line(appearance::ui_text(14.)) + snap(rem * 0.125) + line(appearance::ui_text(11.)),
+            ),
+        ];
+        if self.repository.is_some() {
+            items.push((
+                snap(rem * 0.125) * 3.
+                    + self.labelled_width(widths.history, false, window)
+                    + self.labelled_width(widths.changes, false, window),
+                control + snap(rem * 0.125) * 2.,
+            ));
+            items.push((
+                self.labelled_width(widths.pull_requests, false, window),
+                control,
+            ));
+        }
+        items.push((px(0.), px(0.)));
+        if !back_to_projects {
+            items.push((control, control));
+        }
+        // A medium kit Button: `px_3`, the 16 px icon, the label and the
+        // rem-sized caret, `gap_2` apart, within its 230 px limit.
+        let profile = if narrow {
+            scaled(36.)
+        } else {
+            (snap(rem * 0.75) * 2. + px(16.) + snap(rem * 0.5) * 2. + widths.profile + snap(rem))
+                .min(snap(px(230.)))
+        };
+        items.push((profile, scaled(36.)));
+        items.push((control, control));
+        let rows = wrapped_height(&items, width - snap(rem * 0.75) * 2., snap(rem * 0.5));
+        (rows + snap(rem * 0.375) * 2. + snap(px(1.))).max(scaled(48.))
+    }
+
+    /// The full action bar's height, Targets collapsed, in a repository page
+    /// `width` wide: `render_git_actions`' controls in order, wrapped as
+    /// layout wraps them.
+    fn full_actions_height(&self, width: Pixels, widths: &ChromeWidths, window: &Window) -> Pixels {
+        let rem = window.rem_size();
+        let snap = |length: Pixels| window.pixel_snap(length);
+        let scaled = |base: f32| snap(appearance::ui_size(base));
+        let line = |size: Pixels| snap(window.text_style().line_height.to_pixels(size.into(), rem));
+        let action = scaled(34.);
+        let text = line(appearance::ui_text(11.));
+        // Medium kit Buttons: `px_3`, a 16 px icon and the label `gap_2`
+        // apart, the branch picker's caret after it, within its 280 px limit.
+        let mut items = vec![(
+            (snap(rem * 0.75) * 2. + px(16.) + snap(rem * 0.5) * 2. + widths.branch + snap(rem))
+                .min(snap(px(280.))),
+            action,
+        )];
+        if let Some(status) = &self.work_status {
+            let inset = snap(rem * 0.5) * 2.;
+            items.push(if status.upstream.is_some() {
+                let count = px(12.) + snap(rem * 0.25);
+                (
+                    inset + count * 2. + widths.ahead + snap(rem * 0.5) + widths.behind,
+                    text.max(px(12.)),
+                )
+            } else {
+                (inset + widths.no_upstream, text)
+            });
+            if status.operation.is_some() {
+                items.push((inset + widths.operation, snap(rem * 0.25) * 2. + text));
+            }
+        }
+        items.push((px(0.), px(0.)));
+        for label in [widths.fetch, widths.pull, widths.push] {
+            items.push((
+                snap(rem * 0.75) * 2. + scaled(16.) + snap(rem * 0.5) + label,
+                action,
+            ));
+        }
+        items.push((
+            self.labelled_width(widths.targets, true, window),
+            scaled(28.),
+        ));
+        let rows = wrapped_height(&items, width - snap(rem * 0.75) * 2., snap(rem * 0.5));
+        (rows + snap(rem * 0.25) * 2.).max(scaled(46.)) + snap(px(1.))
+    }
+}
 /// The width History's scope toolbar needs to keep its labels: `px_3` on
 /// either side, seven `gap_2` gaps, the fixed-size branch icon, the count, the
 /// scope name at the narrowest it is drawn in, and the Columns, Latest,
@@ -2419,6 +2944,25 @@ thread_local! {
     /// (`compact_controls_carry_their_accessible_names`).
     pub(crate) static COMPACT_NAMES: RefCell<std::collections::BTreeMap<&'static str, &'static str>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
+    /// [`COMPACT_NAMES`] for the names a compact control is given from what
+    /// it shows, such as the Changes count (`compact_control_label`).
+    pub(crate) static COMPACT_LABELS: RefCell<std::collections::BTreeMap<&'static str, SharedString>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// [`compact_control_name`] for a `name` that changes with what the control
+/// stands for, such as the Changes count or a Git action's target.
+pub(crate) fn compact_control_label(
+    control: Button,
+    selector: &'static str,
+    name: impl Into<SharedString>,
+) -> Button {
+    let name = name.into();
+    #[cfg(test)]
+    COMPACT_LABELS.with(|names| names.borrow_mut().insert(selector, name.clone()));
+    #[cfg(not(test))]
+    let _ = selector;
+    control.accessibility_label(name)
 }
 
 /// `control` named `name` for assistive technology: a control that a compact
@@ -2543,7 +3087,12 @@ impl GitTurtle {
         }
     }
 
-    fn render_repository(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_repository(
+        &self,
+        chrome: Chrome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // Tiling window managers ignore the window's minimum size. Below the
         // width that fits navigation, the history table and the narrowest
         // inspector, History shows the rail and the content column accepts
@@ -2686,7 +3235,7 @@ impl GitTurtle {
             .size_full()
             .flex()
             .flex_col()
-            .child(self.render_git_actions(cx))
+            .child(self.render_git_actions(chrome.is_compact(), cx))
             .child(self.render_operation_state(cx))
             .child(div().flex_1().min_h_0().child(workspace))
             .into_any_element()
@@ -2763,10 +3312,9 @@ impl Render for GitTurtle {
             platform_polish::menus(menu_state.0, menu_state.1, cx);
             self.menu_state = Some(menu_state);
         }
-        let compact_header =
-            window.viewport_size().width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+        let chrome = self.chrome(window, cx);
         let page = match self.page {
-            AppPage::Repository => self.render_repository(window, cx),
+            AppPage::Repository => self.render_repository(chrome, window, cx),
             AppPage::Projects => self.hub.clone().into_any_element(),
             AppPage::Settings => self.settings_page_element(window),
         };
@@ -3088,7 +3636,7 @@ impl Render for GitTurtle {
             }))
             .child(self.render_repository_tabs(window, cx))
             .when(self.page != AppPage::Projects, |root| {
-                root.child(self.render_header(compact_header, cx))
+                root.child(self.render_header(chrome, cx))
             })
             .when(
                 self.page == AppPage::Projects && self.operation_busy.is_some(),
@@ -4214,6 +4762,391 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A local bare `origin` that `main` tracks one commit behind, read again
+    /// by Refresh, so Fetch, Pull and Push are enabled and the action bar
+    /// shows the ahead and behind counts. Nothing is fetched or pushed.
+    async fn track_a_local_origin(
+        fixture: &std::path::Path,
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) {
+        let repository = fixture.join("narrow");
+        let bare = fixture.join("origin.git");
+        fixture_git(
+            fixture,
+            &["init", "--quiet", "--bare", bare.to_str().unwrap()],
+        );
+        fixture_git(
+            &repository,
+            &["remote", "add", "origin", bare.to_str().unwrap()],
+        );
+        fixture_git(
+            &repository,
+            &["update-ref", "refs/remotes/origin/main", "main~1"],
+        );
+        fixture_git(
+            &repository,
+            &["branch", "--quiet", "--set-upstream-to=origin/main", "main"],
+        );
+        press_refresh(app, cx).await;
+    }
+
+    /// The full chrome `GitTurtle::chrome` predicts, and the chrome drawn.
+    fn predicted_chrome(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+    ) -> ((Pixels, Pixels), Chrome) {
+        cx.update(|window, cx| {
+            let app = app.read(cx);
+            let widths = app.chrome_widths(window);
+            (
+                app.full_chrome_heights(&widths, window),
+                app.chrome(window, cx),
+            )
+        })
+    }
+
+    /// The full header's and action bar's heights that decide the compact
+    /// chrome are predicted before layout from the interface font, and they
+    /// are the heights layout then gives them: in History and Compare, at
+    /// the default size and 18 pt, at widths where they take one, two and
+    /// three rows, with and without an upstream and beside the project pane.
+    #[gpui::test]
+    async fn chrome_prediction_matches_the_laid_out_header_and_action_bar(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, &history_script(2, 3)).await;
+        let check = |cx: &mut VisualTestContext, state: &str| {
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                for width in [400., 461., 493., 560., 640., 700., 800., 1000., 1480.] {
+                    // Tall enough for the full chrome everywhere.
+                    cx.simulate_resize(size(px(width), px(1400.)));
+                    draw(cx);
+                    let ((header, actions), chrome) = predicted_chrome(&app, cx);
+                    assert!(!chrome.is_compact(), "{state}, {text} pt at {width}");
+                    let at = format!("{state}, {text} pt at {width}");
+                    let drawn = cx.debug_bounds("repository-header").unwrap().size.height;
+                    assert!(
+                        (drawn - header).abs() < px(0.01),
+                        "{at}: header {drawn:?}, predicted {header:?}"
+                    );
+                    let drawn = cx.debug_bounds("git-actions").unwrap().size.height;
+                    assert!(
+                        (drawn - actions).abs() < px(0.01),
+                        "{at}: action bar {drawn:?}, predicted {actions:?}"
+                    );
+                }
+            }
+        };
+        check(cx, "History without an upstream");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        check(cx, "Compare without an upstream");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        track_a_local_origin(fixture.path(), &app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app
+                .work_status
+                .as_ref()
+                .map(|s| (s.ahead, s.behind))),
+            Some((1, 0))
+        );
+        check(cx, "History tracking origin");
+        app.update(cx, |app, cx| {
+            app.settings.project_pane = true;
+            cx.notify();
+        });
+        check(cx, "History beside the project pane");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// At 18 pt in a 461 × 490 half tile the full header and action bar
+    /// take five rows; their compact rows leave History three whole rows and
+    /// Compare three whole diff lines.
+    #[gpui::test]
+    async fn short_large_text_keeps_history_rows_and_diff_lines(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 40)).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let (list, row) = app
+            .read_with(cx, |app, _| app.history_list_layout)
+            .expect("History's list is laid out");
+        assert!(
+            list.height >= row * 3.,
+            "{:.2} History rows in {list:?}",
+            list.height / row
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let lines = visible_diff_lines(&app, cx, 490.);
+        assert!(lines >= 3., "{lines} diff lines");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The chrome controls `ringed` looks for, in their Tab order.
+    const CHROME_CONTROLS: [&str; 11] = [
+        "page-back",
+        "history-tab",
+        "changes-tab",
+        "pull-requests",
+        "profile-button",
+        "settings",
+        "current-branch",
+        "fetch",
+        "pull",
+        "push",
+        "git-actions-toggle",
+    ];
+
+    /// The control among `CHROME_CONTROLS` whose focus ring is painted: the
+    /// quad the installed ring's room outside its bounds.
+    fn ringed(cx: &mut VisualTestContext) -> Option<&'static str> {
+        let room = cx.read(appearance::button_ring_room);
+        let quads = cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.border_widths.top.0 > 0.)
+                .map(|quad| {
+                    let (origin, extent) = (quad.bounds.origin, quad.bounds.size);
+                    let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+                    Bounds::new(
+                        point(logical(origin.x), logical(origin.y)),
+                        size(logical(extent.width), logical(extent.height)),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        CHROME_CONTROLS.into_iter().find(|selector| {
+            cx.debug_bounds(selector).is_some_and(|control| {
+                let ring = control.dilate(room);
+                quads.iter().any(|quad| {
+                    (quad.left() - ring.left()).abs() < px(0.5)
+                        && (quad.right() - ring.right()).abs() < px(0.5)
+                        && (quad.top() - ring.top()).abs() < px(0.5)
+                        && (quad.bottom() - ring.bottom()).abs() < px(0.5)
+                })
+            })
+        })
+    }
+
+    /// The chrome controls Tab reaches from History's list, in order, once
+    /// round the window.
+    fn chrome_tab_order(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Vec<&'static str> {
+        cx.update(|window, cx| {
+            let focus = app.read(cx).focus.clone();
+            window.focus(&focus, cx);
+        });
+        draw(cx);
+        let mut order = Vec::new();
+        for _ in 0..80 {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            if let Some(control) = ringed(cx)
+                && order.last() != Some(&control)
+            {
+                order.push(control);
+            }
+            if order.last() == Some(&"git-actions-toggle") {
+                break;
+            }
+        }
+        order
+    }
+
+    /// In the compact chrome every control that loses its label keeps its
+    /// action, a tooltip and its accessible name, the header and the action
+    /// bar are one row each, the turtle leaves where the name needs its room,
+    /// and Tab reaches the chrome's controls in the full chrome's order.
+    #[gpui::test]
+    async fn compact_chrome_keeps_each_control(cx: &mut TestAppContext) {
+        use std::time::Duration;
+        let (fixture, app, cx) = history_window_from(cx, &history_script(3, 3)).await;
+        track_a_local_origin(fixture.path(), &app, cx).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(1400.)));
+        draw(cx);
+        assert_eq!(predicted_chrome(&app, cx).1, Chrome::Full { narrow: true });
+        let full = chrome_tab_order(&app, cx);
+        assert_eq!(full, CHROME_CONTROLS, "the full chrome's Tab order");
+
+        COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+        COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert_eq!(
+            predicted_chrome(&app, cx).1,
+            Chrome::Compact { app_icon: false }
+        );
+        assert!(cx.debug_bounds("repository-heading").is_some());
+        // One row each: the header's controls, the action bar's, 28 px.
+        let (control, room) = cx.update(|window, cx| {
+            (
+                window.pixel_snap(appearance::ui_size(28.)),
+                appearance::button_ring_room(cx),
+            )
+        });
+        let header = cx.debug_bounds("repository-header").unwrap();
+        let actions = cx.debug_bounds("git-actions").unwrap();
+        assert_eq!(header.size.height, room * 2. + control, "{header:?}");
+        assert_eq!(actions.size.height, control + room + px(1.), "{actions:?}");
+        for (selectors, bar) in [
+            (&CHROME_CONTROLS[..6], header),
+            (&CHROME_CONTROLS[6..], actions),
+        ] {
+            for selector in selectors {
+                let bounds = cx.debug_bounds(selector).unwrap();
+                assert!(
+                    bounds.size.height == control
+                        && bounds.top() == bar.top() + if bar == header { room } else { px(0.) }
+                        && bounds.right() <= px(461.),
+                    "{selector} {bounds:?} off the {bar:?} row"
+                );
+            }
+        }
+        let names = COMPACT_NAMES.with(|names| names.borrow().clone());
+        for (selector, name) in [
+            ("history-tab", "History"),
+            ("pull-requests", "Pull requests"),
+            ("git-actions-toggle", "Targets"),
+        ] {
+            assert_eq!(names.get(selector), Some(&name), "{selector}");
+        }
+        let labels = COMPACT_LABELS.with(|names| names.borrow().clone());
+        for (selector, name) in [
+            ("changes-tab", "Changes · 1"),
+            ("fetch", "Fetch: Fetch from origin"),
+            (
+                "pull",
+                "Pull: Pull origin/main into main · fast-forward only",
+            ),
+            ("push", "Push: Push main to origin/main"),
+        ] {
+            assert_eq!(
+                labels.get(selector).map(|name| name.as_ref()),
+                Some(name),
+                "{selector}"
+            );
+        }
+        assert_eq!(
+            chrome_tab_order(&app, cx),
+            full,
+            "the compact chrome's Tab order"
+        );
+
+        // Each collapsed control shows its tooltip.
+        let popover =
+            cx.read(|cx| Background::from(gpui_kit::component::Theme::global(cx).tokens.popover));
+        let popups = move |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == popover)
+                    .count()
+            })
+        };
+        for selector in [
+            "history-tab",
+            "changes-tab",
+            "pull-requests",
+            "fetch",
+            "pull",
+            "push",
+            "git-actions-toggle",
+        ] {
+            let control = cx.debug_bounds(selector).unwrap();
+            let before = popups(cx);
+            cx.simulate_mouse_move(control.center(), None, Modifiers::default());
+            cx.executor().advance_clock(Duration::from_millis(500));
+            draw(cx);
+            assert_eq!(popups(cx), before + 1, "{selector} shows its tooltip");
+            cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+            cx.executor().advance_clock(Duration::from_millis(500));
+            draw(cx);
+        }
+
+        // And each acts. Opening Targets keeps the compact form it opened in.
+        let click = |cx: &mut VisualTestContext, selector: &'static str| {
+            let control = cx.debug_bounds(selector).unwrap();
+            cx.simulate_click(control.center(), Modifiers::default());
+            draw(cx);
+        };
+        click(cx, "changes-tab");
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working));
+        click(cx, "history-tab");
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::History));
+        for open in [true, false] {
+            click(cx, "git-actions-toggle");
+            assert_eq!(app.read_with(cx, |app, _| app.git_actions_open), open);
+            assert!(predicted_chrome(&app, cx).1.is_compact());
+        }
+        click(cx, "pull-requests");
+        settle(&app, cx).await;
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Pull requests opens"
+        );
+        cx.simulate_keystrokes("escape");
+        settle(&app, cx).await;
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+
+        // Where the name keeps its full minimum beside it, the turtle shows.
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(700.), px(330.)));
+        draw(cx);
+        assert_eq!(
+            predicted_chrome(&app, cx).1,
+            Chrome::Compact { app_icon: true }
+        );
+    }
+
+    /// With two staged files in a 461 × 490 window, the composer's heading
+    /// is drawn whole, above the commit action and the status bar, at the
+    /// default size and at 18 pt: the staged list gives up the room.
+    #[gpui::test]
+    async fn composer_heading_stays_whole_in_a_short_window(cx: &mut TestAppContext) {
+        // The import leaves the index empty: both files are staged deletions.
+        let (_fixture, app, cx) = history_window_from(cx, &files_script(1, 1)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_paths.staged_count),
+            2
+        );
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            let (status, line) = cx.update(|window, _| {
+                let text = window.text_style();
+                (
+                    window.pixel_snap(appearance::ui_size(26.)),
+                    window.pixel_snap(
+                        text.line_height
+                            .to_pixels(appearance::ui_text(13.).into(), window.rem_size()),
+                    ),
+                )
+            });
+            let heading = cx.debug_bounds("commit-composer-heading").unwrap();
+            let commit = cx.debug_bounds("commit-staged").unwrap();
+            let list = cx.debug_bounds("working-selection").unwrap();
+            assert!(
+                heading.size.height >= line
+                    && heading.top() >= list.bottom()
+                    && heading.bottom() <= commit.top()
+                    && heading.right() <= px(461.)
+                    && commit.bottom() <= px(490.) - status,
+                "{text} pt: heading {heading:?} between {list:?} and {commit:?}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// In a 461 × 490 window, the compact Latest and Older tooltips and the

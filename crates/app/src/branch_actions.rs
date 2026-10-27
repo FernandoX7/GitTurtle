@@ -103,7 +103,9 @@ impl GitTurtle {
     }
 
     /// Replaces the existing picker; its frequent switch actions remain first.
-    pub(super) fn render_branch_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// `compact`, in the action bar's compact row, it is a 28 px control that
+    /// gives up its width, truncating the branch name, before its row wraps.
+    pub(super) fn render_branch_picker(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let branch = self
             .work_status
             .as_ref()
@@ -111,8 +113,10 @@ impl GitTurtle {
             .unwrap_or_else(|| "Detached HEAD".into());
         let owner = cx.entity().downgrade();
         Button::new("current-branch")
+            .debug_selector(|| "current-branch".into())
             .secondary()
-            .h(crate::appearance::ui_size(34.))
+            .h(crate::appearance::ui_size(if compact { 28. } else { 34. }))
+            .when(compact, |button| button.flex_shrink(1.))
             .px_3()
             .max_w(px(280.))
             .text_size(crate::appearance::ui_text(12.))

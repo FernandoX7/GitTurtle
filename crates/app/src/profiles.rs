@@ -54,11 +54,9 @@ impl GitTurtle {
         })
         .detach();
     }
-    pub(super) fn render_profile_button(
-        &self,
-        compact: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    /// The header picker's label: the assigned profile, marked where it
+    /// differs from the effective identity, or the effective author's name.
+    pub(super) fn profile_title(&self) -> String {
         let assignment = self
             .path
             .as_ref()
@@ -68,7 +66,7 @@ impl GitTurtle {
                 .as_ref()
                 .is_some_and(|effective| !saved.identity().matches(effective))
         });
-        let title = assignment
+        assignment
             .map(|saved| {
                 format!(
                     "{}{}",
@@ -82,18 +80,29 @@ impl GitTurtle {
                     .filter(|profile| !profile.name.is_empty())
                     .map(|p| p.name.clone())
                     .unwrap_or_else(|| "Profiles".into())
-            });
+            })
+    }
+
+    /// `compact` draws only the icon, in a square `size` px control at the
+    /// default interface size: 36 in the full header, 28 in its compact row.
+    pub(super) fn render_profile_button(
+        &self,
+        compact: bool,
+        size: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let title = self.profile_title();
         let owner = cx.entity().downgrade();
         Button::new("profile")
             .debug_selector(|| "profile-button".into())
             .secondary()
-            .h(crate::appearance::ui_size(36.))
+            .h(crate::appearance::ui_size(size))
             .max_w(px(230.))
             // The kit sizes a label-less button as a square icon button; the
             // caret and the full button's padding would clip the icon.
             .map(|button| {
                 if compact {
-                    button.w(crate::appearance::ui_size(36.))
+                    button.w(crate::appearance::ui_size(size))
                 } else {
                     button.px_3().label(title.clone())
                 }

@@ -2046,7 +2046,7 @@ const TAB_STRIP_BORDER: Pixels = px(1.);
 /// smallest text scales lack (below 0.875 of the default, where the scaled
 /// 8 px between 36 and 28 fall under the default ring's 3 px twice plus the
 /// 1 px rule) and nothing moves where the room already fits.
-fn tab_strip_min_height(ring_room: Pixels) -> Pixels {
+pub(super) fn tab_strip_min_height(ring_room: Pixels) -> Pixels {
     let controls = appearance::ui_size(28.);
     appearance::ui_size(36.).max(controls + ring_room * 2. + TAB_STRIP_BORDER)
 }

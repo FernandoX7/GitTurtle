@@ -16,6 +16,22 @@ struct WorkingInspectorLayout {
     list_size: Option<Size<Pixels>>,
 }
 
+/// The least height the composer keeps: its top border, the pinned heading
+/// row with the padding above it, and the commit action with the padding
+/// below it, each snapped to device pixels as layout snaps them. A body too
+/// short for it and the file list gives the list's room to the composer.
+fn pinned_composer_height(short: bool, window: &Window) -> f32 {
+    let rem = window.rem_size();
+    let snap = |length: Pixels| window.pixel_snap(length);
+    let line = |size: Pixels| snap(window.text_style().line_height.to_pixels(size.into(), rem));
+    let padding = snap(rem * if short { 0.5 } else { 0.75 });
+    // The heading's line beside its 16 px icon and the staged count's badge.
+    let heading = line(crate::appearance::ui_text(13.))
+        .max(px(16.))
+        .max(snap(rem * 0.125) * 2. + line(crate::appearance::ui_text(10.)));
+    f32::from(snap(px(1.)) + padding + heading + snap(crate::appearance::ui_size(36.)) + padding)
+}
+
 fn commit_composer_height(available: f32, row_height: f32, preferred: f32) -> f32 {
     let available = available.max(0.);
     // Reserve several visible rows at ordinary sizes and share very short
@@ -949,6 +965,12 @@ impl GitTurtle {
             .and_then(|s| s.branch.as_deref())
             .unwrap_or("detached HEAD");
         let summary_length = self.commit_title.read(cx).value().chars().count();
+        // An operation in progress replaces the composer with its banner.
+        let composer = self
+            .work_status
+            .as_ref()
+            .is_none_or(|status| status.operation.is_none());
+        let pinned = pinned_composer_height(short, window);
         let list = uniform_list(
             "working-files",
             self.working_rows.len(),
@@ -962,7 +984,11 @@ impl GitTurtle {
         .track_scroll(&self.working_scroll);
         div()
             .size_full().min_h_0().relative().flex().flex_col().bg(rgb(p.panel))
-            .child(div().debug_selector(|| "working-selection".into()).flex_shrink_0().child(self.render_working_selection(cx)))
+            // Where the inspector is too short for these controls, the header
+            // and the composer's pinned heading and action, once the file list
+            // has given up its room, the controls give up the rest and scroll.
+            .child(div().id("working-selection").debug_selector(|| "working-selection".into()).min_h_0().overflow_y_scroll()
+                .child(self.render_working_selection(cx)))
             .child(
                 div().h(px(header_height)).flex_shrink_0().px_4().flex().items_center().gap_2()
                     .border_b_1().border_color(rgb(p.border))
@@ -978,7 +1004,7 @@ impl GitTurtle {
                         .accessibility_label("Refresh working changes").tooltip("Refresh working changes")
                         .disabled(busy || refreshing).on_click(cx.listener(|this, _, window, cx| this.refresh_worktree(window, cx)))),
             )
-            .child(div().relative().flex_1().min_h_0().flex().flex_col()
+            .child(div().relative().flex_1().min_h(px(if composer { pinned } else { 0. })).flex().flex_col()
             .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
                 layout.update(cx, |layout, cx| {
                     if layout.height != bounds.size.height {
@@ -1026,15 +1052,16 @@ impl GitTurtle {
                         });
                     }).absolute().inset_0()),
             )
-            .when(self.work_status.as_ref().is_none_or(|status| status.operation.is_none()), |el| el.child(
-                div().flex_shrink_0().min_h_0().h(px(composer_height)).flex().flex_col()
+            .when(composer, |el| el.child(
+                div().flex_shrink_0().min_h_0().h(px(composer_height.max(pinned))).flex().flex_col()
                     .bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
-                    .child(div().id("commit-composer-fields").flex_1().min_h_0().overflow_y_scroll()
-                    .child(div().flex().flex_col().gap_2().p_3()
-                    .when(short, |el| el.gap_1().p_2())
-                    .child(div().flex().items_center().gap_2()
+                    // The heading is pinned above the scrolling fields, as the
+                    // commit action is below them; where the body is short the
+                    // file list gives up the room for both.
+                    .child(div().flex_shrink_0().flex().items_center().gap_2().px_3().pt_3()
+                        .when(short, |el| el.px_2().pt_2())
                         .child(icon("commit", 16., p.accent))
-                        .child(div().id("commit-composer-heading").flex_1().min_w_0().truncate().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::SEMIBOLD)
+                        .child(div().id("commit-composer-heading").debug_selector(|| "commit-composer-heading".into()).flex_1().min_w_0().truncate().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::SEMIBOLD)
                             .tooltip({ let branch = branch.to_owned(); move |window, cx| Tooltip::new(format!("Commit to {branch}")).build(window, cx) })
                             .child(if short { format!("Commit to {branch}") } else { "Create a commit".into() }))
                         .child(div().px_1p5().py_0p5().rounded(px(4.))
@@ -1042,6 +1069,10 @@ impl GitTurtle {
                             .text_size(crate::appearance::ui_text(10.)).font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(if staged > 0 { crate::appearance::labels(cx).added } else { crate::appearance::labels(cx).count }))
                             .child(format!("{staged} staged"))))
+                    .child(div().id("commit-composer-fields").flex_1().min_h_0().overflow_y_scroll()
+                    // The gap that followed the heading leads the fields.
+                    .child(div().flex().flex_col().gap_2().px_3().pt_2().pb_3()
+                    .when(short, |el| el.gap_1().px_2().pt_1().pb_2())
                     .when(!short, |el| el.child(div().flex().items_center().gap_1p5().min_w_0().text_size(crate::appearance::ui_text(11.))
                         .text_color(rgb(p.muted)).child(icon("branch", 13., p.muted))
                         .child(div().truncate().child(branch.to_owned()))))
@@ -1079,7 +1110,7 @@ impl GitTurtle {
                             .child("Resolve conflicted files before committing."),
                     ))))
                     .child(div().flex_shrink_0().px_3().pb_3().when(short, |el| el.px_2().pb_2()).child(
-                        Button::new("commit-staged").primary().w_full().h(crate::appearance::ui_size(36.))
+                        Button::new("commit-staged").debug_selector(|| "commit-staged".into()).primary().w_full().h(crate::appearance::ui_size(36.))
                             .icon(Icon::default().path("icons/commit.svg").size(px(16.)))
                             .label(if busy {
                                 "Working…".to_owned()
@@ -1446,7 +1477,13 @@ impl GitTurtle {
         }
     }
 
-    pub(super) fn render_git_actions(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The Git action bar. `compact`, in a window too short for its full form
+    /// (`views::Chrome`), it is one row of 28 px controls: the branch picker
+    /// and sync state give up their width first, and Fetch, Pull, Push and
+    /// Targets keep only their icons, their accessible names, and tooltips
+    /// that lead with those names. Their actions, states and order are the
+    /// full form's.
+    pub(super) fn render_git_actions(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
         let branch = self
@@ -1463,69 +1500,240 @@ impl GitTurtle {
         let target = format!("{selected_remote}/{selected_branch}");
         let branch_empty = self.branch_name.read(cx).value().trim().is_empty();
         let detached = self.work_status.as_ref().is_none_or(|s| s.branch.is_none());
-        let branch_picker = self.render_branch_picker(cx);
-        div().flex().flex_col().flex_shrink_0().bg(rgb(p.panel)).border_b_1().border_color(rgb(p.border))
-            .child(
-                div().min_h(crate::appearance::ui_size(46.)).px_3().py_1().flex().flex_wrap().items_center().gap_2()
-                    .child(branch_picker)
-                    .children(self.work_status.as_ref().map(|status| {
-                        let tooltip = status.upstream.as_ref().map_or_else(
-                            || "No upstream is configured. Choose a remote and branch in Targets to push.".to_owned(),
-                            |upstream| format!("Compared with local {upstream}. Fetch to update remote information."),
-                        );
-                        div().id("branch-sync-state").flex().items_center().gap_2().px_2().text_size(crate::appearance::ui_text(11.))
-                            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                            .when(status.upstream.is_some(), |el| el
-                                .child(div().flex().items_center().gap_1()
-                                    .text_color(rgb(if status.ahead > 0 { p.added } else { p.muted }))
-                                    .child(icon("push", 12., if status.ahead > 0 { p.added } else { p.muted }))
-                                    .child(format!("{} ahead", status.ahead)))
-                                .child(div().flex().items_center().gap_1()
-                                    .text_color(rgb(if status.behind > 0 { p.modified } else { p.muted }))
-                                    .child(icon("pull", 12., if status.behind > 0 { p.modified } else { p.muted }))
-                                    .child(format!("{} behind", status.behind))))
-                            .when(status.upstream.is_none(), |el| el.child(div().text_color(rgb(p.muted)).child("No upstream")))
-                    }))
-                    .children(self.work_status.as_ref().and_then(|s| s.operation.as_ref()).map(|operation| {
-                        div().px_2().py_1().rounded(px(5.)).bg(rgb(p.hover)).text_size(crate::appearance::ui_text(11.))
-                            .text_color(rgb(p.warning)).child(format!("{operation} in progress"))
-                    }))
-                    .child(div().flex_1())
-                    .children([("fetch", "Fetch"), ("pull", "Pull"), ("push", "Push")].into_iter().map(|(id, label)| {
-                        let unavailable = busy || remote.is_none() || (id != "fetch" && (selected_branch.is_empty() || detached));
-                        let tooltip = if busy { self.operation_busy.unwrap_or_default().to_owned() }
-                        else if remote.is_none() { "No configured remote selected · Check Targets".to_owned() }
-                        else if id != "fetch" && detached { "Switch to a local branch before pulling or pushing".to_owned() }
-                        else if id != "fetch" && selected_branch.is_empty() { "Choose a remote branch in Targets".to_owned() }
-                        else {
-                            match id {
-                                "fetch" => format!("Fetch from {selected_remote}"),
-                                "pull" => format!("Pull {target} into {branch} · fast-forward only"),
-                                _ => format!("Push {branch} to {target}"),
-                            }
-                        };
-                        action_button(id, label, id).when(id == "push", |button| button.primary())
-                            .disabled(unavailable).accessibility_label(format!("{label}: {tooltip}")).tooltip(tooltip)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                let remote = this.remote_name.read(cx).value().trim().to_owned();
-                                let branch = this.remote_branch.read(cx).value().trim().to_owned();
-                                let command = match id {
-                                    "fetch" => WriteCommand::Fetch { remote },
-                                    "pull" => WriteCommand::Pull { remote, branch },
-                                    _ => WriteCommand::Push {
-                                        remote,
-                                        local_branch: this.work_status.as_ref().and_then(|s| s.branch.clone()).unwrap_or_default(),
-                                        remote_branch: branch,
-                                    },
-                                };
-                                this.write(command, match id { "fetch" => "Fetching remote…", "pull" => "Pulling fast-forward…", _ => "Pushing branch…" }, window, cx);
+        let branch_picker = self.render_branch_picker(compact, cx);
+        // A compact row's texts truncate rather than push the actions away.
+        let shrinking = |text: Div| {
+            if compact {
+                text.min_w_0().truncate()
+            } else {
+                text
+            }
+        };
+        let sync_state = self.work_status.as_ref().map(|status| {
+            let explanation = status.upstream.as_ref().map_or_else(
+                || {
+                    "No upstream is configured. Choose a remote and branch in Targets to push."
+                        .to_owned()
+                },
+                |upstream| {
+                    format!("Compared with local {upstream}. Fetch to update remote information.")
+                },
+            );
+            // Truncated, the counts stay readable in the tooltip.
+            let tooltip = if compact {
+                format!("{} · {explanation}", sync_summary(status))
+            } else {
+                explanation
+            };
+            div()
+                .id("branch-sync-state")
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .text_size(crate::appearance::ui_text(11.))
+                .when(compact, |el| el.min_w_0().overflow_hidden())
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .when(status.upstream.is_some(), |el| {
+                    el.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .when(compact, |el| el.min_w_0())
+                            .text_color(rgb(if status.ahead > 0 { p.added } else { p.muted }))
+                            .child(icon(
+                                "push",
+                                12.,
+                                if status.ahead > 0 { p.added } else { p.muted },
+                            ))
+                            .child(shrinking(div()).child(format!("{} ahead", status.ahead))),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .when(compact, |el| el.min_w_0())
+                            .text_color(rgb(if status.behind > 0 {
+                                p.modified
+                            } else {
+                                p.muted
                             }))
+                            .child(icon(
+                                "pull",
+                                12.,
+                                if status.behind > 0 {
+                                    p.modified
+                                } else {
+                                    p.muted
+                                },
+                            ))
+                            .child(shrinking(div()).child(format!("{} behind", status.behind))),
+                    )
+                })
+                .when(status.upstream.is_none(), |el| {
+                    el.child(
+                        shrinking(div())
+                            .text_color(rgb(p.muted))
+                            .child("No upstream"),
+                    )
+                })
+        });
+        let operation_state = self
+            .work_status
+            .as_ref()
+            .and_then(|s| s.operation.as_ref())
+            .map(|operation| {
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(5.))
+                    .bg(rgb(p.hover))
+                    .text_size(crate::appearance::ui_text(11.))
+                    .when(compact, |el| el.min_w_0().truncate())
+                    .text_color(rgb(p.warning))
+                    .child(format!("{operation} in progress"))
+            });
+        let actions = [("fetch", "Fetch"), ("pull", "Pull"), ("push", "Push")]
+            .into_iter()
+            .map(|(id, label)| {
+                let unavailable = busy
+                    || remote.is_none()
+                    || (id != "fetch" && (selected_branch.is_empty() || detached));
+                let tooltip = if busy {
+                    self.operation_busy.unwrap_or_default().to_owned()
+                } else if remote.is_none() {
+                    "No configured remote selected · Check Targets".to_owned()
+                } else if id != "fetch" && detached {
+                    "Switch to a local branch before pulling or pushing".to_owned()
+                } else if id != "fetch" && selected_branch.is_empty() {
+                    "Choose a remote branch in Targets".to_owned()
+                } else {
+                    match id {
+                        "fetch" => format!("Fetch from {selected_remote}"),
+                        "pull" => format!("Pull {target} into {branch} · fast-forward only"),
+                        _ => format!("Push {branch} to {target}"),
+                    }
+                };
+                let name = format!("{label}: {tooltip}");
+                let control = if compact {
+                    let tooltip = format!("{label} · {tooltip}");
+                    crate::views::compact_control_label(button(id, "", id, false), id, name.clone())
+                        .map(|button| {
+                            if id == "push" {
+                                button.primary()
+                            } else {
+                                button.secondary()
+                            }
+                        })
+                        .tooltip(tooltip)
+                } else {
+                    action_button(id, label, id)
+                        .when(id == "push", |button| button.primary())
+                        .tooltip(tooltip)
+                };
+                control
+                    .debug_selector(move || id.into())
+                    .disabled(unavailable)
+                    .accessibility_label(name)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let remote = this.remote_name.read(cx).value().trim().to_owned();
+                        let branch = this.remote_branch.read(cx).value().trim().to_owned();
+                        let command = match id {
+                            "fetch" => WriteCommand::Fetch { remote },
+                            "pull" => WriteCommand::Pull { remote, branch },
+                            _ => WriteCommand::Push {
+                                remote,
+                                local_branch: this
+                                    .work_status
+                                    .as_ref()
+                                    .and_then(|s| s.branch.clone())
+                                    .unwrap_or_default(),
+                                remote_branch: branch,
+                            },
+                        };
+                        this.write(
+                            command,
+                            match id {
+                                "fetch" => "Fetching remote…",
+                                "pull" => "Pulling fast-forward…",
+                                _ => "Pushing branch…",
+                            },
+                            window,
+                            cx,
+                        );
                     }))
-                    .child(button("git-actions-toggle", "Targets", "sliders", self.git_actions_open)
-                        .toggled(self.git_actions_open)
-                        .tooltip(if self.git_actions_open { "Hide branch and remote targets" } else { "Show branch and remote targets" })
-                        .on_click(cx.listener(|this, _, _, cx| { this.git_actions_open = !this.git_actions_open; cx.notify(); }))),
+            });
+        let open = self.git_actions_open;
+        let targets = if compact {
+            crate::views::compact_control_name(
+                button("git-actions-toggle", "", "sliders", open),
+                "git-actions-toggle",
+                "Targets",
             )
+            .tooltip(if open {
+                "Targets · Hide branch and remote targets"
+            } else {
+                "Targets · Show branch and remote targets"
+            })
+        } else {
+            button("git-actions-toggle", "Targets", "sliders", open).tooltip(if open {
+                "Hide branch and remote targets"
+            } else {
+                "Show branch and remote targets"
+            })
+        }
+        .debug_selector(|| "git-actions-toggle".into())
+        .toggled(open)
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.git_actions_open = !this.git_actions_open;
+            cx.notify();
+        }));
+        let row = if compact {
+            // The branch picker and sync state share a group that wraps as if
+            // it had no width, so the row breaks only when the actions alone
+            // overflow it; the group then gives up its room. The header's
+            // compact row keeps the room a focused control's ring takes above
+            // these, so this row keeps it only below them.
+            div()
+                .px_3()
+                .pb(appearance::button_ring_room(cx))
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(branch_picker)
+                        .children(sync_state)
+                        .children(operation_state),
+                )
+                .children(actions)
+                .child(targets)
+        } else {
+            div()
+                .min_h(crate::appearance::ui_size(46.))
+                .px_3()
+                .py_1()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(branch_picker)
+                .children(sync_state)
+                .children(operation_state)
+                .child(div().flex_1())
+                .children(actions)
+                .child(targets)
+        };
+        div().debug_selector(|| "git-actions".into()).flex().flex_col().flex_shrink_0().bg(rgb(p.panel)).border_b_1().border_color(rgb(p.border))
+            .child(row)
             .when(self.git_actions_open, |el| el.child(
                 div().px_4().pb_3().flex().flex_col().gap_2()
                     .child(div().flex().flex_wrap().items_end().gap_3()
@@ -1560,6 +1768,16 @@ impl GitTurtle {
                         )))),
             ))
             .into_any_element()
+    }
+}
+
+/// The action bar's sync state as one line: the ahead and behind counts, or
+/// that no upstream is configured.
+fn sync_summary(status: &gitturtle_core::RepositoryStatus) -> String {
+    if status.upstream.is_some() {
+        format!("{} ahead, {} behind", status.ahead, status.behind)
+    } else {
+        "No upstream".into()
     }
 }
 
