@@ -2030,11 +2030,11 @@ impl GitTurtle {
                     ),
             )
             .children(file.map(|_| {
-                button("copy-path", "", "copy", false)
+                copy_feedback::copy_button("copy-path", "", "copy", "Copy file path", cx)
                     .accessibility_label("Copy file path")
-                    .tooltip("Copy file path")
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy_path.clone()))
+                    .on_click(move |_, window, cx| {
+                        let path = copy_path.clone();
+                        copy_feedback::copy(window, cx, Some("copy-path".into()), "file path", path)
                     })
             }))
             .children(
@@ -2406,7 +2406,13 @@ impl GitTurtle {
                 .map(|entry| entry.commit.oid.clone()),
         };
         if let Some(text) = text {
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            // Announced, with no button to mark.
+            let what = match item {
+                ListCopy::CommitHash | ListCopy::RevisionHash => "commit hash",
+                ListCopy::WorkingPaths if text.contains('\n') => "file paths",
+                ListCopy::FilePath | ListCopy::WorkingPaths => "file path",
+            };
+            copy_feedback::copy(window, cx, None, what, text);
         }
     }
 }
@@ -3823,6 +3829,8 @@ impl Render for GitTurtle {
                         },
                     }),
             )
+            // Copies from any page or dialog are announced from here.
+            .children(copy_feedback::announcement(window, cx))
             .children(Root::render_dialog_layer(window, cx))
             // Deferred above the dialog layer: the last paint of the frame
             // that shows an edited draft ends `gitturtle.theme_edit_frame_ms`.
@@ -4167,7 +4175,8 @@ mod tests {
             history_window_from(cx, &history_script(history_paging::PAGE_SIZE + 20, 1)).await;
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         // At 560 px the inspector is wide enough for the labelled Copy
-        // message, so Hash wraps below it; at 461 only its icon fits.
+        // message; at 461 only its icon fits. Either way Hash, as wide as its
+        // copied state, wraps below it.
         for (width, height, compact) in [(461., 490., true), (560., 600., false)] {
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
@@ -4189,11 +4198,7 @@ mod tests {
                 compact,
                 "Copy message at {width}: {copy:?}"
             );
-            assert_eq!(
-                hash.top() > copy.top(),
-                !compact,
-                "Hash at {width}: {hash:?}"
-            );
+            assert!(hash.top() > copy.top(), "Hash at {width}: {hash:?}");
         }
         assert_eq!(
             COMPACT_NAMES.with(|names| names.borrow().get("copy-message").copied()),
@@ -4341,7 +4346,9 @@ mod tests {
     /// At the default interface size the narrow half tiles keep origin/main's
     /// layout: these are the bounds its fixed minimums gave (the rail, a
     /// 177 px column and a 240 px inspector at 461 px; a 209 px column at
-    /// 493 px), measured on origin/main at f695dce.
+    /// 493 px), measured on origin/main at f695dce. Only Hash differs: it is
+    /// as wide as its copied state, the check icon and "Copied", and still
+    /// shares Copy message's row.
     #[gpui::test]
     async fn default_text_size_keeps_the_narrow_layout(cx: &mut TestAppContext) {
         let (_fixture, app, cx) =
@@ -4367,7 +4374,7 @@ mod tests {
                 ),
                 ("commit-message-toolbar", bounds(inspector, 207., 239., 34.)),
                 ("copy-message", bounds(inspector + 9.5, 210., 129., 28.)),
-                ("copy-commit", bounds(inspector + 141.5, 210., 49., 28.)),
+                ("copy-commit", bounds(inspector + 141.5, 210., 86., 28.)),
                 (
                     "changed-files-header",
                     bounds(inspector, files_top, 238., 36.),

@@ -100,7 +100,11 @@ The variable list owns measured row geometry and remeasures proportionally when
 interface scale changes. Text and list reservations count toward retained-tab
 admission, including nested return contexts. Keyboard arrows, Page Up/Down and
 Home/End scroll the focused message; labelled native buttons provide message and
-hash copy. Native platform quality remains a separate validation requirement.
+hash copy. They are `copy_feedback` copy buttons, each as wide as the wider of
+its content and its copied content (check and "Copied"), which for Hash is the
+copied content; `Toolbar::within` measures them so where the window fixes the
+inspector's width the reserved rows match what they draw. Native platform
+quality remains a separate validation requirement.
 
 The pieces and the selectable metadata lines (author, date and short hash, or a
 revision's lines) form one text document (`commit_message::selection`). The

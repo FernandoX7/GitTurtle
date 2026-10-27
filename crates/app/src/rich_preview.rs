@@ -357,7 +357,8 @@ pub(super) fn render_comparison<T: 'static>(
             for detail in &side.metadata.details { body=body.child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(detail.clone())); }
             if let Some(source)=&side.metadata.source {
                 let copied=source.clone();
-                body=body.child(button(("copy-decoded-source",index),"Copy source","copy",false).on_click(move|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string(copied.to_string()))));
+                let what=if quick {"source".to_owned()} else {format!("{label} source")};
+                body=body.child(copy_feedback::copy_button(("copy-decoded-source",index),"Copy source","copy","",cx).on_click(move|_,window,cx|copy_feedback::copy(window,cx,Some(("copy-decoded-source",index).into()),&what,copied.to_string())));
                 let mut end=source.len().min(16*1024); while !source.is_char_boundary(end) { end-=1; }
                 body=body.child(decoded_source(&source[..end],cx));
                 if end<source.len() { body=body.child(div().text_color(rgb(colors.muted)).child("Excerpt limited to 16 KiB; Copy source includes the complete available text.")); }

@@ -601,7 +601,7 @@ mod tests;
 /// The manager's room for focus rings, on the shared clipping fixtures of the
 /// Tags and Reflog dialogs.
 #[cfg(test)]
-mod ring_room_tests {
+pub(crate) mod ring_room_tests {
     use super::*;
     use crate::tags::tests::{
         assert_rings_whole, assert_room_for_rings, assert_room_moves_nothing, draw, git, rendered,
@@ -1060,7 +1060,10 @@ mod ring_room_tests {
     /// asks that element. The kit's Button renders a base Button, which GPUI
     /// renders in turn when it is laid out, to an element type of the base's
     /// own; a base Button rendered beside it names that type.
-    fn row_nodes(cx: &mut VisualTestContext, rows: Vec<Button>) -> Vec<gpui::accesskit::Node> {
+    pub(crate) fn row_nodes(
+        cx: &mut VisualTestContext,
+        rows: Vec<Button>,
+    ) -> Vec<gpui::accesskit::Node> {
         use gpui::Element as _;
         type Nodes = std::rc::Rc<std::cell::RefCell<Vec<gpui::accesskit::Node>>>;
         /// The element `element` renders when it is laid out.

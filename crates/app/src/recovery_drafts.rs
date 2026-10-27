@@ -570,8 +570,15 @@ impl RecoveryList {
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        button(("copy-recovery", index), "Copy exact text", "", false).on_click(
-                            cx.listener(move |this, _, _, cx| {
+                        copy_feedback::copy_button(
+                            ("copy-recovery", index),
+                            "Copy exact text",
+                            "",
+                            "",
+                            cx,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
                                 if let Some(owner) = this.owner.upgrade() {
                                     let text = owner
                                         .read(cx)
@@ -580,11 +587,17 @@ impl RecoveryList {
                                         .get(&copy)
                                         .map(|draft| draft.text.clone());
                                     if let Some(text) = text {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                        copy_feedback::copy(
+                                            window,
+                                            cx,
+                                            Some(("copy-recovery", index).into()),
+                                            "draft text",
+                                            text,
+                                        );
                                     }
                                 }
-                            }),
-                        ),
+                            },
+                        )),
                     )
                     .child(
                         button(("retry-recovery", index), "Retry save", "", false).on_click(

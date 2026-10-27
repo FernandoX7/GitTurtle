@@ -10,6 +10,7 @@ mod command_palette;
 mod commit_drafts;
 mod commit_message;
 mod conflicts;
+mod copy_feedback;
 mod desktop_text;
 mod diff_view;
 mod discard;
@@ -1875,6 +1876,21 @@ fn button(
     active: bool,
 ) -> Button {
     let label = label.into();
+    let mut button = button_frame(id, &label, symbol, active);
+    if !label.is_empty() {
+        button = button.label(label);
+    }
+    if !symbol.is_empty() {
+        button = button.icon(control_icon(symbol));
+    }
+    button
+}
+
+/// The compact frame [`button`] and `copy_feedback::copy_button` share,
+/// without content: 28 px high, with 10 px of padding beside a label and a
+/// 6 px icon/label gap, or, when `label` is empty, a 28 px square named after
+/// its `symbol` until the caller names it.
+fn button_frame(id: impl Into<ElementId>, label: &str, symbol: &str, active: bool) -> Button {
     // Transparent at rest like the kit's ghost, with the palette's hover and
     // pressed fills: the ghost's own hover darkens a hovered row. Selected, it
     // keeps the `selected` surface.
@@ -1898,17 +1914,15 @@ fn button(
         button = button
             .w(appearance::ui_size(28.))
             .accessibility_label(format!("{} file path", symbol));
-    } else {
-        button = button.label(label);
-    }
-    if !symbol.is_empty() {
-        button = button.icon(
-            Icon::default()
-                .path(format!("icons/{symbol}.svg"))
-                .size(appearance::ui_size(16.)),
-        );
     }
     button
+}
+
+/// A control's 16 px icon, `icons/<symbol>.svg`, tinted with its text.
+fn control_icon(symbol: &str) -> Icon {
+    Icon::default()
+        .path(format!("icons/{symbol}.svg"))
+        .size(appearance::ui_size(16.))
 }
 fn empty(title: &str, detail: &str) -> AnyElement {
     div()
@@ -2472,9 +2486,10 @@ mod icon_symbol_tests {
     }
 
     /// The literal icon names in `source`: the symbol argument of each
-    /// `button(id, label, symbol, active)` call and each `icons/<name>.svg`
-    /// path literal. Method calls (`.button(`) and definitions are not calls
-    /// of the helper; an empty symbol draws no icon.
+    /// `button(id, label, symbol, active)` and
+    /// `copy_button(id, label, symbol, tooltip, cx)` call and each
+    /// `icons/<name>.svg` path literal. Method calls (`.button(`) and
+    /// definitions are not calls of the helper; an empty symbol draws no icon.
     fn literal_icon_symbols(source: &str) -> Vec<String> {
         let tokens = tokens(source);
         let mut symbols = Vec::new();
@@ -2487,7 +2502,7 @@ mod icon_symbol_tests {
             {
                 symbols.push(name.to_owned());
             }
-            let call = matches!(token, Token::Ident(name) if name == "button")
+            let call = matches!(token, Token::Ident(name) if name == "button" || name == "copy_button")
                 && tokens.get(index + 1) == Some(&Token::Punct('('))
                 && !matches!(
                     index.checked_sub(1).map(|i| &tokens[i]),
@@ -2553,8 +2568,12 @@ mod icon_symbol_tests {
             let e = button("computed", "", symbol, false);
             let f = Icon::default().path("icons/third.svg");
             let g = svg().path(format!("icons/{name}.svg"));
+            let h = copy_feedback::copy_button("copy", "Copy", "fourth", "", cx);
         "#;
-        assert_eq!(literal_icon_symbols(source), ["first", "second", "third"]);
+        assert_eq!(
+            literal_icon_symbols(source),
+            ["first", "second", "third", "fourth"]
+        );
     }
 
     #[test]

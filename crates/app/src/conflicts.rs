@@ -695,7 +695,7 @@ impl Render for ConflictView {
                     let copy = text.clone();
                     element.child(div().flex().flex_wrap().items_center().gap_2()
                         .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(if valid { p.muted } else { p.warning })).child(if valid { "Saved draft matches this operation, index stages and working file." } else { "Saved draft belongs to changed source state. Recover its text without replacing this file." }))
-                        .child(button("copy-saved-conflict", "Copy saved text", "", false).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+                        .child(copy_feedback::copy_button("copy-saved-conflict", "Copy saved text", "", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some("copy-saved-conflict".into()), "saved text", copy.clone())))
                         .child(button("restore-saved-conflict", "Restore saved draft", "", false).debug_selector(|| "restore-saved-conflict".to_string()).disabled(!valid).on_click(cx.listener(move |this, _, window, cx| {
                             this.restore_saved_draft(window, cx);
                         }))))

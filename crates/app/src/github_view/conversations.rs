@@ -455,7 +455,7 @@ impl Panel {
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(button("github-review-reply","Review reply…","",true).disabled(self.pending||!valid).on_click(cx.listener(|this,_,window,cx|this.review_reply(window,cx))))
                 .child(button("github-close-reply","Save and close reply","",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|{this.save_reply(window,cx);this.conversations.active=None;this.confirm=None;this.focus_visible_section(window,cx);cx.notify();})))
-                .child(button("github-copy-reply","Copy reply","",false).on_click(cx.listener(|this,_,_,cx|{if let Some(draft)=this.reply_snapshot(cx){cx.write_to_clipboard(ClipboardItem::new_string(draft.recovery_text()));}})))
+                .child(copy_button("github-copy-reply","Copy reply","","",cx).on_click(cx.listener(|this,_,window,cx|{if let Some(draft)=this.reply_snapshot(cx){copy_feedback::copy(window,cx,Some("github-copy-reply".into()),"reply",draft.recovery_text());}})))
                 .child(label("github-reply-save",self.save_status.clone()).role(Role::Status).text_color(rgb(p.muted))))
             .into_any_element()
     }

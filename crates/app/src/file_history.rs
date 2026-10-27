@@ -778,13 +778,22 @@ impl GitTurtle {
                                     )),
                             )
                             .child(
-                                button("copy-history-path", "", "copy", false)
-                                    .tooltip("Copy file history's anchor path")
-                                    .on_click(move |_, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            copy_path.clone(),
-                                        ))
-                                    }),
+                                copy_feedback::copy_button(
+                                    "copy-history-path",
+                                    "",
+                                    "copy",
+                                    "Copy file history's anchor path",
+                                    cx,
+                                )
+                                .on_click(move |_, window, cx| {
+                                    copy_feedback::copy(
+                                        window,
+                                        cx,
+                                        Some("copy-history-path".into()),
+                                        "file path",
+                                        copy_path.clone(),
+                                    )
+                                }),
                             ),
                     )
                     .child(

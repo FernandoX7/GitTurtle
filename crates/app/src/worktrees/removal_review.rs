@@ -218,10 +218,9 @@ impl GitTurtle {
                                         .child(label("worktree-force-branch", revision).truncate().font_weight(FontWeight::MEDIUM).tooltip(move |window, cx| Tooltip::new(revision_tooltip.clone()).build(window, cx)))
                                         .child(label("worktree-force-path", target).truncate().text_color(rgb(colors.muted)).tooltip(move |window, cx| Tooltip::new(target_tooltip.clone()).build(window, cx))),
                                 )
-                                .child(button("copy-worktree-removal-path", "Copy path", "copy", false)
-                                    .debug_selector(|| "copy-worktree-removal-path".into())
+                                .child(copy_feedback::copy_button("copy-worktree-removal-path", "Copy path", "copy", "", cx)
                                     .accessibility_label("Copy full path of worktree to remove")
-                                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy_target.clone())))),
+                                    .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some("copy-worktree-removal-path".into()), "worktree path", copy_target.clone()))),
                         )
                         .child(
                             div()

@@ -415,10 +415,7 @@ impl GitTurtle {
             self.settings.interface_text_size,
             self.settings.code_text_size,
         );
-        let details = cx.new(|_| AboutDetails {
-            report,
-            copied: false,
-        });
+        let details = cx.new(|_| AboutDetails { report });
         window.open_alert_dialog(cx, move |dialog, _, _| {
             dialog
                 .title("About GitTurtle")
@@ -434,7 +431,6 @@ impl GitTurtle {
 
 struct AboutDetails {
     report: String,
-    copied: bool,
 }
 
 impl Render for AboutDetails {
@@ -466,11 +462,10 @@ impl Render for AboutDetails {
                     .child("Bug diagnostics include build and display settings. Repository paths, file content and account details are omitted."),
             )
             .child(
-                button("copy-bug-diagnostics", if self.copied { "Diagnostics copied" } else { "Copy bug diagnostics" }, "copy", false)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(this.report.clone()));
-                        this.copied = true;
-                        cx.notify();
+                copy_feedback::copy_button("copy-bug-diagnostics", "Copy bug diagnostics", "copy", "", cx)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let report = this.report.clone();
+                        copy_feedback::copy(window, cx, Some("copy-bug-diagnostics".into()), "bug diagnostics", report);
                     })),
             )
     }

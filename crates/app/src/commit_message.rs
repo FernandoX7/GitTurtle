@@ -54,17 +54,20 @@ pub(super) struct Toolbar {
 thread_local! {
     static COPY_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static HASH_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+    static COPIED_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
 }
 
 impl Toolbar {
     /// The toolbar of an inspector `width` wide, measured from the interface
     /// font at the interface size: the inspector's 1 px left border and the
-    /// toolbar's `px_3`, then the shared `button` helper's controls a quarter
-    /// rem apart, Copy message its 10 px of padding on either side of a 16 px
-    /// icon 6 px before its label, or a 28 px square of only the icon, and
-    /// Hash its padding beside its label. Wrapped rows are a quarter rem
-    /// apart inside the toolbar's `py_1`, and the panel's 1 px bottom border
-    /// is reserved with them.
+    /// toolbar's `px_3`, then the shared copy buttons a quarter rem apart,
+    /// each with 10 px of padding on either side of the wider of its content
+    /// and the copied content, a 16 px check icon 6 px before "Copied", which
+    /// `copy_feedback::copy_button` reserves. Copy message's content is a
+    /// 16 px icon 6 px before its label, or it is a 28 px square of only the
+    /// icon; Hash's is its label, narrower than the copied content. Wrapped
+    /// rows are a quarter rem apart inside the toolbar's `py_1`, and the
+    /// panel's 1 px bottom border is reserved with them.
     pub(super) fn within(width: Pixels, window: &Window) -> Self {
         let key = LineKey::current(window);
         let label = |cache, text| {
@@ -74,21 +77,21 @@ impl Toolbar {
         };
         let copy_label = label(&COPY_LABEL, "Copy message");
         let hash_label = label(&HASH_LABEL, "Hash");
+        let icon = appearance::ui_size(16. + 6.);
+        let copied = icon + label(&COPIED_LABEL, copy_feedback::COPIED);
         let rem = window.rem_size();
         let room = width - px(1.) - rem * 1.5;
         let gap = rem * 0.25;
-        let labelled = appearance::ui_size(2. * 10. + 16. + 6.) + copy_label;
+        let padding = appearance::ui_size(2. * 10.);
+        let labelled = padding + (icon + copy_label).max(copied);
         let compact = labelled > room;
         let copy = if compact {
             appearance::ui_size(28.)
         } else {
             labelled
         };
-        let rows = if copy + gap + appearance::ui_size(2. * 10.) + hash_label <= room {
-            1.
-        } else {
-            2.
-        };
+        let hash = padding + hash_label.max(copied);
+        let rows = if copy + gap + hash <= room { 1. } else { 2. };
         Self {
             compact,
             height: appearance::ui_size(28.).ceil() * rows + gap * (rows - 1.) + rem * 0.5 + px(1.),
@@ -391,23 +394,20 @@ impl GitTurtle {
                 .px_3().py_1()
                 .flex().flex_wrap().items_center().gap_1()
                 .child(if compact {
-                    compact_control_name(button("copy-message", "", "copy", false), "copy-message", "Copy full commit message")
-                        .tooltip("Copy message · Copy the complete commit title and body")
+                    compact_control_name(copy_feedback::copy_button("copy-message", "", "copy", "Copy message · Copy the complete commit title and body", cx), "copy-message", "Copy full commit message")
                 } else {
-                    button("copy-message", "Copy message", "copy", false)
+                    copy_feedback::copy_button("copy-message", "Copy message", "copy", "Copy the complete commit title and body", cx)
                         .accessibility_label("Copy full commit message")
-                        .tooltip("Copy the complete commit title and body")
                 }
-                    .debug_selector(|| "copy-message".into())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(commit) = this.message_commit(file_history).filter(|commit| commit.oid == copy_oid) {
-                            cx.write_to_clipboard(ClipboardItem::new_string(full_message(commit)));
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let message = this.message_commit(file_history).filter(|commit| commit.oid == copy_oid).map(full_message);
+                        if let Some(message) = message {
+                            copy_feedback::copy(window, cx, Some("copy-message".into()), "commit message", message);
                         }
                     })))
-                .child(button("copy-commit", "Hash", "", false).debug_selector(|| "copy-commit".into())
+                .child(copy_feedback::copy_button("copy-commit", "Hash", "", format!("Copy full commit hash · {}", commit.oid), cx)
                     .accessibility_label("Copy full commit hash")
-                    .tooltip(format!("Copy full commit hash · {}", commit.oid))
-                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(hash.clone()))))
+                    .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some("copy-commit".into()), "commit hash", hash.clone())))
             )
             .child(div()
                 .id("commit-message-viewport").debug_selector(|| "commit-message-viewport".into())

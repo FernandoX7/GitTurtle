@@ -181,14 +181,14 @@ impl GitTurtle {
             return;
         };
         let editor = text::editor(&details, "text", None, window, cx);
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
             let details = details.clone();
             dialog.title("Automatic refresh")
                 .width(px(620.))
                 .child(div().child("Some local changes may need Refresh. Existing watches continue where available. Refresh reads local changes and retries coverage."))
                 .child(crate::editor_find::Editor::new(&editor).readonly(true).h(px(240.)).aria_label("Automatic refresh details"))
-                .child(button("copy-refresh-details", "Copy details", "", false).on_click(move |_, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(details.clone()));
+                .child(copy_feedback::copy_button("copy-refresh-details", "Copy details", "", "", cx).on_click(move |_, window, cx| {
+                    copy_feedback::copy(window, cx, Some("copy-refresh-details".into()), "refresh details", details.clone());
                 }))
                 .button_props(DialogButtonProps::default().ok_text("Close"))
         });

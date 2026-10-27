@@ -660,8 +660,13 @@ fn render_side<T: 'static>(
             .child(source_label),
     );
     if let Some(source) = side.metadata.source.clone() {
+        let content = if lfs_pointer {
+            "LFS pointer"
+        } else {
+            "model source"
+        };
         source_actions = source_actions.child(
-            button(
+            copy_feedback::copy_button(
                 ("model-source", index),
                 if lfs_pointer {
                     "Copy pointer"
@@ -669,18 +674,18 @@ fn render_side<T: 'static>(
                     "Copy source"
                 },
                 "copy",
-                false,
+                "",
+                cx,
             )
-            .accessibility_label(format!(
-                "Copy exact {label} {}",
-                if lfs_pointer {
-                    "LFS pointer"
-                } else {
-                    "model source"
-                }
-            ))
-            .on_click(move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(source.to_string()))
+            .accessibility_label(format!("Copy exact {label} {content}"))
+            .on_click(move |_, window, cx| {
+                copy_feedback::copy(
+                    window,
+                    cx,
+                    Some(("model-source", index).into()),
+                    &format!("{label} {content}"),
+                    source.to_string(),
+                )
             }),
         );
     }

@@ -38,6 +38,16 @@ fn button(
 ) -> Button {
     crate::button(id, label, symbol, active).key_context("GitTurtleGithubButton")
 }
+/// [`copy_feedback::copy_button`] with the same activation as [`button`].
+fn copy_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    symbol: &str,
+    tooltip: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    copy_feedback::copy_button(id, label, symbol, tooltip, cx).key_context("GitTurtleGithubButton")
+}
 
 #[derive(Default)]
 struct WarmPanels(Vec<WarmPanel>);
@@ -1056,13 +1066,13 @@ impl Render for Panel {
                 .child(div().w(appearance::ui_size(280.)).min_w(px(190.)).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending)))
                 .child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx))))
                 .child(button("github-create","New pull request","plus",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx))))
-                .child(div().flex_1()).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();}))))
+                .child(div().flex_1()).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();}))))
             .when(self.review.connection_open,|element|element.child(div().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                 .child(label("github-worktree",format!("Local worktree: {}",self.repo.path().display())).text_color(rgb(p.muted)))
                 .child(label("github-connection-help","Connect uses your current GitHub CLI account and saves GitTurtle authorization in secure storage. Refresh and PR selection are explicit network reads.").text_color(rgb(p.muted)))
                 .child(div().flex().flex_wrap().gap_2()
                     .child(button("github-connect","Connect GitHub CLI account","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx))))
-                    .child(button("github-sign-in-help","Copy sign-in command","",false).on_click(|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string("gh auth login --hostname github.com --web --skip-ssh-key".into()))))
+                    .child(copy_button("github-sign-in-help","Copy sign-in command","","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some("github-sign-in-help".into()),"sign-in command","gh auth login --hostname github.com --web --skip-ssh-key".into())))
                     .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.run(false,|_|SecureStore.remove(),|result,this,_,_|match result{Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx)))))))
             .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted))))
             .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
@@ -1125,7 +1135,7 @@ impl Render for Panel {
             .when(self.review.recovery_open,|element|element
                 .child(label("github-saved-heading","Captured drafts · Copy includes all inline text and original positions; older heads are never remapped").text_color(rgb(p.muted)))
                 .child(div().id("github-saved-drafts").debug_selector(||"github-saved-drafts".into()).flex_shrink_0().max_h(px(160.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.saved.iter().filter(|draft| !matches!(draft,Draft::Reply(reply) if reply.body.is_empty())).take(128).enumerate().map(|(index,draft)|{let draft=draft.clone();let discard=draft.clone();div().flex_shrink_0().flex().flex_col().gap_1().child(label(("github-draft-identity",index),match &draft {Draft::Reply(reply)=>format!("Reply · {} #{} · {} · {}",reply.target.pull.repository.label(),reply.target.pull.number,reply.target.path,reply.target.account),_=>draft.key()}).text_color(rgb(p.muted)))
-                    .child(div().flex().gap_2().child(button(("github-copy-draft",index),"Copy complete draft","",false).on_click(move|_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string(draft.recovery_text()))))
+                    .child(div().flex().gap_2().child(copy_button(("github-copy-draft",index),"Copy complete draft","","",cx).on_click(move|_,window,cx|copy_feedback::copy(window,cx,Some(("github-copy-draft",index).into()),"draft",draft.recovery_text())))
                         .child(button(("github-discard-draft",index),"Discard saved draft","",false).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.discard_draft(discard.clone(),window,cx)))))})))
                 .when(!self.attempts.is_empty(),|element|element.child(label("github-attempt-heading","Previous outbound attempts · inspect the destination before repeating"))
                     .child(div().id("github-attempt-list").debug_selector(||"github-attempt-list".into()).flex_shrink_0().max_h(px(100.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.attempts.iter().rev().take(10).enumerate().map(|(index,attempt)|label(("github-attempt",index),format!("{}: {}",attempt.destination,attempt.outcome)).flex_shrink_0())))))
@@ -1446,9 +1456,77 @@ mod tests {
     async fn opening_github_from_an_active_repository_update_defers_local_reads(
         cx: &mut TestAppContext,
     ) {
+        let (_fixture, app, cx) = repository_window(cx);
+        open_panel(&app, cx).await;
+        cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx));
+            window.close_dialog(cx);
+            assert!(!window.has_active_dialog(cx));
+        });
+    }
+
+    /// The sign-in command's copy button, drawn by the panel's own view in
+    /// the dialog layer, reads Copied at its own size and restores: a copy
+    /// redraws the whole window, not only the view that owns its button.
+    #[gpui::test]
+    async fn the_sign_in_command_reads_copied_inside_the_panel(cx: &mut TestAppContext) {
+        use crate::copy_feedback::{RESTORE_AFTER, tests::*};
+        let (_fixture, app, cx) = repository_window(cx);
+        open_panel(&app, cx).await;
+        crate::commit_message::tests::draw(cx);
+        click(cx, "github-account-options");
+        cx.run_until_parked();
+        // The dialog slides in on the wall clock, so only sizes compare.
+        let size =
+            |cx: &mut VisualTestContext| cx.debug_bounds("github-sign-in-help").unwrap().size;
+        let rest = size(cx);
+        assert_eq!(shows(cx, "github-sign-in-help"), Shows::Rest);
+
+        click(cx, "github-sign-in-help");
+        assert_eq!(
+            clipboard(cx),
+            "gh auth login --hostname github.com --web --skip-ssh-key"
+        );
+        assert_eq!(shows(cx, "github-sign-in-help"), Shows::Copied);
+        assert_eq!(size(cx), rest);
+        assert_eq!(announced(cx).unwrap().1, "Copied sign-in command");
+
+        wait(cx, RESTORE_AFTER);
+        assert_eq!(shows(cx, "github-sign-in-help"), Shows::Rest);
+        assert_eq!(size(cx), rest);
+        assert_eq!(announced(cx), None);
+        cx.update(|window, cx| window.close_dialog(cx));
+    }
+
+    /// The panel opened from the active repository's update, as command
+    /// palette activation opens it, with its local reads drained.
+    async fn open_panel(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            // This is the same parent-entity update boundary as command-palette
+            // activation. The previous constructor synchronously reborrowed it.
+            app.update(cx, |app, cx| app.open_github(window, cx));
+            assert!(window.has_active_dialog(cx));
+        });
+        let (operations_done, preferences_done) = app.read_with(cx, |app, _| {
+            (
+                app.operations.submit_read(|| Ok(())),
+                app.preferences_writer.submit_read(|| Ok(())),
+            )
+        });
+        operations_done.await.unwrap().unwrap();
+        preferences_done.await.unwrap().unwrap();
+        cx.executor().run_until_parked();
+    }
+
+    /// A window on an empty repository, on the Repository page. Keep the
+    /// returned directory until the test ends.
+    fn repository_window(
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
         // This full app integration test intentionally performs local reads on
         // the real serial executors. GPUI's supported I/O mode accepts their
-        // cross-thread wakes; the barriers below drain them before teardown.
+        // cross-thread wakes; the barriers in `open_panel` drain them before
+        // teardown.
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
         let result = std::process::Command::new("git")
@@ -1485,25 +1563,6 @@ mod tests {
             Root::new(app, window, cx)
         });
         let app = view.borrow().as_ref().unwrap().clone();
-        cx.update(|window, cx| {
-            // This is the same parent-entity update boundary as command-palette
-            // activation. The previous constructor synchronously reborrowed it.
-            app.update(cx, |app, cx| app.open_github(window, cx));
-            assert!(window.has_active_dialog(cx));
-        });
-        let (operations_done, preferences_done) = app.read_with(cx, |app, _| {
-            (
-                app.operations.submit_read(|| Ok(())),
-                app.preferences_writer.submit_read(|| Ok(())),
-            )
-        });
-        operations_done.await.unwrap().unwrap();
-        preferences_done.await.unwrap().unwrap();
-        cx.executor().run_until_parked();
-        cx.update(|window, cx| {
-            assert!(window.has_active_dialog(cx));
-            window.close_dialog(cx);
-            assert!(!window.has_active_dialog(cx));
-        });
+        (fixture, app, cx)
     }
 }

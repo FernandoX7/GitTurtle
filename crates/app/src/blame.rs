@@ -310,7 +310,14 @@ impl GitTurtle {
         true
     }
 
-    pub(super) fn copy_blame_line(&self, cx: &mut Context<Self>) -> bool {
+    /// Copies the selected line's text, confirmed on `control`, the Copy line
+    /// button, or only announced for the list's Copy.
+    pub(super) fn copy_blame_line(
+        &self,
+        control: Option<ElementId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if !self.blame.is_visible() {
             return false;
         }
@@ -319,7 +326,7 @@ impl GitTurtle {
             .selected
             .and_then(|index| self.blame.data.as_ref()?.lines.get(index))
         {
-            cx.write_to_clipboard(ClipboardItem::new_string(line.text.clone()));
+            copy_feedback::copy(window, cx, control, "line", line.text.clone());
         }
         true
     }
@@ -505,7 +512,7 @@ impl GitTurtle {
                 .child(static_text("blame-lineage-limit", lineage).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))))
             .children(self.blame.data.as_ref().filter(|data| data.shallow).map(|_| static_text("blame-shallow-boundary", "Shallow repository · attribution and line history stop at the locally available boundary.").flex_shrink_0().px_3().py_2().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
             .children(self.blame.error.as_ref().map(|error| static_text("blame-error", format!("Attribution unavailable: {error}")).flex_shrink_0().max_h(px(100.)).overflow_y_scroll().p_3().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
-            .child(div().id("blame-lines-region").role(Role::ListBox).aria_label("Source lines and commit attribution").tab_stop(true).key_context("GitTurtleList").on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, _, cx| { this.copy_blame_line(cx); })).track_focus(focus).flex_1().min_h_0().min_w_0()
+            .child(div().id("blame-lines-region").role(Role::ListBox).aria_label("Source lines and commit attribution").tab_stop(true).key_context("GitTurtleList").on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, window, cx| { this.copy_blame_line(None, window, cx); })).track_focus(focus).flex_1().min_h_0().min_w_0()
                 .child(if count == 0 { div().id("blame-empty-state").role(Role::Label).aria_label(format!("{empty_title}. {empty_detail}")).size_full().child(empty(empty_title, empty_detail)).into_any_element() } else {
                     uniform_list("blame-lines", count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.render_blame_row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.blame.scroll).into_any_element()
                 }))
@@ -515,13 +522,13 @@ impl GitTurtle {
                 .child(div().flex().items_center().gap_2()
                     .child(button("blame-compare-commit", "Compare commit", "", false).accessibility_label(action_label("Compare commit")).disabled(attribution.is_none() || busy).tooltip("Open the line's originating commit; Back restores this attribution and selected line").on_click(cx.listener(|this, _, window, cx| this.open_blame_commit(window, cx))))
                     .child(button("blame-line-history", "History of line", "clock", false).accessibility_label(action_label("History of line")).disabled(attribution.is_none() || busy).on_click(cx.listener(|this, _, window, cx| this.load_line_history(window, cx))))
-                    .child(button("copy-blame-line", "Copy line", "copy", false).accessibility_label(if selected.is_some() { "Copy line" } else { "Copy line, unavailable until a line is selected" }).disabled(selected.is_none()).on_click(cx.listener(|this, _, _, cx| { this.copy_blame_line(cx); })))
-                    .children(attribution.map(|attribution| { let oid = attribution.oid.clone(); button("copy-blame-commit", short_oid(&oid), "copy", false).tooltip("Copy originating commit hash").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(oid.clone()))) })))
+                    .child(copy_feedback::copy_button("copy-blame-line", "Copy line", "copy", "", cx).accessibility_label(if selected.is_some() { "Copy line" } else { "Copy line, unavailable until a line is selected" }).disabled(selected.is_none()).on_click(cx.listener(|this, _, window, cx| { this.copy_blame_line(Some("copy-blame-line".into()), window, cx); })))
+                    .children(attribution.map(|attribution| { let oid = attribution.oid.clone(); copy_feedback::copy_button("copy-blame-commit", short_oid(&oid), "copy", "Copy originating commit hash", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some("copy-blame-commit".into()), "commit hash", oid.clone())) })))
                 .children(matches!(self.blame.pending, Some(Pending::History(_))).then(|| static_text("blame-line-history-loading", "Tracing the selected line…").text_size(crate::appearance::ui_text(11.))))
                 .children(self.blame.history.as_ref().map(|history| div().flex().flex_col().min_h_0().gap_1()
                     .child(static_text("blame-line-history-limit", if history.truncated { "Latest 100 line changes · limit reached. First-parent lineage; copies and other merge parents are excluded." } else { "Line changes · first-parent lineage; copies and other merge parents are excluded." }).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)))
                     .child(div().id("line-history-results").overflow_y_scroll().max_h(px(130.)).children(history.commits.iter().enumerate().map(|(index, commit)| { let oid = commit.oid.clone();
-                        div().py_1().flex().items_center().gap_2().child(button(("copy-line-history-commit", index), short_oid(&oid), "copy", false).tooltip("Copy this line-history commit hash").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(oid.clone())))).child(static_text(("blame-line-history-subject", index), commit.subject.clone()).flex_1().truncate().text_size(crate::appearance::ui_text(11.))).child(static_text(("blame-line-history-author", index), commit.author.clone()).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)))
+                        div().py_1().flex().items_center().gap_2().child(copy_feedback::copy_button(("copy-line-history-commit", index), short_oid(&oid), "copy", "Copy this line-history commit hash", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(("copy-line-history-commit", index).into()), "commit hash", oid.clone()))).child(static_text(("blame-line-history-subject", index), commit.subject.clone()).flex_1().truncate().text_size(crate::appearance::ui_text(11.))).child(static_text(("blame-line-history-author", index), commit.author.clone()).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)))
                     }))))))
             .into_any_element()
     }

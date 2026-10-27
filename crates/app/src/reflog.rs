@@ -353,7 +353,7 @@ impl Render for ReflogBrowser {
             .when_some(self.selected.as_ref(), |element, entry| {
                 let oid = entry.oid.clone();
                 element.child(label("reflog-selected-object", format!("{}\nCommit: {}\nPrevious: {}", entry.selector, entry.oid, entry.previous_oid)).text_size(crate::appearance::ui_text(12.)))
-                    .child(button("copy-reflog-oid", "Copy commit ID", "", false).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(oid.clone()))))
+                    .child(copy_feedback::copy_button("copy-reflog-oid", "Copy commit ID", "", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some("copy-reflog-oid".into()), "commit ID", oid.clone())))
             })
             .when_some(self.commit.as_ref(), |element, commit| element
                 .child(label("reflog-commit-metadata", format!("{} · {}\n{} parent{} · {} against {}", commit.author, full_date(commit.timestamp), commit.parents.len(), if commit.parents.len() == 1 { "" } else { "s" }, crate::changed_files(self.changes.len()), if commit.parents.len() > 1 { "first parent" } else { "parent or empty tree" })).text_size(crate::appearance::ui_text(12.)))

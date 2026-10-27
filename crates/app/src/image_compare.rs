@@ -406,7 +406,7 @@ impl GitTurtle {
         for (index, side) in [old, new].into_iter().enumerate() {
             let label = if index == 0 { "Before" } else { "After" };
             if let Some(literal) = side.literal_source.clone() {
-                captured_actions = captured_actions.child(button(("copy-image-source",index),format!("Copy {label} source"),"copy",false).tooltip("Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch").on_click(move |_,_,cx|cx.write_to_clipboard(ClipboardItem::new_string(literal.to_string()))));
+                captured_actions = captured_actions.child(copy_feedback::copy_button(("copy-image-source",index),format!("Copy {label} source"),"copy","Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(("copy-image-source",index).into()),&format!("{label} source"),literal.to_string())));
             }
             if let Some(bytes) = side.captured.clone() {
                 let path = self
