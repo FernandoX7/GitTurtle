@@ -13,13 +13,17 @@ use crate::{
     highlighter::{Language, languages},
 };
 
-pub(super) const HIGHLIGHT_NAMES: [&str; 41] = [
+pub(super) const HIGHLIGHT_NAMES: [&str; 45] = [
     "attribute",
     "boolean",
     "comment",
     "comment.doc",
     "constant",
     "constructor",
+    "diff.header",
+    "diff.hunk",
+    "diff.minus",
+    "diff.plus",
     "embedded",
     "emphasis",
     "emphasis.strong",
@@ -115,6 +119,17 @@ pub struct SyntaxColors {
     pub comment_doc: Option<ThemeStyle>,
     pub constant: Option<ThemeStyle>,
     pub constructor: Option<ThemeStyle>,
+    /// GitTurtle patch: a unified diff's file header (`---`, `+++`), hunk
+    /// location (`@@`), and removed and added lines, which the bundled diff
+    /// query captures under names of their own.
+    #[serde(rename = "diff.header")]
+    pub diff_header: Option<ThemeStyle>,
+    #[serde(rename = "diff.hunk")]
+    pub diff_hunk: Option<ThemeStyle>,
+    #[serde(rename = "diff.minus")]
+    pub diff_minus: Option<ThemeStyle>,
+    #[serde(rename = "diff.plus")]
+    pub diff_plus: Option<ThemeStyle>,
     pub embedded: Option<ThemeStyle>,
     pub emphasis: Option<ThemeStyle>,
     #[serde(rename = "emphasis.strong")]
@@ -248,6 +263,10 @@ impl SyntaxColors {
             "comment.doc" => self.comment_doc,
             "constant" => self.constant,
             "constructor" => self.constructor,
+            "diff.header" => self.diff_header,
+            "diff.hunk" => self.diff_hunk,
+            "diff.minus" => self.diff_minus,
+            "diff.plus" => self.diff_plus,
             "embedded" => self.embedded,
             "emphasis" => self.emphasis,
             "emphasis.strong" => self.emphasis_strong,

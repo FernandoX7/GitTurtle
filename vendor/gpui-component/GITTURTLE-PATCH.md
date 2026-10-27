@@ -294,6 +294,23 @@ at least 6 of 255 in one channel in every palette. Remove this part of the
 patch when upstream Switch draws a focus indicator and a hover state, or offers
 equivalent settings, and those tests pass without it.
 
+The diff-roles patch modifies `src/highlighter/registry.rs`,
+`src/highlighter/wasm_stub.rs` and `src/highlighter/languages.rs`, and adds
+`src/highlighter/languages/diff/highlights.scm`. Upstream builds the diff
+language from tree-sitter-diff 0.1.0's own query, which captures added lines
+and `+++` as `string`, removed lines and `---` as `keyword`, and `@@` lines as
+`attribute`, so a ```` ```diff ```` fence in Markdown source drew a removed line
+in a theme's keyword colour. The bundled query is that query with the file
+headers, hunk locations and changed lines captured as `diff.header`,
+`diff.hunk`, `diff.minus` and `diff.plus`, and `SyntaxColors` gains those four
+fields (theme keys of the same names) and `HIGHLIGHT_NAMES` the four names; a
+theme that leaves them unset draws those lines in its editor foreground. No
+other grammar emits these names. The consumer is the application's syntax theme
+(`crates/app/src/appearance.rs`), which maps them to its patch colours, covered
+by `cargo test --locked -p gitturtle a_diff_fence_in_markdown_draws_the_patch_colours`.
+Remove it when upstream gives diff captures names a theme can colour apart from
+string, keyword and attribute, and that test passes without it.
+
 The caller focus-handle patch also modifies `src/switch.rs` and
 `src/checkbox.rs`. Upstream Switch and Checkbox keep their focus handles in
 their own keyed state, so an application cannot tell whether one holds focus,

@@ -1665,6 +1665,7 @@ impl Palette {
             function: targets.fit(self.hunk),
             markup: targets.fit(self.accent),
             comment: targets.fit(self.muted),
+            removed: targets.fit(self.removed),
             // `text` reaches every target by definition, so fitting would return it unchanged.
             text: self.text,
         }
@@ -1703,7 +1704,8 @@ impl Palette {
 
 /// The palette color each syntax role draws in once fitted: `keyword` from `renamed`, `string`
 /// from `added`, `constant` from `warning`, `type_` from `modified`, `function` from `hunk`,
-/// `markup` from `accent`, `comment` from `muted`, and `text` as it is.
+/// `markup` from `accent`, `comment` from `muted`, `removed` from `removed`, and `text` as it
+/// is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SyntaxRoles {
     keyword: u32,
@@ -1713,6 +1715,7 @@ struct SyntaxRoles {
     function: u32,
     markup: u32,
     comment: u32,
+    removed: u32,
     text: u32,
 }
 
@@ -1732,6 +1735,7 @@ impl SyntaxRoles {
             function,
             markup,
             comment,
+            removed,
             text,
         ] = self.colors().map(Some);
         SyntaxColors {
@@ -1749,6 +1753,10 @@ impl SyntaxRoles {
             constant: restyle(kit.constant, constant),
             type_: restyle(kit.type_, type_),
             constructor: restyle(kit.constructor, type_),
+            diff_header: restyle(kit.diff_header, text),
+            diff_hunk: restyle(kit.diff_hunk, function),
+            diff_minus: restyle(kit.diff_minus, removed),
+            diff_plus: restyle(kit.diff_plus, string),
             enum_: restyle(kit.enum_, type_),
             variant: restyle(kit.variant, type_),
             function: restyle(kit.function, function),
@@ -1780,8 +1788,9 @@ impl SyntaxRoles {
         }
     }
 
-    /// Every color the editors draw syntax in: the seven fitted roles and `text`.
-    fn colors(self) -> [u32; 8] {
+    /// The colors a word tint carries: every role but `removed`, which only a diff file's
+    /// removed lines draw in, and which a compared language's words never take.
+    fn word_colors(self) -> [u32; 8] {
         [
             self.keyword,
             self.string,
@@ -1790,6 +1799,21 @@ impl SyntaxRoles {
             self.function,
             self.markup,
             self.comment,
+            self.text,
+        ]
+    }
+
+    /// Every color the editors draw syntax in: the eight fitted roles and `text`.
+    fn colors(self) -> [u32; 9] {
+        [
+            self.keyword,
+            self.string,
+            self.constant,
+            self.type_,
+            self.function,
+            self.markup,
+            self.comment,
+            self.removed,
             self.text,
         ]
     }
@@ -1967,8 +1991,8 @@ impl EditorHighlights {
     /// step toward black or white at 4.5:1. The colors drawn on the selection and on Find's
     /// matches are `text` and every syntax role, drawn on the editor background, the active line
     /// and both line tints, and the unified patch's `added`, `removed` and `hunk`, drawn on their
-    /// line tints and the editor background; a word tint carries `text`, every syntax role and its
-    /// diff color, and sits on its line tint. The current match stands apart from the other
+    /// line tints and the editor background; a word tint carries `text`, every syntax role but
+    /// `removed` ([`SyntaxRoles::word_colors`]) and its diff color, and sits on its line tint. The current match stands apart from the other
     /// matches too where it can; its accent underline marks it where it cannot.
     fn fit(palette: Palette, roles: SyntaxRoles) -> Self {
         let away = if palette.is_light() {
@@ -1983,6 +2007,7 @@ impl EditorHighlights {
             palette.removed_background,
         ];
         let syntax = roles.colors().map(|color| (color, &lines[..]));
+        let words = roles.word_colors().map(|color| (color, &lines[..]));
         let diff = [
             (palette.added, &lines[2..3]),
             (palette.removed, &lines[3..4]),
@@ -2008,7 +2033,7 @@ impl EditorHighlights {
             });
             fit(
                 seed,
-                &[&syntax[..], &[(diff, &[line])]].concat(),
+                &[&words[..], &[(diff, &[line])]].concat(),
                 &[line],
                 diff,
             )
@@ -2510,8 +2535,8 @@ mod tests {
             below.join("\n")
         );
         assert_eq!(uncolored, Vec::<String>::new());
-        // Thirty-nine colored fields and the editor foreground, on four backgrounds.
-        assert_eq!(measured, palettes * 40 * 4);
+        // Forty-three colored fields and the editor foreground, on four backgrounds.
+        assert_eq!(measured, palettes * 44 * 4);
     }
 
     /// Text, every syntax color and the unified patch's diff colors read at 4.5:1 on each
@@ -2519,7 +2544,8 @@ mod tests {
     /// highlight stands [`HIGHLIGHT_DISTANCE`] (ΔEOK) from every line background it is drawn on:
     /// the selection (the configured theme's text selection) and Find's other and current
     /// matches on the editor background, the active line and both line tints; each word tint on
-    /// its own line tint, under text, the syntax colors and its diff color. Returns the cases
+    /// its own line tint, under text, the syntax colors but a diff file's removed lines
+    /// (`diff.minus`, [`SyntaxRoles::word_colors`]) and its diff color. Returns the cases
     /// whose current Find match stands less than that distance from the other matches (its
     /// accent underline still marks it).
     pub(crate) fn assert_editor_highlights_read(
@@ -2549,6 +2575,11 @@ mod tests {
                         .iter()
                         .map(|&(token, color)| (token.to_owned(), color)),
                 );
+                drawn
+            };
+            let word = |extra: &[(&str, u32)]| {
+                let mut drawn = with(extra);
+                drawn.retain(|(token, _)| token != "diff.minus");
                 drawn
             };
             let unified = with(&[
@@ -2586,13 +2617,13 @@ mod tests {
                 (
                     "added word tint",
                     highlights.added_word,
-                    with(&[("unified added", palette.added)]),
+                    word(&[("unified added", palette.added)]),
                     vec![lines[2]],
                 ),
                 (
                     "removed word tint",
                     highlights.removed_word,
-                    with(&[("unified removed", palette.removed)]),
+                    word(&[("unified removed", palette.removed)]),
                     vec![lines[3]],
                 ),
             ];
@@ -2655,6 +2686,83 @@ mod tests {
     /// colors sit just above the 3:1 status rule it is held to, read on every editor
     /// background; `omarchy::palette::tests` measures the Omarchy fixtures. On origin/main
     /// these were the toolkit's default highlight theme's colors.
+    /// A ```diff fence in Markdown source draws its file headers in `text` and its hunk,
+    /// removed and added lines in the fitted `hunk`, `removed` and `added` roles, in every
+    /// built-in and Omarchy palette, each at 4.5:1 or more on the canvas and the panel. On
+    /// origin/main a removed line took the keyword color (`renamed`), a hunk line the markup
+    /// color (`accent`) and the headers keyword and string. Markdown without a diff fence,
+    /// another language injected, draws exactly as before: no style it takes depends on the
+    /// diff fields.
+    #[test]
+    fn a_diff_fence_in_markdown_draws_the_patch_colours() {
+        use gpui_kit::{
+            combine_highlights,
+            component::{Rope, highlighter::SyntaxHighlighter},
+        };
+        let fence =
+            "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,2 +1,2 @@ intro\n-old line\n+new line\n";
+        let document = format!("# Notes\n\nThe change:\n\n```diff\n{fence}```\n");
+        let without =
+            "# Notes\n\nSome `code` and **bold**.\n\n```rust\nfn main() { let s = \"x\"; }\n```\n";
+        let styles = |text: &str, theme: &gpui_kit::component::highlighter::HighlightTheme| {
+            let mut highlighter = SyntaxHighlighter::new("markdown");
+            highlighter.update(None, &Rope::from(text), None);
+            combine_highlights(Vec::new(), highlighter.styles(&(0..text.len()), theme))
+                .collect::<Vec<_>>()
+        };
+        for (name, palette) in test_palettes() {
+            let theme = palette.configured_theme(palette.is_light()).highlight_theme;
+            let roles = palette.syntax_roles();
+            let drawn = styles(&document, &theme);
+            let mut start = document.find("```diff\n").unwrap() + "```diff\n".len();
+            for line in fence.split_inclusive('\n') {
+                let range = start..start + line.len() - 1;
+                start += line.len();
+                let (role, expected) = if line.starts_with("---") || line.starts_with("+++") {
+                    ("text", roles.text)
+                } else if line.starts_with("@@") {
+                    ("hunk", roles.function)
+                } else if line.starts_with('-') {
+                    ("removed", roles.removed)
+                } else {
+                    ("added", roles.string)
+                };
+                let colors: Vec<_> = drawn
+                    .iter()
+                    .filter(|(segment, _)| segment.start < range.end && segment.end > range.start)
+                    .map(|(_, style)| style.color)
+                    .collect();
+                assert!(
+                    !colors.is_empty()
+                        && colors
+                            .iter()
+                            .all(|color| *color == Some(rgb(expected).into())),
+                    "{name}: {line:?} draws {colors:?}, not its {role} color #{expected:06x}"
+                );
+                for surface in [palette.canvas, palette.panel] {
+                    let ratio = custom::contrast(expected, surface);
+                    assert!(
+                        ratio >= 4.5,
+                        "{name}: {role} #{expected:06x} reads {ratio:.2}:1 on #{surface:06x}"
+                    );
+                }
+            }
+            let mut without_diff = (*theme).clone();
+            let syntax = &mut without_diff.style.syntax;
+            (
+                syntax.diff_header,
+                syntax.diff_hunk,
+                syntax.diff_minus,
+                syntax.diff_plus,
+            ) = (None, None, None, None);
+            assert_eq!(
+                styles(without, &theme),
+                styles(without, &without_diff),
+                "{name}: Markdown without a diff fence takes a diff style"
+            );
+        }
+    }
+
     #[test]
     fn syntax_colors_read_on_every_editor_background() {
         let mut custom = CustomTheme::from_base(1, "Faint statuses", ThemeChoice::Porcelain);
@@ -2670,7 +2778,7 @@ mod tests {
     }
 
     /// Each syntax field draws in its role's palette color. Pinned on Tokyo Night with its
-    /// orange for `warning`, which Tokyo Night shares with `modified`: its eight role colors
+    /// orange for `warning`, which Tokyo Night shares with `modified`: its nine role colors
     /// are then distinct and each already reads on every editor background, so none is mixed
     /// toward `text`.
     #[test]
@@ -2679,7 +2787,7 @@ mod tests {
         custom.palette.set(TokenKind::Warning, 0xff9e64);
         let palette = custom.palette;
         assert_eq!(palette.readability_issues(), Vec::new());
-        let roles: [(Option<u32>, &[&str]); 9] = [
+        let roles: [(Option<u32>, &[&str]); 10] = [
             (Some(palette.renamed), &["keyword", "preproc"]),
             (
                 Some(palette.added),
@@ -2691,14 +2799,16 @@ mod tests {
                     "string.special.symbol",
                     "text.literal",
                     "text.code.span",
+                    "diff.plus",
                 ],
             ),
+            (Some(palette.removed), &["diff.minus"]),
             (Some(palette.warning), &["number", "boolean", "constant"]),
             (
                 Some(palette.modified),
                 &["type", "constructor", "enum", "variant"],
             ),
-            (Some(palette.hunk), &["function"]),
+            (Some(palette.hunk), &["function", "diff.hunk"]),
             (
                 Some(palette.accent),
                 &[
@@ -2729,6 +2839,7 @@ mod tests {
                     "punctuation.list_marker",
                     "punctuation.special",
                     "primary",
+                    "diff.header",
                     "editor foreground",
                 ],
             ),
@@ -2740,7 +2851,7 @@ mod tests {
             .collect::<Vec<_>>();
         distinct.sort_unstable();
         distinct.dedup();
-        assert_eq!(distinct.len(), 8, "the role colors are distinct");
+        assert_eq!(distinct.len(), 9, "the role colors are distinct");
 
         let drawn = editor_text_colors(&palette.configured_theme(custom.is_light()));
         let mut wrong = Vec::new();
@@ -2804,7 +2915,7 @@ mod tests {
             "fields off text:\n{}",
             off_text.join("\n")
         );
-        assert_eq!(drawn.len(), 42);
+        assert_eq!(drawn.len(), 46);
     }
 
     /// Tuned tokens clear their rule by this much: the rules are computed on declared colors,
