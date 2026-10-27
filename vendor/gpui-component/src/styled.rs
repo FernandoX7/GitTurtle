@@ -67,6 +67,16 @@ pub fn popover_ring(cx: &App) -> Hsla {
         .unwrap_or_else(|| cx.theme().foreground.alpha(POPOVER_RING_INK))
 }
 
+/// The colour of a menu separator in this theme: the theme's
+/// [`crate::Theme::popover_edge`] when it sets one, and otherwise the border
+/// token, as upstream draws it.
+///
+/// A separator sits on the popup's own surface, so an edge fitted against that
+/// surface holds there too; the border token is fitted against the page.
+pub fn menu_separator(cx: &App) -> Hsla {
+    cx.theme().popover_edge.unwrap_or(cx.theme().border)
+}
+
 /// shadcn/ui's popup surface shadow — a hairline `ring` plus `shadow-md` — at
 /// `strength` of its full ink.
 ///

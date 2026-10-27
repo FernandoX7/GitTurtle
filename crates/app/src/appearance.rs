@@ -3730,24 +3730,29 @@ mod tests {
     /// alone would read 1.17:1 on Omarchy Matte Black's raised surface. In
     /// every palette the surface is at least as light as each page surface,
     /// its edge clears the border rule against the surface and against every
-    /// page surface beneath it, text and secondary text clear the text rule on
-    /// it, and the menu's hover row keeps the hover step off it.
+    /// page surface beneath it, separators take that edge, text and secondary
+    /// text clear the text rule on it, and the menu's hover row keeps the
+    /// hover step off it.
     #[gpui::test]
     fn every_palette_raises_menus_above_the_page_with_a_border_edge(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_kit::init);
         let mut failures = Vec::new();
         for (name, palette) in test_palettes() {
-            let (popover, ring, hover) = cx.update(|cx| {
+            let (popover, ring, separator, hover) = cx.update(|cx| {
                 palette.apply(palette.is_light(), None, cx);
                 let theme = Theme::global(cx);
                 (
                     theme.popover,
                     gpui_kit::component::popover_ring(cx),
+                    gpui_kit::component::menu_separator(cx),
                     theme.tokens.accent.color,
                 )
             });
             assert_eq!(popover, Hsla::from(rgb(palette.raised())), "{name}");
             assert_eq!(ring, Hsla::from(rgb(palette.raised_edge())), "{name} edge");
+            // Separators lie on the menu, where `border` alone read 1.16:1 in
+            // Omarchy Matte Black and 1.25:1 in Lumon.
+            assert_eq!(separator, ring, "{name} separator");
             // The menu's hover and keyboard row.
             assert_eq!(hover, Hsla::from(rgb(palette.hover)), "{name} hover row");
             let (popover, hover) = (palette.raised(), palette.hover);
