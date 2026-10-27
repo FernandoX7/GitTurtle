@@ -137,7 +137,9 @@ cover current upstream x86-64 Omarchy.
         are the ten named above, plus `switch-focus-ring-and-hover` and
         `settings-focus-reveal-and-steady-switch`, which are in that list. The stock-theme
         sweep (item 4) found `switch-checked-knob-and-disabled-label`'s knob at 1.2–2.5:1
-        in six themes.
+        in six themes. Done on this branch: `switch-checked-knob-and-disabled-label`
+        (`1adbdf4`) and `switch-focus-ring-and-hover` (`4401009`,
+        [validation entry](../validation.md#october-27-switches-show-focus-and-hover)).
      9. Any further UI or UX improvement found along the way: the owner wants a
         first-class Omarchy app, good enough to be featured. Done so far: the Changes
         status bar counts the working tree instead of History's files, `8f2e8da`
