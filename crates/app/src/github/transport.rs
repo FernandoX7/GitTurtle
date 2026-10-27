@@ -174,7 +174,7 @@ impl GhTransport {
     pub fn connect_existing(control: &OperationControl) -> Result<String> {
         let mut command = gh_command()?;
         command.args(["auth", "token", "--hostname", "github.com"]);
-        let (success, token)=run(command,None,control,16*1024,Duration::from_secs(30)).map_err(|_|anyhow!("GitHub CLI has no usable signed-in account. In Terminal run ‘gh auth login --hostname github.com --web --skip-ssh-key’, then choose Connect GitHub CLI account. Never paste the token here."))?;
+        let (success, token)=run(command,None,control,16*1024,Duration::from_secs(30)).map_err(|_|anyhow!("GitHub CLI has no usable signed-in account. In a terminal, run ‘gh auth login --hostname github.com --web --skip-ssh-key’, then choose Connect GitHub CLI account. Never paste the token here."))?;
         ensure!(
             success,
             "GitHub CLI has no usable signed-in account. Complete its browser sign-in, then connect again."

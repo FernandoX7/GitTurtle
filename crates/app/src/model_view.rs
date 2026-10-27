@@ -689,7 +689,7 @@ fn render_side<T: 'static>(
             }),
         );
     }
-    if side.captured.is_some() && !lfs_pointer {
+    if crate::rich_preview::SYSTEM_PREVIEW && side.captured.is_some() && !lfs_pointer {
         let side = side.clone();
         source_actions = source_actions.child(
             button(

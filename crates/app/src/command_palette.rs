@@ -1064,9 +1064,12 @@ impl Render for Palette {
                 div()
                     .text_size(crate::appearance::ui_text(11.))
                     .text_color(rgb(p.muted))
-                    .child(reason.unwrap_or(
-                        "↑ / ↓ select · Return opens · Escape returns to your previous focus",
-                    )),
+                    .child(reason.map(str::to_owned).unwrap_or_else(|| {
+                        format!(
+                            "↑ / ↓ select · {} opens · Escape returns to your previous focus",
+                            shortcuts::ENTER
+                        )
+                    })),
             )
             .children(
                 self.error

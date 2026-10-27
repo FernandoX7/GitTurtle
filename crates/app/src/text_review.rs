@@ -454,7 +454,10 @@ impl GitTurtle {
             .debug_selector(|| "previous-text-change".into())
             .small()
             .ghost()
-            .tooltip("Previous change · Option/Alt-Up")
+            .tooltip(format!(
+                "Previous change · {}",
+                crate::shortcuts::label(crate::shortcuts::ShortcutId::PreviousChange)
+            ))
             .disabled(busy || !has_changes)
             .on_click(
                 cx.listener(|this, _, window, cx| this.navigate_text_change(false, window, cx)),
@@ -463,7 +466,10 @@ impl GitTurtle {
             .debug_selector(|| "next-text-change".into())
             .small()
             .ghost()
-            .tooltip("Next change · Option/Alt-Down")
+            .tooltip(format!(
+                "Next change · {}",
+                crate::shortcuts::label(crate::shortcuts::ShortcutId::NextChange)
+            ))
             .disabled(busy || !has_changes)
             .on_click(
                 cx.listener(|this, _, window, cx| this.navigate_text_change(true, window, cx)),

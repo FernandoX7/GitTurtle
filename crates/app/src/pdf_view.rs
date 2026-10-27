@@ -449,7 +449,7 @@ pub(super) fn render_comparison<T: 'static>(
     let colors = palette(cx);
     div().size_full().flex().min_w_0().children([("Before", &preview.old, &preview.new), (if quick {"Source"} else {"After"}, &preview.new, &preview.old)].into_iter().enumerate().filter(|(i,_)| !quick || *i == 1).map(|(index,(label, side, other))| {
         let mut header = div().flex().flex_wrap().items_center().gap_2().p_2().border_b_1().border_color(rgb(colors.border)).child(div().font_weight(FontWeight::SEMIBOLD).child(format!("{label} · PDF")));
-        if side.captured.is_some() {
+        if crate::rich_preview::SYSTEM_PREVIEW && side.captured.is_some() {
             let side = side.clone(); let owner = owner.clone();
             header = header.child(button(("pdf-system",index), "System preview", "external-link", false).accessibility_label(format!("{label}: open captured PDF in System preview")).on_click(move |_, window, cx| { let _ = owner.update(cx, |this,cx|this.open_captured_preview(side.clone(),window,cx)); }));
         }

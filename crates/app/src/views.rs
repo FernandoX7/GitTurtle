@@ -3823,8 +3823,9 @@ impl Render for GitTurtle {
                                 "↑↓ Review files · Esc Back to history".to_owned()
                             }
                             WorkspaceMode::History => format!(
-                                "{}F Search · ↑↓ Navigate · Return Open file",
-                                primary_label()
+                                "{}F Search · ↑↓ Navigate · {} Open file",
+                                primary_label(),
+                                shortcuts::ENTER
                             ),
                         },
                     }),

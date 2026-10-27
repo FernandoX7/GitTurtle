@@ -951,7 +951,10 @@ impl Panel {
                     .focus_visible(|style| style.border_color(rgb(p.accent)))
                     .role(Role::ListBox)
                     .aria_label("Pull request changed files")
-                    .aria_description("Up and Down select a file. Return moves to its patch.")
+                    .aria_description(format!(
+                        "Up and Down select a file. {} moves to its patch.",
+                        shortcuts::ENTER
+                    ))
                     .child(
                         uniform_list(
                             "github-file-list",
@@ -1067,7 +1070,7 @@ impl Panel {
                 .child(div().flex().flex_wrap().items_center().gap_1().children(["Changes","Source","Threads"].into_iter().enumerate().map(|(mode,name)|button(("github-file-mode",mode),name,"",self.review.mode==mode).toggled(self.review.mode==mode).on_click(cx.listener(move|this,_,window,cx|this.review_source(mode,window,cx)))))
                     .child(div().flex_1()).child(button("github-inline-start",if self.review.composing.is_some(){"Continue comment"}else{"Comment on selection"},"plus",false).disabled(self.pending||self.review.preparing||file.unavailable.is_some()).on_click(cx.listener(|this,_,window,cx|this.begin_comment(window,cx)))))
                 .child(match self.review.mode {1=>self.review.source_view.as_ref().map(|view|div().debug_selector(||"github-source-patch".into()).h(px(246.)).flex_shrink_0().min_w_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().child(view.clone()).into_any_element()).or_else(||self.review.source.as_ref().map(|source|div().debug_selector(||"github-source-patch".into()).h(px(246.)).flex_shrink_0().child(crate::editor_find::Editor::new(source).readonly(true).h_full().aria_label("Exact GitHub supplied patch source")).into_any_element())).unwrap_or_else(||label("github-no-source","No text patch was supplied. Open the captured local comparison to inspect available source or binary content.").into_any_element()),2=>self.render_threads(Some(&file.filename),cx),_=>self.render_patch(cx)})
-                .when(self.review.mode==0,|element|element.child(label("github-range-hint","Click a changed line · Shift-click or Shift-Up/Down selects a same-side range · Return comments").text_color(rgb(p.muted))))
+                .when(self.review.mode==0,|element|element.child(label("github-range-hint",format!("Click a changed line · Shift-click or {} / {} selects a same-side range · {} comments",shortcuts::key_label("shift-up"),shortcuts::key_label("shift-down"),shortcuts::ENTER)).text_color(rgb(p.muted))))
                 .into_any_element()
         } else {
             div().flex_1().min_w_0().p_5().flex().flex_col().gap_2().child(label("github-choose-file","Choose a file to begin reviewing").font_weight(FontWeight::SEMIBOLD)).child(label("github-file-help","Changes keep their captured PR identity. Inline drafts remain local as you move between files.").text_color(rgb(p.muted))).into_any_element()

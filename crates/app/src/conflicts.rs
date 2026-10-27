@@ -10,6 +10,24 @@ use gpui_kit::prelude::FluentBuilder;
 use std::ops::Range;
 
 const MAX_RETAINED_DRAFT_BYTES: usize = 64 * 1024 * 1024;
+/// The viewer's block steps, in `shortcuts.rs` notation: the tooltips name
+/// these keys and `block_step` matches them.
+const PREVIOUS_BLOCK: &str = "primary-alt-up";
+const NEXT_BLOCK: &str = "primary-alt-down";
+
+/// Whether `keystroke` steps to the previous block (`Some(true)`), the next
+/// (`Some(false)`) or neither.
+fn block_step(keystroke: &Keystroke) -> Option<bool> {
+    let modifiers = &keystroke.modifiers;
+    if !(modifiers.secondary() && modifiers.alt && !modifiers.shift) {
+        return None;
+    }
+    match keystroke.key.as_str() {
+        "up" => Some(true),
+        "down" => Some(false),
+        _ => None,
+    }
+}
 
 #[derive(Clone)]
 struct ConflictIdentity {
@@ -666,8 +684,8 @@ impl Render for ConflictView {
         };
         div().id("conflict-review").size_full().flex().flex_col()
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.modifiers.platform && event.keystroke.modifiers.alt && matches!(event.keystroke.key.as_str(), "up" | "down") {
-                    this.select_block(event.keystroke.key == "up", window, cx); cx.stop_propagation();
+                if let Some(previous) = block_step(&event.keystroke) {
+                    this.select_block(previous, window, cx); cx.stop_propagation();
                 }
             }))
             .child(div().px_3().py_2().flex().flex_wrap().items_center().gap_2().border_b_1().border_color(rgb(p.border))
@@ -682,8 +700,8 @@ impl Render for ConflictView {
             .when(self.presentation.result.is_some(), |element| element.child(div().px_3().py_2().flex().flex_col().gap_2().border_b_1().border_color(rgb(p.border))
                 .child(div().id("conflict-block-status").role(Role::Status).a11y_synthetic_children(native_accessibility::polite).aria_label(status.clone()).text_size(crate::appearance::ui_text(12.)).child(status))
                 .child(div().flex().flex_wrap().gap_2().items_center()
-                    .child(button("previous-conflict-block", "Previous", "", false).accessibility_label("Previous conflict block").tooltip("Previous conflict · Command-Option-Up").disabled(blocked || self.block_selected == 0).on_click(cx.listener(|this, _, window, cx| this.select_block(true, window, cx))))
-                    .child(button("next-conflict-block", "Next", "", false).accessibility_label("Next conflict block").tooltip("Next conflict · Command-Option-Down").disabled(blocked || self.block_selected + 1 >= self.blocks.len()).on_click(cx.listener(|this, _, window, cx| this.select_block(false, window, cx))))
+                    .child(button("previous-conflict-block", "Previous", "", false).accessibility_label("Previous conflict block").tooltip(format!("Previous conflict · {}", shortcuts::key_label(PREVIOUS_BLOCK))).disabled(blocked || self.block_selected == 0).on_click(cx.listener(|this, _, window, cx| this.select_block(true, window, cx))))
+                    .child(button("next-conflict-block", "Next", "", false).accessibility_label("Next conflict block").tooltip(format!("Next conflict · {}", shortcuts::key_label(NEXT_BLOCK))).disabled(blocked || self.block_selected + 1 >= self.blocks.len()).on_click(cx.listener(|this, _, window, cx| this.select_block(false, window, cx))))
                     .child(button("accept-current-block", "Accept current", "", false).accessibility_label(format!("Accept current block from {current} into the result draft")).tooltip(format!("Use only this block from {current} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Current, window, cx))))
                     .child(button("accept-incoming-block", "Accept incoming", "", false).accessibility_label(format!("Accept incoming block from {incoming} into the result draft")).tooltip(format!("Use only this block from {incoming} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Incoming, window, cx))))
                     .child(button("accept-both-block", "Accept both", "", false).accessibility_label("Accept both versions of this block, current then incoming, into the result draft").tooltip("Keep current, then incoming, for this block; review ordering in the result draft").disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Both, window, cx)))))
@@ -979,6 +997,31 @@ mod tests {
         });
         click(cx, "save-conflict-resolution");
         assert_eq!(resolutions.borrow().as_slice(), &[RESTORED.as_bytes()]);
+    }
+
+    #[test]
+    fn the_advertised_block_keys_step_between_blocks() {
+        let parse = |key: &str| {
+            Keystroke::parse(&key.replace(
+                "primary",
+                if cfg!(target_os = "macos") {
+                    "cmd"
+                } else {
+                    "ctrl"
+                },
+            ))
+            .unwrap()
+        };
+        assert_eq!(block_step(&parse(PREVIOUS_BLOCK)), Some(true));
+        assert_eq!(block_step(&parse(NEXT_BLOCK)), Some(false));
+        assert_eq!(block_step(&parse("alt-down")), None);
+        assert_eq!(block_step(&parse("primary-alt-left")), None);
+        #[cfg(not(target_os = "macos"))]
+        {
+            // Super belongs to the desktop on Linux; the tooltip names Ctrl.
+            assert_eq!(block_step(&parse("cmd-alt-down")), None);
+            assert_eq!(shortcuts::key_label(NEXT_BLOCK), "Ctrl+Alt+Down");
+        }
     }
 
     #[test]

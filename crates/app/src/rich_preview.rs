@@ -6,6 +6,10 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+/// System preview hands an isolated copy of captured bytes to Quick Look,
+/// which only macOS has; elsewhere no surface offers the action.
+pub(super) const SYSTEM_PREVIEW: bool = cfg!(target_os = "macos");
+
 #[cfg(target_os = "macos")]
 static EXTERNAL_PREVIEWS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(target_os = "macos")]
@@ -320,7 +324,7 @@ pub(super) fn render_comparison<T: 'static>(
     div().size_full().min_w_0().flex().children([("Before",&preview.old),(if quick {"Source"}else{"After"},&preview.new)].into_iter().enumerate().filter(|(index,_)|!quick||*index==1).map(|(index,(label,side))| {
             let selected=side.selected_page.load(Ordering::Relaxed).min(side.pages.len().saturating_sub(1));
             let mut header=div().flex().items_center().flex_wrap().gap_2().px_3().py_2().border_b_1().border_color(rgb(colors.border)).child(div().text_size(appearance::ui_text(12.)).font_weight(FontWeight::SEMIBOLD).child(label)).child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(side.metadata.format.clone()));
-            if side.captured.is_some() {
+            if SYSTEM_PREVIEW && side.captured.is_some() {
                 let captured=Arc::clone(side);
                 let target=owner.clone();
                 header=header.child(button(("system-preview",index),"System preview","external-link",false).tooltip("Inspect an isolated copy of these captured revision bytes").on_click(move |_,window,cx| { let _=target.update(cx,|this,cx|this.open_captured_preview(Arc::clone(&captured),window,cx)); window.refresh(); }));
@@ -402,21 +406,31 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let response=self.preferences_writer.submit_read(move|| {
-            #[cfg(target_os="macos")]
-            let slot=ExternalPreviewSlot::reserve()?;
-            let (directory,path)=captured_copy(&bytes,&name)?;
-            #[cfg(target_os="macos")]
+        let response = self.preferences_writer.submit_read(move || {
+            #[cfg(target_os = "macos")]
+            let slot = ExternalPreviewSlot::reserve()?;
+            let (directory, path) = captured_copy(&bytes, &name)?;
+            #[cfg(target_os = "macos")]
             {
-                let mut child=std::process::Command::new("/usr/bin/qlmanage").arg("-p").arg(&path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()?;
-                std::thread::spawn(move|| { let _=child.wait(); drop(directory); drop(slot); });
+                let mut child = std::process::Command::new("/usr/bin/qlmanage")
+                    .arg("-p")
+                    .arg(&path)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()?;
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                    drop(directory);
+                    drop(slot);
+                });
                 Ok(())
             }
-            #[cfg(not(target_os="macos"))]
+            #[cfg(not(target_os = "macos"))]
             {
                 drop(directory);
-                let _=path;
-                anyhow::bail!("System Quick Look requires macOS; native external preview is unavailable on this platform")
+                let _ = path;
+                anyhow::bail!("System preview is not available on this platform")
             }
         });
         cx.spawn_in(window, async move |this, cx| {

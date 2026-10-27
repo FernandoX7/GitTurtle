@@ -12,6 +12,8 @@ Verified local LFS objects use the existing bounded size/SHA-256 check. Missing 
 
 ## Support matrix
 
+System preview, wherever the matrix names it, opens an isolated read-only copy of the captured bytes in Quick Look, so it exists on macOS only; a Linux build shows no System preview button and no text that points to one.
+
 | Category and detection | In-app presentation | Comparison and exact source | Bounds / platform / fallback |
 | --- | --- | --- | --- |
 | UTF-8 source, extensionless text, logs, config, JSON, YAML, TOML, Markdown, XML, HTML/CSS, CSV/TSV | Literal source, unified and aligned split diffs. Rust, TypeScript/TSX, JavaScript/JSX, JSON/JSONC, CSS, Markdown, YAML, TOML, HTML, Python, Go and shell grammars are enabled. Other languages use readable plain text. | Existing Diff / Split / Before / After; Quick Open opens Source. Copy preserves literal source, including CRLF and no-newline state; exact partial staging remains based on the captured Git patch. HTML/scripts are shown as source and never run. | 2 MiB / 100,000 lines per side. Markdown also has the native Rendered view below; HTML remains literal source. CSV/TSV are source, not a spreadsheet. XML has source access without a dedicated XML grammar. |

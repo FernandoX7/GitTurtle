@@ -201,7 +201,7 @@ impl GitTurtle {
                 .child(button("gif-previous-frame", "Previous frame", "", false).on_click(cx.listener(|this, _, _, cx| this.gif_step(false, cx))))
                 .child(button("gif-next-frame", "Next frame", "", false).on_click(cx.listener(|this, _, _, cx| this.gif_step(true, cx))))
                 .child(div().text_size(appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("{:.2} / {:.2} s · {}", position as f64 / 1000., duration as f64 / 1000., labels.join(" · ")))))
-            .child(div().text_size(appearance::ui_text(10.)).text_color(rgb(p.muted)).child(if cx.reduce_motion() { "Reduce Motion is enabled. Use First, Previous, and Next frame for static inspection." } else if truncated { "Playback is limited to the decoded segment (120 frames, 30 seconds, 16 million output pixels). Open captured bytes in system preview for the complete animation." } else if self.is_quick_source() { "Frame controls pause playback for inspection." } else { "Both versions share one clock; a shorter animation holds its final frame. Frame controls pause playback for inspection." }))
+            .child(div().text_size(appearance::ui_text(10.)).text_color(rgb(p.muted)).child(if cx.reduce_motion() { "Reduce Motion is enabled. Use First, Previous, and Next frame for static inspection." } else if truncated && crate::rich_preview::SYSTEM_PREVIEW { "Playback is limited to the decoded segment (120 frames, 30 seconds, 16 million output pixels). Open captured bytes in system preview for the complete animation." } else if truncated { "Playback is limited to the decoded segment (120 frames, 30 seconds, 16 million output pixels)." } else if self.is_quick_source() { "Frame controls pause playback for inspection." } else { "Both versions share one clock; a shorter animation holds its final frame. Frame controls pause playback for inspection." }))
             .into_any_element())
     }
     fn image_geometry(&self) -> Geometry {
@@ -408,7 +408,11 @@ impl GitTurtle {
             if let Some(literal) = side.literal_source.clone() {
                 captured_actions = captured_actions.child(copy_feedback::copy_button(("copy-image-source",index),format!("Copy {label} source"),"copy","Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(("copy-image-source",index).into()),&format!("{label} source"),literal.to_string())));
             }
-            if let Some(bytes) = side.captured.clone() {
+            if let Some(bytes) = side
+                .captured
+                .clone()
+                .filter(|_| crate::rich_preview::SYSTEM_PREVIEW)
+            {
                 let path = self
                     .selected_file
                     .and_then(|selected| self.files.get(selected))

@@ -466,6 +466,13 @@ pub(super) fn action(id: ShortcutId) -> Option<Box<dyn Action>> {
         .map(|spec| (spec.action)())
 }
 
+/// The Enter key as prose names it: Mac keyboards label it Return.
+pub(super) const ENTER: &str = if cfg!(target_os = "macos") {
+    "Return"
+} else {
+    "Enter"
+};
+
 pub(super) fn key_label(key: &str) -> String {
     // Use the same platform renderer as native GPUI popup-menu accelerators.
     Kbd::format(
