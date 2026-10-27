@@ -582,6 +582,38 @@ impl Palette {
         })
     }
 
+    /// The surface of menus, popovers, selects and tooltips: the lightest of
+    /// the page's surfaces (subtle, canvas and panel, the panel on a tie), so
+    /// a floating surface sits raised above the page, lighter in dark and
+    /// light palettes alike, as GNOME and macOS draw menus. Its edge is the
+    /// `border`. Every surface rule already holds `text` and `muted` on it,
+    /// and the menu's hover row keeps its step off it.
+    pub fn raised(self) -> u32 {
+        [self.subtle, self.canvas, self.panel]
+            .into_iter()
+            .max_by(|&a, &b| custom::luminance(a).total_cmp(&custom::luminance(b)))
+            .unwrap_or(self.panel)
+    }
+
+    /// The edge of menus, popovers and selects: `border`, which the border
+    /// rule holds only against the panel, unless it misses that rule against
+    /// the raised surface or a page surface the popup may lie on. Then it takes
+    /// the first step toward black in a light palette or white in a dark one
+    /// that clears it on all of them.
+    pub fn raised_edge(self) -> u32 {
+        let surfaces = [self.raised(), self.subtle, self.canvas, self.panel];
+        let clears = |edge| {
+            surfaces
+                .iter()
+                .all(|&surface| custom::contrast(edge, surface) >= custom::BORDER_SURFACE)
+        };
+        if clears(self.border) {
+            return self.border;
+        }
+        let extreme = if self.is_light() { 0x000000 } else { 0xffffff };
+        toward_extreme(self.border, extreme, clears)
+    }
+
     /// A sidebar row's label and icon colors. The label stays `text`, which
     /// reads at the text rule on every row state, and selection marks the icon
     /// in `accent`, a graphic at 3:1, beside the selected surface: `accent` is
@@ -1540,7 +1572,8 @@ impl Palette {
         theme.colors.list_active = rgb(palette.selected).into();
         theme.colors.list_active_border = rgb(palette.accent).into();
         theme.colors.list_even = rgb(palette.subtle).into();
-        theme.colors.popover = rgb(palette.panel).into();
+        theme.colors.popover = rgb(palette.raised()).into();
+        theme.popover_edge = Some(rgb(palette.raised_edge()).into());
         theme.colors.popover_foreground = rgb(palette.text).into();
         theme.colors.sidebar = rgb(palette.panel).into();
         theme.colors.sidebar_foreground = rgb(palette.text).into();
@@ -2875,7 +2908,7 @@ mod tests {
                 (theme.tokens.button_secondary_hover, palette.hover),
                 (theme.tokens.button_secondary_active, palette.selected),
                 (theme.tokens.list_active, palette.selected),
-                (theme.tokens.popover, palette.panel),
+                (theme.tokens.popover, palette.raised()),
                 (theme.tokens.scrollbar_thumb, palette.border),
             ] {
                 let color: Hsla = rgb(expected).into();
@@ -3685,6 +3718,75 @@ mod tests {
                 count,
                 &[palette.hover],
             ));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Menus, popovers, selects and tooltips float on `Palette::raised`, the
+    /// lightest page surface, edged by `Palette::raised_edge`: the Linux Menu
+    /// used to share the panel's color, 1.00:1 against the header it drops
+    /// from, with a 10% text-colored hairline at 1.12:1 to 1.15:1 in Omarchy
+    /// Catppuccin Latte, Flexoki Light, Ethereal and Hackerman, and `border`
+    /// alone would read 1.17:1 on Omarchy Matte Black's raised surface. In
+    /// every palette the surface is at least as light as each page surface,
+    /// its edge clears the border rule against the surface and against every
+    /// page surface beneath it, text and secondary text clear the text rule on
+    /// it, and the menu's hover row keeps the hover step off it.
+    #[gpui::test]
+    fn every_palette_raises_menus_above_the_page_with_a_border_edge(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut failures = Vec::new();
+        for (name, palette) in test_palettes() {
+            let (popover, ring, hover) = cx.update(|cx| {
+                palette.apply(palette.is_light(), None, cx);
+                let theme = Theme::global(cx);
+                (
+                    theme.popover,
+                    gpui_kit::component::popover_ring(cx),
+                    theme.tokens.accent.color,
+                )
+            });
+            assert_eq!(popover, Hsla::from(rgb(palette.raised())), "{name}");
+            assert_eq!(ring, Hsla::from(rgb(palette.raised_edge())), "{name} edge");
+            // The menu's hover and keyboard row.
+            assert_eq!(hover, Hsla::from(rgb(palette.hover)), "{name} hover row");
+            let (popover, hover) = (palette.raised(), palette.hover);
+            let mut check = |what: &str, ratio: f64, minimum: f64| {
+                if ratio < minimum {
+                    failures.push(format!("{name} {what} {ratio:.3}:1, needs {minimum}"));
+                }
+            };
+            for (page, surface) in [
+                ("subtle", palette.subtle),
+                ("canvas", palette.canvas),
+                ("panel", palette.panel),
+            ] {
+                // Never darker than a page surface: a ratio of 1 where it is not.
+                let lift = if luminance(popover) < luminance(surface) {
+                    0.
+                } else {
+                    1.
+                };
+                check(&format!("lift over {page}"), lift, 1.);
+                let edge = palette.raised_edge();
+                check(&format!("edge on {page}"), contrast(edge, surface), 1.3);
+            }
+            check(
+                "edge on the menu",
+                contrast(palette.raised_edge(), popover),
+                1.3,
+            );
+            check(
+                "text on the menu",
+                contrast(palette.text, popover),
+                LABEL_RULE,
+            );
+            check(
+                "muted on the menu",
+                contrast(palette.muted, popover),
+                LABEL_RULE,
+            );
+            check("hover row on the menu", contrast(hover, popover), 1.08);
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }

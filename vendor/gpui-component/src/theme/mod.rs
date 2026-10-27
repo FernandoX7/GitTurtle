@@ -133,6 +133,13 @@ pub struct Theme {
     /// and [`Self::focus_ring`] still turns it off.
     #[serde(skip)]
     pub button_focus_ring: FocusRing,
+    /// The hairline edge of a popup surface (menus, popovers, selects), or
+    /// `None` for 10% of the foreground, as shadcn/ui draws it.
+    ///
+    /// Set in code, not read from theme files, so an application that fits
+    /// its surfaces can fit the edge against them too.
+    #[serde(skip)]
+    pub popover_edge: Option<Hsla>,
     pub transparent: Hsla,
     /// Show the scrollbar mode, default: Scrolling
     #[serde(alias = "scrollbar_show")]
@@ -649,6 +656,7 @@ impl From<&ThemeColor> for Theme {
             shadow: true,
             focus_ring: true,
             button_focus_ring: FocusRing::default(),
+            popover_edge: None,
             scrollbar_mode: ScrollbarMode::default(),
             notification: NotificationSettings::default(),
             tile_grid_size: px(8.),

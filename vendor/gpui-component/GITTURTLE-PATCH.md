@@ -289,6 +289,26 @@ record the painted result. Remove this part of the patch when upstream gives
 disabled menu items and their shortcuts a disabled colour distinct from
 secondary text.
 
+The popover-edge patch modifies `src/theme/mod.rs` and `src/styled.rs`.
+Upstream edges every popup surface (menus, popovers, selects, the combobox,
+date picker and hover popovers) with a hairline ring of 10% of the foreground,
+which a theme cannot tune. On a popup the same colour as the surface it opens
+over, as GitTurtle's Linux Menu was over the header, the edge read 1.12:1 to
+1.15:1 in several Omarchy palettes. `Theme::popover_edge` lets an application
+set the ring's colour; unset, the ring is upstream's. `popover_ring` is now
+public so the application's tests can read the colour it resolves to. The
+consumers are the Linux Menu, context menus, selects and popovers, whose
+surface GitTurtle sets to the lightest page surface and whose edge it fits to
+1.3:1 against that surface and every page surface (`Palette::raised` and
+`Palette::raised_edge` in `crates/app/src/appearance.rs`). Geometry, the shadow
+layers and their animation are unchanged.
+
+`cargo test --locked -p gitturtle every_palette_raises_menus_above_the_page_with_a_border_edge`
+applies every built-in and embedded Omarchy palette and reads the popup surface
+and the resolved ring. Native frames of the Menu record the rendered edge.
+Remove this part of the patch when upstream lets a theme set a popup's edge
+colour.
+
 The `usize`-constant patch modifies `src/highlighter/highlighter.rs`. Upstream
 imports the `std::usize` module (`use std::{…, usize}`), so the `usize::MIN`
 and `usize::MAX` in `HighlightSummary`'s `Summary::zero` and in

@@ -458,7 +458,7 @@ const TEXT: f64 = 4.5;
 pub(super) const GRAPHIC: f64 = 3.0;
 const SELECTED_SURFACE: f64 = 1.15;
 const HOVER_SURFACE: f64 = 1.08;
-const BORDER_SURFACE: f64 = 1.3;
+pub(super) const BORDER_SURFACE: f64 = 1.3;
 /// How far the shared button's pressed fill stands from its hover fill, in one channel, on
 /// every surface it sits on. It is the largest step every built-in keeps without retuning
 /// (Catppuccin Mocha and Nord hold 6 over their selected rows); see the rule's row in the spec.

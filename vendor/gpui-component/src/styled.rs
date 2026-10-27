@@ -52,14 +52,19 @@ const SURFACE_SHADOW_INK: f32 = 0.1;
 /// over the element's own background, not over the shadow.
 const POPOVER_RING_INK: f32 = 0.1;
 
-/// The colour of a popup surface's hairline ring in this theme.
+/// The colour of a popup surface's hairline ring in this theme: the theme's
+/// [`crate::Theme::popover_edge`] when it sets one, and otherwise 10% of the
+/// foreground.
 ///
 /// shadcn spends black on it in light mode and white in dark
-/// (`oklch(1 0 0 / 10%)`), so it follows the foreground rather than the border
-/// token: a fixed black ring would all but vanish on a dark surface.
-///
-pub(crate) fn popover_ring(cx: &App) -> Hsla {
-    cx.theme().foreground.alpha(POPOVER_RING_INK)
+/// (`oklch(1 0 0 / 10%)`), so by default it follows the foreground rather than
+/// the border token: a fixed black ring would all but vanish on a dark surface.
+/// A theme cannot tune that tint, and a popup on a surface of its own colour
+/// stood off it by about 1.15:1, so an application may set the edge.
+pub fn popover_ring(cx: &App) -> Hsla {
+    cx.theme()
+        .popover_edge
+        .unwrap_or_else(|| cx.theme().foreground.alpha(POPOVER_RING_INK))
 }
 
 /// shadcn/ui's popup surface shadow — a hairline `ring` plus `shadow-md` — at
