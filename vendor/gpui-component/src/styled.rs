@@ -100,17 +100,19 @@ pub(crate) fn popover_shadow(ring: Hsla, strength: f32) -> Vec<BoxShadow> {
     let strength = strength.clamp(0., 1.);
     let ink = hsla(0., 0., 0., SURFACE_SHADOW_INK * strength);
     vec![
-        // The ring, sitting in the 1px band outside the surface. No blur, so it
-        // takes the shader's crisp path rather than the gaussian one.
-        BoxShadow::new(px(0.), px(0.), ring.alpha(ring.a * strength))
-            .blur_radius(px(0.))
-            .spread_radius(px(1.)),
         BoxShadow::new(px(0.), px(4.), ink)
             .blur_radius(px(3.))
             .spread_radius(px(-1.)),
         BoxShadow::new(px(0.), px(2.), ink)
             .blur_radius(px(2.))
             .spread_radius(px(-2.)),
+        // The ring, sitting in the 1px band outside the surface. No blur, so it
+        // takes the shader's crisp path rather than the gaussian one. GPUI
+        // paints later layers on top, the reverse of CSS, so the ring comes
+        // last: under the ink it read up to 11% darker along the bottom.
+        BoxShadow::new(px(0.), px(0.), ring.alpha(ring.a * strength))
+            .blur_radius(px(0.))
+            .spread_radius(px(1.)),
     ]
 }
 

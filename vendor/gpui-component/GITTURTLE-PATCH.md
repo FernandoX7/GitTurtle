@@ -304,8 +304,11 @@ surface GitTurtle sets to the lightest page surface and whose edge it fits to
 `Palette::raised_edge` in `crates/app/src/appearance.rs`). Menu separators
 lie on that surface, where upstream's `border` token read 1.16:1 in Omarchy
 Matte Black, so `menu_separator` draws them in the edge when the theme sets
-one and in `border` otherwise. Geometry, the shadow layers and their
-animation are unchanged.
+one and in `border` otherwise. `popover_shadow` paints the ring after the two
+shadow layers: GPUI draws later layers on top, the reverse of CSS, so the ring
+upstream lists first lay under the ink, which darkened a fitted edge to 1.15:1
+along a menu's bottom in Omarchy Everforest. Geometry, the shadow layers'
+values and their animation are unchanged.
 
 `cargo test --locked -p gitturtle every_palette_raises_menus_above_the_page_with_a_border_edge`
 applies every built-in and embedded Omarchy palette and reads the popup surface
