@@ -3558,6 +3558,55 @@ mod tests {
         }
     }
 
+    /// The status bar reports the working tree in Changes: from the moment it
+    /// is shown, and through a working preview, whose file list holds only the
+    /// previewed file. Back in History the commit's own count returns, and one
+    /// file is singular.
+    #[gpui::test]
+    async fn changes_reports_the_working_tree_in_the_status_bar(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, &history_script(2, 1)).await;
+        settle(&app, cx).await;
+        let status = |cx: &mut VisualTestContext| cx.read(|cx| app.read(cx).status.clone());
+        assert!(
+            status(cx).starts_with("1 changed file · "),
+            "{}",
+            status(cx)
+        );
+
+        // The import leaves the index empty, so notes.txt is a staged deletion.
+        let worktree = fixture.path().join("narrow");
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(worktree.join(name), "new\n").unwrap();
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(status(cx), "3 working changes · 1 staged");
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let index = app
+                    .work_status
+                    .as_ref()
+                    .unwrap()
+                    .entries
+                    .iter()
+                    .position(|entry| entry.path == std::path::Path::new("a.txt"))
+                    .unwrap();
+                app.select_working(index, gitturtle_core::ChangeArea::Unstaged, window, cx);
+            })
+        });
+        settle(&app, cx).await;
+        assert!(
+            status(cx).starts_with("3 working changes · 1 staged · content read "),
+            "{}",
+            status(cx)
+        );
+
+        cx.update(|window, cx| app.update(cx, |app, cx| app.back_to_history(window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(status(cx), "1 changed file");
+    }
+
     /// At an 18 pt interface size the column and inspector minimums grow with
     /// the text: in a 461 × 490 half tile History's compact paging stays in
     /// the column, the inspector ends at the window's edge, its message

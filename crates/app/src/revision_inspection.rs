@@ -312,8 +312,8 @@ impl GitTurtle {
         self.refresh_file_filter(cx);
         self.selected_file = None;
         self.status = format!(
-            "{} changed files · pinned local revisions · open a file to compare",
-            self.files.len()
+            "{} · pinned local revisions · open a file to compare",
+            crate::changed_files(self.files.len())
         );
         cx.notify();
     }

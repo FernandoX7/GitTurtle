@@ -1217,8 +1217,8 @@ impl GitTurtle {
             }
             Output::Changes(files, elapsed) => {
                 self.status = format!(
-                    "{} changed files · file list {:.1} ms",
-                    files.len(),
+                    "{} · file list {:.1} ms",
+                    changed_files(files.len()),
                     elapsed.as_secs_f64() * 1000.
                 );
                 self.files = files;
@@ -1243,9 +1243,14 @@ impl GitTurtle {
                 self.restore_tab_file(window, cx);
             }
             Output::Preview(content, elapsed) => {
+                // A working preview's `files` is the one previewed file.
+                let summary = if self.mode == WorkspaceMode::Working {
+                    self.working_summary()
+                } else {
+                    changed_files(self.files.len())
+                };
                 self.status = format!(
-                    "{} changed files · content read {:.1} ms",
-                    self.files.len(),
+                    "{summary} · content read {:.1} ms",
                     elapsed.as_secs_f64() * 1000.
                 );
                 match content.as_ref() {
@@ -1564,6 +1569,7 @@ impl GitTurtle {
             self.files = files;
             self.refresh_file_filter(cx);
             self.selected_file = selected;
+            self.status = changed_files(self.files.len());
         }
         if was_working
             && self.files.is_empty()
@@ -2003,6 +2009,10 @@ fn format_bytes(bytes: usize) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+/// The status bar's count of a commit's or comparison's changed files.
+fn changed_files(count: usize) -> String {
+    format!("{count} changed file{}", if count == 1 { "" } else { "s" })
 }
 fn mono() -> &'static str {
     if cfg!(target_os = "macos") {

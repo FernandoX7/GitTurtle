@@ -449,6 +449,11 @@ impl GitTurtle {
             }
         };
         self.work_status = Some(Arc::new(status));
+        // A quiet refresh that changed nothing leaves the line to whatever it
+        // last reported, an operation's outcome included.
+        if self.mode == WorkspaceMode::Working && (entries_changed || !quiet) {
+            self.status = self.working_summary();
+        }
         if entries_changed {
             self.schedule_working_filter(working_anchor, !quiet, window, cx);
         }
@@ -491,12 +496,34 @@ impl GitTurtle {
             self.clear_preview();
         }
         self.mode = WorkspaceMode::Working;
+        self.status = self.working_summary();
         self.page = AppPage::Repository;
         self.sidebar = false;
         self.pane = Pane::Files;
         window.focus(&self.file_focus, cx);
         self.refresh_worktree(window, cx);
         cx.notify();
+    }
+
+    /// The status bar's account of the working tree. Changes sets it when it
+    /// is shown, refreshed or previewed, because History's figures describe a
+    /// commit's files and a working preview holds only the previewed one.
+    pub(super) fn working_summary(&self) -> String {
+        let Some(status) = &self.work_status else {
+            return "Reading working changes…".into();
+        };
+        let changes = status.entries.len();
+        let staged = status
+            .entries
+            .iter()
+            .filter(|entry| entry.staged.is_some())
+            .count();
+        let plural = if changes == 1 { "" } else { "s" };
+        match (changes, staged) {
+            (0, _) => "No working changes".into(),
+            (_, 0) => format!("{changes} working change{plural}"),
+            _ => format!("{changes} working change{plural} · {staged} staged"),
+        }
     }
 
     pub(super) fn select_working(
