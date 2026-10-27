@@ -893,7 +893,8 @@ impl ThemeChoice {
                 canvas: 0xf6f7fc,
                 panel: 0xffffff,
                 subtle: 0xeff1f8,
-                hover: 0xe5e9f4,
+                // Tuned: 1.08:1 off subtle, as the Omarchy fitter holds hover.
+                hover: 0xe4e8f3,
                 border: 0xcbd3e4,
                 text: 0x242e49,
                 muted: 0x4d5b78,
@@ -1035,7 +1036,8 @@ impl ThemeChoice {
                 canvas: 0xf4f6fa,
                 panel: 0xffffff,
                 subtle: 0xedf1f7,
-                hover: 0xe7ecf3,
+                // Tuned: 1.08:1 off subtle, as the Omarchy fitter holds hover.
+                hover: 0xe3e8ef,
                 border: 0xd2dce8,
                 text: 0x253247,
                 muted: 0x526279,
@@ -1237,7 +1239,8 @@ impl ThemeChoice {
                     canvas: o::BG,
                     panel: 0xffffff,
                     subtle: 0xf0f0f1,
-                    hover: 0xf1f1f3,
+                    // Tuned: 1.08:1 off subtle, as the Omarchy fitter holds hover.
+                    hover: 0xe7e7e9,
                     selected: 0xe9edff,
                     border: 0xd3d3d6,
                     text: o::MONO_1,
@@ -1296,7 +1299,8 @@ impl ThemeChoice {
                     canvas: r::BASE,
                     panel: r::SURFACE,
                     subtle: 0xf4ede4,
-                    hover: r::OVERLAY,
+                    // Tuned: overlay darkened for 1.08:1 off subtle, as the Omarchy fitter holds hover.
+                    hover: 0xece3dc,
                     selected: 0xe8dfe2,
                     border: 0xdfdad9,
                     text: r::TEXT,
@@ -1356,7 +1360,8 @@ impl ThemeChoice {
                     canvas: a::BACKGROUND,
                     panel: 0xfffdf5,
                     subtle: 0xf5f1e1,
-                    hover: 0xefebdb,
+                    // Tuned: 1.08:1 off subtle, as the Omarchy fitter holds hover.
+                    hover: 0xebe8d8,
                     selected: a::SELECTION,
                     border: 0xd9d4bf,
                     text: a::FOREGROUND,
@@ -3082,6 +3087,30 @@ mod tests {
     /// were tuned past it (from 3 and 4 to 8), and Catppuccin Mocha and Nord
     /// hold it exactly over their selected rows.
     const CONTROL_PRESS_DISTANCE: u32 = custom::PRESSED_STEP;
+
+    /// The Omarchy fitter's rule (`omarchy::palette`'s `HOVER_STEP`) for the
+    /// built-ins too: a secondary control's hover stays distinguishable from its
+    /// resting `subtle` fill.
+    #[test]
+    fn every_built_in_hover_steps_off_subtle() {
+        let short: Vec<_> = ThemeChoice::ALL
+            .into_iter()
+            .map(|choice| (choice, choice.palette()))
+            .map(|(choice, p)| (choice, p.hover, p.subtle, contrast(p.hover, p.subtle)))
+            .filter(|(.., ratio)| *ratio < 1.08)
+            .collect();
+        assert!(
+            short.is_empty(),
+            "hover too close to subtle: {}",
+            short
+                .iter()
+                .map(|(choice, hover, subtle, ratio)| format!(
+                    "{choice:?} #{hover:06x} on #{subtle:06x} {ratio:.4}"
+                ))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+    }
 
     #[test]
     fn shared_button_fills_lift_every_surface_and_keep_the_label_readable() {
