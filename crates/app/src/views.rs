@@ -1601,6 +1601,8 @@ impl GitTurtle {
                                 .rounded(px(4.))
                                 .bg(rgb(colors.hover))
                                 .text_size(crate::appearance::ui_text(10.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(crate::appearance::labels(cx).count))
                                 .child(self.files.len().to_string()),
                         )
                     }),

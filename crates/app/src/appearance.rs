@@ -674,6 +674,8 @@ pub struct Labels {
     pub added: u32,
     /// `removed` on its diff tile: the gutter numbers of removed lines.
     pub removed: u32,
+    /// A count chip's number: `text` on its `hover` fill.
+    pub count: u32,
 }
 
 impl Global for Labels {}
@@ -699,6 +701,7 @@ impl Labels {
             unstaged: palette.small_label(palette.modified, &[palette.subtle]),
             added: palette.small_label(palette.added, &[palette.added_background]),
             removed: palette.small_label(palette.removed, &[palette.removed_background]),
+            count: palette.small_label(palette.text, &[palette.hover]),
         }
     }
 }
@@ -3660,6 +3663,29 @@ mod tests {
             }
         }
         assert!(moved > 0, "some palette needs its gutter numbers fitted");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Count chips (the Changes count, the changed-file count and "0 staged")
+    /// draw their number in `text` on their `hover` fill, fitted with the
+    /// margin: they drew `muted`, which secondary text keeps at the text rule
+    /// alone, and 11 px digits read 4.32:1 natively in Omarchy Catppuccin
+    /// Latte. Every palette's count clears the rule with the margin.
+    #[test]
+    fn every_palette_fits_count_chip_numbers() {
+        let mut failures = Vec::new();
+        for (name, palette) in test_palettes() {
+            let count = Labels::fit(palette).count;
+            if small_label_failures(&name, "", palette.text, &[palette.hover]).is_none() {
+                assert_eq!(count, palette.text, "{name} keeps its text color");
+            }
+            failures.extend(small_label_failures(
+                &name,
+                "count",
+                count,
+                &[palette.hover],
+            ));
+        }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }
