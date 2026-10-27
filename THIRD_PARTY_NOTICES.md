@@ -92,8 +92,13 @@ by the OS/user; distribution of those components would require a separate review
 - Linux builds embed DejaVu Sans Mono 2.37 (Regular, Bold, Oblique and Bold
   Oblique, unmodified) as the code font, with its [provenance and hashes](assets/fonts/dejavu-sans-mono/README.md).
   Preserve its Bitstream Vera, public-domain DejaVu and Arev
-  [notice](docs/licenses/assets/dejavu-fonts-LICENSE). macOS builds embed no font
-  and use installed system fonts, as does the Linux interface text. Font files
+  [notice](docs/licenses/assets/dejavu-fonts-LICENSE). They also embed IBM Plex
+  Sans 3.005 (Regular, Medium, SemiBold, Bold, Italic and Bold Italic, unmodified)
+  as the interface font, with its [provenance and hashes](assets/fonts/ibm-plex-sans/README.md),
+  under the SIL Open Font License 1.1 with IBM's Reserved Font Name "Plex".
+  Preserve its [notice](docs/licenses/assets/ibm-plex-sans-LICENSE.txt), keep the
+  faces unmodified and unrenamed, and do not sell them by themselves. macOS builds
+  embed no font and use installed system fonts. Font files
   present in decoder/text dependency test directories are not application
   assets. Preserve their own notices if separately redistributing those test
   corpora.

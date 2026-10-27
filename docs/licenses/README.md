@@ -10,10 +10,11 @@ from a pinned SPDX license dataset revision, rather than substituting its later
 upstream ISC license. These records do not change dependency license terms.
 
 `assets/sources.json` records the same provenance for theme palettes, toolkit
-Lucide/Feather icons, and the native ufbx library. Preserve the complete original
-copyright/license text. Upstream notices were inspected and captured on
-September 14, 2026; the five theme palette notices added on September 17, 2026
-are pinned in the same file.
+Lucide/Feather icons, the native ufbx library and the fonts Linux builds embed.
+Preserve the complete original copyright/license text. Upstream notices were
+inspected and captured on September 14, 2026; the five theme palette notices
+added on September 17, 2026 and IBM Plex Sans's, added on October 27, 2026, are
+pinned in the same file.
 
 The [collector](../../scripts/collect-third-party-licenses.py) copies notices from
 the resolved local crate archives first, including meshoptimizer's complete

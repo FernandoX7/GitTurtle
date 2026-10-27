@@ -2053,7 +2053,7 @@ fn main() {
     });
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         gpui_kit::init(cx);
-        desktop_text::register_code_font(cx);
+        desktop_text::register_bundled_fonts(cx);
         native_accessibility::sync_preferences(cx);
         let desktop_text = desktop_text::start(system_code_font, cx);
         #[cfg(target_os = "linux")]

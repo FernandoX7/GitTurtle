@@ -156,20 +156,44 @@ const CODE_FONT_FACES: [&[u8]; 4] = [
     include_bytes!("../../../assets/fonts/dejavu-sans-mono/DejaVuSansMono-BoldOblique.ttf"),
 ];
 
-/// Registers the bundled code font. Call it before any window lays out text:
-/// the toolkit caches a failed family lookup for the life of the process.
+/// IBM Plex Sans 3.005 (`assets/fonts/ibm-plex-sans`): the four weights the
+/// interface draws, and the italics Markdown emphasis needs. Without the
+/// installed family the toolkit fell back to the desktop's sans family at
+/// weight 400, and variable families such as Adwaita Sans load as one Regular
+/// face, so every interface weight drew Regular.
 #[cfg(target_os = "linux")]
-pub(super) fn register_code_font(cx: &gpui_kit::App) {
+const INTERFACE_FONT_FACES: [&[u8]; 6] = [
+    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf"),
+    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Medium.ttf"),
+    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-SemiBold.ttf"),
+    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Bold.ttf"),
+    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf"),
+    include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-BoldItalic.ttf"),
+];
+
+/// Registers the bundled code and interface fonts. Call it before any window
+/// lays out text: the toolkit caches a failed family lookup for the life of the
+/// process.
+#[cfg(target_os = "linux")]
+pub(super) fn register_bundled_fonts(cx: &gpui_kit::App) {
     if let Err(error) = cx.text_system().add_fonts(code_font_faces()) {
         eprintln!("GitTurtle could not register its bundled code font: {error:#}");
     }
+    if let Err(error) = cx.text_system().add_fonts(borrowed(&INTERFACE_FONT_FACES)) {
+        eprintln!("GitTurtle could not register its bundled interface font: {error:#}");
+    }
 }
 #[cfg(not(target_os = "linux"))]
-pub(super) fn register_code_font(_cx: &gpui_kit::App) {}
+pub(super) fn register_bundled_fonts(_cx: &gpui_kit::App) {}
 
 #[cfg(target_os = "linux")]
 fn code_font_faces() -> Vec<std::borrow::Cow<'static, [u8]>> {
-    CODE_FONT_FACES
+    borrowed(&CODE_FONT_FACES)
+}
+
+#[cfg(target_os = "linux")]
+fn borrowed(faces: &[&'static [u8]]) -> Vec<std::borrow::Cow<'static, [u8]>> {
+    faces
         .iter()
         .map(|face| std::borrow::Cow::Borrowed(*face))
         .collect()
@@ -1488,6 +1512,55 @@ mod tests {
             }
         }
         assert_eq!(faces.len(), 4, "each style has its own bundled face");
+    }
+
+    /// The interface's `.SystemUIFont` resolves, through the toolkit's
+    /// `resolve_font`, to a face of its own at every weight the interface draws,
+    /// each wider than the last, and to real italics.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bundled_interface_font_draws_each_weight_in_its_own_face() {
+        use gpui_kit::{FontStyle, FontWeight, PlatformTextSystem as _};
+        use gpui_wgpu::CosmicTextSystem;
+
+        // The family the toolkit's Linux platform draws `.SystemUIFont` in.
+        const SYSTEM_UI_FAMILY: &str = "IBM Plex Sans";
+        let ui = gpui_kit::font(".SystemUIFont");
+        // What a session without the installed family resolved before the
+        // bundle: `.SystemUIFont` names a family that does not exist.
+        let bare = CosmicTextSystem::new_without_system_fonts(SYSTEM_UI_FAMILY);
+        assert!(bare.font_id(&ui).is_err());
+
+        let platform =
+            std::sync::Arc::new(CosmicTextSystem::new_without_system_fonts(SYSTEM_UI_FAMILY));
+        platform.add_fonts(borrowed(&INTERFACE_FONT_FACES)).unwrap();
+        let text = gpui_kit::TextSystem::new(platform.clone());
+        let face = |weight, style| {
+            text.resolve_font(&gpui_kit::Font {
+                weight,
+                style,
+                ..ui.clone()
+            })
+        };
+        let advance = |face| {
+            let glyph = platform.glyph_for_char(face, 'm').unwrap();
+            platform.advance(face, glyph).unwrap().width
+        };
+        let upright = [
+            FontWeight::NORMAL,
+            FontWeight::MEDIUM,
+            FontWeight::SEMIBOLD,
+            FontWeight::BOLD,
+        ]
+        .map(|weight| face(weight, FontStyle::Normal));
+        for pair in upright.windows(2) {
+            assert_ne!(pair[0], pair[1]);
+            assert!(advance(pair[0]) < advance(pair[1]), "{pair:?}");
+        }
+        let italic =
+            [FontWeight::NORMAL, FontWeight::BOLD].map(|weight| face(weight, FontStyle::Italic));
+        let faces: std::collections::HashSet<_> = upright.iter().chain(&italic).collect();
+        assert_eq!(faces.len(), INTERFACE_FONT_FACES.len());
     }
 
     /// Code text in the bundled family skips the features that keep a desktop
