@@ -90,6 +90,8 @@ pub(super) struct ReviewState {
     pub line_focus: FocusHandle,
     pub section_focus: FocusHandle,
     pub preparing: bool,
+    /// A preparation the panel's close cancelled, resumed when it reopens.
+    suspended: bool,
     prepare_generation: u64,
     prepare_task: Option<Task<()>>,
     pub file_scroll: UniformListScrollHandle,
@@ -134,6 +136,7 @@ impl ReviewState {
             line_focus: cx.focus_handle(),
             section_focus: cx.focus_handle(),
             preparing: false,
+            suspended: false,
             prepare_generation: 0,
             prepare_task: None,
             file_scroll: UniformListScrollHandle::new(),
@@ -149,6 +152,20 @@ impl ReviewState {
         self.prepare_generation = self.prepare_generation.wrapping_add(1);
         self.prepare_task = None;
         self.preparing = false;
+        self.suspended = false;
+    }
+    /// Cancel a pending preparation as the panel closes, remembering it for the reopen.
+    pub fn suspend_preparation(&mut self) {
+        let suspended = self.preparing;
+        self.cancel_preparation();
+        self.suspended = suspended;
+    }
+    /// The selected file whose preparation closing cancelled, once; a failed preparation is
+    /// not resumed.
+    pub fn take_suspended(&mut self) -> Option<usize> {
+        std::mem::take(&mut self.suspended)
+            .then_some(self.selected_file)
+            .flatten()
     }
     pub fn reset_content(&mut self) {
         self.cancel_preparation();
@@ -568,6 +585,17 @@ impl Panel {
             .line_scroll
             .scroll_to_item(0, ScrollStrategy::Top);
         self.review.file_focus.focus(window, cx);
+        self.prepare_review_file(index, window, cx);
+    }
+    /// Prepare a file's inline rows and Source presentation off the UI thread, leaving its
+    /// mode, scroll and Source editor as they are; Source takes the decorations on arrival.
+    /// The clone shares the patch's allocation with the view rather than copying it.
+    pub(super) fn prepare_review_file(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut file = self.review.files[index].clone();
         let generation = self.review.prepare_generation;
         // Pure CPU over the supplied patch the panel owns: no repository, network or write, so
@@ -1583,7 +1611,7 @@ mod tests {
             status: "modified".into(),
             additions,
             deletions: 1,
-            patch: Some(patch.clone()),
+            patch: Some(patch.as_str().into()),
             rows: Vec::new(),
             unavailable: None,
         };
@@ -2107,5 +2135,315 @@ mod tests {
             .unwrap()
             .unwrap();
         cx.executor().run_until_parked();
+    }
+    /// A repository page and a review panel for it, built as the views above build them, with
+    /// the panel's local read settled.
+    fn review_panel(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        &mut gpui_kit::VisualTestContext,
+    ) {
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["-c", "init.templateDir=", "init", "--initial-branch=main"])
+                .arg(fixture.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let repo = GitRepository::open(fixture.path()).unwrap();
+        let panel_repo = repo.clone();
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let output = captured.clone();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.page = AppPage::Repository;
+                app.path = Some(repo.path().to_owned());
+                app.repository = Some(repo);
+                app
+            });
+            *output.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = captured.borrow().as_ref().unwrap().clone();
+        let panel = cx.update(|window, cx| {
+            cx.new(|cx| Panel::new(app.downgrade(), panel_repo, "main".into(), window, cx))
+        });
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.run_until_parked();
+        (fixture, app, panel, cx)
+    }
+    /// 8,000 deletions and 8,000 additions of 520 bytes, just under the 8 MiB response bound:
+    /// 16,001 inline rows, inside the 20,000-row limit, and above Compare's bounds, so no
+    /// presentation is prepared.
+    const LARGE_LINES: usize = 8_000;
+    fn large_file(name: &str, fill: char) -> PullFile {
+        let mut patch = format!("@@ -1,{LARGE_LINES} +1,{LARGE_LINES} @@\n");
+        for marker in ['-', '+'] {
+            for line in 0..LARGE_LINES {
+                patch.push(marker);
+                patch.push_str(&format!("{line:08} "));
+                patch.extend(std::iter::repeat_n(fill, 510));
+                patch.push('\n');
+            }
+        }
+        assert!(patch.len() <= github::MAX_RESPONSE && patch.len() > 8_000_000);
+        PullFile {
+            filename: name.into(),
+            previous_filename: None,
+            status: "modified".into(),
+            additions: LARGE_LINES as u32,
+            deletions: LARGE_LINES as u32,
+            patch: Some(patch.into()),
+            rows: Vec::new(),
+            unavailable: None,
+        }
+    }
+    /// Selecting a file hands its preparation the patch the view holds, not a copy made on
+    /// the UI thread, and the prepared file keeps that allocation.
+    #[gpui::test]
+    async fn selecting_a_review_file_shares_its_patch_with_the_preparation(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, panel, cx) = review_panel(cx);
+        let file = large_file("src/large.rs", 'a');
+        // Compared, never read: the address of the bytes the view holds.
+        let held = file.patch.as_deref().expect("a patch").as_ptr();
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.review.files = vec![file];
+                panel.review.section = Section::Files;
+                panel.select_review_file(0, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let review = &panel.read(cx).review;
+            assert!(!review.preparing);
+            assert_eq!(review.files[0].rows.len(), 2 * LARGE_LINES + 1);
+            assert_eq!(
+                review.files[0].patch.as_deref().expect("a patch").as_ptr(),
+                held,
+                "the preparation took the view's allocation"
+            );
+        });
+        app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.run_until_parked();
+    }
+    /// Closing the panel cancels the selected file's pending preparation; reopening resumes it
+    /// without the file being chosen again, in Changes and in Source, which keeps its editor
+    /// and takes the decorations Compare would draw. A preparation that failed is not repeated.
+    #[gpui::test]
+    async fn reopening_resumes_an_interrupted_file_preparation(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, cx) = review_panel(cx);
+        let patches = [
+            "@@ -1,2 +1,2 @@\n context\n-old value\n+new value\n",
+            "@@ -1 +1,2 @@\n-before\n+after\n+more\n",
+        ];
+        let file = |name: &str, patch: &str, additions| PullFile {
+            filename: name.into(),
+            previous_filename: None,
+            status: "modified".into(),
+            additions,
+            deletions: 1,
+            patch: Some(patch.into()),
+            rows: Vec::new(),
+            unavailable: None,
+        };
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.review.files = vec![
+                    file("src/a.rs", patches[0], 1),
+                    file("src/b.rs", patches[1], 2),
+                    // A path the preparation refuses.
+                    file("../outside.rs", patches[0], 1),
+                ];
+                panel.review.section = Section::Files;
+            })
+        });
+        let close_and_reopen = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+            // The cancelled preparation's result, if any, has nowhere to land.
+            cx.run_until_parked();
+            cx.read(|cx| {
+                let review = &panel.read(cx).review;
+                assert!(!review.preparing);
+                assert!(review.files.iter().all(|file| file.rows.is_empty()));
+                assert!(review.presentation.is_none());
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.run_until_parked();
+        };
+
+        // Changes: the rows and presentation arrive after reopening.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.select_review_file(0, window, cx))
+        });
+        close_and_reopen(cx);
+        cx.read(|cx| {
+            let review = &panel.read(cx).review;
+            assert_eq!((review.selected_file, review.mode), (Some(0), 0));
+            assert!(!review.preparing);
+            assert_eq!(review.files[0].rows.len(), 4);
+            assert!(review.presentation.is_some());
+        });
+
+        // Source: the editor opened before the close is kept and decorated, with Compare's
+        // gutter, as Compare decorates the same text.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.select_review_file(1, window, cx);
+                panel.review_source(1, window, cx);
+            })
+        });
+        let source = cx.read(|cx| panel.read(cx).review.source.clone().expect("Source editor"));
+        close_and_reopen(cx);
+        let expected = cx.update(|window, cx| {
+            let presentation = text::PatchPresentation::prepare(patches[1]);
+            let (_editor, decorations) =
+                text::editor_with_decorations(patches[1], "diff", Some(&presentation), window, cx);
+            decorations
+                .expect("a prepared patch is decorated")
+                .drawn(cx)
+        });
+        cx.read(|cx| {
+            let review = &panel.read(cx).review;
+            assert_eq!((review.selected_file, review.mode), (Some(1), 1));
+            assert_eq!(review.files[1].rows.len(), 4);
+            assert_eq!(
+                review.source.as_ref(),
+                Some(&source),
+                "Source keeps its editor"
+            );
+            assert!(
+                review.source_view.is_some(),
+                "Source takes Compare's gutter"
+            );
+            assert_eq!(
+                editor_find::patch_layer(&source, cx).map(|layer| layer.drawn(cx)),
+                Some(expected)
+            );
+        });
+
+        // A failed preparation reports once; reopening does not run it again.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.select_review_file(2, window, cx))
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                assert!(panel.error.take().is_some(), "the refused path is reported");
+            })
+        });
+        close_and_reopen(cx);
+        cx.read(|cx| {
+            let panel = panel.read(cx);
+            assert_eq!(panel.review.selected_file, Some(2));
+            assert_eq!(panel.error, None, "the failed preparation is not repeated");
+        });
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.run_until_parked();
+    }
+    /// The UI-thread time of `select_review_file` between two files whose patches are just
+    /// under the 8 MiB response bound: after the previous file finished preparing, and while it
+    /// is still preparing. Only the handler is timed; preparation runs untimed between samples.
+    #[gpui::test]
+    #[ignore = "Opt-in release benchmark: set GITTURTLE_REVIEW_SELECT_BENCH_OUTPUT and run with --release --ignored"]
+    async fn select_review_file_release_benchmark(cx: &mut TestAppContext) {
+        const WARMUPS: usize = 5;
+        const SAMPLES: usize = 60;
+        assert!(
+            !std::hint::black_box(cfg!(debug_assertions)),
+            "performance evidence requires --release"
+        );
+        let output = std::env::var_os("GITTURTLE_REVIEW_SELECT_BENCH_OUTPUT")
+            .expect("the runner supplies the result destination");
+        let (_fixture, app, panel, cx) = review_panel(cx);
+        let first = large_file("src/first.rs", 'a');
+        let patch_bytes = first.patch.as_deref().map_or(0, str::len);
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.review.files = vec![first, large_file("src/second.rs", 'b')];
+                panel.review.section = Section::Files;
+            })
+        });
+        let select = |index: usize, cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    let started = std::time::Instant::now();
+                    panel.select_review_file(index, window, cx);
+                    started.elapsed().as_secs_f64() * 1000.
+                })
+            })
+        };
+        let mut series = Vec::new();
+        for (name, prepared) in [("after_preparation", true), ("while_preparing", false)] {
+            select(0, cx);
+            cx.run_until_parked();
+            let mut samples = Vec::new();
+            for attempt in 0..WARMUPS + SAMPLES {
+                let index = (attempt + 1) % 2;
+                let milliseconds = select(index, cx);
+                if prepared {
+                    cx.run_until_parked();
+                    cx.read(|cx| {
+                        let review = &panel.read(cx).review;
+                        assert!(!review.preparing);
+                        assert_eq!(review.files[index].rows.len(), 2 * LARGE_LINES + 1);
+                    });
+                } else {
+                    cx.read(|cx| assert!(panel.read(cx).review.preparing));
+                }
+                if attempt >= WARMUPS {
+                    samples.push(milliseconds);
+                }
+            }
+            cx.run_until_parked();
+            series.push(serde_json::json!({"name": name, "milliseconds": samples}));
+        }
+        let result = serde_json::json!({
+            "schema": 1,
+            "warmups_per_series": WARMUPS,
+            "samples_per_series": SAMPLES,
+            "patch_bytes": patch_bytes,
+            "rows_per_file": 2 * LARGE_LINES + 1,
+            "boundary": "One `select_review_file` call on the UI thread, from before the call to its return; excludes GPUI's effect flush, rendering and the background preparation.",
+            "series": series,
+        });
+        std::fs::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+        app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.run_until_parked();
     }
 }

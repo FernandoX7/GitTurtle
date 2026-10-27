@@ -13,12 +13,19 @@ pub(crate) struct PullFile {
     pub status: String,
     pub additions: u32,
     pub deletions: u32,
-    #[serde(default)]
-    pub patch: Option<String>,
+    /// Shared with the file's preparation, which takes it off the UI thread without a copy.
+    #[serde(default, deserialize_with = "shared_patch")]
+    pub patch: Option<std::sync::Arc<str>>,
     #[serde(skip)]
     pub rows: Vec<PatchRow>,
     #[serde(skip)]
     pub unavailable: Option<String>,
+}
+/// Through `String`, so this crate does not rely on serde's `rc` feature.
+fn shared_patch<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<std::sync::Arc<str>>, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.map(Into::into))
 }
 #[derive(Clone, Debug)]
 pub(crate) struct PatchRow {

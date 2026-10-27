@@ -1,0 +1,17 @@
+after_preparation  base-30b8868  round 1: n 60 p50 0.630 p95 0.951 max 1.393
+while_preparing    base-30b8868  round 1: n 60 p50 0.673 p95 0.772 max 0.779
+after_preparation  base-30b8868  round 2: n 60 p50 0.552 p95 0.878 max 1.160
+while_preparing    base-30b8868  round 2: n 60 p50 0.674 p95 0.781 max 0.791
+after_preparation  base-30b8868  round 3: n 60 p50 0.582 p95 0.922 max 0.937
+while_preparing    base-30b8868  round 3: n 60 p50 0.676 p95 0.771 max 0.794
+after_preparation  cand          round 1: n 60 p50 0.216 p95 0.239 max 0.245
+while_preparing    cand          round 1: n 60 p50 0.000 p95 0.001 max 0.002
+after_preparation  cand          round 2: n 60 p50 0.214 p95 0.229 max 0.261
+while_preparing    cand          round 2: n 60 p50 0.000 p95 0.001 max 0.002
+after_preparation  cand          round 3: n 60 p50 0.216 p95 0.230 max 0.258
+while_preparing    cand          round 3: n 60 p50 0.000 p95 0.001 max 0.002
+
+after_preparation  base-30b8868  pooled: n 180 p50 0.582 p95 0.929 max 1.393
+after_preparation  cand          pooled: n 180 p50 0.216 p95 0.232 max 0.261
+while_preparing    base-30b8868  pooled: n 180 p50 0.674 p95 0.777 max 0.794
+while_preparing    cand          pooled: n 180 p50 0.000 p95 0.001 max 0.002

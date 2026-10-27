@@ -93,13 +93,10 @@ impl GitTurtle {
         window.defer(cx, move |window, cx| {
             focus_form.update(cx, |panel, cx| {
                 panel.load_local(window, cx);
-                if panel.review.section == Section::Files
-                    && panel.review.mode == 0
-                    && let Some(index) = panel.review.selected_file
-                    && panel.review.files[index].rows.is_empty()
-                    && panel.review.files[index].unavailable.is_none()
-                {
-                    panel.select_review_file(index, window, cx);
+                // Closing cancelled a pending preparation; resume it in whichever mode the
+                // file was left, keeping its scroll and Source editor.
+                if let Some(index) = panel.review.take_suspended() {
+                    panel.prepare_review_file(index, window, cx);
                 }
                 panel.focus_visible_section(window, cx);
             });
@@ -965,7 +962,7 @@ impl Panel {
         self.pending = false;
         self.writing = false;
         self.task = None;
-        self.review.cancel_preparation();
+        self.review.suspend_preparation();
         self.local_generation = self.local_generation.wrapping_add(1);
         self.local_loading = false;
         self.local_task = None;
