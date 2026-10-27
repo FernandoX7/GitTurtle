@@ -538,6 +538,19 @@ impl Palette {
         Rgba { r, g, b, a: alpha }
     }
 
+    /// An enabled, unchecked Switch's track under the pointer: its resting
+    /// `border` fill moved by the step a row takes from `panel` to `hover`, so
+    /// the track lifts as the rows around it do. The shared button's
+    /// [`Self::control_fill`] layer would shrink that step over a `border`
+    /// lighter than `panel`, below a visible change in One Dark.
+    pub fn switch_hover(self) -> u32 {
+        [16, 8, 0].into_iter().fold(0, |color, shift| {
+            let channel = |value: u32| ((value >> shift) & 0xff) as i32;
+            let lifted = channel(self.border) + channel(self.hover) - channel(self.panel);
+            color | ((lifted.clamp(0, 255) as u32) << shift)
+        })
+    }
+
     /// The shared button's label: `text`, unless `text` falls below the text
     /// rule over one of the fills the button composites. Then it moves toward
     /// black in a light palette and white in a dark one until it clears the rule
@@ -1610,6 +1623,7 @@ impl Palette {
         theme.colors.skeleton = rgb(palette.hover).into();
         theme.colors.ring = rgb(palette.accent).into();
         theme.button_focus_ring = BUTTON_FOCUS_RING;
+        theme.switch_hover = Some(rgb(palette.switch_hover()).into());
         theme.colors.caret = rgb(palette.accent).into();
         theme.colors.link = rgb(palette.hunk).into();
         theme.colors.link_hover = rgb(palette.accent).into();
@@ -2348,6 +2362,21 @@ mod tests {
     use super::*;
     use gpui_kit as gpui;
     use gpui_kit::{Background, Hsla};
+
+    /// Hovering an enabled unchecked Switch visibly lifts its track in every
+    /// palette: at least 6 of 255 in one channel from its resting `border`.
+    #[test]
+    fn every_palette_lifts_a_hovered_switch_track() {
+        for (name, palette) in test_palettes() {
+            let (rest, hover) = (palette.border, palette.switch_hover());
+            let step = [16, 8, 0]
+                .map(|shift| ((rest >> shift) & 0xff).abs_diff((hover >> shift) & 0xff))
+                .into_iter()
+                .max()
+                .unwrap();
+            assert!(step >= 6, "{name}: #{rest:06x} hovers to #{hover:06x}");
+        }
+    }
 
     #[test]
     fn parallel_test_applications_keep_their_own_text_geometry() {

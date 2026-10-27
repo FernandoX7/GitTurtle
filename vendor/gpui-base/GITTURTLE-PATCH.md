@@ -98,3 +98,15 @@ focused element that is no longer rendered, and those regressions pass without
 it.
 
 All other upstream source, manifests and tests are unmodified. The registry-only `.cargo-ok`, `.cargo-checksum.json` and upstream package lockfile are omitted; the application uses the workspace lockfile. Remove this patch when the matching upstream toolkit publishes equivalent semantics and the application regressions pass against it. Native VoiceOver and macOS AX focus behavior remain separate runtime validation gates.
+
+The switch focus-handle patch also modifies `src/switch.rs`. Upstream Switch
+always keeps its focus handle in its own keyed state, so the `gpui-component`
+wrapper, which renders under a different element-id scope, could not tell
+whether the Switch it draws was focused. `Switch::track_focus` now takes a
+caller-owned handle, exactly as upstream `Button::track_focus` does, and the
+Switch uses it in place of its keyed state; without one nothing changes. The
+consumer is the component Switch's focus ring
+([component patch](../gpui-component/GITTURTLE-PATCH.md)), covered by
+`cargo test --locked -p gitturtle a_focused_switch_draws_the_button_ring_whole_and_moves_nothing`.
+Remove it when upstream Switch accepts a caller focus handle or exposes its
+focus state.

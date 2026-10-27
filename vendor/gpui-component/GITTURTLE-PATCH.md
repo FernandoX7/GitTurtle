@@ -265,6 +265,35 @@ this part of the patch when upstream gives a checked thumb a colour that
 contrasts with the accent and fades a disabled label from the enabled one, and
 those tests pass without it.
 
+The switch focus-ring and hover patch also modifies `src/switch.rs`, and adds
+`Theme::switch_hover` to `src/theme/mod.rs`. Upstream Switch draws no focus
+indication and no hover change, although the base Switch is a tab stop, so a
+Tab onto a Settings switch showed nothing. The wrapper now owns the base
+Switch's focus handle (the base patch's `Switch::track_focus`). While that
+handle is focused and the Switch is enabled, its track draws
+`Theme::button_focus_ring` through the shared `apply_focus_ring`, the same
+absolutely positioned child a Button draws, which takes no layout space; the
+border that helper tints is the track's transparent 2 px inset around the
+thumb, so it stays transparent. An enabled, unchecked Switch's track takes
+`Theme::switch_hover` while the pointer is over the Switch, its label included
+(the root forms a group). `switch_hover` is `None` by default, set in code and
+skipped by theme files, so an application that leaves it alone keeps the
+resting fill. A checked track keeps its accent and a disabled Switch shows
+neither ring nor hover, keeping its faded look.
+
+The consumers are the Settings Switches (`crates/app/src/settings.rs`); the app
+sets `switch_hover` to `Palette::switch_hover` where it installs the button
+ring (`crates/app/src/appearance.rs`).
+`cargo test --locked -p gitturtle a_focused_switch_draws_the_button_ring_whole_and_moves_nothing`
+tabs through the real Settings page at 13 and 18 pt and reads the scene: each
+enabled Switch draws the ring 3 px outside its track, whole inside its clips,
+while no other quad moves and no unfocused Switch draws one; it then hovers
+Follow system unchecked, checked and, on Linux, disabled by the Omarchy theme.
+`every_palette_lifts_a_hovered_switch_track` requires the hovered track to move
+at least 6 of 255 in one channel in every palette. Remove this part of the
+patch when upstream Switch draws a focus indicator and a hover state, or offers
+equivalent settings, and those tests pass without it.
+
 The disabled-foreground patch modifies `src/theme/mod.rs`,
 `src/button/button.rs`, `src/menu/menu_item.rs` and `src/menu/popup_menu.rs`.
 Upstream dims a disabled Button's label to `muted_foreground` at half strength

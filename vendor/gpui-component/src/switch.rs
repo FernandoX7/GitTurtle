@@ -1,5 +1,6 @@
 use crate::{
-    ActiveTheme, Disableable, Side, Sizable, Size, StyledExt, text::Text, tooltip::ComponentTooltip,
+    ActiveTheme, Disableable, Side, Sizable, Size, StyledExt, styled::apply_focus_ring,
+    text::Text, tooltip::ComponentTooltip,
 };
 use gpui::{
     App, Background, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement as _,
@@ -8,6 +9,9 @@ use gpui::{
 };
 use gpui_base::{Switch as BaseSwitch, SwitchThumb, SwitchTrack, spring};
 use std::rc::Rc;
+
+/// The group a Switch's root forms, so hovering its label hovers its track.
+const SWITCH_GROUP: &str = "gpui-component-switch";
 
 /// A Switch element that can be toggled on or off.
 #[derive(IntoElement)]
@@ -189,8 +193,23 @@ impl RenderOnce for Switch {
             cx,
         );
 
+        // GitTurtle patch: the wrapper owns the base Switch's focus handle,
+        // so a focused enabled Switch can draw the Button focus ring around its
+        // track; an enabled unchecked one lifts its track on hover.
+        let focus_handle = window
+            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        let focused = !self.disabled && focus_handle.is_focused(window);
+        let hover_bg = cx
+            .theme()
+            .switch_hover
+            .filter(|_| !checked && !self.disabled);
+
         div().refine_style(&self.style).child(
             BaseSwitch::new(self.id.clone())
+                .track_focus(&focus_handle)
+                .group(SWITCH_GROUP)
                 .checked(checked)
                 .disabled(self.disabled)
                 .styles(|styles| {
@@ -228,6 +247,15 @@ impl RenderOnce for Switch {
                             styles
                                 .checked(|style| style.bg(checked_bg))
                                 .disabled(|style| style.bg(disabled_bg))
+                        })
+                        .when_some(hover_bg, |this, hover| {
+                            this.group_hover(SWITCH_GROUP, |style| style.bg(hover))
+                        })
+                        // The ring is the Button's; the border it would tint
+                        // is the thumb's transparent inset, so it stays clear.
+                        .when(focused, |this| {
+                            apply_focus_ring(this, cx.theme().button_focus_ring, window, cx)
+                                .border_color(cx.theme().transparent)
                         })
                         .map(|this| self.tooltip.apply(this))
                         .child(

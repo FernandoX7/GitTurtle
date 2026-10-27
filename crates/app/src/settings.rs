@@ -5268,6 +5268,216 @@ mod picker_tests {
         assert_eq!(painted, expected(cx, false, true), "disabled");
     }
 
+    /// A Tab-focused, enabled Settings Switch draws the Button focus ring, 2 px
+    /// of full accent 1 px outside its track, whole inside every clip, at the
+    /// default and the largest interface size, and gaining focus moves nothing;
+    /// no unfocused Switch draws one. Hovering an enabled unchecked Switch lifts
+    /// its track to `Palette::switch_hover`; a checked or disabled one keeps its
+    /// resting fill.
+    #[gpui::test]
+    fn a_focused_switch_draws_the_button_ring_whole_and_moves_nothing(cx: &mut TestAppContext) {
+        use gpui_kit::{ScaledPixels, component::ActiveTheme as _};
+
+        /// Switch tracks (the 36 x 20 filled quads) with their fills, the
+        /// Button-ring quads with whether their clip holds them whole, and the
+        /// bounds of every other quad, in paint order.
+        type Frame = (
+            Vec<(Bounds<Pixels>, Background)>,
+            Vec<(Bounds<Pixels>, bool)>,
+            Vec<Bounds<Pixels>>,
+        );
+        fn frame(cx: &mut VisualTestContext) -> Frame {
+            cx.update(|window, cx| {
+                let scale = window.scale_factor();
+                let logical = |b: Bounds<ScaledPixels>| {
+                    Bounds::from_corners(
+                        point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                        point(
+                            px(b.right().as_f32() / scale),
+                            px(b.bottom().as_f32() / scale),
+                        ),
+                    )
+                };
+                let ring = appearance::BUTTON_FOCUS_RING;
+                let ring_color = cx.theme().ring.alpha(ring.opacity);
+                let (mut tracks, mut sides, mut others) = (Vec::new(), Vec::new(), Vec::new());
+                for quad in window.painted_quads() {
+                    let bounds = logical(quad.bounds);
+                    if quad.background.is_transparent()
+                        && quad.border_color == ring_color
+                        && quad.border_widths.top.as_f32() == ring.width.as_f32() * scale
+                    {
+                        sides.push((quad.bounds, quad.content_mask.bounds));
+                    } else if !quad.background.is_transparent()
+                        && bounds.size == size(px(36.), px(20.))
+                    {
+                        tracks.push((bounds, quad.background));
+                    } else {
+                        others.push(bounds);
+                    }
+                }
+                // The kit paints a ring as one quad per side, each masked to
+                // its side: the ring is whole when those masks cover it.
+                let mut rings: Vec<(Bounds<Pixels>, bool)> = Vec::new();
+                for (ring, _) in &sides {
+                    if rings.iter().any(|(seen, _)| *seen == logical(*ring)) {
+                        continue;
+                    }
+                    let covered = sides
+                        .iter()
+                        .filter(|(other, _)| other == ring)
+                        .map(|(_, mask)| *mask)
+                        .reduce(|a, b| a.union(&b))
+                        .unwrap();
+                    let whole = covered.left() <= ring.left()
+                        && covered.top() <= ring.top()
+                        && covered.right() >= ring.right()
+                        && covered.bottom() >= ring.bottom();
+                    rings.push((logical(*ring), whole));
+                }
+                (tracks, rings, others)
+            })
+        }
+        let around = |track: Bounds<Pixels>| {
+            let room = appearance::BUTTON_FOCUS_RING.gap + appearance::BUTTON_FOCUS_RING.width;
+            track.dilate(room)
+        };
+
+        let (app, cx) = open_app(cx);
+        let midnight = ThemeSelection::BuiltIn(ThemeChoice::Midnight);
+        let select = |cx: &mut VisualTestContext, follow_system: bool| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.theme = midnight;
+                    app.settings.follow_system = follow_system;
+                    app.apply_appearance(window, cx);
+                })
+            });
+            settle(cx);
+        };
+        select(cx, false);
+        for (interface, height) in [(13, 2400.), (18, 4000.)] {
+            cx.simulate_resize(size(px(1440.), px(height)));
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.update(|window, cx| window.blur(cx));
+            settle(cx);
+            let (tracks, rings, others) = frame(cx);
+            let switches: Vec<_> = tracks.iter().map(|(track, _)| *track).collect();
+            assert!(switches.len() >= 3, "{interface} pt: {switches:?}");
+            assert!(
+                !rings
+                    .iter()
+                    .any(|(ring, _)| switches.iter().any(|t| around(*t) == *ring)),
+                "{interface} pt: an unfocused switch draws a ring"
+            );
+            let mut seen = Vec::new();
+            // With nothing focused a key reaches no binding; start the walk.
+            cx.update(|window, cx| window.focus_next(cx));
+            for _ in 0..300 {
+                if seen.len() == switches.len() {
+                    break;
+                }
+                cx.simulate_keystrokes("tab");
+                settle(cx);
+                let (now_tracks, now_rings, now_others) = frame(cx);
+                let ringed: Vec<_> = now_rings
+                    .iter()
+                    .filter(|(ring, _)| switches.iter().any(|t| around(*t) == *ring))
+                    .collect();
+                let [(ring, whole)] = ringed[..] else {
+                    assert!(ringed.is_empty(), "{interface} pt: {ringed:?}");
+                    continue;
+                };
+                assert!(whole, "{interface} pt: a clip cuts the ring {ring:?}");
+                assert_eq!(
+                    now_tracks.iter().map(|(t, _)| *t).collect::<Vec<_>>(),
+                    switches,
+                    "{interface} pt: a switch moved"
+                );
+                let missing = |from: &[Bounds<Pixels>], to: &[Bounds<Pixels>]| {
+                    let mut left = to.to_vec();
+                    from.iter()
+                        .filter(|b| match left.iter().position(|o| o == *b) {
+                            Some(at) => {
+                                left.remove(at);
+                                false
+                            }
+                            None => true,
+                        })
+                        .copied()
+                        .collect::<Vec<_>>()
+                };
+                let (gone, came) = (missing(&others, &now_others), missing(&now_others, &others));
+                assert!(
+                    gone.is_empty() && came.is_empty(),
+                    "{interface} pt: focus moved quads: {gone:?} became {came:?}"
+                );
+                if !seen.contains(ring) {
+                    seen.push(*ring);
+                }
+            }
+            assert_eq!(
+                seen.len(),
+                switches.len(),
+                "{interface} pt: Tab rings every switch"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1440.), px(2400.)));
+        cx.update(|window, cx| window.blur(cx));
+
+        // The Follow system switch, hovered: unchecked, then checked.
+        let hovered_fill = |cx: &mut VisualTestContext| {
+            settle(cx);
+            let area = shown(cx, "follow-system-switch").unwrap();
+            let (tracks, _, _) = frame(cx);
+            let (track, _) = *tracks
+                .iter()
+                .find(|(track, _)| area.contains(&track.center()))
+                .unwrap();
+            cx.simulate_mouse_move(track.center(), None, Modifiers::default());
+            settle(cx);
+            let (tracks, _, _) = frame(cx);
+            let fill = tracks.iter().find(|(t, _)| *t == track).unwrap().1;
+            cx.simulate_mouse_move(point(px(4.), px(4.)), None, Modifiers::default());
+            fill
+        };
+        let fill = |color: u32| Background::from(Hsla::from(rgb(color)));
+        select(cx, false);
+        let unchecked = hovered_fill(cx);
+        assert_eq!(unchecked, fill(cx.read(palette).switch_hover()));
+        assert_ne!(unchecked, fill(cx.read(palette).border));
+        select(cx, true);
+        let checked = hovered_fill(cx);
+        assert_eq!(
+            checked,
+            fill(cx.read(palette).accent),
+            "a checked track keeps its accent"
+        );
+
+        #[cfg(target_os = "linux")]
+        {
+            // The Omarchy theme disables Follow system: its track keeps its
+            // faded resting fill under the pointer.
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path().join("current");
+            std::fs::create_dir_all(root.join("theme")).unwrap();
+            let colors = include_bytes!("../tests/fixtures/omarchy/tokyo-night.toml");
+            std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+            std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+            cx.update(|_, cx| drop(appearance::omarchy::install(Some(root.clone()), cx)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.theme = ThemeSelection::Omarchy;
+                    app.settings.follow_system = false;
+                    app.apply_appearance(window, cx);
+                })
+            });
+            let disabled = hovered_fill(cx);
+            assert_eq!(disabled, fill(cx.read(palette).border).opacity(0.5));
+        }
+    }
+
     /// The Omarchy card's caption fits its card at the default interface size
     /// in a 1,400 px window, for the longest bundled theme name (Catppuccin
     /// Latte): an unavailable card's name line holds "Omarchy", "Unavailable"

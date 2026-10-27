@@ -133,6 +133,13 @@ pub struct Theme {
     /// and [`Self::focus_ring`] still turns it off.
     #[serde(skip)]
     pub button_focus_ring: FocusRing,
+    /// The track of an enabled, unchecked Switch under the pointer, or `None`
+    /// to keep its resting `switch` fill, as upstream does.
+    ///
+    /// Set in code, not read from theme files, so an application can lift the
+    /// track by the same step its other controls take on hover.
+    #[serde(skip)]
+    pub switch_hover: Option<Hsla>,
     /// The hairline edge of a popup surface (menus, popovers, selects), or
     /// `None` for 10% of the foreground, as shadcn/ui draws it.
     ///
@@ -656,6 +663,7 @@ impl From<&ThemeColor> for Theme {
             shadow: true,
             focus_ring: true,
             button_focus_ring: FocusRing::default(),
+            switch_hover: None,
             popover_edge: None,
             scrollbar_mode: ScrollbarMode::default(),
             notification: NotificationSettings::default(),
