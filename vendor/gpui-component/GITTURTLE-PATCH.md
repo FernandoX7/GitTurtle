@@ -410,3 +410,30 @@ highlighter tests therefore ran in a scratch workspace with the root patches
 and lockfile, `--features tree-sitter-languages`, placeholders for those files
 and the input test module compiled out. Remove this part of the patch when
 upstream drops the import.
+
+The ghost-hover patch modifies `src/button/button.rs` and adds
+`Theme::ghost_hover` to `src/theme/mod.rs`. Upstream fills a hovered ghost
+Button with `secondary` lightened by 10% in a dark theme, or darkened by 10% in
+a light one, at 80% opacity. `Colorize::lighten` scales the lightness, so on a
+dark `secondary` (GitTurtle's `subtle` surface) the fill moves by a step or two
+and a hovered ghost Button, such as Compare's narrow review arrows, shows no
+lift. A hovered, enabled ghost Button now takes `Theme::ghost_hover` when it is
+set; `ghost_hover` is `None` by default, set in code and skipped by theme files,
+so an application that leaves it alone keeps upstream's fill. A disabled ghost
+Button still paints no hover, as every disabled Button does.
+
+The consumers are every ghost Button the app draws or the kit draws for it: in
+the app, Compare's review arrows, Options, Hide whitespace, Context and Reset
+review (`crates/app/src/text_review.rs`), editor Find's buttons
+(`crates/app/src/editor_find.rs`), the branch, tag, reflog, recovery, worktree,
+project and project-pane rows and actions that call `.ghost()`; in the kit, the
+dialog and sheet close buttons, input clear and search buttons, pagination,
+tab-bar, dock, sidebar, notification and date-picker controls. The app sets
+`ghost_hover` to `Palette::control_fill(hover)`, the hover its shared `button`
+helper takes, where it installs the button ring (`crates/app/src/appearance.rs`).
+`cargo test --locked -p gitturtle narrow_review_arrows_lift_on_hover` hovers the
+narrow review arrows in Midnight and Daylight and reads the scene: no fill at
+rest, the shared hover fill when hovered, and none when an operation disables
+them. Remove this part of the patch when upstream derives the ghost hover so a
+dark `secondary` visibly lifts, or offers an equivalent setting, and that test
+passes without it.

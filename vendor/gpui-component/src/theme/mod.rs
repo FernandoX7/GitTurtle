@@ -140,6 +140,16 @@ pub struct Theme {
     /// track by the same step its other controls take on hover.
     #[serde(skip)]
     pub switch_hover: Option<Hsla>,
+    /// A ghost Button's fill under the pointer, or `None` for the `secondary`
+    /// color lightened (dark) or darkened (light) by 10% at 80% opacity, as
+    /// upstream does.
+    ///
+    /// Set in code, not read from theme files. Upstream's lightening scales the
+    /// lightness, so on a dark `secondary` it moves the fill by a step or two
+    /// and the hover cannot be seen; an application can give ghost Buttons the
+    /// hover its other controls take.
+    #[serde(skip)]
+    pub ghost_hover: Option<Hsla>,
     /// The hairline edge of a popup surface (menus, popovers, selects), or
     /// `None` for 10% of the foreground, as shadcn/ui draws it.
     ///
@@ -664,6 +674,7 @@ impl From<&ThemeColor> for Theme {
             focus_ring: true,
             button_focus_ring: FocusRing::default(),
             switch_hover: None,
+            ghost_hover: None,
             popover_edge: None,
             scrollbar_mode: ScrollbarMode::default(),
             notification: NotificationSettings::default(),

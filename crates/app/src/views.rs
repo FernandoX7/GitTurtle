@@ -4411,6 +4411,81 @@ mod tests {
         assert_eq!(options(cx), Options::default());
     }
 
+    /// The narrow review row's change arrows are the kit's ghost Buttons.
+    /// Hovered and enabled they take the shared controls' hover fill, the
+    /// palette's hover step over the panel; disabled, they paint none.
+    #[gpui::test]
+    async fn narrow_review_arrows_lift_on_hover(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        // The fills painted exactly over a control's bounds.
+        let fills = |cx: &mut VisualTestContext, selector: &'static str| {
+            let bounds = cx.debug_bounds(selector).expect(selector);
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let near = |device: gpui_kit::ScaledPixels, logical: Pixels| {
+                    (device.as_f32() - logical.as_f32() * scale).abs() < 0.5
+                };
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        !quad.background.is_transparent()
+                            && near(quad.bounds.left(), bounds.left())
+                            && near(quad.bounds.top(), bounds.top())
+                            && near(quad.bounds.right(), bounds.right())
+                            && near(quad.bounds.bottom(), bounds.bottom())
+                    })
+                    .map(|quad| quad.background)
+                    .collect::<Vec<_>>()
+            })
+        };
+        let hover_over = |cx: &mut VisualTestContext, selector: &'static str| {
+            let center = cx.debug_bounds(selector).expect(selector).center();
+            cx.simulate_mouse_move(center, None, Modifiers::default());
+            draw(cx);
+        };
+        let away = |cx: &mut VisualTestContext| {
+            cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+            draw(cx);
+        };
+        for theme in [
+            crate::appearance::ThemeChoice::Midnight,
+            crate::appearance::ThemeChoice::Daylight,
+        ] {
+            cx.update(|_, cx| theme.apply(None, cx));
+            draw(cx);
+            let hover = cx.update(|_, cx| {
+                let p = palette(cx);
+                gpui_kit::Background::from(gpui_kit::Hsla::from(p.control_fill(p.hover)))
+            });
+            for selector in ["previous-text-change", "next-text-change"] {
+                away(cx);
+                assert_eq!(fills(cx, selector), vec![], "{theme:?} {selector} at rest");
+                hover_over(cx, selector);
+                assert_eq!(
+                    fills(cx, selector),
+                    vec![hover],
+                    "{theme:?} {selector} hovered"
+                );
+            }
+        }
+        // While an operation runs the arrows are disabled.
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.operation_busy = Some("Fetching remote…");
+                cx.notify()
+            })
+        });
+        for selector in ["previous-text-change", "next-text-change"] {
+            away(cx);
+            hover_over(cx, selector);
+            assert_eq!(fills(cx, selector), vec![], "disabled {selector} hovered");
+        }
+    }
+
     /// "Original Git diff" and the other captions start where the buttons'
     /// labels do when they wrap to a line of their own, and keep to the
     /// Options row when the options collapse.

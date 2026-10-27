@@ -1624,6 +1624,8 @@ impl Palette {
         theme.colors.ring = rgb(palette.accent).into();
         theme.button_focus_ring = BUTTON_FOCUS_RING;
         theme.switch_hover = Some(rgb(palette.switch_hover()).into());
+        // Ghost Buttons, the kit's own among them, lift as the shared controls do.
+        theme.ghost_hover = Some(palette.control_fill(palette.hover).into());
         theme.colors.caret = rgb(palette.accent).into();
         theme.colors.link = rgb(palette.hunk).into();
         theme.colors.link_hover = rgb(palette.accent).into();
