@@ -28,6 +28,17 @@ fn label(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Di
         .child(text)
         .text_size(crate::appearance::ui_text(12.))
 }
+/// One line of a PR row: left-aligned in its column and cut with an ellipsis
+/// where the row is too narrow, the whole text in the row's tooltip.
+fn row_text(selector: String, text: String) -> Div {
+    div()
+        .debug_selector(move || selector.clone())
+        .flex_1()
+        .min_w_0()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .child(text)
+}
 /// Preserve native focused-button Enter/Space activation inside this long-lived
 /// dialog; its default Return-to-confirm action must not bypass Panel::close.
 fn button(
@@ -1110,8 +1121,10 @@ impl Render for Panel {
                 .child(div().id("github-pr-list").debug_selector(||"github-pr-list".into()).flex_shrink_0().max_h(px(200.)).overflow_y_scroll().flex().flex_col().gap_1()
                     .children(self.rows.iter().map(|pull|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
                         div().id(("github-pr-card",pull.number)).flex_shrink_0().p_3().rounded(px(7.)).border_1().border_color(rgb(if selected{p.accent}else{p.border})).bg(rgb(p.panel)).flex().flex_col().gap_1()
-                            .child(button(("github-pr",pull.number),name,"",selected).w_full().disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx))))
-                            .child(label(("github-pr-context",number),context).text_color(rgb(p.muted)))
+                            // One text column: the title starts at the Button's label inset, and the
+                            // context line, outside the Button, takes the same inset.
+                            .child(crate::button_frame(("github-pr",number),&name,"",selected).key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx))))
+                            .child(div().id(("github-pr-context",number)).flex().role(Role::Label).aria_label(context.clone()).mx(appearance::ui_size(crate::LABEL_INSET)).text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).child(row_text(format!("github-pr-context-{number}"),context)))
                     }))
                     .when(self.rows.is_empty(),|element|element.child(div().p_5().flex().flex_col().gap_2().child(label("github-list-empty","Your pull requests, ready to review").font_weight(FontWeight::SEMIBOLD)).child(label("github-list-empty-help","Choose a repository and Refresh PRs to load open requests. Opening this panel reads local settings and drafts only.").text_color(rgb(p.muted))))))
                 .child(div().flex().items_center().gap_2().child(button("github-previous","Previous PR page","",false).disabled(pending||self.page<=1).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page-1,window,cx))))
@@ -1592,6 +1605,70 @@ mod tests {
             );
             assert!(outlined(cx, "history-pane"), "History's accent outline");
         }
+    }
+
+    /// Each PR row is one text column: the title, a Button's label, and the
+    /// context line below the Button start at the Button's label inset and
+    /// end at the same edge, whatever the title's length, and each keeps one
+    /// line, cut with an ellipsis, in a wide and a narrow window.
+    #[gpui::test]
+    async fn pull_request_rows_share_one_text_column(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        let repo = cx.read(|cx| app.read(cx).repository.clone().unwrap());
+        let panel = cx.update(|window, cx| {
+            cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx))
+        });
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.run_until_parked();
+        let short = github::review::fixture_pull(false);
+        let mut long = short.clone();
+        long.number = 43;
+        long.title = "Keep every captured review position through a repository change ".repeat(6);
+        long.head.branch = format!("feature/{}", "a-long-topic-branch-name-".repeat(6));
+        long.user.login = "a-reviewer-with-a-long-account-name".into();
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.rows = vec![short, long];
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        settle_panel(&app, cx).await;
+        let inset = appearance::ui_size(crate::LABEL_INSET);
+        for width in [1480., 640.] {
+            cx.simulate_resize(size(px(width), px(980.)));
+            draw(cx);
+            let lines = |cx: &mut VisualTestContext, number: u64| {
+                let mut bounds = |selector: String| {
+                    cx.debug_bounds(selector.clone().leak())
+                        .unwrap_or_else(|| panic!("{selector} at {width} px"))
+                };
+                (
+                    bounds(format!("github-pr-{number}")),
+                    bounds(format!("github-pr-title-{number}")),
+                    bounds(format!("github-pr-context-{number}")),
+                )
+            };
+            let (_, short_title, short_context) = lines(cx, 42);
+            for number in [42, 43] {
+                let (button, title, context) = lines(cx, number);
+                let at = format!("#{number} at {width} px: title {title:?}, context {context:?}");
+                assert!(
+                    (title.left() - (button.left() + inset)).abs() < px(0.01),
+                    "{at}"
+                );
+                assert!((title.left() - context.left()).abs() < px(0.01), "{at}");
+                assert!((title.right() - context.right()).abs() < px(0.01), "{at}");
+                assert!(context.right() <= button.right() - inset + px(0.01), "{at}");
+                assert_eq!(title.size.height, short_title.size.height, "{at}: one line");
+                assert_eq!(
+                    context.size.height, short_context.size.height,
+                    "{at}: one line"
+                );
+            }
+        }
+        cx.update(|window, cx| window.close_dialog(cx));
     }
 
     /// Escape, the frame after the dialog closes, and the app's repair of

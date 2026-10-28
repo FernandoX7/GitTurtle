@@ -1890,6 +1890,11 @@ fn button(
     button
 }
 
+/// The space beside a labelled compact Button's label, at the default
+/// interface size: text beside or below such a Button that takes it lines up
+/// with the Button's label.
+const LABEL_INSET: f32 = 10.;
+
 /// The compact frame [`button`] and `copy_feedback::copy_button` share,
 /// without content: 28 px high, with 10 px of padding beside a label and a
 /// 6 px icon/label gap, or, when `label` is empty, a 28 px square named after
@@ -1903,7 +1908,11 @@ fn button_frame(id: impl Into<ElementId>, label: &str, symbol: &str, active: boo
         .with_variant(appearance::control_button_variant(active))
         .h(appearance::ui_size(28.))
         .min_w(appearance::ui_size(28.))
-        .px(appearance::ui_size(if label.is_empty() { 6. } else { 10. }))
+        .px(appearance::ui_size(if label.is_empty() {
+            6.
+        } else {
+            LABEL_INSET
+        }))
         .gap(appearance::ui_size(6.))
         .rounded(appearance::ui_size(7.))
         .selected(active)

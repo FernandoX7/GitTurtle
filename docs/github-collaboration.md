@@ -18,7 +18,7 @@ The credential store is a platform abstraction. Linux builds remain portable, bu
 
 ## PR inspection and creation
 
-PR lists load 50 open PRs per explicit page, up to page 1000. Pages replace the visible list. Server pagination links only indicate that another page exists; their URLs are never followed. The API destination remains the captured GitHub.com repository. As with the provider’s REST pagination, the list is live and may shift when new PRs are created between page requests.
+PR lists load 50 open PRs per explicit page, up to page 1000. Pages replace the visible list. Server pagination links only indicate that another page exists; their URLs are never followed. The API destination remains the captured GitHub.com repository. As with the provider’s REST pagination, the list is live and may shift when new PRs are created between page requests. Each row reads as one text column: the `#number · title` Button and the `state · head → base · author` line below it start at the Button's label inset and end at the same edge, each on one line that ends in an ellipsis where the row is too narrow, with the whole text in its tooltip and accessible name.
 
 Selecting a PR loads current title, exact description source, draft/open state, head/base branches and complete commit identities. The explicit selection separately loads review history, check runs, commit statuses, the first changed-file page, and the first authoritative conversation page. Each status endpoint is bounded to 100 entries; additional entries or partial endpoint failures are explicitly reported. Older-head reviews are identified. These entries report provider results and do not infer an aggregate approval decision or merge authorization.
 
