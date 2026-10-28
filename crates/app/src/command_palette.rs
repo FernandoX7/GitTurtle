@@ -426,6 +426,14 @@ fn matches(query: &str) -> Vec<usize> {
         .take(40)
         .collect()
 }
+/// The position in `results` of the first command `availability` allows, or
+/// 0 when it allows none.
+fn first_available(results: &[usize], availability: &Availability) -> usize {
+    results
+        .iter()
+        .position(|&index| COMMANDS[index].id.reason(availability).is_none())
+        .unwrap_or(0)
+}
 #[derive(Clone, Default, PartialEq, Eq)]
 struct FileScope {
     commit: Option<String>,
@@ -740,9 +748,8 @@ impl Palette {
             cx.subscribe_in(&query, window, |this, _, event, window, cx| match event {
                 InputEvent::Change => {
                     this.results = matches(&this.query.read(cx).value());
-                    this.selection.index = 0;
+                    this.highlight_first_available();
                     this.error = None;
-                    this.scroll.scroll_to_item(0, ScrollStrategy::Top);
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => this.activate(window, cx),
@@ -759,7 +766,7 @@ impl Palette {
                 }
             })
         });
-        Self {
+        let mut palette = Self {
             owner,
             path,
             file_scope,
@@ -772,7 +779,22 @@ impl Palette {
             scroll: UniformListScrollHandle::new(),
             error: None,
             _subscription: subscription,
-        }
+        };
+        palette.highlight_first_available();
+        palette
+    }
+    /// Highlights the first result the current context can run, or the first
+    /// result when it can run none, and shows the list from its top with
+    /// that row in view. A disabled row draws in the faintest text on screen,
+    /// so it is a poor place for the highlight to start; Up/Down still reach
+    /// every row, disabled ones included.
+    fn highlight_first_available(&mut self) {
+        self.selection.index = first_available(&self.results, &self.context.availability);
+        // Strictly, so the list starts from its top whatever it showed
+        // before: the bottom placement scrolls only when the row lies below
+        // the first screen.
+        self.scroll
+            .scroll_to_item_strict(self.selection.index, ScrollStrategy::Bottom);
     }
     fn can_activate(&self) -> bool {
         !self.selection.closed
@@ -862,6 +884,7 @@ impl Render for Palette {
                         let shortcut = spec.shortcut.map(shortcuts::label).unwrap_or_default();
                         div()
                             .id(("palette-command", index))
+                            .debug_selector(move || format!("palette-command-{index}"))
                             .role(Role::ListBoxOption)
                             .aria_label(format!(
                                 "{}{}",
@@ -1346,5 +1369,77 @@ mod render_tests {
                 "{name} rows"
             );
         }
+    }
+
+    /// The rows among the first `rows` that the last frame painted with the
+    /// highlight's `selected` fill.
+    fn highlighted(cx: &mut VisualTestContext, rows: usize) -> Vec<usize> {
+        let bounds: Vec<_> = (0..rows)
+            .map(|row| cx.debug_bounds(format!("palette-command-{row}").leak()))
+            .collect();
+        cx.update(|window, cx| {
+            let fill = Background::from(Hsla::from(rgb(palette(cx).selected)));
+            let scale = window.scale_factor();
+            let quads = window.painted_quads();
+            (0..rows)
+                .filter(|&row| {
+                    bounds[row].is_some_and(|bounds| {
+                        quads.iter().any(|quad| {
+                            quad.background == fill && logical(quad.bounds, scale) == bounds
+                        })
+                    })
+                })
+                .collect()
+        })
+    }
+
+    /// The highlight starts on the first command the context can run: a
+    /// highlighted unavailable row drew its title in the faintest text on
+    /// screen (2.16:1 to 2.65:1) under a reason at secondary strength. On the
+    /// Projects hub "show" first matches the graph-lane commands, which need
+    /// a repository, so typing it highlights the first available match
+    /// instead of the first row, and Up/Down still reach the unavailable rows.
+    #[gpui::test]
+    fn the_highlight_starts_on_the_first_available_command(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+        crate::tags::tests::draw(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window));
+        let available = |results: &[usize]| {
+            results
+                .iter()
+                .map(|&index| COMMANDS[index].id.reason(&availability).is_none())
+                .collect::<Vec<_>>()
+        };
+        // Opening: the registry's first command runs anywhere.
+        assert!(available(&matches(""))[0]);
+        assert_eq!(highlighted(cx, 7), vec![0], "on opening");
+
+        cx.simulate_input("show");
+        crate::tags::tests::draw(cx);
+        let rows = available(&matches("show"));
+        let first = rows
+            .iter()
+            .position(|&available| available)
+            .expect("a match runs on the hub");
+        assert!(
+            first > 0 && first < 7,
+            "the first match is unavailable: {rows:?}"
+        );
+        assert_eq!(
+            highlighted(cx, rows.len().min(7)),
+            vec![first],
+            "after typing"
+        );
+
+        // Up/Down move one row at a time, onto unavailable rows too.
+        cx.simulate_keystrokes("up");
+        crate::tags::tests::draw(cx);
+        assert!(!rows[first - 1]);
+        assert_eq!(
+            highlighted(cx, rows.len().min(7)),
+            vec![first - 1],
+            "after Up"
+        );
     }
 }

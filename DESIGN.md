@@ -296,7 +296,7 @@ Media, Office/OpenDocument, archives and fonts present useful bounded metadata w
 
 **Primary-Shift-P** and **View → Command Palette** open a native, focused command search; **Primary-P** remains Quick Open. Search names and useful synonyms from the bounded existing-workflow registry. Rows show shortcuts and application/repository/selected-file scope; unavailable actions stay discoverable with a reason. Highlighting is inert. Return or a click revalidates the target and opens its existing workflow/review once; Escape/Cancel restores the preceding visible focus.
 
-Use 54 px scaled rows, an adaptive one-to-seven-row result height, a compact empty-result explanation and a viewport cap at large text sizes. Up/Down moves selection and keeps it visible. Preserve query editing shortcuts, consume background navigation shortcuts and avoid opening over another active modal. The [command-palette contract](docs/command-palette.md) owns search bounds, availability and target validation.
+Use 54 px scaled rows, an adaptive one-to-seven-row result height, a compact empty-result explanation and a viewport cap at large text sizes. Opening the palette and every change to the query highlight the first command the context can run, or the first row when none can, with the list shown from its top; Up/Down moves selection one row at a time, unavailable rows included, and keeps it visible. Preserve query editing shortcuts, consume background navigation shortcuts and avoid opening over another active modal. The [command-palette contract](docs/command-palette.md) owns search bounds, availability and target validation.
 
 ## Keyboard contract
 
