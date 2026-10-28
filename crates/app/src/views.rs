@@ -2439,36 +2439,53 @@ impl GitTurtle {
                             .find(|(mode, _)| *mode == current)
                             .map_or("Diff", |(_, name)| *name);
                         let owner = cx.entity().downgrade();
-                        toolbar.child(
-                            compact_control_label(
-                                button("text-mode-menu", label, "", false),
-                                "text-mode-menu",
-                                format!("Comparison mode: {label}"),
-                            )
-                            .debug_selector(|| "text-mode-menu".into())
-                            .dropdown_caret(true)
-                            .tooltip(format!("Comparison mode · {}", names.join(", ")))
-                            .dropdown_menu(move |menu, _, _| {
-                                // Built when opened; a choice acts on the page
-                                // as it is then, as a mode button does.
-                                available.iter().fold(menu, |menu, &(mode, name)| {
-                                    let owner = owner.clone();
-                                    menu.item(
-                                        PopupMenuItem::new(name).checked(mode == current).on_click(
-                                            move |_, window, cx| {
-                                                let _ = owner.update(cx, |this, cx| {
-                                                    if this.page == AppPage::Repository {
-                                                        this.text_mode = mode;
-                                                        this.ensure_editor(window, cx);
-                                                        cx.notify();
-                                                    }
-                                                });
-                                            },
-                                        ),
-                                    )
-                                })
-                            }),
+                        // On a row of its own the transparent menu gives its
+                        // inset back to the toolbar's padding, so its label
+                        // starts where the path's text does and its focus
+                        // ring stays inside the column.
+                        let own_row = !modes_share_the_path_row(
+                            text_mode_menu_width(window),
+                            column,
+                            column_min,
+                            window,
+                        );
+                        let menu = compact_control_label(
+                            button("text-mode-menu", label, "", false),
+                            "text-mode-menu",
+                            format!("Comparison mode: {label}"),
                         )
+                        .debug_selector(|| "text-mode-menu".into())
+                        .px(appearance::ui_size(TEXT_MODE_MENU_INSET))
+                        .when(own_row, |menu| {
+                            menu.ml(-appearance::ui_size(TEXT_MODE_MENU_INSET))
+                        })
+                        .dropdown_caret(true)
+                        .tooltip(format!("Comparison mode · {}", names.join(", ")))
+                        .dropdown_menu(move |menu, _, _| {
+                            // Built when opened; a choice acts on the page
+                            // as it is then, as a mode button does.
+                            available.iter().fold(menu, |menu, &(mode, name)| {
+                                let owner = owner.clone();
+                                menu.item(
+                                    PopupMenuItem::new(name).checked(mode == current).on_click(
+                                        move |_, window, cx| {
+                                            let _ = owner.update(cx, |this, cx| {
+                                                if this.page == AppPage::Repository {
+                                                    this.text_mode = mode;
+                                                    this.ensure_editor(window, cx);
+                                                    cx.notify();
+                                                }
+                                            });
+                                        },
+                                    ),
+                                )
+                            })
+                        });
+                        if own_row {
+                            toolbar.child(div().w_full().flex().child(menu))
+                        } else {
+                            toolbar.child(menu)
+                        }
                     } else {
                         toolbar.child(modes)
                     };
@@ -3333,27 +3350,50 @@ fn compare_toolbar_height(column: Pixels, column_min: Pixels, window: &Window) -
     let rem = window.rem_size();
     let room = column - rem * 1.5;
     let control = appearance::ui_size(28.);
-    let path = appearance::ui_size(220.).min((column_min - appearance::ui_size(19.5)).max(px(0.)));
     let labelled = text_modes_width(&MODES, window);
     let (modes, height) = if labelled <= room {
         (labelled, control + rem * 0.25)
     } else {
-        // The menu reads the widest mode, then its caret.
-        let widest = cached_width(&TEXT_MODE_WIDEST, &LineKey::current(window), || {
-            line_widths(&[("Before", appearance::ui_text(12.))], window)
-        });
-        (
-            appearance::ui_size(10. * 2. + 6.) + widest + rem * 0.875,
-            control,
-        )
+        (text_mode_menu_width(window), control)
     };
     let gap = rem * 0.375;
-    let rows = if path + gap + modes <= room {
+    let rows = if modes_share_the_path_row(modes, column, column_min, window) {
         control.max(height)
     } else {
         control + gap + height
     };
     (rem * 0.25 * 2. + rows + px(1.)).max(appearance::ui_size(42.))
+}
+
+/// The space beside the collapsed text modes' label, at the default
+/// interface size: an icon's inset, which the menu gives back to the
+/// toolbar's padding on a row of its own, so its label starts at the path's
+/// left edge while its frame and focus ring keep inside the column.
+const TEXT_MODE_MENU_INSET: f32 = crate::ICON_INSET;
+
+/// The collapsed text modes' menu at its widest: its inset either side of
+/// the widest mode's label, then the shared `button` helper's 6 px gap and
+/// the caret.
+fn text_mode_menu_width(window: &Window) -> Pixels {
+    let widest = cached_width(&TEXT_MODE_WIDEST, &LineKey::current(window), || {
+        line_widths(&[("Before", appearance::ui_text(12.))], window)
+    });
+    appearance::ui_size(TEXT_MODE_MENU_INSET * 2. + 6.) + widest + window.rem_size() * 0.875
+}
+
+/// Whether text modes `modes` wide share the path's row in a preview
+/// `column` wide whose narrowest is `column_min`: the path held at its
+/// 220 px allotment, or the whole narrowest column, then `gap_1p5` and the
+/// modes inside the toolbar's `px_3`.
+fn modes_share_the_path_row(
+    modes: Pixels,
+    column: Pixels,
+    column_min: Pixels,
+    window: &Window,
+) -> bool {
+    let rem = window.rem_size();
+    let path = appearance::ui_size(220.).min((column_min - appearance::ui_size(19.5)).max(px(0.)));
+    path + rem * 0.375 + modes <= column - rem * 1.5
 }
 
 /// The width History's scope toolbar needs to keep its labels: `px_3` on
@@ -6258,6 +6298,45 @@ pub(crate) mod tests {
         cx.simulate_keystrokes("down down enter");
         draw(cx);
         assert!(app.read_with(cx, |app, _| app.text_mode == TextMode::Split));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The text modes' menu, on a row of its own below the path, starts its
+    /// label at the path's left edge: at 18 pt in a 461 × 490 window "Diff"
+    /// stood 14 px right of the path, the transparent button's padding. The
+    /// menu gives that inset back to the toolbar's padding, and its focus
+    /// ring keeps its room inside the column.
+    #[gpui::test]
+    async fn narrow_mode_menu_label_starts_with_the_path(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert_eq!(
+            COMPACT_LABELS.with(|names| names.borrow().get("text-mode-menu").cloned()),
+            Some("Comparison mode: Diff".into())
+        );
+        let menu = cx.debug_bounds("text-mode-menu").expect("the modes' menu");
+        let path = cx.debug_bounds("preview-file-path").unwrap();
+        let toolbar = cx.debug_bounds("compare-toolbar").unwrap();
+        assert!(
+            menu.top() >= path.bottom(),
+            "a row of its own: {menu:?} below {path:?}"
+        );
+        let label = menu.left() + appearance::ui_size(TEXT_MODE_MENU_INSET);
+        assert!(
+            (label - path.left()).abs() < px(0.5),
+            "Diff starts at {label:?}, the path at {:?}",
+            path.left()
+        );
+        let room = cx.read(appearance::button_ring_room);
+        assert!(
+            menu.left() - room >= toolbar.left(),
+            "the ring's room {room:?} left of {menu:?} inside {toolbar:?}"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
