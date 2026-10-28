@@ -4173,12 +4173,18 @@ const CHANGES_TOGGLE: &str = "compact-changes-toggle";
 
 /// The compact Changes toggle's working-file count, a small accent pill on
 /// the icon's top-right corner inside the toggle, so the toggle keeps its
-/// width and its focus ring. A [`CHANGES_BADGE_RING`] surrounds the pill,
-/// outside its 14 px, in the colour beneath it: the toggle group's `subtle`
-/// fill, or the toggle's own fill over it while it is `selected`, hovered
-/// or pressed ([`appearance::Palette::control_fills`]). So the ring is a
-/// true cut-out, the glyph's strokes stop short of the count rather than
-/// run into it, and no halo shows around it. Above 99 it reads "99+".
+/// width and its focus ring. The pill sits in a cut-out a
+/// [`CHANGES_BADGE_RING`] wider on every side, filled with the colour
+/// beneath it: the toggle group's `subtle` fill, or the toggle's own fill
+/// over it while it is `selected`, hovered or pressed
+/// ([`appearance::Palette::control_fills`]). So the glyph's strokes stop
+/// short of the count rather than run into it, and no halo shows around it.
+/// The cut-out is the outermost shape: GPUI paints a bordered quad's fill to
+/// its outer edge beneath the border, so a ring drawn as the pill's border
+/// let the pill's antialiased edge show past it as a half-pixel fringe of
+/// the accent (1.23:1 in Braden, 1.43:1 in Midnight); here the outer edge
+/// blends the fill beneath with itself, and the pill's own edge lies inside
+/// the cut-out. Above 99 it reads "99+".
 fn changes_badge(count: usize, selected: bool, p: appearance::Palette) -> impl IntoElement {
     let ring = appearance::ui_size(CHANGES_BADGE_RING);
     let [rest, hovered, pressed] = p.control_fills(selected, p.subtle);
@@ -4189,30 +4195,30 @@ fn changes_badge(count: usize, selected: bool, p: appearance::Palette) -> impl I
         .absolute()
         .top(appearance::ui_size(1.) - ring)
         .right(appearance::ui_size(1.) - ring)
-        .min_w(appearance::ui_size(14.) + ring * 2.)
-        .h(appearance::ui_size(14.) + ring * 2.)
-        .px(appearance::ui_size(3.))
-        .border(ring)
-        .border_color(rgb(rest))
-        .group_hover(CHANGES_TOGGLE, move |style| {
-            style.border_color(rgb(hovered))
-        })
-        .group_active(CHANGES_TOGGLE, move |style| {
-            style.border_color(rgb(pressed))
-        })
-        .flex()
-        .items_center()
-        .justify_center()
+        .p(ring)
         .rounded_full()
-        .bg(rgb(p.accent))
-        .text_color(rgb(p.accent_foreground))
-        .text_size(appearance::ui_text(10.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(if count > 99 {
-            "99+".to_owned()
-        } else {
-            count.to_string()
-        })
+        .bg(rgb(rest))
+        .group_hover(CHANGES_TOGGLE, move |style| style.bg(rgb(hovered)))
+        .group_active(CHANGES_TOGGLE, move |style| style.bg(rgb(pressed)))
+        .child(
+            div()
+                .min_w(appearance::ui_size(14.))
+                .h(appearance::ui_size(14.))
+                .px(appearance::ui_size(3.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(rgb(p.accent))
+                .text_color(rgb(p.accent_foreground))
+                .text_size(appearance::ui_text(10.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(if count > 99 {
+                    "99+".to_owned()
+                } else {
+                    count.to_string()
+                }),
+        )
 }
 
 /// [`compact_control_name`] for a `name` that changes with what the control
@@ -7655,37 +7661,50 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// What [`changes_badge_ring`] reads: the count's fills, its rings (each
-    /// its colour and its width on each side) and the colour beneath them.
-    type BadgeRingProbe = (Vec<gpui_kit::Background>, Vec<(u32, [f32; 4])>, u32);
+    /// What [`changes_badge_ring`] reads from the compact Changes count.
+    #[derive(Debug)]
+    struct BadgeRingProbe {
+        /// The fills of the quads at the count's outer bounds: its cut-out.
+        cutouts: Vec<gpui_kit::Background>,
+        /// How many quads at those bounds draw a border, whose fill GPUI
+        /// paints out to the outer edge beneath it.
+        borders: usize,
+        /// Each quad filled with the accent that meets the count's bounds, as
+        /// its inset from them on the left, top, right and bottom.
+        pills: Vec<[f32; 4]>,
+        /// Whether every such quad is painted after the cut-out, inside it.
+        pills_above: bool,
+        /// The colour the quads painted before the count composite to just
+        /// inside the cut-out's band at its left, mid-height: what the
+        /// cut-out covers.
+        beneath: u32,
+    }
 
-    /// The compact Changes count's ring as the last frame painted it, its
-    /// colour and its width on each side, the count's fills, and the colour
-    /// the quads painted before the count composite to just inside the
-    /// ring's band at the count's left, mid-height: what the ring covers.
-    fn changes_badge_ring(cx: &mut VisualTestContext) -> BadgeRingProbe {
+    /// The compact Changes count as the last frame painted it, with its pill
+    /// in the palette's `accent`.
+    fn changes_badge_ring(cx: &mut VisualTestContext, accent: u32) -> BadgeRingProbe {
         let badge = cx.debug_bounds("changes-count-badge").expect("the count");
         let ring = appearance::ui_size(CHANGES_BADGE_RING);
         cx.update(|window, _| {
             let scale = window.scale_factor();
+            let device = |logical: Pixels| logical.as_f32() * scale;
             let near = |device: gpui_kit::ScaledPixels, logical: Pixels| {
                 (device.as_f32() - logical.as_f32() * scale).abs() < 0.5
             };
             let quads = window.painted_quads();
-            // GPUI paints the fill and the border as two quads at the bounds.
             let at_badge = |quad: &&gpui_kit::Quad| {
                 near(quad.bounds.left(), badge.left())
                     && near(quad.bounds.top(), badge.top())
                     && near(quad.bounds.right(), badge.right())
                     && near(quad.bounds.bottom(), badge.bottom())
             };
-            let fills = quads
+            let cutouts = quads
                 .iter()
                 .filter(at_badge)
                 .filter(|quad| !quad.background.is_transparent())
                 .map(|quad| quad.background)
                 .collect::<Vec<_>>();
-            let rings = quads
+            let borders = quads
                 .iter()
                 .filter(at_badge)
                 .filter(|quad| {
@@ -7695,19 +7714,33 @@ pub(crate) mod tests {
                             .into_iter()
                             .any(|width| width.as_f32() > 0.)
                 })
+                .count();
+            let accent = gpui_kit::Background::from(rgb(accent));
+            let meets = |quad: &gpui_kit::Quad| {
+                quad.background == accent
+                    && quad.bounds.left().as_f32() < device(badge.right())
+                    && quad.bounds.right().as_f32() > device(badge.left())
+                    && quad.bounds.top().as_f32() < device(badge.bottom())
+                    && quad.bounds.bottom().as_f32() > device(badge.top())
+            };
+            let pills = quads
+                .iter()
+                .filter(|quad| meets(quad))
                 .map(|quad| {
-                    let widths = quad.border_widths;
-                    (
-                        appearance::packed(quad.border_color),
-                        [widths.left, widths.top, widths.right, widths.bottom]
-                            .map(|width| width.as_f32() / scale),
-                    )
+                    [
+                        quad.bounds.left().as_f32() - device(badge.left()),
+                        quad.bounds.top().as_f32() - device(badge.top()),
+                        device(badge.right()) - quad.bounds.right().as_f32(),
+                        device(badge.bottom()) - quad.bounds.bottom().as_f32(),
+                    ]
+                    .map(|inset| inset / scale)
                 })
                 .collect::<Vec<_>>();
             let first = quads
                 .iter()
                 .position(|quad| at_badge(&quad))
                 .expect("the count's quads");
+            let pills_above = quads[..=first].iter().all(|quad| !meets(quad));
             let (x, y) = (
                 (badge.left() + ring * 0.5).as_f32() * scale,
                 badge.center().y.as_f32() * scale,
@@ -7736,64 +7769,81 @@ pub(crate) mod tests {
                     };
                     appearance::composite(layer.to_rgb(), surface)
                 });
-            (fills, rings, beneath)
+            BadgeRingProbe {
+                cutouts,
+                borders,
+                pills,
+                pills_above,
+                beneath,
+            }
         })
     }
 
-    /// The compact Changes count is cut out of the glyph it overlaps: its
-    /// accent pill keeps its 14 px inside a ring that stays inside the
-    /// toggle, drawn in the colour the count sits on, so it reads as a cut
-    /// in that fill rather than a halo around the pill. In every palette
-    /// with the toggle selected in Changes, and in Midnight and Daylight
-    /// also selected and hovered, and in History on the toggle group's fill
-    /// at rest, hovered and pressed. The ring matches what the frame's own
-    /// quads composite to beneath it, to a channel step for the blend.
-    #[gpui::test]
-    async fn compact_changes_badge_is_ringed_in_the_fill_beneath(cx: &mut TestAppContext) {
-        let (_fixture, app, cx) = working_window(cx).await;
-        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
-        cx.simulate_resize(size(px(461.), px(490.)));
+    /// Checks the compact Changes count as the last frame painted it: inside
+    /// its toggle, a cut-out of the colour beneath it, to a channel step for
+    /// the blend, is the outermost shape at its bounds, with no border whose
+    /// fill would reach past it, and the accent pill is painted after it,
+    /// its 14 px whole and inset from the cut-out's edge by the ring's 1–2
+    /// px on every side, so nothing of the pill's antialiased edge shows
+    /// past the cut-out. Returns the cut-out's colour.
+    fn assert_badge_cut_out(cx: &mut VisualTestContext, at: &str, p: appearance::Palette) -> u32 {
         let same = |a: u32, b: u32| {
             [16, 8, 0]
                 .into_iter()
                 .all(|shift| ((a >> shift) & 0xff).abs_diff((b >> shift) & 0xff) <= 1)
         };
-        // Checks the count's geometry and pill, and that its ring is the
-        // colour beneath it; returns the ring's colour.
-        let check = |cx: &mut VisualTestContext, at: &str, palette: appearance::Palette| {
-            let badge = cx.debug_bounds("changes-count-badge").expect("the count");
-            let toggle = cx.debug_bounds("changes-tab").unwrap();
-            assert!(
-                badge.left() >= toggle.left()
-                    && badge.right() <= toggle.right()
-                    && badge.top() >= toggle.top()
-                    && badge.bottom() <= toggle.bottom(),
-                "{at}: badge {badge:?} inside {toggle:?}"
-            );
-            let (fills, rings, beneath) = changes_badge_ring(cx);
-            assert_eq!(
-                fills,
-                [gpui_kit::Background::from(rgb(palette.accent))],
-                "{at}: the accent pill"
-            );
-            let [(color, widths)] = rings.as_slice() else {
-                panic!("{at}: one ring, not {rings:?}");
-            };
-            assert!(
-                same(*color, beneath),
-                "{at}: the ring {color:06x} is the fill beneath it, {beneath:06x}"
-            );
-            assert!(
-                widths.iter().all(|width| (1. ..=2.).contains(width)),
-                "{at}: a 1–2 px ring all round: {widths:?}"
-            );
-            let ring = appearance::ui_size(CHANGES_BADGE_RING);
-            assert!(
-                badge.size.height - ring * 2. >= appearance::ui_size(14.) - px(0.5),
-                "{at}: the pill keeps its 14 px, to layout's half-pixel snapping, inside the ring: {badge:?}"
-            );
-            *color
+        let badge = cx.debug_bounds("changes-count-badge").expect("the count");
+        let toggle = cx.debug_bounds("changes-tab").unwrap();
+        assert!(
+            badge.left() >= toggle.left()
+                && badge.right() <= toggle.right()
+                && badge.top() >= toggle.top()
+                && badge.bottom() <= toggle.bottom(),
+            "{at}: badge {badge:?} inside {toggle:?}"
+        );
+        let probe = changes_badge_ring(cx, p.accent);
+        let [cutout] = probe.cutouts.as_slice() else {
+            panic!("{at}: one cut-out at the count's bounds: {probe:?}");
         };
+        let color = appearance::packed(cutout.as_solid().expect("a solid cut-out"));
+        assert!(
+            color != p.accent && same(color, probe.beneath),
+            "{at}: the outermost shape {color:06x} is the fill beneath it, {:06x}, not the \
+             accent pill: {probe:?}",
+            probe.beneath
+        );
+        assert_eq!(probe.borders, 0, "{at}: no bordered quad: {probe:?}");
+        let [insets] = probe.pills.as_slice() else {
+            panic!("{at}: one accent pill: {probe:?}");
+        };
+        assert!(
+            probe.pills_above && insets.iter().all(|inset| (1. ..=2.).contains(inset)),
+            "{at}: the pill lies inside the cut-out, 1–2 px from its edge all round: {probe:?}"
+        );
+        let ring = appearance::ui_size(CHANGES_BADGE_RING);
+        assert!(
+            badge.size.height - ring * 2. >= appearance::ui_size(14.) - px(0.5),
+            "{at}: the pill keeps its 14 px, to layout's half-pixel snapping, inside the \
+             cut-out: {badge:?}"
+        );
+        color
+    }
+
+    /// The compact Changes count is cut out of the glyph it overlaps: its
+    /// accent pill keeps its 14 px inside a cut-out that stays inside the
+    /// toggle, filled with the colour the count sits on, so it reads as a cut
+    /// in that fill rather than a halo around the pill
+    /// ([`assert_badge_cut_out`]). In every palette with the toggle selected
+    /// in Changes, and in Midnight and Daylight also selected and hovered,
+    /// and in History on the toggle group's fill at rest, hovered and
+    /// pressed.
+    #[gpui::test]
+    async fn compact_changes_badge_is_ringed_in_the_fill_beneath(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let check = assert_badge_cut_out;
+
         let away = |cx: &mut VisualTestContext| {
             cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
             draw(cx);
@@ -7851,6 +7901,77 @@ pub(crate) mod tests {
                 app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working),
                 "{theme:?}: the press selects Changes"
             );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Nothing of the compact Changes count's accent pill shows past its
+    /// cut-out, where a half-pixel fringe of it once did (1.23:1 against the
+    /// toggle group's fill in Braden, 1.43:1 in Midnight): in Midnight and
+    /// Braden, in Changes, where the toggle is selected, and in History, on
+    /// the group's fill, the cut-out is the outermost shape
+    /// ([`assert_badge_cut_out`]) wherever the chrome is compact, as at 18
+    /// pt in a 461 × 490 window. The toggle keeps its name with the count,
+    /// "Changes · 3". Where the full header stays, as at the default size in
+    /// 461 × 490 and 640 × 680 windows, its Changes tab reads the count and
+    /// no badge is drawn.
+    #[gpui::test]
+    async fn compact_changes_badge_shows_nothing_past_its_cut_out(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        for theme in [
+            crate::appearance::ThemeChoice::Midnight,
+            crate::appearance::ThemeChoice::Daylight,
+        ] {
+            cx.update(|_, cx| theme.apply(None, cx));
+            let p = cx.update(|_, cx| palette(cx));
+            for (text, width, height) in [
+                (13, 461., 490.),
+                (13, 640., 680.),
+                (18, 461., 490.),
+                (18, 640., 680.),
+            ] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                for history in [false, true] {
+                    cx.update(|window, cx| {
+                        app.update(cx, |app, cx| {
+                            if history {
+                                app.show_history(window, cx)
+                            } else {
+                                app.show_working(window, cx)
+                            }
+                        })
+                    });
+                    settle(&app, cx).await;
+                    cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+                    COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+                    draw(cx);
+                    let at = format!(
+                        "{theme:?} in {} at {text} pt in {width} × {height}",
+                        if history { "History" } else { "Changes" }
+                    );
+                    let compact = cx.update(|window, cx| app.read(cx).chrome(window, cx));
+                    assert!(
+                        compact.is_compact() || (text, width) != (18, 461.),
+                        "{at}: the compact chrome"
+                    );
+                    if !compact.is_compact() {
+                        assert!(
+                            cx.debug_bounds("changes-count-badge").is_none(),
+                            "{at}: no badge beside the full tab"
+                        );
+                        continue;
+                    }
+                    let cutout = assert_badge_cut_out(cx, &at, p);
+                    let fill = if history { p.subtle } else { p.selected };
+                    assert_eq!(cutout, fill, "{at}: the fill the count sits on");
+                    assert_eq!(
+                        COMPACT_LABELS.with(|names| names.borrow().get("changes-tab").cloned()),
+                        Some("Changes · 3".into()),
+                        "{at}: the toggle's name"
+                    );
+                }
+            }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
