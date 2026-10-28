@@ -591,6 +591,8 @@ impl GitTurtle {
         let form =
             cx.new(|cx| Palette::new(owner, path, file_scope, context, return_focus, window, cx));
         let query_focus = form.read(cx).query.read(cx).focus_handle(cx);
+        self.dialog_hints
+            .register(&query_focus, shortcuts::DialogKeys::Palette);
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let cancel = form.clone();
             let cancel_action = form.clone();

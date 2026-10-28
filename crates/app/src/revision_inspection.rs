@@ -218,6 +218,8 @@ impl GitTurtle {
         let return_focus = window.focused(cx);
         let form = cx.new(|cx| QuickForm::new(owner, repo, revision, return_focus, window, cx));
         let query_focus = form.read(cx).query.read(cx).focus_handle(cx);
+        self.dialog_hints
+            .register(&query_focus, shortcuts::DialogKeys::QuickOpen);
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let submit = form.clone();
             let cancel = form.clone();

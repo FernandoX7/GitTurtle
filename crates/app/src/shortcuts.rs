@@ -590,7 +590,61 @@ fn help_matches(query: &str) -> Vec<HelpRow> {
     rows
 }
 
-pub(super) fn open_help(window: &mut Window, cx: &mut Context<GitTurtle>) {
+/// A dialog control with keys of its own, which the status bar names while
+/// that control holds focus, in place of the page's hints beneath the dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DialogKeys {
+    /// The command palette's search, which moves through its commands.
+    Palette,
+    /// Quick Open's search, which moves through its files.
+    QuickOpen,
+    /// Keyboard Shortcuts' search, which browses its list.
+    Shortcuts,
+    /// The interactive rebase's planned sequence.
+    RebaseSequence,
+}
+
+impl DialogKeys {
+    /// The hints in the status bar's form, `Key Action · Key Action`.
+    pub(super) fn hints(self) -> String {
+        match self {
+            Self::Palette => format!("↑↓ Select · {ENTER} Open · Esc Close"),
+            Self::QuickOpen => format!("↑↓ Select · {ENTER} Open · Esc Cancel"),
+            Self::Shortcuts => "↑↓ Browse · Esc Close".to_owned(),
+            Self::RebaseSequence => format!(
+                "↑↓ Select · {} / {} Reorder · Esc Close",
+                key_label("alt-up"),
+                key_label("alt-down")
+            ),
+        }
+    }
+}
+
+/// The dialog controls whose keys the status bar names, registered as their
+/// dialogs open. A control is held weakly, so a closed dialog's entry lapses
+/// with its view, and each registration drops the lapsed ones.
+#[derive(Default)]
+pub(super) struct DialogHints(Vec<(WeakFocusHandle, DialogKeys)>);
+
+impl DialogHints {
+    pub(super) fn register(&mut self, focus: &FocusHandle, keys: DialogKeys) {
+        self.0
+            .retain(|(handle, _)| handle.upgrade().is_some() && handle != focus);
+        self.0.push((focus.downgrade(), keys));
+    }
+
+    /// The keys of the registered control that holds focus, if one does.
+    pub(super) fn focused(&self, window: &Window) -> Option<DialogKeys> {
+        self.0.iter().find_map(|(handle, keys)| {
+            handle
+                .upgrade()
+                .is_some_and(|handle| handle.is_focused(window))
+                .then_some(*keys)
+        })
+    }
+}
+
+pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut Context<GitTurtle>) {
     use gpui_kit::component::{WindowExt, dialog::DialogFooter};
     if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
         return;
@@ -598,6 +652,7 @@ pub(super) fn open_help(window: &mut Window, cx: &mut Context<GitTurtle>) {
     let return_focus = window.focused(cx);
     let help = cx.new(|cx| ShortcutHelpView::new(return_focus, window, cx));
     let focus = help.read(cx).query.read(cx).focus_handle(cx);
+    hints.register(&focus, DialogKeys::Shortcuts);
     window.open_alert_dialog(cx, move |dialog, _, _| {
         let done = help.clone();
         let cancel = help.clone();

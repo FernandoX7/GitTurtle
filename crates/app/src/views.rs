@@ -3633,6 +3633,32 @@ impl GitTurtle {
             .child(div().flex_1().min_h_0().child(workspace))
             .into_any_element()
     }
+
+    /// The keyboard hints at the status bar's right: the page's, or, under a
+    /// modal dialog or sheet, those of the dialog control holding focus,
+    /// which has keys of its own, or none. The page's keys do not reach the
+    /// page beneath a modal, so its hints never show there.
+    pub(super) fn status_hints(&self, window: &mut Window, cx: &mut App) -> Option<String> {
+        if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return self
+                .dialog_hints
+                .focused(window)
+                .map(shortcuts::DialogKeys::hints);
+        }
+        Some(match self.page {
+            AppPage::Settings => "Tab Move between controls · Esc Back".to_owned(),
+            AppPage::Projects => format!("{}O Open repository · Esc Back", primary_label()),
+            AppPage::Repository => match self.mode {
+                WorkspaceMode::Compare => "Esc Back to history · ↑↓ Files".to_owned(),
+                WorkspaceMode::Working => "↑↓ Review files · Esc Back to history".to_owned(),
+                WorkspaceMode::History => format!(
+                    "{}F Search · ↑↓ Navigate · {} Open file",
+                    primary_label(),
+                    shortcuts::ENTER
+                ),
+            },
+        })
+    }
 }
 
 impl Render for GitTurtle {
@@ -4202,23 +4228,9 @@ impl Render for GitTurtle {
                             .child(button("local-refresh-details", "Details…", "", false).h(crate::appearance::ui_size(20.)).text_size(crate::appearance::ui_text(10.))
                                 .on_click(cx.listener(|this, _, window, cx| this.show_automatic_refresh_details(window, cx)))))
                     })
-                    .child(match self.page {
-                        AppPage::Settings => "Tab Move between controls · Esc Back".to_owned(),
-                        AppPage::Projects => {
-                            format!("{}O Open repository · Esc Back", primary_label())
-                        }
-                        AppPage::Repository => match self.mode {
-                            WorkspaceMode::Compare => "Esc Back to history · ↑↓ Files".to_owned(),
-                            WorkspaceMode::Working => {
-                                "↑↓ Review files · Esc Back to history".to_owned()
-                            }
-                            WorkspaceMode::History => format!(
-                                "{}F Search · ↑↓ Navigate · {} Open file",
-                                primary_label(),
-                                shortcuts::ENTER
-                            ),
-                        },
-                    }),
+                    .children(self.status_hints(window, cx).map(|hints| {
+                        div().debug_selector(|| "status-hints".into()).child(hints)
+                    })),
             )
             // Copies from any page or dialog are announced from here.
             .children(copy_feedback::announcement(window, cx))

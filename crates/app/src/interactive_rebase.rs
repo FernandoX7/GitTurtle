@@ -116,10 +116,13 @@ impl GitTurtle {
                 })
             });
         self.interactive_rebase.draft = Some(draft.clone());
-        draft.update(cx, |draft, _| {
+        let sequence = draft.update(cx, |draft, _| {
             draft.pending = false;
             draft.closed = false;
+            draft.focus.clone()
         });
+        self.dialog_hints
+            .register(&sequence, shortcuts::DialogKeys::RebaseSequence);
         let review_owner = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let close = draft.clone();
@@ -735,5 +738,102 @@ impl Render for MessageForm {
             .when(self.editor.is_none(), |element| element.child(label("rebase-no-message", "No message is pending. Continue will replay the next planned step and pause if a message or conflict needs attention.").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| label("rebase-message-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .child(button("review-rebase-continue", "Review Continue…", "", true).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tags::tests::{draw, tagged_repository, window};
+    use core::prelude::v1::test;
+
+    /// Under a modal dialog the status bar names the keys of the dialog
+    /// control holding focus, or nothing: never the page's hints, whose keys
+    /// do not reach the page beneath. The rebase sequence names selection
+    /// and reordering in the platform's key labels; the Reflog, and the
+    /// rebase dialog's base field before the sequence loads, name none.
+    #[gpui::test]
+    async fn the_status_bar_names_the_dialogs_keys_and_never_the_pages(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(directory.path());
+        let (app, cx) = window(cx, &repo);
+        let hints = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.status_hints(window, cx)))
+        };
+        let drawn = |cx: &mut VisualTestContext| cx.debug_bounds("status-hints").is_some();
+        let page = hints(cx).expect("History names its keys");
+        assert!(
+            page.contains(&format!("{}F Search", primary_label())),
+            "{page}"
+        );
+        assert!(drawn(cx));
+
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_reflog_browser(window, cx)));
+        draw(cx);
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert_eq!(hints(cx), None, "the Reflog");
+        assert!(!drawn(cx), "the Reflog");
+        cx.update(|window, cx| window.close_dialog(cx));
+        draw(cx);
+        assert_eq!(hints(cx).as_ref(), Some(&page), "after the Reflog");
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.open_interactive_rebase(None, window, cx))
+        });
+        draw(cx);
+        assert_eq!(hints(cx), None, "the base field");
+        assert!(!drawn(cx), "the base field");
+
+        let form = app.read_with(cx, |app, _| app.interactive_rebase.draft.clone().unwrap());
+        cx.update(|window, cx| form.update(cx, |form, cx| form.load(window, cx)));
+        let read = app.update(cx, |app, _| app.interactive_rebase.task.take());
+        read.expect("the plan is read").await;
+        draw(cx);
+        assert!(cx.update(|window, cx| form.read(cx).focus.is_focused(window)));
+        assert_eq!(
+            hints(cx),
+            Some(format!(
+                "↑↓ Select · {} / {} Reorder · Esc Close",
+                shortcuts::key_label("alt-up"),
+                shortcuts::key_label("alt-down")
+            )),
+            "the rebase sequence"
+        );
+        assert!(drawn(cx), "the rebase sequence");
+
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert_eq!(hints(cx).as_ref(), Some(&page), "after the rebase dialog");
+
+        // Each other dialog with keys of its own names them from its search.
+        for (keys, open) in [
+            (
+                shortcuts::DialogKeys::Palette,
+                GitTurtle::open_command_palette
+                    as fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+            ),
+            (shortcuts::DialogKeys::QuickOpen, GitTurtle::open_quick_file),
+            (shortcuts::DialogKeys::Shortcuts, GitTurtle::shortcut_help),
+        ] {
+            cx.update(|window, cx| app.update(cx, |app, cx| open(app, window, cx)));
+            draw(cx);
+            let named = hints(cx);
+            assert_eq!(named, Some(keys.hints()), "{keys:?}");
+            assert!(!named.unwrap().contains("Search"), "{keys:?}");
+            assert!(drawn(cx), "{keys:?}");
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{keys:?}"
+            );
+            assert_eq!(hints(cx).as_ref(), Some(&page), "after {keys:?}");
+        }
+        assert!(
+            shortcuts::DialogKeys::Palette
+                .hints()
+                .contains(shortcuts::ENTER)
+        );
     }
 }

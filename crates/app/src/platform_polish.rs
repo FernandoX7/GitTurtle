@@ -391,8 +391,8 @@ impl GitTurtle {
         })
         .detach();
     }
-    pub(super) fn shortcut_help(&self, window: &mut Window, cx: &mut Context<Self>) {
-        shortcuts::open_help(window, cx);
+    pub(super) fn shortcut_help(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        shortcuts::open_help(&mut self.dialog_hints, window, cx);
     }
     pub(super) fn about(&self, window: &mut Window, cx: &mut Context<Self>) {
         // Diagnostics report fixed keys only: a custom theme reports its base,
