@@ -312,6 +312,16 @@ cover current upstream x86-64 Omarchy.
           wider than computed); the list's ring has no right side at 461 and 640 px; HEAD reads
           "main +3" while wide badges put "+N" outside the chip (one treatment); still owed: the
           tooltip frame and the release History scroll measurement.
+        - Menus after `16220ee`…`3e297d6` (`mc-f5e70d3` → `mc-3e297d6`; headings, profile rows,
+          the keyboard cursor bar, the selected chip edge and the Escape verbs verified in Midnight,
+          Braden, One Dark, Solarized Dark and Kanagawa): in One Dark and Solarized Dark the 12 px
+          Medium headings outweigh the commands, and DESIGN.md gives section labels 11 px in one
+          place and menu headings 12 px in another (use one size); the Options caption "Original
+          Git diff", now a heading under a separator, reads as the title of an empty group (say
+          "Showing the original Git diff"); Quick Open says "1 matches"; not captured: pointer hover
+          without the bar, a submenu, "Saved Git profiles" with saved profiles, the profile menu in
+          a 461 px window or with a long identity (its width caps at 500 px), a light palette whose
+          menu equals its canvas, label and separator roles on the bus.
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
