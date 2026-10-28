@@ -269,6 +269,36 @@ cover current upstream x86-64 Omarchy.
         the whole row (the pill alone would interrupt less), wide rows' accessible names omit
         their references, the selected lane is not scrolled into view after the window
         narrows, and History's rows draw 1 px right of its header; History shows no tags.
+        Found by the native reviews of 2026-10-27 night (frames `.local/item8-2026-10-27/tools/qa/`):
+        - Compact chrome follow-ups (`cf-3f23c62` → `cf-61653f0`; toggles held in place, the count
+          badge, the Diff mode menu, Blame as an icon, whole paths and the unfilled profile icon
+          verified): the short Working inspector shows only the "Staged 2" header, no file row (13
+          and 18 pt); at 18 pt "Unstage all" runs past the window, "0/72 suggested", the summary
+          placeholder and "Write a…" are cut, and the scrolled controls cut the filter's bottom
+          border; the Working list's ring has no left side (all sizes); AT-SPI reports Directories,
+          Stage, Unstage and the description outside what is drawn; the full chrome's History toggle
+          moves 116 px between History and the other pages; Blame and the profile share one person
+          glyph; taste: the 18 pt header's lone "3" chip, the badge without a cut-out, "Diff" text
+          28 px right of the path; still unexercised: the breakpoint at large code sizes and the
+          footer's truncation step.
+        - Kit menus (`km-61653f0` → `km-47f9b06`, all six claims verified natively): a menu heading
+          and an item differ only by colour (1.86:1 Midnight, 1.93:1 Braden; One Dark's and
+          Solarized Dark's secondary text nearly equals their text), so draw headings in the
+          section-label style and say so in DESIGN.md; the profile menu's "Apply a saved Git
+          profile…" heading reads as a command (say "Saved Git profiles", "Current: …"); the
+          Options caption beside a disabled Reset review reads as an option; the keyboard
+          highlight in menus is 1.19:1 (Midnight) and 1.23:1 (Braden) against the surface;
+          DESIGN.md's "current place checked" can add "and unavailable"; still owed: an AT-SPI dump
+          with label and separator roles, focus after the first Down, a frame at `c831033`'s
+          boundary width, Orca speech.
+        - Polish (`pl-47f9b06` → `pl-a762727`, verified natively except the two noted): the
+          selected Keyboard Shortcuts row's key chip edge falls to 1.01:1 (Midnight) and 1.24:1
+          (Braden) on the selected fill; the palette's status bar says "Esc Close" beside a
+          Cancel button while Quick Open says "Esc Cancel"; the Reflog and the rebase entry form
+          open with no visible focus; the GitHub panel uses four left insets; at 640 × 680 the
+          Changes list cuts the "Unstaged 1 / Stage all" header through its glyphs; AT-SPI reports
+          Reflog entries below the dialog; still owed: the rebase status bar with its commit list
+          loaded, and Reflog hovers over a cut and a whole entry.
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
