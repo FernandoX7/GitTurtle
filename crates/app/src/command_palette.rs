@@ -588,9 +588,16 @@ impl GitTurtle {
             let cancel_action = form.clone();
             let activate = form.clone();
             let submit = form.clone();
+            // The palette is a menu of commands, so it floats as the menus
+            // do: on the raised surface with their fitted edge rather than
+            // on the page's own background. Read on every frame, so a theme
+            // switch while it is open retints it with the menus.
+            let surface = palette(cx);
             dialog
                 .title("Command palette")
                 .width(px(660.))
+                .bg(rgb(surface.raised()))
+                .border_color(rgb(surface.raised_edge()))
                 .child(form.clone())
                 .footer(
                     DialogFooter::new()
@@ -874,11 +881,9 @@ impl Render for Palette {
                             .flex_col()
                             .justify_center()
                             .gap_1()
-                            .bg(rgb(if selected {
-                                palette(cx).selected
-                            } else {
-                                palette(cx).panel
-                            }))
+                            // A resting row shows the raised surface beneath
+                            // it, as a menu's rows do.
+                            .when(selected, |row| row.bg(rgb(colors.selected)))
                             .text_color(if disabled.is_some() {
                                 Theme::global(cx).disabled_foreground()
                             } else {
@@ -944,6 +949,7 @@ impl Render for Palette {
             .and_then(|index| COMMANDS[*index].id.reason(&context));
         div()
             .id("command-palette-form")
+            .debug_selector(|| "command-palette-form".into())
             .key_context("GitTurtlePalette")
             .flex()
             .flex_col()
@@ -1042,12 +1048,15 @@ impl Render for Palette {
             .child(
                 div()
                     .id("command-palette-results")
+                    .debug_selector(|| "command-palette-results".into())
                     .role(Role::ListBox)
                     .aria_label("Matching commands")
                     .h(desired_height.min(available_height))
                     .overflow_hidden()
                     .border_1()
-                    .border_color(rgb(p.border))
+                    // Edged as a menu's separators are, against the raised
+                    // surface it lies on.
+                    .border_color(rgb(p.raised_edge()))
                     .rounded(px(6.))
                     .when(count > 0, |element| element.child(list))
                     .when(count == 0, |element| {
@@ -1156,5 +1165,186 @@ mod tests {
         snapshot.availability.busy = true;
         assert!(!snapshot.allows(&original, CommandId::QuickOpen));
         assert!(snapshot.allows(&original, CommandId::Activity));
+    }
+}
+
+/// The palette as a window draws it.
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+    use crate::{activity, image_lifetime, recovery_drafts, repository_tabs};
+    use core::prelude::v1::test;
+    use gpui_kit::{Background, Bounds, ScaledPixels, component::Root, point};
+    use std::{cell::RefCell, rc::Rc};
+
+    /// The application on its Projects hub, with no repository open, so the
+    /// repository's commands are unavailable, and dialogs opening at rest.
+    fn hub(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+            // A dialog otherwise fades in on a wall-clock animation.
+            cx.set_reduce_motion(true);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                GitTurtle::new(
+                    None,
+                    Preferences::default(),
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                )
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.apply_appearance(window, cx);
+                app.open_command_palette(window, cx)
+            })
+        });
+        crate::tags::tests::draw(cx);
+        (app, cx)
+    }
+
+    fn logical(bounds: Bounds<ScaledPixels>, scale: f32) -> Bounds<Pixels> {
+        let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+        Bounds::from_corners(
+            point(logical(bounds.left()), logical(bounds.top())),
+            point(logical(bounds.right()), logical(bounds.bottom())),
+        )
+    }
+
+    /// What the last frame painted for the palette: the dialog panel around
+    /// it (the smallest quad with a 1 px border on every side that holds the
+    /// palette's form) and the result list, each as the fills and the 1 px
+    /// edge colors painted at its bounds, and every fill painted inside the
+    /// list, the rows'.
+    struct Painted {
+        panel_fills: Vec<Background>,
+        panel_edges: Vec<Hsla>,
+        list_edges: Vec<Hsla>,
+        row_fills: Vec<Background>,
+    }
+
+    fn painted(cx: &mut VisualTestContext) -> Painted {
+        let form = crate::tags::tests::rendered(cx, "command-palette-form");
+        let list = crate::tags::tests::rendered(cx, "command-palette-results");
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let quads = window.painted_quads();
+            let bordered = |quad: &gpui_kit::Quad| {
+                let widths = quad.border_widths;
+                [widths.top, widths.right, widths.bottom, widths.left]
+                    .iter()
+                    .all(|width| px(width.as_f32() / scale) == px(1.))
+            };
+            let panel = quads
+                .iter()
+                .filter(|quad| bordered(quad))
+                .map(|quad| logical(quad.bounds, scale))
+                .filter(|panel| {
+                    panel.left() < form.left()
+                        && panel.top() < form.top()
+                        && panel.right() > form.right()
+                        && panel.bottom() > form.bottom()
+                })
+                .min_by(|a, b| {
+                    f32::from(a.size.width * f32::from(a.size.height))
+                        .total_cmp(&f32::from(b.size.width * f32::from(b.size.height)))
+                })
+                .expect("the dialog paints a bordered panel around the palette");
+            let at = |bounds: Bounds<Pixels>| {
+                quads
+                    .iter()
+                    .filter(move |quad| logical(quad.bounds, scale) == bounds)
+            };
+            // GPUI paints a border once per side; each color counts once.
+            let edges = |bounds| {
+                let mut edges = Vec::new();
+                for quad in at(bounds).filter(|quad| bordered(quad)) {
+                    if !edges.contains(&quad.border_color) {
+                        edges.push(quad.border_color);
+                    }
+                }
+                edges
+            };
+            let inside = |drawn: Bounds<Pixels>| {
+                drawn != list
+                    && drawn.left() >= list.left()
+                    && drawn.top() >= list.top()
+                    && drawn.right() <= list.right()
+                    && drawn.bottom() <= list.bottom()
+            };
+            // Quads are listed in paint order; the page beneath the dialog
+            // comes before the panel.
+            let above = quads
+                .iter()
+                .position(|quad| logical(quad.bounds, scale) == panel)
+                .expect("the panel was painted");
+            Painted {
+                panel_fills: at(panel)
+                    .filter(|quad| !quad.background.is_transparent())
+                    .map(|quad| quad.background)
+                    .collect(),
+                panel_edges: edges(panel),
+                list_edges: edges(list),
+                row_fills: quads[above..]
+                    .iter()
+                    .filter(|quad| {
+                        inside(logical(quad.bounds, scale)) && !quad.background.is_transparent()
+                    })
+                    .map(|quad| quad.background)
+                    .collect(),
+            }
+        })
+    }
+
+    /// The palette is a menu of commands, so in every palette it floats on
+    /// the surface the menus do, `Palette::raised`, with their fitted edge,
+    /// `Palette::raised_edge`, rather than on the page background (the
+    /// canvas) it was drawn on. Its result list takes that edge too, as a
+    /// menu's separators do, and a resting row shows the raised surface, so
+    /// only the highlighted row paints a fill of its own: rows on the panel
+    /// color drew a darker box inside the palette in every Omarchy palette
+    /// and in Solarized Light, whose panel is darker than their raised surface.
+    #[gpui::test]
+    fn the_palette_floats_on_the_menus_raised_surface_and_edge(cx: &mut TestAppContext) {
+        let (_, cx) = hub(cx);
+        for (name, palette) in appearance::test_palettes() {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            crate::tags::tests::draw(cx);
+            // What a popup menu paints: its surface and its edge.
+            let (surface, edge) = cx.update(|_, cx| {
+                (
+                    Theme::global(cx).popover,
+                    gpui_kit::component::popover_ring(cx),
+                )
+            });
+            assert_eq!(surface, Hsla::from(rgb(palette.raised())), "{name} menus");
+            assert_eq!(edge, Hsla::from(rgb(palette.raised_edge())), "{name} menus");
+            let painted = painted(cx);
+            assert_eq!(
+                painted.panel_fills,
+                vec![Background::from(surface)],
+                "{name} surface"
+            );
+            assert_eq!(painted.panel_edges, vec![edge], "{name} edge");
+            assert_eq!(painted.list_edges, vec![edge], "{name} list edge");
+            assert_eq!(
+                painted.row_fills,
+                vec![Background::from(Hsla::from(rgb(palette.selected)))],
+                "{name} rows"
+            );
+        }
     }
 }
