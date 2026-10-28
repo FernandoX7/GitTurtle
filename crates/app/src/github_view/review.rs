@@ -81,6 +81,9 @@ pub(super) struct ReviewState {
     /// columns, change tints and no editor folds, from the same presentation. `None` while the
     /// file prepares and above Compare's bounds, where Source keeps the editor's own numbers.
     source_view: Option<Entity<crate::diff_view::DiffView>>,
+    /// The Source box's height inside its border in the last layout, which its fill to the
+    /// file list's bottom sets and its whole-line inset leaves alone.
+    source_height: std::rc::Rc<std::cell::Cell<Pixels>>,
     /// The selected file's patch presentation, prepared with its rows on the read worker
     /// within Compare's text bounds; `None` while preparing and above them.
     presentation: Option<text::PatchPresentation>,
@@ -125,6 +128,7 @@ impl ReviewState {
             source: None,
             source_decorations: None,
             source_view: None,
+            source_height: Default::default(),
             presentation: None,
             // Compare's patch is redecorated where the app applies a palette; this panel
             // follows the applied palette itself.
@@ -916,6 +920,7 @@ impl Panel {
             .child(
                 div()
                     .id("github-file-focus")
+                    .debug_selector(|| "github-file-focus".into())
                     .key_context("GitTurtleGithubFiles")
                     .on_action(cx.listener(|this, _: &ReviewUp, window, cx| {
                         this.review_key("up", false, window, cx);
@@ -953,7 +958,7 @@ impl Panel {
                         this.review_key("enter", false, window, cx);
                         cx.stop_propagation();
                     }))
-                    .h(px(324.))
+                    .h(FILE_LIST_HEIGHT)
                     .border_1()
                     .border_color(rgb(p.border))
                     .rounded(px(6.))
@@ -1077,11 +1082,12 @@ impl Panel {
                 .as_ref()
                 .map(|old| format!("{} → {}", old, file.filename))
                 .unwrap_or_else(|| file.filename.clone());
-            div().flex_1().min_w_0().flex().flex_col().gap_2()
-                .child(label("github-file-title",title).font_weight(FontWeight::SEMIBOLD))
-                .child(div().flex().flex_wrap().items_center().gap_1().children(["Changes","Source","Threads"].into_iter().enumerate().map(|(mode,name)|button(("github-file-mode",mode),name,"",self.review.mode==mode).toggled(self.review.mode==mode).on_click(cx.listener(move|this,_,window,cx|this.review_source(mode,window,cx)))))
+            // Source ends where the file list beside it ends.
+            div().flex_1().min_w_0().flex().flex_col().gap_2().when(self.review.mode==1,|content|content.h(FILE_LIST_HEIGHT))
+                .child(label("github-file-title",title).flex_shrink_0().font_weight(FontWeight::SEMIBOLD))
+                .child(div().flex_shrink_0().flex().flex_wrap().items_center().gap_1().children(["Changes","Source","Threads"].into_iter().enumerate().map(|(mode,name)|button(("github-file-mode",mode),name,"",self.review.mode==mode).toggled(self.review.mode==mode).on_click(cx.listener(move|this,_,window,cx|this.review_source(mode,window,cx)))))
                     .child(div().flex_1()).child(button("github-inline-start",if self.review.composing.is_some(){"Continue comment"}else{"Comment on selection"},"plus",false).disabled(self.pending||self.review.preparing||file.unavailable.is_some()).on_click(cx.listener(|this,_,window,cx|this.begin_comment(window,cx)))))
-                .child(match self.review.mode {1=>self.review.source_view.as_ref().map(|view|div().debug_selector(||"github-source-patch".into()).h(px(246.)).flex_shrink_0().min_w_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden().child(view.clone()).into_any_element()).or_else(||self.review.source.as_ref().map(|source|div().debug_selector(||"github-source-patch".into()).h(px(246.)).flex_shrink_0().child(crate::editor_find::Editor::new(source).readonly(true).h_full().aria_label("Exact GitHub supplied patch source")).into_any_element())).unwrap_or_else(||label("github-no-source","No text patch was supplied. Open the captured local comparison to inspect available source or binary content.").into_any_element()),2=>self.render_threads(Some(&file.filename),cx),_=>self.render_patch(cx)})
+                .child(match self.review.mode {1=>self.render_source(cx),2=>self.render_threads(Some(&file.filename),cx),_=>self.render_patch(cx)})
                 .when(self.review.mode==0,|element|element.child(label("github-range-hint",format!("Click a changed line · {} or {} / {} selects a same-side range · {} comments",shortcuts::SHIFT_CLICK,shortcuts::key_label("shift-up"),shortcuts::key_label("shift-down"),shortcuts::ENTER)).text_color(rgb(p.muted))))
                 .into_any_element()
         } else {
@@ -1100,6 +1106,60 @@ impl Panel {
                     .child(content),
             )
             .child(self.render_comment_composer(cx))
+            .into_any_element()
+    }
+    /// The exact patch, filling its column down to the file list's bottom edge in whole lines:
+    /// what a line does not fill lies below the text, in the editor's own background.
+    fn render_source(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(source) = &self.review.source else {
+            return label("github-no-source","No text patch was supplied. Open the captured local comparison to inspect available source or binary content.").into_any_element();
+        };
+        let p = palette(cx);
+        let laid_out = self.review.source_height.clone();
+        let line = source
+            .read(cx)
+            .line_height()
+            .unwrap_or(appearance::code_text() * EDITOR_LINE_HEIGHT);
+        let text =
+            (laid_out.get() - SOURCE_CHROME - editor_find::panel_height(source, cx)).max(px(0.));
+        let slack = text - line * (text / line).floor();
+        let content = match &self.review.source_view {
+            Some(view) => view.clone().into_any_element(),
+            None => editor_find::Editor::new(source)
+                .readonly(true)
+                .bordered(false)
+                .h_full()
+                .aria_label("Exact GitHub supplied patch source")
+                .into_any_element(),
+        };
+        div()
+            .debug_selector(|| "github-source-patch".into())
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .border_1()
+            .border_color(rgb(p.border))
+            .rounded(px(6.))
+            .overflow_hidden()
+            .bg(gpui_kit::component::Theme::global(cx).input_background())
+            .on_children_prepainted(move |children, window, cx| {
+                // The inset follows the height inside the border, never the other way round,
+                // so this settles in the next frame.
+                if let Some(inner) = children.first()
+                    && laid_out.get() != inner.size.height
+                {
+                    laid_out.set(inner.size.height);
+                    window.defer(cx, |window, _| window.refresh());
+                }
+            })
+            .child(
+                div().size_full().pb(slack).child(
+                    div()
+                        .debug_selector(|| "github-source-text".into())
+                        .size_full()
+                        .child(content),
+                ),
+            )
             .into_any_element()
     }
     fn render_patch(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1163,6 +1223,13 @@ fn patch_line(index: usize, cx: &App) -> Stateful<Div> {
 /// The line-number column width before the code size followed the code font;
 /// the default code size keeps at least this width.
 const MIN_LINE_NUMBER_WIDTH: f32 = 36.;
+/// The changed-file list's height; Source fills its column down to the same edge.
+const FILE_LIST_HEIGHT: Pixels = px(324.);
+/// The kit editor's line height, a multiple of its text size.
+const EDITOR_LINE_HEIGHT: f32 = 1.5;
+/// What lies between the inside of the Source box's border and its text: the kit editor's
+/// 8 px padding above and below.
+const SOURCE_CHROME: Pixels = px(16.);
 
 /// The width of a line-number column that fits `widest` in code digits `digit` wide.
 fn line_number_width(widest: u32, digit: Pixels) -> Pixels {
@@ -1857,15 +1924,12 @@ mod tests {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.run_until_parked();
         }
-        let frame = cx
-            .debug_bounds("github-source-patch")
-            .expect("rendered Source patch");
-        // Compare's unified patch for the same text, built as Compare builds it, drawn in the
-        // Source frame's place inside its one-pixel border.
-        let inner = Bounds::new(
-            frame.origin + point(px(1.), px(1.)),
-            frame.size - size(px(2.), px(2.)),
-        );
+        // Compare's unified patch for the same text, built as Compare builds it, drawn where
+        // Source draws its text: inside the frame's one-pixel border, above the inset that
+        // keeps its lines whole.
+        let inner = cx
+            .debug_bounds("github-source-text")
+            .expect("rendered Source text");
         let presentation = text::PatchPresentation::prepare(&patch);
         let (compare, compare_decorations, compare_view) = cx.update(|window, cx| {
             let (editor, decorations) =
@@ -2150,6 +2214,94 @@ mod tests {
             .unwrap()
             .unwrap();
         cx.executor().run_until_parked();
+    }
+    /// In a 1480 × 980 window at 13 and 18 pt, Source fills its column down to the changed-file
+    /// list's bottom edge, as plain text while its file prepares and decorated once it has, and
+    /// shows whole lines: its text is a whole number of lines tall, and what a line does not
+    /// fill, less than a line, lies below the text inside the box.
+    #[gpui::test]
+    async fn source_reaches_the_file_lists_bottom_in_whole_lines(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, cx) = review_panel(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.apply_appearance(window, cx)));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let pull = model::fixture_pull(false);
+        let captured_pull =
+            pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured_pull, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull);
+                panel.review.files = files;
+                panel.review.section = Section::Files;
+                panel.review.show_list = false;
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        cx.run_until_parked();
+        // Frames without running the file's preparation.
+        let frames = |cx: &mut gpui_kit::VisualTestContext| {
+            for _ in 0..3 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+            }
+        };
+        for (interface, code) in [(13, 12), (18, 15)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, code, window, cx));
+            for file in [0, 1] {
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.select_review_file(file, window, cx);
+                        panel.review_source(1, window, cx);
+                    })
+                });
+                for decorated in [false, true] {
+                    if decorated {
+                        cx.run_until_parked();
+                    }
+                    frames(cx);
+                    let at = format!("{interface} pt, file {file}, decorated {decorated}");
+                    assert_eq!(
+                        cx.read(|cx| panel.read(cx).review.source_view.is_some()),
+                        decorated,
+                        "{at}"
+                    );
+                    let source = cx.debug_bounds("github-source-patch").expect("Source");
+                    let list = cx.debug_bounds("github-file-focus").expect("file list");
+                    assert!(
+                        (source.bottom() - list.bottom()).abs() < px(0.01),
+                        "{at}: Source {source:?} ends with the file list {list:?}"
+                    );
+                    let editor = cx.read(|cx| panel.read(cx).review.source.clone().unwrap());
+                    let (text, line) = cx.read(|cx| {
+                        let editor = editor.read(cx);
+                        (
+                            editor.input_bounds(),
+                            editor.line_height().expect("laid out"),
+                        )
+                    });
+                    let lines = text.size.height / line;
+                    assert!(
+                        lines >= 5. && (lines - lines.round()).abs() < 0.01,
+                        "{at}: {text:?} is {lines} lines of {line:?}"
+                    );
+                    // Inside the 1 px border and the editor's 8 px padding.
+                    let below = source.bottom() - px(9.) - text.bottom();
+                    assert!(
+                        below > px(-0.01) && below < line,
+                        "{at}: {below:?} below the text {text:?} in {source:?}"
+                    );
+                }
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.run_until_parked();
     }
     /// A repository page and a review panel for it, built as the views above build them, with
     /// the panel's local read settled.
