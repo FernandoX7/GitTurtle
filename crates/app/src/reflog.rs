@@ -39,6 +39,11 @@ fn file_rows_shown() -> usize {
 /// One Reflog entry. A selected entry shows its selection through the
 /// selected surface as well as its selected and toggled state, as the
 /// managed worktree rows do.
+///
+/// Its text starts at the entry's inset and ends in an ellipsis where the
+/// entry is too narrow, rather than centred as a kit label is: a centred
+/// line wider than its entry would start left of it. The tooltip and the
+/// accessible name keep the whole text.
 fn entry_button(index: usize, text: String, selected: bool, p: appearance::Palette) -> Button {
     Button::new(("reflog-entry", index))
         .debug_selector(move || format!("reflog-entry-{index}"))
@@ -46,7 +51,17 @@ fn entry_button(index: usize, text: String, selected: bool, p: appearance::Palet
         .w_full()
         .h_auto()
         .min_h(crate::appearance::ui_size(36.))
-        .label(text.clone())
+        .child(
+            div()
+                .debug_selector(move || format!("reflog-entry-text-{index}"))
+                .flex_1()
+                .min_w_0()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .line_height(relative(1.))
+                .child(text.clone()),
+        )
+        .tooltip(text.clone())
         .accessibility_label(text)
         .selected(selected)
         .toggled(selected)
@@ -84,7 +99,7 @@ impl GitTurtle {
 impl ReflogBrowser {
     /// Opens `browser` in its dialog.
     fn show(browser: Entity<Self>, window: &mut Window, cx: &mut App) {
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let done = browser.clone();
             let cancel = browser.clone();
             let closing = browser.downgrade();
@@ -92,9 +107,13 @@ impl ReflogBrowser {
             // The dialog clips its body to the body's bounds, and the browser
             // keeps the focus ring's room inside them below its last control.
             // The footer's gap gives the room back, so the footer stays put.
+            //
+            // The kit centres a dialog at its width whatever the window's,
+            // so in a narrower window it would start left of the window;
+            // it keeps 24 px from either side instead.
             dialog
                 .title(label("reflog-title", "Local reflog and recovery"))
-                .width(px(740.))
+                .width(px(740.).min(window.viewport_size().width - px(48.)))
                 .gap(DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                 .child(browser.clone())
                 .button_props(DialogButtonProps::default().ok_text("Done"))
@@ -805,6 +824,45 @@ mod tests {
         assert_eq!(selected.label(), Some("selected entry"));
         assert_eq!(selected.toggled(), Some(gpui::accesskit::Toggled::True));
         assert_eq!(other.toggled(), Some(gpui::accesskit::Toggled::False));
+    }
+
+    /// In a 461 px tile the dialog keeps inside the window, and at every
+    /// width each entry's text starts at the same inset inside the list,
+    /// whatever its length: never centred in its entry, and so never left
+    /// of the entry, the list or the window.
+    #[gpui::test]
+    async fn entry_text_starts_inside_the_list_at_every_width(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 3);
+        let (_app, browser, cx) = opened_browser(cx, &repo).await;
+        let entries = browser.read_with(cx, |this, _| {
+            this.page.as_ref().expect("the log loaded").entries.len()
+        });
+        assert_eq!(entries, 12);
+        let mut inset = None;
+        for width in [461., 1000.] {
+            cx.simulate_resize(size(px(width), px(680.)));
+            draw(cx);
+            let list = rendered(cx, "reflog-list");
+            assert!(
+                list.left() >= px(0.) && list.right() <= px(width),
+                "the list {list:?} in a {width} px window"
+            );
+            for index in 0..entries {
+                let entry = rendered(cx, format!("reflog-entry-{index}").leak());
+                let text = rendered(cx, format!("reflog-entry-text-{index}").leak());
+                assert!(
+                    text.left() >= list.left() && text.right() <= entry.right(),
+                    "entry {index} at {width}: text {text:?} in {entry:?}, list {list:?}"
+                );
+                let offset = text.left() - entry.left();
+                assert_eq!(
+                    offset,
+                    *inset.get_or_insert(offset),
+                    "entry {index}'s text inset at {width}"
+                );
+            }
+        }
     }
 
     /// At 1000x680 the content's scrollbar paints beside it, in the dialog's
