@@ -128,17 +128,45 @@ fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
 }
 
 impl GitTurtle {
-    pub(super) fn open_reflog_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens the browser in its dialog and starts reading HEAD's log on the
+    /// browser's own thread. Returns the browser, unless an operation is
+    /// running or no repository is open.
+    pub(super) fn open_reflog_browser(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<ReflogBrowser>> {
         if self.operation_busy.is_some() {
-            return;
+            return None;
         }
-        let Some(repo) = self.repository.clone() else {
-            return;
-        };
+        let repo = self.repository.clone()?;
         let owner = cx.entity().downgrade();
         let browser = cx.new(|cx| ReflogBrowser::new(owner, repo, window, cx));
         browser.update(cx, |this, cx| this.refresh(window, cx));
-        ReflogBrowser::show(browser, window, cx);
+        ReflogBrowser::show(browser.clone(), window, cx);
+        Some(browser)
+    }
+}
+
+/// The focus sweep (`focus_ring::sweep`) walks the Reflog, and the layout
+/// grid measures it, once its log has landed. The read runs on the browser's
+/// own thread, which `run_until_parked` cannot wait for: a walk that started
+/// while it ran found the loading row's Cancel focused, and the reply then
+/// took that row away, leaving focus on a control no frame drew.
+#[cfg(test)]
+impl crate::focus_ring::sweep::Opened for Option<Entity<ReflogBrowser>> {
+    fn finish(self, cx: &mut VisualTestContext) {
+        let Some(browser) = self else {
+            return;
+        };
+        // Every read the browser submitted has answered once its thread
+        // drains, and the replies land on this thread when it next runs.
+        browser.read_with(cx, |browser, _| browser.reader.drain());
+        cx.executor().run_until_parked();
+        assert!(
+            browser.read_with(cx, |browser, _| !browser.pending),
+            "the Reflog's read lands"
+        );
     }
 }
 impl ReflogBrowser {
@@ -189,7 +217,7 @@ impl ReflogBrowser {
     }
 }
 
-struct ReflogBrowser {
+pub(crate) struct ReflogBrowser {
     closed: Arc<std::sync::atomic::AtomicBool>,
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,

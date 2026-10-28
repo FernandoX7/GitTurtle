@@ -241,48 +241,59 @@ pub(crate) fn close_dialogs(
     draw(cx, 2);
 }
 
+/// What opening a dialog leaves running that a walk waits for: nothing, as
+/// for most dialogs, whose reads go through the app's own tasks, or the reads
+/// a dialog runs on a thread of its own, such as the Reflog's, which
+/// `run_until_parked` cannot wait for.
+pub(crate) trait Opened {
+    /// Returns once what opening the dialog started has landed.
+    fn finish(self, cx: &mut VisualTestContext);
+}
+
+impl Opened for () {
+    fn finish(self, _: &mut VisualTestContext) {}
+}
+
 /// Opens a dialog with `open`, lets its reads finish, walks it, and closes
 /// it.
-async fn walk_dialog(
+async fn walk_dialog<O: Opened>(
     app: &Entity<GitTurtle>,
     cx: &mut VisualTestContext,
     surface: &str,
     interface: u8,
     failures: &mut Vec<String>,
-    open: impl FnOnce(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+    open: impl FnOnce(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) -> O,
 ) {
     open_dialog(app, cx, surface, open).await;
     walk(app, cx, surface, interface, failures);
     close_dialogs(cx, surface, interface, failures);
 }
 
-/// Opens a dialog with `open` from History's list, lets its reads finish and
-/// waits for the control it focused to draw; the layout grid
-/// (`layout_grid`) opens its dialogs here too.
-pub(crate) async fn open_dialog(
+/// Opens a dialog with `open` from History's list and lets the reads it
+/// started land, so the dialog is walked as it stands once loaded rather
+/// than while a reply can still change it; the layout grid (`layout_grid`)
+/// opens its dialogs here too.
+pub(crate) async fn open_dialog<O: Opened>(
     app: &Entity<GitTurtle>,
     cx: &mut VisualTestContext,
     surface: &str,
-    open: impl FnOnce(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+    open: impl FnOnce(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) -> O,
 ) {
     // Each dialog opens from History's list, as from the page a person is
     // on, rather than from wherever the last dialog's close left focus.
     let list = app.read_with(cx, |app, _| app.focus.clone());
     cx.update(|window, cx| window.focus(&list, cx));
     draw(cx, 2);
-    cx.update(|window, cx| app.update(cx, |app, cx| open(app, window, cx)));
+    let opened = cx.update(|window, cx| app.update(cx, |app, cx| open(app, window, cx)));
+    opened.finish(cx);
     views::tests::settle(app, cx).await;
-    // A dialog whose read finishes late draws the control it focused a frame
-    // or more after opening; a walk that never finds focus drawn still fails.
-    for _ in 0..10 {
-        if !cx.update(|window, _| window.context_stack().is_empty()) {
-            break;
-        }
-        draw(cx, 1);
-    }
     assert!(
         cx.update(|window, cx| window.has_active_dialog(cx)),
         "{surface} opens"
+    );
+    assert!(
+        !cx.update(|window, _| window.context_stack().is_empty()),
+        "{surface} draws the control it focused"
     );
 }
 

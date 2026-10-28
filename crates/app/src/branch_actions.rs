@@ -350,7 +350,9 @@ impl GitTurtle {
             MenuAction::CompareRevisions => self.open_revision_comparison(window, cx),
             MenuAction::QuickFile => self.open_quick_file(window, cx),
             MenuAction::Worktrees => self.open_worktree_manager(window, cx),
-            MenuAction::Reflog => self.open_reflog_browser(window, cx),
+            MenuAction::Reflog => {
+                self.open_reflog_browser(window, cx);
+            }
         }
     }
 

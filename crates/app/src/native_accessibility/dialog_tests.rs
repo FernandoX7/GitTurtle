@@ -366,7 +366,7 @@ async fn every_repository_dialog_is_named_by_its_title(cx: &mut TestAppContext) 
     crate::focus_ring::sweep::prepare(&app, cx);
     let dialogs: [(&str, Open); 15] = [
         ("Local reflog and recovery", |app, window, cx| {
-            app.open_reflog_browser(window, cx)
+            app.open_reflog_browser(window, cx);
         }),
         ("Edit local commits", |app, window, cx| {
             app.open_interactive_rebase(None, window, cx)

@@ -682,7 +682,9 @@ impl GitTurtle {
             CommandId::Worktrees => self.open_worktree_manager(window, cx),
             CommandId::Tags => self.open_tags(window, cx),
             CommandId::GitHub => self.open_github(window, cx),
-            CommandId::Reflog => self.open_reflog_browser(window, cx),
+            CommandId::Reflog => {
+                self.open_reflog_browser(window, cx);
+            }
             CommandId::Rebase => self.open_interactive_rebase(None, window, cx),
             CommandId::RewriteReview => self.open_rewrite_review(window, cx),
             CommandId::FileHistory => {

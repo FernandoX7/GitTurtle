@@ -579,15 +579,33 @@ async fn grid(surface: Surface, cx: &mut TestAppContext) {
         })
     });
     views::tests::settle(&app, cx).await;
-    let dialog: Option<fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>)> = match surface {
-        Surface::Reflog => Some(|app, window, cx| app.open_reflog_browser(window, cx)),
-        Surface::Rebase => Some(|app, window, cx| app.open_interactive_rebase(None, window, cx)),
-        Surface::CommandPalette => Some(|app, window, cx| app.open_command_palette(window, cx)),
-        Surface::QuickOpen => Some(|app, window, cx| app.open_quick_file(window, cx)),
-        _ => None,
-    };
-    if let Some(open) = dialog {
-        open_dialog(&app, cx, &format!("{surface:?}"), open).await;
+    let name = format!("{surface:?}");
+    match surface {
+        Surface::Reflog => {
+            open_dialog(&app, cx, &name, |app, window, cx| {
+                app.open_reflog_browser(window, cx)
+            })
+            .await
+        }
+        Surface::Rebase => {
+            open_dialog(&app, cx, &name, |app, window, cx| {
+                app.open_interactive_rebase(None, window, cx)
+            })
+            .await
+        }
+        Surface::CommandPalette => {
+            open_dialog(&app, cx, &name, |app, window, cx| {
+                app.open_command_palette(window, cx)
+            })
+            .await
+        }
+        Surface::QuickOpen => {
+            open_dialog(&app, cx, &name, |app, window, cx| {
+                app.open_quick_file(window, cx)
+            })
+            .await
+        }
+        _ => {}
     }
     let mut findings = Vec::new();
     let mut measured = BTreeSet::new();
