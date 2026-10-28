@@ -2466,6 +2466,28 @@ impl GitTurtle {
             .map(|file| file.path().to_string_lossy().into_owned())
             .unwrap_or("File comparison".into());
         let copy_path = path.clone();
+        let history_index = self
+            .selected_file
+            .filter(|_| self.mode != WorkspaceMode::Working && !self.file_history.is_active());
+        let text = matches!(self.content.as_deref(), Some(Content::Text { .. }));
+        let blame_index = if self.mode == WorkspaceMode::Working {
+            self.working_selected.map(|(index, _)| index)
+        } else {
+            self.selected_file
+        }
+        .filter(|_| text);
+        // The path keeps its room before its actions keep theirs: Blame
+        // gives up its label, then the actions fold into one menu.
+        let actions = file.map_or(PathActions::Labelled, |file| {
+            self.path_actions(
+                &file.path().display().to_string(),
+                history_index.is_some(),
+                blame_index.is_some(),
+                text,
+                (column, column_min),
+                window,
+            )
+        });
         // The toolbar's `px_3` is 1.5 rem on both sides.
         let path_room = (column_min - appearance::ui_size(19.5)).max(px(0.));
         let mut path_controls = div()
@@ -2502,64 +2524,59 @@ impl GitTurtle {
                     }),
             )
             .child(
-                div()
-                    .id("preview-file-path")
-                    .debug_selector(|| "preview-file-path".into())
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(crate::appearance::ui_text(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
-                    .child(
-                        file.map(|file| file.path().display().to_string())
-                            .unwrap_or("File comparison".into()),
-                    ),
-            )
-            .children(file.map(|file| {
-                let mark = copy_feedback::Mark::new("copy-path", file.path());
-                let copy_mark = mark.clone();
-                copy_feedback::copy_button(mark, "", "Copy file path", cx)
-                    .accessibility_label("Copy file path")
-                    .on_click(move |_, window, cx| {
-                        let path = copy_path.clone();
-                        copy_feedback::copy(window, cx, Some(copy_mark.clone()), "file path", path)
-                    })
-            }))
-            .children(
-                self.selected_file
-                    .filter(|_| {
-                        self.mode != WorkspaceMode::Working && !self.file_history.is_active()
-                    })
-                    .map(|index| {
-                        button("file-history", "", "clock", false)
-                            .accessibility_label("File history")
-                            .tooltip("File history · follow renames along the first parent")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_file_history(index, window, cx)
-                            }))
-                    }),
+                // Where not even the actions' menu leaves it room, the file
+                // name stays whole and the directory elides first.
+                ellipsis_start(
+                    div()
+                        .id("preview-file-path")
+                        .debug_selector(|| "preview-file-path".into())
+                        .flex_1()
+                        .min_w_0(),
+                )
+                .text_size(crate::appearance::ui_text(12.))
+                .font_weight(FontWeight::MEDIUM)
+                .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
+                .child(
+                    file.map(|file| file.path().display().to_string())
+                        .unwrap_or("File comparison".into()),
+                ),
             );
-        let blame_index = if self.mode == WorkspaceMode::Working {
-            self.working_selected.map(|(index, _)| index)
+        if let Some(file) = file.filter(|_| actions == PathActions::Menu) {
+            path_controls =
+                path_controls.child(self.file_actions_menu(file, history_index, blame_index, cx));
         } else {
-            self.selected_file
-        };
-        if let Some(index) =
-            blame_index.filter(|_| matches!(self.content.as_deref(), Some(Content::Text { .. })))
-        {
+            path_controls = path_controls
+                .children(file.map(|file| {
+                    let mark = copy_feedback::Mark::new("copy-path", file.path());
+                    let copy_mark = mark.clone();
+                    copy_feedback::copy_button(mark, "", "Copy file path", cx)
+                        .accessibility_label("Copy file path")
+                        .on_click(move |_, window, cx| {
+                            let path = copy_path.clone();
+                            copy_feedback::copy(
+                                window,
+                                cx,
+                                Some(copy_mark.clone()),
+                                "file path",
+                                path,
+                            )
+                        })
+                }))
+                .children(history_index.map(|index| {
+                    button("file-history", "", "clock", false)
+                        .accessibility_label("File history")
+                        .tooltip("File history · follow renames along the first parent")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_file_history(index, window, cx)
+                        }))
+                }));
+        }
+        if let Some(index) = blame_index.filter(|_| actions != PathActions::Menu) {
             const DETAIL: &str =
                 "Line attribution and history; working files include uncommitted lines";
             // Blame keeps its label where the whole path fits beside it;
             // otherwise its icon, so the path is not cut for a label.
-            let labelled = file.is_none_or(|file| {
-                self.path_fits_beside_labelled_blame(
-                    &file.path().display().to_string(),
-                    column,
-                    column_min,
-                    window,
-                )
-            });
+            let labelled = actions == PathActions::Labelled;
             let blame = if labelled {
                 button("open-blame", "Blame", "", false).tooltip(DETAIL)
             } else {
@@ -3465,26 +3482,37 @@ impl GitTurtle {
             + window.pixel_snap(px(self.settings.density.history_row_height())) * 3.
     }
 
-    /// Whether the comparison path, `path`, fits whole on its row beside its
-    /// actions with Blame labelled, in a preview `column` wide whose
-    /// narrowest is `column_min`: the row the toolbar gives the path (all of
-    /// it where the modes wrap below), less a Working file's area badge, Copy
-    /// path, File history and the labelled Blame, `gap_1` apart.
-    fn path_fits_beside_labelled_blame(
+    /// How the comparison path's row lays out its actions in a preview
+    /// `column` wide whose narrowest is `column_min`, so the whole path,
+    /// `path`, keeps its room before they keep theirs (DESIGN.md, "One
+    /// responsive order"). The row is what the toolbar gives the path: all of
+    /// it where the text modes (`modes`) wrap below it or there are none, less
+    /// a Working file's area badge, then Copy path, File history (`history`)
+    /// and Blame (`blame`), `gap_1` apart. Blame keeps its label where the
+    /// path fits beside it, the actions keep their icons where it fits beside
+    /// those, and otherwise, where two or more would fold, they fold into one
+    /// File actions menu.
+    fn path_actions(
         &self,
         path: &str,
-        column: Pixels,
-        column_min: Pixels,
+        history: bool,
+        blame: bool,
+        modes: bool,
+        (column, column_min): (Pixels, Pixels),
         window: &Window,
-    ) -> bool {
+    ) -> PathActions {
         let rem = window.rem_size();
         let room = column - rem * 1.5;
         let control = appearance::ui_size(28.);
+        let gap = rem * 0.25;
         let allotment =
             appearance::ui_size(220.).min((column_min - appearance::ui_size(19.5)).max(px(0.)));
-        let modes = text_modes_width(&["Diff", "Split", "Before", "After"], window);
-        let row = if modes <= room && allotment + rem * 0.375 + modes <= room {
-            room - rem * 0.375 - modes
+        let labelled_modes = text_modes_width(&["Diff", "Split", "Before", "After"], window);
+        let row = if modes
+            && labelled_modes <= room
+            && allotment + rem * 0.375 + labelled_modes <= room
+        {
+            room - rem * 0.375 - labelled_modes
         } else {
             room
         };
@@ -3504,18 +3532,125 @@ impl GitTurtle {
                     })
                     + rem * 0.25
             });
-        let history = if working || self.file_history.is_active() {
-            px(0.)
-        } else {
-            control + rem * 0.25
-        };
-        let blame = cached_width(&BLAME_LABEL, &LineKey::current(window), || {
-            line_widths(&[("Blame", appearance::ui_text(12.))], window)
-        }) + appearance::ui_size(20.);
-        let needed = cached_text_width(&BLAME_PATH, path, window, || {
+        let needed = cached_text_width(&COMPARE_PATH, path, window, || {
             shaped_width(path, appearance::ui_text(12.), FontWeight::MEDIUM, window).ceil()
         });
-        row - badge - (control + rem * 0.25) - history - (blame + rem * 0.25) >= needed
+        // Copy path, then File history and Blame where the page offers them.
+        let count = 1 + usize::from(history) + usize::from(blame);
+        let icons = (control + gap) * count as f32;
+        let room = row - badge;
+        if blame {
+            let label = cached_width(&BLAME_LABEL, &LineKey::current(window), || {
+                line_widths(&[("Blame", appearance::ui_text(12.))], window)
+            }) + appearance::ui_size(20.);
+            if room - (icons - control + label) >= needed {
+                return PathActions::Labelled;
+            }
+        }
+        if room - icons >= needed || count < 2 {
+            PathActions::Icons
+        } else {
+            PathActions::Menu
+        }
+    }
+
+    /// Copy file path, File history and Blame folded into one 28 px control
+    /// showing the more-actions dots, where the whole path does not fit
+    /// beside them as icons (`path_actions`): named "File actions", its
+    /// tooltip leading with that name and listing them, its menu acting only
+    /// on the file it was built for while Compare still shows it. A copy
+    /// chosen there confirms on this control, as the branch picker confirms
+    /// a switch: the check takes the dots' place and its tooltip reads
+    /// Copied, with its name unchanged.
+    fn file_actions_menu(
+        &self,
+        file: &FileChange,
+        history: Option<usize>,
+        blame: Option<usize>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        const NAME: &str = "File actions";
+        let mark = copy_feedback::Mark::new("file-actions-menu", file.path());
+        let copied = copy_feedback::confirmed(&mark, cx);
+        let symbol = if copied { "check" } else { "more" };
+        #[cfg(test)]
+        note_control_icon(&"file-actions-menu".into(), &format!("icons/{symbol}.svg"));
+        let names = ["Copy file path"]
+            .into_iter()
+            .chain(history.map(|_| "File history"))
+            .chain(blame.map(|_| "Blame"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
+        let target = file.path().to_path_buf();
+        let text = file.path().to_string_lossy().into_owned();
+        compact_control_name(
+            button("file-actions-menu", "", "", false).child(
+                div()
+                    .debug_selector(|| "file-actions-more".into())
+                    .flex()
+                    .child(control_icon(symbol)),
+            ),
+            "file-actions-menu",
+            NAME,
+        )
+        .debug_selector(|| "file-actions-menu".into())
+        .tooltip(if copied {
+            copy_feedback::COPIED.to_owned()
+        } else {
+            format!("{NAME} · {names}")
+        })
+        .dropdown_menu(move |menu, _, _| {
+            let (mark, text) = (mark.clone(), text.clone());
+            let mut menu = menu.item(PopupMenuItem::new("Copy file path").on_click(
+                move |_, window, cx| {
+                    copy_feedback::copy(window, cx, Some(mark.clone()), "file path", text.clone())
+                },
+            ));
+            let actions: [(Option<usize>, &str, FileAction); 2] = [
+                (history, "File history…", GitTurtle::open_file_history),
+                (blame, "Blame", GitTurtle::open_blame),
+            ];
+            for (index, label, action) in actions {
+                let Some(index) = index else {
+                    continue;
+                };
+                let (owner, repository, target) =
+                    (owner.clone(), repository.clone(), target.clone());
+                menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                    let _ = owner.update(cx, |this, cx| {
+                        if this.shows_file(&repository, &target, index) {
+                            action(this, index, window, cx);
+                        }
+                    });
+                }));
+            }
+            menu
+        })
+        .into_any_element()
+    }
+
+    /// Whether Compare still shows the file at `path` in `repository`, as
+    /// `index` names it: a File actions menu built for it acts on nothing
+    /// else.
+    fn shows_file(
+        &self,
+        repository: &Option<PathBuf>,
+        path: &std::path::Path,
+        index: usize,
+    ) -> bool {
+        let shown = if self.mode == WorkspaceMode::Working {
+            self.working_selected.map(|(index, _)| index)
+        } else {
+            self.selected_file
+        };
+        self.path == *repository
+            && self.page == AppPage::Repository
+            && shown == Some(index)
+            && self
+                .selected_file
+                .and_then(|index| self.files.get(index))
+                .is_some_and(|file| file.path() == path)
     }
 
     /// What Compare needs below the chrome to show three whole diff lines of
@@ -3833,6 +3968,40 @@ impl GitTurtle {
         (rows + snap(rem * 0.25) * 2.).max(scaled(46.)) + snap(px(1.))
     }
 }
+
+/// How the comparison path's row lays out its actions (`path_actions`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PathActions {
+    /// Copy path and File history as icons, Blame labelled.
+    Labelled,
+    /// Every action as its icon.
+    Icons,
+    /// The actions folded into one File actions menu.
+    Menu,
+}
+
+/// An action File actions offers for the file at an index.
+type FileAction = fn(&mut GitTurtle, usize, &mut Window, &mut Context<GitTurtle>);
+
+/// The room GPUI's truncation needs past a line's width. It ends a line in an
+/// ellipsis only once the line's width, rounded down, exceeds the room, so a
+/// line up to a pixel wider than its box is drawn whole and cut by the box's
+/// side. A pixel of trailing padding, inside the box's clip, holds what the
+/// rounding leaves out, so the line fits its box whole or ends in an
+/// ellipsis inside it.
+const ELLIPSIS_SLACK: f32 = 1.;
+
+/// One line that fits its box whole or elides from its start inside it at a
+/// character boundary, never cut by the box's side ([`ELLIPSIS_SLACK`]), so
+/// a path keeps its file name.
+pub(crate) fn ellipsis_start<E: Styled>(element: E) -> E {
+    element
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis_start()
+        .pr(px(ELLIPSIS_SLACK))
+}
+
 /// The labelled text-mode group's width for `names`: its `p_0p5` either
 /// side, each the shared `button` helper's 10 px of padding either side of
 /// its label, `gap_0p5` apart. Laid out again only when the names, the font
@@ -4182,7 +4351,7 @@ thread_local! {
     static FILES_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static TEXT_MODES: TextWidth = const { RefCell::new(None) };
     static FOOTER_LINE: TextWidth = const { RefCell::new(None) };
-    static BLAME_PATH: TextWidth = const { RefCell::new(None) };
+    static COMPARE_PATH: TextWidth = const { RefCell::new(None) };
     static AREA_BADGE: TextWidth = const { RefCell::new(None) };
     static STATUS_WORDS: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static BLAME_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
@@ -6207,8 +6376,11 @@ pub(crate) mod tests {
                 files.right() <= px(width),
                 "Compare files clipped at {width}: {files:?}"
             );
+            // Blame, or the File actions menu that holds it where the whole
+            // path needs the room, is the row's last control.
             let blame = cx
                 .debug_bounds("open-blame")
+                .or_else(|| cx.debug_bounds("file-actions-menu"))
                 .expect("a text comparison offers Blame");
             assert!(
                 blame.right() <= files.left(),
@@ -6882,8 +7054,9 @@ pub(crate) mod tests {
                     ("previous-text-change", "Previous change"),
                     ("next-text-change", "Next change"),
                     ("text-review-menu", "Review options"),
-                    // The whole path does not fit beside a labelled Blame.
-                    ("open-blame", "Blame"),
+                    // The whole path does not fit beside the actions' icons,
+                    // so Copy path, File history and Blame fold into one.
+                    ("file-actions-menu", "File actions"),
                     ("copy-message", "Copy full commit message"),
                     ("copy-commit", "Copy full commit hash"),
                     ("commit-recovery-menu", "Selected commit actions"),
@@ -8266,6 +8439,100 @@ pub(crate) mod tests {
             "the ring's room {room:?} left of {menu:?} inside {toolbar:?}"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Compare's path keeps its room before its actions keep theirs: in the
+    /// 177 px column of a 461 × 490 window "notes.txt" does not fit beside
+    /// Copy path, File history and Blame as icons, where it read "notes.t…",
+    /// so the three fold into one 28 px File actions control showing the
+    /// more-actions dots and the path is whole. Its menu lists them; Copy
+    /// file path copies the path and confirms on that control, the check
+    /// taking the dots' place, and Blame opens the file's attribution. In a
+    /// 1,000 px window the actions stand beside the path, Blame labelled.
+    #[gpui::test]
+    async fn compare_folds_its_actions_so_the_path_stays_whole(cx: &mut TestAppContext) {
+        const COPY: &str = "menu-item: Copy file path · MenuItem";
+        const BLAME: &str = "menu-item: Blame · MenuItem";
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let icon = |selector: &str| {
+            CONTROL_ICONS.with(|icons| icons.borrow().get(selector).map(ToString::to_string))
+        };
+        cx.simulate_resize(size(px(461.), px(490.)));
+        CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
+        COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+        draw(cx);
+        let whole = cx.update(|window, _| {
+            shaped_width(
+                "notes.txt",
+                appearance::ui_text(12.),
+                FontWeight::MEDIUM,
+                window,
+            )
+        });
+        let path = cx.debug_bounds("preview-file-path").unwrap();
+        assert!(path.size.width >= whole, "path {path:?}, whole {whole:?}");
+        assert!(cx.debug_bounds("copy-path").is_none(), "Copy path folds");
+        assert!(cx.debug_bounds("open-blame").is_none(), "Blame folds");
+        assert_eq!(icon("file-history"), None, "File history folds");
+        let control = cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.)));
+        let trigger = cx.debug_bounds("file-actions-menu").expect("File actions");
+        assert_eq!(trigger.size, size(control, control), "{trigger:?}");
+        assert!(
+            trigger.left() >= path.right(),
+            "after the path: {trigger:?}"
+        );
+        assert_eq!(icon("file-actions-menu").as_deref(), Some("icons/more.svg"));
+        assert_eq!(
+            COMPACT_NAMES.with(|names| names.borrow().get("file-actions-menu").copied()),
+            Some("File actions")
+        );
+
+        // Its menu copies the path, and the control confirms it.
+        cx.simulate_click(trigger.center(), Modifiers::default());
+        cx.run_until_parked();
+        draw(cx);
+        for item in [COPY, "menu-item: File history… · MenuItem", BLAME] {
+            assert!(cx.debug_bounds(item).is_some(), "the menu offers {item}");
+        }
+        let copy = cx.debug_bounds(COPY).unwrap();
+        cx.simulate_click(copy.center(), Modifiers::default());
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(
+            cx.read(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            Some("notes.txt".to_owned())
+        );
+        assert_eq!(
+            icon("file-actions-menu").as_deref(),
+            Some("icons/check.svg"),
+            "the control confirms the copy"
+        );
+        // Blame from the menu opens the file's attribution.
+        let trigger = cx.debug_bounds("file-actions-menu").unwrap();
+        cx.simulate_click(trigger.center(), Modifiers::default());
+        cx.run_until_parked();
+        draw(cx);
+        let blame = cx.debug_bounds(BLAME).expect("Blame in the menu");
+        cx.simulate_click(blame.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            app.read_with(cx, |app, _| app.blame.is_visible()),
+            "Blame opens from File actions"
+        );
+        let closed = cx.update(|window, cx| app.update(cx, |app, cx| app.close_blame(window, cx)));
+        assert!(closed, "Blame closes");
+        settle(&app, cx).await;
+
+        // Wide enough, the actions stand beside the path, Blame labelled.
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        assert!(cx.debug_bounds("file-actions-menu").is_none(), "no menu");
+        assert!(cx.debug_bounds("copy-path").is_some());
+        let blame = cx.debug_bounds("open-blame").expect("Blame");
+        assert!(blame.size.width > control, "labelled: {blame:?}");
     }
 
     /// In the 156 px inspector and 243 px comparison column of a 461 × 490

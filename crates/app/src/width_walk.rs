@@ -128,21 +128,6 @@ struct Known {
 }
 
 const KNOWN: &[Known] = &[
-    // Compare cuts its path for its actions: "READ…" at 18 pt in 461 px.
-    Known {
-        page: Page::CompareText,
-        sizes: &[18],
-        rule: Rule::PathCut,
-        region: "preview-file-path",
-        follow_up: "Compare keeps its path whole",
-    },
-    Known {
-        page: Page::CompareImage,
-        sizes: &[13, 18],
-        rule: Rule::PathCut,
-        region: "preview-file-path",
-        follow_up: "Compare keeps its path whole",
-    },
     // At 18 pt in 461 × 980 a line of the selected commit's details runs
     // past the 156 px inspector: the parent Button, "P1 · ‹hash›", is 148 px
     // wide where the metadata has 128.5, so the date line wraps at its width.
