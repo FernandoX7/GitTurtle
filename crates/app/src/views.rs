@@ -28,6 +28,12 @@ fn reveal_resized_selection(
     }
 }
 
+/// What the preview says while no file is chosen, as in Changes before a
+/// working file is selected. Short enough for one line at the default text
+/// size in a 640 px window, where the earlier "Select a changed file in the
+/// right panel, or return to history." left "history." alone on a line.
+const CHOOSE_A_FILE: &str = "Select a changed file in the list on the right.";
+
 fn history_scroll_viewport(
     horizontal: &ScrollHandle,
     content: impl IntoElement,
@@ -2181,10 +2187,7 @@ impl GitTurtle {
                 "Add or edit files in your project, then review and stage them here.",
             )
         } else if file.is_none() {
-            empty(
-                self.loading.unwrap_or("Choose a file"),
-                "Select a changed file in the right panel, or return to history.",
-            )
+            empty(self.loading.unwrap_or("Choose a file"), CHOOSE_A_FILE)
         } else if let Some(content) = &self.content {
             match content.as_ref() {
                 Content::Text {
@@ -6280,6 +6283,84 @@ mod tests {
                 })
             })
         })
+    }
+
+    /// The lines `text` takes when the window lays it out `room` wide at
+    /// `size` in the interface font, the bundled IBM Plex Sans a Linux
+    /// session draws `.SystemUIFont` in.
+    #[cfg(target_os = "linux")]
+    fn interface_lines(text: &str, size: Pixels, room: Pixels) -> Vec<String> {
+        let system = gpui_kit::WindowTextSystem::new(crate::desktop_text::interface_text());
+        let run = gpui_kit::TextRun {
+            len: text.len(),
+            font: gpui_kit::font(".SystemUIFont"),
+            color: gpui_kit::Hsla::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shaped = system
+            .shape_text(text.to_owned().into(), size, &[run], Some(room), None)
+            .unwrap();
+        let line = &shaped[0];
+        let mut starts = vec![0];
+        starts.extend(line.wrap_boundaries().iter().map(|boundary| {
+            line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
+        }));
+        starts.push(text.len());
+        starts
+            .windows(2)
+            .map(|span| text[span[0]..span[1]].trim().to_owned())
+            .collect()
+    }
+
+    /// In Changes, before a working file is chosen, the preview's sentence
+    /// keeps to one line at the default text size in a 640 × 680 window,
+    /// where "Select a changed file in the right panel, or return to
+    /// history." left "history." alone on its second line; at every other
+    /// interface size its last line keeps at least two words. The room is
+    /// the empty state's own, measured in the window; the lines are the
+    /// bundled interface font's, laid out as the window lays them out.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_choose_a_file_sentence_keeps_its_words_together_at_640_px(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = history_window(cx).await;
+        std::fs::write(fixture.path().join("narrow/notes.txt"), "edited\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        cx.simulate_resize(size(px(640.), px(680.)));
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Working);
+            assert!(app.working_selected.is_none(), "no working file is chosen");
+        });
+        let lines_at = |cx: &mut VisualTestContext, interface: u8| {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            draw(cx);
+            let state = cx
+                .debug_bounds("empty-state")
+                .expect("the preview's empty state");
+            // The sentence lies inside the state's 1.5 rem padding and is at
+            // most 600 px wide.
+            let padding = cx.update(|window, _| window.rem_size() * 1.5);
+            let room = (state.size.width - padding * 2.).min(px(600.));
+            (
+                interface_lines(CHOOSE_A_FILE, appearance::ui_text(12.), room),
+                room,
+            )
+        };
+        let (lines, room) = lines_at(cx, 13);
+        assert_eq!(lines.len(), 1, "{lines:?} in {room:?}");
+        for interface in 11..=18 {
+            let (lines, room) = lines_at(cx, interface);
+            let last = lines.last().unwrap();
+            assert!(
+                last.split_whitespace().count() >= 2,
+                "{interface} pt: {lines:?} in {room:?}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// A list focused from the keyboard keeps its accent ring, whole on all

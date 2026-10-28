@@ -1947,6 +1947,7 @@ fn control_icon(symbol: &str) -> Icon {
 fn empty(title: &str, detail: &str) -> AnyElement {
     div()
         .id(SharedString::from(format!("empty-state:{title}")))
+        .debug_selector(|| "empty-state".into())
         .role(Role::Label)
         .aria_label(format!("{title}. {detail}"))
         .size_full()

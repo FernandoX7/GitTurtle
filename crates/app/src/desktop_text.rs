@@ -388,6 +388,17 @@ fn bundled_text() -> std::sync::Arc<gpui_kit::TextSystem> {
     std::sync::Arc::new(text)
 }
 
+/// Tests: a text system with only the bundled interface faces, which draws
+/// `.SystemUIFont` as a Linux session does, to measure interface text in.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn interface_text() -> std::sync::Arc<gpui_kit::TextSystem> {
+    let text = gpui_kit::TextSystem::new(std::sync::Arc::new(
+        gpui_wgpu::CosmicTextSystem::new_without_system_fonts("IBM Plex Sans"),
+    ));
+    text.add_fonts(borrowed(&INTERFACE_FONT_FACES)).unwrap();
+    std::sync::Arc::new(text)
+}
+
 /// Tests: lets real time and the test executor's clock pass together by one
 /// read poll, so a real child's output reaches a query timed on that clock.
 #[cfg(all(test, target_os = "linux"))]
