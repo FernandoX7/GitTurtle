@@ -6130,6 +6130,105 @@ pub(crate) mod tests {
         }
     }
 
+    /// A changed image's notes beneath it, the scale notice and the
+    /// interaction guidance, wrap to a second line where the column leaves the
+    /// image its usable minimum beneath them: at 13 pt in a 640 × 680 window
+    /// each read one line ending in an ellipsis above an image 270 px tall.
+    /// There each takes two lines, inside the column and below the image,
+    /// which keeps its scaled 96 px, and both sides' names keep their shared
+    /// top. In a 461 × 490 window, at 13 and 18 pt, and in a 640 × 490 one,
+    /// where one line each would fit but leave the image less than that, the
+    /// notes leave and the image takes the whole room beneath the captions,
+    /// the notes' words kept in its accessible description.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn image_notes_take_two_lines_where_the_image_keeps_its_room(cx: &mut TestAppContext) {
+        use crate::system_preview::tests::png;
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let notes = ["image-source-scale", "image-interaction-guidance"];
+        let slack = px(0.5);
+
+        // One line each where the whole note fits, in a full window.
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let one_line = notes.map(|note| bounds(note, cx).size.height);
+
+        cx.simulate_resize(size(px(640.), px(680.)));
+        draw(cx);
+        draw(cx);
+        let at = "13 pt in 640 × 680";
+        let column = bounds("preview-content", cx);
+        let image = bounds("image-canvas-area", cx);
+        let line = cx.update(|window, _| {
+            window
+                .text_style()
+                .line_height
+                .to_pixels(appearance::ui_text(10.).into(), window.rem_size())
+        });
+        for (note, one_line) in notes.into_iter().zip(one_line) {
+            let drawn = bounds(note, cx);
+            assert!(
+                (drawn.size.height - (one_line + line)).abs() <= slack,
+                "{at}: {note} {drawn:?} takes two lines, one line {one_line:?} and another {line:?}"
+            );
+            assert!(
+                drawn.top() >= image.bottom() - slack
+                    && drawn.bottom() <= column.bottom() + slack
+                    && drawn.left() >= column.left() - slack
+                    && drawn.right() <= column.right() + slack,
+                "{at}: {note} {drawn:?} lies below the image {image:?} inside the column {column:?}"
+            );
+        }
+        assert!(
+            image.size.height >= appearance::ui_size(96.) - slack,
+            "{at}: the image {image:?} keeps its usable minimum"
+        );
+        let names = ["image-side-name-0", "image-side-name-1"].map(|name| bounds(name, cx));
+        assert!(
+            (names[0].top() - names[1].top()).abs() <= slack,
+            "{at}: the side names share their top: {names:?}"
+        );
+
+        for (text, width) in [(13, 461.), (18, 461.), (13, 640.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(490.)));
+            draw(cx);
+            draw(cx);
+            let at = format!("{text} pt in {width} × 490");
+            for note in notes {
+                assert!(cx.debug_bounds(note).is_none(), "{at}: {note} has left");
+            }
+            let (room, image) = (
+                bounds("image-stage-room", cx),
+                bounds("image-canvas-area", cx),
+            );
+            assert!(
+                (room.size.height - image.size.height).abs() <= slack,
+                "{at}: the image {image:?} takes the room {room:?} beneath the captions"
+            );
+            let description = COMPACT_LABELS
+                .with(|labels| labels.borrow().get("image-canvas-area").cloned())
+                .unwrap_or_default();
+            assert!(
+                description.contains("100% =") && description.contains("Linked zoom and pan"),
+                "{at}: the notes' words stay in the image's description: {description:?}"
+            );
+        }
+    }
+
     /// A document's two side headers keep one height, their first line as
     /// tall as the scaled 28 px open control, so Before and After align with
     /// or without it: an added PDF's After header, which offers the control,

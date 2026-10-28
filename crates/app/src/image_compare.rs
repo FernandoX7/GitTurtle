@@ -658,23 +658,30 @@ impl GitTurtle {
                 notes[index] = target.note(cx).map(|note| note.max_h(line_cap));
             }
         }
-        // The comparison's notes take a line each where the room beneath
-        // the captions holds it after any band, and otherwise leave, their
-        // words staying in the image's accessible description, rather than
-        // reach past the column.
+        // The comparison's notes take two lines each where the room beneath
+        // the captions, after any band, keeps the image its usable minimum
+        // beneath them, one where only that does, and otherwise leave the
+        // image their room, their words staying in its accessible
+        // description: labels give way before content.
         let banded = notes.iter().any(Option::is_some);
         let note_size = crate::appearance::ui_text(10.);
+        let note_room = width - window.rem_size() * 1.5;
+        let wraps = [
+            (scale_notice.as_str(), &SCALE_LINE),
+            (guidance, &GUIDANCE_LINE),
+        ]
+        .map(|(text, cache)| one_line_width(text, cache, note_size, window) > note_room);
         let note_lines = laid_out.below.map_or(1, |below| {
             note_lines(
                 below - if banded { laid_out.band } else { px(0.) },
-                [false; 2],
-                1,
+                wraps,
+                2,
                 window
                     .text_style()
                     .line_height
                     .to_pixels(note_size.into(), window.rem_size()),
                 window.rem_size() * 0.5,
-                px(0.),
+                crate::appearance::ui_size(STAGE_MIN),
             )
         });
         let band = banded.then(|| {
@@ -1150,6 +1157,10 @@ fn mode_tooltip(mode: Mode) -> &'static str {
     }
 }
 
+/// The image's usable minimum beneath the captions, before scaling: a fitted
+/// image 64 px tall inside the 16 px margins [`layout`] keeps on each side.
+const STAGE_MIN: f32 = 96.;
+
 /// The room beneath an image comparison's captions as last laid out, which
 /// decides how much of it the line saying why a click opened nothing and the
 /// comparison's notes take. It belongs to the window's layout, so it outlives
@@ -1203,10 +1214,11 @@ fn one_line_width(
     })
 }
 
-/// A muted note of the comparison, `id`, on one line in a column `width`
-/// wide: whole where it fits, and otherwise cut with an ellipsis at a
-/// character boundary, its whole text in its tooltip as in its name. None
-/// where it takes no lines, having left the image its room.
+/// A muted note of the comparison, `id`, in a column `width` wide, on up to
+/// `lines` lines: whole where it fits them, wrapping inside its room, and
+/// otherwise ending in an ellipsis at a character boundary on its last line,
+/// its whole text in its tooltip as in its name. None where it takes no
+/// lines, having left the image its room.
 fn comparison_note(
     id: &'static str,
     text: String,
@@ -1221,7 +1233,8 @@ fn comparison_note(
     }
     let size = crate::appearance::ui_text(10.);
     let room = width - window.rem_size() * 1.5;
-    let whole = one_line_width(&text, cache, size, window) <= room;
+    let whole = one_line_width(&text, cache, size, window) <= room
+        || (lines > 1 && wrapped_lines(&text, size, room, window) <= lines);
     let tooltip = text.clone();
     Some(
         div()
@@ -1239,13 +1252,45 @@ fn comparison_note(
                     gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
                 })
             })
-            .child(div().min_w_0().truncate().child(text)),
+            .child(
+                div()
+                    .min_w_0()
+                    .map(|line| {
+                        if lines == 1 {
+                            line.truncate()
+                        } else {
+                            line.line_clamp(lines).text_ellipsis()
+                        }
+                    })
+                    .child(text),
+            ),
     )
+}
+
+/// The lines `text` wraps to at `size` in `room`, as its text element lays
+/// it out in the inherited interface font.
+fn wrapped_lines(text: &str, size: Pixels, room: Pixels, window: &Window) -> usize {
+    let style = window.text_style();
+    window
+        .text_system()
+        .shape_text(
+            text.to_owned().into(),
+            size,
+            &[style.to_run(text.len())],
+            Some(room),
+            None,
+        )
+        .map_or(usize::MAX, |lines| {
+            lines
+                .iter()
+                .map(|line| line.wrap_boundaries().len() + 1)
+                .sum()
+        })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Drag, State, layout, source_geometry};
+    use super::{Drag, State, layout, note_lines, source_geometry};
     use gpui_kit::{point, px};
     #[test]
     fn thumbnail_reduction_preserves_original_resize_and_absent_sides() {
@@ -1255,6 +1300,26 @@ mod tests {
         let absent = source_geometry([None, Some([720, 440, 720, 440])]);
         assert_eq!(absent.sizes[0], [0., 0.]);
         assert_eq!(absent.extent, [720., 440.]);
+    }
+    /// The notes take two lines where the image keeps its minimum beneath
+    /// them, one where only that does, and leave where even one would cost
+    /// it; a note that fits one line never takes two.
+    #[test]
+    fn notes_give_their_lines_to_the_image_first() {
+        let lines = |room: f32, wraps| note_lines(px(room), wraps, 2, px(14.), px(8.), px(96.));
+        // Two lines each: 2 × (28 + 8) = 72 beneath a 96 px image.
+        assert_eq!(lines(168., [true, true]), 2);
+        assert_eq!(lines(167., [true, true]), 1);
+        // One line each: 2 × (14 + 8) = 44.
+        assert_eq!(lines(140., [true, true]), 1);
+        assert_eq!(lines(139., [true, true]), 0);
+        // Only the guidance wraps: 22 + 36 = 58 for two lines.
+        assert_eq!(lines(154., [false, true]), 2);
+        assert_eq!(lines(153., [false, true]), 1);
+        assert_eq!(
+            note_lines(px(500.), [true; 2], 1, px(14.), px(8.), px(96.)),
+            1
+        );
     }
     #[test]
     fn retained_image_state_never_revives_an_active_gesture() {
