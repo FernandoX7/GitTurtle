@@ -237,7 +237,9 @@ impl EmptyState {
 
 /// An empty or edge state's action: the shared 28 px control with its icon
 /// and label, resting on `subtle` so that on an empty surface it reads as a
-/// control. Its label is its accessible name.
+/// control. Its label is its accessible name. An empty `symbol` leaves out
+/// the icon where no glyph names the action, as Name repository, which moves
+/// to a name field, would otherwise take a search's magnifier.
 pub(crate) fn action(id: &'static str, label: &'static str, symbol: &str) -> Button {
     button(id, label, symbol, false)
         .secondary()
@@ -332,7 +334,7 @@ pub(crate) const CREATE_BRANCH_HERE: EdgeAction = EdgeAction {
 pub(crate) const ADD_REMOTE: EdgeAction = EdgeAction {
     id: "edge-add-remote",
     label: "Add remote…",
-    symbol: "remote",
+    symbol: "remote-add",
 };
 
 impl RepositoryEdge {
@@ -788,11 +790,49 @@ mod tests {
             compact_edge(cx),
             (Some("glyph:remote".into()), Some("icons/branch.svg".into()))
         );
+        // Beside Fetch's cloud, Add remote… draws a glyph of its own, not a
+        // second cloud.
+        let icon = crate::views::CONTROL_ICONS
+            .with(|icons| icons.borrow().get("edge-add-remote").cloned())
+            .expect("Add remote…'s icon");
+        for cloud in ["icons/fetch.svg", "icons/remote.svg"] {
+            assert_ne!(artwork(&icon), artwork(cloud), "Add remote… draws {cloud}");
+        }
         click(cx, "edge-add-remote");
         assert!(
             cx.update(|window, cx| window.has_active_dialog(cx)),
             "Add remote… opens the remote form"
         );
+    }
+
+    /// The bytes of `path`, an app icon.
+    fn artwork(path: &str) -> Vec<u8> {
+        use gpui_kit::AssetSource as _;
+        crate::Assets
+            .load(path)
+            .unwrap()
+            .unwrap_or_else(|| panic!("{path} is an app asset"))
+            .into_owned()
+    }
+
+    /// Whether a whole accent ring, a focused control's, surrounds `control`.
+    fn ringed(cx: &mut VisualTestContext, control: Bounds<Pixels>) -> bool {
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        painted_outlines_where(cx, |color| {
+            color.a > 0.
+                && Hsla {
+                    a: accent.a,
+                    ..color
+                } == accent
+        })
+        .iter()
+        .any(|ring| {
+            ring.whole
+                && ring.bounds.contains(&control.center())
+                && ring.bounds.size.width >= control.size.width
+                && ring.bounds.size.width <= control.size.width + px(8.)
+                && ring.bounds.size.height >= control.size.height
+        })
     }
 
     /// No upstream: the bar says Push sets one, and Push is there to do it.
@@ -1038,5 +1078,119 @@ mod tests {
             "github-panel",
             &[(461., 980.)],
         );
+    }
+
+    /// Tags' empty line starts at the dialog's one left edge, where the
+    /// summary above it starts, at 13 and 18 pt: it stood 10 px right of it,
+    /// a list padding's inset.
+    #[gpui::test]
+    async fn the_tags_line_starts_at_the_dialogs_edge(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) = window(cx, &history_script(1, 1)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        wait(cx, "the Tags list", |cx| {
+            cx.debug_bounds("tag-list-empty-line").is_some()
+        });
+        for interface in SIZES {
+            for (width, height) in [(1280., 800.), WINDOWS[0]] {
+                cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let line = cx.debug_bounds("tag-list-empty-line").expect("the line");
+                let summary = cx.debug_bounds("tag-list-summary").expect("the summary");
+                assert!(
+                    (line.left() - summary.left()).abs() <= px(0.5),
+                    "at {interface} pt in {width} × {height} the line starts at {:?}, the summary at {:?}",
+                    line.left(),
+                    summary.left()
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// With no commit, a tag has nothing to name: Tags says so and points at
+    /// the first commit, and Create tag… is unavailable rather than opening a
+    /// form that cannot work.
+    #[gpui::test]
+    async fn tags_without_a_commit_point_at_the_first_commit(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) = window(cx, "done\n").await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        wait(cx, "the Tags list", |cx| {
+            cx.debug_bounds("tag-list-empty-line").is_some()
+        });
+        check(
+            cx,
+            "tag-list-empty",
+            "No commits to tag yet · Your first commit starts in Changes",
+            None,
+            "tags-list",
+        );
+        click(cx, "create-tag");
+        assert!(
+            cx.debug_bounds("create-tag-dialog-title").is_none()
+                && cx.debug_bounds("tag-list-empty-line").is_some(),
+            "Create tag… opens nothing without a commit"
+        );
+    }
+
+    /// Name repository moves focus to the destination field, a name field,
+    /// so it draws no search magnifier; and where the panel's body has
+    /// scrolled the field out of view, as at 18 pt in a half tile, the field
+    /// comes into view with its ring, as it does for a Tab onto it.
+    #[gpui::test]
+    async fn name_repository_shows_the_field_it_focuses(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) = window(cx, &history_script(1, 1)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        wait(cx, "the panel's local read", |cx| {
+            cx.debug_bounds("github-choose-destination").is_some()
+        });
+        crate::views::CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let icon = crate::views::CONTROL_ICONS
+            .with(|icons| icons.borrow().get("github-choose-destination").cloned());
+        assert_eq!(icon, None, "Name repository draws no glyph");
+        // Scroll the body to its end, then back until Name repository leads
+        // the view, the field above it out of sight.
+        let panel = cx.debug_bounds("github-panel").expect("the panel");
+        let scroll = |cx: &mut VisualTestContext, by: Pixels| {
+            cx.simulate_event(ScrollWheelEvent {
+                position: panel.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), by)),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            draw(cx);
+        };
+        scroll(cx, px(-2000.));
+        let action = cx
+            .debug_bounds("github-choose-destination")
+            .expect("the action");
+        scroll(cx, panel.top() + px(8.) - action.top());
+        let (field, action) = (
+            cx.debug_bounds("github-destination").expect("the field"),
+            cx.debug_bounds("github-choose-destination")
+                .expect("the action"),
+        );
+        assert!(
+            field.bottom() <= panel.top() && action.top() >= panel.top(),
+            "the body shows Name repository {action:?} with the field {field:?} above {panel:?}"
+        );
+        click(cx, "github-choose-destination");
+        draw(cx);
+        let (field, panel) = (
+            cx.debug_bounds("github-destination").expect("the field"),
+            cx.debug_bounds("github-panel").expect("the panel"),
+        );
+        assert!(
+            field.top() >= panel.top() && field.bottom() <= panel.bottom(),
+            "the focused field {field:?} lies in the panel {panel:?}"
+        );
+        assert!(
+            ringed(cx, field),
+            "the focused field {field:?} draws its ring"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 }

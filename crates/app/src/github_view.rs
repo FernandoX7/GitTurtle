@@ -1164,7 +1164,10 @@ impl Render for Panel {
                 .child(label("github-fixture-mode","OFFLINE FIXTURE · native review · no network or credentials").debug_selector(||"github-fixture-mode".into()).min_w_0().text_color(rgb(p.muted)))
                 .child(button("github-fixture-move",if self.review.fixture_moved{"Fixture head moved"}else{"Move fixture head"},"",false).disabled(pending||self.review.fixture_moved).on_click(cx.listener(|this,_,_,cx|{this.review.fixture_moved=true;this.confirm=None;this.notice=Some("Fixture head moved remotely. This view and its draft retain the original commit. Submit to verify stale-head refusal, or Refresh PRs and reopen to inspect the new head.".into());cx.notify();})))))
             .child(self.part("toolbar",div(),cx).flex().flex_wrap().items_center().gap_2()
-                .child(div().w(appearance::ui_size(280.)).min_w(px(190.)).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending)))
+                // Focus moved onto the field, by a click or by Name repository below, which
+                // reveals it even when it holds focus already, scrolls it into view with its
+                // ring, as a Tab onto it does.
+                .child(div().debug_selector(||"github-destination".into()).w(appearance::ui_size(280.)).min_w(px(190.)).on_children_prepainted(self.reveal_on_focus(self.destination.read(cx).focus_handle(cx))).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending)))
                 .child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx))))
                 .child(button("github-create","New pull request","plus",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx))))
                 .child(div().flex_1()).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();}))))
@@ -1199,10 +1202,14 @@ impl Render for Panel {
                     }))
                     // One line with the next step: a repository with no GitHub remote names
                     // the destination first, and one with a destination reads its PRs with
-                    // Refresh PRs, above. Opening the panel itself contacts nothing.
+                    // Refresh PRs, above. Opening the panel itself contacts nothing. Name
+                    // repository moves to a name field, not a search, so it draws no glyph.
                     .when(self.rows.is_empty(),|element|element.child(div().py_5().px(text_inset()).child(if self.local_loaded&&self.destination.read(cx).value().trim().is_empty(){
                         EmptyState::new("github-list-empty","No GitHub remote · Name the repository to load its pull requests").tooltip("Enter the destination as owner/repository or a GitHub.com remote URL. Opening this panel reads local settings and drafts only.")
-                            .action(crate::empty_state::action("github-choose-destination","Name repository","search").disabled(pending).on_click(cx.listener(|this,_,window,cx|{let focus=this.destination.read(cx).focus_handle(cx);window.focus(&focus,cx);})))
+                            .action(crate::empty_state::action("github-choose-destination","Name repository","").disabled(pending).on_click(cx.listener(|this,_,window,cx|{let focus=this.destination.read(cx).focus_handle(cx);window.focus(&focus,cx);
+                                // The field may hold focus already, as it does once the panel opens:
+                                // the next frame reveals it all the same.
+                                *this.review.revealed_focus.borrow_mut()=Default::default();cx.notify();})))
                     }else{
                         EmptyState::new("github-list-empty","No pull requests shown · Refresh PRs loads the open ones").tooltip("Opening this panel reads local settings and drafts only.")
                     }.block(cx))))))

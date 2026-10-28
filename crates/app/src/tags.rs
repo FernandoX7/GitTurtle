@@ -165,7 +165,15 @@ impl GitTurtle {
                 Ok(list) => {
                     let owner = cx.entity().downgrade();
                     let path = this.path.clone();
-                    let browser = cx.new(|cx| TagBrowser::new(owner, path, list, window, cx));
+                    // An unborn HEAD with no commit in History: nothing for a
+                    // tag to name.
+                    let committed = !(this.commits.is_empty()
+                        && this
+                            .work_status
+                            .as_ref()
+                            .is_some_and(|status| status.head.is_none()));
+                    let browser =
+                        cx.new(|cx| TagBrowser::new(owner, path, list, committed, window, cx));
                     #[cfg(test)]
                     {
                         this.tag_actions.list = Some(browser.read(cx).rows.clone());
@@ -388,6 +396,10 @@ struct TagBrowser {
     owner: WeakEntity<GitTurtle>,
     path: Option<PathBuf>,
     list: TagList,
+    /// Whether the repository has a commit for a tag to name. With none,
+    /// Create tag… cannot work: it is disabled with its reason, and the
+    /// empty list points at the first commit.
+    committed: bool,
     query: Entity<InputState>,
     /// The list's scroll, which reveals the row Tab moves onto.
     rows: FocusReveal,
@@ -398,6 +410,7 @@ impl TagBrowser {
         owner: WeakEntity<GitTurtle>,
         path: Option<PathBuf>,
         list: TagList,
+        committed: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -415,6 +428,7 @@ impl TagBrowser {
             owner,
             path,
             list,
+            committed,
             query,
             rows: FocusReveal::new(Trigger::Keyboard),
             _subscription: subscription,
@@ -442,6 +456,13 @@ impl TagBrowser {
         });
     }
 }
+/// Tags' line in a repository with no commits, where a tag has nothing to
+/// name.
+const NO_COMMIT_LINE: &str = "No commits to tag yet · Your first commit starts in Changes";
+/// Create tag…'s name and tooltip there, which say why it is unavailable.
+const NO_COMMIT_NAME: &str = "Create tag…, unavailable until the first commit";
+const NO_COMMIT_REASON: &str = "A tag names a commit · Your first commit starts in Changes";
+
 impl Render for TagBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // A row focus has moved onto scrolls into view in this frame.
@@ -453,7 +474,8 @@ impl Render for TagBrowser {
         // back. The list scrolls, so it clips its rows to its bounds on both
         // axes: it keeps the room around them and gives it back through its
         // margin, so no row moves. A row Tab moves onto scrolls into view
-        // with its ring.
+        // with its ring. The empty list's line starts at the dialog's edge,
+        // with the summary above it.
         let room = appearance::button_ring_room(cx);
         let rows: Vec<_> = (0..matches.len().min(100))
             .map(|index| self.rows.focus(("tag-row", index), cx))
@@ -462,14 +484,14 @@ impl Render for TagBrowser {
         // Past its height the list cues the rest with its scrollbar.
         let cue = ScrollCue::new(self.rows.scroll(), room);
         div().flex().flex_col().gap_3().py(room)
-            .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true))).child(button("create-tag", "Create tag…", "plus", false).debug_selector(|| "create-tag".into()).on_click(cx.listener(|this, _, window, cx| {
+            .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true))).child(button("create-tag", "Create tag…", "plus", false).debug_selector(|| "create-tag".into()).when(!self.committed, |create| create.disabled(true).accessibility_label(NO_COMMIT_NAME).tooltip(NO_COMMIT_REASON)).on_click(cx.listener(|this, _, window, cx| {
                 let _ = this.owner.update(cx, |owner, cx| { if owner.path == this.path && owner.operation_busy.is_none() { window.close_dialog(cx); owner.open_create_tag(window, cx); } });
             }))))
             .child(static_text("tag-list-summary", format!("{} local tags · Select to inspect, delete locally, or push one named tag.", self.list.tags.len())).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("tags-list").debug_selector(|| "tags-list".into()).max_h(px(360.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap_1().children(matches.iter().zip(rows).enumerate().map(|(index, (tag, focus))| {
                 let tag = (*tag).clone(); let label = format!("{} · {} · {}", tag.name, if tag.annotated { "Annotated" } else { "Lightweight" }, short_oid(&tag.target_oid));
                 Button::new(("tag-row", index)).track_focus(&focus).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).label(label.clone()).accessibility_label(label).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
-            })).when(matches.is_empty(), |element| element.child(div().p_3().child(EmptyState::new("tag-list-empty", if self.list.tags.is_empty() { "No local tags yet · Create tag… names a commit" } else { "No tags match this filter" }).block(cx)))), "tags-scrollbar"))
+            })).when(matches.is_empty(), |element| element.child(div().py_3().child(EmptyState::new("tag-list-empty", if !self.committed { NO_COMMIT_LINE } else if self.list.tags.is_empty() { "No local tags yet · Create tag… names a commit" } else { "No tags match this filter" }).block(cx)))), "tags-scrollbar"))
             .when(matches.len() > 100, |element| element.child(static_text("tag-list-match-limit", "Showing 100 matches. Narrow the filter to find another tag.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .when(self.list.truncated, |element| element.child(static_text("tag-list-load-limit", "Loaded the first 10,000 local tags by name. Additional tags are outside this bounded browser.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
     }
