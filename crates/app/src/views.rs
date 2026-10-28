@@ -395,7 +395,9 @@ impl GitTurtle {
     /// and accessible names. Its return action takes one slot in every
     /// mode, as wide as the labelled Projects where that shows, so the Back
     /// arrow outside History's root leaves the turtle, the name and the
-    /// toggles after it in place.
+    /// toggles after it in place. Where the trailing controls take a row of
+    /// their own ([`Trailing::OwnRow`]) the profile and Settings lead it in
+    /// every mode and Projects follows them.
     pub(super) fn render_header(
         &self,
         chrome: Chrome,
@@ -446,6 +448,8 @@ impl GitTurtle {
         }
         // The return slot is the labelled Projects' width outside `compact`.
         let widths = self.chrome_widths(window);
+        let trailing = self.trailing(compact, &widths, window);
+        let own_row = trailing != Trailing::Shared;
         div()
             .debug_selector(|| "repository-header".into())
             .min_h(appearance::ui_size(48.))
@@ -549,7 +553,9 @@ impl GitTurtle {
                             })),
                     )
             })
-            .child(div().flex_1())
+            .when(trailing != (Trailing::OwnRow { spacer: false }), |header| {
+                header.child(div().flex_1())
+            })
             .children(
                 self.operation_busy
                     .map(|label| self.render_operation_progress(label, cx)),
@@ -559,16 +565,21 @@ impl GitTurtle {
             })
             // History's root leaves Projects to its return action but keeps
             // its slot where that adds no row, so the name shares the same
-            // room in every mode.
+            // room in every mode. On a row of their own the trailing
+            // controls start at the header's edge with the profile and
+            // Settings, and Projects follows them where it shows.
             .when(
-                back_to_projects && self.keeps_projects_slot(compact, &widths, window),
+                back_to_projects && !own_row && self.keeps_projects_slot(compact, &widths, window),
                 |header| header.child(div().flex_shrink_0().size(appearance::ui_size(28.))),
             )
-            .when(!back_to_projects, |header| {
+            .when(!back_to_projects && !own_row, |header| {
                 header.child(self.render_projects_button(cx))
             })
             .child(self.render_profile_button(compact, 36., cx))
             .child(self.render_settings_button(cx))
+            .when(!back_to_projects && own_row, |header| {
+                header.child(self.render_projects_button(cx))
+            })
             .into_any_element()
     }
 
@@ -3002,23 +3013,55 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-/// The height a wrapping flex row of `items`, each its width and height,
-/// takes in `room`, `gap` apart on both axes. Lines break as taffy breaks
-/// them, before the item that takes the line's length, gaps included, past
-/// `room`, and each line is as tall as its tallest item.
-fn wrapped_height(items: &[(Pixels, Pixels)], room: Pixels, gap: Pixels) -> Pixels {
-    let mut height = px(0.);
-    let (mut length, mut tallest) = (px(0.), px(0.));
+/// How the full header lays out its trailing controls: Projects (or History
+/// root's empty slot for it), the profile and Settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Trailing {
+    /// After the spacer on a row with other controls: Projects, or the slot,
+    /// before the profile and Settings, at the row's trailing edge.
+    Shared,
+    /// On a row of their own, led from the header's left edge by the profile
+    /// and Settings in every mode, with Projects after them where it shows
+    /// and no slot at History's root. `spacer` where the spacer stays on the
+    /// row above; one that would start this row is left out, since it would
+    /// push the row to the trailing edge.
+    OwnRow { spacer: bool },
+}
+
+/// The lines a wrapping flex row of `items`, each its width and height,
+/// takes in `room`, `gap` apart: each line's first item and its tallest
+/// item's height. Lines break as taffy breaks them, before the item that
+/// takes the line's length, gaps included, past `room`.
+fn wrapped_rows(items: &[(Pixels, Pixels)], room: Pixels, gap: Pixels) -> Vec<(usize, Pixels)> {
+    let mut rows: Vec<(usize, Pixels)> = Vec::new();
+    let mut length = px(0.);
     for (index, &(width, item)) in items.iter().enumerate() {
-        if index > 0 && length + gap + width > room {
-            height += tallest + gap;
-            (length, tallest) = (width, item);
-        } else {
-            length += if index > 0 { gap } else { px(0.) } + width;
-            tallest = tallest.max(item);
+        match rows.last_mut() {
+            Some((_, tallest)) if length + gap + width <= room => {
+                length += gap + width;
+                *tallest = (*tallest).max(item);
+            }
+            _ => {
+                rows.push((index, item));
+                length = width;
+            }
         }
     }
-    height + tallest
+    rows
+}
+
+/// The height a wrapping flex row of `items` takes in `room`, `gap` apart on
+/// both axes: its [`wrapped_rows`], each as tall as its tallest item.
+fn wrapped_height(items: &[(Pixels, Pixels)], room: Pixels, gap: Pixels) -> Pixels {
+    let rows = wrapped_rows(items, room, gap);
+    let Some(((_, last), above)) = rows.split_last() else {
+        return px(0.);
+    };
+    let mut height = px(0.);
+    for (_, tallest) in above {
+        height += *tallest + gap;
+    }
+    height + *last
 }
 
 /// The window's size inside a client-decorated frame: the toolkit's
@@ -3264,11 +3307,22 @@ impl GitTurtle {
     /// so History lays out the controls the other modes do and the name
     /// takes the same share of the row. Where it would add a row, the other
     /// modes' row wraps and leaves the name its minimum, as History's
-    /// tighter row does without the slot.
+    /// tighter row does without the slot. On the trailing controls' own row
+    /// ([`Trailing::OwnRow`]) the slot would only open that row with an
+    /// empty space, so `render_header` asks only when they share a row.
     fn keeps_projects_slot(&self, narrow: bool, widths: &ChromeWidths, window: &Window) -> bool {
         let width = content_size(window).width;
         self.full_header_height(width, narrow, true, widths, window)
             <= self.full_header_height(width, narrow, false, widths, window)
+    }
+
+    /// How the full header lays out its trailing controls in this window,
+    /// decided from the other modes' controls, Projects among them, so
+    /// History's root lays them out alike.
+    fn trailing(&self, narrow: bool, widths: &ChromeWidths, window: &Window) -> Trailing {
+        let width = content_size(window).width;
+        self.full_header_items(width, narrow, true, widths, window)
+            .1
     }
 
     /// The full header's height in a window `width` wide: `render_header`'s
@@ -3282,6 +3336,26 @@ impl GitTurtle {
         widths: &ChromeWidths,
         window: &Window,
     ) -> Pixels {
+        let (items, _, room, gap) = self.full_header_items(width, narrow, projects, widths, window);
+        let snap = |length: Pixels| window.pixel_snap(length);
+        let rem = window.rem_size();
+        (wrapped_height(&items, room, gap) + snap(rem * 0.375) * 2. + snap(px(1.)))
+            .max(snap(appearance::ui_size(48.)))
+    }
+
+    /// `render_header`'s full-form controls in a window `width` wide, in
+    /// order, each its width and height, with Projects or its slot where
+    /// `projects`; how the trailing controls are laid out ([`Trailing`]),
+    /// which orders them and keeps or leaves out the spacer; and the room
+    /// and gap they wrap in.
+    fn full_header_items(
+        &self,
+        width: Pixels,
+        narrow: bool,
+        projects: bool,
+        widths: &ChromeWidths,
+        window: &Window,
+    ) -> (Vec<(Pixels, Pixels)>, Trailing, Pixels, Pixels) {
         let rem = window.rem_size();
         let snap = |length: Pixels| window.pixel_snap(length);
         let scaled = |base: f32| snap(appearance::ui_size(base));
@@ -3315,9 +3389,25 @@ impl GitTurtle {
                 control,
             ));
         }
-        items.push((px(0.), px(0.)));
-        if projects {
-            items.push((control, control));
+        let (room, gap) = (width - snap(rem * 0.75) * 2., snap(rem * 0.5));
+        let (spacer, slot) = ((px(0.), px(0.)), (control, control));
+        // The row Projects would take after the spacer: one the spacer or
+        // Projects starts holds the trailing controls alone.
+        let first = wrapped_rows(&[items.as_slice(), &[spacer, slot]].concat(), room, gap)
+            .last()
+            .map_or(0, |&(first, _)| first);
+        let trailing = if first < items.len() {
+            Trailing::Shared
+        } else {
+            Trailing::OwnRow {
+                spacer: first > items.len(),
+            }
+        };
+        if trailing != (Trailing::OwnRow { spacer: false }) {
+            items.push(spacer);
+        }
+        if projects && trailing == Trailing::Shared {
+            items.push(slot);
         }
         // A medium kit Button: `px_3`, the 16 px icon, the label and the
         // rem-sized caret, `gap_2` apart, within its 230 px limit.
@@ -3329,8 +3419,10 @@ impl GitTurtle {
         };
         items.push((profile, scaled(36.)));
         items.push((control, control));
-        let rows = wrapped_height(&items, width - snap(rem * 0.75) * 2., snap(rem * 0.5));
-        (rows + snap(rem * 0.375) * 2. + snap(px(1.))).max(scaled(48.))
+        if projects && trailing != Trailing::Shared {
+            items.push(slot);
+        }
+        (items, trailing, room, gap)
     }
 
     /// The full action bar's height, Targets collapsed, in a repository page
@@ -6237,6 +6329,132 @@ pub(crate) mod tests {
             assert!(
                 app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working),
                 "{at}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Where the full header's trailing controls wrap onto a row of their
+    /// own, that row starts at the header's left edge in Changes, History
+    /// and Compare: the profile leads it below the return action, with no
+    /// empty slot before it at History's root, the profile and Settings keep
+    /// one place in every mode, and Projects follows Settings where it
+    /// shows. Both such rows are checked, at the default size and 18 pt: one
+    /// where the spacer stays on the row above, and one where it would have
+    /// started the row and pushed it to the trailing edge. Where they share
+    /// a row, at 1000 px, Projects still comes before the profile.
+    #[gpui::test]
+    async fn full_header_starts_its_trailing_row_at_the_left_edge(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        let trailing = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let app = app.read(cx);
+                let narrow =
+                    window.viewport_size().width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+                app.trailing(narrow, &app.chrome_widths(window), window)
+            })
+        };
+        let controls = |cx: &mut VisualTestContext| {
+            (
+                cx.debug_bounds("page-back").expect("the return action"),
+                cx.debug_bounds("profile-button").expect("the profile"),
+                cx.debug_bounds("settings").expect("Settings"),
+                cx.debug_bounds("projects"),
+            )
+        };
+        let mut checked = Vec::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            // The narrowest windows, 2 px apart, whose header takes each own
+            // row, as the prediction decides it before layout.
+            let mut sizes = vec![(1000., Trailing::Shared)];
+            for spacer in [true, false] {
+                let width = (461..1000)
+                    .step_by(2)
+                    .map(|width| width as f32)
+                    .find(|&width| {
+                        cx.update(|window, cx| {
+                            let app = app.read(cx);
+                            let narrow = px(width) < appearance::ui_size(COMPACT_HEADER_WIDTH);
+                            let widths = app.chrome_widths(window);
+                            app.full_header_items(px(width), narrow, true, &widths, window)
+                                .1
+                                == Trailing::OwnRow { spacer }
+                        })
+                    });
+                sizes.extend(width.map(|width| (width, Trailing::OwnRow { spacer })));
+            }
+            for (width, expected) in sizes {
+                let at = format!("{text} pt at {width} px, {expected:?}");
+                cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+                settle(&app, cx).await;
+                // Tall enough for the full chrome at either size.
+                cx.simulate_resize(size(px(width), px(1400.)));
+                draw(cx);
+                assert!(
+                    matches!(predicted_chrome(&app, cx).1, Chrome::Full { .. }),
+                    "{at}"
+                );
+                assert_eq!(trailing(cx), expected, "{at}");
+                checked.push(expected);
+                let mut placed = None;
+                for mode in ["Changes", "History", "Compare"] {
+                    match mode {
+                        "History" => cx.update(|window, cx| {
+                            app.update(cx, |app, cx| app.show_history(window, cx))
+                        }),
+                        "Compare" => cx.update(|window, cx| {
+                            app.update(cx, |app, cx| app.select_file(0, window, cx))
+                        }),
+                        _ => {}
+                    }
+                    settle(&app, cx).await;
+                    let (back, profile, settings, projects) = controls(cx);
+                    assert_eq!(
+                        projects.is_some(),
+                        mode != "History",
+                        "{mode}, {at}: Projects outside History's root"
+                    );
+                    if expected == Trailing::Shared {
+                        assert!(
+                            profile.top() < back.bottom()
+                                && projects
+                                    .is_none_or(|projects| projects.right() <= profile.left()),
+                            "{mode}, {at}: one row, Projects {projects:?} before {profile:?}"
+                        );
+                        continue;
+                    }
+                    assert!(
+                        profile.top() >= back.bottom(),
+                        "{mode}, {at}: the profile {profile:?} below {back:?}"
+                    );
+                    assert!(
+                        (profile.left() - back.left()).abs() < px(0.5),
+                        "{mode}, {at}: the row starts at the left edge, {profile:?} under {back:?}"
+                    );
+                    if let Some(projects) = projects {
+                        assert!(
+                            projects.left() >= settings.right()
+                                && (projects.top() - settings.top()).abs() < px(0.5),
+                            "{mode}, {at}: Projects {projects:?} after Settings {settings:?}"
+                        );
+                    }
+                    match placed {
+                        None => placed = Some((profile, settings)),
+                        Some(placed) => assert_eq!(
+                            (profile, settings),
+                            placed,
+                            "{mode}, {at}: the profile and Settings keep their place"
+                        ),
+                    }
+                }
+            }
+        }
+        for spacer in [true, false] {
+            assert!(
+                checked.contains(&Trailing::OwnRow { spacer }),
+                "an own row with the spacer {}: {checked:?}",
+                if spacer { "above" } else { "left out" }
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
