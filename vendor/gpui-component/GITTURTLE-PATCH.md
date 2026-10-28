@@ -730,3 +730,31 @@ marker there and nothing on the item the keyboard had;
 Remove this part of the patch when upstream marks a keyboard-selected menu item
 apart from the pointer's hover with a cue a theme can hold at 3:1, and those
 tests pass without it.
+
+The menu-width patch modifies `src/menu/popup_menu.rs`. Upstream capped a menu
+only at its own maximum, 500 px unless the caller sets one, and let a row's text
+wrap wherever the menu was narrower than it. In a window narrower than that
+maximum, such as a 461 px half tile, a menu with a long row, such as the profile
+menu's current identity, ran past the window's edge, and an item's wrapped
+text overflowed its fixed height. `PopupMenu::max_width` now also caps a menu at
+its window's width less `WINDOW_INSET` on either side, the 8 px the base
+`Popup` host and the context menu keep from the window's edges. Every row's
+text, an item's, a submenu's and a label's, keeps one line and ends with an
+ellipsis where the menu is narrower than it (`menu_row_text`, and `truncate` on
+a label's text), its row and text shrinking below their content (`min_w_0`);
+its accessible name keeps the whole text. A menu as wide as its content is
+unchanged; only one at its cap cuts a row, where a label used to wrap to more
+lines instead. A test build names each item's and submenu's text in a debug
+selector (`menu-row-text: <text>`).
+
+The consumers are every kit menu: the profile menu's current identity and
+saved profiles (`crates/app/src/profiles.rs`), and any menu whose row is
+longer than its cap, such as a worktree's path heading in the navigator's
+worktree menu (`crates/app/src/views.rs`). The profile picker's tooltip keeps
+the whole current identity.
+`cargo test --locked -p gitturtle the_profile_menu_keeps_a_long_identity_inside_a_narrow_window`
+opens the profile menu in a 461 × 490 window with a long name and email and
+reads each row inside the window less 8 px on either side, named by its whole
+text, and the current identity and the saved profile on one line as tall as a
+short row's. Remove this part of the patch when upstream keeps a menu inside its
+window and its rows on one line, and that test passes without it.

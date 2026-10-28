@@ -36,18 +36,29 @@ async fn use_store(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, store: S
     settle(app, cx).await;
 }
 
-/// Open the menu, which is built as it opens, with `profile` as the
-/// identity Git authors with. It is set just before the click, so a quiet
-/// refresh of the fixture's own identity cannot replace it first.
+/// Open the menu, which is built as it opens, with "GitTurtle QA
+/// <qa@example.invalid>" as the identity Git authors with.
 async fn open_menu(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    open_menu_as(app, cx, "GitTurtle QA", "qa@example.invalid").await;
+}
+
+/// Open the menu with `name` and `email` as the identity Git authors with.
+/// It is set just before the click, so a quiet refresh of the fixture's own
+/// identity cannot replace it first.
+async fn open_menu_as(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    name: &str,
+    email: &str,
+) {
     let picker = cx
         .debug_bounds("profile-button")
         .expect("the profile picker");
     cx.update(|_, cx| {
         app.update(cx, |app, _| {
             app.profile = Some(GitProfile {
-                name: "GitTurtle QA".into(),
-                email: "qa@example.invalid".into(),
+                name: name.into(),
+                email: email.into(),
                 ..Default::default()
             })
         })
@@ -133,6 +144,81 @@ async fn the_profile_menu_names_its_rows(cx: &mut TestAppContext) {
         creating,
         "New profile… opens the profile form for a new profile"
     );
+}
+
+/// In a 461 × 490 window, narrower than a menu's 500 px maximum, the profile
+/// menu keeps inside the window less the popup's 8 px inset on either side,
+/// even with a long name and email. The current identity and the saved
+/// profile that carries the email keep one line each, as tall as a short
+/// row's, ending with an ellipsis where the menu ends, and each is still
+/// announced by its whole text. The menu used to run past the window's edge.
+#[gpui::test]
+async fn the_profile_menu_keeps_a_long_identity_inside_a_narrow_window(cx: &mut TestAppContext) {
+    const NAME: &str = "Maximiliana Konstantinopoulou-Vanderbergh";
+    const EMAIL: &str = "maximiliana.konstantinopoulou-vanderbergh@engineering.example.invalid";
+    let (_fixture, app, cx) = history_window(cx).await;
+    cx.simulate_resize(size(px(461.), px(490.)));
+    let mut store = Store::default();
+    store.definitions = vec![definition("work", "Work", EMAIL)];
+    use_store(&app, cx, store).await;
+    open_menu_as(&app, cx, NAME, EMAIL).await;
+
+    let current = format!("Current: {NAME} <{EMAIL}>");
+    let saved = format!("Work · {EMAIL}");
+    let bounds = |cx: &mut VisualTestContext, selector: String| {
+        cx.debug_bounds(selector.clone().leak())
+            .unwrap_or_else(|| panic!("{selector}"))
+    };
+    let (start, end) = (px(8.), px(461. - 8.));
+    // The menu takes the whole 445 px: the long identity's row ends at the
+    // cap less the menu's `p_1` (3.25 px at 13 pt).
+    let identity = bounds(cx, format!("menu-item: {current} · Label"));
+    assert!(
+        (identity.right() - (end - px(3.25))).abs() < px(0.5),
+        "{identity:?} ends at the cap"
+    );
+    // Each row inside the window's inset, named by its whole text.
+    for row in [
+        format!("menu-item: {current} · Label"),
+        format!("menu-item: {saved} · MenuItemCheckBox False"),
+        "menu-item: Manage profiles… · MenuItem".into(),
+    ] {
+        let shown = bounds(cx, row.clone());
+        assert!(
+            shown.left() >= start && shown.right() <= end,
+            "{row}: {shown:?} outside {start:?}..{end:?}"
+        );
+    }
+    // Each long text keeps one line inside its row, cut short of its whole
+    // width, where a wrapped text would be two lines tall.
+    let (muted, whole) = cx.update(|window, cx| {
+        (
+            gpui_kit::component::Theme::global(cx).muted_foreground,
+            crate::views::shaped_width(
+                &current,
+                appearance::ui_text(appearance::SECTION_LABEL_TEXT),
+                FontWeight::MEDIUM,
+                window,
+            ),
+        )
+    });
+    let label = |text: &str| format!("menu-label: {text} · {:?}", gpui::Rgba::from(muted));
+    let (long, short) = (
+        bounds(cx, label(&current)),
+        bounds(cx, label("Saved Git profiles")),
+    );
+    assert_eq!(
+        long.size.height, short.size.height,
+        "{current:?} on one line"
+    );
+    assert!(long.right() <= end && long.size.width < whole, "{long:?}");
+    let (long, short) = (
+        bounds(cx, format!("menu-row-text: {saved}")),
+        bounds(cx, "menu-row-text: Manage profiles…".into()),
+    );
+    assert_eq!(long.size.height, short.size.height, "{saved:?} on one line");
+    assert!(long.right() <= end, "{long:?}");
+    cx.simulate_keystrokes("escape");
 }
 
 /// The identity line leaves out what Git has not set rather than drawing

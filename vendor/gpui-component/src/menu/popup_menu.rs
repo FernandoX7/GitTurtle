@@ -17,6 +17,28 @@ use std::rc::Rc;
 
 const CONTEXT: &str = "PopupMenu";
 
+/// GitTurtle patch: the room a menu keeps from its window's edges, the
+/// margin gpui-base's `Popup` host snaps a dropdown menu to and the context
+/// menu's `snap_to_window_with_margin(px(8.))`.
+const WINDOW_INSET: Pixels = px(8.);
+
+/// GitTurtle patch: a row's text, kept on one line. Upstream let a row's
+/// text wrap wherever the menu was narrower than it, which an item's fixed
+/// height then cut; a row now ends with an ellipsis instead, its whole text
+/// staying its accessible name. The text and its row shrink below their
+/// content (`min_w_0`), so a menu capped at its window's width
+/// ([`PopupMenu::max_width`]) truncates its long rows rather than
+/// overflowing. A test build names the text in a debug selector,
+/// `menu-row-text: <text>`, since GPUI's test scene does not expose glyphs.
+fn menu_row_text(text: SharedString) -> gpui::Div {
+    let shown = text.clone();
+    div()
+        .min_w_0()
+        .truncate()
+        .debug_selector(move || format!("menu-row-text: {shown}"))
+        .child(text)
+}
+
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("enter", Confirm { secondary: false }, Some(CONTEXT)),
@@ -1241,15 +1263,21 @@ impl PopupMenu {
         Some(icon.xsmall())
     }
 
-    #[inline]
-    fn max_width(&self) -> Pixels {
-        self.max_width.unwrap_or(px(500.))
+    /// GitTurtle patch: the widest the menu draws, its own maximum (500 px by
+    /// default) but never wider than its window less [`WINDOW_INSET`] on
+    /// either side. Upstream capped a menu only at its maximum, so in a
+    /// window narrower than that a menu with a long row, such as a long Git
+    /// identity, ran off the window's edge; it now keeps inside the window
+    /// and its rows end with an ellipsis ([`menu_row_text`]).
+    fn max_width(&self, window: &Window) -> Pixels {
+        let room = window.viewport_size().width - WINDOW_INSET * 2.;
+        self.max_width.unwrap_or(px(500.)).min(room)
     }
 
     /// Calculate the anchor corner and left offset for child submenu
     fn update_submenu_menu_anchor(&mut self, window: &Window) {
         let bounds = self.bounds;
-        let max_width = self.max_width();
+        let max_width = self.max_width(window);
         let (anchor, left) = if max_width + bounds.origin.x > window.bounds().size.width {
             (Anchor::TopRight, -px(16.))
         } else {
@@ -1326,10 +1354,11 @@ impl PopupMenu {
                 .border_color(crate::menu_separator(cx)),
             PopupMenuItem::Label(label) => {
                 // GitTurtle patch: a label is a heading in secondary text, not
-                // an unavailable item, and it differs from an item by size and
-                // weight as well as colour. Its row sets the size and weight
-                // and its text the colour, and a test build names each,
-                // because GPUI's test scene does not expose glyphs.
+                // an unavailable item, and it differs from an item by weight as
+                // well as colour, at its own size. Its row sets the size and
+                // weight and its text the colour, and a test build names each,
+                // because GPUI's test scene does not expose glyphs. Its text
+                // keeps one line, as an item's does ([`menu_row_text`]).
                 let color = crate::menu_label_color(cx);
                 let size = crate::menu_label_size(window, cx);
                 let weight = crate::MENU_LABEL_WEIGHT;
@@ -1337,6 +1366,8 @@ impl PopupMenu {
                 let style_text = label.clone();
                 this.entry(Entry::Label).cursor_default().child(
                     h_flex()
+                        .flex_1()
+                        .min_w_0()
                         .cursor_default()
                         .items_center()
                         .gap_x_1()
@@ -1353,6 +1384,8 @@ impl PopupMenu {
                         .child(
                             div()
                                 .flex_1()
+                                .min_w_0()
+                                .truncate()
                                 .text_color(color)
                                 .debug_selector(move || {
                                     format!("menu-label: {text} · {:?}", gpui::Rgba::from(color))
@@ -1424,18 +1457,22 @@ impl PopupMenu {
                 .child(
                     h_flex()
                         .w_full()
+                        .min_w_0()
                         .gap_3()
                         .items_center()
                         .justify_between()
-                        .when(!show_link_icon, |this| this.child(label.clone()))
+                        .when(!show_link_icon, |this| {
+                            this.child(menu_row_text(label.clone()))
+                        })
                         .children(right_check_icon)
                         .when(show_link_icon, |this| {
                             this.child(
                                 h_flex()
                                     .w_full()
+                                    .min_w_0()
                                     .justify_between()
                                     .gap_1p5()
-                                    .child(label.clone())
+                                    .child(menu_row_text(label.clone()))
                                     .child(
                                         Icon::new(IconName::ExternalLink)
                                             .xsmall()
@@ -1460,6 +1497,7 @@ impl PopupMenu {
                     h_flex()
                         .min_h(item_height)
                         .size_full()
+                        .min_w_0()
                         .items_center()
                         .gap_x_1()
                         .children(Self::render_icon(
@@ -1472,10 +1510,11 @@ impl PopupMenu {
                         .child(
                             h_flex()
                                 .flex_1()
+                                .min_w_0()
                                 .gap_2()
                                 .items_center()
                                 .justify_between()
-                                .child(label.clone())
+                                .child(menu_row_text(label.clone()))
                                 .child(
                                     Icon::new(IconName::ChevronRight)
                                         .xsmall()
@@ -1559,7 +1598,7 @@ impl Render for PopupMenu {
             .iter()
             .any(|item| item.has_left_icon(self.check_side));
 
-        let max_width = self.max_width();
+        let max_width = self.max_width(window);
         let options = RenderOptions {
             has_left_icon,
             check_side: self.check_side,
