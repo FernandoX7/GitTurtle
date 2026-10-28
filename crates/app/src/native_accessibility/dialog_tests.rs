@@ -352,12 +352,15 @@ fn self_named_titles_name_their_dialog(cx: &mut TestAppContext) {
     );
 }
 
-/// Every dialog the repository window opens is a modal alert dialog named
-/// by its title, never by the toolkit's fallback "Alert dialog", which
-/// announced the Reflog and the interactive rebase form, their styled
-/// titles unread. Each is read from the node its focus trap was laid out to
-/// write, which the toolkit records in debug builds: GPUI writes the
-/// window's tree only while an assistive technology is active.
+/// Every dialog the repository window opens is a modal dialog named by its
+/// title, never by the toolkit's fallback "Alert dialog", which announced
+/// the Reflog and the interactive rebase form, their styled titles unread.
+/// Only a confirmation that interrupts with a warning, such as a reviewed
+/// write's last step, is an alert dialog: every dialog was one, so Orca
+/// announced the Reflog, a picker or a sheet as an alert. Each is read from
+/// the node its focus trap was laid out to write, which the toolkit records
+/// in debug builds: GPUI writes the window's tree only while an assistive
+/// technology is active.
 #[cfg(debug_assertions)]
 #[gpui::test]
 async fn every_repository_dialog_is_named_by_its_title(cx: &mut TestAppContext) {
@@ -413,7 +416,8 @@ async fn every_repository_dialog_is_named_by_its_title(cx: &mut TestAppContext) 
         let [node] = nodes.as_slice() else {
             panic!("{title}: one modal holds focus, {nodes:?}");
         };
-        assert_eq!(node.role(), Role::AlertDialog, "{title}");
+        // None of these interrupts with a warning: a dialog, not an alert.
+        assert_eq!(node.role(), Role::Dialog, "{title}");
         assert!(node.is_modal(), "{title}");
         assert_eq!(node.label(), Some(title), "{title}");
         cx.update(|window, cx| window.close_dialog(cx));
@@ -423,4 +427,29 @@ async fn every_repository_dialog_is_named_by_its_title(cx: &mut TestAppContext) 
             "{title} closes"
         );
     }
+    // A reviewed write's last step, shared by every Git write the window
+    // confirms (Delete local tag, Drop saved stash, Abort operation…),
+    // interrupts with its consequences: an alert dialog. Nothing runs, as
+    // the review closes unconfirmed.
+    let title = "Stage every file";
+    crate::focus_ring::sweep::open_dialog(&app, cx, title, |app, window, cx| {
+        app.confirm_git_write(
+            title.into(),
+            "Stage every working change.".into(),
+            "Stage all",
+            gitturtle_core::WriteCommand::StageAll,
+            window,
+            cx,
+        )
+    })
+    .await;
+    let nodes = cx.update(|window, cx| gpui_kit::base::focused_modal_nodes(window, cx));
+    let [node] = nodes.as_slice() else {
+        panic!("{title}: one modal holds focus, {nodes:?}");
+    };
+    assert_eq!(node.role(), Role::AlertDialog, "{title}");
+    assert!(node.is_modal(), "{title}");
+    assert_eq!(node.label(), Some(title), "{title}");
+    cx.update(|window, cx| window.close_dialog(cx));
+    views::tests::draw(cx);
 }

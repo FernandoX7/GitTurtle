@@ -1591,7 +1591,7 @@ mod tests {
                 }
             }
             if cx.update(|window, cx| window.has_active_dialog(cx)) {
-                let mut dialog = Node::new(A11yRole::AlertDialog);
+                let mut dialog = Node::new(A11yRole::Dialog);
                 dialog.set_label("Reflog");
                 dialog.set_modal();
                 tree = tree
@@ -1622,14 +1622,14 @@ mod tests {
                 crate::native_accessibility::atspi_state_tests::reached(update.clone())
                     .into_iter()
                     .map(|node| match node.role {
-                        accesskit_atspi_common::Role::Alert => format!("{} alert", node.name),
+                        accesskit_atspi_common::Role::Dialog => format!("{} dialog", node.name),
                         _ => node.name,
                     })
                     .collect();
             let names: Vec<String> = reachable(update)
                 .into_iter()
                 .filter_map(|node| match node.role {
-                    A11yRole::AlertDialog => node.label.map(|label| format!("{label} alert")),
+                    A11yRole::Dialog => node.label.map(|label| format!("{label} dialog")),
                     _ => node.label,
                 })
                 .collect();
@@ -1673,7 +1673,7 @@ mod tests {
             "nothing of the page is in reach while the Reflog is open: {reached:?}"
         );
         assert!(
-            reached.iter().any(|name| name == "Reflog alert")
+            reached.iter().any(|name| name == "Reflog dialog")
                 && reached.iter().any(|name| name.starts_with("Reflog entry")),
             "the Reflog and its entries are in reach: {reached:?}"
         );

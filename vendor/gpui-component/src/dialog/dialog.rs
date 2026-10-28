@@ -19,6 +19,7 @@ use crate::{
 };
 
 pub static ANIMATION_DURATION: LazyLock<Duration> = LazyLock::new(|| Duration::from_secs_f64(0.25));
+pub use gpui_base::DialogKind;
 pub use gpui_base::actions::{Cancel, Confirm};
 
 /// Dialog button props.
@@ -146,6 +147,8 @@ pub(crate) struct DialogProps {
     overlay_closable: bool,
     pub(crate) overlay_visible: bool,
     keyboard: bool,
+    // GitTurtle patch: the modal's kind, its accessible role.
+    kind: DialogKind,
 }
 
 impl Default for DialogProps {
@@ -159,6 +162,7 @@ impl Default for DialogProps {
             overlay_visible: false,
             close_button: true,
             overlay_closable: true,
+            kind: DialogKind::Dialog,
         }
     }
 }
@@ -188,6 +192,9 @@ impl BaseDialogRoot {
     }
     fn close_on_escape(self, value: bool) -> Self {
         map_base_root!(self, close_on_escape(value))
+    }
+    fn kind(self, kind: DialogKind) -> Self {
+        map_base_root!(self, kind(kind))
     }
     fn close_on_backdrop_press(self, value: bool) -> Self {
         match self {
@@ -415,6 +422,13 @@ impl Dialog {
         self
     }
 
+    /// GitTurtle patch: sets the kind of modal, which decides the role
+    /// assistive technology announces, defaults to [`DialogKind::Dialog`].
+    pub fn kind(mut self, kind: DialogKind) -> Self {
+        self.props.kind = kind;
+        self
+    }
+
     pub(crate) fn has_overlay(&self) -> bool {
         self.props.overlay
     }
@@ -545,6 +559,7 @@ impl RenderOnce for Dialog {
                             )
                             .focus_handle(self.focus_handle.clone())
                             .close_on_escape(self.props.keyboard)
+                            .kind(self.props.kind)
                             .close_on_backdrop_press(self.props.overlay_closable)
                             .dismiss_below_y(TITLE_BAR_HEIGHT)
                             .when(self.props.overlay, |this| {

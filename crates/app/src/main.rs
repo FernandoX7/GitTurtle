@@ -86,6 +86,7 @@ use gitturtle_core::{Branch, Commit, FileChange, GitRepository, Worktree};
 use gpui_kit::component::{
     Disableable, Icon, Root, Selectable, Sizable, WindowExt,
     button::{Button, ButtonVariants},
+    dialog::DialogKind,
     input::{EditorState, Input, InputEvent, InputState, Textarea, TextareaState},
     resizable::{ResizableState, h_resizable, resizable_panel},
     tooltip::Tooltip,
@@ -1789,13 +1790,16 @@ impl GitTurtle {
                 }
                 Ok(None) => {}
                 Err(error) => window.open_alert_dialog(cx, move |dialog, _, cx| {
-                    dialog.title("Could not open repository picker").child(
-                        div()
-                            .id("repository-picker-error")
-                            .role(Role::Label)
-                            .aria_label(error.clone())
-                            .child(folder_picker::styled_message(&error, palette(cx).muted)),
-                    )
+                    dialog
+                        .kind(DialogKind::Alert)
+                        .title("Could not open repository picker")
+                        .child(
+                            div()
+                                .id("repository-picker-error")
+                                .role(Role::Label)
+                                .aria_label(error.clone())
+                                .child(folder_picker::styled_message(&error, palette(cx).muted)),
+                        )
                 }),
             });
         })

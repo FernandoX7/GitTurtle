@@ -481,7 +481,7 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let owner = owner.clone(); let definition = definition.clone(); let explanation = format!("Delete the saved '{}' profile and its app assignments? Repository Git configuration remains as it is. Repositories, keys and drafts are preserved.", definition.label);
-            dialog.title("Delete saved profile").child(label("delete-profile-consequences", explanation))
+            dialog.kind(DialogKind::Alert).title("Delete saved profile").child(label("delete-profile-consequences", explanation))
                 .button_props(DialogButtonProps::default().ok_text("Delete profile").cancel_text("Cancel").show_cancel(true))
                 .on_ok(move |_, window, cx| { let _ = owner.update(cx, |this, cx| { if this.operation_busy.is_none() { this.save_profile_mutation(Mutation::Delete(definition.clone()), None, window, cx); } }); true })
         });

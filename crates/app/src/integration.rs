@@ -67,7 +67,10 @@ impl GitTurtle {
             let path = path.clone();
             let view = view.clone();
             let command = Arc::clone(&command);
+            // Every reviewed write's last step interrupts with its
+            // consequences before it runs: an alert.
             dialog
+                .kind(DialogKind::Alert)
                 .title(title.clone())
                 .width(appearance::dialog_width(px(520.), window))
                 .child(

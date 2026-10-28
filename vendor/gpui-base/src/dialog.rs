@@ -30,6 +30,29 @@ pub enum DialogChangeReason {
     Imperative,
 }
 
+// GitTurtle patch: a modal states which kind it is, so assistive technology
+// announces a form, browser or picker as a dialog and only a confirmation
+// that interrupts with a warning, or an error, as an alert.
+/// The kind of modal a dialog is: its accessible role.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DialogKind {
+    /// A dialog (`Role::Dialog`): a form, browser, picker or sheet.
+    #[default]
+    Dialog,
+    /// An alert dialog (`Role::AlertDialog`): a confirmation that interrupts
+    /// with a warning, or an error the person must acknowledge.
+    Alert,
+}
+
+impl DialogKind {
+    fn role(self) -> Role {
+        match self {
+            Self::Dialog => Role::Dialog,
+            Self::Alert => Role::AlertDialog,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct DialogHandle {
     open: Rc<Cell<bool>>,
@@ -435,6 +458,10 @@ impl Dialog {
     pub(crate) fn role(mut self, role: Role) -> Self {
         self.role = role;
         self
+    }
+    /// Sets the kind of modal, which decides its accessible role.
+    pub fn kind(self, kind: DialogKind) -> Self {
+        self.role(kind.role())
     }
     #[doc(hidden)]
     pub fn layer(mut self, index: usize, topmost: bool) -> Self {

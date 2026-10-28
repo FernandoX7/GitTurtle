@@ -1047,6 +1047,7 @@ impl GitTurtle {
             let (cancel_focus, delete_focus) = (cancel_focus.clone(), delete_focus.clone());
             let (route_cancel, route_delete) = (cancel_focus.clone(), delete_focus.clone());
             dialog
+                .kind(DialogKind::Alert)
                 .title(title.clone())
                 .child(
                     div()

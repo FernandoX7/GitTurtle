@@ -232,6 +232,16 @@ impl AlertDialog {
         self
     }
 
+    /// GitTurtle patch: sets the kind of modal, which decides the role
+    /// assistive technology announces, defaults to
+    /// [`DialogKind::Dialog`](crate::dialog::DialogKind::Dialog). Only a
+    /// confirmation that interrupts with a warning, or an error, is
+    /// [`DialogKind::Alert`](crate::dialog::DialogKind::Alert).
+    pub fn kind(mut self, kind: crate::dialog::DialogKind) -> Self {
+        self.base = self.base.kind(kind);
+        self
+    }
+
     /// Sets the callback for when the alert dialog is closed.
     ///
     /// Called after [`Self::on_action`] or [`Self::on_cancel`] callback.

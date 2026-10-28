@@ -109,6 +109,7 @@ impl GitTurtle {
                 .child(label("discard-preserved", "Other files and the branch stay unchanged.").text_color(rgb(colors.muted)))
                 .child(label("discard-revalidation", "If this file or Git state changes, the action stops so you can review it again.").text_color(rgb(colors.muted)));
             dialog
+                .kind(DialogKind::Alert)
                 .title(label("discard-title", title))
                 .width(appearance::dialog_width(px(620.), window))
                 .child(

@@ -788,3 +788,29 @@ reads each row inside the window less 8 px on either side, named by its whole
 text, and the current identity and the saved profile on one line as tall as a
 short row's. Remove this part of the patch when upstream keeps a menu inside its
 window and its rows on one line, and that test passes without it.
+
+The dialog-kind patch modifies `src/dialog/dialog.rs` and
+`src/dialog/alert_dialog.rs`, with the base patch's `DialogKind`. Upstream
+AlertDialog always hosts the base `AlertDialog`, so every modal opened through
+`open_alert_dialog`, the no-close-button surface GitTurtle opens each of its
+dialogs with, was an alert dialog: AT-SPI's `alert`, which Orca announces as an
+alert, for the Reflog, a picker or a sheet as for a discard review. The
+component Dialog's props now carry a kind, `DialogKind::Dialog` by default,
+which `Dialog::kind` and `AlertDialog::kind` set and the base host takes as its
+role when the dialog is laid out (the declarative trigger paths carry it in the
+props they copy). Only a caller that passes `DialogKind::Alert` keeps the alert
+role. Nothing else changes: an AlertDialog still never closes from a backdrop
+press, keeps its footer and buttons, and every dialog stays modal with its
+captured title. The component re-exports the kind as `dialog::DialogKind`.
+
+The consumers are every app dialog. The confirmations that interrupt with a
+warning pass `DialogKind::Alert`: the reviewed write's last step shared by
+every Git write (`confirm_git_write` in `crates/app/src/integration.rs`), the
+discard and forced worktree-removal reviews, Delete saved profile, the custom
+theme's delete confirmation, Verify SSH host and the repository picker's
+failure. Every other dialog is a plain dialog.
+`cargo test --locked -p gitturtle every_repository_dialog_is_named_by_its_title`
+opens fifteen of the repository window's dialogs and reads each as a modal
+dialog named by its title, then a reviewed write as a modal alert dialog; the
+discard review's test reads its own alert. Remove this part of the patch when
+upstream lets an AlertDialog choose its role, and those tests pass without it.

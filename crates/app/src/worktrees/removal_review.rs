@@ -182,6 +182,7 @@ impl GitTurtle {
             // another 10% below, plus scaled title/footer/padding geometry.
             let body_height = (window.viewport_size().height * 0.8 - appearance::ui_size(118.)).max(px(160.));
             dialog
+                .kind(DialogKind::Alert)
                 .title(label("worktree-force-title", "Force remove worktree?"))
                 .width(appearance::dialog_width(px(720.), window))
                 .child(

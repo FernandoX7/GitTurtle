@@ -211,7 +211,13 @@ impl GitTurtle {
                 };
                 body.child(field)
             };
+            // Trusting a host interrupts with a warning; a credential is a form.
             dialog
+                .kind(if confirmation {
+                    DialogKind::Alert
+                } else {
+                    DialogKind::Dialog
+                })
                 .title(if confirmation {
                     "Verify SSH host"
                 } else {

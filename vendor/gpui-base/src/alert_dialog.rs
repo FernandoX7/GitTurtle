@@ -198,6 +198,12 @@ impl AlertDialog {
         self.0 = self.0.open(open);
         self
     }
+    /// GitTurtle patch: sets the kind of modal, which decides its accessible
+    /// role; the alert role until a caller says otherwise.
+    pub fn kind(mut self, kind: crate::DialogKind) -> Self {
+        self.0 = self.0.kind(kind);
+        self
+    }
     pub fn handle(mut self, handle: DialogHandle) -> Self {
         self.0 = self.0.handle(handle);
         self
