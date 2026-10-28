@@ -333,7 +333,11 @@ cover current upstream x86-64 Omarchy.
           documents get no Linux offer for now, and every portal request first checks GIO's content
           type against the kind. Deferred, for a later task: office documents with a bounded body
           scan (field codes, data connections, hybrids, extra-field names) and a release measurement
-          at Compare open.
+          at Compare open. The third and fourth reviews found media unsafe too (an SDP description
+          in an MP3 or Matroska copy made mpv open RTP sockets; a media copy FFmpeg cannot open is
+          retried through libarchive and a playlist inside it reaches the network), so Linux offers
+          only raster images, PDF and plain text. Deferred: audio and video through a sandboxed or
+          network-restricted handoff.
         - Working inspector after `67ce1fb`…`147c37c` (`wi-f5e70d3` → `wi-0aca11e`; one-row
           controls, list and first-row bounds, icon-only Unstage all, "0/72", "Commit" verified):
           the composer's "Description · optional" label is cut by the commit button and its entry
