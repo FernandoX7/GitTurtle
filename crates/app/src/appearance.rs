@@ -1132,12 +1132,15 @@ impl ThemeChoice {
                 hover: 0xe3e8ef,
                 border: 0xd2dce8,
                 text: 0x253247,
-                muted: 0x526279,
+                // Tuned: 5 darker per channel for 4.75:1 on the darker selected rows.
+                muted: 0x4d5d74,
                 accent: 0x08755d,
                 accent_foreground: 0xffffff,
                 accent_hover: 0x06654f,
                 accent_active: 0x055440,
-                selected: 0xdaece6,
+                // Tuned: darkened in linear light, keeping its hue, so a pressed
+                // control reads darker than its hover, at least 10 from it.
+                selected: 0xd6e7e2,
                 added: 0x146744,
                 removed: 0xb53351,
                 modified: 0x875a14,
@@ -1393,7 +1396,9 @@ impl ThemeChoice {
                     subtle: 0xf4ede4,
                     // Tuned: overlay darkened for 1.08:1 off subtle, as the Omarchy fitter holds hover.
                     hover: 0xece3dc,
-                    selected: 0xe8dfe2,
+                    // Tuned: a step darker and toward iris, so a pressed control
+                    // stands at least 10 from its hover, darker than it.
+                    selected: 0xeadde7,
                     border: 0xdfdad9,
                     text: r::TEXT,
                     // Tuned: subtle darkened for 4.5:1 on every row surface and diff tile.
@@ -3182,6 +3187,146 @@ mod tests {
     /// were tuned past it (from 3 and 4 to 8), and Catppuccin Mocha and Nord
     /// hold it exactly over their selected rows.
     const CONTROL_PRESS_DISTANCE: u32 = custom::PRESSED_STEP;
+
+    /// Two Buttons a light palette presses: the kit's secondary (Fetch, Pull,
+    /// the branch and profile pickers), whose pressed fill is `selected` over
+    /// its hovered `hover`, and the shared helper, whose layers repeat that
+    /// step, each on the panel and on `subtle`.
+    struct PressTargets;
+
+    impl gpui::Render for PressTargets {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui_kit::component::button::{Button, ButtonVariants as _};
+            use gpui_kit::{InteractiveElement as _, ParentElement as _, div};
+
+            let p = palette(cx);
+            div()
+                .flex()
+                .flex_col()
+                .children(
+                    [("panel", p.panel), ("subtle", p.subtle)].map(|(surface, color)| {
+                        div().flex().gap_4().p_4().bg(rgb(color)).children(
+                            [("secondary", "Fetch"), ("control", "Options")].map(
+                                |(kind, label)| {
+                                    let button = Button::new(disabled_selector(kind, surface))
+                                        .debug_selector(move || format!("{kind}-{surface}"))
+                                        .label(label)
+                                        .on_click(|_, _, _| {});
+                                    if kind == "secondary" {
+                                        button.secondary()
+                                    } else {
+                                        button.with_variant(control_button_variant(false))
+                                    }
+                                },
+                            ),
+                        )
+                    }),
+                )
+        }
+    }
+
+    /// Braden (`daylight`) and Rosé Pine Dawn press deeper than they hover.
+    /// Braden's pressed fill had the brightness of its hover and differed by
+    /// hue, 1.02:1 lighter over its selected row, and Dawn's stood exactly the
+    /// pressed step, 6 of 255 in one channel, from its hover. Now on each of
+    /// the six surfaces the shared button's pressed layer reads at least
+    /// 1.02:1 darker than its hover layer and at least 10 from it, four past
+    /// the step, and so does the kit's secondary, `selected` over `hover`, as
+    /// the scene paints both Buttons hovered and held down. Text and secondary
+    /// text keep 4.75:1 on the darker selected rows.
+    #[gpui::test]
+    fn braden_and_rose_pine_dawn_press_deeper_than_they_hover(cx: &mut gpui::TestAppContext) {
+        use gpui_kit::{Modifiers, MouseButton, point};
+
+        const DEEPER: f64 = 1.02;
+        const STEP: u32 = custom::PRESSED_STEP + 4;
+        // How much darker `pressed` reads than `hovered`: below 1 when lighter.
+        let deeper =
+            |hovered: u32, pressed: u32| (luminance(hovered) + 0.05) / (luminance(pressed) + 0.05);
+        let mut failures = Vec::new();
+        for choice in [ThemeChoice::Daylight, ThemeChoice::RosePineDawn] {
+            let palette = choice.palette();
+            let (hover, pressed) = (
+                palette.control_fill(palette.hover),
+                palette.control_fill(palette.selected),
+            );
+            let surfaces = [
+                palette.canvas,
+                palette.panel,
+                palette.subtle,
+                palette.hover,
+                palette.selected,
+                palette.row_hover(true),
+            ];
+            let mut fills = surfaces
+                .map(|surface| (composite(hover, surface), composite(pressed, surface)))
+                .to_vec();
+            fills.push((palette.hover, palette.selected));
+            for (hovered, held) in fills {
+                let (depth, step) = (deeper(hovered, held), channel_distance(hovered, held));
+                if depth < DEEPER || step < STEP {
+                    failures.push(format!(
+                        "{choice:?} pressed {held:06x} under hover {hovered:06x}: {depth:.3}:1, {step} apart"
+                    ));
+                }
+            }
+            if palette.pressed_step() < STEP {
+                failures.push(format!(
+                    "{choice:?} pressed step {}",
+                    palette.pressed_step()
+                ));
+            }
+            for row in [palette.selected, palette.row_hover(true)] {
+                for (what, color) in [("text", palette.text), ("muted", palette.muted)] {
+                    let ratio = contrast(color, row);
+                    if ratio < LABEL_RULE + LABEL_MARGIN {
+                        failures.push(format!("{choice:?} {what} on {row:06x} {ratio:.3}:1"));
+                    }
+                }
+            }
+        }
+
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|_, _| PressTargets);
+        for choice in [ThemeChoice::Daylight, ThemeChoice::RosePineDawn] {
+            cx.update(|window, cx| choice.apply(Some(window), cx));
+            let palette = choice.palette();
+            for (surface, color) in [("panel", palette.panel), ("subtle", palette.subtle)] {
+                for kind in ["secondary", "control"] {
+                    let selector = disabled_selector(kind, surface);
+                    let bounds = cx.debug_bounds(selector).expect("the button");
+                    let painted = |cx: &mut gpui_kit::VisualTestContext| {
+                        cx.update(|window, cx| window.draw(cx).clear(cx));
+                        let (fills, _) = painted_button(cx, bounds);
+                        fills.iter().fold(color, |beneath, fill| {
+                            composite(fill.as_solid().expect("a solid fill").to_rgb(), beneath)
+                        })
+                    };
+                    cx.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+                    let hovered = painted(cx);
+                    cx.simulate_mouse_down(
+                        bounds.center(),
+                        MouseButton::Left,
+                        Modifiers::default(),
+                    );
+                    let held = painted(cx);
+                    cx.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+                    cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+                    let (depth, step) = (deeper(hovered, held), channel_distance(hovered, held));
+                    if hovered == color || depth < DEEPER || step < STEP {
+                        failures.push(format!(
+                            "{choice:?} {kind} on the {surface}: hovered {hovered:06x}, held {held:06x}, {depth:.3}:1, {step} apart"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
 
     /// The Omarchy fitter's rule (`omarchy::palette`'s `HOVER_STEP`) for the
     /// built-ins too: a secondary control's hover stays distinguishable from its
