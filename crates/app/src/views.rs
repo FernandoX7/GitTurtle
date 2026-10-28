@@ -2022,28 +2022,50 @@ impl GitTurtle {
     /// The author and the date and hash lines are selectable after the
     /// message in `selection`'s document; parents stay controls. The commit's
     /// Actions stands in the message toolbar, outside this scrolling area.
+    /// Each parent's control reads "P1 · ‹hash›" where the widest such label
+    /// fits the inspector, and otherwise only "P1", its tooltip and
+    /// accessible name keeping the full hash: the 148 px "P1 · ‹hash›" in the
+    /// 128.5 px of an 18 pt half tile's inspector widened the metadata past
+    /// it, and the date line wrapped at that width ran past the edge.
     pub(super) fn render_commit_metadata(
         &self,
         commit: &Commit,
         selection: &commit_message::Selection,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
+        let labels = commit
+            .parents
+            .iter()
+            .take(128)
+            .enumerate()
+            .map(|(i, parent)| format!("P{} · {}", i + 1, short_oid(parent)))
+            .collect::<Vec<_>>();
+        let hashes = self
+            .inspector_message
+            .details_room()
+            .is_none_or(|room| parent_controls_width(&labels, window) <= room);
         let mut parents = div().flex().flex_wrap().gap_1();
-        for (i, parent) in commit.parents.iter().take(128).enumerate() {
+        for (i, (parent, label)) in commit.parents.iter().zip(labels).enumerate() {
+            let name = format!("Compare against parent {} · {}", i + 1, parent);
+            let control = if hashes {
+                button(("parent", i), label, "", self.parent == i).accessibility_label(name.clone())
+            } else {
+                let control = button(("parent", i), format!("P{}", i + 1), "", self.parent == i);
+                if i == 0 {
+                    compact_control_label(control, "commit-parent-0", name.clone())
+                } else {
+                    control.accessibility_label(name.clone())
+                }
+            };
             parents = parents.child(
-                button(
-                    ("parent", i),
-                    format!("P{} · {}", i + 1, short_oid(parent)),
-                    "",
-                    self.parent == i,
-                )
-                .debug_selector(move || format!("commit-parent-{i}"))
-                .accessibility_label(format!("Compare against parent {} · {}", i + 1, parent))
-                .tooltip(format!("Compare against parent {} · {}", i + 1, parent))
-                .on_click(
-                    cx.listener(move |this, _, window, cx| this.change_parent(i, window, cx)),
-                ),
+                control
+                    .debug_selector(move || format!("commit-parent-{i}"))
+                    .tooltip(name)
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.change_parent(i, window, cx)),
+                    ),
             );
         }
         if commit.parents.len() > 128 {
@@ -2064,7 +2086,9 @@ impl GitTurtle {
         // The message's document is read as a whole and clips nothing, and
         // AccessKit compares a control with its nearest clipping parent
         // alone, so this group clips its controls: the parents below the
-        // part of the details the window draws leave the tree.
+        // part of the details the window draws leave the tree. It ends at
+        // its last row, so details that fit draw no scrollbar: its bottom
+        // padding alone scrolled 13 px at 18 pt in a 1,000 × 680 window.
         native_accessibility::clips_children(
             div()
                 .id("commit-metadata")
@@ -2072,7 +2096,8 @@ impl GitTurtle {
                 .role(Role::Group)
                 .aria_label("Commit author and comparison parents")
                 .min_w_0()
-                .p_3()
+                .px_3()
+                .pt_3()
                 .flex()
                 .flex_col()
                 .gap_2()
@@ -3133,6 +3158,18 @@ fn changed_file_menu(
             });
         }),
     )
+}
+
+/// The widest of the parents' labelled controls, `labels`: the shared
+/// `button` helper's 10 px of padding either side of its label. Laid out
+/// again only when the labels, the font or the sizes change.
+fn parent_controls_width(labels: &[String], window: &Window) -> Pixels {
+    cached_text_width(&PARENT_LABELS, &labels.join("\n"), window, || {
+        labels
+            .iter()
+            .map(|label| line_widths(&[(label, appearance::ui_text(12.))], window))
+            .fold(px(0.), Pixels::max)
+    }) + appearance::ui_size(20.)
 }
 
 /// "Changed files" whole, at the header's 11 pt medium.
@@ -4358,6 +4395,7 @@ thread_local! {
     static TEXT_MODES: TextWidth = const { RefCell::new(None) };
     static FOOTER_LINE: TextWidth = const { RefCell::new(None) };
     static COMPARE_PATH: TextWidth = const { RefCell::new(None) };
+    static PARENT_LABELS: TextWidth = const { RefCell::new(None) };
     static AREA_BADGE: TextWidth = const { RefCell::new(None) };
     static STATUS_WORDS: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static BLAME_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
@@ -9127,16 +9165,19 @@ pub(crate) mod tests {
 
     /// The selected commit's message and metadata draw no scrollbar where
     /// they fit, as the compact fixture's one-line commits do at 18 pt in a
-    /// 1,480 × 800 window and at the default size in 961 and 1,240 px wide
-    /// tiles 520 px tall: the metadata ends inside the message's viewport and
-    /// the list has nothing to scroll, so its scrollbar draws nothing. With
-    /// Actions as the metadata's last row they ran 7 px past it at 18 pt,
-    /// its row's gap and the metadata's padding, and 31 px in the tiles.
+    /// 1,480 × 800 and a 1,000 × 680 window and at the default size in 961
+    /// and 1,240 px wide tiles 520 px tall: the metadata ends inside the
+    /// message's viewport and the list has nothing to scroll, so its
+    /// scrollbar draws nothing. With Actions as the metadata's last row they
+    /// ran 7 px past it at 18 pt, its row's gap and the metadata's padding,
+    /// and 31 px in the tiles; with the metadata's bottom padding they ran
+    /// 13 px past it at 18 pt in 1,000 × 680.
     #[gpui::test]
     async fn commit_details_that_fit_draw_no_scrollbar(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
         for (text, width, height) in [
             (18, 1480., 800.),
+            (18, 1000., 680.),
             (13, 961., 520.),
             (13, 1240., 520.),
             (13, 1480., 980.),
@@ -9157,6 +9198,67 @@ pub(crate) mod tests {
                 "{at}: nothing to scroll"
             );
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A parent's control fits the 156 px inspector of an 18 pt half tile,
+    /// 461 × 980: "P1 · ‹hash›", 148 px wide where the inspector leaves
+    /// 128.5 px, widened the metadata past the inspector and the date line,
+    /// wrapped at that width, ran past its edge. There it reads "P1", named
+    /// for its parent's full hash as its tooltip is, and the metadata stays
+    /// inside the viewport; in a 1,000 px window it keeps the hash.
+    #[gpui::test]
+    async fn parent_controls_fit_a_half_tile_inspector(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        let parent = app.read_with(cx, |app, _| {
+            app.selected_commit
+                .and_then(|index| app.commits.get(index))
+                .and_then(|commit| commit.parents.first().cloned())
+                .expect("the selected commit's parent")
+        });
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+        cx.simulate_resize(size(px(461.), px(980.)));
+        draw(cx);
+        let viewport = cx.debug_bounds("commit-message-viewport").unwrap();
+        let metadata = cx.debug_bounds("commit-metadata").unwrap();
+        let control = cx.debug_bounds("commit-parent-0").unwrap();
+        let inset = cx.update(|window, _| window.rem_size() * 0.75);
+        // A list item is laid out as a root, which rounds its 155.5 px to
+        // 156: the half pixel is the metadata's padding, beyond its text.
+        assert!(
+            metadata.right() <= viewport.right() + px(0.5),
+            "{metadata:?} inside {viewport:?}"
+        );
+        assert!(
+            control.right() <= viewport.right() - inset,
+            "{control:?} inside {viewport:?}"
+        );
+        assert_eq!(
+            COMPACT_LABELS.with(|names| names.borrow().get("commit-parent-0").cloned()),
+            Some(format!("Compare against parent 1 · {parent}").into()),
+            "P1, named for its parent's hash"
+        );
+        let short = cx.update(|window, _| {
+            line_widths(&[("P1", appearance::ui_text(12.))], window) + appearance::ui_size(20.)
+        });
+        assert!(
+            control.size.width <= short.max(appearance::ui_size(28.)) + px(0.5),
+            "{control:?} reads P1"
+        );
+        // Wide, it keeps the hash.
+        COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        let wide = cx.debug_bounds("commit-parent-0").unwrap();
+        assert!(
+            wide.size.width > control.size.width,
+            "{wide:?} keeps the hash"
+        );
+        assert_eq!(
+            COMPACT_LABELS.with(|names| names.borrow().get("commit-parent-0").cloned()),
+            None
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

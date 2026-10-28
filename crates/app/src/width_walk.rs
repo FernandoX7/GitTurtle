@@ -95,6 +95,7 @@ const REGIONS: &[&str] = &[
     "github-fixture-mode",
     "github-title",
     "github-panel",
+    "repository-tab-strip",
     "repository-header",
     "git-actions",
     "repository-rail",
@@ -128,29 +129,31 @@ struct Known {
 }
 
 const KNOWN: &[Known] = &[
-    // At 18 pt in 461 × 980 a line of the selected commit's details runs
-    // past the 156 px inspector: the parent Button, "P1 · ‹hash›", is 148 px
-    // wide where the metadata has 128.5, so the date line wraps at its width.
+    // At 18 pt in 478 × 980, a width the parent controls' breakpoint brings
+    // into the walk, the repository tab's name is less than a pixel wider
+    // than the 59.5 px its tab leaves it, and the kit's Button label, which
+    // GPUI ends in an ellipsis only once the name's width rounded down
+    // exceeds the room, draws it whole and cut by half a pixel.
     Known {
         page: Page::History,
         sizes: &[18],
         rule: Rule::CutText,
-        region: "commit-message-viewport",
-        follow_up: "the commit details fit an 18 pt half-tile inspector",
+        region: "repository-tab-strip",
+        follow_up: "a repository tab ends its name inside its tab",
     },
     Known {
         page: Page::CompareText,
         sizes: &[18],
         rule: Rule::CutText,
-        region: "commit-message-viewport",
-        follow_up: "the commit details fit an 18 pt half-tile inspector",
+        region: "repository-tab-strip",
+        follow_up: "a repository tab ends its name inside its tab",
     },
     Known {
         page: Page::CompareImage,
         sizes: &[18],
         rule: Rule::CutText,
-        region: "commit-message-viewport",
-        follow_up: "the commit details fit an 18 pt half-tile inspector",
+        region: "repository-tab-strip",
+        follow_up: "a repository tab ends its name inside its tab",
     },
     // A PR's detail rows and their controls run past a narrow panel.
     Known {

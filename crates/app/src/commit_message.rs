@@ -57,6 +57,10 @@ pub(super) struct Toolbar {
     /// An inspector at least its tight minimum wide keeps Copy message and
     /// Hash labelled and reserves nothing, as before.
     reserve: bool,
+    /// The width inside the inspector's left border and the `px_3` that the
+    /// toolbar and the metadata below it share: the room a line or a
+    /// control of the metadata has, such as a parent's control.
+    room: Pixels,
 }
 
 /// One layout of the toolbar's controls (DESIGN.md, "One responsive order":
@@ -165,6 +169,7 @@ impl Toolbar {
             plain,
             actions,
             reserve: pinned,
+            room,
         }
     }
 
@@ -187,6 +192,13 @@ impl State {
     /// stale.
     pub(super) fn lay_out_toolbar(&self, toolbar: Option<Toolbar>) {
         self.1.set(toolbar);
+    }
+
+    /// The room a line or a control of the metadata has in the inspector the
+    /// window draws next (`Toolbar::room`); `None` where no window lays the
+    /// inspector out.
+    pub(super) fn details_room(&self) -> Option<Pixels> {
+        self.1.get().map(|toolbar| toolbar.room)
     }
 
     /// Drops a presentation of another OID, ending its text selection at once.
@@ -451,7 +463,7 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let oid = commit.oid.clone();
         let rows = selection.clone();
-        let list = gpui_kit::list(scroll.clone(), move |index, _, cx| {
+        let list = gpui_kit::list(scroll.clone(), move |index, window, cx| {
             if let Some(piece) = pieces.get(index) {
                 return render_piece(piece, index, &rows, cx).into_any_element();
             }
@@ -466,7 +478,12 @@ impl GitTurtle {
                     if file_history {
                         this.render_revision_metadata(this.file_history_entry().unwrap(), &rows, cx)
                     } else {
-                        this.render_commit_metadata(this.message_commit(false).unwrap(), &rows, cx)
+                        this.render_commit_metadata(
+                            this.message_commit(false).unwrap(),
+                            &rows,
+                            window,
+                            cx,
+                        )
                     }
                 })
                 .unwrap_or_else(|_| div().into_any_element())
