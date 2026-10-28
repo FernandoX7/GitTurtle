@@ -7350,17 +7350,22 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// The Changes filter's placeholder fits its field as the composer's do.
-    /// In the tight form's one row at 18 pt in a 461 × 490 window, where the
-    /// field is about 86 px, it ends with an ellipsis at a character boundary
-    /// inside the field, where it was cut mid-glyph; in its own row at 13 pt
-    /// in a 1480 × 980 window it is whole.
+    /// The Changes filter's placeholder fits its field in whole words. In
+    /// the tight form's one row at 18 pt in a 461 × 490 window, where the
+    /// field is about 86 px, it reads the short "Filter", whole, where it
+    /// once read "Filte…", a cut word; in its own row in a 1480 × 980 window,
+    /// at 13 and at 18 pt, it is the whole "Filter working paths…". Only a
+    /// field too narrow for "Filter" cuts it before an ellipsis.
     #[gpui::test]
     async fn working_filter_placeholder_fits_its_field(cx: &mut TestAppContext) {
-        use crate::workspace::FILTER_PLACEHOLDER;
+        use crate::workspace::{FILTER_PLACEHOLDER, FILTER_SHORT_PLACEHOLDER};
         let (_fixture, app, cx) = working_window(cx).await;
         cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
-        for (text, width, height, tight) in [(18, 461., 490., true), (13, 1480., 980., false)] {
+        for (text, width, height, tight) in [
+            (18, 461., 490., true),
+            (13, 1480., 980., false),
+            (18, 1480., 980., false),
+        ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
@@ -7388,18 +7393,12 @@ pub(crate) mod tests {
                 )
             });
             assert!(drawn <= field.size.width, "{at}: {shown:?} in {field:?}");
-            let stem = shown.trim_end_matches('…');
-            if tight {
-                assert!(
-                    shown != FILTER_PLACEHOLDER
-                        && shown.ends_with('…')
-                        && !stem.is_empty()
-                        && FILTER_PLACEHOLDER.starts_with(stem),
-                    "{at}: {shown:?} in {field:?}"
-                );
+            let expected = if tight {
+                FILTER_SHORT_PLACEHOLDER
             } else {
-                assert_eq!(shown.as_ref(), FILTER_PLACEHOLDER, "{at}");
-            }
+                FILTER_PLACEHOLDER
+            };
+            assert_eq!(shown.as_ref(), expected, "{at}: in {field:?}");
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }

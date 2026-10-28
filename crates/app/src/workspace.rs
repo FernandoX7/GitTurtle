@@ -286,6 +286,9 @@ pub(super) struct WorkingForms {
 /// The filter's, the title's and the description's placeholders, of which
 /// each field shows as much as fits its width (`placeholder_fit`).
 pub(super) const FILTER_PLACEHOLDER: &str = "Filter working paths…";
+/// The filter's placeholder where the whole one does not fit: a shorter
+/// whole word reads better than a cut one ("Filte…").
+pub(super) const FILTER_SHORT_PLACEHOLDER: &str = "Filter";
 pub(super) const TITLE_PLACEHOLDER: &str = "Summarize the change";
 pub(super) const DESCRIPTION_PLACEHOLDER: &str = "Explain why this change is needed…";
 
@@ -669,7 +672,11 @@ impl GitTurtle {
     /// where the field can be 86 px at 18 pt, or its own row above the
     /// selection controls.
     pub(super) fn fit_filter_placeholder(&self) -> impl IntoElement {
-        placeholder_fit(self.working_filter.clone(), &FILTER_FIT, FILTER_PLACEHOLDER)
+        placeholder_fit(
+            self.working_filter.clone(),
+            &FILTER_FIT,
+            &[FILTER_PLACEHOLDER, FILTER_SHORT_PLACEHOLDER],
+        )
     }
 
     /// The commit action's label: what it commits, or why it cannot.
@@ -898,15 +905,32 @@ fn ellipsized(full: &str, room: Pixels, size: Pixels, window: &Window) -> Shared
     fitting
 }
 
-/// A canvas that, painted after `field`, fits its placeholder, `full`, to the
-/// width the field just painted its text at, so a narrow field ends the
-/// placeholder with an ellipsis rather than clipping a glyph. It sets the
+/// The first of `forms` that fits `room` whole at `size`, each a shorter
+/// wording of the one before it in whole words; where none does, the last
+/// as [`ellipsized`] fits it, so a word is cut only where even the shortest
+/// form is too wide.
+fn whole_form(forms: &[&str], room: Pixels, size: Pixels, window: &Window) -> SharedString {
+    let weight = window.text_style().font_weight;
+    let (shortest, wider) = forms.split_last().expect("a placeholder");
+    wider
+        .iter()
+        .find(|form| crate::views::shaped_width(form, size, weight, window) <= room)
+        .map_or_else(
+            || ellipsized(shortest, room, size, window),
+            |form| SharedString::from(form.to_string()),
+        )
+}
+
+/// A canvas that, painted after `field`, fits its placeholder to the width
+/// the field just painted its text at: the first of `forms`, its whole-word
+/// wordings from the longest, that fits, else the shortest ending with an
+/// ellipsis rather than clipping a glyph (`whole_form`). It sets the
 /// placeholder only when that changes, and then draws again, since refresh is
 /// ignored during paint. Its parent is positioned; it takes no room.
 fn placeholder_fit<M: gpui_kit::base::input::InputModeKind + 'static>(
     field: Entity<gpui_kit::base::input::InputBaseState<M>>,
     cache: &'static std::thread::LocalKey<PlaceholderFit>,
-    full: &'static str,
+    forms: &'static [&'static str],
 ) -> impl IntoElement {
     canvas(
         |_, _, _| (),
@@ -914,7 +938,7 @@ fn placeholder_fit<M: gpui_kit::base::input::InputModeKind + 'static>(
             let Some(text) = field.read(cx).text_bounds() else {
                 return;
             };
-            let fit = fitted_placeholder(cache, full, text.size.width, window);
+            let fit = fitted_placeholder(cache, forms, text.size.width, window);
             if *field.read(cx).presentation().placeholder() != fit {
                 field.update(cx, |state, cx| state.set_placeholder(fit, window, cx));
                 window.defer(cx, |window, _| window.refresh());
@@ -925,11 +949,11 @@ fn placeholder_fit<M: gpui_kit::base::input::InputModeKind + 'static>(
     .size_0()
 }
 
-/// `full` as it fits `room`, laid out again only when the room, the font or
-/// the sizes change.
+/// `forms` as they fit `room` (`whole_form`), laid out again only when the
+/// room, the font or the sizes change.
 fn fitted_placeholder(
     cache: &'static std::thread::LocalKey<PlaceholderFit>,
-    full: &str,
+    forms: &[&str],
     room: Pixels,
     window: &Window,
 ) -> SharedString {
@@ -939,7 +963,7 @@ fn fitted_placeholder(
         match &*cache {
             Some((cached, width, text)) if *cached == key && *width == room => text.clone(),
             _ => {
-                let text = ellipsized(full, room, crate::appearance::ui_text(12.), window);
+                let text = whole_form(forms, room, crate::appearance::ui_text(12.), window);
                 *cache = Some((key, room, text.clone()));
                 text
             }
@@ -2315,11 +2339,11 @@ impl GitTurtle {
                         }))
                     }))
                     // Painted after both fields, it fits their placeholders.
-                    .child(placeholder_fit(self.commit_title.clone(), &TITLE_FIT, TITLE_PLACEHOLDER))
+                    .child(placeholder_fit(self.commit_title.clone(), &TITLE_FIT, &[TITLE_PLACEHOLDER]))
                     .child(placeholder_fit(
                         self.commit_message.clone(),
                         &DESCRIPTION_FIT,
-                        DESCRIPTION_PLACEHOLDER,
+                        &[DESCRIPTION_PLACEHOLDER],
                     )),
             )))
             .into_any_element()
