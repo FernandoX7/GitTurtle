@@ -393,6 +393,14 @@ fn the_first_down_in_a_row_menu_reaches_its_first_action(cx: &mut TestAppContext
         cx.debug_bounds("menu-item: Work · Label").is_some(),
         "the menu opens with the group's name"
     );
+    // Move to titles the destinations, and the group's current place is
+    // checked and unavailable: moving it there would do nothing.
+    for entry in [
+        "menu-item: Move to · Label",
+        "menu-item: Top level · MenuItemCheckBox True disabled",
+    ] {
+        assert!(cx.debug_bounds(entry).is_some(), "{entry}");
+    }
     cx.simulate_keystrokes("down enter");
     settle(cx);
     app.read_with(cx, |app, _| {
