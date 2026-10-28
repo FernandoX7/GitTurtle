@@ -40,6 +40,9 @@ ashpd = { version = "=0.13.13", default-features = false, features = ["async-io"
 
 [dev-dependencies]
 gpui-kit = { version = "=0.6.0", features = ["test-support"] }
+# The tree model and filter under every AccessKit platform adapter, already in
+# the graph on each platform; the accessibility tests walk a tree through it.
+accesskit_consumer = "=0.38.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The toolkit's Linux text system, already in the graph through gpui-kit; the

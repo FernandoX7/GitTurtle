@@ -1424,4 +1424,177 @@ mod tests {
             );
         }
     }
+
+    /// While the Reflog is open, an assistive technology reaches the dialog
+    /// and nothing of the page it covers. AT-SPI reached History's commit
+    /// list and its rows beside the dialog, so a screen reader could browse
+    /// and activate commits the dialog covers. Escape still closes the Reflog
+    /// and returns focus to the History list that opened it, and History is
+    /// in reach again.
+    ///
+    /// The test platform builds no accessibility tree, so the test builds the
+    /// part GPUI would: the page's and the scrolling regions' nodes as their
+    /// wrappers wrote them, each in the wrapper it was drawn in, the dialog's
+    /// own node as its focus trap writes it, beside the page, and the rows
+    /// at their bounds in their lists. It walks the tree through AccessKit's
+    /// own filter, and on Linux through the AT-SPI adapter too.
+    #[gpui::test]
+    async fn an_open_reflog_leaves_the_page_it_covers_out_of_reach(cx: &mut TestAppContext) {
+        use crate::native_accessibility::{reachable, written};
+        use crate::views::tests::{bounds_of, history_script, history_window_from, settle};
+        use gpui::accesskit::{Node, Rect, Role as A11yRole, TreeUpdate};
+
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        // A dialog otherwise slides in on a wall-clock animation.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle(&app, cx).await;
+        let opener = app.read_with(cx, |app, _| app.focus.clone());
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+
+        let physical = |cx: &mut VisualTestContext, bounds: Bounds<Pixels>| {
+            let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+            Rect {
+                x0: f64::from(f32::from(bounds.left())) * scale,
+                y0: f64::from(f32::from(bounds.top())) * scale,
+                x1: f64::from(f32::from(bounds.right())) * scale,
+                y1: f64::from(f32::from(bounds.bottom())) * scale,
+            }
+        };
+        // The window's tree as the next frame builds it.
+        let tree = |cx: &mut VisualTestContext| -> TreeUpdate {
+            written::forget();
+            draw(cx);
+            let mut tree = written::Assembly::default()
+                .written("gitturtle-page", None)
+                .written("history-pane", None)
+                .written("files-pane", None);
+            for index in 0..40 {
+                if let Some(bounds) = bounds_of(cx, format!("history-row-{index}")) {
+                    let mut row = Node::new(A11yRole::ListBoxOption);
+                    row.set_label(format!("History commit {index}"));
+                    row.set_bounds(physical(cx, bounds));
+                    tree = tree.node(&format!("history-row-{index}"), row, Some("history-pane"));
+                }
+            }
+            if cx.update(|window, cx| window.has_active_dialog(cx)) {
+                let mut dialog = Node::new(A11yRole::AlertDialog);
+                dialog.set_label("Reflog");
+                dialog.set_modal();
+                tree = tree
+                    .node("dialog", dialog, None)
+                    .written("reflog-browser-content", Some("dialog"))
+                    .written("reflog-list", Some("dialog"));
+                for index in 0..100 {
+                    if let Some(bounds) = bounds_of(cx, format!("reflog-entry-{index}")) {
+                        let mut entry = Node::new(A11yRole::Button);
+                        entry.set_label(format!("Reflog entry {index}"));
+                        entry.set_bounds(physical(cx, bounds));
+                        tree =
+                            tree.node(&format!("reflog-entry-{index}"), entry, Some("reflog-list"));
+                    }
+                }
+            }
+            let window = Bounds::new(
+                point(px(0.), px(0.)),
+                cx.update(|window, _| window.viewport_size()),
+            );
+            tree.tree(physical(cx, window), None)
+        };
+        // The names an assistive technology reaches in `update`, the dialog's
+        // with its role.
+        let names = |update: TreeUpdate| -> Vec<String> {
+            #[cfg(target_os = "linux")]
+            let atspi: Vec<String> =
+                crate::native_accessibility::atspi_state_tests::reached(update.clone())
+                    .into_iter()
+                    .map(|node| match node.role {
+                        accesskit_atspi_common::Role::Alert => format!("{} alert", node.name),
+                        _ => node.name,
+                    })
+                    .collect();
+            let names: Vec<String> = reachable(update)
+                .into_iter()
+                .filter_map(|node| match node.role {
+                    A11yRole::AlertDialog => node.label.map(|label| format!("{label} alert")),
+                    _ => node.label,
+                })
+                .collect();
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                atspi
+                    .iter()
+                    .filter(|name| !name.is_empty())
+                    .collect::<Vec<_>>(),
+                names
+                    .iter()
+                    .filter(|name| !name.is_empty())
+                    .collect::<Vec<_>>(),
+                "AT-SPI reaches what AccessKit's filter keeps"
+            );
+            names
+        };
+        let history = |names: &[String]| {
+            names
+                .iter()
+                .filter(|name| name.starts_with("History commit"))
+                .count()
+        };
+
+        let reached = names(tree(cx));
+        assert!(history(&reached) > 2, "History is in reach: {reached:?}");
+
+        let browser = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().expect("a repository");
+            let browser = cx.new(|cx| ReflogBrowser::new(app.downgrade(), repo, window, cx));
+            browser.update(cx, |this, cx| this.refresh(window, cx));
+            ReflogBrowser::show(browser.clone(), window, cx);
+            browser
+        });
+        let read = browser.update(cx, |this, _| this.task.take());
+        read.expect("the log is read").await;
+        let reached = names(tree(cx));
+        assert_eq!(
+            history(&reached),
+            0,
+            "nothing of the page is in reach while the Reflog is open: {reached:?}"
+        );
+        assert!(
+            reached.iter().any(|name| name == "Reflog alert")
+                && reached.iter().any(|name| name.starts_with("Reflog entry")),
+            "the Reflog and its entries are in reach: {reached:?}"
+        );
+        // The page holds History's list, the dialog does not lie in it, and
+        // it is hidden only while the dialog is open.
+        let page = written::get("gitturtle-page").expect("the page writes a node");
+        assert!(page.parent.is_none() && page.node.is_hidden(), "{page:?}");
+        assert_eq!(
+            written::get("history-pane")
+                .and_then(|list| list.parent)
+                .as_deref(),
+            Some("gitturtle-page"),
+            "History's list lies in the page"
+        );
+        let content = written::get("reflog-browser-content").expect("the Reflog is drawn");
+        assert_eq!(content.parent, None, "the Reflog is drawn beside the page");
+
+        cx.simulate_keystrokes("escape");
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        draw(cx);
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "Escape returns focus to the opener"
+        );
+        let reached = names(tree(cx));
+        assert!(
+            history(&reached) > 2,
+            "History is in reach again: {reached:?}"
+        );
+        let page = written::get("gitturtle-page").expect("the page writes a node");
+        assert!(!page.node.is_hidden(), "{page:?}");
+    }
 }

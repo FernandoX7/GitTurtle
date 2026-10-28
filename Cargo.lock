@@ -2255,6 +2255,7 @@ name = "gitturtle"
 version = "0.1.0"
 dependencies = [
  "accesskit_atspi_common",
+ "accesskit_consumer",
  "anyhow",
  "ashpd",
  "block2 0.6.2",

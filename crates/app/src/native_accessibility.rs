@@ -147,14 +147,13 @@ impl<E: Element> Element for ClipsChildren<E> {
         };
         self.visible = Some(visible);
         #[cfg(test)]
-        if let (Some(id), Some(role)) = (self.inner.id(), self.a11y_role()) {
-            let mut node = gpui::accesskit::Node::new(role);
-            self.write_a11y_info(&mut node);
-            node.set_bounds(visible);
-            CLIPPING_NODES.with(|nodes| nodes.borrow_mut().insert(id.to_string(), node));
-        }
-        self.inner
-            .prepaint(id, inspector, bounds, layout, window, cx)
+        let written = written::open(self, Some(visible));
+        let state = self
+            .inner
+            .prepaint(id, inspector, bounds, layout, window, cx);
+        #[cfg(test)]
+        written::close(written);
+        state
     }
 
     fn paint(
@@ -192,26 +191,306 @@ impl<E: Element> Element for ClipsChildren<E> {
     }
 }
 
+/// `page`, everything an open modal dialog covers, as a node that leaves the
+/// accessibility tree while `covered`.
+///
+/// The window draws each dialog over the page, and the dialog's focus trap
+/// keeps the keyboard inside it, but the page's nodes stayed in the tree:
+/// with the Reflog open, AT-SPI still reached History's lists and buttons,
+/// so a screen reader could browse and activate controls the dialog covers.
+/// AccessKit's adapters do not act on a dialog's `modal` flag beyond
+/// reporting it (AT-SPI's `modal` state, macOS's `AXModal`); every adapter
+/// leaves out a hidden node with all it holds, so the page is hidden while
+/// a dialog is open and the dialogs, beside it, are what remains. The node
+/// is a generic container, which AccessKit's filter passes over, so while
+/// nothing covers the page an assistive technology finds the same tree as
+/// before. Focus and the Tab order do not change: the wrapper adds no
+/// dispatch node, focus handle or listener, and a dialog that closes returns
+/// focus to its opener as before.
+pub(crate) fn beneath_modal<E: IntoElement>(page: E, covered: bool) -> BeneathModal<E::Element> {
+    BeneathModal {
+        inner: page.into_element(),
+        covered,
+    }
+}
+
+/// The element [`beneath_modal`] returns.
+pub(crate) struct BeneathModal<E> {
+    inner: E,
+    /// Whether an open dialog covers the page.
+    covered: bool,
+}
+
+impl<E: Element> IntoElement for BeneathModal<E> {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl<E: Element> Element for BeneathModal<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    type PrepaintState = E::PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        self.inner.id()
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.inner.source_location()
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.inner.request_layout(id, inspector, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        #[cfg(test)]
+        let written = written::open(self, None);
+        let state = self
+            .inner
+            .prepaint(id, inspector, bounds, layout, window, cx);
+        #[cfg(test)]
+        written::close(written);
+        state
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.inner
+            .paint(id, inspector, bounds, layout, prepaint, window, cx);
+    }
+
+    fn a11y_role(&self) -> Option<Role> {
+        Some(self.inner.a11y_role().unwrap_or(Role::GenericContainer))
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.inner.write_a11y_info(node);
+        if self.covered {
+            node.set_hidden();
+        }
+    }
+
+    fn a11y_synthetic_children(
+        &mut self,
+        prepaint: &mut Self::PrepaintState,
+        builder: &mut A11ySubtreeBuilder,
+    ) {
+        self.inner.a11y_synthetic_children(prepaint, builder);
+    }
+}
+
+/// The nodes this module's wrappers write, read back for tests: the test
+/// platform never builds a window's accessibility tree.
 #[cfg(test)]
-thread_local! {
-    /// The node each [`clips_children`] element last prepainted, by element
-    /// ID: the test platform never builds a window's accessibility tree.
-    static CLIPPING_NODES: std::cell::RefCell<std::collections::HashMap<String, gpui::accesskit::Node>> =
-        Default::default();
+pub(crate) mod written {
+    use super::*;
+    use std::{cell::RefCell, collections::HashMap};
+
+    /// A node a wrapper wrote as it last prepainted, and the wrapper nearest
+    /// around it, by element ID, if any: GPUI makes a node the child of the
+    /// node of the nearest element around it that has one.
+    #[derive(Clone, Debug)]
+    pub(crate) struct Written {
+        pub node: gpui::accesskit::Node,
+        pub parent: Option<String>,
+    }
+
+    thread_local! {
+        static NODES: RefCell<HashMap<String, Written>> = Default::default();
+        /// The wrappers prepainting, innermost last.
+        static OPEN: RefCell<Vec<String>> = Default::default();
+    }
+
+    /// Records the node `element` writes, at `bounds` if given, as the
+    /// element starts to prepaint what it holds. GPUI writes a node only
+    /// for an element with an ID; so does this.
+    pub(super) fn open<E: Element>(
+        element: &E,
+        bounds: Option<gpui::accesskit::Rect>,
+    ) -> Option<String> {
+        let id = element.id()?.to_string();
+        let role = element.a11y_role()?;
+        let mut node = gpui::accesskit::Node::new(role);
+        element.write_a11y_info(&mut node);
+        if let Some(bounds) = bounds {
+            node.set_bounds(bounds);
+        }
+        let parent = OPEN.with(|open| open.borrow().last().cloned());
+        NODES.with(|nodes| {
+            nodes
+                .borrow_mut()
+                .insert(id.clone(), Written { node, parent })
+        });
+        OPEN.with(|open| open.borrow_mut().push(id.clone()));
+        Some(id)
+    }
+
+    /// Ends what [`open`] began, once the element has prepainted.
+    pub(super) fn close(opened: Option<String>) {
+        if opened.is_some() {
+            OPEN.with(|open| open.borrow_mut().pop());
+        }
+    }
+
+    /// What the wrapper with element ID `id` wrote as it last prepainted.
+    pub(crate) fn get(id: &str) -> Option<Written> {
+        NODES.with(|nodes| nodes.borrow().get(id).cloned())
+    }
+
+    /// Forgets every node [`get`] would return, so that what a test reads
+    /// after its next draw comes from that draw.
+    pub(crate) fn forget() {
+        NODES.with(|nodes| nodes.borrow_mut().clear());
+    }
+
+    /// A window's tree as GPUI builds it, assembled for a test from the
+    /// nodes the wrappers wrote, each where it was drawn, and the nodes the
+    /// test adds for elements without a wrapper, such as a dialog's own node
+    /// or a list's rows, at their rendered bounds.
+    #[derive(Default)]
+    pub(crate) struct Assembly {
+        /// Each node by its key, with its parent's key, `None` for the root.
+        nodes: Vec<(String, gpui::accesskit::Node, Option<String>)>,
+    }
+
+    impl Assembly {
+        /// Adds the node the wrapper `id` last wrote, under the wrapper it
+        /// was drawn in or, drawn in none, under `outside` (the root if
+        /// `None`). A wrapper that was not drawn adds nothing.
+        pub(crate) fn written(mut self, id: &str, outside: Option<&str>) -> Self {
+            if let Some(Written { node, parent }) = get(id) {
+                let parent = parent.or_else(|| outside.map(str::to_owned));
+                self.nodes.push((id.to_owned(), node, parent));
+            }
+            self
+        }
+
+        /// Adds `node` under `parent`, the root if `None`, as `key`.
+        pub(crate) fn node(
+            mut self,
+            key: &str,
+            node: gpui::accesskit::Node,
+            parent: Option<&str>,
+        ) -> Self {
+            self.nodes
+                .push((key.to_owned(), node, parent.map(str::to_owned)));
+            self
+        }
+
+        /// The tree: a window root at `window` holding the nodes, in the
+        /// order they were added, with focus on `focus`, the root if `None`.
+        pub(crate) fn tree(
+            self,
+            window: gpui::accesskit::Rect,
+            focus: Option<&str>,
+        ) -> gpui::accesskit::TreeUpdate {
+            use gpui::accesskit::{Node, NodeId, Role, Tree, TreeId, TreeUpdate};
+            let id = |key: &str| {
+                let index = self
+                    .nodes
+                    .iter()
+                    .position(|(added, ..)| added == key)
+                    .unwrap_or_else(|| panic!("no node {key} was added"));
+                NodeId(index as u64 + 1)
+            };
+            let children = |parent: Option<&str>| {
+                self.nodes
+                    .iter()
+                    .filter(|(_, _, of)| of.as_deref() == parent)
+                    .map(|(key, ..)| id(key))
+                    .collect::<Vec<_>>()
+            };
+            let mut nodes: Vec<(NodeId, Node)> = self
+                .nodes
+                .iter()
+                .map(|(key, node, _)| {
+                    let mut node = node.clone();
+                    node.set_children(children(Some(key)));
+                    (id(key), node)
+                })
+                .collect();
+            let mut root = Node::new(Role::Window);
+            root.set_bounds(window);
+            root.set_children(children(None));
+            nodes.push((NodeId(0), root));
+            TreeUpdate {
+                nodes,
+                tree: Some(Tree::new(NodeId(0))),
+                tree_id: TreeId::ROOT,
+                focus: focus.map_or(NodeId(0), id),
+            }
+        }
+    }
 }
 
 /// The node the [`clips_children`] element with `id` wrote as it last
 /// prepainted, with its role, clipping flag and visible bounds.
 #[cfg(test)]
 pub(crate) fn clipping_node(id: &str) -> Option<gpui::accesskit::Node> {
-    CLIPPING_NODES.with(|nodes| nodes.borrow().get(id).cloned())
+    written::get(id)
+        .map(|written| written.node)
+        .filter(|node| node.clips_children())
 }
 
 /// Forgets every node [`clipping_node`] would return, so that what a test
 /// reads after its next draw comes from that draw.
 #[cfg(test)]
 pub(crate) fn forget_clipping_nodes() {
-    CLIPPING_NODES.with(|nodes| nodes.borrow_mut().clear());
+    written::forget();
+}
+
+/// A node an assistive technology reaches, as every AccessKit adapter
+/// filters the tree (`accesskit_consumer::common_filter`).
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct Reachable {
+    pub role: Role,
+    pub label: Option<String>,
+}
+
+/// Every node an assistive technology reaches walking `update`'s tree from
+/// its root through AccessKit's own filter, the one the AT-SPI, macOS and
+/// Windows adapters apply, in tree order.
+#[cfg(test)]
+pub(crate) fn reachable(update: gpui::accesskit::TreeUpdate) -> Vec<Reachable> {
+    use accesskit_consumer::{Node, Tree, common_filter};
+    fn walk(node: Node<'_>, found: &mut Vec<Reachable>) {
+        found.push(Reachable {
+            role: node.role(),
+            label: node.label(),
+        });
+        for child in node.filtered_children(common_filter) {
+            walk(child, found);
+        }
+    }
+    let tree = Tree::new(update, true);
+    let mut found = Vec::new();
+    walk(tree.state().root(), &mut found);
+    found
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

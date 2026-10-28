@@ -4447,290 +4447,15 @@ impl Render for GitTurtle {
         } else {
             page
         };
-        div()
-            .id("gitturtle")
-            .relative()
-            .track_focus(&self.app_focus)
-            .key_context("GitTurtle")
-            .child(self.focus_ring.pointer_listener())
-            .on_action(cx.listener(|this, _: &theme_editor::PageUpAction, _, cx| {
-                this.scroll_settings_page(settings::PageStep::Up, cx)
-            }))
-            .on_action(cx.listener(|this, _: &theme_editor::PageDownAction, _, cx| {
-                this.scroll_settings_page(settings::PageStep::Down, cx)
-            }))
-            .on_action(cx.listener(|this, _: &theme_editor::PageTopAction, _, cx| {
-                this.scroll_settings_page(settings::PageStep::Top, cx)
-            }))
-            .on_action(cx.listener(|this, _: &theme_editor::PageBottomAction, _, cx| {
-                this.scroll_settings_page(settings::PageStep::Bottom, cx)
-            }))
-            .size_full()
+        // Everything an open dialog covers. The dialogs and the copy
+        // announcement are drawn beside it, inside the element whose actions
+        // they dispatch through.
+        let page_frame = div()
+            .id("gitturtle-page")
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
-            .bg(rgb(colors.canvas))
-            .text_color(rgb(colors.text))
-            .text_size(crate::appearance::ui_text(13.))
-            // Keep an active image drag continuous across the toolbar, inspector,
-            // and either image viewport until the mouse is released.
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                this.move_image_drag(event, cx);
-                if let Some((id, start, width)) = this.column_drag {
-                    if event.pressed_button == Some(MouseButton::Left) {
-                        this.settings
-                            .columns
-                            .set_width(id, width + f32::from(event.position.x - start));
-                        cx.notify();
-                    }
-                    return;
-                }
-                let Some((start, offset)) = this.image_drag else {
-                    return;
-                };
-                if event.pressed_button != Some(MouseButton::Left) {
-                    this.end_image_drag();
-                    if this.image_drag.take().is_some() {
-                        cx.notify();
-                    }
-                    return;
-                }
-                let requested = offset + event.position - start;
-                let maximum = this.image_scroll.max_offset();
-                this.image_scroll.set_offset(point(
-                    requested.x.clamp(-maximum.x, px(0.)),
-                    requested.y.clamp(-maximum.y, px(0.)),
-                ));
-                cx.notify();
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    if this.column_drag.take().is_some() {
-                        this.save_preferences(window, cx);
-                    }
-                    this.end_image_drag();
-                    if this.image_drag.take().is_some() {
-                        cx.notify();
-                    }
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    if this.column_drag.take().is_some() {
-                        this.save_preferences(window, cx);
-                    }
-                    this.end_image_drag();
-                    if this.image_drag.take().is_some() {
-                        cx.notify();
-                    }
-                }),
-            )
-            .on_action(cx.listener(|this, _: &ExtendNextWorking, window, cx| {
-                if this.mode == WorkspaceMode::Working {
-                    this.extend_working_selection(true, window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &ExtendPreviousWorking, window, cx| {
-                if this.mode == WorkspaceMode::Working {
-                    this.extend_working_selection(false, window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &SelectAllWorking, _, cx| this.select_all_working(cx)))
-            // Selected commit-message text copies byte for byte wherever
-            // focus is; otherwise the toolkit root copies other selected text.
-            .on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, _, cx| {
-                if !this.inspector_message.copy_selection(cx) {
-                    cx.propagate();
-                }
-            }))
-            .on_action(cx.listener(|this, _: &ShowActivity, window, cx| {
-                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
-                    this.open_activity(window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &QuickOpenFile, window, cx| {
-                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
-                    this.open_quick_file(window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &MainMenu, window, cx| {
-                #[cfg(target_os = "linux")]
-                {
-                    let menu = this.primary_menu.clone();
-                    window.defer(cx, move |window, cx| {
-                        menu.update(cx, |menu, cx| menu.toggle(window, cx))
-                    });
-                }
-                #[cfg(not(target_os = "linux"))]
-                let _ = (this, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ShowCommandPalette, window, cx| {
-                this.open_command_palette(window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &CompareRevisions, window, cx| {
-                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
-                    this.open_revision_comparison(window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &ShowHistory, window, cx| {
-                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
-                    this.show_history(window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &RevealRepository, _, cx| {
-                if let Some(repo) = &this.repository {
-                    cx.reveal_path(repo.path());
-                }
-            }))
-            .on_action(
-                cx.listener(|this, _: &OpenEditor, window, cx| {
-                    this.open_external_editor(window, cx)
-                }),
-            )
-            .on_action(cx.listener(|this, _: &OpenTerminal, window, cx| {
-                this.open_terminal(window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &ShortcutHelp, window, cx| {
-                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
-                    this.shortcut_help(window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &NextRepositoryTab, window, cx| {
-                this.cycle_repository_tab(1, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &PreviousRepositoryTab, window, cx| {
-                this.cycle_repository_tab(-1, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &CloseRepositoryTab, window, cx| {
-                if let Some(index) = this.repository_tabs.active {
-                    this.close_repository_tab(index, window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &SelectRepositoryTab1, window, cx| {
-                this.switch_repository_tab(0, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectRepositoryTab2, window, cx| {
-                this.switch_repository_tab(1, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectRepositoryTab3, window, cx| {
-                this.switch_repository_tab(2, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectRepositoryTab4, window, cx| {
-                this.switch_repository_tab(3, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectRepositoryTab5, window, cx| {
-                this.switch_repository_tab(4, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectRepositoryTab6, window, cx| {
-                this.switch_repository_tab(5, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectRepositoryTab7, window, cx| {
-                this.switch_repository_tab(6, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectRepositoryTab8, window, cx| {
-                this.switch_repository_tab(7, window, cx)
-            }))
-            .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
-            .on_action(cx.listener(|this, _: &CloseWindow, window, _| {
-                if this.operation_busy.is_none() {
-                    window.remove_window();
-                }
-            }))
-            .on_action(cx.listener(|_, _: &ZoomWindow, window, _| window.zoom_window()))
-            .on_action(cx.listener(|this, _: &ShowProjects, window, cx| {
-                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
-                    this.show_projects(window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &ShowSettings, window, cx| {
-                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
-                    this.show_settings(window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &ShowChanges, window, cx| {
-                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
-                    this.show_working(window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, action: &OpenRepository, window, cx| {
-                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
-                    this.choose_repository(action, window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, action: &Refresh, window, cx| {
-                if !window.has_active_dialog(cx)
-                    && !window.has_active_sheet(cx)
-                    && this.page == AppPage::Repository
-                {
-                    this.refresh(action, window, cx);
-                }
-            }))
-            .on_action(cx.listener(Self::search))
-            .on_action(cx.listener(Self::clear_search))
-            // Editor Escape is a distinct action from the list binding. Find
-            // and native editor popovers consume it first; otherwise it is Back.
-            .on_action(
-                cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
-                    this.clear_search(&ClearSearch, window, cx);
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &BackHistory, window, cx| this.navigate_back(window, cx)),
-            )
-            .on_action(cx.listener(|this, _: &NextTextChange, window, cx| {
-                this.navigate_text_change(true, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &PreviousTextChange, window, cx| {
-                this.navigate_text_change(false, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &NextRow, window, cx| {
-                this.move_selection(1, false, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &PreviousRow, window, cx| {
-                this.move_selection(-1, false, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &FirstRow, window, cx| {
-                this.move_selection(-1, true, window, cx)
-            }))
-            .on_action(
-                cx.listener(|this, _: &LastRow, window, cx| {
-                    this.move_selection(1, true, window, cx)
-                }),
-            )
-            .on_action(cx.listener(|this, _: &NextPane, window, cx| {
-                if this.page != AppPage::Repository
-                    || window.has_active_dialog(cx)
-                    || window.has_active_sheet(cx)
-                {
-                    return;
-                }
-                if this.blame.owns_focus(window) {
-                    this.open_blame_commit(window, cx);
-                    return;
-                }
-                if this.mode == WorkspaceMode::Working {
-                    return;
-                }
-                if let Some(index) = this.selected_file {
-                    this.select_file(index, window, cx);
-                } else {
-                    this.pane = Pane::Files;
-                    window.focus(&this.file_focus, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
-                if this.page != AppPage::Repository
-                    || window.has_active_dialog(cx)
-                    || window.has_active_sheet(cx)
-                {
-                    return;
-                }
-                this.toggle_sidebar(window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ToggleProjectPane, window, cx| {
-                this.toggle_project_pane(window, cx)
-            }))
             .child(self.render_repository_tabs(window, cx))
             .when(self.page != AppPage::Projects, |root| {
                 root.child(self.render_header(chrome, window, cx))
@@ -4906,7 +4631,301 @@ impl Render for GitTurtle {
                     .children(self.status_hints(window, cx).map(|hints| {
                         div().debug_selector(|| "status-hints".into()).child(hints)
                     })),
+            );
+        div()
+            .id("gitturtle")
+            .relative()
+            .track_focus(&self.app_focus)
+            .key_context("GitTurtle")
+            .child(self.focus_ring.pointer_listener())
+            .on_action(cx.listener(|this, _: &theme_editor::PageUpAction, _, cx| {
+                this.scroll_settings_page(settings::PageStep::Up, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &theme_editor::PageDownAction, _, cx| {
+                    this.scroll_settings_page(settings::PageStep::Down, cx)
+                }),
             )
+            .on_action(cx.listener(|this, _: &theme_editor::PageTopAction, _, cx| {
+                this.scroll_settings_page(settings::PageStep::Top, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &theme_editor::PageBottomAction, _, cx| {
+                    this.scroll_settings_page(settings::PageStep::Bottom, cx)
+                }),
+            )
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(colors.canvas))
+            .text_color(rgb(colors.text))
+            .text_size(crate::appearance::ui_text(13.))
+            // Keep an active image drag continuous across the toolbar, inspector,
+            // and either image viewport until the mouse is released.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                this.move_image_drag(event, cx);
+                if let Some((id, start, width)) = this.column_drag {
+                    if event.pressed_button == Some(MouseButton::Left) {
+                        this.settings
+                            .columns
+                            .set_width(id, width + f32::from(event.position.x - start));
+                        cx.notify();
+                    }
+                    return;
+                }
+                let Some((start, offset)) = this.image_drag else {
+                    return;
+                };
+                if event.pressed_button != Some(MouseButton::Left) {
+                    this.end_image_drag();
+                    if this.image_drag.take().is_some() {
+                        cx.notify();
+                    }
+                    return;
+                }
+                let requested = offset + event.position - start;
+                let maximum = this.image_scroll.max_offset();
+                this.image_scroll.set_offset(point(
+                    requested.x.clamp(-maximum.x, px(0.)),
+                    requested.y.clamp(-maximum.y, px(0.)),
+                ));
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if this.column_drag.take().is_some() {
+                        this.save_preferences(window, cx);
+                    }
+                    this.end_image_drag();
+                    if this.image_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if this.column_drag.take().is_some() {
+                        this.save_preferences(window, cx);
+                    }
+                    this.end_image_drag();
+                    if this.image_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_action(cx.listener(|this, _: &ExtendNextWorking, window, cx| {
+                if this.mode == WorkspaceMode::Working {
+                    this.extend_working_selection(true, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ExtendPreviousWorking, window, cx| {
+                if this.mode == WorkspaceMode::Working {
+                    this.extend_working_selection(false, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SelectAllWorking, _, cx| this.select_all_working(cx)))
+            // Selected commit-message text copies byte for byte wherever
+            // focus is; otherwise the toolkit root copies other selected text.
+            .on_action(
+                cx.listener(|this, _: &gpui_kit::component::input::Copy, _, cx| {
+                    if !this.inspector_message.copy_selection(cx) {
+                        cx.propagate();
+                    }
+                }),
+            )
+            .on_action(cx.listener(|this, _: &ShowActivity, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.open_activity(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &QuickOpenFile, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.open_quick_file(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &MainMenu, window, cx| {
+                #[cfg(target_os = "linux")]
+                {
+                    let menu = this.primary_menu.clone();
+                    window.defer(cx, move |window, cx| {
+                        menu.update(cx, |menu, cx| menu.toggle(window, cx))
+                    });
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = (this, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowCommandPalette, window, cx| {
+                this.open_command_palette(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CompareRevisions, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.open_revision_comparison(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowHistory, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.show_history(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &RevealRepository, _, cx| {
+                if let Some(repo) = &this.repository {
+                    cx.reveal_path(repo.path());
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &OpenEditor, window, cx| {
+                    this.open_external_editor(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &OpenTerminal, window, cx| this.open_terminal(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ShortcutHelp, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.shortcut_help(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &NextRepositoryTab, window, cx| {
+                this.cycle_repository_tab(1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PreviousRepositoryTab, window, cx| {
+                this.cycle_repository_tab(-1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CloseRepositoryTab, window, cx| {
+                if let Some(index) = this.repository_tabs.active {
+                    this.close_repository_tab(index, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab1, window, cx| {
+                this.switch_repository_tab(0, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab2, window, cx| {
+                this.switch_repository_tab(1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab3, window, cx| {
+                this.switch_repository_tab(2, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab4, window, cx| {
+                this.switch_repository_tab(3, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab5, window, cx| {
+                this.switch_repository_tab(4, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab6, window, cx| {
+                this.switch_repository_tab(5, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab7, window, cx| {
+                this.switch_repository_tab(6, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SelectRepositoryTab8, window, cx| {
+                this.switch_repository_tab(7, window, cx)
+            }))
+            .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
+            .on_action(cx.listener(|this, _: &CloseWindow, window, _| {
+                if this.operation_busy.is_none() {
+                    window.remove_window();
+                }
+            }))
+            .on_action(cx.listener(|_, _: &ZoomWindow, window, _| window.zoom_window()))
+            .on_action(cx.listener(|this, _: &ShowProjects, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.show_projects(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowSettings, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.show_settings(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ShowChanges, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.show_working(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, action: &OpenRepository, window, cx| {
+                if !window.has_active_dialog(cx) && !window.has_active_sheet(cx) {
+                    this.choose_repository(action, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, action: &Refresh, window, cx| {
+                if !window.has_active_dialog(cx)
+                    && !window.has_active_sheet(cx)
+                    && this.page == AppPage::Repository
+                {
+                    this.refresh(action, window, cx);
+                }
+            }))
+            .on_action(cx.listener(Self::search))
+            .on_action(cx.listener(Self::clear_search))
+            // Editor Escape is a distinct action from the list binding. Find
+            // and native editor popovers consume it first; otherwise it is Back.
+            .on_action(
+                cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
+                    this.clear_search(&ClearSearch, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &BackHistory, window, cx| this.navigate_back(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &NextTextChange, window, cx| {
+                this.navigate_text_change(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PreviousTextChange, window, cx| {
+                this.navigate_text_change(false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NextRow, window, cx| {
+                this.move_selection(1, false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PreviousRow, window, cx| {
+                this.move_selection(-1, false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FirstRow, window, cx| {
+                this.move_selection(-1, true, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &LastRow, window, cx| {
+                    this.move_selection(1, true, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &NextPane, window, cx| {
+                if this.page != AppPage::Repository
+                    || window.has_active_dialog(cx)
+                    || window.has_active_sheet(cx)
+                {
+                    return;
+                }
+                if this.blame.owns_focus(window) {
+                    this.open_blame_commit(window, cx);
+                    return;
+                }
+                if this.mode == WorkspaceMode::Working {
+                    return;
+                }
+                if let Some(index) = this.selected_file {
+                    this.select_file(index, window, cx);
+                } else {
+                    this.pane = Pane::Files;
+                    window.focus(&this.file_focus, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| {
+                if this.page != AppPage::Repository
+                    || window.has_active_dialog(cx)
+                    || window.has_active_sheet(cx)
+                {
+                    return;
+                }
+                this.toggle_sidebar(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleProjectPane, window, cx| {
+                this.toggle_project_pane(window, cx)
+            }))
+            .child(native_accessibility::beneath_modal(
+                page_frame,
+                window.has_active_dialog(cx),
+            ))
             // Copies from any page or dialog are announced from here.
             .children(copy_feedback::announcement(window, cx))
             .children(Root::render_dialog_layer(window, cx))
@@ -4970,7 +4989,7 @@ pub(crate) mod tests {
     /// A `git fast-import` stream of `commits` commits on `main`, each
     /// rewriting `notes.txt`; the newest writes `lines` numbered lines, so
     /// its comparison has at least that many diff lines.
-    fn history_script(commits: usize, lines: usize) -> String {
+    pub(crate) fn history_script(commits: usize, lines: usize) -> String {
         let mut input = String::new();
         for commit in 0..commits {
             let notes: String = if commit + 1 == commits {
@@ -5197,7 +5216,7 @@ pub(crate) mod tests {
     }
 
     /// [`history_window`] on the repository `input` imports.
-    async fn history_window_from<'a>(
+    pub(crate) async fn history_window_from<'a>(
         cx: &'a mut TestAppContext,
         input: &str,
     ) -> (
@@ -10554,7 +10573,10 @@ pub(crate) mod tests {
 
     /// The bounds the last frame drew `selector` at, for a selector built at
     /// run time.
-    fn bounds_of(cx: &mut VisualTestContext, selector: String) -> Option<Bounds<Pixels>> {
+    pub(crate) fn bounds_of(
+        cx: &mut VisualTestContext,
+        selector: String,
+    ) -> Option<Bounds<Pixels>> {
         cx.debug_bounds(selector.leak())
     }
 
