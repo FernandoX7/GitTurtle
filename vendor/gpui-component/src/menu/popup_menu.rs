@@ -991,8 +991,8 @@ impl PopupMenu {
         window.dispatch_action(action.boxed_clone(), cx);
     }
 
-    /// Select `ix` for the keyboard, this method's only caller (Up, Down and
-    /// a submenu's first item).
+    /// Select `ix` for the keyboard, this method's only caller (Up, Down, a
+    /// submenu's first item and a keyboard-opened menu's).
     fn set_selected_index(&mut self, ix: usize, cx: &mut Context<Self>) {
         if self.selected_index != Some(ix) || !self.keyboard_selection {
             self.selected_index = Some(ix);
@@ -1012,6 +1012,17 @@ impl PopupMenu {
     /// The first item that can act, if any.
     fn first_clickable_index(&self) -> Option<usize> {
         self.clickable_menu_items().next().map(|(ix, _)| ix)
+    }
+
+    /// GitTurtle patch: places the keyboard's cursor on the first item that
+    /// can act, as a menu the keyboard opened shows it, so Enter acts on
+    /// that item and Down moves on from it; a menu with none selects
+    /// nothing. Upstream highlighted nothing until the first Down. The
+    /// caller decides when a menu was opened from the keyboard.
+    pub fn select_first_item(&mut self, cx: &mut Context<Self>) {
+        if let Some(ix) = self.first_clickable_index() {
+            self.set_selected_index(ix, cx);
+        }
     }
 
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {

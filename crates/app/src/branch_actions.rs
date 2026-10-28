@@ -7,7 +7,7 @@ use gpui_kit::component::{
     WindowExt,
     checkbox::Checkbox,
     dialog::DialogButtonProps,
-    menu::{DropdownMenu, PopupMenu, PopupMenuItem},
+    menu::{PopupMenu, PopupMenuItem},
 };
 use gpui_kit::prelude::FluentBuilder;
 
@@ -162,7 +162,7 @@ impl GitTurtle {
             } else {
                 format!("{named} · Switch branch and repository actions")
             })
-            .dropdown_menu(move |mut menu, _, cx| {
+            .app_menu(move |mut menu, _, cx| {
                 let Some(view) = owner.upgrade() else {
                     return menu;
                 };

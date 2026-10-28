@@ -7,7 +7,7 @@ use gpui_kit::component::{
     WindowExt,
     checkbox::Checkbox,
     dialog::DialogButtonProps,
-    menu::{DropdownMenu, PopupMenu, PopupMenuItem},
+    menu::{PopupMenu, PopupMenuItem},
 };
 use gpui_kit::prelude::FluentBuilder;
 
@@ -165,7 +165,7 @@ impl GitTurtle {
             .cloned();
         working_actions_trigger(compact, tight.is_some())
             .disabled(self.operation_busy.is_some())
-            .dropdown_menu(move |mut menu, _, _| {
+            .app_menu(move |mut menu, _, _| {
                 if let Some(refresh) = tight {
                     menu = menu
                         .item(
@@ -292,7 +292,7 @@ impl GitTurtle {
         commit_actions_trigger(labelled)
             .ml_auto()
             .disabled(self.operation_busy.is_some())
-            .dropdown_menu(move |menu, _, cx| commit_menu(menu, &owner, &repository, &commit, cx))
+            .app_menu(move |menu, _, cx| commit_menu(menu, &owner, &repository, &commit, cx))
             .into_any_element()
     }
 

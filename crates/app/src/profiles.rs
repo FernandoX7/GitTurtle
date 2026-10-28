@@ -3,12 +3,7 @@
 use crate::*;
 use gitturtle_core::{ProfilePlan, WriteCommand};
 use gpui_kit::{
-    component::{
-        WindowExt,
-        checkbox::Checkbox,
-        dialog::DialogButtonProps,
-        menu::{DropdownMenu, PopupMenuItem},
-    },
+    component::{WindowExt, checkbox::Checkbox, dialog::DialogButtonProps, menu::PopupMenuItem},
     prelude::FluentBuilder,
 };
 #[cfg(test)]
@@ -171,13 +166,12 @@ impl GitTurtle {
                     })
                     .unwrap_or_else(|| "Choose or manage named Git author profiles".into()),
             )
-            .dropdown_menu(move |mut menu, _, cx| {
+            .app_menu_within(px(440.), move |mut menu, _, cx| {
                 let Some(view) = owner.upgrade() else {
                     return menu;
                 };
                 let this = view.read(cx);
                 let path = this.path.clone();
-                menu = menu.max_h(px(440.)).scrollable(true);
                 if let Some(profile) = &this.profile {
                     menu = menu.label(current_identity(profile)).separator();
                 }

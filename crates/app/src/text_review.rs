@@ -1,7 +1,7 @@
 //! Bounded, presentation-only review of a captured text comparison. Every option
 //! is rebuilt from the original snapshot on the replaceable read worker.
 use crate::{
-    AppPage, GitTurtle, TextMode, WorkspaceMode,
+    AppMenu, AppPage, GitTurtle, TextMode, WorkspaceMode,
     appearance::{self, palette},
     split_diff::{self, Row, SplitPresentation},
     text::PatchPresentation,
@@ -14,7 +14,7 @@ use gpui_kit::{
     component::{
         Disableable, Icon, Sizable,
         button::{Button, ButtonVariants},
-        menu::{DropdownMenu, PopupMenuItem},
+        menu::PopupMenuItem,
     },
     div, percentage,
     prelude::FluentBuilder,
@@ -500,7 +500,7 @@ impl GitTurtle {
                 "Review options",
             )
             .tooltip(OPTIONS_TOOLTIP)
-            .dropdown_menu(move |menu, _, _| {
+            .app_menu(move |menu, _, _| {
                 // Built when opened; each item acts on the review as it
                 // is when chosen, as the buttons of the full row do. A
                 // caption with no room in the row closes the menu, below a

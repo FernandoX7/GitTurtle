@@ -2,10 +2,7 @@
 use crate::*;
 use anyhow::{Context as _, Result, ensure};
 use futures::FutureExt;
-use gpui_kit::{
-    component::menu::{DropdownMenu, PopupMenuItem},
-    prelude::FluentBuilder,
-};
+use gpui_kit::{component::menu::PopupMenuItem, prelude::FluentBuilder};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -1816,7 +1813,7 @@ impl GitTurtle {
         };
         trigger
             .debug_selector(|| "repository-workspaces".into())
-            .dropdown_menu(move |mut menu, _, cx| {
+            .app_menu(move |mut menu, _, cx| {
                 let Some(view) = owner.upgrade() else {
                     return menu;
                 };

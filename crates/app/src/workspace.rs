@@ -1,6 +1,6 @@
 use crate::*;
 use gitturtle_core::{ChangeArea, ChangeStatus, StatusEntry, WriteCommand};
-use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 use preferences::CommitDraft;
 use std::cell::RefCell;
@@ -3100,7 +3100,7 @@ impl GitTurtle {
                             cx,
                         )
                     }))
-                    .context_menu(move |menu, _, _| {
+                    .app_context_menu(move |menu, _, _| {
                         working_row_menu(
                             menu,
                             ignore_owner.clone(),

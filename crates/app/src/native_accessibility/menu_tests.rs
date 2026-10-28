@@ -14,16 +14,24 @@ use std::{cell::RefCell, rc::Rc};
 /// The items chosen from the probe's menu, in order.
 type Chosen = Rc<RefCell<Vec<&'static str>>>;
 
-struct MenuProbe(Chosen);
+/// The probe's items chosen and its button's focus, which the keyboard
+/// opens the menu from.
+struct MenuProbe(Chosen, FocusHandle);
+
+thread_local! {
+    /// The last probe's button focus, for a test to move the keyboard there.
+    static TRIGGER: RefCell<Option<FocusHandle>> = const { RefCell::new(None) };
+}
 
 impl Render for MenuProbe {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let chosen = self.0.clone();
         div().size_full().p_4().child(
             Button::new("menu-probe")
+                .track_focus(&self.1)
                 .debug_selector(|| "menu-probe".into())
                 .label("Open")
-                .dropdown_menu(move |menu, _, _| {
+                .app_menu(move |menu, _, _| {
                     let item = |name: &'static str| {
                         let chosen = chosen.clone();
                         PopupMenuItem::new(name)
@@ -55,7 +63,11 @@ fn open_menu(cx: &mut TestAppContext) -> (&mut VisualTestContext, Chosen) {
     let (_, cx) = cx.add_window_view({
         let chosen = chosen.clone();
         move |window, cx| {
-            let probe = cx.new(|_| MenuProbe(chosen));
+            let probe = cx.new(|cx| {
+                let focus = cx.focus_handle();
+                TRIGGER.with(|trigger| *trigger.borrow_mut() = Some(focus.clone()));
+                MenuProbe(chosen, focus)
+            });
             Root::new(probe, window, cx)
         }
     });
@@ -138,6 +150,43 @@ fn menu_keys_pass_over_labels_and_disabled_items(cx: &mut TestAppContext) {
         cx.debug_bounds("menu-item: First · MenuItem").is_none(),
         "the menu closed"
     );
+}
+
+/// A menu the keyboard opens, with Enter on its button, starts with the
+/// keyboard's cursor on its first item that can act, passing over the label
+/// and the disabled item above it, so Enter acts there and Down moves on; the
+/// same menu opened by a click highlights nothing. A keyboard's menu
+/// highlighted nothing until the first Down.
+#[gpui::test]
+fn a_menu_the_keyboard_opens_starts_on_its_first_action(cx: &mut TestAppContext) {
+    let (cx, chosen) = open_menu(cx);
+    cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+    draw(cx);
+    assert_eq!(highlighted(cx), None, "a click's menu highlights nothing");
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    let trigger = cx.debug_bounds("menu-probe").expect("the menu's button");
+    assert!(
+        cx.debug_bounds("menu-item: First · MenuItem").is_none(),
+        "Escape closed the menu"
+    );
+    let focus = TRIGGER
+        .with(|trigger| trigger.borrow().clone())
+        .expect("the button's focus");
+    cx.update(|window, cx| window.focus(&focus, cx));
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert!(
+        cx.debug_bounds("menu-item: First · MenuItem").is_some(),
+        "Enter on {trigger:?} opened the menu"
+    );
+    assert_eq!(highlighted(cx), Some("First"), "on opening");
+    cx.simulate_keystrokes("down");
+    draw(cx);
+    assert_eq!(highlighted(cx), Some("Second"), "after Down");
+    cx.simulate_keystrokes("up enter");
+    draw(cx);
+    assert_eq!(*chosen.borrow(), ["First"]);
 }
 
 /// The keyboard's cursor in a menu is marked as a list's selected row is:

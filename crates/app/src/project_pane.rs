@@ -4,7 +4,7 @@
 //! serialized preference writer. It never touches a repository.
 
 use crate::{
-    AppPage, GitTurtle, button, icon, native_accessibility,
+    AppContextMenu, AppMenu, AppPage, GitTurtle, button, icon, native_accessibility,
     preferences::Preferences,
     project_library::{LibraryRow, MAX_DEPTH, ProjectLibrary},
 };
@@ -13,7 +13,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
     dialog::{Cancel, Confirm, DialogFooter},
     input::{Input, InputEvent, InputState},
-    menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
+    menu::{PopupMenu, PopupMenuItem},
     tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -1103,7 +1103,7 @@ impl GitTurtle {
             )
             .child(body)
             .child(self.render_row_actions(index, menu_key, cursor, cx))
-            .context_menu({
+            .app_context_menu({
                 let owner = owner.clone();
                 move |menu, _, cx| {
                     let snapshot = owner.upgrade().map(|app| app.read(cx).menu_snapshot(&key));
@@ -1143,7 +1143,7 @@ impl GitTurtle {
             // The popover trigger consumes the press, so the row beneath it
             // never sees a click; a click handler here would consume it first
             // and keep the menu shut.
-            .dropdown_menu(move |menu, _, cx| {
+            .app_menu(move |menu, _, cx| {
                 let snapshot = owner.upgrade().map(|app| app.read(cx).menu_snapshot(&key));
                 row_menu(menu, &owner, &key, snapshot)
             })

@@ -35,6 +35,9 @@ pub(super) struct PrimaryMenu {
     /// decides each frame (`GitTurtle::tab_strip_labels`) before this view
     /// renders inside it.
     labelled: bool,
+    /// The trigger's bounds as the last frame painted them, below which the
+    /// menu opens.
+    trigger: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -47,6 +50,7 @@ impl PrimaryMenu {
             _dismiss: None,
             _focus_out: None,
             labelled: true,
+            trigger: Default::default(),
         }
     }
 
@@ -106,13 +110,19 @@ impl PrimaryMenu {
             })
         });
         let target = self.owner.clone();
-        let menu = PopupMenu::build(window, cx, move |mut menu, window, _| {
+        // The menu opens 4 px below its trigger (the popup's top padding),
+        // and from F10, Enter or Space with its first command under the
+        // keyboard's cursor (`native_accessibility::open_menu`).
+        let top = self
+            .trigger
+            .get()
+            .map(|trigger| trigger.bottom() + appearance::ui_size(4.));
+        let keyboard = window.last_input_was_keyboard();
+        let menu = PopupMenu::build(window, cx, move |mut menu, window, cx| {
             menu = menu
                 .action_context(focus.clone())
                 .min_w(appearance::ui_size(305.))
-                .max_w((window.viewport_size().width - px(24.)).min(appearance::ui_size(390.)))
-                .max_h((window.viewport_size().height - appearance::ui_size(70.)).max(px(120.)))
-                .scrollable(true);
+                .max_w((window.viewport_size().width - px(24.)).min(appearance::ui_size(390.)));
             for row in &rows {
                 let Some((spec, reason)) = row else {
                     menu = menu.separator();
@@ -135,7 +145,7 @@ impl PrimaryMenu {
                     });
                 }));
             }
-            menu
+            native_accessibility::open_menu(menu, keyboard, top, None, window, cx)
         });
         self._dismiss = Some(
             cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
@@ -169,7 +179,11 @@ impl PrimaryMenu {
 #[cfg(target_os = "linux")]
 impl Render for PrimaryMenu {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        use gpui_kit::{base::Popup, component::IconName, prelude::FluentBuilder};
+        use gpui_kit::{
+            base::{ElementExt as _, Popup},
+            component::IconName,
+            prelude::FluentBuilder,
+        };
         // Popup owns anchoring only. Keeping focus and opening in this entity
         // avoids a popover shell taking focus before we capture the editor.
         let open = self.menu.is_some();
@@ -190,7 +204,11 @@ impl Render for PrimaryMenu {
                     "Main Menu · {}",
                     shortcuts::label(shortcuts::ShortcutId::MainMenu)
                 ))
-                .on_click(cx.listener(|this, _, window, cx| this.toggle(window, cx))),
+                .on_click(cx.listener(|this, _, window, cx| this.toggle(window, cx)))
+                .on_prepaint({
+                    let trigger = self.trigger.clone();
+                    move |bounds, _, _| trigger.set(Some(bounds))
+                }),
         )
         .when_some(self.menu.clone(), |popup, menu| {
             popup.content(div().pt(appearance::ui_size(4.)).child(menu))

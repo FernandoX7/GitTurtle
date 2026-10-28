@@ -60,9 +60,10 @@ pub(super) fn bind_keys(cx: &mut App) {
 /// project pane's cursor row with Shift-F10, and a file list's with
 /// Shift-F10 or the Menu key ([`RowActions`]). A right-click menu belongs to
 /// its row; this one is placed from the cursor row's geometry and takes the
-/// keys until it closes. Its first Down reaches its first action, the kit's
-/// menu keys passing over entries that cannot act, and Escape returns focus
-/// to the list or tree that opened it, its action context. Focus that leaves
+/// keys until it closes. It opens with the keyboard's cursor on its first
+/// action, the kit's menu keys passing over entries that cannot act, and
+/// stays above the status bar ([`open_menu`]); Escape returns focus to the
+/// list or tree that opened it, its action context. Focus that leaves
 /// it otherwise, to a dialog one of its items opens or with the page that
 /// drew it, closes it as well, so it never reappears over another
 /// repository tab or mode.
@@ -73,6 +74,9 @@ pub(super) struct KeyboardMenu {
     /// menu also closes on a press outside itself, past an overlay that a
     /// larger window has outgrown.
     viewport: Size<Pixels>,
+    /// The room the menu keeps from the window's foot: the status bar and
+    /// [`MENU_MARGIN`] above it.
+    bottom: Pixels,
     _subscriptions: [Subscription; 2],
 }
 
@@ -87,8 +91,15 @@ impl KeyboardMenu {
         window: &mut Window,
         cx: &mut Context<GitTurtle>,
     ) -> Self {
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            build(menu).action_context(focus)
+        let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
+            open_menu(
+                build(menu).action_context(focus),
+                true,
+                Some(position.y),
+                None,
+                window,
+                cx,
+            )
         });
         let dismiss = cx.subscribe_in(
             &menu,
@@ -100,10 +111,12 @@ impl KeyboardMenu {
             dismissed(this, window, cx)
         });
         window.focus(&handle, cx);
+        let viewport = window.viewport_size();
         Self {
             menu,
             position,
-            viewport: window.viewport_size(),
+            viewport,
+            bottom: viewport.height - crate::theme_editor::status_bar_top(window) + MENU_MARGIN,
             _subscriptions: [dismiss, blur],
         }
     }
@@ -154,7 +167,13 @@ impl KeyboardMenu {
                     .child(
                         anchored()
                             .position(self.position)
-                            .snap_to_window_with_margin(px(8.))
+                            // Where the row leaves the menu less than its
+                            // least room above the status bar, it moves up
+                            // rather than cover the bar.
+                            .snap_to_window_with_margin(Edges {
+                                bottom: self.bottom,
+                                ..Edges::all(MENU_MARGIN)
+                            })
                             .child(
                                 // A press inside the menu must reach its
                                 // item, not the overlay behind it.
@@ -169,6 +188,178 @@ impl KeyboardMenu {
         .into_any_element()
     }
 }
+
+/// How far a menu stays above the status bar's top edge: the 8 px the kit's
+/// popup hosts keep from the window's edges.
+const MENU_MARGIN: Pixels = px(8.);
+/// The least height a menu's items take, at the default interface size,
+/// where its top lies too near the status bar for more: about four rows. A
+/// keyboard's menu there moves up instead ([`KeyboardMenu::render`]).
+const MENU_FLOOR: f32 = 120.;
+
+/// The tallest a menu's items may be when its top edge is at `top`: down to
+/// [`MENU_MARGIN`] above the status bar, so that it never covers the bar,
+/// and no less than [`MENU_FLOOR`].
+pub(crate) fn menu_room(top: Pixels, window: &Window) -> Pixels {
+    (crate::theme_editor::status_bar_top(window) - MENU_MARGIN - top)
+        .max(appearance::ui_size(MENU_FLOOR))
+}
+
+/// `menu` as every menu in the app opens. Opened from the keyboard (the
+/// Menu key, Shift-F10, F10, or Enter or Space on a menu's button), its
+/// first item that can act carries the keyboard's cursor, so Enter acts on
+/// it and Down moves on from it, as native menus do; opened by a pointer, it
+/// highlights nothing until the pointer or a key moves. With its top edge
+/// at `top`, where the opener knows it, its items are no taller than the
+/// room above the status bar, nor than `max` where the menu has a cap of its
+/// own, and scroll past that.
+pub(crate) fn open_menu(
+    mut menu: PopupMenu,
+    keyboard: bool,
+    top: Option<Pixels>,
+    max: Option<Pixels>,
+    window: &Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    if keyboard {
+        menu.select_first_item(cx);
+    }
+    let room = top.map(|top| menu_room(top, window));
+    if let Some(cap) = match (room, max) {
+        (Some(room), Some(max)) => Some(room.min(max)),
+        (room, max) => room.or(max),
+    } {
+        menu = menu.max_h(cap).scrollable(true);
+    }
+    menu
+}
+
+/// A menu's builder, run each time its menu opens.
+type BuildMenu = dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu;
+/// What a dropdown calls with its menu's new open state.
+type OpenChange = dyn Fn(&bool, &mut Window, &mut App);
+
+/// A Button and the menu it opens below itself ([`AppMenu`]), which
+/// [`open_menu`] opens: the Button's bounds in the last frame place the
+/// menu's top.
+#[derive(IntoElement)]
+pub(crate) struct AppDropdown {
+    trigger: Button,
+    max: Option<Pixels>,
+    build: std::rc::Rc<BuildMenu>,
+    on_open_change: Option<std::rc::Rc<OpenChange>>,
+}
+
+impl AppDropdown {
+    /// Calls `callback` with the menu's new open state when it opens or
+    /// closes, as the kit's dropdown does.
+    pub(crate) fn on_open_change(
+        mut self,
+        callback: impl Fn(&bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_open_change = Some(std::rc::Rc::new(callback));
+        self
+    }
+}
+
+/// A Button's dropdown menu as the app's menus open ([`open_menu`]), in
+/// place of the kit's `dropdown_menu`.
+pub(crate) trait AppMenu {
+    /// The menu `build` makes, each time the Button opens it.
+    fn app_menu(
+        self,
+        build: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> AppDropdown;
+
+    /// [`AppMenu::app_menu`] for a menu that also caps its own height at
+    /// `max`.
+    fn app_menu_within(
+        self,
+        max: Pixels,
+        build: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> AppDropdown;
+}
+
+impl AppMenu for Button {
+    fn app_menu(
+        self,
+        build: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> AppDropdown {
+        AppDropdown {
+            trigger: self,
+            max: None,
+            build: std::rc::Rc::new(build),
+            on_open_change: None,
+        }
+    }
+
+    fn app_menu_within(
+        self,
+        max: Pixels,
+        build: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> AppDropdown {
+        AppDropdown {
+            max: Some(max),
+            ..self.app_menu(build)
+        }
+    }
+}
+
+impl RenderOnce for AppDropdown {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        use gpui_kit::{base::ElementExt as _, component::menu::DropdownMenu as _};
+        // The trigger's bounds as the last frame painted them: the menu is
+        // built in the frame after its Button was pressed, before that
+        // frame's own layout.
+        let key = format!(
+            "app-menu-anchor:{:?}",
+            self.trigger.interactivity().element_id
+        );
+        let anchor = window
+            .use_keyed_state(SharedString::from(key), cx, |_, _| {
+                std::rc::Rc::new(std::cell::Cell::new(None::<Bounds<Pixels>>))
+            })
+            .read(cx)
+            .clone();
+        let painted = anchor.clone();
+        let (build, max, on_open_change) = (self.build, self.max, self.on_open_change);
+        let dropdown = self
+            .trigger
+            .on_prepaint(move |bounds, _, _| painted.set(Some(bounds)))
+            .dropdown_menu(move |menu, window, cx| {
+                let menu = build(menu, window, cx);
+                // The kit's popover sets the menu a quarter rem below its
+                // trigger (`top_1`).
+                let gap = window.rem_size() * 0.25;
+                let top = anchor.get().map(|trigger| trigger.bottom() + gap);
+                open_menu(menu, window.last_input_was_keyboard(), top, max, window, cx)
+            });
+        match on_open_change {
+            Some(callback) => dropdown
+                .on_open_change(move |open, window, cx| callback(open, window, cx))
+                .into_any_element(),
+            None => dropdown.into_any_element(),
+        }
+    }
+}
+
+/// An element's right-click menu as the app's menus open ([`open_menu`]),
+/// in place of the kit's `context_menu`: its top is the pointer's place.
+pub(crate) trait AppContextMenu: gpui_kit::component::menu::ContextMenuExt + Sized {
+    #[track_caller]
+    fn app_context_menu(
+        self,
+        build: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> gpui_kit::component::menu::ContextMenu<Self> {
+        self.context_menu(move |menu, window, cx| {
+            let menu = build(menu, window, cx);
+            let top = window.mouse_position().y;
+            open_menu(menu, false, Some(top), None, window, cx)
+        })
+    }
+}
+
+impl<E: gpui_kit::component::menu::ContextMenuExt> AppContextMenu for E {}
 
 pub(super) fn polite(builder: &mut A11ySubtreeBuilder<'_>) {
     builder

@@ -2,7 +2,7 @@ use crate::*;
 use columns::ColumnId;
 use gpui_kit::base::ElementExt;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
-use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 use std::cell::RefCell;
 
@@ -943,7 +943,7 @@ impl GitTurtle {
             );
         if let Some((name, remote)) = contextual_branch {
             element
-                .context_menu(move |menu, _, cx| {
+                .app_context_menu(move |menu, _, cx| {
                     let owner = branch_owner.clone();
                     let repository = branch_repository.clone();
                     let name = name.clone();
@@ -970,7 +970,7 @@ impl GitTurtle {
                 .into_any_element()
         } else if let Some(tree) = contextual_worktree {
             element
-                .context_menu(move |menu, _, cx| {
+                .app_context_menu(move |menu, _, cx| {
                     let disabled = branch_owner.upgrade().is_none_or(|owner| {
                         let owner = owner.read(cx);
                         owner.operation_busy.is_some()
@@ -2046,7 +2046,7 @@ impl GitTurtle {
         native_accessibility::clips_children(row.on_click(
             cx.listener(move |this, _, window, cx| this.select_commit(index, window, cx)),
         ))
-        .context_menu(move |menu, _, cx| {
+        .app_context_menu(move |menu, _, cx| {
             GitTurtle::recovery_context_menu(
                 menu,
                 &recovery_owner,
@@ -2548,7 +2548,7 @@ impl GitTurtle {
                 )
             })
             .on_click(cx.listener(move |this, _, window, cx| this.select_file(index, window, cx)))
-            .context_menu(move |menu, _, _| {
+            .app_context_menu(move |menu, _, _| {
                 changed_file_menu(
                     menu,
                     history_owner.clone(),
@@ -2828,7 +2828,7 @@ impl GitTurtle {
                         })
                         .dropdown_caret(true)
                         .tooltip(format!("Comparison mode · {}", names.join(", ")))
-                        .dropdown_menu(move |menu, _, _| {
+                        .app_menu(move |menu, _, _| {
                             // Built when opened; a choice acts on the page
                             // as it is then, as a mode button does.
                             available.iter().fold(menu, |menu, &(mode, name)| {
@@ -3734,7 +3734,7 @@ impl GitTurtle {
         } else {
             format!("{NAME} · {names}")
         })
-        .dropdown_menu(move |menu, _, _| {
+        .app_menu(move |menu, _, _| {
             let (mark, text) = (mark.clone(), text.clone());
             let mut menu = menu.item(PopupMenuItem::new("Copy file path").on_click(
                 move |_, window, cx| {
@@ -10653,12 +10653,81 @@ pub(crate) mod tests {
         "menu"
     };
 
+    /// The surface of the open menu that holds `item`: the last fill of the
+    /// popover colour painted around it, over any page surface of that
+    /// colour.
+    fn menu_surface(cx: &mut VisualTestContext, item: Bounds<Pixels>) -> Bounds<Pixels> {
+        cx.update(|window, cx| {
+            let fill = Background::from(gpui_kit::component::Theme::global(cx).popover);
+            let scale = window.scale_factor();
+            let logical = |value: gpui_kit::ScaledPixels| px(value.as_f32() / scale);
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background == fill)
+                .map(|quad| {
+                    let bounds = Bounds::from_corners(
+                        point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                        point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                    );
+                    (quad.order, bounds)
+                })
+                .filter(|(_, surface)| surface.contains(&item.center()))
+                .max_by_key(|(order, _)| *order)
+                .map(|(_, surface)| surface)
+                .expect("the menu's surface")
+        })
+    }
+
+    /// At 461 × 490, at 13 and 18 pt, the Working Actions menu ("Working
+    /// changes and recovery actions") opens below its button and ends 8 px
+    /// above the status bar, its items scrolling past that: at 18 pt it ran
+    /// over the bar. Its items stay reachable by the keyboard.
+    #[gpui::test]
+    async fn the_working_actions_menu_stays_above_the_status_bar(cx: &mut TestAppContext) {
+        const BROWSE: &str = "menu-item: Browse stashes… · MenuItem";
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|window, cx| {
+            appearance::ThemeChoice::Midnight.apply(Some(window), cx);
+            app.update(cx, |app, cx| app.show_working(window, cx));
+        });
+        settle(&app, cx).await;
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            let at = format!("{text} pt in 461 × 490");
+            let trigger = cx
+                .debug_bounds("working-recovery-menu")
+                .unwrap_or_else(|| panic!("{at}: the Actions button"));
+            cx.simulate_click(trigger.center(), Modifiers::default());
+            draw(cx);
+            let browse = cx
+                .debug_bounds(BROWSE)
+                .unwrap_or_else(|| panic!("{at}: the menu"));
+            let surface = menu_surface(cx, browse);
+            let status = crate::theme_editor::tests::status_bar_top(cx);
+            assert!(
+                surface.top() >= trigger.bottom(),
+                "{at}: the menu {surface:?} opens below its button {trigger:?}"
+            );
+            assert!(
+                surface.bottom() <= status - px(8.) + px(0.25),
+                "{at}: the menu {surface:?} ends 8 px above the status bar at {status:?}"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(cx.debug_bounds(BROWSE).is_none(), "{at}: Escape closed it");
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Shift-F10 and the Menu key open the Working Changes cursor row's
     /// menu, the one a right-click opens, below the row: Ignore and Discard
     /// beside the row's Stage control, and at 18 pt in a 461 × 490 window,
     /// where the row has no room for the control, led by Stage. Escape
-    /// closes it and returns focus to the list; the first Down reaches the
-    /// first action, so Enter stages the file. The menu, and with it a
+    /// closes it and returns focus to the list; it opens on its first
+    /// action, so Enter alone stages the file. The menu, and with it a
     /// narrow row's Stage, once opened only on a right-click.
     #[gpui::test]
     async fn working_row_menu_opens_from_the_keyboard(cx: &mut TestAppContext) {
@@ -10739,14 +10808,14 @@ pub(crate) mod tests {
             assert!(cx.debug_bounds(DISCARD).is_none(), "{at}: Escape closed it");
             assert!(focused(cx), "{at}: Escape returned focus to the list");
         }
-        // The first Down reaches Stage, the narrow row's first action.
+        // The menu opens on Stage, the narrow row's first action.
         cx.simulate_keystrokes(MENU_KEY);
         draw(cx);
         assert!(
             cx.debug_bounds(STAGE).is_some(),
             "{MENU_KEY} opened the menu"
         );
-        cx.simulate_keystrokes("down enter");
+        cx.simulate_keystrokes("enter");
         wait_until(cx, &app, "the menu's Stage", |app| {
             app.operation_busy.is_none() && app.working_paths.staged_count == 3
         });
@@ -10758,8 +10827,8 @@ pub(crate) mod tests {
 
     /// Shift-F10 and the Menu key open the highlighted changed file's menu
     /// in History's inspector, the one a right-click opens, below its row.
-    /// Escape closes it and returns focus to the list; the first Down
-    /// reaches File history…, so Enter opens it.
+    /// Escape closes it and returns focus to the list; it opens on File
+    /// history…, so Enter alone opens it.
     #[gpui::test]
     async fn changed_file_menu_opens_from_the_keyboard(cx: &mut TestAppContext) {
         const HISTORY: &str = "menu-item: File history… · MenuItem";
@@ -10802,7 +10871,7 @@ pub(crate) mod tests {
         cx.simulate_keystrokes(MENU_KEY);
         draw(cx);
         assert!(cx.debug_bounds(HISTORY).is_some(), "{MENU_KEY} opened it");
-        cx.simulate_keystrokes("down enter");
+        cx.simulate_keystrokes("enter");
         draw(cx);
         assert!(
             app.read_with(cx, |app, _| app.file_history.is_active()),
@@ -11659,7 +11728,9 @@ pub(crate) mod tests {
         cx.simulate_keystrokes("enter");
         draw(cx);
         assert!(menu_open(cx), "Enter opens the Options menu");
-        choose(cx, 2);
+        // Opened from the keyboard, the menu starts on its first enabled
+        // item, so one Down reaches More context.
+        choose(cx, 1);
         settle(&app, cx).await;
         assert_eq!(
             options(cx),

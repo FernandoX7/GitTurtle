@@ -657,7 +657,14 @@ a label the first Down highlighted text that cannot act and Enter did nothing.
 Up and Down now move only between items that can act, from the first of them,
 and wrap to the first or last such item; a label, separator or disabled item is
 passed over, and a menu with none that can act selects nothing. A submenu opened
-from the keyboard selects its first item that can act.
+from the keyboard selects its first item that can act. `PopupMenu::select_first_item`
+places the keyboard's cursor on a menu's first item that can act, as a menu the
+keyboard opened shows it; upstream offers no way to set a menu's selection, so a
+keyboard's menu highlighted nothing until the first Down. The caller decides when
+the keyboard opened the menu: the app calls it from its one menu opener
+(`crates/app/src/native_accessibility.rs`, `open_menu`) for a dropdown its
+button's Enter or Space opened, a row's Shift-F10 or Menu key menu and the Linux
+Main Menu opened with F10.
 
 The consumers are the menus that open with a label: the project pane's row
 menu, opened with Shift-F10 or its button (`crates/app/src/project_pane.rs`),
@@ -670,8 +677,11 @@ needs its caption last to keep the first Down (`text_review.rs`).
 drives a menu that opens with a label and a disabled item and closes with a
 caption, reads the highlight from the scene after each Down and Up, and chooses
 the item Down reached with Enter;
-`the_first_down_in_a_row_menu_reaches_its_first_action` opens the project
-pane's row menu with the keyboard and renames the group with Down and Enter.
+`a_keyboard_row_menu_starts_on_its_first_action` opens the project pane's row
+menu with the keyboard and renames the group with Enter alone;
+`a_menu_the_keyboard_opens_starts_on_its_first_action` opens the same menu with
+a click, which highlights nothing, and with Enter on its button, which
+highlights its first available item.
 Remove this part of the patch when upstream menus move only between items that
 can act and those tests pass without it.
 

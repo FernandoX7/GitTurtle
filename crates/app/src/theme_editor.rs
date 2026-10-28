@@ -32,7 +32,7 @@ use gpui_kit::component::{
     WindowExt,
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     dialog::Confirm,
-    menu::{DropdownMenu, PopupMenuItem},
+    menu::PopupMenuItem,
 };
 use gpui_kit::prelude::FluentBuilder;
 use preferences::MAX_CUSTOM_THEMES;
@@ -493,6 +493,17 @@ struct WindowFrame {
     padding_top: Pixels,
     padding_bottom: Pixels,
     border_bottom: Pixels,
+}
+
+/// The status bar's top edge in `window`: the window's foot less the
+/// client-decoration frame and the bar, drawn at a whole device pixel. A menu
+/// stays above it (`native_accessibility::open_menu`).
+pub(crate) fn status_bar_top(window: &Window) -> Pixels {
+    let frame = WindowFrame::of(window);
+    window.viewport_size().height
+        - frame.padding_bottom
+        - frame.border_bottom
+        - window.pixel_snap(appearance::ui_size(STATUS_BAR_HEIGHT))
 }
 
 impl WindowFrame {
@@ -1767,13 +1778,6 @@ impl ThemeForm {
     #[cfg(test)]
     const HEX_CARET_MARGIN: Pixels = px(10.);
 
-    /// The Base menu opens under the header, a tenth of the way down plus the
-    /// title and Name row; it may use the window below that and then scrolls.
-    fn base_menu_height(window: &Window) -> Pixels {
-        (window.viewport_size().height * 0.9 - appearance::ui_size(120.))
-            .max(appearance::ui_size(240.))
-    }
-
     /// The tallest the form may be: the window less its client-decoration
     /// frame, the status bar, the 16 px above the bar and the alert's fixed
     /// chrome, each term drawn at a whole device pixel as the window's layout
@@ -2309,13 +2313,11 @@ impl ThemeForm {
                             .dropdown_caret(true)
                             .disabled(self.pending)
                             .accessibility_label(format!("Base theme: {}", current.label()))
-                            .dropdown_menu(move |mut menu, window, _| {
+                            .app_menu(move |mut menu, _, _| {
                                 // As wide as the button; as tall as the window
-                                // below the header allows, then scrolling.
-                                menu = menu
-                                    .min_w(Self::base_width())
-                                    .max_h(Self::base_menu_height(window))
-                                    .scrollable(true);
+                                // allows above the status bar, then scrolling,
+                                // as every menu is.
+                                menu = menu.min_w(Self::base_width());
                                 for light in [true, false] {
                                     menu = menu.label(if light {
                                         "Light palettes"
@@ -2852,7 +2854,7 @@ impl Render for ThemeForm {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use appearance::custom::{ReadabilityBackground, ReadabilityForeground, ReadabilityMeasure};
     use core::prelude::v1::test;
@@ -3941,7 +3943,7 @@ mod tests {
     /// The status bar's top edge as the last frame painted it: the quad
     /// across the window's full width at its foot with only a top rule. It is
     /// [`STATUS_BAR_HEIGHT`] tall at the interface text size.
-    fn status_bar_top(cx: &mut VisualTestContext) -> Pixels {
+    pub(crate) fn status_bar_top(cx: &mut VisualTestContext) -> Pixels {
         cx.update(|window, _| {
             let scale = window.scale_factor();
             let logical = |value: ScaledPixels| px(value.as_f32() / scale);

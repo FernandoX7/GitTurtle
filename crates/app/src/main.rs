@@ -91,6 +91,7 @@ use gpui_kit::component::{
     tooltip::Tooltip,
 };
 use gpui_kit::*;
+use native_accessibility::{AppContextMenu, AppMenu};
 use operations::SerialExecutor;
 use platform_polish::*;
 use preferences::{AppSettings, CommitDraft, Preferences};

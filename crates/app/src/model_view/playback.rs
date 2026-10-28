@@ -208,7 +208,7 @@ pub(super) fn clip_control<T: 'static>(
                 button(("model-clip", index), text, "", false)
                     .dropdown_caret(true)
                     .accessibility_label(label_text)
-                    .dropdown_menu(move |mut menu, _, _| {
+                    .app_menu(move |mut menu, _, _| {
                         menu = menu.label(format!("{label} animation"));
                         for (clip, name) in std::iter::once((None, "Default pose".to_owned()))
                             .chain(target.scene.animation_clips().iter().enumerate().map(

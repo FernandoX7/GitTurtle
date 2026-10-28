@@ -1,7 +1,7 @@
 //! GPU composition over bounded worker-decoded images. No pixels are copied on drag.
 use crate::*;
 use gpui_kit::base::ElementExt;
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::prelude::FluentBuilder;
 
 /// The comparison modes, in their group's order.
@@ -433,7 +433,7 @@ impl GitTurtle {
             .ml(-crate::appearance::ui_size(crate::ICON_INSET))
             .dropdown_caret(true)
             .tooltip(format!("Comparison mode · {}", mode_tooltip(current)))
-            .dropdown_menu(move |menu, _, _| {
+            .app_menu(move |menu, _, _| {
                 // Built when opened; a choice acts on the comparison as it
                 // is then, as a mode button does.
                 MODES.iter().fold(menu, |menu, &(mode, name)| {
@@ -480,7 +480,7 @@ impl GitTurtle {
             .px(crate::appearance::ui_size(crate::ICON_INSET))
             .dropdown_caret(true)
             .tooltip(format!("Zoom · {scale}"))
-            .dropdown_menu(move |menu, _, _| {
+            .app_menu(move |menu, _, _| {
                 ZOOMS.iter().fold(menu, |menu, &(zoom, name)| {
                     let owner = owner.clone();
                     menu.item(PopupMenuItem::new(name).checked(zoom == current).on_click(

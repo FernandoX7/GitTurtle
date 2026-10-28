@@ -4,7 +4,7 @@ use crate::*;
 use futures::channel::oneshot;
 use gitturtle_preview::model3d::{self, ModelBounds, ModelCamera, ModelScene, ModelStandardView};
 use gpui_kit::base::ElementExt;
-use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::prelude::FluentBuilder;
 use std::sync::{
     Condvar, Mutex, OnceLock, Weak,
@@ -869,7 +869,7 @@ fn render_side<T: 'static>(
             selected_view.map_or("Custom", |view| view.label())
         ))
         .tooltip("Choose Isometric, Front, Back, Left, Right, Top or Bottom")
-        .dropdown_menu(move |mut menu, _, _| {
+        .app_menu(move |mut menu, _, _| {
             menu = menu.label(format!("{label} standard view"));
             for view in ModelStandardView::ALL {
                 let target = target.clone();

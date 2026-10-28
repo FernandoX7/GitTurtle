@@ -375,11 +375,12 @@ async fn the_keyboard_browses_the_tree_like_the_navigator(cx: &mut TestAppContex
     });
 }
 
-/// A row's menu opens with the row's name, a label. The first Down from the
-/// keyboard reaches the first action below it, so Enter renames the group:
-/// the kit's first Down used to select the name, and Enter did nothing.
+/// A row's menu opens with the row's name, a label. Opened from the
+/// keyboard, it starts on the first action below the name, so Enter alone
+/// renames the group: the kit's first Down used to select the name, and
+/// Enter did nothing, and a keyboard's menu highlighted nothing until Down.
 #[gpui::test]
-fn the_first_down_in_a_row_menu_reaches_its_first_action(cx: &mut TestAppContext) {
+fn a_keyboard_row_menu_starts_on_its_first_action(cx: &mut TestAppContext) {
     let (library, _, _) = library_with_group();
     let (app, cx) = test_app(cx, enabled(), library);
     cx.update(|window, cx| {
@@ -401,7 +402,7 @@ fn the_first_down_in_a_row_menu_reaches_its_first_action(cx: &mut TestAppContext
     ] {
         assert!(cx.debug_bounds(entry).is_some(), "{entry}");
     }
-    cx.simulate_keystrokes("down enter");
+    cx.simulate_keystrokes("enter");
     settle(cx);
     app.read_with(cx, |app, _| {
         assert!(app.project_pane.keyboard_menu.is_none(), "the menu closed");
