@@ -714,10 +714,12 @@ impl GitTurtle {
         if self.operation_busy.is_some() {
             "Working…".to_owned()
         } else if self.work_status.is_none()
-            || self.working_paths.pending
+            || self.working_filter_waiting()
             || self.working_paths.error.is_some()
         {
-            if self.working_paths.pending {
+            // Rows kept while new ones are prepared keep their counts, and
+            // the action keeps its label (disabled until they land).
+            if self.working_filter_waiting() {
                 "Filtering working paths…"
             } else if self.status_task.is_some() {
                 "Reading working changes…"
@@ -769,10 +771,10 @@ impl GitTurtle {
             staged + unstaged
         );
         let mut texts = vec![(count, ui_text(10.))];
-        if self.working_paths.pending {
+        if self.working_filter_waiting() {
             texts.push(("Filtering working paths…".into(), ui_text(11.)));
         }
-        if !self.working_paths.pending
+        if !self.working_filter_waiting()
             && self.working_paths.error.is_none()
             && self.working_paths.visible_count == 0
             && !self.working_filter.read(cx).value().is_empty()
@@ -829,13 +831,14 @@ impl GitTurtle {
     /// the Description section's label and hint with the gaps around its
     /// field (`description_section`), the guidance after it, and the gap
     /// above the commit action, wrapped texts laid out once per text, size
-    /// and width (`wrapped_lines`).
+    /// and width (`wrapped_lines`). `shown`: the list shows a status's rows,
+    /// its own or those kept while a newer one's are prepared.
     fn composer_rows(
         &self,
         metrics: &ComposerMetrics,
         width: Pixels,
         identity_ready: bool,
-        status_ready: bool,
+        shown: bool,
         window: &Window,
         cx: &App,
     ) -> Pixels {
@@ -858,7 +861,7 @@ impl GitTurtle {
                 + rem * 0.25
                 + ui_size(28.);
         }
-        if !identity_ready && status_ready {
+        if !identity_ready && shown {
             rows += gap + ui_size(28.);
         }
         if self.working_paths.conflicted {
@@ -1540,7 +1543,14 @@ impl GitTurtle {
             None
         };
         if entries_changed {
-            self.working_paths.reset();
+            // The shown rows index the earlier status; they stay on screen,
+            // with the cursor among them, until the new status's land.
+            let shown = self
+                .work_status
+                .clone()
+                .filter(|_| !self.working_rows.is_empty())
+                .map(|status| (status, self.working_selected));
+            self.working_paths.supersede(shown);
             self.working_selected = preferred.as_ref().and_then(|(path, area)| {
                 status.entries.iter().enumerate().find_map(|(i, entry)| {
                     if &entry.path != path {
@@ -1591,8 +1601,11 @@ impl GitTurtle {
         }
         if entries_changed {
             self.schedule_working_filter(working_anchor, !quiet, window, cx);
-        } else {
-            // No new rows: a departed row whose write has finished did not move.
+        } else if !self.working_paths.pending {
+            // No new rows: a departed row whose write has finished did not
+            // move. Rows still being prepared for an earlier status, as a
+            // quiet refresh's after the write's own can find, may yet land
+            // it, and they settle the departure when they do.
             self.land_working_row(None, cx);
         }
         self.remotes = remotes;
@@ -1600,7 +1613,7 @@ impl GitTurtle {
             self.invalidate_read();
             if let Some((index, area)) = self.working_selected {
                 self.select_working(index, area, window, cx);
-                if let Some(position) = self.working_rows.iter().position(
+                if let Some(position) = self.actionable_working_rows().iter().position(
                     |row| matches!(row, WorkingRow::File(i, a) if *i == index && *a == area),
                 ) {
                     self.working_scroll
@@ -1778,7 +1791,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         let files: Vec<_> = self
-            .working_rows
+            .actionable_working_rows()
             .iter()
             .enumerate()
             .filter_map(|(position, row)| match row {
@@ -2158,7 +2171,7 @@ impl GitTurtle {
         let description_height = ((available - 440.) * 0.5 + 64.).clamp(64., normal_description);
         let list_layout = layout.clone();
         let list_scroll = self.working_scroll.clone();
-        let selected_row = self.working_rows.iter().position(
+        let selected_row = self.actionable_working_rows().iter().position(
             |row| matches!(row, WorkingRow::File(index, area) if Some((*index, *area)) == self.working_selected),
         );
         let confirming_heading = self.confirming_heading(cx);
@@ -2190,9 +2203,9 @@ impl GitTurtle {
             }
         }
         let staged = self.working_paths.staged_count;
+        // Of the status the shown rows index, as their counts are.
         let total = self
-            .work_status
-            .as_ref()
+            .shown_working_status()
             .map_or(0, |status| status.entries.len());
         let conflicted = self.working_paths.conflicted;
         let identity_ready = self
@@ -2201,12 +2214,17 @@ impl GitTurtle {
             .is_some_and(|p| !p.name.is_empty() && !p.email.is_empty());
         let busy = self.operation_busy.is_some();
         let refreshing = self.status_task.is_some();
-        let status_ready = self.work_status.is_some()
-            && !self.working_paths.pending
+        // A result is on screen: the status's own rows, or, while a newer
+        // status's are prepared, the rows kept from before, which keep the
+        // layout they had.
+        let shown = self.work_status.is_some()
+            && !self.working_filter_waiting()
             && self.working_paths.error.is_none();
+        // The commit waits for the rows it counts to be the status's own.
+        let status_ready = shown && !self.working_paths.pending;
         // With nothing to list, one line says why (`empty_state`).
         let clean = (total == 0).then(|| {
-            if status_ready {
+            if shown {
                 EmptyState::new(
                     "working-clean",
                     empty_state::working_clean_line(self.work_status.as_deref(), false),
@@ -2257,14 +2275,7 @@ impl GitTurtle {
         let minimum = f32::from(metrics.minimum());
         // The fields' rows but the description's field, at the interface
         // size: the composer prefers room for them whole with that field.
-        let rows = self.composer_rows(
-            &metrics,
-            fitted_width,
-            identity_ready,
-            status_ready,
-            window,
-            cx,
-        );
+        let rows = self.composer_rows(&metrics, fitted_width, identity_ready, shown, window, cx);
         let description_height = description_height.max(f32::from(metrics.description_least()));
         let composer_height = commit_composer_height(
             available,
@@ -2659,7 +2670,7 @@ impl GitTurtle {
                                 .tooltip(error.clone())
                                 .on_click(cx.listener(|this, _, window, cx| this.persist_commit_draft(window, cx)))),
                     ))
-                    .when(!identity_ready && status_ready, |el| el.child(
+                    .when(!identity_ready && shown, |el| el.child(
                         button("configure-identity", "Set your commit identity", "", false)
                             .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
                     ))
@@ -2722,11 +2733,12 @@ impl GitTurtle {
     ) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
+        // The shown rows index the shown status, an earlier one while a
+        // newer status's rows are prepared.
         match self.working_rows[position] {
             WorkingRow::Directory(index, _) => {
                 let parent = self
-                    .work_status
-                    .as_ref()
+                    .shown_working_status()
                     .and_then(|s| s.entries.get(index))
                     .and_then(|entry| entry.path.parent())
                     .filter(|path| !path.as_os_str().is_empty())
@@ -2867,7 +2879,7 @@ impl GitTurtle {
                     .into_any_element()
             }
             WorkingRow::File(index, area) => {
-                let entry = &self.work_status.as_ref().unwrap().entries[index];
+                let entry = &self.shown_working_status().unwrap().entries[index];
                 let paths = entry.paths();
                 let row_path = entry.path.clone();
                 let ignore_entry = entry.clone();
@@ -2938,7 +2950,7 @@ impl GitTurtle {
                     ))
                     .debug_selector(move || format!("working-row-{position}"))
                     .aria_selected(active)
-                    .when(self.working_selected == Some((index, area)), |row| {
+                    .when(self.shown_working_cursor() == Some((index, area)), |row| {
                         row.aria_active_descendant()
                     })
                     .h(px(self.settings.density.file_row_height()))
@@ -3124,7 +3136,7 @@ impl GitTurtle {
             return;
         };
         let Some(row) = self
-            .working_rows
+            .actionable_working_rows()
             .iter()
             .position(|row| matches!(row, WorkingRow::File(i, a) if (*i, *a) == (index, area)))
         else {

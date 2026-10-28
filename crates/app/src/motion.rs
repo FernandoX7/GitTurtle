@@ -139,9 +139,11 @@ impl GitTurtle {
         if cx.reduce_motion() {
             return;
         }
-        let (Some(repository), Some(&workspace::WorkingRow::File(index, from))) =
-            (self.path.clone(), self.working_rows.get(position))
-        else {
+        // Rows kept on screen while new ones are prepared do not depart.
+        let (Some(repository), Some(&workspace::WorkingRow::File(index, from))) = (
+            self.path.clone(),
+            self.actionable_working_rows().get(position),
+        ) else {
             return;
         };
         let Some(entry) = self
@@ -541,6 +543,164 @@ mod tests {
             row(cx, 4),
             Bounds::new(point(alpha.left(), slot), alpha.size),
         );
+    }
+
+    /// With a path filter set, staging a row leaves the list as it was until
+    /// the filter's new rows land. In the frames before the filter's worker
+    /// answers every row stays where it was, the Staged heading included,
+    /// no "Filtering working paths…" line opens above them and the commit
+    /// action keeps its label; then the row travels from where it stood,
+    /// as it does without a filter. The list emptied for those frames, and
+    /// the line pushed the heading 21 px down, before the flight began.
+    #[gpui::test]
+    async fn a_filtered_list_holds_its_rows_until_the_new_ones_land(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working(cx, false).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.working_filter
+                    .update(cx, |input, cx| input.set_value(".txt", window, cx));
+                app.filter_working_paths(window, cx);
+            })
+        });
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        // Every file matches: [Staged 2, alpha, beta, Unstaged 1, notes].
+        assert_eq!(app.read_with(cx, |app, _| app.working_rows.len()), 5);
+        let before: Vec<_> = (0..5).map(|position| row(cx, position)).collect();
+        let label = app.read_with(cx, |app, cx| app.commit_action_label(cx));
+
+        // The filter's worker waits until the frames before it are drawn.
+        let held = app.update(cx, |app, _| app.file_paths.executor().hold());
+        let control = cx.debug_bounds("working-stage-4").expect("notes' Stage");
+        cx.simulate_click(control.center(), Modifiers::default());
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        // The write's status read arrives and asks the filter for rows.
+        for _ in 0..8 {
+            cx.executor().run_until_parked();
+            if app.read_with(cx, |app, _| app.working_paths.pending) {
+                break;
+            }
+            let tasks = app.update(cx, |app, _| {
+                [app.task.take(), app.status_task.take()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+            });
+            for task in tasks {
+                task.await;
+            }
+        }
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.working_paths.pending));
+        for (position, before) in before.iter().enumerate() {
+            let selector: &'static str = format!("working-row-{position}").leak();
+            assert_eq!(
+                cx.debug_bounds(selector),
+                Some(*before),
+                "row {position} before the filter answers"
+            );
+        }
+        assert!(
+            cx.debug_bounds("working-filter-pending").is_none(),
+            "no filtering line while rows are shown"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, cx| app.commit_action_label(cx)),
+            label
+        );
+        // Their counts stay with them: two staged until the new rows land.
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_paths.staged_count),
+            2
+        );
+        // Another read finds the same status meanwhile, as a quiet refresh
+        // after the write's own read can: the row still waits for the rows
+        // being prepared, which land it.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        let read = app
+            .update(cx, |app, _| app.status_task.take())
+            .expect("the read");
+        read.await;
+        cx.executor().run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert!(app.working_paths.pending);
+            assert!(matches!(app.working_travel, RowTravel::Departed(_)));
+        });
+
+        drop(held);
+        rows_arrived(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_paths.staged_count),
+            3
+        );
+        assert_eq!(flying(&app, cx), Some(3));
+        draw(cx);
+        // [Staged 3, alpha, beta, notes, Unstaged 0]: the heading has not
+        // moved, and notes leaves from where it stood.
+        assert_eq!(row(cx, 0), before[0]);
+        assert_near("the first frame", row(cx, 3).top(), before[4].top());
+        advance(cx, 150);
+        assert_eq!(flying(&app, cx), None);
+        assert_near("landed", row(cx, 3).top(), before[2].bottom());
+    }
+
+    /// A tab left while its list still shows the rows of an earlier status,
+    /// before the newer status's rows land, keeps none of them: they index
+    /// the earlier status, which the tab does not keep. Returning, the list
+    /// shows "Filtering working paths…" until its own rows land, here two
+    /// files after notes.txt's edit was discarded outside the app; the kept
+    /// rows read the newer status's two entries as three and drew notes from
+    /// past their end.
+    #[gpui::test]
+    async fn a_tab_left_before_new_rows_land_keeps_no_earlier_rows(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = working(cx, false).await;
+        let root = fixture.path().join("narrow");
+        let other = GitRepository::init(fixture.path().join("other"), "main")
+            .unwrap()
+            .path()
+            .to_owned();
+        let held = app.update(cx, |app, _| app.file_paths.executor().hold());
+        fixture_git(&root, &["checkout", "--", "notes.txt"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        for _ in 0..8 {
+            cx.executor().run_until_parked();
+            if app.read_with(cx, |app, _| app.working_paths.pending) {
+                break;
+            }
+            let task = app.update(cx, |app, _| app.status_task.take());
+            if let Some(task) = task {
+                task.await;
+            }
+        }
+        draw(cx);
+        // The earlier rows stay on screen meanwhile.
+        app.read_with(cx, |app, _| {
+            assert!(app.working_paths.retains_rows());
+            assert_eq!(app.working_rows.len(), 5);
+            assert_eq!(app.work_status.as_ref().unwrap().entries.len(), 2);
+        });
+        assert!(cx.debug_bounds("working-row-4").is_some());
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.open_repository_tab(other, window, cx))
+        });
+        drop(held);
+        crate::views::tests::settle(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Working);
+            assert!(!app.working_paths.retains_rows());
+        });
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        // [Staged 2, alpha, beta, Unstaged 0]
+        assert_eq!(app.read_with(cx, |app, _| app.working_rows.len()), 4);
+        assert!(cx.debug_bounds("working-row-3").is_some());
+        assert!(cx.debug_bounds("working-row-4").is_none());
     }
 
     /// Under reduced motion the row is in its slot in the first frame the

@@ -90,7 +90,16 @@ pub(super) struct FilterState {
     pub staged_count: usize,
     pub visible_count: usize,
     pub conflicted: bool,
+    /// While the rows of a newer status are prepared, the status the shown
+    /// rows index and the cursor among them as it was: the list keeps
+    /// drawing them, with the counts above, until the new rows land.
+    retained: Option<Shown>,
 }
+/// The status shown rows index and the cursor among them.
+pub(super) type Shown = (Arc<RepositoryStatus>, Option<(usize, ChangeArea)>);
+/// The shown rows' counts: the staged files, the filter's matches and
+/// whether any file is conflicted.
+pub(super) type Counts = (usize, usize, bool);
 impl FilterState {
     pub fn reset(&mut self) {
         self.cancellation
@@ -102,6 +111,46 @@ impl FilterState {
         self.staged_count = 0;
         self.visible_count = 0;
         self.conflicted = false;
+        self.retained = None;
+    }
+
+    /// A status with other entries replaces the one the index and the shown
+    /// rows were built from. Where rows are shown (`shown`: the status they
+    /// index and the cursor among them), they and their counts stay until
+    /// the new status's rows land, so the list neither empties nor moves
+    /// while the filter prepares them (DESIGN.md, "Motion"); with none shown
+    /// this is `reset`.
+    pub fn supersede(&mut self, shown: Option<Shown>) {
+        let Some(shown) = shown else {
+            self.reset();
+            return;
+        };
+        self.cancellation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.index = None;
+        self.task = None;
+        self.pending = false;
+        self.error = None;
+        // Rows kept from an earlier status still index that one.
+        self.retained.get_or_insert(shown);
+    }
+
+    /// Whether the shown rows index an earlier status than the window's,
+    /// while that status's rows are prepared.
+    pub fn retains_rows(&self) -> bool {
+        self.retained.is_some()
+    }
+
+    /// The shown rows' counts, which a retained tab keeps with its rows.
+    pub fn counts(&self) -> Counts {
+        (self.staged_count, self.visible_count, self.conflicted)
+    }
+
+    /// Shows a returning tab's counts with its rows until the filter's land.
+    pub fn restore_counts(&mut self, (staged, visible, conflicted): Counts) {
+        self.staged_count = staged;
+        self.visible_count = visible;
+        self.conflicted = conflicted;
     }
 }
 
@@ -175,8 +224,50 @@ fn rows(
 }
 
 impl GitTurtle {
+    /// The status the shown rows index: while a newer status's rows are
+    /// prepared, the earlier one they were built from.
+    pub(super) fn shown_working_status(&self) -> Option<&RepositoryStatus> {
+        match &self.working_paths.retained {
+            Some((status, _)) => Some(status),
+            None => self.work_status.as_deref(),
+        }
+    }
+
+    /// The cursor among the shown rows, in their status's indices.
+    pub(super) fn shown_working_cursor(&self) -> Option<(usize, ChangeArea)> {
+        match &self.working_paths.retained {
+            Some((_, cursor)) => *cursor,
+            None => self.working_selected,
+        }
+    }
+
+    /// The rows the cursor, keys, selection, copying and menus act on. While
+    /// the filter prepares new rows there are none: the rows still shown are
+    /// the previous result's, drawn so that the list holds its place, and a
+    /// key or a click on them must not act on what is being replaced.
+    pub(super) fn actionable_working_rows(&self) -> &[workspace::WorkingRow] {
+        if self.working_paths.pending {
+            &[]
+        } else {
+            &self.working_rows
+        }
+    }
+
+    /// No rows to show: the status is gone, or the filter failed and its
+    /// error replaces the list.
+    fn clear_working_rows(&mut self) {
+        self.working_rows.clear();
+        self.working_paths.retained = None;
+    }
+
+    /// The filter is preparing the first rows, with no earlier result to
+    /// show meanwhile: only then does "Filtering working paths…" show.
+    pub(super) fn working_filter_waiting(&self) -> bool {
+        self.working_paths.pending && self.working_rows.is_empty()
+    }
+
     fn visible_working_keys(&self) -> Vec<Key> {
-        self.working_rows
+        self.actionable_working_rows()
             .iter()
             .filter_map(|row| match row {
                 workspace::WorkingRow::File(index, area) => self
@@ -214,9 +305,10 @@ impl GitTurtle {
         let entry = self.work_status.as_ref()?.entries.get(index)?;
         Some(entry.path.to_string_lossy().into_owned())
     }
+    /// Whether the shown row of `index` in `area` is among the selected
+    /// files; `index` is in the shown rows' status.
     pub(super) fn working_is_selected(&self, index: usize, area: ChangeArea) -> bool {
-        self.work_status
-            .as_ref()
+        self.shown_working_status()
             .and_then(|s| s.entries.get(index))
             .is_some_and(|entry| {
                 self.working_selection
@@ -265,7 +357,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         let files: Vec<_> = self
-            .working_rows
+            .actionable_working_rows()
             .iter()
             .filter_map(|row| match row {
                 workspace::WorkingRow::File(i, a) => Some((*i, *a)),
@@ -287,7 +379,7 @@ impl GitTurtle {
         let (index, area) = files[next];
         self.choose_working_selection(index, area, false, true, window, cx);
         if let Some(position) = self
-            .working_rows
+            .actionable_working_rows()
             .iter()
             .position(|r| matches!(r,workspace::WorkingRow::File(i,a) if *i==index&&*a==area))
         {
@@ -299,12 +391,20 @@ impl GitTurtle {
         let offset = self.working_scroll.0.borrow().base_handle.offset();
         let height = f32::from(window.pixel_snap(px(self.settings.density.file_row_height())));
         let top = ((-f32::from(offset.y)) / height).max(0.) as usize;
+        // The row at the top of the list as drawn, kept from an earlier
+        // status while a newer one's rows are prepared.
         let (path, area) = match self.working_rows.get(top)? {
             workspace::WorkingRow::Heading(area, _) | workspace::WorkingRow::Directory(_, area) => {
                 (None, *area)
             }
             workspace::WorkingRow::File(index, area) => (
-                Some(self.work_status.as_ref()?.entries.get(*index)?.path.clone()),
+                Some(
+                    self.shown_working_status()?
+                        .entries
+                        .get(*index)?
+                        .path
+                        .clone(),
+                ),
                 *area,
             ),
         };
@@ -339,10 +439,14 @@ impl GitTurtle {
         self.working_paths.task = None;
         self.working_paths.error = None;
         self.working_paths.pending = false;
-        self.working_rows.clear();
+        // The shown rows stay, drawn where they are, until the new ones land:
+        // a list that empties for the frames the filter takes moves every
+        // row and the controls beside it, and a row that a Stage moves would
+        // vanish before it travels (DESIGN.md, "Motion").
         self.interrupt_working_travel();
         let departure = self.working_departure();
         let Some(status) = self.work_status.clone() else {
+            self.clear_working_rows();
             cx.notify();
             return;
         };
@@ -398,6 +502,7 @@ impl GitTurtle {
                         this.working_paths.visible_count = visible_count;
                         this.working_paths.conflicted = conflicted;
                         this.working_rows = rows;
+                        this.working_paths.retained = None;
                         this.reconcile_working_selection();
                         let selected = this.working_selected.and_then(|(i, a)| this.working_rows.iter().position(|r| matches!(r, workspace::WorkingRow::File(index, area) if *index == i && *area == a)));
                         if this.working_selected.is_some() && selected.is_none() {
@@ -420,8 +525,8 @@ impl GitTurtle {
                         if center_selected { this.reveal_confirming_heading(selected, window, cx); }
                         this.land_working_row(landing, cx);
                     }
-                    Ok(Err(error)) => { this.working_paths.error = Some(error.to_string()); this.working_selection.clear(); this.land_working_row(None, cx); }
-                    Err(_) => { this.working_paths.error = Some("Path filtering stopped. Edit or clear the query to retry.".into()); this.working_selection.clear(); this.land_working_row(None, cx); }
+                    Ok(Err(error)) => { this.working_paths.error = Some(error.to_string()); this.clear_working_rows(); this.working_selection.clear(); this.land_working_row(None, cx); }
+                    Err(_) => { this.working_paths.error = Some("Path filtering stopped. Edit or clear the query to retry.".into()); this.clear_working_rows(); this.working_selection.clear(); this.land_working_row(None, cx); }
                 }
                 cx.notify();
             });
@@ -624,17 +729,20 @@ impl GitTurtle {
                         staged + unstaged
                     )),
             )
-            .when(self.working_paths.pending, |el| {
+            // Only before the first rows: later the shown rows stay until
+            // the new ones land, and the line would move them down.
+            .when(self.working_filter_waiting(), |el| {
                 el.child(
                     div()
                         .id("working-filter-pending")
+                        .debug_selector(|| "working-filter-pending".into())
                         .role(Role::Label)
                         .text_size(crate::appearance::ui_text(11.))
                         .child("Filtering working paths…"),
                 )
             })
             .when(
-                !self.working_paths.pending
+                !self.working_filter_waiting()
                     && self.working_paths.error.is_none()
                     && self.working_paths.visible_count == 0
                     && !self.working_filter.read(cx).value().is_empty(),
@@ -829,6 +937,46 @@ mod tests {
         assert!(state.index.is_none());
         assert!(!state.pending);
         assert_eq!(state.visible_count, 0);
+    }
+
+    /// A status with other entries cancels the index built from the earlier
+    /// one, as a reset does, but rows on screen keep their counts and the
+    /// status they index, the first one kept while later statuses arrive,
+    /// until a reset; with no rows shown it is a reset.
+    #[test]
+    fn a_new_status_keeps_the_shown_rows_with_their_status_and_counts() {
+        use gitturtle_core::{ChangeArea, RepositoryStatus};
+        use std::sync::{Arc, atomic::Ordering};
+        let status = |branch: &str| {
+            Arc::new(RepositoryStatus {
+                branch: Some(branch.into()),
+                ..Default::default()
+            })
+        };
+        let mut state = super::FilterState {
+            index: Some(Arc::new(vec![["old path".into(), String::new()]])),
+            staged_count: 2,
+            visible_count: 3,
+            conflicted: true,
+            ..Default::default()
+        };
+        let ticket = state.cancellation.load(Ordering::Relaxed);
+        let cursor = Some((1, ChangeArea::Unstaged));
+        state.supersede(Some((status("shown"), cursor)));
+        assert!(crate::path_filter::checkpoint(&state.cancellation, ticket).is_err());
+        assert!(state.index.is_none());
+        assert_eq!(state.counts(), (2, 3, true));
+        assert!(state.retains_rows());
+        state.supersede(Some((status("later"), None)));
+        let (kept, kept_cursor) = state.retained.clone().unwrap();
+        assert_eq!(kept.branch.as_deref(), Some("shown"));
+        assert_eq!(kept_cursor, cursor);
+        state.reset();
+        assert!(!state.retains_rows());
+        assert_eq!(state.counts(), (0, 0, false));
+        state.restore_counts((4, 5, false));
+        state.supersede(None);
+        assert_eq!(state.counts(), (0, 0, false));
     }
 
     #[test]

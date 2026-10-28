@@ -606,6 +606,9 @@ struct WarmTab {
     profile: Option<gitturtle_core::GitProfile>,
     remotes: Vec<gitturtle_core::Remote>,
     working_rows: Vec<workspace::WorkingRow>,
+    /// The counts that go with `working_rows`, shown with them on return
+    /// until the filter's rows land.
+    working_counts: working_selection::Counts,
     working_selected: Option<(usize, gitturtle_core::ChangeArea)>,
     working_scroll: UniformListScrollHandle,
     working_selection: working_selection::Selection,
@@ -829,6 +832,15 @@ impl GitTurtle {
         self.image_drag = None;
         let retained_commit = self.automatic.retained_commit;
         self.automatic.reset();
+        // The tab keeps the shown rows with their counts. Rows kept from an
+        // earlier status while a newer one's were prepared index a status
+        // the tab does not keep, so then it keeps none.
+        let working_counts = if self.working_paths.retains_rows() {
+            self.working_rows.clear();
+            Default::default()
+        } else {
+            self.working_paths.counts()
+        };
         self.working_paths.reset();
         // A row's travel belongs to the shown list: it neither waits in the
         // retained tab nor lands when the tab returns.
@@ -884,6 +896,7 @@ impl GitTurtle {
             profile: self.profile.take(),
             remotes: std::mem::take(&mut self.remotes),
             working_rows: std::mem::take(&mut self.working_rows),
+            working_counts,
             working_selected: self.working_selected.take(),
             working_scroll: std::mem::take(&mut self.working_scroll),
             working_selection: std::mem::take(&mut self.working_selection),
@@ -939,6 +952,7 @@ impl GitTurtle {
         self.profile = warm.profile;
         self.remotes = warm.remotes;
         self.working_rows = warm.working_rows;
+        self.working_paths.restore_counts(warm.working_counts);
         self.working_selected = warm.working_selected;
         self.working_scroll = warm.working_scroll;
         self.working_selection = warm.working_selection;
