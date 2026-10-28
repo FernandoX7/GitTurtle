@@ -124,29 +124,6 @@ struct Known {
 }
 
 const KNOWN: &[Known] = &[
-    // History's chosen columns run past the table's edge where they exceed
-    // it, cutting the subject, a column's cells or its title mid-glyph.
-    Known {
-        page: Page::History,
-        sizes: &[13, 18],
-        rule: Rule::CutText,
-        region: "history-list-edge",
-        follow_up: "History ends its table at a whole column",
-    },
-    Known {
-        page: Page::History,
-        sizes: &[13, 18],
-        rule: Rule::CutText,
-        region: "history-column-3",
-        follow_up: "History ends its table at a whole column",
-    },
-    Known {
-        page: Page::History,
-        sizes: &[13, 18],
-        rule: Rule::CutText,
-        region: "history-column-5",
-        follow_up: "History ends its table at a whole column",
-    },
     // Compare cuts its path for its actions: "READ…" at 18 pt in 461 px.
     Known {
         page: Page::CompareText,

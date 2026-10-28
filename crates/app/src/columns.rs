@@ -252,8 +252,10 @@ impl ColumnSettings {
     /// width within what the floor and the folded pill leave it, and the
     /// subject takes the rest of the viewport, never less than the floor
     /// beside the pill, so it ends at the viewport's edge. Author, Date and
-    /// SHA keep their widths after it and scroll sideways. The settings are
-    /// not changed, so a wider viewport gives the chosen layout back.
+    /// SHA keep their widths after it and scroll sideways. Where the chosen
+    /// columns leave the subject its floor but run past the edge, no column
+    /// is cut there either (`end_at_a_whole_column`). The settings are not
+    /// changed, so a wider viewport gives the chosen layout back.
     pub fn history_layout(
         &self,
         available_width: f32,
@@ -279,7 +281,7 @@ impl ColumnSettings {
         // The viewport after the table's leading inset.
         let viewport = available_width + narrow.trailing_inset;
         if subject.min(viewport - before) >= floor {
-            return chosen;
+            return end_at_a_whole_column(chosen, before, viewport);
         }
         // Folded, the subject cell keeps its floor beside the compact pill.
         let floor = floor + narrow.pill;
@@ -315,9 +317,98 @@ impl ColumnSettings {
     }
 }
 
+/// `layout`, whose subject starts `before` px into a `viewport` px wide
+/// table, with no column cut at the viewport's edge before the table
+/// scrolls: where the chosen columns run past the edge, the subject ends
+/// there, or takes the room short of the first column after it that the edge
+/// would cut, which starts at the edge with the columns after it. Those
+/// scroll sideways; the saved widths are untouched.
+fn end_at_a_whole_column(mut layout: ColumnLayout, before: f32, viewport: f32) -> ColumnLayout {
+    let Some(subject) = layout
+        .columns
+        .iter()
+        .position(|column| column.id == ColumnId::Subject)
+    else {
+        return layout;
+    };
+    if layout.content_width <= viewport {
+        return layout;
+    }
+    let mut end = before + layout.columns[subject].width;
+    let room = if end >= viewport {
+        viewport - end
+    } else {
+        let mut room = 0.;
+        for column in &layout.columns[subject + 1..] {
+            if end + column.width > viewport {
+                room = viewport - end;
+                break;
+            }
+            end += column.width;
+        }
+        room
+    };
+    layout.columns[subject].width += room;
+    layout.content_width += room;
+    layout
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where the default columns (884 px) run past the table's edge but
+    /// leave the subject its floor, no column is cut there: in a 500 px
+    /// table the subject, which would end 61.25 px past the edge, ends at
+    /// it; in a 600 px one Author, which the edge would cut 38.75 px in,
+    /// starts at the edge, the subject taking those 38.75 px, and in a
+    /// 700 px one Date does, the subject taking 2.75 px. The columns after it
+    /// keep their widths and scroll sideways; a table that holds every
+    /// column is unchanged, and so are the saved widths.
+    #[test]
+    fn chosen_columns_end_at_a_whole_column_at_the_table_edge() {
+        let settings = ColumnSettings::default();
+        let saved = settings.clone();
+        let starts = |layout: &ColumnLayout| {
+            let mut start = 0.;
+            layout
+                .columns
+                .iter()
+                .map(|column| {
+                    let range = (column.id, start, start + column.width);
+                    start += column.width;
+                    range
+                })
+                .collect::<Vec<_>>()
+        };
+        for available in [500., 600., 700., 900., 1_400.] {
+            let viewport = available + NARROW.trailing_inset;
+            let layout = settings.history_layout(available, 0., NARROW);
+            assert!(!layout.narrow, "{available}");
+            for (id, start, end) in starts(&layout) {
+                assert!(
+                    end <= viewport + 1e-3 || start >= viewport - 1e-3,
+                    "{available}: {id:?} {start}..{end} beside the edge at {viewport}"
+                );
+                if id != ColumnId::Subject {
+                    assert_eq!(width(&layout, id), Some(settings.get(id).width));
+                }
+            }
+        }
+        for (available, subject) in [(500., 258.75), (600., 358.75), (700., 322.75)] {
+            assert_eq!(
+                width(
+                    &settings.history_layout(available, 0., NARROW),
+                    ColumnId::Subject
+                ),
+                Some(subject),
+                "{available}"
+            );
+        }
+        let wide = settings.history_layout(1_400., 0., NARROW);
+        assert_eq!(wide, settings.layout_for_graph(1_400., 0.));
+        assert_eq!(settings, saved);
+    }
 
     #[test]
     fn distant_graph_lanes_do_not_push_messages_out_of_the_viewport() {
@@ -453,9 +544,19 @@ mod tests {
         assert_eq!(width(&tighter, ColumnId::Graph), Some(20.));
         assert_eq!(width(&tighter, ColumnId::Subject), Some(120.));
         // Where the chosen columns leave the subject its floor inside the
-        // viewport, they stand.
+        // viewport, they stand, but for the subject taking the 10.75 px the
+        // table's edge would otherwise cut SHA by.
         let wide = settings.history_layout(800., 40., NARROW);
-        assert_eq!(wide, settings.layout_for_graph(800., 40.));
+        let chosen = settings.layout_for_graph(800., 40.);
+        assert_eq!(wide.columns.len(), chosen.columns.len());
+        for (fitted, chosen) in wide.columns.iter().zip(&chosen.columns) {
+            let room = if chosen.id == ColumnId::Subject {
+                10.75
+            } else {
+                0.
+            };
+            assert_eq!(fitted.width, chosen.width + room, "{:?}", chosen.id);
+        }
         assert!(!wide.narrow);
         let edge = 140. + 112. + 120. - 10.75;
         assert!(!settings.history_layout(edge, 40., NARROW).narrow);
