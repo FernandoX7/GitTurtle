@@ -749,6 +749,8 @@ impl Render for ShortcutHelpView {
             self.rows.len(),
             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                 let p = palette(cx);
+                // Fitted once for the rows drawn, not for each row.
+                let (edge, selected_edge) = (p.raised_edge(), p.selected_edge());
                 range
                     .map(|index| {
                         let row = div()
@@ -769,7 +771,7 @@ impl Render for ShortcutHelpView {
                                 // Ruled with the edge, as a menu's
                                 // separators are.
                                 .border_b_1()
-                                .border_color(rgb(p.raised_edge()))
+                                .border_color(rgb(edge))
                                 .child(*group),
                             HelpRow::Entry(entry) => row
                                 .debug_selector(move || format!("shortcut-help-row-{index}"))
@@ -785,6 +787,9 @@ impl Render for ShortcutHelpView {
                                 .child(div().flex_1().min_w_0().truncate().child(entry.label))
                                 .child(
                                     div()
+                                        .debug_selector(move || {
+                                            format!("shortcut-help-key-{index}")
+                                        })
                                         .flex_shrink_0()
                                         .rounded(px(4.))
                                         .px_2()
@@ -792,7 +797,13 @@ impl Render for ShortcutHelpView {
                                         .text_size(appearance::ui_text(11.))
                                         .font_family(mono())
                                         .border_1()
-                                        .border_color(rgb(p.raised_edge()))
+                                        // The raised edge nearly equals the
+                                        // selected fill in some palettes.
+                                        .border_color(rgb(if index == this.selected {
+                                            selected_edge
+                                        } else {
+                                            edge
+                                        }))
                                         .child(entry.key.clone()),
                                 )
                                 .on_click(cx.listener(move |this, _, _, cx| {

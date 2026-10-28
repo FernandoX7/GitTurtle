@@ -1562,6 +1562,60 @@ mod render_tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// Keyboard Shortcuts outlines its key chips in the raised surface's edge,
+    /// which the selected row's fill nearly equals in some palettes: #2c384a
+    /// on #223b3b (1.01:1) in Midnight and #c4ced9 on #d6e7e2 (1.24:1) in
+    /// Braden. On the selected row a chip's edge holds 1.4:1 against that
+    /// fill, as a resting row's chip holds it against the raised surface, in
+    /// every palette.
+    #[gpui::test]
+    fn key_chips_keep_their_edge_on_the_selected_row(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, rendered};
+        use appearance::custom::contrast;
+        let (app, cx) = hub(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+        draw(cx);
+        let mut failures = Vec::new();
+        for (name, palette) in appearance::test_palettes() {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            draw(cx);
+            // The first entry is highlighted as the dialog opens.
+            for (row, fill, beneath) in [
+                (1, Some(palette.selected), palette.selected),
+                (2, None, palette.raised()),
+            ] {
+                let bounds = rendered(cx, format!("shortcut-help-row-{row}").leak());
+                let fills = appearance::painted_row(cx, bounds).0;
+                let expected: Vec<_> = fill
+                    .map(|fill| Background::from(Hsla::from(rgb(fill))))
+                    .into_iter()
+                    .collect();
+                if fills != expected {
+                    failures.push(format!("{name}: row {row} fills {fills:?}"));
+                }
+                let edges = crate::views::tests::painted_edges(
+                    cx,
+                    format!("shortcut-help-key-{row}").leak(),
+                );
+                match edges[..] {
+                    [edge] => {
+                        let ratio = contrast(appearance::packed(edge), beneath);
+                        if ratio < 1.4 {
+                            failures.push(format!(
+                                "{name}: row {row}'s chip edge #{:06x} on #{beneath:06x} {ratio:.3}:1",
+                                appearance::packed(edge)
+                            ));
+                        }
+                    }
+                    _ => failures.push(format!("{name}: row {row}'s chip edges {edges:?}")),
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     /// The rows among the first `rows` that the last frame painted with the
     /// highlight's `selected` fill.
     fn highlighted(cx: &mut VisualTestContext, rows: usize) -> Vec<usize> {

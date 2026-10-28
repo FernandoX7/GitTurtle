@@ -689,6 +689,23 @@ impl Palette {
         toward_extreme_in(256, self.border, extreme, clears)
     }
 
+    /// The edge of an outline drawn on a picker's selected row, such as a
+    /// Keyboard Shortcuts key chip: [`Self::raised_edge`], the edge it takes
+    /// on a resting row, unless that misses [`POPUP_EDGE`] against `selected`,
+    /// as Midnight's #2c384a did on #223b3b (1.01:1) and Braden's #c4ced9 on
+    /// #d6e7e2 (1.24:1). Then it takes the first of 256 even steps toward black
+    /// in a light palette or white in a dark one, the text's side as for the
+    /// raised edge, that clears it there.
+    pub fn selected_edge(self) -> u32 {
+        let clears = |edge| custom::contrast(edge, self.selected) >= POPUP_EDGE;
+        let edge = self.raised_edge();
+        if clears(edge) {
+            return edge;
+        }
+        let extreme = if self.is_light() { 0x000000 } else { 0xffffff };
+        toward_extreme_in(256, edge, extreme, clears)
+    }
+
     /// The edge of a disabled Button resting on the neutral `subtle` fill (a
     /// primary action or a selected shared helper) on `surface`: none where
     /// the fill stands off the surface, and [`Self::raised_edge`], 1.4:1 or
