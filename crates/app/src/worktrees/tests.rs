@@ -952,3 +952,71 @@ async fn the_forced_removal_review_draws_a_whole_ring_at_every_stop(cx: &mut Tes
     }
     sweep::assert_whole(failures);
 }
+
+/// A read that answers while keyboard focus is on its loading row's Cancel
+/// takes the row away and hands focus to the first field below it, ringed
+/// whole: the filter in Manage, the branch field in Create. Escape still
+/// closes the manager. Focus stayed on the Cancel no frame drew, where
+/// Escape reached nothing.
+#[gpui::test]
+async fn a_read_landing_while_its_cancel_holds_focus_moves_focus_to_the_first_field(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    draw(cx);
+    for creating in [false, true] {
+        cx.update(|_, cx| manager.update(cx, |this, cx| this.set_creating(creating, cx)));
+        // Refresh while the manager's thread is held, as by a slow read, with
+        // keyboard focus on the loading row's Cancel.
+        let held = manager.read_with(cx, |this, _| this.reader.hold());
+        cx.update(|window, cx| manager.update(cx, |this, cx| this.refresh(window, cx)));
+        draw(cx);
+        let cancel = manager.read_with(cx, |this, _| this.cancel_read.handle().clone());
+        cx.update(|window, cx| window.focus(&cancel, cx));
+        draw(cx);
+        assert!(cx.debug_bounds("cancel-worktree-read").is_some());
+        assert!(
+            !cx.update(|window, _| window.context_stack().is_empty()),
+            "the Cancel holds focus, drawn"
+        );
+
+        drop(held);
+        settle(&manager, cx).await;
+        draw(cx);
+        assert!(
+            cx.debug_bounds("cancel-worktree-read").is_none(),
+            "the reply takes the loading row away"
+        );
+        let (field, text) = cx.read(|cx| {
+            let this = manager.read(cx);
+            let field = if creating { &this.branch } else { &this.filter }.read(cx);
+            (field.focus_handle(cx), field.input_bounds())
+        });
+        let name = if creating {
+            "the branch field"
+        } else {
+            "the filter"
+        };
+        assert!(
+            cx.update(|window, _| field.is_focused(window)),
+            "focus moves from the Cancel to {name}"
+        );
+        assert!(
+            !cx.update(|window, _| window.context_stack().is_empty()),
+            "the frame draws {name}, which holds focus"
+        );
+        focus_ring::assert_input_ringed(cx, text, name);
+    }
+    cx.simulate_keystrokes("escape");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    draw(cx);
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Escape closes the manager"
+    );
+}

@@ -399,6 +399,9 @@ struct Panel {
     notice: Option<String>,
     error: Option<String>,
     pending: bool,
+    /// The busy row's Cancel, which hands focus to the shown section as the
+    /// row goes.
+    cancel_request: focus_ring::LoadingCancel,
     request_generation: u64,
     local_loaded: bool,
     local_loading: bool,
@@ -438,7 +441,7 @@ impl Panel {
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
             rows:vec![],page:1,has_next:false,pull:None,status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
-            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),error:None,pending:false,request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,writing:false,closed:false,
+            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),error:None,pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,writing:false,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
         if this.review.fixture {
@@ -806,7 +809,12 @@ impl Panel {
         self.notice = None;
         self.task=Some(cx.spawn_in(window,async move|this,cx|{
             let result=response.await.unwrap_or_else(|_|Err(anyhow::anyhow!("GitHub operation was interrupted. Its outcome may be uncertain; check the destination before submitting again.")));
-            let _=this.update_in(cx,|this,window,cx|{if generation!=this.request_generation{return;}this.pending=false;this.writing=false;this.control=None;if !this.closed {receive(result,this,window,cx);}cx.notify();});
+            let _=this.update_in(cx,|this,window,cx|{if generation!=this.request_generation{return;}this.pending=false;this.writing=false;this.control=None;
+                // The busy row goes: focus on its Cancel moves to the section
+                // the panel shows, as when it opens, before the reply moves it
+                // anywhere else.
+                if !this.closed && this.cancel_request.holds_focus(window) {this.focus_visible_section(window,cx);}
+                if !this.closed {receive(result,this,window,cx);}cx.notify();});
         }));
         cx.notify();
     }
@@ -1163,7 +1171,7 @@ impl Render for Panel {
             .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
             .when(pending,|element|element.child(self.part("busy",div(),cx).flex().items_center().gap_2().pl(text_inset())
                 .child(label("github-busy",if self.writing{"Sending the captured review…"}else{"Loading your requested PR context…"}).role(Role::Status).a11y_synthetic_children(|builder|{native_accessibility::polite(builder);builder.parent_node().set_busy();}))
-                .child(button("github-cancel","Cancel","",false).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
+                .child(button("github-cancel","Cancel","",false).track_focus(self.cancel_request.handle()).debug_selector(||"github-cancel".into()).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
                     if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(if this.writing{"Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."}else{"Cancellation requested. Your review draft is retained."}.into());cx.notify();})))))
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
                 .child(crate::native_accessibility::clips_children(self.part("pr-list",div(),cx).id("github-pr-list").debug_selector(||"github-pr-list".into()).flex_shrink_0().max_h(px(200.)).overflow_y_scroll().flex().flex_col().gap_1()
@@ -1716,6 +1724,88 @@ mod tests {
             );
             assert!(outlined(cx, "history-pane"), "History's accent outline");
         }
+    }
+
+    /// A request that answers while keyboard focus is on the busy row's
+    /// Cancel takes the row away and hands focus to the section the panel
+    /// shows, before a PR is chosen its destination field, drawn with its
+    /// accent edge, and Escape still closes the panel. Focus stayed on the
+    /// Cancel no frame drew, where Escape reached nothing.
+    #[gpui::test]
+    async fn a_request_landing_while_its_cancel_holds_focus_leaves_focus_in_the_panel(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let panel = cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.review.fixture = true;
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+            panel
+        });
+        settle_panel(&app, cx).await;
+        draw(cx);
+
+        // Refresh while the operation thread is held, as by a slow request,
+        // with keyboard focus on the busy row's Cancel.
+        let held = app.read_with(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.refresh(1, window, cx)));
+        draw(cx);
+        let cancel = panel.read_with(cx, |panel, _| panel.cancel_request.handle().clone());
+        cx.update(|window, cx| window.focus(&cancel, cx));
+        draw(cx);
+        assert!(cx.debug_bounds("github-cancel").is_some());
+        assert!(
+            !cx.update(|window, _| window.context_stack().is_empty()),
+            "the Cancel holds focus, drawn"
+        );
+
+        drop(held);
+        settle_panel(&app, cx).await;
+        draw(cx);
+        assert!(
+            cx.debug_bounds("github-cancel").is_none(),
+            "the reply takes the busy row away"
+        );
+        let (destination, text) = cx.read(|cx| {
+            let field = panel.read(cx).destination.read(cx);
+            (field.focus_handle(cx), field.input_bounds())
+        });
+        assert!(
+            cx.update(|window, _| destination.is_focused(window)),
+            "focus moves from the Cancel to the destination field"
+        );
+        assert!(
+            !cx.update(|window, _| window.context_stack().is_empty()),
+            "the frame draws the field that holds focus"
+        );
+        // The field's own accent edge shows its focus whole. The kit's ring
+        // outside it is cut at the panel's left edge, whose scroll clip keeps
+        // no ring room, as it is when the panel opens with focus there.
+        let accent = cx.read(|cx| gpui_kit::component::Theme::global(cx).ring);
+        let edges: Vec<_> = focus_ring::painted_outlines(cx, accent)
+            .into_iter()
+            .filter(|edge| edge.bounds.contains(&text.center()))
+            .collect();
+        assert!(
+            matches!(edges[..], [edge] if edge.whole && edge.width == px(1.)),
+            "the destination field draws its accent edge whole: {edges:?}"
+        );
+
+        escape(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape closes the panel"
+        );
     }
 
     /// Each PR row is one text column: the title, a Button's label, and the

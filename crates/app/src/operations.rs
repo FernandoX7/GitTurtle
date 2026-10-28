@@ -62,6 +62,13 @@ pub struct SerialExecutor {
     sender: mpsc::SyncSender<Operation>,
 }
 
+/// Keeps a [`SerialExecutor`] held until it drops ([`SerialExecutor::hold`]).
+#[cfg(test)]
+#[must_use = "the executor is released as soon as the guard drops"]
+pub struct Held {
+    _release: mpsc::Sender<()>,
+}
+
 impl SerialExecutor {
     pub fn new(name: &str) -> Self {
         let (sender, receiver) = mpsc::sync_channel::<Operation>(8);
@@ -119,6 +126,22 @@ impl SerialExecutor {
             }))
             .expect("the executor accepts the marker");
         drained.recv().expect("the executor ran the marker");
+    }
+
+    /// Holds this executor's thread until the returned guard drops, as a
+    /// slow job would: whatever is submitted meanwhile waits behind it. A
+    /// GPUI test holds a dialog's read this way to act on its loading row
+    /// before the reply lands.
+    #[cfg(test)]
+    pub fn hold(&self) -> Held {
+        let (release, released) = mpsc::channel::<()>();
+        self.sender
+            .send(Box::new(move |_| {
+                // Dropping the guard closes the channel, which ends the wait.
+                let _ = released.recv();
+            }))
+            .expect("the executor accepts the hold");
+        Held { _release: release }
     }
 
     fn submit_impl<T: Send + 'static>(

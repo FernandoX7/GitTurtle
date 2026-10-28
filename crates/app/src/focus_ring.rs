@@ -82,6 +82,42 @@ impl FocusRing {
     }
 }
 
+/// A loading row's Cancel, which the row takes with it when the read it
+/// waits for answers or is cancelled. Focus left on it would rest on a control
+/// no frame draws: nothing would show focus, and keys would reach none of the
+/// dialog's bindings, so Escape no longer closed the dialog. The Cancel tracks
+/// [`LoadingCancel::handle`], and what takes the row away first hands focus
+/// the Cancel holds to a stop that stays, so the frame without the row draws
+/// that stop's ring. The Reflog, the worktree manager and the GitHub panel
+/// keep one each.
+#[derive(Clone)]
+pub(crate) struct LoadingCancel(FocusHandle);
+
+impl LoadingCancel {
+    pub(crate) fn new(cx: &mut App) -> Self {
+        Self(cx.focus_handle())
+    }
+
+    /// The handle the Cancel tracks (`Button::track_focus`).
+    pub(crate) fn handle(&self) -> &FocusHandle {
+        &self.0
+    }
+
+    /// Whether the Cancel holds focus, which taking its row away would
+    /// strand.
+    pub(crate) fn holds_focus(&self, window: &Window) -> bool {
+        self.0.is_focused(window)
+    }
+
+    /// Moves focus the Cancel holds to `to`, a stop that stays drawn once the
+    /// row has gone; focus anywhere else stays where it is.
+    pub(crate) fn release_to(&self, to: &FocusHandle, window: &mut Window, cx: &mut App) {
+        if self.holds_focus(window) {
+            to.focus(window, cx);
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod sweep;
 

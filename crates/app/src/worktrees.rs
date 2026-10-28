@@ -203,6 +203,9 @@ struct WorktreeManager {
     selected: Option<PathBuf>,
     details: Option<WorktreeDetails>,
     pending: bool,
+    /// The loading row's Cancel, which hands focus to the shown form's first
+    /// field as the row goes.
+    cancel_read: focus_ring::LoadingCancel,
     reviewing: bool,
     error: Option<String>,
     creating: bool,
@@ -246,6 +249,7 @@ impl WorktreeManager {
             selected: None,
             details: None,
             pending: false,
+            cancel_read: focus_ring::LoadingCancel::new(cx),
             reviewing: false,
             error: None,
             creating: false,
@@ -267,6 +271,17 @@ impl WorktreeManager {
         self.task = None;
         self.pending = false;
         self.reviewing = false;
+    }
+    /// As the loading row goes, focus its Cancel holds moves to the first
+    /// field below it: the filter in Manage, the branch field in Create.
+    fn leave_loading_row(&self, window: &mut Window, cx: &mut App) {
+        let field = if self.creating {
+            &self.branch
+        } else {
+            &self.filter
+        };
+        let field = field.read(cx).focus_handle(cx);
+        self.cancel_read.release_to(&field, window, cx);
     }
     fn current(&self, cx: &App) -> bool {
         self.owner.upgrade().is_some_and(|owner| {
@@ -307,7 +322,7 @@ impl WorktreeManager {
         });
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Worktree read interrupted. Refresh to try again.")));
-            let _ = this.update_in(cx, |this, window, cx| { if this.closed.load(std::sync::atomic::Ordering::Acquire) { return; } this.pending = false; this.reviewing = false; if !this.current(cx) { this.error = Some("The repository context changed or an operation started. Reopen Worktrees when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
+            let _ = this.update_in(cx, |this, window, cx| { if this.closed.load(std::sync::atomic::Ordering::Acquire) { return; } this.pending = false; this.reviewing = false; this.leave_loading_row(window, cx); if !this.current(cx) { this.error = Some("The repository context changed or an operation started. Reopen Worktrees when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
         }));
         cx.notify();
     }
@@ -555,7 +570,7 @@ impl Render for WorktreeManager {
                 .child(button("worktree-browse-tab", "Manage", "", !self.creating).debug_selector(|| "worktree-browse-tab".to_string()).toggled(!self.creating).on_click(cx.listener(|this, _, _, cx| this.set_creating(false, cx))))
                 .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).debug_selector(|| "worktree-create-tab".to_string()).toggled(self.creating).on_click(cx.listener(|this, _, _, cx| this.set_creating(true, cx))))
                 .child(button("refresh-worktrees", "Refresh", "refresh", false).debug_selector(|| "refresh-worktrees".to_string()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
-            .when(self.pending, |element| element.child(div().flex().gap_2().child(label("worktree-loading", "Reading worktree identities and content…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-worktree-read", "Cancel", "", false).debug_selector(|| "cancel-worktree-read".to_string()).on_click(cx.listener(|this, _, _, cx| { this.cancel(); cx.notify(); })))))
+            .when(self.pending, |element| element.child(div().flex().gap_2().child(label("worktree-loading", "Reading worktree identities and content…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-worktree-read", "Cancel", "", false).track_focus(self.cancel_read.handle()).debug_selector(|| "cancel-worktree-read".to_string()).on_click(cx.listener(|this, _, window, cx| { this.cancel(); this.leave_loading_row(window, cx); cx.notify(); })))))
             .children(self.error.as_ref().map(|error| label("worktree-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .when(!self.creating, |element| element
                 .child(Input::new(&self.filter).aria_label("Filter worktrees by branch or path").cleanable(true))

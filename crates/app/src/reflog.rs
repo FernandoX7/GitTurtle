@@ -239,6 +239,9 @@ pub(crate) struct ReflogBrowser {
     /// The entries whose text the last layout cut.
     cut_entries: CutEntries,
     pending: bool,
+    /// The loading row's Cancel, which hands focus to the filter as the row
+    /// goes.
+    cancel_read: focus_ring::LoadingCancel,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -297,6 +300,7 @@ impl ReflogBrowser {
             files_scroll: ScrollHandle::new(),
             cut_entries: CutEntries::default(),
             pending: false,
+            cancel_read: focus_ring::LoadingCancel::new(cx),
             error: None,
             _subscriptions: vec![scope_subscription, query_subscription],
         }
@@ -305,6 +309,12 @@ impl ReflogBrowser {
         self.cancellation.cancel();
         self.task = None;
         self.pending = false;
+    }
+    /// As the loading row goes, focus its Cancel holds moves to the filter,
+    /// the first stop below it that every state of the browser draws.
+    fn leave_loading_row(&self, window: &mut Window, cx: &mut App) {
+        let filter = self.query.read(cx).focus_handle(cx);
+        self.cancel_read.release_to(&filter, window, cx);
     }
     fn current(&self, cx: &App) -> bool {
         self.owner.upgrade().is_some_and(|owner| {
@@ -330,7 +340,7 @@ impl ReflogBrowser {
         });
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Reflog read interrupted. Refresh to try again.")));
-            let _ = this.update_in(cx, |this, window, cx| { if this.closed.load(std::sync::atomic::Ordering::Acquire) { return; } this.pending = false; if !this.current(cx) { this.error = Some("The repository changed or an operation started. Reopen the reflog when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
+            let _ = this.update_in(cx, |this, window, cx| { if this.closed.load(std::sync::atomic::Ordering::Acquire) { return; } this.pending = false; this.leave_loading_row(window, cx); if !this.current(cx) { this.error = Some("The repository changed or an operation started. Reopen the reflog when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
         }));
         cx.notify();
     }
@@ -446,7 +456,7 @@ impl Render for ReflogBrowser {
             .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh", false).debug_selector(|| "refresh-reflog".into()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
             .when_some(self.page.as_ref(), |element, page| element.child(label("reflog-scope-summary", format!("{} · {} retained entries · newest first", page.reference, page.entries.len())).text_size(crate::appearance::ui_text(12.))).when(page.truncated, |element| element.child(label("reflog-limit", "Showing the newest 1,000 records within a 4 MiB tail. Older records are outside this bounded view.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
             .child(Input::new(&self.query).aria_label("Filter loaded reflog entries").cleanable(true))
-            .when(self.pending, |element| element.child(div().flex().gap_2().child(label("reflog-loading", "Reading local reflog or selected commit…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-reflog-read", "Cancel", "", false).on_click(cx.listener(|this, _, _, cx| { this.cancel(); cx.notify(); })))))
+            .when(self.pending, |element| element.child(div().flex().gap_2().child(label("reflog-loading", "Reading local reflog or selected commit…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-reflog-read", "Cancel", "", false).track_focus(self.cancel_read.handle()).debug_selector(|| "cancel-reflog-read".into()).on_click(cx.listener(|this, _, window, cx| { this.cancel(); this.leave_loading_row(window, cx); cx.notify(); })))))
             .children(self.error.as_ref().map(|error| label("reflog-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().child(native_accessibility::clips_children(div().id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(px(230.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, entry)| {
                 let entry = entry.clone(); let text = format!("{} · {} · {} · {}", entry.selector, short_oid(&entry.oid), full_date(entry.timestamp), if entry.message.is_empty() { "Reference updated" } else { &entry.message });
@@ -580,6 +590,83 @@ mod tests {
             .advance_clock(std::time::Duration::from_millis(400));
         draw(cx);
         assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "Escape returns focus to the opener"
+        );
+    }
+
+    /// A read that answers while keyboard focus is on its loading row's
+    /// Cancel takes the row away and hands focus to the filter, which draws
+    /// its ring whole, and Escape still closes the Reflog. Focus stayed on
+    /// the Cancel no frame drew, where Escape reached nothing.
+    #[gpui::test]
+    async fn a_read_landing_while_its_cancel_holds_focus_leaves_focus_on_the_filter(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        let opener = app.read_with(cx, |app, _| app.focus.clone());
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        let browser = cx.update(|window, cx| {
+            let browser =
+                cx.new(|cx| ReflogBrowser::new(app.downgrade(), repo.clone(), window, cx));
+            browser.update(cx, |this, cx| this.refresh(window, cx));
+            ReflogBrowser::show(browser.clone(), window, cx);
+            browser
+        });
+        let read = browser.update(cx, |this, _| this.task.take());
+        read.expect("the log is read").await;
+        draw(cx);
+
+        // Read log again while the browser's thread is held, as by a slow
+        // read, and Tab from the filter to the loading row's Cancel.
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.refresh(window, cx)));
+        draw(cx);
+        let cancel = browser.read_with(cx, |this, _| this.cancel_read.handle().clone());
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| cancel.is_focused(window)),
+            "Tab moves from the filter to the loading row's Cancel"
+        );
+        assert!(cx.debug_bounds("cancel-reflog-read").is_some());
+
+        drop(held);
+        let read = browser.update(cx, |this, _| this.task.take());
+        read.expect("the log is read again").await;
+        draw(cx);
+        park_pointer(cx);
+        assert!(
+            cx.debug_bounds("cancel-reflog-read").is_none(),
+            "the reply takes the loading row away"
+        );
+        let (filter, text) = cx.read(|cx| {
+            let query = browser.read(cx).query.read(cx);
+            (query.focus_handle(cx), query.input_bounds())
+        });
+        assert!(
+            cx.update(|window, _| filter.is_focused(window)),
+            "focus moves from the Cancel to the filter"
+        );
+        assert!(
+            !cx.update(|window, _| window.context_stack().is_empty()),
+            "the frame draws the stop that holds focus"
+        );
+        focus_ring::assert_input_ringed(cx, text, "the Reflog's filter");
+
+        cx.simulate_keystrokes("escape");
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape closes the Reflog"
+        );
         assert!(
             cx.update(|window, _| opener.is_focused(window)),
             "Escape returns focus to the opener"
