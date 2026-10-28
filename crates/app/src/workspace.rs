@@ -1621,30 +1621,57 @@ impl GitTurtle {
     }
 
     /// One file row's Stage, or Unstage where `staged`, from its control or,
-    /// where the control has left a narrow row, its menu.
+    /// where the control has left a narrow row, its menu. `path`, the row's
+    /// file, confirms on its row's control in the area it moves to.
     fn stage_working_paths(
         &mut self,
         paths: Vec<PathBuf>,
+        path: &std::path::Path,
         staged: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if staged {
-            self.write(
+        let (command, label, arrives) = if staged {
+            (
                 WriteCommand::Unstage { paths },
                 "Unstaging file…",
-                window,
-                cx,
-            );
+                ChangeArea::Unstaged,
+            )
         } else {
-            self.write(WriteCommand::Stage { paths }, "Staging file…", window, cx);
-        }
+            (
+                WriteCommand::Stage { paths },
+                "Staging file…",
+                ChangeArea::Staged,
+            )
+        };
+        let origin = confirmations::file(&self.path, path, arrives);
+        self.write_from(command, label, Some(origin), window, cx);
     }
 
+    /// Submits `command` with no control to confirm it: its outcome reaches
+    /// the window-wide notice, or the operation error.
     pub(super) fn write(
         &mut self,
         command: WriteCommand,
         label: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.write_from(command, label, None, window, cx);
+    }
+
+    /// Submits `command`, which the control `origin` marks asked for. Once Git
+    /// reports success, while its repository is still the one shown, that
+    /// control confirms it where it was touched (`copy_feedback::confirm`),
+    /// the outcome is announced once and the status line records it, and the
+    /// window-wide notice stays down. A failure, an uncertain result, or a
+    /// write with no `origin` or whose repository is no longer shown keeps
+    /// today's error or notice; nothing is retried.
+    pub(super) fn write_from(
+        &mut self,
+        command: WriteCommand,
+        label: &'static str,
+        origin: Option<copy_feedback::Mark>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1848,7 +1875,14 @@ impl GitTurtle {
                         } else {
                             outcome.message.lines().find(|line| !line.trim().is_empty()).unwrap_or("Git operation completed").to_owned()
                         };
-                        this.tab_operation_feedback(&path, Some(notice), None);
+                        match origin.filter(|_| this.path.as_ref() == Some(&path) && this.page == AppPage::Repository) {
+                            Some(control) => {
+                                this.tab_operation_feedback(&path, None, None);
+                                this.status = notice.clone();
+                                copy_feedback::confirm(window, cx, Some(control), notice);
+                            }
+                            None => this.tab_operation_feedback(&path, Some(notice), None),
+                        }
                     }
                     Err(error) => {
                         this.tab_operation_feedback(&path, None, Some(format!("{error:#}")));
@@ -2489,32 +2523,46 @@ impl GitTurtle {
             WorkingRow::Heading(area, count) => {
                 let staged = area == ChangeArea::Staged;
                 let name = if staged { "Staged" } else { "Unstaged" };
-                let (selector, action, symbol, detail) = if staged {
+                let (selector, action, detail) = if staged {
                     (
                         "unstage-all",
                         "Unstage all",
-                        "minus",
                         "Remove all staged changes from the next commit",
                     )
                 } else {
                     (
                         "stage-all",
                         "Stage all",
-                        "plus",
                         "Include all local changes in the next commit",
                     )
                 };
                 // Where its label does not fit, the action keeps its icon,
-                // with its name and a tooltip that leads with it.
+                // with its name and a tooltip that leads with it. Either way
+                // it reads Staged or Unstaged where it was touched once Git
+                // reports success, in its label's place or in its tooltip.
+                let (mark, confirmation) = (
+                    confirmations::all(&self.path, area),
+                    if staged {
+                        confirmations::UNSTAGE_ALL
+                    } else {
+                        confirmations::STAGE_ALL
+                    },
+                );
+                let origin = mark.clone();
                 let control = if forms.section_action_label {
-                    button(selector, action, symbol, false).tooltip(detail)
+                    copy_feedback::feedback_button(mark, confirmation, action, detail, cx)
                 } else {
                     crate::views::compact_control_name(
-                        button(selector, "", symbol, false),
+                        copy_feedback::feedback_button(
+                            mark,
+                            confirmation,
+                            "",
+                            format!("{action} · {detail}"),
+                            cx,
+                        ),
                         selector,
                         action,
                     )
-                    .tooltip(format!("{action} · {detail}"))
                 };
                 let part = move |part: &'static str| -> String {
                     format!(
@@ -2578,7 +2626,7 @@ impl GitTurtle {
                                     || !self.working_filter.read(cx).value().is_empty(),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.write(
+                                this.write_from(
                                     if staged {
                                         WriteCommand::UnstageAll
                                     } else {
@@ -2589,6 +2637,7 @@ impl GitTurtle {
                                     } else {
                                         "Staging files…"
                                     },
+                                    Some(origin.clone()),
                                     window,
                                     cx,
                                 )
@@ -2599,6 +2648,8 @@ impl GitTurtle {
             WorkingRow::File(index, area) => {
                 let entry = &self.work_status.as_ref().unwrap().entries[index];
                 let paths = entry.paths();
+                let row_path = entry.path.clone();
+                let menu_path = row_path.clone();
                 let ignore_entry = entry.clone();
                 let ignore_owner = cx.entity().downgrade();
                 let ignore_repository = self.path.clone();
@@ -2772,22 +2823,35 @@ impl GitTurtle {
                         )
                     })
                     .when(forms.file_action, |row| {
+                        // Icon-only, it reads its confirmation in its tooltip
+                        // once the Stage or Unstage that moved its file here
+                        // succeeded, and keeps its name.
                         row.child(
-                            button(
-                                (if staged { "unstage" } else { "stage" }, index),
+                            copy_feedback::feedback_button(
+                                confirmations::file(&self.path, &entry.path, area),
+                                if staged {
+                                    confirmations::STAGED_FILE
+                                } else {
+                                    confirmations::UNSTAGED_FILE
+                                },
                                 "",
-                                if staged { "minus" } else { "plus" },
-                                false,
+                                stage_label.clone(),
+                                cx,
                             )
                             .debug_selector(move || format!("working-stage-{position}"))
-                            .accessibility_label(stage_label.clone())
-                            .tooltip(stage_label)
+                            .accessibility_label(stage_label)
                             .disabled(busy)
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
                                     cx.stop_propagation();
                                     this.depart_working_row(position, window, cx);
-                                    this.stage_working_paths(paths.clone(), staged, window, cx);
+                                    this.stage_working_paths(
+                                        paths.clone(),
+                                        &row_path,
+                                        staged,
+                                        window,
+                                        cx,
+                                    );
                                 },
                             )),
                         )
@@ -2817,6 +2881,7 @@ impl GitTurtle {
                         } else {
                             let (owner, repository) = (owner.clone(), repository.clone());
                             let paths = menu_paths.clone();
+                            let path = menu_path.clone();
                             menu.item(
                                 PopupMenuItem::new(if staged { "Unstage" } else { "Stage" })
                                     .disabled(busy)
@@ -2826,6 +2891,7 @@ impl GitTurtle {
                                                 this.depart_working_row(position, window, cx);
                                                 this.stage_working_paths(
                                                     paths.clone(),
+                                                    &path,
                                                     staged,
                                                     window,
                                                     cx,
@@ -3072,21 +3138,53 @@ impl GitTurtle {
                     }
                 };
                 let name = format!("{label}: {tooltip}");
+                // Each reads its confirmation where it was touched once Git
+                // reports success, for the target it acted on: labelled in its
+                // label's place, as an icon in its tooltip. Its name stays.
+                let (confirmation, target) = match id {
+                    "fetch" => (confirmations::FETCH, vec![selected_remote.as_str()]),
+                    "pull" => (
+                        confirmations::PULL,
+                        vec![selected_remote.as_str(), selected_branch.as_str()],
+                    ),
+                    _ => (
+                        confirmations::PUSH,
+                        vec![
+                            branch.as_str(),
+                            selected_remote.as_str(),
+                            selected_branch.as_str(),
+                        ],
+                    ),
+                };
+                let mark = confirmations::sync(id, &self.path, &target);
                 let control = if compact {
                     let tooltip = format!("{label} · {tooltip}");
-                    crate::views::compact_control_label(button(id, "", id, false), id, name.clone())
-                        .map(|button| {
-                            if id == "push" {
-                                button.primary()
-                            } else {
-                                button.secondary()
-                            }
-                        })
-                        .tooltip(tooltip)
+                    crate::views::compact_control_label(
+                        copy_feedback::feedback_button(mark, confirmation, "", tooltip, cx),
+                        id,
+                        name.clone(),
+                    )
+                    .map(|button| {
+                        if id == "push" {
+                            button.primary()
+                        } else {
+                            button.secondary()
+                        }
+                    })
                 } else {
-                    action_button(id, label, id)
-                        .when(id == "push", |button| button.primary())
-                        .tooltip(tooltip)
+                    // Its rest width decides where the bar wraps, so the
+                    // past tense takes its icon's and label's room alone.
+                    copy_feedback::confirming(
+                        action_frame(id),
+                        rems(0.5),
+                        copy_feedback::Fit::Within,
+                        mark,
+                        confirmation,
+                        label,
+                        tooltip,
+                        cx,
+                    )
+                    .when(id == "push", |button| button.primary())
                 };
                 // Disabled, each rests on the neutral `subtle`, 1.046:1 off
                 // Midnight's toolbar, so there it keeps its shape with an edge
@@ -3103,26 +3201,34 @@ impl GitTurtle {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let remote = this.remote_name.read(cx).value().trim().to_owned();
                         let branch = this.remote_branch.read(cx).value().trim().to_owned();
+                        let local_branch = this
+                            .work_status
+                            .as_ref()
+                            .and_then(|s| s.branch.clone())
+                            .unwrap_or_default();
+                        let target = match id {
+                            "fetch" => vec![remote.as_str()],
+                            "pull" => vec![remote.as_str(), branch.as_str()],
+                            _ => vec![local_branch.as_str(), remote.as_str(), branch.as_str()],
+                        };
+                        let origin = confirmations::sync(id, &this.path, &target);
                         let command = match id {
                             "fetch" => WriteCommand::Fetch { remote },
                             "pull" => WriteCommand::Pull { remote, branch },
                             _ => WriteCommand::Push {
                                 remote,
-                                local_branch: this
-                                    .work_status
-                                    .as_ref()
-                                    .and_then(|s| s.branch.clone())
-                                    .unwrap_or_default(),
+                                local_branch,
                                 remote_branch: branch,
                             },
                         };
-                        this.write(
+                        this.write_from(
                             command,
                             match id {
                                 "fetch" => "Fetching remote…",
                                 "pull" => "Pulling fast-forward…",
                                 _ => "Pushing branch…",
                             },
+                            Some(origin),
                             window,
                             cx,
                         );
@@ -3206,17 +3312,20 @@ impl GitTurtle {
                             .child(action_field_label("Find or create a branch", p.muted))
                             .child(div().flex().items_center().gap_1()
                                 .child(div().w(appearance::ui_size(170.)).child(Input::new(&self.branch_name).aria_label("Branch to switch to or create").text_size(crate::appearance::ui_text(12.)).disabled(busy)))
-                                .child(button("checkout-branch", "Switch", "branch", false).disabled(busy || branch_empty)
-                                    .tooltip("Switch to the named local branch")
+                                // Each reads Switched or Created where it was
+                                // touched once Git reports success, though the
+                                // name field it read has emptied.
+                                .child(copy_feedback::feedback_button(confirmations::branch_form("checkout-branch", &self.path), confirmations::SWITCH, "Switch", "Switch to the named local branch", cx).disabled(busy || branch_empty)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         let branch = this.branch_name.read(cx).value().trim().to_owned();
-                                        this.write(WriteCommand::Checkout { branch }, "Switching branch…", window, cx);
+                                        let origin = confirmations::branch_form("checkout-branch", &this.path);
+                                        this.write_from(WriteCommand::Checkout { branch }, "Switching branch…", Some(origin), window, cx);
                                     })))
-                                .child(button("create-branch", "Create", "branch-add", false).disabled(busy || branch_empty)
-                                    .tooltip("Create and switch to a branch from HEAD")
+                                .child(copy_feedback::feedback_button(confirmations::branch_form("create-branch", &self.path), confirmations::CREATE, "Create", "Create and switch to a branch from HEAD", cx).disabled(busy || branch_empty)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         let name = this.branch_name.read(cx).value().trim().to_owned();
-                                        this.write(WriteCommand::CreateBranch { name, start_point: None }, "Creating branch…", window, cx);
+                                        let origin = confirmations::branch_form("create-branch", &this.path);
+                                        this.write_from(WriteCommand::CreateBranch { name, start_point: None }, "Creating branch…", Some(origin), window, cx);
                                     })))))
                         .child(div().w(px(1.)).h(crate::appearance::ui_size(32.)).mx_1().bg(rgb(p.border)))
                         .child(div().w(appearance::ui_size(120.)).flex().flex_col().gap_1()
@@ -3252,19 +3361,120 @@ fn action_inset() -> Pixels {
     appearance::ui_text(13.) * 0.75
 }
 
-fn action_button(id: impl Into<ElementId>, label: impl Into<SharedString>, symbol: &str) -> Button {
+/// The Git writes that confirm on the control that asked for them
+/// ([`GitTurtle::write_from`]): each control's icon at rest and the word it
+/// reads once Git reports success, after the check or, in the action bar's
+/// labelled Fetch, Pull and Push, alone (`copy_feedback::Fit`).
+pub(super) mod confirmations {
+    use crate::copy_feedback::{Action, Mark};
+    use gitturtle_core::ChangeArea;
+    use std::path::{Path, PathBuf};
+
+    /// A file row's control in Staged, which unstages at rest and reads
+    /// Staged once that file's Stage succeeded.
+    pub(crate) const STAGED_FILE: Action = Action {
+        icon: "minus",
+        done: "Staged",
+        state: "staged",
+    };
+    /// A file row's control in Unstaged, which stages at rest and reads
+    /// Unstaged once that file's Unstage succeeded.
+    pub(crate) const UNSTAGED_FILE: Action = Action {
+        icon: "plus",
+        done: "Unstaged",
+        state: "unstaged",
+    };
+    pub(crate) const STAGE_ALL: Action = Action {
+        icon: "plus",
+        done: "Staged",
+        state: "staged",
+    };
+    pub(crate) const UNSTAGE_ALL: Action = Action {
+        icon: "minus",
+        done: "Unstaged",
+        state: "unstaged",
+    };
+    pub(crate) const FETCH: Action = Action {
+        icon: "fetch",
+        done: "Fetched",
+        state: "fetched",
+    };
+    pub(crate) const PULL: Action = Action {
+        icon: "pull",
+        done: "Pulled",
+        state: "pulled",
+    };
+    pub(crate) const PUSH: Action = Action {
+        icon: "push",
+        done: "Pushed",
+        state: "pushed",
+    };
+    pub(crate) const CREATE: Action = Action {
+        icon: "branch-add",
+        done: "Created",
+        state: "created",
+    };
+    pub(crate) const SWITCH: Action = Action {
+        icon: "branch",
+        done: "Switched",
+        state: "switched",
+    };
+
+    /// The control of `path`'s row in `area` of `repository`'s working
+    /// changes. A file staged arrives in Staged, so its Stage confirms on the
+    /// control of its row there, the row it moved to, and an Unstage on its
+    /// row in Unstaged.
+    pub(crate) fn file(repository: &Option<PathBuf>, path: &Path, area: ChangeArea) -> Mark {
+        Mark::per_subject(
+            match area {
+                ChangeArea::Staged => "staged-file-action",
+                ChangeArea::Unstaged => "unstaged-file-action",
+            },
+            (repository, path),
+        )
+    }
+
+    /// Stage all, or in Staged Unstage all, of `repository`.
+    pub(crate) fn all(repository: &Option<PathBuf>, area: ChangeArea) -> Mark {
+        Mark::new(
+            match area {
+                ChangeArea::Staged => "unstage-all",
+                ChangeArea::Unstaged => "stage-all",
+            },
+            repository,
+        )
+    }
+
+    /// The action bar's Fetch, Pull or Push (`id`) of `repository` toward
+    /// `target`, its remote and branches, so changing Targets leaves the
+    /// next target's control at rest.
+    pub(crate) fn sync(id: &'static str, repository: &Option<PathBuf>, target: &[&str]) -> Mark {
+        Mark::new(id, (repository, target))
+    }
+
+    /// Targets' Create (`create-branch`) or Switch (`checkout-branch`) of
+    /// `repository`, whose name field empties once the branch is created.
+    pub(crate) fn branch_form(id: &'static str, repository: &Option<PathBuf>) -> Mark {
+        Mark::new(id, repository)
+    }
+
+    /// The branch picker while it shows `branch` of `repository`: a switch
+    /// chosen from its menu confirms once the picker names that branch.
+    pub(crate) fn picker(repository: &Option<PathBuf>, branch: &str) -> Mark {
+        Mark::new("current-branch", (repository, branch))
+    }
+}
+
+/// The action bar's labelled Fetch, Pull or Push frame, 34 px high, without
+/// content: `copy_feedback::confirming` draws its icon and label, `gap_2`
+/// apart as the kit's medium Button sets them.
+fn action_frame(id: impl Into<ElementId>) -> Button {
     Button::new(id)
         .secondary()
         .h(crate::appearance::ui_size(34.))
         .px(action_inset())
         .text_size(crate::appearance::ui_text(12.))
         .font_weight(FontWeight::MEDIUM)
-        .label(label)
-        .icon(
-            Icon::default()
-                .path(format!("icons/{symbol}.svg"))
-                .size(appearance::ui_size(16.)),
-        )
 }
 
 fn action_field_label(label: &'static str, color: u32) -> impl IntoElement {
@@ -3329,6 +3539,9 @@ pub(super) fn display_remote_url(url: &str) -> String {
         without_query.into()
     }
 }
+
+#[cfg(test)]
+mod confirmation_tests;
 
 #[cfg(test)]
 mod tests {

@@ -1,6 +1,9 @@
 //! Confirmation of explicit copy actions, and of the other actions that
-//! confirm on the control they came from ([`confirm`]), such as opening
-//! captured bytes in another application (`system_preview`).
+//! confirm on the control they came from ([`confirm`]): opening captured
+//! bytes in another application (`system_preview`), and the Git writes a
+//! control asks for, which confirm once Git reports success (`workspace`'s
+//! `write_from`: a file row's Stage or Unstage, Stage all and Unstage all,
+//! Fetch, Pull, Push, Create and Switch, and the branch picker's switch).
 //!
 //! Every copy a person asks for goes through [`copy`]: it writes the
 //! clipboard, marks the copy button it came from, if any, and posts one polite
@@ -10,8 +13,13 @@
 //! then reverts. A repeated copy restarts the time and is announced again.
 //! The button keeps its bounds and its accessible name throughout, and
 //! nothing animates, so reduced motion needs nothing more. Another action's
-//! button, drawn by [`feedback_button`], reads its own word ("Opened") the
-//! same way.
+//! button, drawn by [`feedback_button`] in the shared frame or by
+//! [`confirming`] in a frame of its own (the action bar's 34 px Fetch, Pull
+//! and Push), reads its own word ("Opened", "Fetched", "Staged") the same
+//! way, or, where a layout depends on its width, the word alone within its
+//! content's room ([`Fit::Within`]). A control that names something it
+//! changes, as the branch picker names the branch, keeps its content and
+//! trades only its icon for the check ([`confirmed`]).
 //!
 //! The mark is one application global: the latest confirmation, its window
 //! and its generation. A newer one replaces it, so at most one button reads
@@ -100,6 +108,21 @@ impl Mark {
         }
     }
 
+    /// The mark of one of several `name` controls in a list, one per
+    /// `subject`, such as a working file's Stage: the control's id carries
+    /// the subject's hash, so each row's control has its own id however the
+    /// rows are ordered, and a confirmation made for a subject finds its row
+    /// after the list is read again.
+    pub(crate) fn per_subject(name: &'static str, subject: impl Hash) -> Self {
+        let mut hasher = DefaultHasher::new();
+        subject.hash(&mut hasher);
+        let subject = hasher.finish();
+        Self {
+            control: ElementId::NamedInteger(name.into(), subject),
+            subject,
+        }
+    }
+
     /// The id of the button this mark belongs to.
     pub(crate) fn control(&self) -> &ElementId {
         &self.control
@@ -166,7 +189,8 @@ fn restore(generation: usize, cx: &mut App) {
     }
 }
 
-fn confirmed(mark: &Mark, cx: &App) -> bool {
+/// Whether `mark`'s control reads its confirmation now.
+pub(crate) fn confirmed(mark: &Mark, cx: &App) -> bool {
     cx.try_global::<Feedback>()
         .and_then(|feedback| feedback.latest.as_ref())
         .is_some_and(|latest| latest.mark.as_ref() == Some(mark))
@@ -208,15 +232,60 @@ pub(crate) fn feedback_button(
     tooltip: impl Into<SharedString>,
     cx: &App,
 ) -> Button {
+    let label = label.into();
+    let frame = button_frame(mark.control.clone(), &label, action.icon, false);
+    confirming(
+        frame,
+        appearance::ui_size(6.),
+        Fit::Reserve,
+        mark,
+        action,
+        label,
+        tooltip,
+        cx,
+    )
+}
+
+/// How a labelled control draws its confirmation in its bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Fit {
+    /// The check in the icon's place, then the word where the label starts,
+    /// as Copied: the control is as wide as the wider of its content and
+    /// that, at rest too.
+    Reserve,
+    /// The word alone, from where the icon starts, within the content's own
+    /// width, for a control whose width a layout depends on: the action
+    /// bar's Fetch, Pull and Push, whose rest widths decide where the bar
+    /// wraps and where the compact chrome begins. "Fetched" is narrower than
+    /// the icon, its gap and "Fetch" together, so nothing at rest grows.
+    Within,
+}
+
+/// [`feedback_button`]'s content, naming and tooltip in `frame`, a Button
+/// with `mark`'s control id and its own size, padding and variant, such as
+/// the action bar's 34 px Fetch, Pull and Push; `gap` is the space it keeps
+/// between its icon and its label, so the content sits where the frame's own
+/// icon and label would, and `fit` how a label's confirmation fits.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn confirming(
+    frame: Button,
+    gap: impl Into<DefiniteLength>,
+    fit: Fit,
+    mark: Mark,
+    action: Action,
+    label: impl Into<SharedString>,
+    tooltip: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
     let copied = confirmed(&mark, cx);
     let id = mark.control.clone();
     let label = label.into();
     let tooltip = tooltip.into();
     let labelled = !label.is_empty();
+    let gap = gap.into();
     let selector = id.clone();
-    let mut button = button_frame(id.clone(), &label, action.icon, false)
-        .debug_selector(move || selector.to_string());
-    let cell = |icon: Icon, text: SharedString, shown: bool, state: &'static str| {
+    let mut button = frame.debug_selector(move || selector.to_string());
+    let cell = |icon: Option<Icon>, text: SharedString, shown: bool, state: &'static str| {
         let (probe, text_probe) = (id.clone(), id.clone());
         // Both contents start at the leading edge, so the check takes the
         // icon's place and the narrower one's spare width trails it.
@@ -234,8 +303,8 @@ pub(crate) fn feedback_button(
                     .debug_selector(move || format!("{probe}/{state}"))
                     .flex()
                     .items_center()
-                    .gap(appearance::ui_size(6.))
-                    .child(icon)
+                    .gap(gap)
+                    .children(icon)
                     .when(!text.is_empty(), |content| {
                         content.child(
                             div()
@@ -255,13 +324,13 @@ pub(crate) fn feedback_button(
             .grid_cols(1)
             .items_center()
             .child(cell(
-                control_icon(action.icon),
+                Some(control_icon(action.icon)),
                 label.clone(),
                 !copied,
                 "rest",
             ))
             .child(cell(
-                control_icon("check"),
+                (!labelled || fit == Fit::Reserve).then(|| control_icon("check")),
                 if labelled {
                     action.done.into()
                 } else {

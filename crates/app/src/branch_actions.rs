@@ -112,6 +112,18 @@ impl GitTurtle {
             .and_then(|status| status.branch.clone())
             .unwrap_or_else(|| "Detached HEAD".into());
         let owner = cx.entity().downgrade();
+        // A switch chosen from this menu confirms here once the picker names
+        // the branch it switched to: the check takes the branch icon's place
+        // and the tooltip says Switched, while the label, the width and the
+        // name stay (`copy_feedback`).
+        let switched =
+            copy_feedback::confirmed(&workspace::confirmations::picker(&self.path, &branch), cx);
+        let symbol = if switched {
+            "icons/check.svg"
+        } else {
+            "icons/branch.svg"
+        };
+        crate::views::note_control_icon(&"current-branch".into(), symbol);
         Button::new("current-branch")
             .debug_selector(|| "current-branch".into())
             .secondary()
@@ -122,13 +134,17 @@ impl GitTurtle {
             .text_size(crate::appearance::ui_text(12.))
             .font_weight(FontWeight::MEDIUM)
             .label(branch.clone())
-            .icon(Icon::default().path("icons/branch.svg").size(px(16.)))
+            .icon(Icon::default().path(symbol).size(px(16.)))
             .dropdown_caret(true)
             .disabled(self.operation_busy.is_some())
             .accessibility_label(format!(
                 "Current branch: {branch}. Switch or manage branches"
             ))
-            .tooltip(format!("{branch} · Switch branch and repository actions"))
+            .tooltip(if switched {
+                format!("{} · {branch}", workspace::confirmations::SWITCH.done)
+            } else {
+                format!("{branch} · Switch branch and repository actions")
+            })
             .dropdown_menu(move |mut menu, _, cx| {
                 let Some(view) = owner.upgrade() else {
                     return menu;
@@ -199,11 +215,14 @@ impl GitTurtle {
                             .on_click(move |_, window, cx| {
                                 let _ = owner.update(cx, |this, cx| {
                                     if this.path == path && this.page == AppPage::Repository {
-                                        this.write(
+                                        let origin =
+                                            workspace::confirmations::picker(&this.path, &name);
+                                        this.write_from(
                                             WriteCommand::Checkout {
                                                 branch: name.clone(),
                                             },
                                             "Switching branch…",
+                                            Some(origin),
                                             window,
                                             cx,
                                         );
