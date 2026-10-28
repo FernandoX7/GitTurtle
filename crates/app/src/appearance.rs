@@ -582,6 +582,27 @@ impl Palette {
         Rgba { r, g, b, a: alpha }
     }
 
+    /// What the shared button ([`control_button_variant`]) shows over an
+    /// opaque `surface` at rest, hovered and pressed, selected where
+    /// `selected`, as GPUI blends its fill: for content drawn on the button
+    /// that cuts itself out of it, as the compact Changes count's ring does.
+    /// Unselected, it is transparent at rest and lays its
+    /// [`Self::control_fill`] layers over the surface; selected, it is
+    /// opaque `selected`, and [`control_selected_hover`] while hovered or
+    /// pressed, since the kit gives a selected control no pressed fill.
+    pub fn control_fills(self, selected: bool, surface: u32) -> [u32; 3] {
+        if selected {
+            let hovered = self.row_hover(true);
+            [self.selected, hovered, hovered]
+        } else {
+            [
+                surface,
+                composite(self.control_fill(self.hover), surface),
+                composite(self.control_fill(self.selected), surface),
+            ]
+        }
+    }
+
     /// An enabled, unchecked Switch's track under the pointer: its resting
     /// `border` fill moved by the step a row takes from `panel` to `hover`, so
     /// the track lifts as the rows around it do. The shared button's
@@ -974,7 +995,7 @@ pub fn labels(cx: &App) -> Labels {
 
 /// Composite a translucent layer over an opaque surface as GPUI's renderers
 /// blend a quad: on the gamma-encoded values of their non-sRGB targets.
-fn composite(layer: Rgba, surface: u32) -> u32 {
+pub(crate) fn composite(layer: Rgba, surface: u32) -> u32 {
     let beneath = rgb(surface);
     [
         (layer.r, beneath.r, 16),
