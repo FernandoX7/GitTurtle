@@ -1396,7 +1396,9 @@ impl GitTurtle {
                             ))
                             .border_1()
                             .border_color(rgb(colors.border))
-                            .focus_visible(|style| style.border_color(rgb(colors.accent)))
+                            .when(self.focus_ring.shows(&self.focus), |pane| {
+                                pane.border_color(rgb(colors.accent))
+                            })
                             .relative()
                             .flex_1()
                             .min_h_0()
@@ -1818,6 +1820,7 @@ impl GitTurtle {
             .child(
                 div()
                     .id("files-pane")
+                    .debug_selector(|| "files-pane".into())
                     .role(Role::ListBox)
                     .aria_label("Changed files")
                     .tab_stop(true)
@@ -1830,7 +1833,9 @@ impl GitTurtle {
                     ))
                     .border_1()
                     .border_color(rgb(colors.border))
-                    .focus_visible(|style| style.border_color(rgb(colors.accent)))
+                    .when(self.focus_ring.shows(&self.file_focus), |pane| {
+                        pane.border_color(rgb(colors.accent))
+                    })
                     .relative()
                     .flex_1()
                     .min_h_0()
@@ -3512,6 +3517,29 @@ impl GitTurtle {
         } else if self.sidebar && !narrow {
             h_resizable("history-columns")
                 .with_state(&self.history_panels)
+                // The kit paints its divider over History's first pixel,
+                // where the commit list draws its left edge and focus ring;
+                // the sidebar's own right border is the divider. Paint the
+                // line on that border instead, in its color at rest and the
+                // ring's while dragged; the hit area and drag stay the kit's.
+                .with_handle_appearance(std::rc::Rc::new(
+                    |handle: &gpui_kit::base::ResizeHandleContext, _, cx| {
+                        let line = if handle.is_active() {
+                            gpui_kit::component::Theme::global(cx).colors.ring
+                        } else {
+                            rgb(palette(cx).border).into()
+                        };
+                        Some(
+                            div()
+                                .flex_none()
+                                .h_full()
+                                .w(px(1.))
+                                .ml(px(-1.))
+                                .bg(line)
+                                .into_any_element(),
+                        )
+                    },
+                ))
                 .on_resize({
                     let owner = cx.entity().downgrade();
                     move |panels, window, cx| {
@@ -3671,6 +3699,8 @@ impl Render for GitTurtle {
         }
         self.update_modal_focus(window, cx);
         self.return_focus_after_delete(window, cx);
+        // After the focus repairs above, before any list is built.
+        self.focus_ring.begin_frame(window, cx);
         let colors = palette(cx);
         let menu_state = (self.repository.is_some(), self.operation_busy.is_some());
         if self.menu_state != Some(menu_state) {
@@ -3721,6 +3751,7 @@ impl Render for GitTurtle {
             .relative()
             .track_focus(&self.app_focus)
             .key_context("GitTurtle")
+            .child(self.focus_ring.pointer_listener())
             .on_action(cx.listener(|this, _: &theme_editor::PageUpAction, _, cx| {
                 this.scroll_settings_page(settings::PageStep::Up, cx)
             }))
@@ -6187,6 +6218,141 @@ mod tests {
                 .map(|quad| quad.background)
                 .collect()
         })
+    }
+
+    /// What the last frame's quads leave visible just inside the middle of
+    /// each side of `selector`'s bounds, left, top, right and bottom: the
+    /// last quad painted there within its content mask, its border color in
+    /// a bordered side's band and its fill elsewhere. GPUI paints a border as
+    /// side-masked quads, so this reads their union, and a later quad, such
+    /// as a divider drawn over an edge, wins.
+    fn painted_sides(
+        cx: &mut VisualTestContext,
+        selector: &'static str,
+    ) -> [Option<gpui_kit::Background>; 4] {
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let quads = window.painted_quads();
+            // Half a device pixel inside each edge.
+            let inset = px(0.5 / scale);
+            let center = bounds.center();
+            [
+                point(bounds.left() + inset, center.y),
+                point(center.x, bounds.top() + inset),
+                point(bounds.right() - inset, center.y),
+                point(center.x, bounds.bottom() - inset),
+            ]
+            .map(|position| {
+                let (x, y) = (position.x.as_f32() * scale, position.y.as_f32() * scale);
+                let contains = |area: gpui_kit::Bounds<gpui_kit::ScaledPixels>| {
+                    x >= area.left().as_f32()
+                        && x < area.right().as_f32()
+                        && y >= area.top().as_f32()
+                        && y < area.bottom().as_f32()
+                };
+                quads.iter().rev().find_map(|quad| {
+                    if !contains(quad.bounds) || !contains(quad.content_mask.bounds) {
+                        return None;
+                    }
+                    let (area, widths) = (quad.bounds, quad.border_widths);
+                    let in_border = x < area.left().as_f32() + widths.left.as_f32()
+                        || x >= area.right().as_f32() - widths.right.as_f32()
+                        || y < area.top().as_f32() + widths.top.as_f32()
+                        || y >= area.bottom().as_f32() - widths.bottom.as_f32();
+                    if in_border && quad.border_color.a > 0. {
+                        Some(gpui_kit::Background::from(quad.border_color))
+                    } else {
+                        (!quad.background.is_transparent()).then_some(quad.background)
+                    }
+                })
+            })
+        })
+    }
+
+    /// A list focused from the keyboard keeps its accent ring, whole on all
+    /// four sides, while the pointer moves over the window: GPUI's
+    /// `focus_visible` dropped the ring at the first pointer movement, though
+    /// the list kept focus. A pointer press ends the ring, as a click never
+    /// marked a list, and the next key shows it again. History, the
+    /// changed-file list and Working Changes' list all behave so, and
+    /// History's left side shows: the navigation divider was painted over it.
+    #[gpui::test]
+    async fn a_keyboard_focused_list_keeps_its_ring_while_the_pointer_moves(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = history_window(cx).await;
+        // A local edit, so Working Changes lists a file.
+        std::fs::write(fixture.path().join("narrow/notes.txt"), "edited\n").unwrap();
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        draw(cx);
+        assert!(cx.debug_bounds("history-sidebar").is_some());
+        let (ring, edge) = cx.update(|_, cx| {
+            let p = palette(cx);
+            let solid = |color| Some(gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(color))));
+            ([solid(p.accent); 4], [solid(p.border); 4])
+        });
+        let focus_by_key = |cx: &mut VisualTestContext, handle: FocusHandle| {
+            cx.update(|window, cx| window.focus(&handle, cx));
+            cx.simulate_keystrokes("down");
+            draw(cx);
+        };
+        let move_pointer = |cx: &mut VisualTestContext, list: &'static str| {
+            let bounds = cx.debug_bounds(list).expect(list);
+            for position in [bounds.center(), bounds.center() + point(px(30.), px(10.))] {
+                cx.simulate_mouse_move(position, None, Modifiers::default());
+                draw(cx);
+            }
+        };
+        let (history, files) =
+            app.read_with(cx, |app, _| (app.focus.clone(), app.file_focus.clone()));
+        for (handle, list) in [(history, "history-pane"), (files.clone(), "files-pane")] {
+            assert_eq!(painted_sides(cx, list), edge, "{list} at rest");
+            focus_by_key(cx, handle.clone());
+            assert_eq!(painted_sides(cx, list), ring, "{list} focused by a key");
+            move_pointer(cx, list);
+            assert!(
+                cx.update(|window, _| handle.is_focused(window)),
+                "{list} keeps focus"
+            );
+            assert_eq!(
+                painted_sides(cx, list),
+                ring,
+                "{list} keeps its ring as the pointer moves"
+            );
+        }
+
+        // A press in the list's empty space below its row keeps focus there
+        // and ends the ring; a key shows it again.
+        let files_list = cx.debug_bounds("files-pane").unwrap();
+        let below = point(files_list.center().x, files_list.bottom() - px(6.));
+        cx.simulate_mouse_down(below, MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(below, MouseButton::Left, Modifiers::default());
+        draw(cx);
+        assert!(cx.update(|window, _| files.is_focused(window)));
+        assert_eq!(painted_sides(cx, "files-pane"), edge, "pressed");
+        move_pointer(cx, "files-pane");
+        assert_eq!(painted_sides(cx, "files-pane"), edge, "pressed, then moved");
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(
+            painted_sides(cx, "files-pane"),
+            ring,
+            "a key after the press"
+        );
+
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        focus_by_key(cx, files.clone());
+        assert_eq!(painted_sides(cx, "working-pane"), ring, "Working Changes");
+        move_pointer(cx, "working-pane");
+        assert!(cx.update(|window, _| files.is_focused(window)));
+        assert_eq!(
+            painted_sides(cx, "working-pane"),
+            ring,
+            "Working Changes keeps its ring as the pointer moves"
+        );
     }
 
     /// While an operation runs, the toolbar's Push, a primary Button, rests

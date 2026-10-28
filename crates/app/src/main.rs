@@ -17,6 +17,7 @@ mod discard;
 mod editor_find;
 mod file_history;
 mod focus_reveal;
+mod focus_ring;
 mod folder_picker;
 mod gif_playback;
 mod github;
@@ -465,6 +466,8 @@ struct GitTurtle {
     /// The header's Pull requests button, full or compact: the GitHub panel it
     /// opens returns focus to it on close.
     pull_requests_focus: FocusHandle,
+    /// Which list draws its keyboard focus ring.
+    focus_ring: focus_ring::FocusRing,
     pane: Pane,
     history_scroll: UniformListScrollHandle,
     file_scroll: UniformListScrollHandle,
@@ -783,6 +786,7 @@ impl GitTurtle {
             focus: cx.focus_handle(),
             file_focus: cx.focus_handle(),
             pull_requests_focus: cx.focus_handle(),
+            focus_ring: focus_ring::FocusRing::default(),
             pane: Pane::History,
             history_scroll: UniformListScrollHandle::new(),
             file_scroll: UniformListScrollHandle::new(),

@@ -1232,7 +1232,12 @@ impl GitTurtle {
                     .on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, window, cx| {
                         this.copy_list_item(crate::views::ListCopy::WorkingPaths, window, cx)
                     }))
-                    .border_1().border_color(rgb(p.border)).focus_visible(|style| style.border_color(rgb(p.accent)))
+                    .border_1().border_color(rgb(p.border)).when(self.focus_ring.shows(&self.file_focus), |pane| pane.border_color(rgb(p.accent)))
+                    // One pixel in from the inspector's divider, which the kit
+                    // paints over the inspector's first pixel: the list's own
+                    // left edge and focus ring stay whole beside it, as the
+                    // commit inspector's list does beside its own edge.
+                    .ml(px(1.))
                     // One whole row, whatever else gives way, so its focus ring
                     // surrounds a visible list.
                     .relative().flex_1().min_h(px(floor)).overflow_hidden()
