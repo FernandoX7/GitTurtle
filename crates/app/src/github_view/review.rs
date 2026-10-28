@@ -226,6 +226,66 @@ fn source_presentation(patch: &str) -> Option<text::PatchPresentation> {
         && patch.bytes().filter(|byte| *byte == b'\n').count() <= gitturtle_core::MAX_DIFF_LINES)
         .then(|| text::PatchPresentation::prepare(patch))
 }
+/// The key context entry that names a part of the panel's body ([`Panel::part`]).
+const PART: &str = "GitTurtleGithubPart";
+
+/// Scrolls the panel's body, `scroll`, by the least that shows `bounds`, the children of
+/// what focus has moved into, `inset` clear of its edges, after this frame paints, unless
+/// focus or a scroll supersedes it. Only a change of focus since the frame `revealed`
+/// records reveals.
+fn reveal(
+    scroll: &ScrollHandle,
+    revealed: &std::cell::RefCell<FocusObservation>,
+    bounds: Vec<Bounds<Pixels>>,
+    inset: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let observed = FocusObservation {
+        focus: window.focused(cx),
+        viewport: scroll.bounds(),
+        rem_size: window.rem_size(),
+    };
+    let previous_focus = revealed.borrow();
+    // Dialog entrance animation can move the whole viewport without
+    // changing what fits inside it. It must not undo manual scrolling.
+    if previous_focus.focus == observed.focus
+        && previous_focus.viewport.size == observed.viewport.size
+        && previous_focus.rem_size == observed.rem_size
+    {
+        return;
+    }
+    let Some(bounds) = bounds.into_iter().reduce(|a, b| a.union(&b)) else {
+        return;
+    };
+    let viewport = observed.viewport;
+    let delta = if bounds.top() < viewport.top() + inset {
+        viewport.top() + inset - bounds.top()
+    } else if bounds.bottom() > viewport.bottom() - inset {
+        viewport.bottom() - inset - bounds.bottom()
+    } else {
+        return;
+    };
+    let previous = scroll.offset();
+    let offset = point(
+        previous.x,
+        (previous.y + delta).clamp(-scroll.max_offset().y, px(0.)),
+    );
+    if offset == previous {
+        return;
+    }
+    let scroll = scroll.clone();
+    window.defer(cx, move |window, cx| {
+        if window.focused(cx) == observed.focus
+            && scroll.offset() == previous
+            && scroll.bounds() == viewport
+        {
+            scroll.set_offset(offset);
+            window.refresh();
+        }
+    });
+}
+
 impl Panel {
     pub(super) fn reveal_on_focus(
         &self,
@@ -234,52 +294,35 @@ impl Panel {
         let scroll = self.review.body_scroll.clone();
         let revealed = self.review.revealed_focus.clone();
         move |bounds, window, cx| {
-            let observed = FocusObservation {
-                focus: window.focused(cx),
-                viewport: scroll.bounds(),
-                rem_size: window.rem_size(),
-            };
-            let previous_focus = revealed.borrow();
-            // Dialog entrance animation can move the whole viewport without
-            // changing what fits inside it. It must not undo manual scrolling.
-            if (previous_focus.focus == observed.focus
-                && previous_focus.viewport.size == observed.viewport.size
-                && previous_focus.rem_size == observed.rem_size)
-                || !focus.contains_focused(window, cx)
-            {
-                return;
+            if focus.contains_focused(window, cx) {
+                let inset = window.rem_size() + px(2.);
+                reveal(&scroll, &revealed, bounds, inset, window, cx);
             }
-            let Some(bounds) = bounds.into_iter().reduce(|a, b| a.union(&b)) else {
-                return;
-            };
-            let viewport = observed.viewport;
-            let inset = window.rem_size() + px(2.);
-            let delta = if bounds.top() < viewport.top() + inset {
-                viewport.top() + inset - bounds.top()
-            } else if bounds.bottom() > viewport.bottom() - inset {
-                viewport.bottom() - inset - bounds.bottom()
-            } else {
-                return;
-            };
-            let previous = scroll.offset();
-            let offset = point(
-                previous.x,
-                (previous.y + delta).clamp(-scroll.max_offset().y, px(0.)),
-            );
-            if offset == previous {
-                return;
-            }
-            let scroll = scroll.clone();
-            window.defer(cx, move |window, cx| {
-                if window.focused(cx) == observed.focus
-                    && scroll.offset() == previous
-                    && scroll.bounds() == viewport
-                {
-                    scroll.set_offset(offset);
-                    window.refresh();
-                }
-            });
         }
+    }
+    /// `element` as the part of the panel's body called `name`. When the keyboard moves
+    /// focus onto a control in it, and no smaller part inside it holds that control, the
+    /// body scrolls by the least that shows the part's children with their focus rings. The
+    /// part's key context names it on the focus path of the frame that drew the control, so
+    /// a control needs no focus handle of the panel's to be revealed.
+    pub(super) fn part(&self, name: &'static str, element: Div, cx: &App) -> Div {
+        let scroll = self.review.body_scroll.clone();
+        let revealed = self.review.revealed_focus.clone();
+        let inset = appearance::button_ring_room(cx);
+        let mut context = KeyContext::default();
+        context.set(PART, name);
+        element
+            .key_context(context)
+            .on_children_prepainted(move |bounds, window, cx| {
+                let innermost = window
+                    .context_stack()
+                    .iter()
+                    .rev()
+                    .find_map(|context| context.get(PART).cloned());
+                if window.last_input_was_keyboard() && innermost.as_deref() == Some(name) {
+                    reveal(&scroll, &revealed, bounds, inset, window, cx);
+                }
+            })
     }
     /// Whether the pane that `focus` tracks draws the window's keyboard ring:
     /// after a key, and still while the pointer moves, until a pointer press.
@@ -810,7 +853,7 @@ impl Panel {
     }
     pub(super) fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
         let count = self.review.comments.len();
-        div()
+        self.part("tabs", div(), cx)
             .flex()
             .flex_wrap()
             .items_center()
@@ -932,7 +975,8 @@ impl Panel {
             .review
             .selected_file
             .and_then(|n| self.review.files.get(n));
-        let file_list = div()
+        let file_list = self
+            .part("file-list", div(), cx)
             .w(appearance::ui_size(210.))
             .min_w(px(150.))
             .flex_shrink_0()
@@ -1070,7 +1114,7 @@ impl Panel {
                     ),
             ))
             .child(
-                div()
+                self.part("file-pager", div(), cx)
                     .min_h(appearance::ui_size(PAGER_ROW))
                     .flex()
                     .items_center()
@@ -1094,31 +1138,6 @@ impl Panel {
                                 this.file_page(this.review.file_page + 1, window, cx)
                             })),
                     ),
-            )
-            .child(
-                // At the panel's text edge, where Previous starts its label, and one phrase to
-                // a line: past the inset the list's column is a few pixels narrower than the
-                // whole line, which then broke inside its last phrase.
-                div()
-                    .id("github-file-bound")
-                    .debug_selector(|| "github-file-bound".into())
-                    .role(Role::Label)
-                    .aria_label("100 files per page · GitHub limit 3,000")
-                    .ml(super::text_inset())
-                    .flex()
-                    .flex_col()
-                    .text_size(appearance::ui_text(12.))
-                    .text_color(rgb(p.muted))
-                    .children(
-                        ["100 files per page", "GitHub limit 3,000"]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(line, text)| {
-                                div()
-                                    .debug_selector(move || format!("github-file-bound-{line}"))
-                                    .child(text)
-                            }),
-                    ),
             );
         let content = if let Some(file) = selected {
             let title = file
@@ -1132,7 +1151,7 @@ impl Panel {
             // on the pager's row, where the page buttons centre their labels, wrapped or not.
             // The column's text starts at one left edge, where the mode buttons at its edge
             // start their labels, as the panel's does; the boxes keep the column's edge.
-            div()
+            self.part("file-content", div(), cx)
                 .debug_selector(|| "github-file-column".into())
                 .flex_1()
                 .min_w_0()
@@ -1153,7 +1172,7 @@ impl Panel {
                                 .font_weight(FontWeight::SEMIBOLD),
                         )
                         .child(
-                            div()
+                            self.part("file-modes", div(), cx)
                                 .flex_shrink_0()
                                 .flex()
                                 .flex_wrap()
@@ -1237,6 +1256,18 @@ impl Panel {
                     .min_w_0()
                     .child(file_list)
                     .child(content),
+            )
+            // Below both columns, at the panel's text edge, where Previous starts its label:
+            // across the panel's width it keeps one line, and in a narrow panel it breaks
+            // between its phrases. In the file list's column it took two lines, one phrase to
+            // each, without its "·".
+            .child(
+                super::phrases(
+                    "github-file-bound",
+                    "100 files per page · GitHub limit 3,000",
+                )
+                .ml(super::text_inset())
+                .text_color(rgb(p.muted)),
             )
             .child(self.render_comment_composer(cx))
             .into_any_element()
@@ -2843,13 +2874,15 @@ mod tests {
             // below the body's fold, above the dialog's footer.
             let (hint, body) = (
                 cx.debug_bounds("github-range-hint").expect("range hint"),
-                cx.debug_bounds("github-panel").expect("panel"),
+                cx.debug_bounds("github-panel").expect("panel's body"),
             );
-            if hint.bottom() > body.bottom() {
+            // Inside the room the body keeps for focus rings.
+            let below = hint.bottom() - (body.bottom() - px(4.));
+            if below > px(0.) {
                 cx.read(|cx| {
                     let scroll = &panel.read(cx).review.body_scroll;
                     let offset = scroll.offset();
-                    scroll.set_offset(point(offset.x, offset.y - (hint.bottom() - body.bottom())));
+                    scroll.set_offset(point(offset.x, offset.y - below));
                 });
                 draw_settled(cx, measured);
             }
@@ -3484,36 +3517,34 @@ mod tests {
                 sweep::walk(&app, cx, name, interface, &mut failures);
             }
         }
-        // Follow-ups (focus sweep, 2026-10-28): the panel's scrolling body
-        // keeps no room for the focus ring, so the controls along its edges
-        // lose part of theirs in every view; at 18 pt Tab moves focus to
-        // controls and panes the body leaves scrolled out of view, so nothing
-        // shows it; and one Files stop at 13 pt, a panel button, draws no
-        // ring. The panes this sweep fixed, the file list, the patch and the
-        // conversations, draw theirs whole wherever the body shows them.
-        let mut known = Vec::new();
-        for size in ["13 pt", "18 pt"] {
-            for view in ["list", "Overview", "Files", "Review"] {
-                known.push((
-                    format!("the GitHub panel's {view} at {size}"),
-                    "a clip cuts",
-                ));
-            }
-        }
-        for view in ["Overview", "Files", "Review"] {
-            known.push((
-                format!("the GitHub panel's {view} at 18 pt"),
+        // Follow-ups (focus sweep, 2026-10-28). The body keeps the rings' room
+        // and Tab scrolls the part it moves into into view (`Panel::part`);
+        // still failing: the PR list clips its full-width rows' rings at its
+        // own edges; at 18 pt in Overview two buttons outside any part (Open
+        // captured local comparison and a conversation's) stay below the
+        // fold, and a conversation pane's ring is cut at its sides and by the
+        // fold; and Review's first stop follows a focus the frame before had
+        // not drawn, so no part names it.
+        let known = [
+            ("the GitHub panel's list at 13 pt, stop 2", "a clip cuts"),
+            ("the GitHub panel's list at 18 pt, stop 2", "a clip cuts"),
+            (
+                "the GitHub panel's Overview at 18 pt, stop 0",
                 "paints no ring",
-            ));
-        }
-        known.push((
-            "the GitHub panel's Files at 13 pt, stop 5".into(),
-            "paints no ring",
-        ));
-        let known: Vec<_> = known
-            .iter()
-            .map(|(at, finding)| (at.as_str(), *finding))
-            .collect();
+            ),
+            (
+                "the GitHub panel's Overview at 18 pt, stop 1",
+                "paints no ring",
+            ),
+            (
+                "the GitHub panel's Overview at 18 pt, stop 12",
+                "a clip cuts",
+            ),
+            (
+                "the GitHub panel's Review at 18 pt, stop 0",
+                "paints no ring",
+            ),
+        ];
         sweep::assert_whole_except(failures, &known);
     }
 }

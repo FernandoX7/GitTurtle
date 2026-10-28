@@ -1141,16 +1141,17 @@ impl Render for Panel {
         let observed = self.review.revealed_focus.clone();
         let show_editor =
             self.create || (self.pull.is_some() && self.review.section == Section::Review);
-        crate::native_accessibility::clips_children(div().on_children_prepainted(move|_,window,cx|{*observed.borrow_mut()=review::FocusObservation{focus:window.focused(cx),viewport:scroll.bounds(),rem_size:window.rem_size()};}).id("github-panel").debug_selector(||"github-panel".into()).track_scroll(&self.review.body_scroll).min_w_0().max_h((window.viewport_size().height-window.rem_size()*(220. / f32::from(appearance::DEFAULT_INTERFACE_TEXT_SIZE))).clamp(px(120.),px(660.))).overflow_y_scroll().flex().flex_col().gap_2()
-            .when(self.review.fixture,|element|element.child(div().flex().flex_wrap().items_center().gap_2().py_2().px(text_inset()).rounded(px(6.)).bg(rgb(p.subtle))
+        // The panel's content, its text one inset in from this edge.
+        let content = div().debug_selector(||"github-panel-content".into()).min_w_0().flex().flex_col().gap_2()
+            .when(self.review.fixture,|element|element.child(self.part("banner",div(),cx).flex().flex_wrap().items_center().gap_2().py_2().px(text_inset()).rounded(px(6.)).bg(rgb(p.subtle))
                 .child(label("github-fixture-mode","OFFLINE FIXTURE · native review · no network or credentials").debug_selector(||"github-fixture-mode".into()).min_w_0().text_color(rgb(p.muted)))
                 .child(button("github-fixture-move",if self.review.fixture_moved{"Fixture head moved"}else{"Move fixture head"},"",false).disabled(pending||self.review.fixture_moved).on_click(cx.listener(|this,_,_,cx|{this.review.fixture_moved=true;this.confirm=None;this.notice=Some("Fixture head moved remotely. This view and its draft retain the original commit. Submit to verify stale-head refusal, or Refresh PRs and reopen to inspect the new head.".into());cx.notify();})))))
-            .child(div().flex().flex_wrap().items_center().gap_2()
+            .child(self.part("toolbar",div(),cx).flex().flex_wrap().items_center().gap_2()
                 .child(div().w(appearance::ui_size(280.)).min_w(px(190.)).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending)))
                 .child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx))))
                 .child(button("github-create","New pull request","plus",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx))))
                 .child(div().flex_1()).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();}))))
-            .when(self.review.connection_open,|element|element.child(div().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
+            .when(self.review.connection_open,|element|element.child(self.part("connection",div(),cx).p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                 .child(label("github-worktree",format!("Local worktree: {}",self.repo.path().display())).text_color(rgb(p.muted)))
                 .child(label("github-connection-help","Connect uses your current GitHub CLI account and saves GitTurtle authorization in secure storage. Refresh and PR selection are explicit network reads.").text_color(rgb(p.muted)))
                 .child(div().flex().flex_wrap().gap_2()
@@ -1160,12 +1161,12 @@ impl Render for Panel {
             .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted))))
             .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
             .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
-            .when(pending,|element|element.child(div().flex().items_center().gap_2().pl(text_inset())
+            .when(pending,|element|element.child(self.part("busy",div(),cx).flex().items_center().gap_2().pl(text_inset())
                 .child(label("github-busy",if self.writing{"Sending the captured review…"}else{"Loading your requested PR context…"}).role(Role::Status).a11y_synthetic_children(|builder|{native_accessibility::polite(builder);builder.parent_node().set_busy();}))
                 .child(button("github-cancel","Cancel","",false).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
                     if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(if this.writing{"Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."}else{"Cancellation requested. Your review draft is retained."}.into());cx.notify();})))))
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
-                .child(crate::native_accessibility::clips_children(div().id("github-pr-list").debug_selector(||"github-pr-list".into()).flex_shrink_0().max_h(px(200.)).overflow_y_scroll().flex().flex_col().gap_1()
+                .child(crate::native_accessibility::clips_children(self.part("pr-list",div(),cx).id("github-pr-list").debug_selector(||"github-pr-list".into()).flex_shrink_0().max_h(px(200.)).overflow_y_scroll().flex().flex_col().gap_1()
                     .children(self.rows.iter().map(|pull|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
                         // A list row: the title Button spans it, its label at the panel's text inset,
                         // and the context line below, outside the Button, takes the same inset. The
@@ -1183,18 +1184,18 @@ impl Render for Panel {
                     }else{
                         EmptyState::new("github-list-empty","No pull requests shown · Refresh PRs loads the open ones").tooltip("Opening this panel reads local settings and drafts only.")
                     }.block(cx))))))
-                .child(div().flex().items_center().gap_2().child(button("github-previous","Previous PR page","",false).debug_selector(||"github-previous".into()).disabled(pending||self.page<=1).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page-1,window,cx))))
+                .child(self.part("pr-pager",div(),cx).flex().items_center().gap_2().child(button("github-previous","Previous PR page","",false).debug_selector(||"github-previous".into()).disabled(pending||self.page<=1).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page-1,window,cx))))
                     .child(label("github-page",format!("Page {} · up to {} PRs",self.page,github::PAGE_SIZE)).text_color(rgb(p.muted)))
                     .child(button("github-next","Next PR page","",false).disabled(pending||!self.has_next).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page+1,window,cx))))))
             .when_some(self.pull.as_ref(),|element,pull|element
-                .child(div().flex().flex_col().gap_2()
+                .child(self.part("pull-header",div(),cx).flex().flex_col().gap_2()
                     .child(div().flex().items_center().gap_2().child(button("github-back-list",if self.review.show_list{"Hide PR list"}else{"Pull requests"},"arrow-left",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.review.show_list= !this.review.show_list;cx.notify();})))
                         .child(label("github-pull-title",format!("#{} · {}",pull.number,pull.title)).font_weight(FontWeight::SEMIBOLD).text_size(appearance::ui_text(15.))))
                     .child(label("github-branch-context",format!("{} → {} · {}",pull.head.branch,pull.base.branch,if pull.draft{"Draft PR"}else{"Open PR"})).ml(text_inset()).text_color(rgb(p.muted))))
                 .child(self.render_tabs(cx))
                 .when(self.review.section==Section::Overview,|element|element
                     .child(label("github-captured-identities",format!("Before · {}\nAfter  · {}",pull.base.sha,pull.head.sha)).ml(text_inset()).text_color(rgb(p.muted)))
-                    .when_some(self.description.as_ref(),|element,description|element.child(div().h(px(120.)).flex_shrink_0().child(crate::editor_find::Editor::new(description).readonly(true).h_full().aria_label("Pull request description, exact Markdown source"))))
+                    .when_some(self.description.as_ref(),|element,description|element.child(self.part("description",div(),cx).h(px(120.)).flex_shrink_0().child(crate::editor_find::Editor::new(description).readonly(true).h_full().aria_label("Pull request description, exact Markdown source"))))
                     .when_some(self.status.as_ref(),|element,status|element.child(div().py_3().px(text_inset()).bg(rgb(p.subtle)).rounded(px(6.)).flex().flex_col().gap_1()
                         .child(label("github-review-status",format!("Reviews · {}",if status.reviews.is_empty(){"None reported".into()}else{status.reviews.join(" · ")})))
                         .child(label("github-check-status",format!("Checks · {}{}",if status.checks.is_empty(){"None reported".into()}else{status.checks.join(" · ")},if status.incomplete{" · Additional status entries are outside this preview"}else{""})))))
@@ -1211,11 +1212,11 @@ impl Render for Panel {
                     .child(button("github-load-templates","Load local base templates","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.load_templates(window,cx)))))
                 .children(self.templates.iter().enumerate().map(|(index,template)|{let template=template.clone();button(("github-template",index),format!("Append {} · {}",template.path,&template.revision[..8]),"",false).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{let body=format!("{}{}{}",this.body.read(cx).value(),if this.body.read(cx).value().is_empty(){""}else{"\n\n"},template.body);this.body.update(cx,|input,cx|input.set_value(body,window,cx));this.save_draft(window,cx);} ))})))
             .when(show_editor,|element|element
-                .when(!self.create,|element|element.child(div().flex().flex_wrap().gap_1()
+                .when(!self.create,|element|element.child(self.part("events",div(),cx).flex().flex_wrap().gap_1()
                     .children([ReviewEvent::Comment,ReviewEvent::Approve,ReviewEvent::RequestChanges].map(|event|button(event.label(),event.label(),"",!self.discussion&&self.event==event).toggled(!self.discussion&&self.event==event).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.discussion=false;this.event=event;this.confirm=None;this.save_draft(window,cx);}))))
                     .child(button("github-discussion","Discussion only","",self.discussion).toggled(self.discussion).disabled(pending||!self.review.comments.is_empty()||self.review.composing.is_some()).on_click(cx.listener(|this,_,_,cx|{this.discussion=true;this.confirm=None;cx.notify();})))))
                 .child(div().debug_selector(||"github-review-summary".into()).on_children_prepainted(self.reveal_on_focus(self.body.read(cx).focus_handle(cx))).child(Textarea::new(&self.body).h(appearance::ui_size(130.)).aria_label(if self.create{"Pull request description"}else{"Review summary"}).disabled(pending)))
-                .child(div().flex().items_center().gap_2().child(label("github-draft-status",self.save_status.clone()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted)))
+                .child(self.part("submit",div(),cx).flex().items_center().gap_2().child(label("github-draft-status",self.save_status.clone()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted)))
                     .child(div().flex_1()).child(button("github-review-submit","Review submission…","",true).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.review_submission(window,cx))))))
             .child(self.render_reply_composer(cx))
             .when_some(self.confirm.as_ref(),|element,confirmation|element.child(div().debug_selector(||"github-confirmation".into()).on_children_prepainted(self.reveal_on_focus(self.conversations.confirm_focus.clone())).track_focus(&self.conversations.confirm_focus).tab_stop(true).p_3().border_1().border_color(rgb(p.accent)).rounded(px(7.)).flex().flex_col().gap_2()
@@ -1224,7 +1225,7 @@ impl Render for Panel {
                 .child(label("github-confirm-guidance","Send performs one outbound action with these exact captured targets and comments. Inspect the destination before repeating an uncertain attempt.").text_color(rgb(p.muted)))
                 .child(div().flex().gap_2().child(button("github-confirm-send",if self.review.fixture{"Send to offline fixture"}else{"Send to GitHub"},"",true).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.submit(window,cx))))
                     .child(button("github-edit-submission","Keep editing","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.confirm=None;this.focus_visible_section(window,cx);cx.notify();}))))))
-            .child(div().flex().items_center().gap_2().child(button("github-recovery-toggle",format!("Recover drafts · {}",self.saved.len()),"",self.review.recovery_open).debug_selector(||"github-recovery-toggle".into()).toggled(self.review.recovery_open).on_click(cx.listener(|this,_,_,cx|{this.review.recovery_open= !this.review.recovery_open;cx.notify();})))
+            .child(self.part("recovery",div(),cx).flex().items_center().gap_2().child(button("github-recovery-toggle",format!("Recover drafts · {}",self.saved.len()),"",self.review.recovery_open).debug_selector(||"github-recovery-toggle".into()).toggled(self.review.recovery_open).on_click(cx.listener(|this,_,_,cx|{this.review.recovery_open= !this.review.recovery_open;cx.notify();})))
                 .child(label("github-passive-policy",if cfg!(target_os="macos"){"Drafts stay on this Mac · outbound actions are explicit"}else{"Drafts stay on this computer · outbound actions are explicit"}).text_color(rgb(p.muted))))
             .when(self.review.recovery_open,|element|element
                 .child(label("github-saved-heading","Captured drafts · Copy includes all inline text and original positions; older heads are never remapped").ml(text_inset()).text_color(rgb(p.muted)))
@@ -1232,7 +1233,40 @@ impl Render for Panel {
                     .child(div().flex().gap_2().child(copy_button(mark,"Copy complete draft", "", cx).on_click(move|_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),"draft",draft.recovery_text())))
                         .child(button(("github-discard-draft",index),"Discard saved draft","",false).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.discard_draft(discard.clone(),window,cx)))))}))))
                 .when(!self.attempts.is_empty(),|element|element.child(label("github-attempt-heading","Previous outbound attempts · inspect the destination before repeating").ml(text_inset()))
-                    .child(crate::native_accessibility::clips_children(div().id("github-attempt-list").debug_selector(||"github-attempt-list".into()).flex_shrink_0().max_h(px(100.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.attempts.iter().rev().take(10).enumerate().map(|(index,attempt)|label(("github-attempt",index),format!("{}: {}",attempt.destination,attempt.outcome)).ml(text_inset()).flex_shrink_0())))))))
+                    .child(crate::native_accessibility::clips_children(div().id("github-attempt-list").debug_selector(||"github-attempt-list".into()).flex_shrink_0().max_h(px(100.)).overflow_y_scroll().flex().flex_col().gap_1().children(self.attempts.iter().rev().take(10).enumerate().map(|(index,attempt)|label(("github-attempt",index),format!("{}: {}",attempt.destination,attempt.outcome)).ml(text_inset()).flex_shrink_0()))))));
+        // The body scrolls inside the room its controls' focus rings take, which its sides
+        // give back through their margin; above and below, the dialog's clip of its body
+        // allows no margin, so the room is the body's own. While the body overflows, its
+        // scrollbar shows the rest is there.
+        let room = appearance::button_ring_room(cx);
+        let cue = crate::tags::ScrollCue::new(&scroll, room);
+        cue.list(
+            div()
+                .on_children_prepainted(cue.observe(move |_, window, cx| {
+                    *observed.borrow_mut() = review::FocusObservation {
+                        focus: window.focused(cx),
+                        viewport: scroll.bounds(),
+                        rem_size: window.rem_size(),
+                    };
+                }))
+                .id("github-panel")
+                .debug_selector(|| "github-panel".into())
+                .track_scroll(&self.review.body_scroll)
+                .min_w_0()
+                .max_h(
+                    (window.viewport_size().height
+                        - window.rem_size()
+                            * (220. / f32::from(appearance::DEFAULT_INTERFACE_TEXT_SIZE)))
+                    .clamp(px(120.), px(660.)),
+                )
+                .p(room)
+                .mx(-room)
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .child(content),
+            "github-panel-scrollbar",
+        )
     }
 }
 
@@ -1793,7 +1827,7 @@ mod tests {
                 cx.debug_bounds(selector)
                     .unwrap_or_else(|| panic!("{selector} at {interface} pt"))
             };
-            let edge = at(cx, "github-panel").left();
+            let edge = at(cx, "github-panel-content").left();
             let text = edge + text_inset();
             let starts = [
                 ("title", at(cx, "github-title").left()),
@@ -1873,13 +1907,13 @@ mod tests {
             }
             // The draft status ends where the Buttons at the panel's right edge end their
             // labels.
-            let end = at(cx, "github-panel").right() - text_inset();
+            let end = at(cx, "github-panel-content").right() - text_inset();
             let saved = at(cx, "github-local-save").right();
             assert!(
                 (saved - end).abs() < px(0.5),
                 "{interface} pt: the draft status ends at {saved:?}, not {end:?}"
             );
-            let text = at(cx, "github-panel").left() + text_inset();
+            let text = at(cx, "github-panel-content").left() + text_inset();
             let list = at(cx, "github-file-focus");
             let bound = at(cx, "github-file-bound");
             let starts = [
@@ -1896,20 +1930,19 @@ mod tests {
                     "{interface} pt, Files: {name} starts at {start:?}, not {text:?}: {starts:?}"
                 );
             }
-            // The bound stays inside the file list's column, each phrase whole on its line,
-            // as tall as the page number's.
-            assert!(
-                bound.right() <= list.right() + px(0.01),
-                "{interface} pt: the file bound {bound:?} runs past the file list {list:?}"
-            );
+            // Below the file list, across the panel, the bound is one line as tall as the
+            // page number's, with its separator: in the list's column it took two.
             let line = at(cx, "github-files-page").size.height;
-            for selector in ["github-file-bound-0", "github-file-bound-1"] {
-                let phrase = at(cx, selector);
-                assert!(
-                    (phrase.size.height - line).abs() < px(0.01) && phrase.left() == bound.left(),
-                    "{interface} pt: {selector} {phrase:?} in {bound:?}, one line {line:?}"
-                );
-            }
+            assert!(
+                bound.top() >= list.bottom() && (bound.size.height - line).abs() < px(0.01),
+                "{interface} pt: the file bound {bound:?} is not one line {line:?} below the \
+                 file list {list:?}"
+            );
+            let (first, last) = (at(cx, "github-file-bound-0"), at(cx, "github-file-bound-1"));
+            assert!(
+                first.top() == last.top() && first.left() == bound.left(),
+                "{interface} pt: the bound's phrases {first:?} and {last:?} share no line"
+            );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         cx.update(|window, cx| window.close_dialog(cx));
@@ -1978,7 +2011,7 @@ mod tests {
                     cx.debug_bounds(selector)
                         .unwrap_or_else(|| panic!("{at}: {selector}"))
                 };
-                let edge = bounds(cx, "github-panel");
+                let edge = bounds(cx, "github-panel-content");
                 let row = ["github-section-0", "github-section-1", "github-section-2"]
                     .map(|selector| bounds(cx, selector));
                 let shown = bounds(cx, "github-local-save");
