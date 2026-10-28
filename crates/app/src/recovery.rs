@@ -1318,6 +1318,7 @@ impl StashBrowser {
         let selected = self.selected == Some(index);
         div()
             .id(("saved-stash", stash.ordinal))
+            .debug_selector(move || format!("saved-stash-row-{index}"))
             .role(Role::ListBoxOption)
             .aria_selected(selected)
             .aria_label(format!("{} · {}", stash.name, stash.selector))
@@ -1555,13 +1556,20 @@ impl Render for StashBrowser {
         .size_full()
         .track_scroll(&self.file_scroll);
         let snapshot = self.snapshot.clone();
+        // Stacked in a narrow window, the saved-work panel is as tall as its
+        // header, one 58 px row and its footer at the default size, scaled
+        // with them: unscaled, its header and footer left the list 35.6 px
+        // at 18 pt in a 461 × 490 window, short of a row and of the empty
+        // line, which ran past the list's visible bottom. That line takes
+        // the rows' own inset, where its 1 rem padding started it past
+        // their text and outgrew the list.
         div().h(px(height)).flex().gap_3().when(narrow, |element| element.flex_col())
             .child(div().w(px(255.)).min_w_0().flex_shrink_0().h_full().flex().flex_col().border_1().border_color(rgb(p.border)).rounded(px(7.)).overflow_hidden()
-                .when(narrow, |element| element.w_full().h(px(140.)))
+                .when(narrow, |element| element.w_full().h(crate::appearance::ui_size(140.)))
                 .child(div().h(crate::appearance::ui_size(38.)).flex().items_center().px_2().gap_1().border_b_1().border_color(rgb(p.border))
                     .child(div().flex_1().text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::SEMIBOLD).child("Saved work"))
                     .child(button("refresh-stashes", "", "refresh", false).accessibility_label("Refresh saved stashes").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.load_page(0, window, cx)))))
-                .child(crate::native_accessibility::clips_children(div().id("stash-list-focus").role(Role::ListBox).aria_label("Saved stashes").tab_stop(true).track_focus(&self.stash_focus).flex_1().min_h_0()
+                .child(crate::native_accessibility::clips_children(div().id("stash-list-focus").debug_selector(|| "stash-list".into()).role(Role::ListBox).aria_label("Saved stashes").tab_stop(true).track_focus(&self.stash_focus).flex_1().min_h_0()
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         if let Some(index) = list_key_selection(event.keystroke.key.as_str(), this.selected, this.page.as_ref().map_or(0, |page| page.entries.len())) {
                             cx.stop_propagation();
@@ -1570,7 +1578,7 @@ impl Render for StashBrowser {
                         }
                     }))
                     .when(self.page.as_ref().is_some_and(|page| !page.entries.is_empty()), |element| element.child(list))
-                    .when(self.page.as_ref().is_some_and(|page| page.entries.is_empty()), |element| element.child(div().p_4().child(EmptyState::new("stash-list-empty", "No saved stashes · Save one from the Actions menu in Changes").block(cx))))))
+                    .when(self.page.as_ref().is_some_and(|page| page.entries.is_empty()), |element| element.child(div().px_3().py_2().child(EmptyState::new("stash-list-empty", "No saved stashes · Save one from the Actions menu in Changes").block(cx))))))
                 .child(div().h(crate::appearance::ui_size(36.)).flex().items_center().justify_between().px_2().border_t_1().border_color(rgb(p.border))
                     .child(button("previous-stashes", "Previous", "", false).disabled(busy || self.offset == 0).on_click(cx.listener(|this, _, window, cx| this.load_page(this.offset.saturating_sub(STASH_PAGE_SIZE), window, cx))))
                     .child(button("next-stashes", "More", "", false).disabled(busy || self.page.as_ref().and_then(|page| page.next_offset).is_none()).on_click(cx.listener(|this, _, window, cx| { if let Some(offset) = this.page.as_ref().and_then(|page| page.next_offset) { this.load_page(offset, window, cx); } })))))
@@ -1731,5 +1739,44 @@ mod tests {
         assert_eq!(list_key_selection("end", None, 4), Some(3));
         assert_eq!(list_key_selection("home", Some(3), 4), Some(0));
         assert_eq!(list_key_selection("escape", Some(3), 4), None);
+    }
+
+    /// Stacked in a 461 × 490 window, the Stashes dialog's saved-work list
+    /// shows its first stash whole at 13 and 18 pt: its unscaled height left
+    /// the list 35.6 px at 18 pt, short of an 80 px row.
+    #[gpui::test]
+    async fn a_narrow_stash_list_keeps_its_first_row_whole(cx: &mut gpui_kit::TestAppContext) {
+        use crate::views::tests::{draw, fixture_git, history_script, styled_history_window};
+        let (_fixture, app, cx) =
+            styled_history_window(cx, history_script(1, 1).as_bytes(), |root| root).await;
+        let root = app.read_with(cx, |app, _| app.path.clone().unwrap());
+        fixture_git(&root, &["config", "user.name", "Stash Fixture"]);
+        fixture_git(&root, &["config", "user.email", "stash@example.invalid"]);
+        std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
+        fixture_git(&root, &["stash", "push", "-m", "kept for later"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
+        for _ in 0..400 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            draw(cx);
+            if cx.debug_bounds("saved-stash-row-0").is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        for interface in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            let list = cx.debug_bounds("stash-list").expect("the saved-work list");
+            let row = cx
+                .debug_bounds("saved-stash-row-0")
+                .expect("the saved stash's row");
+            let slack = px(0.5);
+            assert!(
+                row.top() >= list.top() - slack && row.bottom() <= list.bottom() + slack,
+                "{interface} pt: the row {row:?} is cut by the list {list:?}"
+            );
+        }
     }
 }

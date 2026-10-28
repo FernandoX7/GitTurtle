@@ -1189,13 +1189,32 @@ mod tests {
         wait(cx, "the stash list", |cx| {
             cx.debug_bounds("stash-list-empty-line").is_some()
         });
+        // Inside the list's visible part: at 18 pt in a 461 × 490 window the
+        // line ran past it.
         check(
             cx,
             "stash-list-empty",
             "No saved stashes · Save one from the Actions menu in Changes",
             None,
-            "stash-list-empty",
+            "stash-list",
         );
+        // It starts where the rows' text does, their `px_3` in from the
+        // list's side, rather than a rem in.
+        for interface in SIZES {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            let (list, line) = (
+                cx.debug_bounds("stash-list").unwrap(),
+                cx.debug_bounds("stash-list-empty-line").unwrap(),
+            );
+            let inset = cx.update(|window, _| window.rem_size() * 0.75);
+            assert!(
+                (f32::from(line.left() - list.left()) - f32::from(inset)).abs() <= 0.5,
+                "{interface} pt: the line {line:?} starts {:?} in from the list {list:?}",
+                line.left() - list.left()
+            );
+        }
     }
 
     /// The GitHub panel of a repository with no GitHub remote names the next
