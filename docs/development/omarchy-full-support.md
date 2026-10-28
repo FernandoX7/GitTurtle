@@ -375,6 +375,22 @@ cover current upstream x86-64 Omarchy.
           807.75 px caption move, History search's "1 match", Quick Open's count on AT-SPI (Orca).
         - System preview: the image control's accessible name omits the type ("Open After in
           default app") where PDF and text name it ("…as a PDF document in the default app").
+        Owner decision, 2026-10-28: Linux reaches feature parity with macOS where possible; macOS is
+        checked later on a Mac. The gaps (README "Linux gaps", `docs/file-previews.md`,
+        `docs/linux.md`), each a separate change with a dated research note on the dependency
+        (license, maintenance, AArch64 and x86-64 builds; no GPL code), the architecture review, an
+        independent security review before integration (decoders and credentials), a release
+        measurement and native evidence:
+        - PDF pages: page rendering, navigation, linked Before/After pages, Fit and zoom and the
+          selected-page text alternative, as macOS has through PDFKit.
+        - AVIF, HEIF/HEIC and JPEG 2000 images, which macOS decodes through ImageIO.
+        - Pull-request review: store the GitHub account in the Secret Service (gnome-keyring runs
+          on Omarchy) so the GitHub panel works with a live account on Linux.
+        - The desktop's reduced-motion and contrast preferences read automatically (the XDG
+          settings portal), as macOS reads its accessibility preferences.
+        - Screen reader (Orca) and input-method coverage, established and recorded.
+        - Office documents, audio and video for Open in default app, only through a sandboxed or
+          network-restricted handoff that passes a security review (deferred on 2026-10-27).
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
