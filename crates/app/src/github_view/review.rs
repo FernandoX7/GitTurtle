@@ -1085,12 +1085,15 @@ impl Panel {
                 .as_ref()
                 .map(|old| format!("{} → {}", old, file.filename))
                 .unwrap_or_else(|| file.filename.clone());
-            // Changes, its hint included, and Source end where the file list beside them ends.
-            div().flex_1().min_w_0().flex().flex_col().gap_2().when(self.review.mode<2,|content|content.h(FILE_LIST_HEIGHT))
-                .child(label("github-file-title",title).flex_shrink_0().font_weight(FontWeight::SEMIBOLD))
-                .child(div().flex_shrink_0().flex().flex_wrap().items_center().gap_1().children(["Changes","Source","Threads"].into_iter().enumerate().map(|(mode,name)|button(("github-file-mode",mode),name,"",self.review.mode==mode).toggled(self.review.mode==mode).on_click(cx.listener(move|this,_,window,cx|this.review_source(mode,window,cx)))))
-                    .child(div().flex_1()).child(button("github-inline-start",if self.review.composing.is_some(){"Continue comment"}else{"Comment on selection"},"plus",false).disabled(self.pending||self.review.preparing||file.unavailable.is_some()).on_click(cx.listener(|this,_,window,cx|this.begin_comment(window,cx)))))
-                .child(match self.review.mode {1=>self.render_source(cx),2=>self.render_threads(Some(&file.filename),cx),_=>self.render_patch(cx)})
+            // Changes' box and Source's end where the file list beside them ends, so switching
+            // modes keeps the box's edge; Changes' range hint lies below it, beside the list's
+            // pager, where it took the box's last 26 px only in Changes.
+            div().flex_1().min_w_0().flex().flex_col().gap_2()
+                .child(div().flex().flex_col().gap_2().when(self.review.mode<2,|content|content.h(FILE_LIST_HEIGHT))
+                    .child(label("github-file-title",title).flex_shrink_0().font_weight(FontWeight::SEMIBOLD))
+                    .child(div().flex_shrink_0().flex().flex_wrap().items_center().gap_1().children(["Changes","Source","Threads"].into_iter().enumerate().map(|(mode,name)|button(("github-file-mode",mode),name,"",self.review.mode==mode).toggled(self.review.mode==mode).on_click(cx.listener(move|this,_,window,cx|this.review_source(mode,window,cx)))))
+                        .child(div().flex_1()).child(button("github-inline-start",if self.review.composing.is_some(){"Continue comment"}else{"Comment on selection"},"plus",false).disabled(self.pending||self.review.preparing||file.unavailable.is_some()).on_click(cx.listener(|this,_,window,cx|this.begin_comment(window,cx)))))
+                    .child(match self.review.mode {1=>self.render_source(cx),2=>self.render_threads(Some(&file.filename),cx),_=>self.render_patch(cx)}))
                 .when(self.review.mode==0,|element|element.child(label("github-range-hint",format!("Click a changed line · {} or {} / {} selects a same-side range · {} comments",shortcuts::SHIFT_CLICK,shortcuts::key_label("shift-up"),shortcuts::key_label("shift-down"),shortcuts::ENTER)).debug_selector(||"github-range-hint".into()).flex_shrink_0().text_color(rgb(p.muted))))
                 .into_any_element()
         } else {
@@ -1191,7 +1194,7 @@ impl Panel {
         else {
             return div().into_any_element();
         };
-        // In the patch's place, so the hint below keeps the file list's bottom edge.
+        // In the patch's place, which ends with the file list.
         if self.review.preparing {
             return div()
                 .flex_1()
@@ -1215,9 +1218,9 @@ impl Panel {
                 )
                 .into_any_element();
         }
-        // Whole rows down to the hint above the file list's bottom edge, as Source shows whole
-        // lines: what a row does not fill lies below them, measured from the box's height in
-        // the last layout, which the inset cannot change.
+        // Whole rows down to the file list's bottom edge, as Source shows whole lines: what a
+        // row does not fill lies below them, measured from the box's height in the last layout,
+        // which the inset cannot change.
         let laid_out = self.review.patch_height.clone();
         let measured = laid_out.clone();
         let row = patch_row_height();
@@ -2441,12 +2444,11 @@ mod tests {
         })
     }
 
-    /// In a 1480 × 980 window at 13 and 18 pt, Changes ends with its range hint at the
-    /// changed-file list's bottom edge, as Source ends there, where it was a fixed 246 px box
-    /// with the hint below it, so switching modes moved the box's bottom. Its rows fill the box
-    /// in whole rows: what a row does not fill, less than a row, lies below them inside the
-    /// box, which paints nothing below its last whole row and fills that strip with the canvas
-    /// a context row paints.
+    /// In a 1480 × 980 window at 13 and 18 pt, Changes' box ends at the changed-file list's
+    /// bottom edge, as Source's does, with its range hint below it. Its rows fill the box in
+    /// whole rows: what a row does not fill, less than a row, lies below them inside the box,
+    /// which paints nothing below its last whole row and fills that strip with the canvas a
+    /// context row paints.
     #[gpui::test]
     async fn changes_reach_the_file_lists_bottom_in_whole_rows(cx: &mut TestAppContext) {
         let (_fixture, app, panel, cx) = review_panel(cx);
@@ -2486,12 +2488,16 @@ mod tests {
                 }
                 let at = format!("{interface} pt, file {file}");
                 let list = cx.debug_bounds("github-file-focus").expect("file list");
+                let patch = cx.debug_bounds("github-patch").expect("Changes");
+                assert!(
+                    (patch.bottom() - list.bottom()).abs() < px(0.01),
+                    "{at}: Changes {patch:?} ends with the file list {list:?}"
+                );
                 let hint = cx.debug_bounds("github-range-hint").expect("range hint");
                 assert!(
-                    (hint.bottom() - list.bottom()).abs() < px(0.01),
-                    "{at}: the hint {hint:?} ends with the file list {list:?}"
+                    hint.top() >= patch.bottom(),
+                    "{at}: the hint {hint:?} lies below the box {patch:?}"
                 );
-                let patch = cx.debug_bounds("github-patch").expect("Changes");
                 let rows = cx.debug_bounds("github-patch-rows").expect("rows");
                 let row = patch_row_height();
                 // Rows of 19.8 px at 12 pt; layout rounds the box to whole pixels.
@@ -2511,6 +2517,79 @@ mod tests {
                 assert!(
                     lowest <= rows.bottom() + px(0.01),
                     "{at}: paints down to {lowest:?}, below {rows:?}"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.run_until_parked();
+    }
+
+    /// In a 1480 × 980 window at 13 and 18 pt, the review box's bottom edge stays where it is
+    /// between Changes and Source, level with the changed-file list's bottom: Changes' range
+    /// hint took the box's last 26 px only in Changes, so switching modes moved the edge. The
+    /// hint lies below the box in Changes and is not drawn in Source.
+    #[gpui::test]
+    async fn switching_modes_keeps_the_review_box_edge(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, cx) = review_panel(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.apply_appearance(window, cx)));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let pull = model::fixture_pull(false);
+        let captured_pull =
+            pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured_pull, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull);
+                panel.review.files = files;
+                panel.review.section = Section::Files;
+                panel.review.show_list = false;
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        cx.run_until_parked();
+        for (interface, code) in [(13, 12), (18, 15)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, code, window, cx));
+            for file in [0, 1] {
+                let mut edges = Vec::new();
+                for (mode, selector) in [(0, "github-patch"), (1, "github-source-patch")] {
+                    cx.update(|window, cx| {
+                        panel.update(cx, |panel, cx| {
+                            panel.select_review_file(file, window, cx);
+                            panel.review_source(mode, window, cx);
+                        })
+                    });
+                    cx.run_until_parked();
+                    for _ in 0..3 {
+                        cx.update(|window, cx| window.draw(cx).clear(cx));
+                    }
+                    let at = format!("{interface} pt, file {file}, {selector}");
+                    let shown = cx.debug_bounds(selector).expect(selector);
+                    let list = cx.debug_bounds("github-file-focus").expect("file list");
+                    let hint = cx.debug_bounds("github-range-hint");
+                    match mode {
+                        0 => assert!(
+                            hint.is_some_and(|hint| hint.top() >= shown.bottom()),
+                            "{at}: the hint {hint:?} lies below the box {shown:?}"
+                        ),
+                        _ => assert_eq!(hint, None, "{at}"),
+                    }
+                    // From the list's top: the panel's body may scroll between the modes.
+                    edges.push((shown.bottom() - list.top(), list.size.height));
+                }
+                assert!(
+                    edges
+                        .iter()
+                        .all(|&(edge, list)| (edge - list).abs() < px(0.01)),
+                    "{interface} pt, file {file}: Changes and Source end {edges:?} below the \
+                     list's top (box, list)"
                 );
             }
         }
