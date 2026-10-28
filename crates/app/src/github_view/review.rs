@@ -907,7 +907,7 @@ impl Panel {
             )
             .into_any_element()
     }
-    pub(super) fn render_files(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_files(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let selected = self
             .review
@@ -1093,7 +1093,7 @@ impl Panel {
                     .child(label("github-file-title",title).flex_shrink_0().font_weight(FontWeight::SEMIBOLD))
                     .child(div().flex_shrink_0().flex().flex_wrap().items_center().gap_1().children(["Changes","Source","Threads"].into_iter().enumerate().map(|(mode,name)|button(("github-file-mode",mode),name,"",self.review.mode==mode).toggled(self.review.mode==mode).on_click(cx.listener(move|this,_,window,cx|this.review_source(mode,window,cx)))))
                         .child(div().flex_1()).child(button("github-inline-start",if self.review.composing.is_some(){"Continue comment"}else{"Comment on selection"},"plus",false).disabled(self.pending||self.review.preparing||file.unavailable.is_some()).on_click(cx.listener(|this,_,window,cx|this.begin_comment(window,cx)))))
-                    .child(match self.review.mode {1=>self.render_source(cx),2=>self.render_threads(Some(&file.filename),cx),_=>self.render_patch(cx)}))
+                    .child(match self.review.mode {1=>self.render_source(cx),2=>self.render_threads(Some(&file.filename),cx),_=>self.render_patch(window,cx)}))
                 .when(self.review.mode==0,|element|element.child(label("github-range-hint",format!("Click a changed line · {} or {} / {} selects a same-side range · {} comments",shortcuts::SHIFT_CLICK,shortcuts::key_label("shift-up"),shortcuts::key_label("shift-down"),shortcuts::ENTER)).debug_selector(||"github-range-hint".into()).flex_shrink_0().text_color(rgb(p.muted))))
                 .into_any_element()
         } else {
@@ -1185,7 +1185,7 @@ impl Panel {
             )
             .into_any_element()
     }
-    fn render_patch(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_patch(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let Some(file) = self
             .review
@@ -1223,8 +1223,8 @@ impl Panel {
         // which the inset cannot change.
         let laid_out = self.review.patch_height.clone();
         let measured = laid_out.clone();
-        let row = patch_row_height();
-        let slack = laid_out.get() - row * (laid_out.get() / row).floor();
+        let row_height = patch_row_height(window.scale_factor());
+        let slack = laid_out.get() - row_height * (laid_out.get() / row_height).floor();
         // One width for every row of the file: its widest line number in the code font.
         let widest = file
             .rows
@@ -1249,7 +1249,7 @@ impl Panel {
                     window.defer(cx, |window, _| window.refresh());
                 }
             }).child(div().size_full().pb(slack).child(div().debug_selector(||"github-patch-rows".into()).size_full().overflow_hidden().child(uniform_list("github-patch-rows",file.rows.len(),cx.processor(move|this,range:std::ops::Range<usize>,_,cx|range.map(|index|{let file=&this.review.files[this.review.selected_file.expect("visible file")];let row=&file.rows[index];let selected=this.review.anchor.zip(this.review.selected_row).is_some_and(|(a,b)|(a.min(b)..=a.max(b)).contains(&index));let p=palette(cx);let background=if selected{p.selected}else{match row.kind{b'+'=>p.added_background,b'-'=>p.removed_background,b'@'=>p.subtle,_=>p.canvas}};let row_label=format!("Before {} · After {} · {}",row.old.map(|n|n.to_string()).unwrap_or_default(),row.new.map(|n|n.to_string()).unwrap_or_default(),row.text);
-                patch_row(index,row,gutter,cx).bg(rgb(background)).border_l_2().border_color(rgb(if selected{p.accent}else{background})).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
+                patch_row(index,row,gutter,row_height,cx).bg(rgb(background)).border_l_2().border_color(rgb(if selected{p.accent}else{background})).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
                     .on_click(cx.listener(move|this,event:&ClickEvent,window,cx|this.select_review_line(index,event.modifiers().shift,window,cx))).into_any_element()
             }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll))))).into_any_element()
     }
@@ -1283,9 +1283,12 @@ const EDITOR_LINE_HEIGHT: f32 = 1.5;
 /// The kit editor's padding above and below its text. In Source only the top padding lies
 /// between the inside of the box's border and the text; the bottom one runs past the clip.
 const EDITOR_PADDING: Pixels = px(8.);
-/// A Changes row's height: the code text's line at 1.65.
-fn patch_row_height() -> Pixels {
-    px(f32::from(appearance::code_text()) * 1.65)
+/// A Changes row's height: the code text's line at 1.65, on whole device pixels at `scale`.
+/// Layout rounds an authored height to device pixels, so a row of 19.8 px at 12 pt is drawn
+/// 20 px tall at 2x: counted at 19.8 px, the box's rows ran 2.6 px past its clip and cut the
+/// last one. Snapped here, the height counted is the height drawn.
+fn patch_row_height(scale: f32) -> Pixels {
+    px((f32::from(appearance::code_text()) * 1.65 * scale).round() / scale)
 }
 
 /// The width of a line-number column that fits `widest` in code digits `digit` wide.
@@ -1296,9 +1299,15 @@ fn line_number_width(widest: u32, digit: Pixels) -> Pixels {
         .max(MIN_LINE_NUMBER_WIDTH))
 }
 
-/// One patch row's layout: the old and new line numbers in `gutter`-wide
-/// columns, then the line's text.
-fn patch_row(index: usize, row: &model::PatchRow, gutter: Pixels, cx: &App) -> Stateful<Div> {
+/// One patch row's layout, `height` tall: the old and new line numbers in
+/// `gutter`-wide columns, then the line's text.
+fn patch_row(
+    index: usize,
+    row: &model::PatchRow,
+    gutter: Pixels,
+    height: Pixels,
+    cx: &App,
+) -> Stateful<Div> {
     let p = palette(cx);
     let number = |side: &'static str, number: Option<u32>| {
         div()
@@ -1309,8 +1318,9 @@ fn patch_row(index: usize, row: &model::PatchRow, gutter: Pixels, cx: &App) -> S
             .child(number.map(|n| n.to_string()).unwrap_or_default())
     };
     patch_line(index, cx)
+        .debug_selector(move || format!("github-patch-line-{index}"))
         .w_full()
-        .h(patch_row_height())
+        .h(height)
         .px_2()
         .flex()
         .items_center()
@@ -1355,7 +1365,9 @@ mod tests {
             fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
                 let widest = self.0.old.max(self.0.new).unwrap_or(0);
                 let gutter = line_number_width(widest, appearance::code_digit_width(cx));
-                div().w(px(900.)).child(patch_row(0, &self.0, gutter, cx))
+                div()
+                    .w(px(900.))
+                    .child(patch_row(0, &self.0, gutter, px(20.), cx))
             }
         }
         cx.update(|cx| {
@@ -2446,9 +2458,10 @@ mod tests {
 
     /// In a 1480 × 980 window at 13 and 18 pt, Changes' box ends at the changed-file list's
     /// bottom edge, as Source's does, with its range hint below it. Its rows fill the box in
-    /// whole rows: what a row does not fill, less than a row, lies below them inside the box,
-    /// which paints nothing below its last whole row and fills that strip with the canvas a
-    /// context row paints.
+    /// whole rows, counted at the height they are drawn: what a row does not fill, less than a
+    /// row, lies below them inside the box, no row runs past the rows' clip, and the box paints
+    /// nothing below its last whole row and fills that strip with the canvas a context row
+    /// paints.
     #[gpui::test]
     async fn changes_reach_the_file_lists_bottom_in_whole_rows(cx: &mut TestAppContext) {
         let (_fixture, app, panel, cx) = review_panel(cx);
@@ -2499,12 +2512,29 @@ mod tests {
                     "{at}: the hint {hint:?} lies below the box {patch:?}"
                 );
                 let rows = cx.debug_bounds("github-patch-rows").expect("rows");
-                let row = patch_row_height();
-                // Rows of 19.8 px at 12 pt; layout rounds the box to whole pixels.
+                // The rows as drawn: at 12 pt a row of 19.8 px is drawn 20 px tall at 2x, and
+                // counted at 19.8 px the 13th row of the first file was cut 2.6 px short.
+                let row = cx
+                    .debug_bounds("github-patch-line-0")
+                    .expect("row")
+                    .size
+                    .height;
                 let whole = rows.size.height / row;
                 assert!(
-                    whole >= 5. && (rows.size.height - row * whole.round()).abs() < px(0.5),
+                    whole >= 5. && (rows.size.height - row * whole.round()).abs() < px(0.01),
                     "{at}: {rows:?} is {whole} rows of {row:?}"
+                );
+                let drawn = (0..)
+                    .map_while(|index| cx.debug_bounds(format!("github-patch-line-{index}").leak()))
+                    .collect::<Vec<_>>();
+                assert!(
+                    drawn.iter().all(|line| line.size.height == row),
+                    "{at}: {drawn:?}"
+                );
+                let last = drawn.last().expect("rows drawn");
+                assert!(
+                    last.bottom() <= rows.bottom() + px(0.01),
+                    "{at}: the last row drawn {last:?} runs past the rows' clip {rows:?}"
                 );
                 // Inside the 1 px border.
                 let below = patch.bottom() - px(1.) - rows.bottom();

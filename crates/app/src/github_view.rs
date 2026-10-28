@@ -1142,7 +1142,7 @@ impl Render for Panel {
                         .child(label("github-check-status",format!("Checks · {}{}",if status.checks.is_empty(){"None reported".into()}else{status.checks.join(" · ")},if status.incomplete{" · Additional status entries are outside this preview"}else{""})))))
                     .child(self.render_threads(None,cx))
                     .child(button("github-open-changes","Open captured local comparison","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.changes(window,cx)))))
-                .when(self.review.section==Section::Files,|element|element.child(self.render_files(cx)))
+                .when(self.review.section==Section::Files,|element|element.child(self.render_files(window,cx)))
                 .when(self.review.section==Section::Review,|element|element.child(self.render_collected(cx))))
             .when(self.create,|element|element
                 .child(button("github-create-back","Pull requests","arrow-left",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.create=false;this.confirm=None;this.review.show_list=true;this.focus_visible_section(window,cx);cx.notify();})))
