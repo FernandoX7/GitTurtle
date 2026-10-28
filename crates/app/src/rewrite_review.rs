@@ -108,7 +108,7 @@ impl SeriesBrowser {
             task: None,
             review: None,
             selected: 0,
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             rows_scroll: UniformListScrollHandle::new(),
             files_scroll: UniformListScrollHandle::new(),
             inspecting: false,
@@ -674,6 +674,17 @@ impl Render for SeriesBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let height = (f32::from(window.viewport_size().height) - 250.).clamp(240., 690.);
+        // The body scrolls, so it clips its controls on both axes. It keeps
+        // the focus ring's room beside and below them, giving the sides back
+        // through its margin, so the inputs and buttons at its edges draw
+        // their rings whole, as the interactive rebase form does.
+        let room = appearance::button_ring_room(cx);
+        // The series draws the window's keyboard ring on its own 1 px edge,
+        // after a key, until a pointer press.
+        let ringed = self
+            .owner
+            .upgrade()
+            .is_some_and(|owner| owner.read(cx).focus_ring.shows(&self.focus));
         let row_count = self.review.as_ref().map_or(0, |review| review.rows.len());
         let row_height = appearance::ui_size(68.);
         let list_height = (row_height * row_count.clamp(1, 6) as f32 + px(2.))
@@ -688,13 +699,13 @@ impl Render for SeriesBrowser {
                 && plan.remote_ref
                     == format!("refs/heads/{}", self.remote_branch.read(cx).value().trim())
         });
-        crate::native_accessibility::clips_children(div().id("rewrite-review-body").w_full().min_w_0().max_h(px(height)).when(self.inspecting, |element| element.h(px(height))).overflow_y_scroll().flex().flex_col().gap_2()
+        crate::native_accessibility::clips_children(div().id("rewrite-review-body").min_w_0().px(room).mx(-room).pb(room).max_h(px(height) + room).when(self.inspecting, |element| element.h(px(height))).overflow_y_scroll().flex().flex_col().gap_2()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .when(!self.inspecting, |element| element
                 .child(div().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Original → rewritten · unique patch fingerprints identify likely correspondence. Changed patches may match by unique subject only. Ambiguous, combined and empty commits remain explicit; inspect both sides before publishing."))
                 .when_some(self.review.as_ref(), |element, review| element.child(div().text_size(appearance::ui_text(11.)).child(format!("{} · original {} → rewritten {} · base {}", review.branch, short_oid(&review.original_head), short_oid(&review.rewritten_head), short_oid(&review.base)))))
-                .child(crate::native_accessibility::clips_children(div().id("series-focus-list").w_full().min_w_0().h(list_height).flex_shrink_0().border_1().border_color(rgb(p.border)).focus_visible(|style| style.border_color(rgb(p.accent))).rounded(px(6.)).overflow_hidden().tab_stop(true).track_focus(&self.focus).role(Role::ListBox).aria_label("Original and rewritten commits").aria_description("Up and Down select a commit pair. Return inspects rewritten files.")
+                .child(crate::native_accessibility::clips_children(div().id("series-focus-list").w_full().min_w_0().h(list_height).flex_shrink_0().border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(6.)).overflow_hidden().track_focus(&self.focus).role(Role::ListBox).aria_label("Original and rewritten commits").aria_description("Up and Down select a commit pair. Return inspects rewritten files.")
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| { match event.keystroke.key.as_str() { "up" => this.select(this.selected.saturating_sub(1), window, cx), "down" => this.select(this.selected + 1, window, cx), "enter" => this.inspect(false, window, cx), _ => return } cx.stop_propagation(); }))
                     .child(uniform_list("rewrite-series-list", row_count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.rows_scroll))))
                 .child(div().flex().flex_wrap().gap_2()

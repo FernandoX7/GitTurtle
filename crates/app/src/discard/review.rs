@@ -49,7 +49,10 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let plan = Arc::new(plan);
         let scroll = ScrollHandle::new();
-        let focus = cx.focus_handle();
+        // The details scroll by key, so Tab reaches them, and they draw the
+        // window's keyboard ring on their own edge.
+        let focus = cx.focus_handle().tab_stop(true);
+        let ring = self.focus_ring.clone();
         let submitted = Rc::new(Cell::new(false));
         // Enter on the dialog container must never accept irreversible loss.
         // Keyboard and accessibility activation still work on the actual button.
@@ -142,12 +145,10 @@ impl GitTurtle {
                                         .debug_selector(|| "discard-details".into())
                                         .role(Role::Document)
                                         .aria_label("File discard review. Use arrow keys, Page Up, Page Down, Home or End to scroll.")
-                                        .tab_stop(true)
                                         .track_focus(&focus)
                                         .border_1()
-                                        .border_color(gpui_kit::transparent_black())
+                                        .border_color(if ring.shows(&focus) { rgb(colors.accent).into() } else { gpui_kit::transparent_black() })
                                         .rounded_lg()
-                                        .focus_visible(|style| style.border_color(rgb(colors.accent)))
                                         .on_mouse_down(MouseButton::Left, move |_, window, cx| click_focus.focus(window, cx))
                                         .on_key_down(move |event, window, cx| {
                                             let modifiers = event.keystroke.modifiers;

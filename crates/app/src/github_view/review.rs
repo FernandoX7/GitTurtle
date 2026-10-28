@@ -139,9 +139,9 @@ impl ReviewState {
                 panel.review.refresh_theme(cx)
             }),
             mode: 0,
-            file_focus: cx.focus_handle(),
-            line_focus: cx.focus_handle(),
-            section_focus: cx.focus_handle(),
+            file_focus: cx.focus_handle().tab_stop(true),
+            line_focus: cx.focus_handle().tab_stop(true),
+            section_focus: cx.focus_handle().tab_stop(true),
             preparing: false,
             suspended: false,
             prepare_generation: 0,
@@ -280,6 +280,13 @@ impl Panel {
                 }
             });
         }
+    }
+    /// Whether the pane that `focus` tracks draws the window's keyboard ring:
+    /// after a key, and still while the pointer moves, until a pointer press.
+    pub(super) fn ringed(&self, focus: &FocusHandle, cx: &App) -> bool {
+        self.owner
+            .upgrade()
+            .is_some_and(|owner| owner.read(cx).focus_ring.shows(focus))
     }
     pub(super) fn focus_visible_section(&self, window: &mut Window, cx: &mut Context<Self>) {
         *self.review.revealed_focus.borrow_mut() = Default::default();
@@ -975,12 +982,14 @@ impl Panel {
                     }))
                     .h(FILE_LIST_HEIGHT)
                     .border_1()
-                    .border_color(rgb(p.border))
+                    .border_color(rgb(if self.ringed(&self.review.file_focus, cx) {
+                        p.accent
+                    } else {
+                        p.border
+                    }))
                     .rounded(px(6.))
                     .overflow_hidden()
-                    .tab_stop(true)
                     .track_focus(&self.review.file_focus)
-                    .focus_visible(|style| style.border_color(rgb(p.accent)))
                     .role(Role::ListBox)
                     .aria_label("Pull request changed files")
                     .aria_description(format!(
@@ -1275,10 +1284,12 @@ impl Panel {
             crate::diff_view::line_number_column_width(u64::from(widest))
                 * appearance::code_scale(),
         );
+        // The keyboard ring lies over the rows' edge, so no row moves.
+        let ringed = self.ringed(&self.review.line_focus, cx);
         crate::native_accessibility::clips_children(div().id("github-patch-focus").key_context("GitTurtleGithubPatch").on_action(cx.listener(|this,_:&ReviewUp,window,cx|{this.review_key("up",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewDown,window,cx|{this.review_key("down",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewHome,window,cx|{this.review_key("home",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewEnd,window,cx|{this.review_key("end",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageUp,window,cx|{this.review_key("pageup",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageDown,window,cx|{this.review_key("pagedown",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendUp,window,cx|{this.review_key("up",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendDown,window,cx|{this.review_key("down",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewAccept,window,cx|{this.review_key("enter",false,window,cx);cx.stop_propagation();})).debug_selector(||"github-patch".into()).flex_1().min_h_0().min_w_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden()
             // A context row's surface, so the strip below the rows reads as part of the patch.
             .bg(rgb(p.canvas))
-            .tab_stop(true).track_focus(&self.review.line_focus).focus_visible(|style|style.border_color(rgb(p.accent))).role(Role::ListBox).aria_label("Captured pull request patch lines").aria_description("Up and Down move through lines. Shift extends a same-side range. Return starts an inline comment. Source offers exact text selection and Find.")
+            .relative().track_focus(&self.review.line_focus).role(Role::ListBox).aria_label("Captured pull request patch lines").aria_description("Up and Down move through lines. Shift extends a same-side range. Return starts an inline comment. Source offers exact text selection and Find.")
 
             .child(div().size_full().on_children_prepainted(move |children, window, cx| {
                 // The inset follows the height inside the border, never the other way round,
@@ -1293,7 +1304,7 @@ impl Panel {
                 // The selection's edge overlays the row, so its text keeps Source's place.
                 patch_row(index,row,column,row_height,cx).bg(rgb(background)).when(selected,|row|row.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(rgb(p.accent)))).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
                     .on_click(cx.listener(move|this,event:&ClickEvent,window,cx|this.select_review_line(index,event.modifiers().shift,window,cx))).into_any_element()
-            }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll)))))).into_any_element()
+            }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll))))).when(ringed, |pane| pane.child(div().absolute().inset_0().border_1().border_color(rgb(p.accent))))).into_any_element()
     }
     pub(super) fn render_collected(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
@@ -3168,5 +3179,117 @@ mod tests {
             .unwrap()
             .unwrap();
         cx.run_until_parked();
+    }
+
+    /// The focus sweep (`focus_ring::sweep`) over the panel on the offline
+    /// fixture, at the default and the largest interface size: its pull
+    /// request list, then a pull request's Overview, its Files with the first
+    /// file's patch open, and its Review.
+    #[gpui::test]
+    async fn the_panel_draws_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+        use crate::focus_ring::sweep;
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        sweep::prepare(&app, cx);
+        let repo = cx.read(|cx| app.read(cx).repository.clone().unwrap());
+        let panel = cx.update(|window, cx| {
+            cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx))
+        });
+        app.read_with(cx, |app, _| app.operations.submit(|| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.executor().run_until_parked();
+        let pull = model::fixture_pull(false);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.rows = vec![pull.clone()];
+                panel.review.fixture = true;
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        cx.executor().run_until_parked();
+        let mut failures = Vec::new();
+        for interface in sweep::SIZES {
+            sweep::interface_size(cx, interface);
+            // Each change of view moves focus as the panel's own transitions
+            // do, so no walk starts on a pane the panel no longer draws.
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.pull = None;
+                    panel.review.show_list = true;
+                    panel.focus_visible_section(window, cx);
+                    cx.notify();
+                })
+            });
+            cx.executor().run_until_parked();
+            sweep::walk(
+                &app,
+                cx,
+                "the GitHub panel's list",
+                interface,
+                &mut failures,
+            );
+            for (section, name) in [
+                (Section::Overview, "the GitHub panel's Overview"),
+                (Section::Files, "the GitHub panel's Files"),
+                (Section::Review, "the GitHub panel's Review"),
+            ] {
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.pull = Some(pull.clone());
+                        panel.review.files = files.clone();
+                        panel.review.section = section;
+                        panel.review.show_list = false;
+                        if section == Section::Files {
+                            panel.select_review_file(0, window, cx);
+                        }
+                        panel.focus_visible_section(window, cx);
+                        cx.notify();
+                    })
+                });
+                cx.executor().run_until_parked();
+                sweep::walk(&app, cx, name, interface, &mut failures);
+            }
+        }
+        // Follow-ups (focus sweep, 2026-10-28): the panel's scrolling body
+        // keeps no room for the focus ring, so the controls along its edges
+        // lose part of theirs in every view; at 18 pt Tab moves focus to
+        // controls and panes the body leaves scrolled out of view, so nothing
+        // shows it; and one Files stop at 13 pt, a panel button, draws no
+        // ring. The panes this sweep fixed, the file list, the patch and the
+        // conversations, draw theirs whole wherever the body shows them.
+        let mut known = Vec::new();
+        for size in ["13 pt", "18 pt"] {
+            for view in ["list", "Overview", "Files", "Review"] {
+                known.push((
+                    format!("the GitHub panel's {view} at {size}"),
+                    "a clip cuts",
+                ));
+            }
+        }
+        for view in ["Overview", "Files", "Review"] {
+            known.push((
+                format!("the GitHub panel's {view} at 18 pt"),
+                "paints no ring",
+            ));
+        }
+        known.push((
+            "the GitHub panel's Files at 13 pt, stop 5".into(),
+            "paints no ring",
+        ));
+        let known: Vec<_> = known
+            .iter()
+            .map(|(at, finding)| (at.as_str(), *finding))
+            .collect();
+        sweep::assert_whole_except(failures, &known);
     }
 }

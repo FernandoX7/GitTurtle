@@ -489,7 +489,7 @@ impl Panel {
             .map(|index| self.conversations.cursors[index].clone());
         let next = self.conversations.next_cursor.clone();
         crate::native_accessibility::clips_children(div().id("github-thread-section").min_w_0().role(Role::Group).aria_label("GitHub review conversations with authoritative resolution status")
-            .tab_stop(true).track_focus(&self.review.section_focus).border_1().border_color(rgb(p.border)).rounded(px(7.)).focus_visible(|style|style.border_color(rgb(p.accent))).flex().flex_col().gap_2().p_3()
+            .track_focus(&self.review.section_focus).border_1().border_color(rgb(if self.ringed(&self.review.section_focus, cx) { p.accent } else { p.border })).rounded(px(7.)).flex().flex_col().gap_2().p_3()
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(label("github-conversations-heading",format!("Conversations · {} unresolved on this page",unresolved)).font_weight(FontWeight::SEMIBOLD))
                 .child(div().flex_1())

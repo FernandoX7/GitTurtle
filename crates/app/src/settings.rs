@@ -1331,26 +1331,16 @@ impl GitTurtle {
         }
     }
 
-    fn render_theme_picker(
-        &self,
-        columns: usize,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_theme_picker(&self, columns: usize, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         let selected = self.selected_theme_card(cx);
-        // Keyboard focus, as GPUI's `focus_visible` judges it: the last input
-        // was a key. A change of focus or of input modality refreshes the
-        // window, so the page is built again whenever this changes.
-        let focused = window
-            .last_input_was_keyboard()
-            .then(|| {
-                self.theme_card_focus
-                    .iter()
-                    .find(|(_, handle)| handle.is_focused(window))
-                    .map(|(selection, _)| *selection)
-            })
-            .flatten();
+        // Keyboard focus, as the window's focus ring shows it: after a key,
+        // and still while the pointer moves, until a pointer press.
+        let focused = self
+            .theme_card_focus
+            .iter()
+            .find(|(_, handle)| self.focus_ring.shows(handle))
+            .map(|(selection, _)| *selection);
         #[cfg(test)]
         self.card_names.borrow_mut().clear();
         let groups = self.theme_card_groups(cx);
@@ -2248,7 +2238,7 @@ impl GitTurtle {
                             ),
                     ),
             )
-            .child(self.render_theme_picker(theme_columns, window, cx))
+            .child(self.render_theme_picker(theme_columns, cx))
             .child(self.render_custom_themes(window, cx))
             .child(self.render_text_size_setting(false, cx))
             .child(self.render_text_size_setting(true, cx))

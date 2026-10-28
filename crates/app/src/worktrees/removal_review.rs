@@ -157,7 +157,10 @@ impl GitTurtle {
         )));
         let details = Arc::new(details);
         let scroll = ScrollHandle::new();
-        let focus = cx.focus_handle();
+        // The effects scroll by key, so Tab reaches them, and they draw the
+        // window's keyboard ring on their own edge.
+        let focus = cx.focus_handle().tab_stop(true);
+        let ring = self.focus_ring.clone();
         let submitted = Rc::new(Cell::new(false));
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let colors = palette(cx);
@@ -235,12 +238,10 @@ impl GitTurtle {
                                     .debug_selector(|| "worktree-force-effects".into())
                                     .role(Role::Document)
                                     .aria_label("What force removal deletes and keeps. Use arrow keys, Page Up, Page Down, Home or End to scroll.")
-                                    .tab_stop(true)
                                     .track_focus(&focus)
                                     .border_1()
-                                    .border_color(gpui_kit::transparent_black())
+                                    .border_color(if ring.shows(&focus) { rgb(colors.accent).into() } else { gpui_kit::transparent_black() })
                                     .rounded_lg()
-                                    .focus_visible(|style| style.border_color(rgb(colors.accent)))
                                     .on_mouse_down(MouseButton::Left, move |_, window, cx| click_focus.focus(window, cx))
                                     .on_key_down(move |event, window, cx| {
                                         let modifiers = event.keystroke.modifiers;

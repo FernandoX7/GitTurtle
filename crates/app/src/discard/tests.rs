@@ -536,3 +536,32 @@ async fn working_path_tooltip_wraps_and_yields_to_the_discard_menu(cx: &mut Test
     cx.simulate_keystrokes("escape");
     assert_eq!(std::fs::read(&absolute).unwrap(), b"keep scratch\n");
 }
+
+/// The focus sweep (`focus_ring::sweep`) over the discard review, at the
+/// default and the largest interface size.
+#[gpui::test]
+async fn the_discard_review_draws_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let fixture = Fixture::new();
+    std::fs::write(fixture.root().join("tracked.txt"), "edited\n").unwrap();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    sweep::prepare(&app, cx);
+    let entry = fixture.entry("tracked.txt");
+    let mut failures = Vec::new();
+    for interface in sweep::SIZES {
+        sweep::interface_size(cx, interface);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.open_discard(entry.clone(), window, cx));
+        });
+        prepared(&app, cx).await;
+        let details = cx.debug_bounds("discard-details").unwrap();
+        let rings = sweep::walk(&app, cx, "the discard review", interface, &mut failures);
+        // The details scroll by key, so Tab stops there and rings their edge.
+        assert!(
+            sweep::rings_edge(&rings, details),
+            "{interface} pt: Tab rings the details {details:?}: {rings:?}"
+        );
+        sweep::close_dialogs(cx, "the discard review", interface, &mut failures);
+    }
+    sweep::assert_whole(failures);
+}
