@@ -225,9 +225,15 @@ impl GitTurtle {
             let cancel = form.clone();
             let activate = form.clone();
             let cancel_action = form.clone();
+            // A picker of files floats as the menus and the command palette
+            // do: on the raised surface with their fitted edge, read on every
+            // frame so a theme switch retints it with them.
+            let surface = palette(cx);
             dialog
                 .title("Quick Open File")
                 .width(px(700.))
+                .bg(rgb(surface.raised()))
+                .border_color(rgb(surface.raised_edge()))
                 .child(form.clone())
                 .footer(
                     DialogFooter::new()
@@ -975,11 +981,11 @@ impl Render for QuickForm {
                             .px_2()
                             .flex()
                             .items_center()
-                            .bg(rgb(if index == this.selected {
-                                palette(cx).selected
-                            } else {
-                                palette(cx).panel
-                            }))
+                            // A resting row shows the raised surface beneath
+                            // it, as a menu's rows do.
+                            .when(index == this.selected, |row| {
+                                row.bg(rgb(palette(cx).selected))
+                            })
                             .child(div().truncate().child(path))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.selected = index;
@@ -992,7 +998,7 @@ impl Render for QuickForm {
         )
         .track_scroll(&self.scroll)
         .size_full();
-        div().id("quick-file-form-scroll")
+        div().id("quick-file-form-scroll").debug_selector(|| "quick-file-form".into())
             .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
             .overflow_y_scroll().text_size(crate::appearance::ui_text(12.))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
@@ -1005,7 +1011,7 @@ impl Render for QuickForm {
             .child(Input::new(&self.query))
             .child(div().text_color(rgb(p.muted)).child(if self.busy{"Searching local tracked paths…".into()}else{format!("{count} matches · ↑/↓ select · {} opens · Escape cancels{}",shortcuts::ENTER,self.page.as_ref().filter(|page|page.truncated).map_or("",|_|" · Limit reached; narrow the query"))}))
             .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone())))
-            .child(div().id("quick-open-results").role(Role::ListBox).aria_label("Matching tracked files").h(desired_height.min(available_height)).border_1().border_color(rgb(p.border)).overflow_hidden().when(count>0,|el|el.child(list)).when(count==0&&!self.busy,|el|el.child(div().p_3().child("No matching tracked files. Untracked files are available in Working Changes."))))
+            .child(div().id("quick-open-results").debug_selector(|| "quick-open-results".into()).role(Role::ListBox).aria_label("Matching tracked files").h(desired_height.min(available_height)).border_1().border_color(rgb(p.raised_edge())).overflow_hidden().when(count>0,|el|el.child(list)).when(count==0&&!self.busy,|el|el.child(div().p_3().child("No matching tracked files. Untracked files are available in Working Changes."))))
             .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("File History and Blame are available after opening. Worktree reads show raw current bytes; a chosen revision is pinned to its resolved commit.")))
     }
 }

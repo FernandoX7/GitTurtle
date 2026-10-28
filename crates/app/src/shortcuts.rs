@@ -653,13 +653,19 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
     let help = cx.new(|cx| ShortcutHelpView::new(return_focus, window, cx));
     let focus = help.read(cx).query.read(cx).focus_handle(cx);
     hints.register(&focus, DialogKeys::Shortcuts);
-    window.open_alert_dialog(cx, move |dialog, _, _| {
+    window.open_alert_dialog(cx, move |dialog, _, cx| {
         let done = help.clone();
         let cancel = help.clone();
         let confirm = help.clone();
+        // A list of commands' keys floats as the menus and the command
+        // palette do: on the raised surface with their fitted edge, read on
+        // every frame so a theme switch retints it with them.
+        let surface = palette(cx);
         dialog
             .title("Keyboard Shortcuts")
             .width(appearance::ui_size(650.))
+            .bg(rgb(surface.raised()))
+            .border_color(rgb(surface.raised_edge()))
             .child(help.clone())
             .footer(DialogFooter::new().child(
                 button("close-shortcut-help", "Done", "", true).on_click(move |_, window, cx| {
@@ -760,8 +766,10 @@ impl Render for ShortcutHelpView {
                                 .text_size(appearance::ui_text(11.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(rgb(p.muted))
+                                // Ruled with the edge, as a menu's
+                                // separators are.
                                 .border_b_1()
-                                .border_color(rgb(p.border))
+                                .border_color(rgb(p.raised_edge()))
                                 .child(*group),
                             HelpRow::Entry(entry) => row
                                 .role(Role::ListBoxOption)
@@ -777,9 +785,8 @@ impl Render for ShortcutHelpView {
                                         .py_1()
                                         .text_size(appearance::ui_text(11.))
                                         .font_family(mono())
-                                        .bg(rgb(p.panel))
                                         .border_1()
-                                        .border_color(rgb(p.border))
+                                        .border_color(rgb(p.raised_edge()))
                                         .child(entry.key.clone()),
                                 )
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -794,7 +801,7 @@ impl Render for ShortcutHelpView {
         )
         .track_scroll(&self.scroll)
         .size_full();
-        div().id("keyboard-shortcuts-view").key_context("GitTurtleShortcuts")
+        div().id("keyboard-shortcuts-view").debug_selector(|| "keyboard-shortcuts-view".into()).key_context("GitTurtleShortcuts")
             .flex().flex_col().gap_3().text_size(appearance::ui_text(12.))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
                 this.close(window, cx); cx.stop_propagation();
@@ -826,9 +833,9 @@ impl Render for ShortcutHelpView {
                 .aria_label(format!("{count} matching shortcuts"))
                 .text_color(rgb(p.muted)).child(format!("{count} shortcuts · {}",
                     if cfg!(target_os = "macos") { "⌘ Command  ⌥ Option  ⌃ Control  ⇧ Shift" } else { "Ctrl, Alt and Shift" })))
-            .child(div().id("shortcut-help-results").role(Role::ListBox)
+            .child(div().id("shortcut-help-results").debug_selector(|| "shortcut-help-results".into()).role(Role::ListBox)
                 .aria_label("Keyboard shortcuts by group").h(height).overflow_hidden()
-                .rounded(px(7.)).border_1().border_color(rgb(p.border))
+                .rounded(px(7.)).border_1().border_color(rgb(p.raised_edge()))
                 .when(count > 0, |view| view.child(list))
                 .when(count == 0, |view| view.child(div().p_4().text_color(rgb(p.muted)).child(
                     if self.query.read(cx).value().len() > 4096 { "Search is limited to 4,096 bytes." }

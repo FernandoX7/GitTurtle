@@ -1272,8 +1272,17 @@ mod render_tests {
     }
 
     fn painted(cx: &mut VisualTestContext) -> Painted {
-        let form = crate::tags::tests::rendered(cx, "command-palette-form");
-        let list = crate::tags::tests::rendered(cx, "command-palette-results");
+        painted_popup(cx, "command-palette-form", "command-palette-results")
+    }
+
+    /// [`painted`] for any dialog: its panel around `form`, and `list`.
+    fn painted_popup(
+        cx: &mut VisualTestContext,
+        form: &'static str,
+        list: &'static str,
+    ) -> Painted {
+        let form = crate::tags::tests::rendered(cx, form);
+        let list = crate::tags::tests::rendered(cx, list);
         cx.update(|window, _| {
             let scale = window.scale_factor();
             let quads = window.painted_quads();
@@ -1379,6 +1388,85 @@ mod render_tests {
                 painted.row_fills,
                 vec![Background::from(Hsla::from(rgb(palette.selected)))],
                 "{name} rows"
+            );
+        }
+    }
+
+    /// Quick Open and Keyboard Shortcuts are pickers, as the command palette
+    /// is, so they float as it does: on `Palette::raised` with
+    /// `Palette::raised_edge` in every palette, their result lists edged the
+    /// same way, and only the highlighted row painting a fill of its own.
+    /// They were dialogs on the page background with rows on the panel color,
+    /// and Keyboard Shortcuts' key chips on it too.
+    #[gpui::test]
+    async fn quick_open_and_keyboard_shortcuts_float_on_the_menus_raised_surface(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        for name in ["notes.txt", "readme.txt"] {
+            std::fs::write(repo.path().join(name), "text\n").unwrap();
+        }
+        git(repo.path(), &["add", "--all"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add files"]);
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        type Open = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+        let dialogs: [(&str, Open, &'static str, &'static str); 2] = [
+            (
+                "Quick Open",
+                GitTurtle::open_quick_file,
+                "quick-file-form",
+                "quick-open-results",
+            ),
+            (
+                "Keyboard Shortcuts",
+                GitTurtle::shortcut_help,
+                "keyboard-shortcuts-view",
+                "shortcut-help-results",
+            ),
+        ];
+        for (dialog, open, form, list) in dialogs {
+            cx.update(|window, cx| app.update(cx, |app, cx| open(app, window, cx)));
+            for (name, palette) in appearance::test_palettes() {
+                cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+                // Quick Open reads its paths on the worker after a 120 ms
+                // pause for typing.
+                for _ in 0..20 {
+                    cx.executor()
+                        .advance_clock(std::time::Duration::from_millis(150));
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    draw(cx);
+                    if !painted_popup(cx, form, list).row_fills.is_empty() {
+                        break;
+                    }
+                }
+                let (surface, edge) = cx.update(|_, cx| {
+                    (
+                        Theme::global(cx).popover,
+                        gpui_kit::component::popover_ring(cx),
+                    )
+                });
+                let painted = painted_popup(cx, form, list);
+                assert_eq!(
+                    painted.panel_fills,
+                    vec![Background::from(surface)],
+                    "{dialog} {name} surface"
+                );
+                assert_eq!(painted.panel_edges, vec![edge], "{dialog} {name} edge");
+                assert_eq!(painted.list_edges, vec![edge], "{dialog} {name} list edge");
+                assert_eq!(
+                    painted.row_fills,
+                    vec![Background::from(Hsla::from(rgb(palette.selected)))],
+                    "{dialog} {name} rows"
+                );
+            }
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{dialog}"
             );
         }
     }
