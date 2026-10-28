@@ -216,13 +216,17 @@ pub fn sync_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut Ap
     window.set_rem_size(ui_text(13.));
 }
 
-/// A menu label's text size at the default interface size. A label titles or
-/// explains the items around it, so it takes the section-label style of the
-/// theme editor's group labels, 12 px medium in secondary text, beside items
-/// in the kit's `text_sm` (11.375 px at the 13 px root) at regular weight:
-/// secondary text alone sets a heading only 1.9:1 off an item in Midnight and
-/// Braden and barely at all in One Dark or Solarized Dark.
-pub const MENU_LABEL_TEXT: f32 = 12.;
+/// A section label's text size at the default interface size, drawn at
+/// medium weight: the navigation's headings, such as LOCAL BRANCHES, and a
+/// menu's labels, the text that titles or explains the items around it.
+///
+/// A menu label sits beside items in the kit's `text_sm` (11.375 px at the
+/// 13 px root) at regular weight, so weight sets it apart where colour cannot:
+/// secondary text stands only 1.9:1 off an item in Midnight and Braden and
+/// barely at all in One Dark or Solarized Dark. It is no larger than an item,
+/// so a heading never outweighs the commands it titles, as a 12 px one did
+/// in those palettes.
+pub const SECTION_LABEL_TEXT: f32 = 11.;
 
 /// The kit theme's text sizes at the current interface and code sizes: its
 /// root and code text and the menu label's size. Applying a palette restores
@@ -230,7 +234,7 @@ pub const MENU_LABEL_TEXT: f32 = 12.;
 fn set_theme_text_sizes(theme: &mut Theme) {
     theme.font_size = ui_text(13.);
     theme.mono_font_size = code_text();
-    theme.menu_label_size = Some(ui_text(MENU_LABEL_TEXT));
+    theme.menu_label_size = Some(ui_text(SECTION_LABEL_TEXT));
 }
 
 /// [`sync_text_sizes`] for callers that own no entity to notify: a text-size

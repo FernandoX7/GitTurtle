@@ -715,7 +715,9 @@ impl GitTurtle {
                 .flex()
                 .items_center()
                 .justify_between()
-                .text_size(crate::appearance::ui_text(11.))
+                .text_size(crate::appearance::ui_text(
+                    crate::appearance::SECTION_LABEL_TEXT,
+                ))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(rgb(colors.muted))
                 .child(*label)
@@ -7706,14 +7708,15 @@ pub(crate) mod tests {
             } else {
                 "Original Git diff"
             };
-            // It reads as a heading by its 12 px medium, not by colour alone.
+            // It reads as a heading by the section labels' 11 px medium, not
+            // by colour alone.
             let muted = cx.update(|_, cx| gpui_kit::component::Theme::global(cx).muted_foreground);
             for entry in [
                 format!("menu-item: {caption} · Label"),
                 format!("menu-label: {caption} · {:?}", gpui::Rgba::from(muted)),
                 crate::native_accessibility::menu_tests::menu_label_style(
                     caption,
-                    appearance::ui_text(appearance::MENU_LABEL_TEXT),
+                    appearance::ui_text(appearance::SECTION_LABEL_TEXT),
                     FontWeight::MEDIUM,
                 ),
             ] {

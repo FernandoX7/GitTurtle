@@ -78,7 +78,7 @@ async fn the_profile_menu_names_its_rows(cx: &mut TestAppContext) {
     let style = |label: &str| {
         menu_label_style(
             label,
-            appearance::ui_text(appearance::MENU_LABEL_TEXT),
+            appearance::ui_text(appearance::SECTION_LABEL_TEXT),
             FontWeight::MEDIUM,
         )
     };

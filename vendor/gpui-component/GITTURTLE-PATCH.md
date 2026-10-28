@@ -599,9 +599,11 @@ text is nearly their text, so a heading read as one more command. A label's
 row now draws at medium weight (`MENU_LABEL_WEIGHT`) and at
 `menu_label_size`: `Theme::menu_label_size`, `None` by default and set in code,
 not read from theme files, or the items' own `text_sm`. GitTurtle sets it to
-its 12 px section-label size, scaled with the interface text
-(`appearance::MENU_LABEL_TEXT`, through `set_theme_text_sizes` on every palette
-and text-size change), beside items at 11.375 px. The row names its size and
+its 11 px section-label size, scaled with the interface text
+(`appearance::SECTION_LABEL_TEXT`, through `set_theme_text_sizes` on every
+palette and text-size change), beside items at 11.375 px, so weight sets a
+heading apart without it outweighing the items, as 12 px did in One Dark and
+Solarized Dark. The row names its size and
 weight in a debug selector (`menu-label-style: <label> · <size> px · weight
 <weight>`), since the test scene does not expose glyph sizes either.
 
@@ -618,9 +620,10 @@ opens a menu that starts with a label and ends with a caption below a
 separator, reads both labels announced as labels and neither disabled, the
 disabled item announced disabled, and, in every built-in and embedded Omarchy
 palette, both labels' text in `muted_foreground`.
-`menu_labels_differ_from_items_by_size_and_weight` reads, in every such
-palette and at a larger interface size, both labels at the section-label size
-and medium weight, apart from the items' size.
+`menu_labels_take_the_section_label_size_and_differ_from_items_by_weight`
+reads, in every such palette at 13 and 16 pt, both labels at the 11 px
+section-label size, scaled, and medium weight, no larger than the items and
+heavier than their regular weight.
 `review_options_menu_announces_its_toggle_checked` reads the Options menu's
 caption the same way, and `the_profile_menu_names_its_rows` the profile menu's
 labels by name. Remove this part of the patch when upstream gives menu labels a

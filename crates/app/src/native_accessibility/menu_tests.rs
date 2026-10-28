@@ -234,49 +234,52 @@ pub(crate) fn menu_label_style(label: &str, size: Pixels, weight: FontWeight) ->
     )
 }
 
-/// A label is a heading, not one more item: it takes the section labels' 12
-/// px medium, scaled with the interface text, where an item draws the kit's
-/// `text_sm` (0.875 of the root size) at regular weight. Colour alone cannot
-/// set it apart, since secondary text is nearly as strong as text in One Dark
-/// and Solarized Dark, so in every palette the label differs from the items
-/// by size and weight.
+/// A label is a heading, not one more item: it takes the section labels' 11
+/// px medium, as the navigation's LOCAL BRANCHES does, scaled with the
+/// interface text, where an item draws the kit's `text_sm` (0.875 of the root
+/// size, 11.375 px at 13 pt) at the window's regular weight. Colour alone
+/// cannot set it apart, since secondary text is nearly as strong as text in
+/// One Dark and Solarized Dark, so in every palette weight does: the label
+/// is medium where the items are regular, and no larger than an item, so a
+/// heading does not outweigh the commands it titles, as a 12 px one did.
 #[gpui::test]
-fn menu_labels_differ_from_items_by_size_and_weight(cx: &mut TestAppContext) {
+fn menu_labels_take_the_section_label_size_and_differ_from_items_by_weight(
+    cx: &mut TestAppContext,
+) {
     let (cx, _) = open_menu(cx);
-    // The application's rem geometry: a 13 px root at the default size.
-    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     let labels = ["Saved profiles", "Original Git diff"];
-    let sizes = |cx: &mut VisualTestContext| {
+    // At 13 pt the section labels' 11 px, and at 16 pt that scaled; the
+    // items' `text_sm` and the window's own weight, which items draw in.
+    let sizes = |cx: &mut VisualTestContext, label: f32| {
         cx.update(|window, _| {
             (
-                appearance::ui_text(appearance::MENU_LABEL_TEXT),
+                px(label),
                 window.rem_size() * 0.875,
+                window.text_style().font_weight,
             )
         })
     };
-    let mut failures = Vec::new();
-    for (name, palette) in appearance::test_palettes() {
-        cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
-        draw(cx);
-        let (label, item) = sizes(cx);
-        assert_ne!(label, item, "{name}");
-        for text in labels {
-            let style = menu_label_style(text, label, FontWeight::MEDIUM);
-            if shown(cx, style.clone()).is_none() {
-                failures.push(format!("{name}: no {style}"));
+    for (text_size, label) in [(13, 11.), (16, 11. * 16. / 13.)] {
+        cx.update(|window, cx| appearance::apply_text_sizes(text_size, 12, window, cx));
+        let mut failures = Vec::new();
+        for (name, palette) in appearance::test_palettes() {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            draw(cx);
+            let (label, item, item_weight) = sizes(cx, label);
+            assert!(label <= item, "{text_size} pt {name}: {label:?} > {item:?}");
+            assert_ne!(
+                FontWeight::MEDIUM,
+                item_weight,
+                "{text_size} pt {name}: items are regular"
+            );
+            for text in labels {
+                let style = menu_label_style(text, label, FontWeight::MEDIUM);
+                if shown(cx, style.clone()).is_none() {
+                    failures.push(format!("{text_size} pt {name}: no {style}"));
+                }
             }
         }
-    }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
-
-    // The label keeps the section labels' size as the interface text grows.
-    cx.update(|window, cx| appearance::apply_text_sizes(16, 12, window, cx));
-    draw(cx);
-    let (label, item) = sizes(cx);
-    assert_ne!(label, item, "at 16 pt");
-    for text in labels {
-        let style = menu_label_style(text, label, FontWeight::MEDIUM);
-        assert!(shown(cx, style.clone()).is_some(), "at 16 pt: {style}");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
 }
