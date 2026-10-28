@@ -31,7 +31,9 @@ use std::{
 };
 
 const FONT_SIZE: f32 = 12.;
-const CELL_PADDING: f32 = 9.;
+/// The space beside a line number inside its gutter column, at the default code size; a
+/// number ends this far inside its column's right edge.
+pub(crate) const CELL_PADDING: f32 = 9.;
 const ACTION_WIDTH: f32 = 28.;
 
 /// Opt-in observations of existing input and paint work. This deliberately does
@@ -788,16 +790,21 @@ pub(crate) struct LineNumbers {
 /// Pure worker-side preparation; the UI constructor only shares these results.
 pub(crate) fn prepare_gutter(patch: &str) -> (Arc<[LineNumbers]>, f32) {
     let rows: Arc<[LineNumbers]> = parse_rows(patch).into();
-    let digits = rows
+    let widest = rows
         .iter()
         .flat_map(|row| [row.old, row.new])
         .flatten()
-        .map(|number| number.checked_ilog10().unwrap_or(0) + 1)
         .max()
-        .unwrap_or(1)
-        .max(3);
-    let column_width = digits as f32 * FONT_SIZE * 0.65 + CELL_PADDING * 2.;
-    (rows, column_width)
+        .unwrap_or(0);
+    (rows, line_number_column_width(widest))
+}
+
+/// The width at the default code size of a line-number column that holds `widest`, at least
+/// three digits, with [`CELL_PADDING`] on either side. Compare's gutter and the GitHub
+/// review's Changes rows share it, so a patch's numbers stand at one place in both.
+pub(crate) fn line_number_column_width(widest: u64) -> f32 {
+    let digits = (widest.checked_ilog10().unwrap_or(0) + 1).max(3);
+    digits as f32 * FONT_SIZE * 0.65 + CELL_PADDING * 2.
 }
 
 #[derive(Clone, Copy)]

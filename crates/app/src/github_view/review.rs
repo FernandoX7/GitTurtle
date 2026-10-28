@@ -1221,14 +1221,16 @@ impl Panel {
                 )
                 .into_any_element();
         }
-        // Whole rows down to the file list's bottom edge, as Source shows whole lines: what a
-        // row does not fill lies below them, measured from the box's height in the last layout,
-        // which the inset cannot change.
+        // Whole rows down to the file list's bottom edge, as Source shows whole lines, below
+        // the top inset Source's editor keeps above its text: what a row does not fill lies
+        // below them, measured from the box's height in the last layout, which the insets
+        // cannot change.
         let laid_out = self.review.patch_height.clone();
         let measured = laid_out.clone();
         let row_height = patch_row_height(window.scale_factor());
-        let slack = laid_out.get() - row_height * (laid_out.get() / row_height).floor();
-        // One width for every row of the file: its widest line number in the code font.
+        let room = (laid_out.get() - EDITOR_PADDING).max(px(0.));
+        let slack = room - row_height * (room / row_height).floor();
+        // Source's gutter columns for the file: Compare's width for its widest line number.
         let widest = file
             .rows
             .iter()
@@ -1236,7 +1238,10 @@ impl Panel {
             .flatten()
             .max()
             .unwrap_or(0);
-        let gutter = line_number_width(widest, appearance::code_digit_width(cx));
+        let column = px(
+            crate::diff_view::line_number_column_width(u64::from(widest))
+                * appearance::code_scale(),
+        );
         div().id("github-patch-focus").key_context("GitTurtleGithubPatch").on_action(cx.listener(|this,_:&ReviewUp,window,cx|{this.review_key("up",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewDown,window,cx|{this.review_key("down",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewHome,window,cx|{this.review_key("home",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewEnd,window,cx|{this.review_key("end",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageUp,window,cx|{this.review_key("pageup",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageDown,window,cx|{this.review_key("pagedown",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendUp,window,cx|{this.review_key("up",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendDown,window,cx|{this.review_key("down",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewAccept,window,cx|{this.review_key("enter",false,window,cx);cx.stop_propagation();})).debug_selector(||"github-patch".into()).flex_1().min_h_0().min_w_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden()
             // A context row's surface, so the strip below the rows reads as part of the patch.
             .bg(rgb(p.canvas))
@@ -1251,8 +1256,9 @@ impl Panel {
                     measured.set(inner.size.height);
                     window.defer(cx, |window, _| window.refresh());
                 }
-            }).child(div().size_full().pb(slack).child(div().debug_selector(||"github-patch-rows".into()).size_full().overflow_hidden().child(uniform_list("github-patch-rows",file.rows.len(),cx.processor(move|this,range:std::ops::Range<usize>,_,cx|range.map(|index|{let file=&this.review.files[this.review.selected_file.expect("visible file")];let row=&file.rows[index];let selected=this.review.anchor.zip(this.review.selected_row).is_some_and(|(a,b)|(a.min(b)..=a.max(b)).contains(&index));let p=palette(cx);let background=if selected{p.selected}else{match row.kind{b'+'=>p.added_background,b'-'=>p.removed_background,b'@'=>p.subtle,_=>p.canvas}};let row_label=format!("Before {} · After {} · {}",row.old.map(|n|n.to_string()).unwrap_or_default(),row.new.map(|n|n.to_string()).unwrap_or_default(),row.text);
-                patch_row(index,row,gutter,row_height,cx).bg(rgb(background)).border_l_2().border_color(rgb(if selected{p.accent}else{background})).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
+            }).child(div().size_full().pt(EDITOR_PADDING).pb(slack).child(div().debug_selector(||"github-patch-rows".into()).size_full().overflow_hidden().child(uniform_list("github-patch-rows",file.rows.len(),cx.processor(move|this,range:std::ops::Range<usize>,_,cx|range.map(|index|{let file=&this.review.files[this.review.selected_file.expect("visible file")];let row=&file.rows[index];let selected=this.review.anchor.zip(this.review.selected_row).is_some_and(|(a,b)|(a.min(b)..=a.max(b)).contains(&index));let p=palette(cx);let background=if selected{p.selected}else{match row.kind{b'+'=>p.added_background,b'-'=>p.removed_background,b'@'=>p.subtle,_=>p.canvas}};let row_label=format!("Before {} · After {} · {}",row.old.map(|n|n.to_string()).unwrap_or_default(),row.new.map(|n|n.to_string()).unwrap_or_default(),row.text);
+                // The selection's edge overlays the row, so its text keeps Source's place.
+                patch_row(index,row,column,row_height,cx).bg(rgb(background)).when(selected,|row|row.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(rgb(p.accent)))).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
                     .on_click(cx.listener(move|this,event:&ClickEvent,window,cx|this.select_review_line(index,event.modifiers().shift,window,cx))).into_any_element()
             }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll))))).into_any_element()
     }
@@ -1276,9 +1282,6 @@ fn patch_line(index: usize, cx: &App) -> Stateful<Div> {
         .code_font(cx)
 }
 
-/// The line-number column width before the code size followed the code font;
-/// the default code size keeps at least this width.
-const MIN_LINE_NUMBER_WIDTH: f32 = 36.;
 /// The changed-file list's height; Source fills its column down to the same edge.
 const FILE_LIST_HEIGHT: Pixels = px(324.);
 /// The file list's pager row: a compact Button's height at the default interface size.
@@ -1291,7 +1294,11 @@ const HINT_LINE: f32 = 20.;
 const EDITOR_LINE_HEIGHT: f32 = 1.5;
 /// The kit editor's padding above and below its text. In Source only the top padding lies
 /// between the inside of the box's border and the text; the bottom one runs past the clip.
+/// Changes keeps the same inset above its rows, so both modes start their text at one height.
 const EDITOR_PADDING: Pixels = px(8.);
+/// The kit editor's padding beside its text, a medium Input's at every text size: Source's
+/// text starts this far after Compare's gutter, and so does each Changes row's.
+const EDITOR_TEXT_INSET: Pixels = px(10.);
 /// A Changes row's height: the code text's line at 1.65, on whole device pixels at `scale`.
 /// Layout rounds an authored height to device pixels, so a row of 19.8 px at 12 pt is drawn
 /// 20 px tall at 2x: counted at 19.8 px, the box's rows ran 2.6 px past its clip and cut the
@@ -1300,45 +1307,52 @@ fn patch_row_height(scale: f32) -> Pixels {
     px((f32::from(appearance::code_text()) * 1.65 * scale).round() / scale)
 }
 
-/// The width of a line-number column that fits `widest` in code digits `digit` wide.
-fn line_number_width(widest: u32, digit: Pixels) -> Pixels {
-    let digits = widest.checked_ilog10().unwrap_or(0) + 1;
-    px((f32::from(digit) * digits as f32)
-        .ceil()
-        .max(MIN_LINE_NUMBER_WIDTH))
-}
-
-/// One patch row's layout, `height` tall: the old and new line numbers in
-/// `gutter`-wide columns, then the line's text.
+/// One patch row's layout, `height` tall, in Source's geometry: the old and new line numbers
+/// right-aligned in `column`-wide columns, [`crate::diff_view::CELL_PADDING`] inside each
+/// column's right edge, where Compare's gutter paints them, then the line's text
+/// [`EDITOR_TEXT_INSET`] after the gutter, where Source's editor starts it. The gutter is one
+/// box as wide as both columns, as Source's is, so both round its width alike.
 fn patch_row(
     index: usize,
     row: &model::PatchRow,
-    gutter: Pixels,
+    column: Pixels,
     height: Pixels,
     cx: &App,
 ) -> Stateful<Div> {
     let p = palette(cx);
+    let padding = px(crate::diff_view::CELL_PADDING * appearance::code_scale());
     let number = |side: &'static str, number: Option<u32>| {
         div()
-            .debug_selector(move || format!("github-patch-{side}-{index}"))
-            .w(gutter)
-            .flex_shrink_0()
+            .pr(padding)
+            .flex()
+            .justify_end()
             .text_color(rgb(p.muted))
-            .child(number.map(|n| n.to_string()).unwrap_or_default())
+            .child(
+                div()
+                    .debug_selector(move || format!("github-patch-{side}-{index}"))
+                    .flex_shrink_0()
+                    .child(number.map(|n| n.to_string()).unwrap_or_default()),
+            )
     };
     patch_line(index, cx)
         .debug_selector(move || format!("github-patch-line-{index}"))
+        .relative()
         .w_full()
         .h(height)
-        .px_2()
         .flex()
         .items_center()
-        .gap_2()
-        .child(number("old", row.old))
-        .child(number("new", row.new))
+        .child(
+            div()
+                .w(column * 2.)
+                .flex_shrink_0()
+                .flex()
+                .child(number("old", row.old).w(column).flex_shrink_0())
+                .child(number("new", row.new).flex_1()),
+        )
         .child(
             div()
                 .debug_selector(move || format!("github-patch-text-{index}"))
+                .ml(EDITOR_TEXT_INSET)
                 .min_w_0()
                 .flex_1()
                 .truncate()
@@ -1364,19 +1378,24 @@ mod tests {
         assert!(font.features.tag_value_list().contains(&("liga".into(), 0)));
     }
 
-    /// At every code size Settings offers, the line-number columns fit the
-    /// file's widest number in the code font, and the patch text starts after
-    /// both; the default size keeps the earlier 36 px columns.
+    /// At every code size Settings offers, the line-number columns take Compare's width for
+    /// the file's widest number, scaled with the code size, and fit it in the code font: each
+    /// number ends [`crate::diff_view::CELL_PADDING`] inside its column's right edge, as
+    /// Compare's gutter paints it, without crossing the column's left edge, and the patch text
+    /// starts [`EDITOR_TEXT_INSET`] after both columns, where Source's editor starts its text.
     #[gpui::test]
     fn line_numbers_fit_the_widest_number_at_every_code_size(cx: &mut TestAppContext) {
         struct Rows(model::PatchRow);
         impl Render for Rows {
             fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
                 let widest = self.0.old.max(self.0.new).unwrap_or(0);
-                let gutter = line_number_width(widest, appearance::code_digit_width(cx));
+                let column = px(
+                    crate::diff_view::line_number_column_width(u64::from(widest))
+                        * appearance::code_scale(),
+                );
                 div()
                     .w(px(900.))
-                    .child(patch_row(0, &self.0, gutter, px(20.), cx))
+                    .child(patch_row(0, &self.0, column, px(20.), cx))
             }
         }
         cx.update(|cx| {
@@ -1399,9 +1418,13 @@ mod tests {
             let bounds = |selector, cx: &mut gpui_kit::VisualTestContext| {
                 cx.debug_bounds(selector).expect(selector)
             };
+            let line = bounds("github-patch-line-0", cx);
             let old = bounds("github-patch-old-0", cx);
             let new = bounds("github-patch-new-0", cx);
             let text = bounds("github-patch-text-0", cx);
+            let scale = appearance::code_scale();
+            let column = crate::diff_view::line_number_column_width(99_999) * scale;
+            let padding = crate::diff_view::CELL_PADDING * scale;
             // The number as the column's text element shapes it.
             let number = cx.update(|window, cx| {
                 let family = gpui_kit::component::Theme::global(cx)
@@ -1424,23 +1447,34 @@ mod tests {
                     .shape_line("99999".into(), appearance::code_text(), &[run], None)
                     .width
             });
+            let at = |x: f32| line.left() + px(x);
+            // Layout puts each edge on a device pixel, half a pixel at 2x.
+            let near = |a: Pixels, b: Pixels| (a - b).abs() < px(0.51);
             assert!(
                 old.size.width >= number,
                 "{code} pt: {old:?} clips {number:?}"
             );
-            assert_eq!(old.size.width, new.size.width, "{code} pt");
             assert!(
-                old.right() <= new.left(),
-                "{code} pt: {old:?} overlaps {new:?}"
+                old.left() >= line.left(),
+                "{code} pt: {old:?} crosses {line:?}"
             );
             assert!(
-                new.right() < text.left(),
-                "{code} pt: {new:?} overlaps {text:?}"
+                near(old.right(), at(column - padding)),
+                "{code} pt: {old:?}"
             );
-            old.size.width
+            assert!(
+                new.left() >= at(column),
+                "{code} pt: {new:?} crosses the old column"
+            );
+            assert!(
+                near(new.right(), at(column * 2. - padding)),
+                "{code} pt: {new:?}"
+            );
+            assert!(
+                near(text.left(), at(column * 2.) + EDITOR_TEXT_INSET),
+                "{code} pt: {text:?} after {new:?}"
+            );
         };
-        assert!(measure(appearance::DEFAULT_CODE_TEXT_SIZE, cx) >= px(36.));
-        assert!(measure(24, cx) > px(36.));
         for code in appearance::CODE_TEXT_RANGE {
             measure(code, cx);
         }
@@ -2640,6 +2674,138 @@ mod tests {
                         .all(|&(edge, list)| (edge - list).abs() < px(0.01)),
                     "{interface} pt, file {file}: Changes and Source end {edges:?} below the \
                      list's top (box, list)"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.run_until_parked();
+    }
+
+    /// In a 1480 × 980 window at 13 and 18 pt, Changes and decorated Source start their text at
+    /// one place in the box they share: the first row and the first line one inset below the
+    /// box's top, the editor's top padding, the old and new line numbers right-aligned where
+    /// Compare's gutter paints Source's, and the code text one x after the gutter. Changes
+    /// started flush with the box, its numbers left-aligned in columns that kept 36 px, so at
+    /// 15 pt code its text began 12.5 px before Source's.
+    #[gpui::test]
+    async fn changes_and_source_start_their_text_at_one_place(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, cx) = review_panel(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.apply_appearance(window, cx)));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let pull = model::fixture_pull(false);
+        let captured_pull =
+            pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured_pull, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull);
+                panel.review.files = files;
+                panel.review.section = Section::Files;
+                panel.review.show_list = false;
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        cx.run_until_parked();
+        let show = |file: usize, mode: usize, cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.select_review_file(file, window, cx);
+                    panel.review_source(mode, window, cx);
+                })
+            });
+            cx.run_until_parked();
+            for _ in 0..3 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+            }
+        };
+        for (interface, code) in [(13, 12), (18, 15)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, code, window, cx));
+            for file in [0, 1] {
+                let at = format!("{interface} pt, file {file}");
+                show(file, 0, cx);
+                // The first row with both line numbers: the hunk's header has none.
+                let numbered = cx.read(|cx| {
+                    panel.read(cx).review.files[file]
+                        .rows
+                        .iter()
+                        .position(|row| row.old.is_some() && row.new.is_some())
+                        .expect("a context row")
+                });
+                let bounds = |selector: String, cx: &mut gpui_kit::VisualTestContext| {
+                    cx.debug_bounds(selector.clone().leak())
+                        .unwrap_or_else(|| panic!("{selector}"))
+                };
+                let patch = bounds("github-patch".into(), cx);
+                let first = bounds("github-patch-line-0".into(), cx);
+                let text = bounds(format!("github-patch-text-{numbered}"), cx);
+                let old = bounds(format!("github-patch-old-{numbered}"), cx);
+                let new = bounds(format!("github-patch-new-{numbered}"), cx);
+                let changes = (
+                    first.top() - patch.top(),
+                    text.left() - patch.left(),
+                    old.right() - patch.left(),
+                    new.right() - patch.left(),
+                );
+
+                show(file, 1, cx);
+                assert!(
+                    cx.read(|cx| panel.read(cx).review.source_view.is_some()),
+                    "{at}: Source draws Compare's gutter"
+                );
+                let source = cx.debug_bounds("github-source-patch").expect("Source");
+                let editor = cx.read(|cx| panel.read(cx).review.source.clone().unwrap());
+                let (input, lines) = cx.read(|cx| {
+                    let editor = editor.read(cx);
+                    (
+                        editor.input_bounds(),
+                        editor.text_bounds().expect("laid out"),
+                    )
+                });
+                // Compare's gutter paints each number this far inside its column's right edge,
+                // its columns starting inside the box's 1 px border.
+                let scale = appearance::code_scale();
+                let column = cx.read(|cx| {
+                    panel
+                        .read(cx)
+                        .review
+                        .presentation
+                        .as_ref()
+                        .unwrap()
+                        .column_width
+                }) * scale;
+                let padding = crate::diff_view::CELL_PADDING * scale;
+                let painted = |columns: f32| px(1. + column * columns - padding);
+                let shown = (
+                    input.top() - source.top(),
+                    lines.left() - source.left(),
+                    painted(1.),
+                    painted(2.),
+                );
+                assert_eq!(
+                    changes.0,
+                    px(1.) + EDITOR_PADDING,
+                    "{at}: the first row's inset"
+                );
+                assert!(
+                    (changes.0 - shown.0).abs() < px(0.01)
+                        && (changes.1 - shown.1).abs() < px(0.01),
+                    "{at}: Changes starts its text at {changes:?}, Source at {shown:?} \
+                     (top, text x, old and new numbers' right edges)"
+                );
+                // Within the device pixel layout puts each edge on.
+                assert!(
+                    (changes.2 - shown.2).abs() < px(0.51)
+                        && (changes.3 - shown.3).abs() < px(0.51),
+                    "{at}: Changes' numbers end at {changes:?}, Source's at {shown:?} \
+                     (top, text x, old and new numbers' right edges)"
                 );
             }
         }
