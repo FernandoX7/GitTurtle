@@ -830,6 +830,9 @@ impl GitTurtle {
         let retained_commit = self.automatic.retained_commit;
         self.automatic.reset();
         self.working_paths.reset();
+        // A row's travel belongs to the shown list: it neither waits in the
+        // retained tab nor lands when the tab returns.
+        self.working_travel = Default::default();
         self.file_paths.reset();
         let mut context = self.take_inspection_context(window, cx);
         context.pause_for_tab();

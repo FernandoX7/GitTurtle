@@ -1336,6 +1336,7 @@ impl GitTurtle {
                         this.working_paths.reset();
                         this.integration_state = None;
                         this.working_rows.clear();
+                        this.working_travel = Default::default();
                         this.working_selected = None;
                         if this.mode == WorkspaceMode::Working {
                             this.invalidate_read();
@@ -1454,6 +1455,9 @@ impl GitTurtle {
         }
         if entries_changed {
             self.schedule_working_filter(working_anchor, !quiet, window, cx);
+        } else {
+            // No new rows: a departed row whose write has finished did not move.
+            self.land_working_row(None, cx);
         }
         self.remotes = remotes;
         if !quiet && self.mode == WorkspaceMode::Working {
@@ -2087,17 +2091,33 @@ impl GitTurtle {
         // so the commit action says so.
         let hidden_description =
             description.is_none() && !self.commit_message.read(cx).value().trim().is_empty();
+        // A row that its Stage or Unstage moved travels to its slot above
+        // the list, which keeps the slot empty until it lands (`motion`).
+        let flight = self.working_flight(cx);
+        let landing = flight
+            .as_ref()
+            .map(|flight| (flight.position, flight.slot.clone()));
+        let row_height = px(self.settings.density.file_row_height());
         let list = uniform_list(
             "working-files",
             self.working_rows.len(),
             cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
                 range
-                    .map(|i| this.render_working_row(i, forms, window, cx))
+                    .map(|i| match &landing {
+                        Some((position, slot)) if *position == i => {
+                            crate::motion::slot(slot.clone(), row_height)
+                        }
+                        _ => this.render_working_row(i, forms, window, cx),
+                    })
                     .collect::<Vec<_>>()
             }),
         )
         .size_full()
         .track_scroll(&self.working_scroll);
+        let travelling = flight.map(|flight| {
+            let row = self.render_working_row(flight.position, forms, window, cx);
+            crate::motion::TravellingRow::new(flight, row)
+        });
         let refresh = button("refresh-working", "", "refresh", false)
             .debug_selector(|| "refresh-working".into())
             .accessibility_label("Refresh working changes")
@@ -2275,6 +2295,7 @@ impl GitTurtle {
                         el.max_h(px(available - if composer { drawn } else { 0. } - below))
                     })
                     .when(total > 0, |el| el.child(list))
+                    .children(travelling.filter(|_| total > 0))
                     .when(total == 0, |el| el.child(
                         div().size_full().flex().flex_col().items_center().justify_center().p_5().gap_2()
                             .child(div().size(px(40.)).rounded(px(12.))
@@ -2761,6 +2782,7 @@ impl GitTurtle {
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
                                     cx.stop_propagation();
+                                    this.depart_working_row(position, window, cx);
                                     this.stage_working_paths(paths.clone(), staged, window, cx);
                                 },
                             )),
@@ -2797,6 +2819,7 @@ impl GitTurtle {
                                     .on_click(move |_, window, cx| {
                                         let _ = owner.update(cx, |this, cx| {
                                             if this.path == repository {
+                                                this.depart_working_row(position, window, cx);
                                                 this.stage_working_paths(
                                                     paths.clone(),
                                                     staged,

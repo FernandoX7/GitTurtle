@@ -340,6 +340,8 @@ impl GitTurtle {
         self.working_paths.error = None;
         self.working_paths.pending = false;
         self.working_rows.clear();
+        self.interrupt_working_travel();
+        let departure = self.working_departure();
         let Some(status) = self.work_status.clone() else {
             cx.notify();
             return;
@@ -371,6 +373,8 @@ impl GitTurtle {
                 (Some(index), matches)
             };
             let rows = rows(&status, &matches, grouped, &cancellation, ticket)?;
+            let landing = departure
+                .and_then(|(path, from)| crate::motion::landing(&status, &rows, &path, from));
             let staged = status
                 .entries
                 .iter()
@@ -378,7 +382,7 @@ impl GitTurtle {
                 .count();
             let conflicted = status.entries.iter().any(|entry| entry.conflicted);
             path_filter::checkpoint(&cancellation, ticket)?;
-            Ok((index, rows, staged, conflicted, matches.len()))
+            Ok((index, rows, staged, conflicted, matches.len(), landing))
         });
         self.working_paths.pending = true;
         self.working_paths.task = Some(cx.spawn_in(window, async move |this, cx| {
@@ -388,7 +392,7 @@ impl GitTurtle {
                 this.working_paths.pending = false;
                 this.working_paths.task = None;
                 match result {
-                    Ok(Ok((index, rows, staged, conflicted, visible_count))) => {
+                    Ok(Ok((index, rows, staged, conflicted, visible_count, landing))) => {
                         this.working_paths.index = index;
                         this.working_paths.staged_count = staged;
                         this.working_paths.visible_count = visible_count;
@@ -413,9 +417,10 @@ impl GitTurtle {
                         } else if center_selected && let Some(position) = selected {
                             this.working_scroll.scroll_to_item(position, ScrollStrategy::Center);
                         }
+                        this.land_working_row(landing, cx);
                     }
-                    Ok(Err(error)) => { this.working_paths.error = Some(error.to_string()); this.working_selection.clear(); }
-                    Err(_) => { this.working_paths.error = Some("Path filtering stopped. Edit or clear the query to retry.".into()); this.working_selection.clear(); }
+                    Ok(Err(error)) => { this.working_paths.error = Some(error.to_string()); this.working_selection.clear(); this.land_working_row(None, cx); }
+                    Err(_) => { this.working_paths.error = Some("Path filtering stopped. Edit or clear the query to retry.".into()); this.working_selection.clear(); this.land_working_row(None, cx); }
                 }
                 cx.notify();
             });

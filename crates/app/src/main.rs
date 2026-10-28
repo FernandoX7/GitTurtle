@@ -37,6 +37,7 @@ mod lfs_download;
 mod local_refresh;
 mod markdown_view;
 mod model_view;
+mod motion;
 mod native_accessibility;
 mod navigation;
 mod operations;
@@ -394,6 +395,8 @@ struct GitTurtle {
     working_rows: Vec<workspace::WorkingRow>,
     working_selected: Option<(usize, gitturtle_core::ChangeArea)>,
     working_scroll: UniformListScrollHandle,
+    /// A row moving between Staged and Unstaged after its Stage or Unstage.
+    working_travel: motion::RowTravel,
     page: AppPage,
     hub: Entity<projects::ProjectHub>,
     commit_title: Entity<InputState>,
@@ -728,6 +731,7 @@ impl GitTurtle {
             working_rows: Vec::new(),
             working_selected: None,
             working_scroll: UniformListScrollHandle::new(),
+            working_travel: motion::RowTravel::Idle,
             page: if initial.is_some() {
                 AppPage::Repository
             } else {
