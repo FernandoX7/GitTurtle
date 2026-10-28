@@ -2386,7 +2386,9 @@ impl GitTurtle {
                     .when(conflicted, |el| el.child(
                         div().flex().items_center().gap_2().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))
                             .child(icon("file-conflict", 15., p.warning))
-                            .child(CONFLICT_NOTE),
+                            // Shrinking below its one line, it wraps as `composer_rows`
+                            // predicts rather than running past the column.
+                            .child(div().debug_selector(|| "commit-conflict-note".into()).flex_1().min_w_0().child(CONFLICT_NOTE)),
                     )))))
                     .child(div().flex_shrink_0().px_3().pb_3().when(short, |el| el.pb_2()).child({
                         // Disabled, it rests on the composer's own `subtle`, so it

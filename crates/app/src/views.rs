@@ -8992,6 +8992,59 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The composer's conflict note, "Resolve conflicted files before
+    /// committing.", wraps inside the composer's fields as their rows are
+    /// predicted, as the description's hint has since e3fc123: its text,
+    /// unable to shrink below its one line, ran past the column at 18 pt in
+    /// a 461 px window. At the default size in 1480 × 980 and 461 × 1400
+    /// windows, and at 18 pt in a 461 × 1400 one.
+    #[gpui::test]
+    async fn composer_conflict_note_wraps_inside_its_column(cx: &mut TestAppContext) {
+        const NOTE: &str = "Resolve conflicted files before committing.";
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        for (text, width, height) in [(13, 1480., 980.), (13, 461., 1400.), (18, 461., 1400.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    app.working_paths.conflicted = true;
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let fields = cx
+                .debug_bounds("commit-composer-fields")
+                .unwrap_or_else(|| panic!("{at}: the composer's fields"));
+            let note = cx
+                .debug_bounds("commit-conflict-note")
+                .unwrap_or_else(|| panic!("{at}: the conflict note"));
+            let slack = px(0.5);
+            assert!(
+                note.left() >= fields.left() - slack && note.right() <= fields.right() + slack,
+                "{at}: the note {note:?} lies across the fields {fields:?}"
+            );
+            let (line, whole) = cx.update(|window, _| {
+                let size = appearance::ui_text(11.);
+                (
+                    window
+                        .text_style()
+                        .line_height
+                        .to_pixels(size.into(), window.rem_size()),
+                    shaped_width(NOTE, size, window.text_style().font_weight, window),
+                )
+            });
+            let lines = (whole / note.size.width).ceil();
+            assert!(
+                note.size.height + slack >= line * lines,
+                "{at}: the note {note:?}, {whole:?} on one line, in {lines} lines of {line:?}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The composer's Description section (its label, field and hint) is
     /// drawn whole inside the scrolling fields, above the commit action, or
     /// not at all, with and without a Git identity (whose absence adds the
