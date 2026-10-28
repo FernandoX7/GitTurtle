@@ -509,10 +509,9 @@ pub(super) fn working_actions_trigger(compact: bool, tight: bool) -> Button {
             if tight { TIGHT_DETAIL } else { DETAIL }
         ))
     } else {
-        Button::new("working-recovery-menu")
-            .small()
-            .ghost()
-            .label("Actions")
+        // The shared 28 px compact control, as Refresh beside it is, with its
+        // caret: the kit's small Button is 1.5 rem, shorter than Refresh.
+        button("working-recovery-menu", "Actions", "", false)
             .accessibility_label(NAME)
             .tooltip(DETAIL)
             .dropdown_caret(true)

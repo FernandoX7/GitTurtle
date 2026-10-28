@@ -7389,6 +7389,51 @@ pub(crate) mod tests {
         assert!(cx.debug_bounds("commit-composer-icon").is_some());
     }
 
+    /// Labelled, the Changes header's "Actions" with its caret is the shared
+    /// 28 px compact control, as tall as Refresh beside it and centred on
+    /// the same line in the header, in a 640 × 680, a 1000 × 680 and a 1480 ×
+    /// 980 window at the default size and in a 1480 × 980 one at 18 pt: it
+    /// was the kit's small Button, 1.5 rem tall (19.5 px at the default
+    /// size, which AT-SPI read as 39 physical px), beside Refresh's 28 px.
+    #[gpui::test]
+    async fn labelled_actions_matches_refresh_beside_it(cx: &mut TestAppContext) {
+        let (_fixture, _app, cx) = working_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        for (text, width, height) in [
+            (13, 640., 680.),
+            (13, 1000., 680.),
+            (13, 1480., 980.),
+            (18, 1480., 980.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let control = cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.)));
+            let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{at}: {selector}"))
+            };
+            let header = bounds(cx, "working-header");
+            let actions = bounds(cx, "working-recovery-menu");
+            let refresh = bounds(cx, "refresh-working");
+            // Labelled: wider than the icon-only square, without its dots.
+            assert!(
+                actions.size.width > control && cx.debug_bounds("working-recovery-more").is_none(),
+                "{at}: the labelled form {actions:?}"
+            );
+            assert_eq!(actions.size.height, control, "{at}: {actions:?}");
+            assert_eq!(refresh.size.height, control, "{at}: {refresh:?}");
+            let slack = px(0.5);
+            assert!(
+                (actions.center().y - refresh.center().y).abs() <= slack
+                    && (actions.center().y - header.center().y).abs() <= slack,
+                "{at}: {actions:?} beside {refresh:?} in {header:?}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// In a 461 × 490 window, at the default size and at 18 pt, the compact
     /// Actions trigger beside the filter is a 28 px control in Refresh's
     /// frame showing the more-actions dots centred in it, not a bare caret;

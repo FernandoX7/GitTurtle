@@ -500,11 +500,13 @@ impl GitTurtle {
             measure("Changes", ui_text(13.), FontWeight::SEMIBOLD)
         });
         let icon = px(17.);
-        // The kit's small labelled Button: `px_2` either side, its label at
-        // 0.875 rem, then `gap_1` and the caret, 0.875 rem square.
+        // The labelled compact helper: its padding either side, its label,
+        // its 6 px gap and the caret, 0.875 rem square.
         let actions = (cached_width(&ACTIONS_LABEL, &key, || {
-            shaped_width("Actions", rem * 0.875, regular, window)
-        }) + rem * 2.125)
+            shaped_width("Actions", ui_text(12.), regular, window)
+        }) + ui_size(10.) * 2.
+            + ui_size(6.)
+            + rem * 0.875)
             .ceil();
         let refreshing = if self.status_task.is_some() {
             cached_width(&REFRESHING_LABEL, &key, || {
