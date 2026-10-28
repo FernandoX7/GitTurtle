@@ -60,6 +60,160 @@ pub(super) fn assertive(builder: &mut A11ySubtreeBuilder<'_>) {
     builder.parent_node().set_live_atomic();
 }
 
+/// `element`, a container that scrolls or clips what it holds, as the
+/// accessibility node AccessKit expects of one: it clips its children, and its
+/// bounds are the part of it that its ancestors leave visible.
+///
+/// GPUI gives each node its layout bounds and never says that a node clips,
+/// so a control scrolled out of a list, a Reflog entry below the dialog's
+/// edge or a composer field above its viewport stayed in the tree, `visible`
+/// and `showing` on AT-SPI, where a screen reader could find and activate a
+/// control the window does not draw. AccessKit's filter leaves out each child
+/// of a clipping node that lies wholly outside that node's bounds, keeping
+/// the first such child past each edge, so that an assistive technology can
+/// move into it, and any focused node, wherever it lies. The filter compares
+/// a child with its nearest clipping parent only, so a viewport inside
+/// another viewport reports the part of itself that the outer one shows, and
+/// each child is measured against what is drawn. A container without a role
+/// of its own becomes a scroll view; one with a role, such as a list box,
+/// keeps it. Children keep their own bounds, as AccessKit and the platforms
+/// report a partly visible control whole. Focus and the Tab order do not
+/// change: the wrapper adds no dispatch node, focus handle or listener.
+pub(crate) fn clips_children<E: IntoElement>(element: E) -> ClipsChildren<E::Element> {
+    ClipsChildren {
+        inner: element.into_element(),
+        visible: None,
+    }
+}
+
+/// The element [`clips_children`] returns.
+pub(crate) struct ClipsChildren<E> {
+    inner: E,
+    /// The part of the element that its ancestors leave visible, in the
+    /// physical window pixels of AccessKit's bounds, measured as it
+    /// prepaints. GPUI writes the node before it prepaints the element, so
+    /// the node takes these bounds afterwards (`a11y_synthetic_children`).
+    visible: Option<gpui::accesskit::Rect>,
+}
+
+impl<E: Element> IntoElement for ClipsChildren<E> {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl<E: Element> Element for ClipsChildren<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    type PrepaintState = E::PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        self.inner.id()
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.inner.source_location()
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.inner.request_layout(id, inspector, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        // The content mask is what the ancestors let through; GPUI scales
+        // layout bounds to the node's bounds the same way.
+        let visible = bounds.intersect(&window.content_mask().bounds);
+        let scale = window.scale_factor();
+        let physical = |edge: Pixels| f64::from(f32::from(edge) * scale);
+        let visible = gpui::accesskit::Rect {
+            x0: physical(visible.left()),
+            y0: physical(visible.top()),
+            x1: physical(visible.right()),
+            y1: physical(visible.bottom()),
+        };
+        self.visible = Some(visible);
+        #[cfg(test)]
+        if let (Some(id), Some(role)) = (self.inner.id(), self.a11y_role()) {
+            let mut node = gpui::accesskit::Node::new(role);
+            self.write_a11y_info(&mut node);
+            node.set_bounds(visible);
+            CLIPPING_NODES.with(|nodes| nodes.borrow_mut().insert(id.to_string(), node));
+        }
+        self.inner
+            .prepaint(id, inspector, bounds, layout, window, cx)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.inner
+            .paint(id, inspector, bounds, layout, prepaint, window, cx);
+    }
+
+    fn a11y_role(&self) -> Option<Role> {
+        Some(self.inner.a11y_role().unwrap_or(Role::ScrollView))
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.inner.write_a11y_info(node);
+        node.set_clips_children();
+    }
+
+    fn a11y_synthetic_children(
+        &mut self,
+        prepaint: &mut Self::PrepaintState,
+        builder: &mut A11ySubtreeBuilder,
+    ) {
+        if let Some(visible) = self.visible {
+            builder.parent_node().set_bounds(visible);
+        }
+        self.inner.a11y_synthetic_children(prepaint, builder);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The node each [`clips_children`] element last prepainted, by element
+    /// ID: the test platform never builds a window's accessibility tree.
+    static CLIPPING_NODES: std::cell::RefCell<std::collections::HashMap<String, gpui::accesskit::Node>> =
+        Default::default();
+}
+
+/// The node the [`clips_children`] element with `id` wrote as it last
+/// prepainted, with its role, clipping flag and visible bounds.
+#[cfg(test)]
+pub(crate) fn clipping_node(id: &str) -> Option<gpui::accesskit::Node> {
+    CLIPPING_NODES.with(|nodes| nodes.borrow().get(id).cloned())
+}
+
+/// Forgets every node [`clipping_node`] would return, so that what a test
+/// reads after its next draw comes from that draw.
+#[cfg(test)]
+pub(crate) fn forget_clipping_nodes() {
+    CLIPPING_NODES.with(|nodes| nodes.borrow_mut().clear());
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct DisplayPreferences {
     pub reduce_motion: bool,
@@ -261,7 +415,7 @@ impl GitTurtle {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-mod atspi_state_tests;
+pub(crate) mod atspi_state_tests;
 #[cfg(test)]
 mod control_tests;
 #[cfg(test)]

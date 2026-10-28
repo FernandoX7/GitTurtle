@@ -4,9 +4,14 @@
 //! every disabled Switch, CheckBox or text input as read-only; the vendored #788
 //! backport (`vendor/accesskit_atspi_common/GITTURTLE-PATCH.md`) reports none
 //! of them, while an enabled read-only text input stays read-only.
+//!
+//! [`reached`] walks a tree through the same adapter, for the tests of what an
+//! AT-SPI client finds in it.
 
 use accesskit_atspi_common::{Adapter, AdapterCallback, AppContext, Event, InterfaceSet};
-use accesskit_atspi_common::{NodeId, State, StateSet, WindowBounds};
+use accesskit_atspi_common::{
+    CoordType, NodeId, Rect, Role as AtspiRole, State, StateSet, WindowBounds,
+};
 use gpui_kit::gpui::accesskit::{
     ActionHandler, ActionRequest, Node, NodeId as LocalNodeId, Role, Tree, TreeId, TreeUpdate,
 };
@@ -21,6 +26,47 @@ impl AdapterCallback for IgnoreCallbacks {
 
 impl ActionHandler for IgnoreCallbacks {
     fn do_action(&mut self, _: ActionRequest) {}
+}
+
+/// A node an AT-SPI client reaches: its role, name, state set and extents in
+/// window coordinates.
+#[derive(Debug)]
+pub(crate) struct Reached {
+    pub role: AtspiRole,
+    pub name: String,
+    pub state: StateSet,
+    pub extents: Rect,
+}
+
+/// Every node an AT-SPI client reaches walking `update`'s tree from its root,
+/// child by child as `accesskit_unix` serves it, in tree order.
+pub(crate) fn reached(update: TreeUpdate) -> Vec<Reached> {
+    let adapter = Adapter::new(
+        &AppContext::new(None),
+        IgnoreCallbacks,
+        update,
+        true,
+        WindowBounds::default(),
+        IgnoreCallbacks,
+    );
+    let mut found = Vec::new();
+    let mut pending = vec![adapter.root_id()];
+    while let Some(id) = pending.pop() {
+        let node = adapter.platform_node(id);
+        found.push(Reached {
+            role: node.role().unwrap(),
+            name: node.name().unwrap(),
+            state: node.state(),
+            extents: node.extents(CoordType::Window).unwrap(),
+        });
+        let children = node.child_count().unwrap() as usize;
+        pending.extend(
+            (0..children)
+                .rev()
+                .filter_map(|index| node.child_at_index(index).unwrap()),
+        );
+    }
+    found
 }
 
 fn control(role: Role, disabled: bool) -> Node {

@@ -420,10 +420,10 @@ impl Render for ReflogBrowser {
             .child(Input::new(&self.query).aria_label("Filter loaded reflog entries").cleanable(true))
             .when(self.pending, |element| element.child(div().flex().gap_2().child(label("reflog-loading", "Reading local reflog or selected commit…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-reflog-read", "Cancel", "", false).on_click(cx.listener(|this, _, _, cx| { this.cancel(); cx.notify(); })))))
             .children(self.error.as_ref().map(|error| label("reflog-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().child(div().id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(px(230.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, entry)| {
+            .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().child(native_accessibility::clips_children(div().id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(px(230.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, entry)| {
                 let entry = entry.clone(); let text = format!("{} · {} · {} · {}", entry.selector, short_oid(&entry.oid), full_date(entry.timestamp), if entry.message.is_empty() { "Reference updated" } else { &entry.message });
                 entry_button(index, text, self.selected.as_ref() == Some(&entry), &self.cut_entries, cx.entity().downgrade(), p).on_click(cx.listener(move |this, _, window, cx| this.select(entry.clone(), window, cx)))
-            })).when(matches.is_empty() && self.page.is_some() && !self.pending, |element| element.child(label("reflog-empty", if self.page.as_ref().is_some_and(|page| page.entries.is_empty()) { "No local reflog records for this scope. Reflog recording may be disabled, the branch may not exist, or older entries may have expired." } else { "No loaded entries match this filter." }).text_size(crate::appearance::ui_text(12.))))))
+            })).when(matches.is_empty() && self.page.is_some() && !self.pending, |element| element.child(label("reflog-empty", if self.page.as_ref().is_some_and(|page| page.entries.is_empty()) { "No local reflog records for this scope. Reflog recording may be disabled, the branch may not exist, or older entries may have expired." } else { "No loaded entries match this filter." }).text_size(crate::appearance::ui_text(12.)))))))
             .when(matches.len() > 100, |element| element.child(label("reflog-match-limit", "Showing 100 matches. Narrow the filter to find another retained entry.").text_size(crate::appearance::ui_text(12.))))
             .when_some(self.selected.as_ref(), |element, entry| {
                 let oid = entry.oid.clone(); let mark = copy_feedback::Mark::new("copy-reflog-oid", &entry.oid); let copy_mark = mark.clone();
@@ -436,7 +436,7 @@ impl Render for ReflogBrowser {
                 // Whole rows of one line each, so the list's bound cuts no
                 // row; past that bound its scrollbar, in a gutter of its own,
                 // cues the rest.
-                .child(div().relative().flex_shrink_0().child(div().id("reflog-commit-files").debug_selector(|| "reflog-commit-files".into()).max_h(file_row * files_shown as f32).overflow_y_scroll().track_scroll(&self.files_scroll).flex().flex_col().when(files_scroll, |list| list.pr(Scrollbar::width())).children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); div().id(("reflog-commit-file", index)).debug_selector(move || format!("reflog-commit-file-{index}")).role(Role::Label).aria_label(text.clone()).ml(TEXT_INSET).flex_shrink_0().h(file_row).text_size(crate::appearance::ui_text(FILE_ROW_TEXT)).line_height(file_row).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text) }))).when(files_scroll, |list| list.child(Scrollbar::vertical(&self.files_scroll).id("reflog-files-scrollbar").mode(ScrollbarMode::Always))))
+                .child(div().relative().flex_shrink_0().child(native_accessibility::clips_children(div().id("reflog-commit-files").debug_selector(|| "reflog-commit-files".into()).max_h(file_row * files_shown as f32).overflow_y_scroll().track_scroll(&self.files_scroll).flex().flex_col().when(files_scroll, |list| list.pr(Scrollbar::width())).children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); div().id(("reflog-commit-file", index)).debug_selector(move || format!("reflog-commit-file-{index}")).role(Role::Label).aria_label(text.clone()).ml(TEXT_INSET).flex_shrink_0().h(file_row).text_size(crate::appearance::ui_text(FILE_ROW_TEXT)).line_height(file_row).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text) })))).when(files_scroll, |list| list.child(Scrollbar::vertical(&self.files_scroll).id("reflog-files-scrollbar").mode(ScrollbarMode::Always))))
                 .when(self.changes.len() > 100, |element| element.child(label("reflog-file-limit", "Showing the first 100 changed paths.").text_size(crate::appearance::ui_text(12.))))
                 .child(label("reflog-recovery-name-label", "Create a new branch at this commit to keep it reachable").text_size(crate::appearance::ui_text(12.)))
                 .child(Input::new(&self.name).aria_label("New recovery branch name"))
@@ -446,7 +446,7 @@ impl Render for ReflogBrowser {
             .min_h_0()
             .flex()
             .flex_col()
-            .child(content)
+            .child(native_accessibility::clips_children(content))
             .child(
                 div()
                     .debug_selector(|| "reflog-browser-scrollbar".into())
@@ -1258,5 +1258,170 @@ mod tests {
             "a list of {shown} files {list:?} paints {:?}",
             fills_inside(cx, list)
         );
+    }
+
+    /// An AT-SPI client reaches only the entries the Reflog draws, and a
+    /// focused one wherever it lies. It reached all of them, `showing`, below
+    /// the entry list and below the dialog alike, so a screen reader could
+    /// find and activate an entry nobody could see. At 640 × 680, as on the
+    /// native capture, the list shows about six of its twelve entries; at
+    /// 640 × 490 the dialog's content scrolls and its edge cuts the list, so
+    /// entries inside the list's own bounds lie below the dialog. AccessKit
+    /// still offers the first entry past an edge, for an assistive technology
+    /// to move into.
+    ///
+    /// The test platform builds no accessibility tree, so the test builds the
+    /// part GPUI would: the window, each clipping container's node as it
+    /// prepainted, and the entries the kit's Buttons write, at their bounds.
+    /// Without a clipping node an entry is its window's child, as it was.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn assistive_technology_reaches_only_the_entries_drawn(cx: &mut TestAppContext) {
+        use crate::native_accessibility::{atspi_state_tests::reached, clipping_node};
+        use accesskit_atspi_common::State;
+        use gpui::accesskit::{Node, NodeId, Rect, Role as A11yRole, Tree, TreeId, TreeUpdate};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_app, browser, cx) = opened_browser(cx, &repo).await;
+        let count = browser.read_with(cx, |this, _| this.page.as_ref().unwrap().entries.len());
+        assert_eq!(count, 12);
+        let selectors: Vec<&'static str> = (0..count)
+            .map(|index| &*Box::leak(format!("reflog-entry-{index}").into_boxed_str()))
+            .collect();
+        let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+        let physical = |bounds: Bounds<Pixels>| Rect {
+            x0: f64::from(f32::from(bounds.left())) * scale,
+            y0: f64::from(f32::from(bounds.top())) * scale,
+            x1: f64::from(f32::from(bounds.right())) * scale,
+            y1: f64::from(f32::from(bounds.bottom())) * scale,
+        };
+
+        for height in [680., 490.] {
+            crate::native_accessibility::forget_clipping_nodes();
+            cx.simulate_resize(size(px(640.), px(height)));
+            draw(cx);
+            park_pointer(cx);
+            let window = Bounds::new(
+                point(px(0.), px(0.)),
+                cx.update(|window, _| window.viewport_size()),
+            );
+            let list = rendered(cx, "reflog-list");
+            let content = rendered(cx, "reflog-browser-content");
+            let entries: Vec<Rect> = selectors
+                .iter()
+                .map(|selector| physical(rendered(cx, selector)))
+                .collect();
+            // Where the window draws entries: inside the list, the content
+            // and the window, measured from layout alone.
+            let drawn_area = physical(list.intersect(&content).intersect(&window));
+            let drawn: Vec<bool> = entries
+                .iter()
+                .map(|entry| !entry.intersect(drawn_area).is_empty())
+                .collect();
+            // AccessKit's rule: a drawn entry, or the first one past an edge.
+            let offered: Vec<bool> = (0..count)
+                .map(|index| {
+                    drawn[index]
+                        || (index > 0 && drawn[index - 1])
+                        || drawn.get(index + 1).copied().unwrap_or(false)
+                })
+                .collect();
+            assert!(
+                offered.contains(&false),
+                "at 640 × {height} some entry is out of reach: {drawn:?}"
+            );
+            if height < 680. {
+                assert!(
+                    (0..count).any(|index| !offered[index]
+                        && !entries[index].intersect(physical(list)).is_empty()
+                        && entries[index].intersect(physical(content)).is_empty()),
+                    "at 640 × {height} the dialog's edge cuts the list: {list:?} in {content:?}"
+                );
+            }
+            let tree = |focus: Option<usize>| {
+                let mut nodes = Vec::new();
+                let mut children: Vec<NodeId> = entries
+                    .iter()
+                    .enumerate()
+                    .map(|(index, bounds)| {
+                        let id = NodeId(100 + index as u64);
+                        let mut node = Node::new(A11yRole::Button);
+                        node.set_label(format!("entry {index}"));
+                        node.set_bounds(*bounds);
+                        nodes.push((id, node));
+                        id
+                    })
+                    .collect();
+                for (id, element) in [(2, "reflog-list"), (1, "reflog-browser-content")] {
+                    if let Some(mut node) = clipping_node(element) {
+                        node.set_children(children);
+                        nodes.push((NodeId(id), node));
+                        children = vec![NodeId(id)];
+                    }
+                }
+                let mut root = Node::new(A11yRole::Window);
+                root.set_bounds(physical(window));
+                root.set_children(children);
+                nodes.push((NodeId(0), root));
+                TreeUpdate {
+                    nodes,
+                    tree: Some(Tree::new(NodeId(0))),
+                    tree_id: TreeId::ROOT,
+                    focus: focus.map_or(NodeId(0), |index| NodeId(100 + index as u64)),
+                }
+            };
+
+            let found = reached(tree(None));
+            let showing = State::Showing | State::Visible;
+            for index in 0..count {
+                let name = format!("entry {index}");
+                let entry = found.iter().find(|node| node.name == name);
+                assert_eq!(
+                    entry.is_some(),
+                    offered[index],
+                    "at 640 × {height}, {name} at {:?} is reached: {}, drawn in {drawn_area:?}: {}",
+                    entries[index],
+                    entry.is_some(),
+                    drawn[index]
+                );
+                if let Some(entry) = entry {
+                    assert!(entry.state.contains(showing), "{name}: {entry:?}");
+                }
+            }
+            // The list reports the part of itself the dialog shows.
+            let panels: Vec<_> = found
+                .iter()
+                .filter(|node| node.role == accesskit_atspi_common::Role::Panel)
+                .map(|node| node.extents)
+                .collect();
+            let [content_extents, list_extents] = panels[..] else {
+                panic!("the content and the list are scroll views: {found:?}");
+            };
+            let inside = |inner: accesskit_atspi_common::Rect,
+                          outer: accesskit_atspi_common::Rect| {
+                inner.x >= outer.x
+                    && inner.y >= outer.y
+                    && inner.x + inner.width <= outer.x + outer.width
+                    && inner.y + inner.height <= outer.y + outer.height
+            };
+            assert!(
+                inside(list_extents, content_extents) && inside(content_extents, found[0].extents),
+                "at 640 × {height} the list {list_extents:?} lies in the content {content_extents:?} in the window {:?}",
+                found[0].extents
+            );
+
+            // Focus keeps an entry reachable wherever it lies.
+            let last = count - 1;
+            let found = reached(tree(Some(last)));
+            let focused = found
+                .iter()
+                .find(|node| node.name == format!("entry {last}"))
+                .unwrap_or_else(|| panic!("the focused entry {last} is reached at 640 × {height}"));
+            assert!(
+                focused.state.contains(showing | State::Focused),
+                "{focused:?}"
+            );
+        }
     }
 }

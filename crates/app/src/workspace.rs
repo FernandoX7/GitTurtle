@@ -2079,13 +2079,15 @@ impl GitTurtle {
             vec![
                 // The selection controls fit whole; the scroll only guards a
                 // prediction that missed.
-                div()
-                    .id("working-selection")
-                    .debug_selector(|| "working-selection".into())
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(self.render_working_selection(forms.compact_selection, cx))
-                    .into_any_element(),
+                native_accessibility::clips_children(
+                    div()
+                        .id("working-selection")
+                        .debug_selector(|| "working-selection".into())
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(self.render_working_selection(forms.compact_selection, cx)),
+                )
+                .into_any_element(),
                 div()
                     .debug_selector(|| "working-header".into())
                     .h(px(header_height))
@@ -2184,7 +2186,7 @@ impl GitTurtle {
                     }
                 });
             }).absolute().inset_0())
-            .child(
+            .child(native_accessibility::clips_children(
                 div().id("working-pane").debug_selector(|| "working-pane".into()).role(Role::ListBox).aria_label("Working tree files")
                     .tab_stop(true).key_context("GitTurtleList").track_focus(&self.file_focus)
                     .on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, window, cx| {
@@ -2227,7 +2229,7 @@ impl GitTurtle {
                             }
                         });
                     }).absolute().inset_0()),
-            )
+            ))
             .when(composer, |el| el.child(
                 div().debug_selector(|| "commit-composer".into())
                     .relative().flex_shrink_0().min_h_0().h(px(composer_height)).flex().flex_col()
@@ -2253,7 +2255,7 @@ impl GitTurtle {
                             .text_size(crate::appearance::ui_text(10.)).font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(if staged > 0 { crate::appearance::labels(cx).added } else { crate::appearance::labels(cx).count }))
                             .child(format!("{staged} staged"))))))
-                    .child(div().id("commit-composer-fields").debug_selector(|| "commit-composer-fields".into()).flex_1().min_h_0().overflow_y_scroll()
+                    .child(native_accessibility::clips_children(div().id("commit-composer-fields").debug_selector(|| "commit-composer-fields".into()).flex_1().min_h_0().overflow_y_scroll()
                     // The gap that followed the heading leads the fields;
                     // without the heading, the composer's own padding does.
                     .child(div().flex().flex_col().gap_2().px_3().pt_2().pb_3()
@@ -2309,7 +2311,7 @@ impl GitTurtle {
                         div().flex().items_center().gap_2().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))
                             .child(icon("file-conflict", 15., p.warning))
                             .child(CONFLICT_NOTE),
-                    ))))
+                    )))))
                     .child(div().flex_shrink_0().px_3().pb_3().when(short, |el| el.pb_2()).child({
                         // Disabled, it rests on the composer's own `subtle`, so it
                         // keeps its shape with an edge; it is as wide as the composer.

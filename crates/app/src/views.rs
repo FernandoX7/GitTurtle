@@ -1449,7 +1449,7 @@ impl GitTurtle {
                             .flex()
                             .flex_col()
                             .child(header)
-                            .child(
+                            .child(native_accessibility::clips_children(
                                 div()
                                     .id("history-pane")
                                     .debug_selector(|| "history-pane".into())
@@ -1479,7 +1479,7 @@ impl GitTurtle {
                                     )
                                     .child(history)
                                     .child(self.list_viewport_probe(true, cx)),
-                            ),
+                            )),
                     ))
                     .child(self.history_list_edge(colors)),
             )
@@ -2070,7 +2070,7 @@ impl GitTurtle {
                     .pb_2()
                     .child(Input::new(&self.file_filter).text_size(appearance::ui_text(12.))),
             )
-            .child(
+            .child(native_accessibility::clips_children(
                 div()
                     .id("files-pane")
                     .debug_selector(|| "files-pane".into())
@@ -2135,7 +2135,7 @@ impl GitTurtle {
                         .into_any_element()
                     })
                     .child(self.list_viewport_probe(false, cx)),
-            )
+            ))
             .into_any_element()
     }
     /// A changed file's row. `status` shows its status word beside the name;
@@ -9436,6 +9436,139 @@ pub(crate) mod tests {
                 .position(|commit| commit.subject == subject)
                 .expect(subject)
         })
+    }
+
+    /// The bounds `bounds` takes as an AccessKit node: physical window pixels.
+    fn node_bounds(cx: &mut VisualTestContext, bounds: Bounds<Pixels>) -> gpui::accesskit::Rect {
+        let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+        gpui::accesskit::Rect {
+            x0: f64::from(f32::from(bounds.left())) * scale,
+            y0: f64::from(f32::from(bounds.top())) * scale,
+            x1: f64::from(f32::from(bounds.right())) * scale,
+            y1: f64::from(f32::from(bounds.bottom())) * scale,
+        }
+    }
+
+    /// The scrolling container whose element ID and debug selector are `id`
+    /// is a node of `role` that clips its children, at the part `visible` of
+    /// it that the window draws.
+    fn assert_clipping(
+        cx: &mut VisualTestContext,
+        id: &'static str,
+        role: Role,
+        visible: Bounds<Pixels>,
+        at: &str,
+    ) {
+        let node = crate::native_accessibility::clipping_node(id)
+            .unwrap_or_else(|| panic!("{at}: {id} is no clipping node"));
+        assert_eq!(node.role(), role, "{at}: {id}");
+        assert!(node.clips_children(), "{at}: {id} clips its children");
+        let expected = node_bounds(cx, visible);
+        let bounds = node.bounds().expect("bounds");
+        let close = |a: f64, b: f64| (a - b).abs() < 0.01;
+        assert!(
+            close(bounds.x0, expected.x0)
+                && close(bounds.y0, expected.y0)
+                && close(bounds.x1, expected.x1)
+                && close(bounds.y1, expected.y1),
+            "{at}: {id} reports {bounds:?}, the window draws {expected:?}"
+        );
+    }
+
+    /// History's commit list and changed-file list are nodes that clip their
+    /// rows, at the part of themselves the window draws. The commit table
+    /// runs sideways past its viewport, under the inspector and past the
+    /// window's edge, and the list reported all of it: its extents ran
+    /// 82.5 px past a 461 × 490 window and 42.5 px past a 640 × 680 one.
+    /// Every row the list renders lies at least partly in what it reports,
+    /// so each stays reachable; both lists keep their role.
+    #[gpui::test]
+    async fn history_lists_report_the_part_the_window_draws(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle(&app, cx).await;
+        for (width, height) in [(461., 490.), (640., 680.), (1480., 800.)] {
+            crate::native_accessibility::forget_clipping_nodes();
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{width} × {height}");
+            let window = Bounds::new(point(px(0.), px(0.)), size(px(width), px(height)));
+            let pane = cx.debug_bounds("history-pane").unwrap();
+            // The list's edge is drawn over the part of it the viewport shows.
+            let shown = pane
+                .intersect(&cx.debug_bounds("history-list-edge").unwrap())
+                .intersect(&window);
+            if width < 1000. {
+                assert!(
+                    pane.right() > window.right(),
+                    "{at}: the table {pane:?} runs past the window"
+                );
+            }
+            assert_clipping(cx, "history-pane", Role::ListBox, shown, &at);
+            let rows: Vec<_> = (0..40)
+                .filter_map(|index| bounds_of(cx, format!("history-row-{index}")))
+                .collect();
+            assert!(rows.len() > 2, "{at}: rows render");
+            for row in rows {
+                assert!(
+                    row.intersects(&shown),
+                    "{at}: the row {row:?} is in {shown:?}"
+                );
+            }
+            let files = cx.debug_bounds("files-pane").unwrap();
+            assert_clipping(
+                cx,
+                "files-pane",
+                Role::ListBox,
+                files.intersect(&window),
+                &at,
+            );
+        }
+    }
+
+    /// The Working inspector's file list, its composer's scrolling fields
+    /// and, where it shows, its scrolling selection row are nodes that clip
+    /// what they hold, at the part of themselves the window draws: a control
+    /// one of them scrolls out of view is not reported where it is not
+    /// drawn. The list keeps its role; the others are scroll views. A region
+    /// the inspector leaves out writes no node.
+    #[gpui::test]
+    async fn working_regions_report_the_part_the_window_draws(cx: &mut TestAppContext) {
+        let (_fixture, _app, cx) = working_window(cx).await;
+        let regions = [
+            ("working-pane", Role::ListBox),
+            ("commit-composer-fields", Role::ScrollView),
+            ("working-selection", Role::ScrollView),
+        ];
+        for (text, width, height) in [
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 640., 680.),
+            (13, 1480., 980.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            // The inspector chooses its form from measured heights; read the
+            // frame after it holds still.
+            crate::native_accessibility::forget_clipping_nodes();
+            draw(cx);
+            let at = format!("{text} pt at {width} × {height}");
+            let window = Bounds::new(point(px(0.), px(0.)), size(px(width), px(height)));
+            for (id, role) in regions {
+                match cx.debug_bounds(id) {
+                    Some(bounds) => assert_clipping(cx, id, role, bounds.intersect(&window), &at),
+                    None => assert!(
+                        crate::native_accessibility::clipping_node(id).is_none(),
+                        "{at}: {id} is not drawn, and writes no node"
+                    ),
+                }
+            }
+            for id in ["working-pane", "commit-composer-fields"] {
+                assert!(cx.debug_bounds(id).is_some(), "{at}: {id} is drawn");
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// In a 461 × 490 half tile and a 640 × 680 window, at 13 and 18 pt,
