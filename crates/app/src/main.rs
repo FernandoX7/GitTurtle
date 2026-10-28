@@ -432,7 +432,7 @@ struct GitTurtle {
     graph_lanes: usize,
     graph_offset: usize,
     graph_notice: Option<String>,
-    refs: HashMap<String, Vec<String>>,
+    refs: HashMap<String, worker::CommitReferences>,
     selected_commit: Option<usize>,
     selected_file: Option<usize>,
     parent: usize,

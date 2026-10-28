@@ -8,7 +8,7 @@ use gitturtle_core::{Branch, Commit, FileChange, GitRepository, TextPreview, Wor
 use gitturtle_preview::{
     ImagePreview, MAX_INPUT_BYTES, decode_image, detect_lfs_pointer, is_image_path, metadata,
 };
-use gpui_kit::RenderImage;
+use gpui_kit::{RenderImage, SharedString};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     panic::{AssertUnwindSafe, catch_unwind},
@@ -37,11 +37,47 @@ pub struct Snapshot {
     pub graph: Vec<graph::GraphRow>,
     pub graph_notice: Option<String>,
     /// Each commit's local and remote branch names, HEAD's branch first.
-    pub refs: HashMap<String, Vec<String>>,
+    pub refs: HashMap<String, CommitReferences>,
     pub elapsed: Duration,
     /// An explicit Open whose branch or worktree scope no longer resolves
     /// reads All history instead and names the vanished scope here once.
     pub vanished_scope: Option<VanishedScope>,
+}
+
+/// One commit's references as History shows them, prepared with the
+/// snapshot on the worker, so a row's badge, pill, tooltip and accessible
+/// name share these strings rather than joining them per row and frame.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitReferences {
+    /// HEAD's branch first, then the others in Git's order.
+    pub names: Vec<SharedString>,
+    /// "+N" for the names after the first, which the badge counts.
+    pub more: Option<SharedString>,
+    /// Every name on its own line: the badge's and the pill's tooltip.
+    pub lines: SharedString,
+    /// Every name, comma-separated, as the row's accessible name says them.
+    pub listed: SharedString,
+}
+
+impl CommitReferences {
+    fn new(names: Vec<String>) -> Self {
+        Self {
+            more: (names.len() > 1).then(|| format!("+{}", names.len() - 1).into()),
+            lines: names.join("\n").into(),
+            listed: names.join(", ").into(),
+            names: names.into_iter().map(SharedString::from).collect(),
+        }
+    }
+
+    /// The bytes these strings keep, for a retained tab's accounting.
+    pub fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.names.capacity() * std::mem::size_of::<SharedString>()
+            + self.names.iter().map(|name| name.len()).sum::<usize>()
+            + self.more.as_ref().map_or(0, |more| more.len())
+            + self.lines.len()
+            + self.listed.len()
+    }
 }
 
 pub struct ImageSide {
@@ -1305,15 +1341,19 @@ fn read_snapshot(
     cancellation.check()?;
     // Each commit's references in Git's order, HEAD's branch first: History
     // shows the first one in its badge and in narrow History's pill.
-    let mut refs: HashMap<String, Vec<String>> = HashMap::new();
+    let mut names: HashMap<String, Vec<String>> = HashMap::new();
     for branch in &branches {
-        let names = refs.entry(branch.oid.clone()).or_default();
+        let names = names.entry(branch.oid.clone()).or_default();
         if branch.current {
             names.insert(0, branch.name.clone());
         } else {
             names.push(branch.name.clone());
         }
     }
+    let refs = names
+        .into_iter()
+        .map(|(oid, names)| (oid, CommitReferences::new(names)))
+        .collect();
     cancellation.check()?;
     Ok(Snapshot {
         repository,
@@ -2955,7 +2995,7 @@ mod image_tests {
             metadata
                 .refs
                 .values()
-                .flatten()
+                .flat_map(|refs| &refs.names)
                 .all(|name| name != "departing")
         );
         assert_eq!(metadata.worktrees.len(), 1);

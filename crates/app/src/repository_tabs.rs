@@ -586,7 +586,7 @@ struct WarmTab {
     graph_lanes: usize,
     graph_offset: usize,
     graph_notice: Option<String>,
-    refs: HashMap<String, Vec<String>>,
+    refs: HashMap<String, worker::CommitReferences>,
     selected_commit: Option<usize>,
     parent: usize,
     retained_commit: Option<usize>,
@@ -653,9 +653,7 @@ impl GitTurtle {
             + self
                 .refs
                 .iter()
-                .map(|(oid, names)| {
-                    oid.capacity() + names.iter().map(String::capacity).sum::<usize>()
-                })
+                .map(|(oid, refs)| oid.capacity() + refs.retained_bytes())
                 .sum::<usize>()
             + self
                 .expanded_folders

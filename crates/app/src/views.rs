@@ -1592,7 +1592,11 @@ impl GitTurtle {
         if !self.settings.columns.refs.visible {
             return 0;
         }
-        self.refs.values().map(Vec::len).max().unwrap_or(0)
+        self.refs
+            .values()
+            .map(|refs| refs.names.len())
+            .max()
+            .unwrap_or(0)
     }
 
     fn graph_lane_offset(&self) -> usize {
@@ -1645,26 +1649,20 @@ impl GitTurtle {
         let color = rows.lane_colors[lane];
         let label = rows.labels.refs[lane];
         let tint = rgba((color << 8) | crate::appearance::REF_TINT_ALPHA);
+        // Prepared with the snapshot (`worker::CommitReferences`): the row
+        // shares their strings and joins nothing.
         let names = self
             .refs
             .get(&commit.oid)
-            .filter(|names| self.settings.columns.refs.visible && !names.is_empty());
+            .filter(|refs| self.settings.columns.refs.visible && !refs.names.is_empty());
         let mut references = None;
         let mut pill = None;
-        // The whole list, which narrow History gives the row's accessible
-        // name and the pill's tooltip.
-        let mut folded = None;
         #[cfg(test)]
-        let mut pill_tooltip = None;
-        if let Some(names) = names {
+        let pill_tooltip = names.map(|refs| refs.lines.clone());
+        if let Some(refs) = names {
             // The chip's own tooltip lists every reference, so reading the
-            // subject beside it brings up no tooltip. The text is copied only
-            // when the tooltip shows.
-            let title = names.join("\n");
-            #[cfg(test)]
-            {
-                pill_tooltip = columns.narrow.then(|| SharedString::from(title.clone()));
-            }
+            // subject beside it brings up no tooltip.
+            let title = refs.lines.clone();
             let chip = div()
                 .id(("refs", index))
                 .debug_selector(move || format!("history-ref-pill-{index}"))
@@ -1682,7 +1680,7 @@ impl GitTurtle {
             let chip = if columns.narrow && rows.pill.compact {
                 // A branch glyph and how many references there are; the
                 // names are the tooltip's and the row's accessible name's.
-                let count = reference_count(names.len());
+                let count = reference_count(refs.names.len());
                 #[cfg(test)]
                 HISTORY_PILLS.with(|pills| {
                     pills
@@ -1702,13 +1700,18 @@ impl GitTurtle {
                 // HEAD's branch comes first (`worker::Snapshot::refs`), and
                 // "+N" counts the others inside the chip, whole while the
                 // name truncates.
-                let name = names[0].clone();
-                let more = (names.len() > 1).then(|| format!("+{}", names.len() - 1));
+                let name = refs.names[0].clone();
+                let more = refs.more.clone();
                 #[cfg(test)]
                 HISTORY_PILLS.with(|pills| {
-                    pills
-                        .borrow_mut()
-                        .insert(index, (Some(name.clone()), more.clone(), label))
+                    pills.borrow_mut().insert(
+                        index,
+                        (
+                            Some(name.to_string()),
+                            more.as_ref().map(ToString::to_string),
+                            label,
+                        ),
+                    )
                 });
                 chip.gap_1()
                     .child(div().min_w_0().truncate().child(name))
@@ -1720,7 +1723,6 @@ impl GitTurtle {
                     }))
             };
             if columns.narrow {
-                folded = Some(names);
                 pill = Some(chip.flex_shrink_0().max_w(px(rows.pill.max)));
             } else {
                 references = Some(
@@ -1737,13 +1739,14 @@ impl GitTurtle {
                 );
             }
         }
+        // Every row with references names them after its subject, in the
+        // References column's badge as in narrow History's pill.
+        let (listing, listed) = names.map_or(("", ""), |refs| (" · References: ", &*refs.listed));
         let name = format!(
-            "{}{} · {} · {} · {} parent{}{}",
+            "{}{}{} · {} · {} · {} parent{}{}",
             subject,
-            folded.map_or_else(String::new, |names| format!(
-                " · References: {}",
-                names.join(", ")
-            )),
+            listing,
+            listed,
             author,
             short_oid(&commit.oid),
             commit.parents.len(),
@@ -9105,6 +9108,66 @@ pub(crate) mod tests {
         let more = bounds_of(cx, format!("history-ref-more-{merge}")).unwrap();
         assert!(inside(more, badge), "\"+3\" inside {badge:?}: {more:?}");
         assert!(inside(badge, cx.debug_bounds("history-column-0").unwrap()));
+    }
+
+    /// Every History row with references names them after its subject in
+    /// one form, beside the References column's badge at 1480 × 980 and
+    /// 1000 × 680 as beside narrow History's pill at 461 × 490, so assistive
+    /// technology hears the references whatever the window's width; the
+    /// badge's tooltip lists them too. A row without references names none.
+    #[gpui::test]
+    async fn every_history_row_names_its_references(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
+        let merge = commit_index(&app, cx, MERGE_SUBJECT);
+        let side = commit_index(&app, cx, SIDE_SUBJECT);
+        let plain = commit_index(&app, cx, "Main work");
+        for (width, height, narrow) in [
+            (1480., 980., false),
+            (1000., 680., false),
+            (461., 490., true),
+        ] {
+            HISTORY_ROW_NAMES.with(|names| names.borrow_mut().clear());
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{width} × {height}");
+            assert_eq!(
+                app.read_with(cx, |app, _| app.history_column_layout().narrow),
+                narrow,
+                "{at}"
+            );
+            assert_eq!(
+                cx.debug_bounds("history-column-0").is_some(),
+                !narrow,
+                "the References column {at}"
+            );
+            let row = |row: usize| {
+                HISTORY_ROW_NAMES
+                    .with(|names| names.borrow().get(&row).cloned())
+                    .unwrap()
+            };
+            let (name, tooltip) = row(merge);
+            assert!(
+                name.starts_with(&format!(
+                    "{MERGE_SUBJECT} · References: main, feature/alpha, release, origin/main · Fixture · "
+                )) && name.ends_with(" · 2 parents · merge commit"),
+                "{name} {at}"
+            );
+            assert_eq!(
+                tooltip.as_deref(),
+                Some("main\nfeature/alpha\nrelease\norigin/main"),
+                "{at}"
+            );
+            let (name, _) = row(side);
+            assert!(
+                name.starts_with(&format!("{SIDE_SUBJECT} · References: side · Fixture · ")),
+                "{name} {at}"
+            );
+            let (name, tooltip) = row(plain);
+            assert!(
+                name.starts_with("Main work · Fixture · ") && tooltip.is_none(),
+                "{name} {at}"
+            );
+        }
     }
 
     /// Narrow History's tooltip listing a row's references belongs to its
