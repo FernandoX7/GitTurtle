@@ -420,6 +420,15 @@ pub(super) fn exited_unreaped(pid: libc::pid_t) -> bool {
     })
 }
 
+/// Tests: whether `pid` has exited and been reaped: a zombie would still
+/// accept signal zero.
+#[cfg(all(test, target_os = "linux"))]
+fn reaped(pid: libc::pid_t) -> bool {
+    // SAFETY: signal zero checks existence and does not send a signal.
+    let gone = unsafe { libc::kill(pid, 0) } == -1;
+    gone && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
 /// Tests: lets one read poll of real time pass with the test executor's
 /// clock held, while a real child starts or writes its answer. A loaded host
 /// can take tens of milliseconds to start one, and waiting with
@@ -493,22 +502,19 @@ rmdir "$d/running""#;
         self.0.path().join("overlap").exists()
     }
 
-    /// Whether the latest query's process has exited, so its answer is
-    /// whole in its pipe; see [`exited_unreaped`].
-    pub(super) fn latest_exited(&self) -> bool {
+    /// Whether query `count` (counting from one) has started and its process
+    /// has exited, so its answer is whole in its pipe ([`exited_unreaped`])
+    /// or, where the query's first read found it already exited and reaped
+    /// it, already read; the next query may then have started too.
+    pub(super) fn exited(&self, count: usize) -> bool {
         self.queries()
-            .last()
-            .is_some_and(|(pid, _)| exited_unreaped(*pid))
+            .get(count - 1)
+            .is_some_and(|(pid, _)| exited_unreaped(*pid) || reaped(*pid))
     }
 
-    /// Whether every query's process has exited and been reaped: a zombie
-    /// would still accept signal zero.
+    /// Whether every query's process has exited and been reaped.
     pub(super) fn reaped(&self) -> bool {
-        self.queries().iter().all(|(pid, _)| {
-            // SAFETY: signal zero checks existence and does not send a signal.
-            let gone = unsafe { libc::kill(*pid, 0) } == -1;
-            gone && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-        })
+        self.queries().iter().all(|(pid, _)| reaped(*pid))
     }
 }
 
@@ -1286,10 +1292,12 @@ mod portal {
         }
 
         /// Runs `query` on the executor: real time passes alone until
-        /// `ready`, then with its clock until the query ends.
+        /// `ready`, then with its clock until the query ends. A child that
+        /// exits before the query's first read is reaped by that read, so
+        /// the query can end before `ready` could ever hold.
         fn finish<T: Send + 'static>(
             cx: &gpui_kit::TestAppContext,
-            ready: impl FnMut() -> bool,
+            mut ready: impl FnMut() -> bool,
             query: impl Future<Output = T> + Send + 'static,
         ) -> T {
             let result = Arc::new(Mutex::new(None));
@@ -1297,7 +1305,7 @@ mod portal {
             cx.executor()
                 .spawn(async move { *slot.lock().unwrap() = Some(query.await) })
                 .detach();
-            until_clock_held(cx, ready);
+            until_clock_held(cx, || result.lock().unwrap().is_some() || ready());
             until(cx, || result.lock().unwrap().is_some());
             result.lock().unwrap().take().unwrap()
         }
@@ -1424,7 +1432,7 @@ mod portal {
             // answers, and the clock one read poll once it has exited, so a
             // slow start spends none of the query's bound.
             let read_answer = |count: usize, seen: &mut Vec<DesktopText>| {
-                until_clock_held(cx, || fake.queries().len() == count && fake.latest_exited());
+                until_clock_held(cx, || fake.exited(count));
                 super::super::pass_real_time(&executor);
                 collect(seen);
             };
@@ -1451,12 +1459,10 @@ mod portal {
             for count in 2..=4 {
                 read_answer(count, &mut seen);
             }
-            let answered = seen
-                .iter()
-                .filter(|snapshot| snapshot.code_font.is_some())
-                .count();
-            assert_eq!(answered, 2);
+            // Snapshots replace one another between reads, so a query whose
+            // process ended before its first read can leave only the pass's.
             let found = Some((1, Ok(gpui_kit::SharedString::from("DejaVu Sans Mono"))));
+            assert_eq!(seen.last().unwrap().code_font, found);
             assert!(
                 seen.iter()
                     .all(|snapshot| snapshot.code_font.is_none() || snapshot.code_font == found)
