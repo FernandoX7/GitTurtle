@@ -550,6 +550,13 @@ async fn walk(page: Page, text: u8, cx: &mut TestAppContext) {
         styled_history_window(cx, &fixture_script(), |root| root.text_bg(text_mark())).await;
     cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
     crate::appearance::mark_controls(control_mark());
+    // The repository's own identity, so the commit action's label, and the
+    // breakpoints it moves, do not depend on the caller's Git config.
+    let root = app.read_with(cx, |app, _| {
+        app.repository.as_ref().unwrap().path().to_owned()
+    });
+    fixture_git(&root, &["config", "user.name", "Walk Fixture"]);
+    fixture_git(&root, &["config", "user.email", "walk@example.invalid"]);
     let open = |cx: &mut VisualTestContext, path: &str| {
         let index = app.read_with(cx, |app, _| {
             app.files
@@ -570,9 +577,6 @@ async fn walk(page: Page, text: u8, cx: &mut TestAppContext) {
             Some("assets/turtle.png")
         }
         Page::Working => {
-            let root = app.read_with(cx, |app, _| {
-                app.repository.as_ref().unwrap().path().to_owned()
-            });
             std::fs::write(root.join("alpha.txt"), "alpha\n").unwrap();
             std::fs::write(root.join("beta.txt"), "beta\n").unwrap();
             fixture_git(&root, &["add", "alpha.txt", "beta.txt"]);
