@@ -56,25 +56,23 @@ fn composer_minimum(short: bool, heading: bool, window: &Window) -> f32 {
 
 /// The heights the composer's rows take, snapped to device pixels as layout
 /// snaps them, from which its minimum (`composer_minimum`), its preferred
-/// height, its Description section's field (`description_field`) and a
-/// short composer's drawn height (`content`) are predicted before layout.
+/// height, its Description section's field (`description_field`) and its
+/// drawn height (`content`) are predicted before layout.
 struct ComposerMetrics {
     /// The composer's top border.
     border: Pixels,
     /// The padding above the heading row (or, without it, above the fields)
     /// and below the commit action.
     padding: Pixels,
-    /// The space between the fields' last row and the commit action: a short
-    /// composer's gap, so its label, field and action keep one scaled 4 px
-    /// rhythm, and a taller one's padding.
-    end: Pixels,
     /// Whether the pinned heading is drawn (`WorkingFit::heading`).
     heading: bool,
     /// The heading's line beside its 16 px icon and the staged count's
     /// badge; nothing where the heading has left.
     heading_row: Pixels,
     /// The gap between the fields' rows, which also leads them below the
-    /// heading.
+    /// heading and ends them above the commit action, so its rows and the
+    /// action keep one rhythm: a short composer's scaled 4 px, a taller one's
+    /// 0.5 rem.
     gap: Pixels,
     /// A taller composer's branch line with the gap below it; nothing in a
     /// short one.
@@ -105,9 +103,9 @@ impl ComposerMetrics {
             // Without it the fields lead with the composer's own padding.
             px(0.)
         };
-        // A short composer's fields keep a scaled 4 px from the heading,
-        // between themselves and above the commit action; a taller one's lead
-        // with the branch line.
+        // The fields keep this gap from the heading, between themselves and
+        // above the commit action: a scaled 4 px in a short composer, 0.5 rem
+        // in a taller one, whose fields lead with the branch line.
         let gap = snap(if short {
             crate::appearance::ui_size(4.)
         } else {
@@ -118,11 +116,9 @@ impl ComposerMetrics {
         } else {
             line(crate::appearance::ui_text(11.)).max(px(13.)) + gap
         };
-        let padding = snap(rem * if short { 0.5 } else { 0.75 });
         Self {
             border: snap(px(1.)),
-            padding,
-            end: if short { gap } else { padding },
+            padding: snap(rem * if short { 0.5 } else { 0.75 }),
             heading,
             heading_row,
             gap,
@@ -144,12 +140,11 @@ impl ComposerMetrics {
 
     /// The composer's least height: its border, the heading row with the
     /// padding above it, the title's label and one line of its field with
-    /// the gaps around them and the `end` below, and the commit action with
-    /// the padding below.
+    /// the gaps around them, and the commit action with the padding below.
     fn minimum(&self) -> Pixels {
         // Without the heading the composer's padding leads the fields.
         let lead = if self.heading { self.gap } else { px(0.) };
-        let fields = lead + self.branch + self.label + self.gap + self.field + self.end;
+        let fields = lead + self.branch + self.label + self.gap + self.field + self.gap;
         self.border + self.padding + self.heading_row + fields + self.action + self.padding
     }
 
@@ -822,7 +817,7 @@ impl GitTurtle {
     /// The height the composer's scrolling fields take, `width` wide, but for
     /// the description's field: the title's rows and any note below them,
     /// the Description section's label and hint with the gaps around its
-    /// field (`description_section`), the guidance after it, and the `end`
+    /// field (`description_section`), the guidance after it, and the gap
     /// above the commit action, wrapped texts laid out once per text, size
     /// and width (`wrapped_lines`).
     fn composer_rows(
@@ -860,7 +855,7 @@ impl GitTurtle {
             let text = room - px(15.) - rem * 0.5;
             rows += gap + px(15.).max(metrics.label * lines(CONFLICT_NOTE, ui_text(11.), text));
         }
-        rows + metrics.end
+        rows + metrics.gap
     }
 
     /// The Description section's rows in the composer's fields, `width`
@@ -2048,18 +2043,26 @@ impl GitTurtle {
                 metrics.description_field(px(composer_height), rows, description_height, window)
             })
             .flatten();
-        // A short composer is drawn no taller than its rows, so its title's
-        // label, field and commit action (and the Description section where it
-        // shows) keep their scaled 4 px rhythm, rather than the height its
-        // share leaves over gathering between the last field and the action.
-        // What it does not use goes back to the list in whole rows, and what
-        // is left, less than a row, lies between the list's last row and the
-        // composer.
+        // Its rows keep their rhythm down to the commit action, a scaled 4 px
+        // in a short composer and 0.5 rem in a taller one, rather than the
+        // height the composer's share leaves over gathering between the last
+        // field and the action. A taller composer with its Description
+        // section keeps its share and its description's field grows to take
+        // what its rows leave: the field is the composer's one row that reads
+        // better taller, and the action stays at the composer's foot. A short
+        // composer, or one whose section has left, is drawn no taller than its
+        // rows: what it does not use goes back to the list in whole rows, and
+        // what is left, less than a row, lies between the list's last row and
+        // the composer.
         let section = self.description_section(&metrics, fitted_width, window);
-        let drawn = if composer && short {
-            composer_height.min(f32::from(metrics.content(rows, section, description)))
-        } else {
-            composer_height
+        let content = f32::from(metrics.content(rows, section, description));
+        let (drawn, description) = match description {
+            Some(field) if composer && !short => (
+                composer_height,
+                Some(field + (composer_height - content).max(0.)),
+            ),
+            _ if composer => (composer_height.min(content), description),
+            _ => (composer_height, description),
         };
         let below = if !composer {
             remainder
@@ -2327,9 +2330,9 @@ impl GitTurtle {
                     .child(native_accessibility::clips_children(div().id("commit-composer-fields").debug_selector(|| "commit-composer-fields".into()).flex_1().min_h_0().overflow_y_scroll()
                     // The gap that followed the heading leads the fields;
                     // without the heading, the composer's own padding does.
-                    .child(div().flex().flex_col().gap_2().px_3().pt_2().pb_3()
-                    // A short composer's fields end a gap above the commit
-                    // action (`ComposerMetrics::end`).
+                    // The fields end a gap above the commit action, as they
+                    // keep it between themselves (`ComposerMetrics::gap`).
+                    .child(div().flex().flex_col().gap_2().px_3().pt_2().pb_2()
                     .when(short, |el| el.gap(crate::appearance::ui_size(4.)).pt(crate::appearance::ui_size(4.)).pb(crate::appearance::ui_size(4.)))
                     .when(!fit.heading, |el| if short { el.pt_2() } else { el.pt_3() })
                     .when(!short, |el| el.child(div().flex().items_center().gap_1p5().min_w_0().text_size(crate::appearance::ui_text(11.))
@@ -2366,7 +2369,9 @@ impl GitTurtle {
                             .h(px(field))
                             .text_size(crate::appearance::ui_text(12.))))
                         .child(div().debug_selector(|| "commit-description-hint".into()).flex().items_center().gap_2().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))
-                            .child(div().flex_1().child(if staged == 0 { UNSTAGED_HINT } else { STAGED_HINT }))))
+                            // Shrinking below its one line, it wraps as `description_section`
+                            // predicts rather than running past the column at 18 pt.
+                            .child(div().flex_1().min_w_0().child(if staged == 0 { UNSTAGED_HINT } else { STAGED_HINT }))))
                     .when_some(self.draft_save_error.as_ref(), |el, error| el.child(
                         div().flex().flex_col().gap_1().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.warning))
                             .child(DRAFT_SAVE_NOTE)

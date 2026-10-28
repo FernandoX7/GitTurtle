@@ -8462,6 +8462,106 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// With a Git identity, a taller composer keeps its fields' 0.5 rem
+    /// rhythm down to the commit action, as a short one keeps its scaled
+    /// 4 px: the title's label and field, the Description section's label,
+    /// field and hint, and the action, each a gap apart, with the composer's
+    /// padding below the action. The height its share leaves over goes to
+    /// the description's field, which grows past its preference to take it,
+    /// so nothing gathers above the action: at the default size in a
+    /// 1480 × 980 window the hint and the action stood 32 px apart, where the
+    /// rhythm gives 6.5 px, the composer's floor and its padding between
+    /// them. The hint wraps inside the column, as the rows are predicted: at
+    /// 18 pt in a 461 × 1400 window it ran on one line past the column, and
+    /// the three lines predicted for it lay empty above the action. In
+    /// 1480 × 980 and 1000 × 900 windows at the default size, and in
+    /// 1480 × 1300 and 461 × 1400 ones at 18 pt (at 18 pt a 1480 × 980
+    /// window's composer is the short one).
+    #[gpui::test]
+    async fn tall_composer_keeps_its_rhythm_down_to_the_commit_action(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = working_window(cx).await;
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["config", "user.name", "Ada"]);
+        fixture_git(&root, &["config", "user.email", "ada@example.com"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        for (text, width, height) in [
+            (13, 1480., 980.),
+            (13, 1000., 900.),
+            (18, 1480., 1300.),
+            (18, 461., 1400.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let (gap, padding) = cx.update(|window, _| {
+                let rem = window.rem_size();
+                (window.pixel_snap(rem * 0.5), window.pixel_snap(rem * 0.75))
+            });
+            let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{at}: {selector}"))
+            };
+            let composer = bounds(cx, "commit-composer");
+            let fields = bounds(cx, "commit-composer-fields");
+            let commit = bounds(cx, "commit-staged");
+            let rows = [
+                "commit-title-label",
+                "commit-title",
+                "commit-description-label",
+                "commit-description",
+                "commit-description-hint",
+            ]
+            .map(|selector| bounds(cx, selector));
+            let slack = px(0.5);
+            for pair in rows.windows(2) {
+                assert!(
+                    (pair[1].top() - pair[0].bottom() - gap).abs() <= slack,
+                    "{at}: {:?} then {:?}, {gap:?} apart",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            let hint = rows[4];
+            assert!(
+                (commit.top() - hint.bottom() - gap).abs() <= slack
+                    && hint.bottom() <= fields.bottom() + slack,
+                "{at}: the hint {hint:?} then {commit:?}, {gap:?} apart, in {fields:?}"
+            );
+            assert!(
+                (composer.bottom() - commit.bottom() - padding).abs() <= slack,
+                "{at}: {commit:?} then the composer's end {composer:?}"
+            );
+            // The hint wraps inside the column, as the composer's rows are
+            // predicted: at 18 pt in a 461 px window it ran on one 308 px
+            // line past the 129.5 px column.
+            let (line, whole) = cx.update(|window, cx| {
+                let size = appearance::ui_text(10.);
+                let hint = if app.read(cx).working_paths.staged_count == 0 {
+                    "Stage files to include in your commit"
+                } else {
+                    "Only staged changes will be committed"
+                };
+                (
+                    window
+                        .text_style()
+                        .line_height
+                        .to_pixels(size.into(), window.rem_size()),
+                    shaped_width(hint, size, window.text_style().font_weight, window),
+                )
+            });
+            let lines = (whole / hint.size.width).ceil();
+            assert!(
+                hint.size.height + slack >= line * lines,
+                "{at}: the hint {hint:?}, {whole:?} on one line, in {lines} lines of {line:?}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The composer's Description section (its label, field and hint) is
     /// drawn whole inside the scrolling fields, above the commit action, or
     /// not at all, with and without a Git identity (whose absence adds the
