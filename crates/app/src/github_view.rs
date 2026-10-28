@@ -28,6 +28,36 @@ fn label(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Di
         .child(text)
         .text_size(crate::appearance::ui_text(12.))
 }
+/// A [`label`] of " · "-separated phrases that keeps each phrase whole: a line
+/// breaks after a separator, between two phrases, and inside a phrase only
+/// where that phrase alone is wider than the line. Each phrase draws as
+/// `{id}-{index}`, the separator ending the phrase before it; on one line
+/// they read as the text does, and the accessible name is the whole text.
+fn phrases(id: &'static str, text: impl Into<SharedString>) -> Stateful<Div> {
+    let text = text.into();
+    let parts: Vec<SharedString> = {
+        let mut parts: Vec<&str> = text.split(" · ").collect();
+        let last = parts.pop().unwrap_or_default().to_owned();
+        parts
+            .into_iter()
+            .map(|phrase| format!("{phrase} · ").into())
+            .chain([last.into()])
+            .collect()
+    };
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .role(Role::Label)
+        .aria_label(text)
+        .flex()
+        .flex_wrap()
+        .text_size(crate::appearance::ui_text(12.))
+        .children(parts.into_iter().enumerate().map(move |(index, phrase)| {
+            div()
+                .debug_selector(move || format!("{id}-{index}"))
+                .child(phrase)
+        }))
+}
 /// Where the panel's text starts, in from its edge: a compact Button's label
 /// inset, [`crate::LABEL_INSET`] at the interface size. The dialog's title, the
 /// fixture banner, the notices, the PR rows and the labels between them start
@@ -2117,6 +2147,78 @@ mod tests {
         operations_done.await.unwrap().unwrap();
         preferences_done.await.unwrap().unwrap();
         cx.executor().run_until_parked();
+    }
+
+    /// Asserts that the [`phrases`] label `selector`, drawing `text` at `size`,
+    /// breaks its lines only between phrases, and returns how many it drew.
+    /// Each line the last frame drew there is as wide as a run of whole
+    /// phrases shaped in one line, give or take a separator's trailing space.
+    /// The window's root marks every text run with `width_walk::text_mark`.
+    pub(super) fn assert_phrases_whole(
+        cx: &mut VisualTestContext,
+        selector: &'static str,
+        text: &str,
+        size: Pixels,
+        at: &str,
+    ) -> usize {
+        let bounds = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{at}: {selector}"));
+        let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+        let (scale, quads) = cx.update(|window, _| (window.scale_factor(), window.painted_quads()));
+        let logical = |value: gpui_kit::ScaledPixels| px(value.0 / scale);
+        // Each line's top, left and right.
+        let mut lines: Vec<(Pixels, Pixels, Pixels)> = Vec::new();
+        for quad in quads.iter().filter(|quad| quad.background == mark) {
+            let (left, top) = (logical(quad.bounds.left()), logical(quad.bounds.top()));
+            let (right, bottom) = (logical(quad.bounds.right()), logical(quad.bounds.bottom()));
+            if left < bounds.left() - px(0.5)
+                || right > bounds.right() + px(0.5)
+                || top < bounds.top() - px(0.5)
+                || bottom > bounds.bottom() + px(0.5)
+            {
+                continue;
+            }
+            match lines.iter_mut().find(|line| (line.0 - top).abs() < px(0.5)) {
+                Some(line) => {
+                    line.1 = line.1.min(left);
+                    line.2 = line.2.max(right);
+                }
+                None => lines.push((top, left, right)),
+            }
+        }
+        assert!(!lines.is_empty(), "{at}: {selector} drew no text");
+        let parts: Vec<&str> = text.split(" · ").collect();
+        let runs: Vec<(String, Pixels)> = cx.update(|window, _| {
+            let mut runs = Vec::new();
+            for start in 0..parts.len() {
+                for end in start..parts.len() {
+                    let mut run = parts[start..=end].join(" · ");
+                    if end + 1 < parts.len() {
+                        run.push_str(" ·");
+                    }
+                    for run in [run.clone(), format!("{run} ")] {
+                        let width =
+                            crate::views::shaped_width(&run, size, FontWeight::NORMAL, window);
+                        runs.push((run, width));
+                    }
+                }
+            }
+            runs
+        });
+        // Layout puts each phrase's edges on device pixels, so a line of several phrases can
+        // be a pixel or two wider than its run shaped whole; runs that differ by a word differ
+        // by far more than this.
+        let slack = size / 4.;
+        for &(top, left, right) in &lines {
+            let width = right - left;
+            assert!(
+                runs.iter().any(|(_, run)| (width - *run).abs() < slack),
+                "{at}: {selector}'s line at {top:?} is {width:?} wide, which no run of whole \
+                 phrases is: it breaks inside a phrase. Lines {lines:?}, runs {runs:?}"
+            );
+        }
+        lines.len()
     }
 
     /// A window on an empty repository, on the Repository page. Keep the

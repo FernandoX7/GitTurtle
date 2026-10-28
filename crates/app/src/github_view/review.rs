@@ -1132,13 +1132,96 @@ impl Panel {
             // on the pager's row, where the page buttons centre their labels, wrapped or not.
             // The column's text starts at one left edge, where the mode buttons at its edge
             // start their labels, as the panel's does; the boxes keep the column's edge.
-            div().debug_selector(||"github-file-column".into()).flex_1().min_w_0().flex().flex_col().gap_2()
-                .child(div().flex().flex_col().gap_2().when(self.review.mode<2,|content|content.h(FILE_LIST_HEIGHT))
-                    .child(label("github-file-title",title).debug_selector(||"github-file-title".into()).ml(super::text_inset()).flex_shrink_0().font_weight(FontWeight::SEMIBOLD))
-                    .child(div().flex_shrink_0().flex().flex_wrap().items_center().gap_1().children(["Changes","Source","Threads"].into_iter().enumerate().map(|(mode,name)|button(("github-file-mode",mode),name,"",self.review.mode==mode).debug_selector(move||format!("github-file-mode-{mode}")).toggled(self.review.mode==mode).on_click(cx.listener(move|this,_,window,cx|this.review_source(mode,window,cx)))))
-                        .child(div().flex_1()).child(button("github-inline-start",if self.review.composing.is_some(){"Continue comment"}else{"Comment on selection"},"plus",false).disabled(self.pending||self.review.preparing||file.unavailable.is_some()).on_click(cx.listener(|this,_,window,cx|this.begin_comment(window,cx)))))
-                    .child(match self.review.mode {1=>self.render_source(cx),2=>self.render_threads(Some(&file.filename),cx),_=>self.render_patch(window,cx)}))
-                .when(self.review.mode==0,|element|element.child(div().flex_shrink_0().pt(appearance::ui_size((PAGER_ROW-HINT_LINE)/2.)).child(label("github-range-hint",format!("Click a changed line · {} or {} / {} selects a same-side range · {} comments",shortcuts::SHIFT_CLICK,shortcuts::key_label("shift-up"),shortcuts::key_label("shift-down"),shortcuts::ENTER)).debug_selector(||"github-range-hint".into()).ml(super::text_inset()).line_height(appearance::ui_size(HINT_LINE)).text_color(rgb(p.muted)))))
+            div()
+                .debug_selector(|| "github-file-column".into())
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .when(self.review.mode < 2, |content| content.h(FILE_LIST_HEIGHT))
+                        .child(
+                            label("github-file-title", title)
+                                .debug_selector(|| "github-file-title".into())
+                                .ml(super::text_inset())
+                                .flex_shrink_0()
+                                .font_weight(FontWeight::SEMIBOLD),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .flex()
+                                .flex_wrap()
+                                .items_center()
+                                .gap_1()
+                                .children(
+                                    ["Changes", "Source", "Threads"]
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(mode, name)| {
+                                            button(
+                                                ("github-file-mode", mode),
+                                                name,
+                                                "",
+                                                self.review.mode == mode,
+                                            )
+                                            .debug_selector(move || {
+                                                format!("github-file-mode-{mode}")
+                                            })
+                                            .toggled(self.review.mode == mode)
+                                            .on_click(
+                                                cx.listener(move |this, _, window, cx| {
+                                                    this.review_source(mode, window, cx)
+                                                }),
+                                            )
+                                        }),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    button(
+                                        "github-inline-start",
+                                        if self.review.composing.is_some() {
+                                            "Continue comment"
+                                        } else {
+                                            "Comment on selection"
+                                        },
+                                        "plus",
+                                        false,
+                                    )
+                                    .disabled(
+                                        self.pending
+                                            || self.review.preparing
+                                            || file.unavailable.is_some(),
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| this.begin_comment(window, cx),
+                                    )),
+                                ),
+                        )
+                        .child(match self.review.mode {
+                            1 => self.render_source(cx),
+                            2 => self.render_threads(Some(&file.filename), cx),
+                            _ => self.render_patch(window, cx),
+                        }),
+                )
+                .when(self.review.mode == 0, |element| {
+                    element.child(
+                        div()
+                            .flex_shrink_0()
+                            .pt(appearance::ui_size((PAGER_ROW - HINT_LINE) / 2.))
+                            .child(
+                                super::phrases("github-range-hint", range_hint())
+                                    .ml(super::text_inset())
+                                    .line_height(appearance::ui_size(HINT_LINE))
+                                    .text_color(rgb(p.muted)),
+                            ),
+                    )
+                })
                 .into_any_element()
         } else {
             div().debug_selector(||"github-file-column".into()).flex_1().min_w_0().p_5().pl(super::text_inset()).flex().flex_col().gap_2().child(label("github-choose-file","Choose a file to begin reviewing").debug_selector(||"github-choose-file".into()).font_weight(FontWeight::SEMIBOLD)).child(label("github-file-help","Changes keep their captured PR identity. Inline drafts remain local as you move between files.").text_color(rgb(p.muted))).into_any_element()
@@ -1324,6 +1407,19 @@ fn patch_line(index: usize, cx: &App) -> Stateful<Div> {
         .id(("github-patch-line", index))
         .text_size(appearance::code_text())
         .code_font(cx)
+}
+
+/// Changes' range hint below its box. Where it wraps it breaks between its phrases
+/// ([`super::phrases`]): at 18 pt in a 1,480 px window it broke inside the last one, leaving
+/// "comments" alone on a line.
+fn range_hint() -> String {
+    format!(
+        "Click a changed line · {} or {} / {} selects a same-side range · {} comments",
+        shortcuts::SHIFT_CLICK,
+        shortcuts::key_label("shift-up"),
+        shortcuts::key_label("shift-down"),
+        shortcuts::ENTER
+    )
 }
 
 /// The changed-file list's height; Source fills its column down to the same edge.
@@ -2703,6 +2799,77 @@ mod tests {
         cx.run_until_parked();
     }
 
+    /// In a 1480 × 980 window, Changes' range hint takes one line at 13 pt and wraps at
+    /// 18 pt, breaking only between its phrases. It broke inside one: here inside the second,
+    /// natively inside the last, leaving "comments" alone on a line.
+    #[gpui::test]
+    async fn the_range_hint_wraps_between_its_phrases(cx: &mut TestAppContext) {
+        use gpui_kit::Styled as _;
+        let (_fixture, app, panel, cx) =
+            review_panel_styled(cx, |root| root.text_bg(crate::width_walk::text_mark()));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.apply_appearance(window, cx)));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let pull = model::fixture_pull(false);
+        let captured_pull =
+            pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured_pull, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull);
+                panel.review.files = files;
+                panel.review.section = Section::Files;
+                panel.review.show_list = false;
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        settle_open(&app, cx);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.select_review_file(0, window, cx);
+                panel.review_source(0, window, cx);
+            })
+        });
+        cx.run_until_parked();
+        let measured = |cx: &App| panel.read(cx).review.patch_height.get();
+        for (interface, wraps) in [(13, false), (18, true)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            draw_settled(cx, measured);
+            let at = format!("{interface} pt");
+            // The panel's body scrolls the whole hint into view; at 18 pt its last line lies
+            // below the body's fold, above the dialog's footer.
+            let (hint, body) = (
+                cx.debug_bounds("github-range-hint").expect("range hint"),
+                cx.debug_bounds("github-panel").expect("panel"),
+            );
+            if hint.bottom() > body.bottom() {
+                cx.read(|cx| {
+                    let scroll = &panel.read(cx).review.body_scroll;
+                    let offset = scroll.offset();
+                    scroll.set_offset(point(offset.x, offset.y - (hint.bottom() - body.bottom())));
+                });
+                draw_settled(cx, measured);
+            }
+            let lines = super::super::tests::assert_phrases_whole(
+                cx,
+                "github-range-hint",
+                &range_hint(),
+                appearance::ui_text(12.),
+                &at,
+            );
+            assert_eq!(lines > 1, wraps, "{at}: the hint draws {lines} lines");
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        app.read_with(cx, |app, _| app.preferences_writer.submit(|| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.run_until_parked();
+    }
+
     /// In a 1480 × 980 window at 13 and 18 pt, the review box's bottom edge stays where it is
     /// between Changes and Source, level with the changed-file list's bottom: Changes' range
     /// hint took the box's last 26 px only in Changes, so switching modes moved the edge. The
@@ -2923,6 +3090,19 @@ mod tests {
         Entity<Panel>,
         &mut gpui_kit::VisualTestContext,
     ) {
+        review_panel_styled(cx, |root| root)
+    }
+
+    /// [`review_panel`] with the window's root styled by `style`.
+    fn review_panel_styled(
+        cx: &mut TestAppContext,
+        style: impl FnOnce(Root) -> Root + 'static,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        &mut gpui_kit::VisualTestContext,
+    ) {
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
         assert!(
@@ -2962,7 +3142,7 @@ mod tests {
                 app
             });
             *output.borrow_mut() = Some(app.clone());
-            Root::new(app, window, cx)
+            style(Root::new(app, window, cx))
         });
         let app = captured.borrow().as_ref().unwrap().clone();
         let panel = cx.update(|window, cx| {
