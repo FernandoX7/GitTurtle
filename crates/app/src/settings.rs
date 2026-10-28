@@ -2320,17 +2320,29 @@ impl GitTurtle {
             .flex_col()
             .gap_5()
             .child(div()
-                .on_children_prepainted(self.keep_in_view(
-                    vec![None, Some(self.settings_editor.focus_handle(cx)), Some(save_editor.clone())],
-                    cx,
-                ))
                 .flex().flex_col().gap_2()
                 .child(setting_description("External editor", if cfg!(target_os = "macos") { "Application name, such as Visual Studio Code. File → Open Repository in Editor opens the current folder." } else { "Executable name or path, such as code. Menu → Open repository in editor opens the current folder; left empty on Omarchy, your Omarchy editor opens it." }, cx))
-                .child(Input::new(&self.settings_editor).aria_label("Preferred external editor"))
-                .child(button("save-external-editor", "Save editor", "", false)
-                    .track_focus(&save_editor)
-                    .disabled(self.settings_editor.read(cx).value().trim() == self.settings.external_editor)
-                    .on_click(cx.listener(|this, _, window, cx| { this.settings.external_editor = this.settings_editor.read(cx).value().trim().to_owned(); this.save_preferences(window, cx); }))))
+                // As the default branch's field and Save are: the Button keeps
+                // its content's width and its own fill at the card's trailing
+                // edge, where the transparent helper stretched to the card's
+                // width drew only a centred dim label while disabled.
+                .child(div()
+                    .on_children_prepainted(self.keep_in_view(
+                        vec![Some(self.settings_editor.focus_handle(cx)), Some(save_editor.clone())],
+                        cx,
+                    ))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().debug_selector(|| "settings-editor-field".into()).flex_1().min_w_0()
+                        .child(Input::new(&self.settings_editor).aria_label("Preferred external editor")))
+                    .child(Button::new("save-external-editor")
+                        .track_focus(&save_editor)
+                        .debug_selector(|| "save-external-editor".into())
+                        .label("Save editor")
+                        .disabled(self.settings_editor.read(cx).value().trim() == self.settings.external_editor)
+                        .tooltip("Save the editor that opens repositories")
+                        .on_click(cx.listener(|this, _, window, cx| { this.settings.external_editor = this.settings_editor.read(cx).value().trim().to_owned(); this.save_preferences(window, cx); })))))
             .child(
                 div()
                     .on_children_prepainted(self.keep_in_view(vec![None, Some(reopen_last.clone())], cx))
@@ -2410,6 +2422,7 @@ impl GitTurtle {
                             .child(
                                 Button::new("save-default-branch")
                                     .track_focus(&save_branch)
+                                    .debug_selector(|| "save-default-branch".into())
                                     .label("Save")
                                     .disabled(!branch_edited)
                                     .tooltip("Save the default branch for new repositories")
@@ -5528,6 +5541,56 @@ mod picker_tests {
                 })
                 .collect()
         })
+    }
+
+    /// Settings' Save editor keeps its shape while there is nothing to save,
+    /// as the default branch's Save does: it was the transparent helper
+    /// stretched to the card's width, so disabled it drew only a centred dim
+    /// label (x 1954–2605 at 2x in a 1480 px window). In a dark and a light
+    /// palette it now sits beside its field at the card's trailing edge, as
+    /// wide as its content, and paints Save's fill at Save's height.
+    #[gpui::test]
+    fn the_disabled_save_editor_keeps_its_shape(cx: &mut TestAppContext) {
+        let (_, cx) = open_app(cx);
+        let fills = |cx: &mut VisualTestContext, at: Bounds<Pixels>| {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let near = |device: gpui_kit::ScaledPixels, logical: Pixels| {
+                    (device.as_f32() - logical.as_f32() * scale).abs() < 0.5
+                };
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        !quad.background.is_transparent()
+                            && near(quad.bounds.left(), at.left())
+                            && near(quad.bounds.top(), at.top())
+                            && near(quad.bounds.right(), at.right())
+                            && near(quad.bounds.bottom(), at.bottom())
+                    })
+                    .map(|quad| quad.background)
+                    .collect::<Vec<_>>()
+            })
+        };
+        for theme in [ThemeChoice::Midnight, ThemeChoice::Daylight] {
+            cx.update(|window, cx| theme.apply(Some(window), cx));
+            // A frame that builds the whole page in the palette, read before
+            // anything else draws.
+            assert!(page_shows(cx, "save-external-editor"), "{theme:?}");
+            let editor = cx.debug_bounds("save-external-editor").unwrap();
+            let field = cx.debug_bounds("settings-editor-field").unwrap();
+            let save = cx.debug_bounds("save-default-branch").unwrap();
+            let (editor_fills, save_fills) = (fills(cx, editor), fills(cx, save));
+            assert!(
+                editor.left() >= field.right() && editor.right() == save.right(),
+                "{theme:?}: Save editor {editor:?} beside its field {field:?}, ending with Save {save:?}"
+            );
+            assert_eq!(editor.size.height, save.size.height, "{theme:?}");
+            assert!(
+                !save_fills.is_empty() && editor_fills == save_fills,
+                "{theme:?}: Save editor paints {editor_fills:?}, Save {save_fills:?}"
+            );
+        }
     }
 
     /// Toggling a Settings Switch moves nothing: every Switch track and the
