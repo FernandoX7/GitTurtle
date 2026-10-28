@@ -7479,6 +7479,90 @@ pub(crate) mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// Disabled, the toolbar's Fetch, Pull and Push rest on the neutral
+    /// `subtle`, which stands only 1.046:1 off Midnight's toolbar (#131a25 on
+    /// #171e2b), so there they drew only their dim labels. In every palette,
+    /// full and compact, a disabled action's fill, or else a 1 px edge 1.4:1
+    /// or more off the toolbar, stands off it; an available one draws no
+    /// edge, and none moves between the two, the edge taking its pixel from
+    /// its padding.
+    #[gpui::test]
+    async fn disabled_git_actions_keep_their_shape_on_the_toolbar(cx: &mut TestAppContext) {
+        use crate::appearance::custom::contrast;
+        const ACTIONS: [&str; 3] = ["fetch", "pull", "push"];
+        let (fixture, app, cx) = history_window_from(cx, &history_script(3, 3)).await;
+        track_a_local_origin(fixture.path(), &app, cx).await;
+        let solid = |fill: gpui_kit::Background| {
+            let color = fill.as_solid().expect("a solid fill").to_rgb();
+            let channel = |value: f32| (value * 255.).round() as u32;
+            (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)
+        };
+        let busy = |cx: &mut VisualTestContext, busy: bool| {
+            cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    app.operation_busy = busy.then_some("Fetching remote…");
+                    cx.notify()
+                })
+            });
+            draw(cx);
+        };
+        let mut failures = Vec::new();
+        let (mut edged, mut plain) = (0, 0);
+        for (window, compact) in [
+            (size(px(1480.), px(980.)), false),
+            (size(px(461.), px(400.)), true),
+        ] {
+            cx.simulate_resize(window);
+            for (name, palette) in crate::appearance::test_palettes() {
+                cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+                busy(cx, false);
+                assert_eq!(predicted_chrome(&app, cx).1.is_compact(), compact);
+                let at = format!("{name}, compact {compact}");
+                let available = ACTIONS.map(|action| cx.debug_bounds(action).expect(action));
+                for action in ACTIONS {
+                    let edges = painted_edges(cx, action);
+                    if !edges.is_empty() {
+                        failures.push(format!("{at}: available {action} with edges {edges:?}"));
+                    }
+                }
+                busy(cx, true);
+                let [surface] = painted_fills(cx, "git-actions")[..] else {
+                    panic!("{at}: the toolbar paints one fill");
+                };
+                let surface = solid(surface);
+                for (action, place) in ACTIONS.into_iter().zip(available) {
+                    assert_eq!(
+                        cx.debug_bounds(action),
+                        Some(place),
+                        "{at}: disabled {action} moves"
+                    );
+                    let [fill] = painted_fills(cx, action)[..] else {
+                        panic!("{at}: disabled {action} paints one fill");
+                    };
+                    let fill = solid(fill);
+                    let edges = painted_edges(cx, action);
+                    if contrast(fill, surface) < 1.05 {
+                        edged += 1;
+                        match edges[..] {
+                            [edge] if contrast(solid(edge.into()), surface) >= 1.4 => {}
+                            _ => failures.push(format!(
+                                "{at}: {action} {fill:06x} on {surface:06x} with edges {edges:?}"
+                            )),
+                        }
+                    } else {
+                        plain += 1;
+                        if !edges.is_empty() {
+                            failures
+                                .push(format!("{at}: {action} needs no edge but draws {edges:?}"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(edged > 0 && plain > 0, "edged {edged}, plain {plain}");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     /// A pressed ghost Button takes the shared controls' pressed layer, the
     /// palette's `selected` over the panel, as a selected one keeps it.
     #[gpui::test]

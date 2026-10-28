@@ -2619,7 +2619,15 @@ impl GitTurtle {
                         .when(id == "push", |button| button.primary())
                         .tooltip(tooltip)
                 };
-                control
+                // Disabled, each rests on the neutral `subtle`, 1.046:1 off
+                // Midnight's toolbar, so there it keeps its shape with an edge
+                // that takes its pixel from the padding.
+                let inset = if compact {
+                    appearance::ui_size(crate::ICON_INSET)
+                } else {
+                    action_inset()
+                };
+                appearance::keep_disabled_shape(control, unavailable, p.panel, Some(inset), cx)
                     .debug_selector(move || id.into())
                     .disabled(unavailable)
                     .accessibility_label(name)
@@ -2767,11 +2775,17 @@ fn sync_summary(status: &gitturtle_core::RepositoryStatus) -> String {
     }
 }
 
+/// The space beside a labelled toolbar action's content: the 0.75 rem it took
+/// as `px_3` at the root rem the app sets, the interface text's 13 px.
+fn action_inset() -> Pixels {
+    appearance::ui_text(13.) * 0.75
+}
+
 fn action_button(id: impl Into<ElementId>, label: impl Into<SharedString>, symbol: &str) -> Button {
     Button::new(id)
         .secondary()
         .h(crate::appearance::ui_size(34.))
-        .px_3()
+        .px(action_inset())
         .text_size(crate::appearance::ui_text(12.))
         .font_weight(FontWeight::MEDIUM)
         .label(label)

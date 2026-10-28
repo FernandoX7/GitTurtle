@@ -861,9 +861,11 @@ const NEUTRAL_FILL_STEP: f64 = 1.05;
 /// `button`, a Button that rests on the neutral `subtle` fill while disabled,
 /// drawn on `surface`: while `disabled` and where that fill nearly equals
 /// `surface`, it keeps its shape with a 1 px edge ([`Palette::disabled_edge`]).
-/// A Button as wide as its content passes the horizontal padding it set as
-/// `inset`, and the edge takes its pixel from that padding, so the Button keeps
-/// its bounds and its content its place; a Button of fixed width passes `None`.
+/// A Button as wide as its content, or a fixed square its content fills, as
+/// the compact toolbar's icon actions are, passes the horizontal padding it set
+/// as `inset`, and the edge takes its pixel from that padding, so the Button
+/// keeps its bounds and its content its place; a wider Button of fixed width,
+/// its content centred, passes `None`.
 pub fn keep_disabled_shape(
     button: gpui_kit::component::button::Button,
     disabled: bool,
