@@ -10123,6 +10123,55 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Tab and Shift-Tab leave the commit description for the next and the
+    /// previous stop, as on every other stop, and add nothing to its text:
+    /// the kit's multi-line field indents with them, so focus never left it.
+    #[gpui::test]
+    async fn tab_and_shift_tab_leave_the_commit_description(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        assert!(cx.debug_bounds("commit-description").is_some());
+        let (title, description) = app.read_with(cx, |app, cx| {
+            (
+                app.commit_title.read(cx).focus_handle(cx),
+                app.commit_message.read(cx).focus_handle(cx),
+            )
+        });
+        let text = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, cx| {
+                app.commit_message.read(cx).value().to_string()
+            })
+        };
+        cx.update(|window, cx| window.focus(&description, cx));
+        cx.simulate_input("Why this change");
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let next = cx
+            .update(|window, cx| window.focused(cx))
+            .expect("Tab leaves focus on a stop");
+        assert_ne!(next, description, "Tab leaves the description");
+        assert!(
+            !cx.update(|window, _| window.context_stack().is_empty()),
+            "the frame draws the stop after the description"
+        );
+        assert_eq!(text(cx), "Why this change", "Tab adds nothing");
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| description.is_focused(window)),
+            "Shift-Tab from the next stop returns to the description"
+        );
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(
+            cx.update(|window, _| title.is_focused(window)),
+            "Shift-Tab leaves the description for the title"
+        );
+        assert_eq!(text(cx), "Why this change", "Shift-Tab removes nothing");
+    }
+
     /// In a 461 × 490 window, the compact Latest and Older tooltips and the
     /// Options tooltip, each wider than the window on one line, wrap inside
     /// it above their controls, with the tooltip positioner's margin and the

@@ -330,17 +330,7 @@ async fn working_changes_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext
         interface_size(cx, interface);
         walk(&app, cx, "Working Changes", interface, &mut failures);
     }
-    // Follow-up (focus sweep, 2026-10-28): at 13 pt the composer's
-    // description field keeps Tab, so the walk ends there and the stops after
-    // it go unchecked at that size; at 18 pt the walk comes round. Tab should
-    // leave the field, or the field should name the key that does.
-    assert_whole_except(
-        failures,
-        &[(
-            "Working Changes at 13 pt, stop 6",
-            "Tab keeps focus where it was",
-        )],
-    );
+    assert_whole(failures);
 }
 
 /// Settings and the theme editor it opens.

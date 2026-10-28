@@ -362,7 +362,7 @@ Use `Cmd` on macOS and `Ctrl` on Linux for the primary modifier. The [user guide
 | Primary + click / Shift + click in Working Changes | Toggle a file / extend the selection range |
 | Shift + Up / Down; Primary + A in Working Changes | Extend the range; select visible file rows |
 | Shift + F10, or Menu on Linux, in a file list | Open the cursor row's menu below it, the one a right-click opens; Escape returns to the list |
-| Tab / Shift + Tab | Traverse controls and panes in visual order |
+| Tab / Shift + Tab | Traverse controls and panes in visual order; in the commit description they move focus too and indent nothing |
 | Primary + R | Refresh local repository state |
 | Primary + C | Copy selected text; explicit copy buttons handle commit hash/path |
 | Primary + B | Toggle expanded repository navigation in History |
