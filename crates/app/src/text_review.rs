@@ -499,9 +499,8 @@ impl GitTurtle {
                 // Built when opened; each item acts on the review as it
                 // is when chosen, as the buttons of the full row do. A
                 // caption with no room in the row closes the menu, below a
-                // separator: the kit's first Down selects the first item
-                // whether or not it can act, so a label above the options
-                // would take that press.
+                // separator, as it follows the options in the row; it is a
+                // label, which the keys pass over.
                 options_menu(options, busy, reset_disabled)
                     .into_iter()
                     .fold(menu, |menu, item| {

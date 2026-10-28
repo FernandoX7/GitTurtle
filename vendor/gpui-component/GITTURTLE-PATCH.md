@@ -567,9 +567,9 @@ its text sets that colour and names it in a debug selector (`menu-label:
 The consumers are every menu with a label: the review Options menu's caption
 (`crates/app/src/text_review.rs`), the project pane's row name and Move to
 heading (`project_pane.rs`), the profile menu's heading, current identity and
-notes (`profiles.rs`), the branch chooser's notes (`branch_actions.rs`), the
-model view and animation clip menus' headings (`model_view.rs`,
-`model_view/playback.rs`), the repository tab list's heading
+notes (`profiles.rs`), the branch chooser's heading and notes
+(`branch_actions.rs`), the model view and animation clip menus' headings
+(`model_view.rs`, `model_view/playback.rs`), the repository tab list's heading
 (`repository_tabs.rs`) and the navigator's branch and worktree context menus'
 headings (`views.rs`).
 `cargo test --locked -p gitturtle menu_labels_read_as_secondary_text_and_disabled_items_as_disabled`
@@ -581,3 +581,28 @@ palette, both labels' text in `muted_foreground`.
 caption the same way. Remove this part of the patch when upstream gives menu
 labels a non-item role and a colour distinct from a disabled item's, and those
 tests pass without it.
+
+The menu-keys patch modifies `src/menu/popup_menu.rs`. Upstream's first Down
+selects a menu's first entry whatever it is, Down past the last item returns
+to it, and Right selects a submenu's first entry, so in a menu that opens with
+a label the first Down highlighted text that cannot act and Enter did nothing.
+Up and Down now move only between items that can act, from the first of them,
+and wrap to the first or last such item; a label, separator or disabled item is
+passed over, and a menu with none that can act selects nothing. A submenu opened
+from the keyboard selects its first item that can act.
+
+The consumers are the menus that open with a label: the project pane's row
+menu, opened with Shift-F10 or its button (`crates/app/src/project_pane.rs`),
+the profile menu (`profiles.rs`), the branch chooser (`branch_actions.rs`), the
+model view and animation clip menus (`model_view.rs`,
+`model_view/playback.rs`), the repository tab list (`repository_tabs.rs`) and
+the navigator's context menus (`views.rs`); the review Options menu no longer
+needs its caption last to keep the first Down (`text_review.rs`).
+`cargo test --locked -p gitturtle menu_keys_pass_over_labels_and_disabled_items`
+drives a menu that opens with a label and a disabled item and closes with a
+caption, reads the highlight from the scene after each Down and Up, and chooses
+the item Down reached with Enter;
+`the_first_down_in_a_row_menu_reaches_its_first_action` opens the project
+pane's row menu with the keyboard and renames the group with Down and Enter.
+Remove this part of the patch when upstream menus move only between items that
+can act and those tests pass without it.

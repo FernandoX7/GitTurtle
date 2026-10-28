@@ -375,6 +375,35 @@ async fn the_keyboard_browses_the_tree_like_the_navigator(cx: &mut TestAppContex
     });
 }
 
+/// A row's menu opens with the row's name, a label. The first Down from the
+/// keyboard reaches the first action below it, so Enter renames the group:
+/// the kit's first Down used to select the name, and Enter did nothing.
+#[gpui::test]
+fn the_first_down_in_a_row_menu_reaches_its_first_action(cx: &mut TestAppContext) {
+    let (library, _, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.move_project_cursor(true, false, window, cx)
+        })
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.manage_project_row(window, cx)));
+    settle(cx);
+    assert!(
+        cx.debug_bounds("menu-item: Work · Label").is_some(),
+        "the menu opens with the group's name"
+    );
+    cx.simulate_keystrokes("down enter");
+    settle(cx);
+    app.read_with(cx, |app, _| {
+        assert!(app.project_pane.keyboard_menu.is_none(), "the menu closed");
+        assert!(
+            app.project_pane.group_form.is_some(),
+            "Rename group… opened its form"
+        );
+    });
+}
+
 #[gpui::test]
 fn an_older_save_reply_never_replaces_a_newer_edit(cx: &mut TestAppContext) {
     let (library, group, _) = library_with_group();

@@ -923,43 +923,47 @@ impl PopupMenu {
         }
     }
 
+    // GitTurtle patch: Up and Down move only between items that can act.
+    // Upstream's first Down, and Down past the last item, selected the first
+    // entry whatever it was, so a menu that opens with a label (the project
+    // pane's row name, the profile menu's heading) highlighted nothing that
+    // could act, and Enter did nothing. A label, separator or disabled item is
+    // passed over, and a menu with none that can act selects nothing.
+
+    /// The first item that can act, if any.
+    fn first_clickable_index(&self) -> Option<usize> {
+        self.clickable_menu_items().next().map(|(ix, _)| ix)
+    }
+
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        let ix = self.selected_index.unwrap_or(0);
-
-        if let Some((prev_ix, _)) = self
-            .menu_items
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(i, item)| *i < ix && item.is_clickable())
-        {
-            self.set_selected_index(prev_ix, cx);
-            return;
+        let previous = self
+            .selected_index
+            .and_then(|ix| {
+                self.clickable_menu_items()
+                    .filter(|(i, _)| *i < ix)
+                    .last()
+                    .map(|(i, _)| i)
+            })
+            .or_else(|| self.clickable_menu_items().last().map(|(ix, _)| ix));
+        if let Some(ix) = previous {
+            self.set_selected_index(ix, cx);
         }
-
-        let last_clickable_ix = self.clickable_menu_items().last().map(|(ix, _)| ix);
-        self.set_selected_index(last_clickable_ix.unwrap_or(0), cx);
     }
 
     fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
-        let Some(ix) = self.selected_index else {
-            self.set_selected_index(0, cx);
-            return;
-        };
-
-        if let Some((next_ix, _)) = self
-            .menu_items
-            .iter()
-            .enumerate()
-            .find(|(i, item)| *i > ix && item.is_clickable())
-        {
-            self.set_selected_index(next_ix, cx);
-            return;
+        let next = self
+            .selected_index
+            .and_then(|ix| {
+                self.clickable_menu_items()
+                    .find(|(i, _)| *i > ix)
+                    .map(|(i, _)| i)
+            })
+            .or_else(|| self.first_clickable_index());
+        if let Some(ix) = next {
+            self.set_selected_index(ix, cx);
         }
-
-        self.set_selected_index(0, cx);
     }
 
     fn select_left(&mut self, _: &SelectLeft, window: &mut Window, cx: &mut Context<Self>) {
@@ -1008,7 +1012,10 @@ impl PopupMenu {
         if let Some(active_submenu) = self.active_submenu() {
             // Focus the submenu, so that can be handle the action.
             active_submenu.update(cx, |view, cx| {
-                view.set_selected_index(0, cx);
+                // GitTurtle patch: the submenu's first item that can act.
+                if let Some(ix) = view.first_clickable_index() {
+                    view.set_selected_index(ix, cx);
+                }
                 view.focus_handle.focus(window, cx);
             });
             cx.notify();

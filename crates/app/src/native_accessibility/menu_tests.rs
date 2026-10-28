@@ -9,20 +9,30 @@ use gpui_kit::component::{
     Theme,
     menu::{DropdownMenu as _, PopupMenuItem},
 };
+use std::{cell::RefCell, rc::Rc};
 
-struct MenuProbe;
+/// The items chosen from the probe's menu, in order.
+type Chosen = Rc<RefCell<Vec<&'static str>>>;
+
+struct MenuProbe(Chosen);
 
 impl Render for MenuProbe {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let chosen = self.0.clone();
         div().size_full().p_4().child(
             Button::new("menu-probe")
                 .debug_selector(|| "menu-probe".into())
                 .label("Open")
-                .dropdown_menu(|menu, _, _| {
+                .dropdown_menu(move |menu, _, _| {
+                    let item = |name: &'static str| {
+                        let chosen = chosen.clone();
+                        PopupMenuItem::new(name)
+                            .on_click(move |_, _, _| chosen.borrow_mut().push(name))
+                    };
                     menu.label("Saved profiles")
-                        .item(PopupMenuItem::new("Unavailable").disabled(true))
-                        .item(PopupMenuItem::new("First").on_click(|_, _, _| {}))
-                        .item(PopupMenuItem::new("Second").on_click(|_, _, _| {}))
+                        .item(item("Unavailable").disabled(true))
+                        .item(item("First"))
+                        .item(item("Second"))
                         .separator()
                         .label("Original Git diff")
                 }),
@@ -38,22 +48,92 @@ fn draw(cx: &mut VisualTestContext) {
     cx.run_until_parked();
 }
 
-/// The probe's window with its menu open.
-fn open_menu(cx: &mut TestAppContext) -> &mut VisualTestContext {
+/// The probe's window with its menu open, and the items chosen from it.
+fn open_menu(cx: &mut TestAppContext) -> (&mut VisualTestContext, Chosen) {
     cx.update(gpui_kit::init);
-    let (_, cx) = cx.add_window_view(|window, cx| {
-        let probe = cx.new(|_| MenuProbe);
-        Root::new(probe, window, cx)
+    let chosen = Chosen::default();
+    let (_, cx) = cx.add_window_view({
+        let chosen = chosen.clone();
+        move |window, cx| {
+            let probe = cx.new(|_| MenuProbe(chosen));
+            Root::new(probe, window, cx)
+        }
     });
     draw(cx);
     let trigger = cx.debug_bounds("menu-probe").expect("the menu's button");
     cx.simulate_click(trigger.center(), Modifiers::default());
     draw(cx);
-    cx
+    (cx, chosen)
 }
 
 fn shown(cx: &mut VisualTestContext, selector: String) -> Option<Bounds<Pixels>> {
     cx.debug_bounds(selector.leak())
+}
+
+/// The entry the probe menu highlights, by the label of the item whose
+/// bounds hold the highlight's fill, or `None` when nothing is highlighted.
+fn highlighted(cx: &mut VisualTestContext) -> Option<&'static str> {
+    let highlight = cx.update(|window, cx| {
+        let fill = Background::from(Theme::global(cx).tokens.accent.color);
+        let scale = window.scale_factor();
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background == fill)
+            .map(|quad| {
+                let center = quad.bounds.center();
+                point(px(center.x.as_f32() / scale), px(center.y.as_f32() / scale))
+            })
+            .collect::<Vec<_>>()
+    });
+    let entries = [
+        ("Saved profiles", "menu-item: Saved profiles · Label"),
+        ("Unavailable", "menu-item: Unavailable · MenuItem disabled"),
+        ("First", "menu-item: First · MenuItem"),
+        ("Second", "menu-item: Second · MenuItem"),
+        ("Original Git diff", "menu-item: Original Git diff · Label"),
+    ];
+    let mut found = None;
+    for (name, selector) in entries {
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        if highlight.iter().any(|center| bounds.contains(center)) {
+            assert!(found.is_none(), "one highlight, on {found:?} and {name}");
+            found = Some(name);
+        }
+    }
+    found
+}
+
+/// Down and Up move only between the items that can act: the first Down in a
+/// menu that opens with a label highlights the first available item, not the
+/// label or the disabled item after it, and both keys wrap past the label and
+/// the closing caption. Enter then acts on what Down reached.
+#[gpui::test]
+fn menu_keys_pass_over_labels_and_disabled_items(cx: &mut TestAppContext) {
+    let (cx, chosen) = open_menu(cx);
+    cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+    draw(cx);
+    assert_eq!(highlighted(cx), None, "nothing until a key is pressed");
+    for (key, expected) in [
+        ("down", "First"),
+        ("down", "Second"),
+        ("down", "First"),
+        ("up", "Second"),
+        ("up", "First"),
+        ("up", "Second"),
+        ("down", "First"),
+    ] {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert_eq!(highlighted(cx), Some(expected), "after {key}");
+    }
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(*chosen.borrow(), ["First"]);
+    assert!(
+        cx.debug_bounds("menu-item: First · MenuItem").is_none(),
+        "the menu closed"
+    );
 }
 
 /// A label is text, not a fourth command: it is announced as a label, never
@@ -62,7 +142,7 @@ fn shown(cx: &mut VisualTestContext, selector: String) -> Option<Bounds<Pixels>>
 /// disabled and an available one as a plain menu item.
 #[gpui::test]
 fn menu_labels_read_as_secondary_text_and_disabled_items_as_disabled(cx: &mut TestAppContext) {
-    let cx = open_menu(cx);
+    let (cx, _) = open_menu(cx);
     for entry in [
         "menu-item: Saved profiles · Label",
         "menu-item: Original Git diff · Label",
