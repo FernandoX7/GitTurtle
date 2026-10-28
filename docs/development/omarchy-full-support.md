@@ -258,6 +258,10 @@ cover current upstream x86-64 Omarchy.
           detached HEAD and similar each show one deliberate line with their next action.
         - Motion with intent: short, reduced-motion-aware transitions only where they explain a
           change (a row moving between Staged and Unstaged, the compact chrome switching).
+        Owner decision, 2026-10-27 late night: Linux gets a System preview that opens an isolated
+        read-only copy of the captured bytes in the desktop's default application (the
+        OpenURI portal or `xdg-open`), after an independent security review of the candidate
+        under [security review](security-review.md) and before integration.
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
