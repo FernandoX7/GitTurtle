@@ -125,7 +125,7 @@ Checks, builds and environments are recorded in [validation](docs/validation.md)
 GitTurtle is young, and some things are not there yet:
 
 - **No prebuilt downloads, notarization or automatic updates.** Local macOS apps are ad-hoc signed; Linux bundles are unsigned.
-- **Linux gaps.** PDF pages and AVIF, HEIC and JPEG 2000 images need macOS, and in place of Quick Look, Linux opens only passive file types (images, PDF and plain text) in the desktop's default app. A GitHub account cannot be stored securely on Linux yet, so pull-request review is macOS-only for now; Git's own authentication for fetch, pull and push works as configured. Screen reader and input-method support on Linux has not been checked.
+- **Linux gaps.** PDF pages and AVIF, HEIC and JPEG 2000 images need macOS, and in place of Quick Look, Linux opens only passive file types in the desktop's default app: raster images, PDF, and the plain text of a Mermaid or Markdown file's Diagrams view or of a text 3D model, never a source diff or Markdown's Rendered view. A GitHub account cannot be stored securely on Linux yet, so pull-request review is macOS-only for now; Git's own authentication for fetch, pull and push works as configured. Screen reader and input-method support on Linux has not been checked.
 - **Early pull-request review.** On macOS, GitTurtle connects a GitHub.com account through the GitHub CLI to browse pull requests, review changed files and submit comments and reviews. It is covered by tests and offline checks, not yet by a run against a live account.
 - **Bounded Git workflows.** Merge-preserving and root rebases and submodule management stay with Git's own tools, and previews, history windows and partial staging have documented size limits.
 

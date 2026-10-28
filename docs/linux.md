@@ -412,8 +412,12 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
   private read-only copy of the captured bytes to the desktop's default
   application through the OpenURI portal, or `xdg-open` where no portal
   answers, once GIO (and, for `xdg-open`, `xdg-mime`) types the copy as
-  what its content is. Only passive types decided from content offer it
-  (images, PDF, plain text); audio and video, office documents, SVG, HTML,
+  what its content is. Only passive types decided from content offer it:
+  raster images and PDF, and plain text where a view presents a file's
+  captured text as a document, which is the Diagrams view of a Mermaid file
+  or of Markdown with Mermaid diagrams and a text 3D model's header (OBJ,
+  ASCII STL, STEP); a source diff, the source tabs and Markdown's Rendered
+  view offer nothing. Audio and video, office documents, SVG, HTML,
   scripts, desktop entries, executables, archives, fonts and unrecognized
   bytes do not. See the
   [handoff contract](file-previews.md#background-work-and-resource-lifetime).
