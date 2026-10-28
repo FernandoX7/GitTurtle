@@ -354,13 +354,14 @@ up to 5.3:1 in dark palettes, so the two dims disagreed. `Theme::disabled_label`
 skipped by theme files, replaces the half-strength value where an application
 sets it; unset, the dim is upstream's Button dim. The app sets it to
 `Palette::disabled_label` (`crates/app/src/appearance.rs`), `muted` at half
-strength or at the first step toward three quarters that reads 3:1 on the
-page's surfaces and the menu's.
+strength or at the first step toward three quarters that reads 3:1, with a
+little room for 1x rendering, on the page's surfaces and the menu's and on the
+translucent fill a disabled default Button paints on each of them.
 
 `cargo test --locked -p gitturtle every_palette_shares_one_disabled_dim_that_reads_three_to_one`
 applies every built-in and embedded Omarchy palette, requires the kit's dim and
 the Switch's disabled label to be the palette's, draws disabled secondary,
-helper and ghost Buttons and a disabled Switch on each page surface and the
+primary, helper, ghost and default Buttons and a disabled Switch on each page surface and the
 menu's, reads each Button's painted fill, and checks the dim against what lies
 beneath and against enabled secondary text there and on the selected row. GPUI's
 test scene does not expose glyph colours, so native frames of the Menu, the

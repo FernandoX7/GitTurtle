@@ -692,25 +692,63 @@ impl Palette {
     /// palette rows share (the kit's `Theme::disabled_foreground`): a layer of
     /// `muted` at half strength, or at the first of 16 even steps toward three
     /// quarters that reads [`DISABLED_LABEL`] on every surface such a label
-    /// rests on, the page's surfaces and the raised menu surface. Half of a
-    /// dark secondary text reads about 2:1 on a light surface, where most dark
-    /// palettes already read 3:1 at half. A translucent layer still dims with
-    /// whatever it lies on, and the three-quarter bound keeps it fainter than
-    /// enabled secondary text even where `muted` itself is weak.
+    /// rests on: the page's surfaces and the raised menu surface, and the
+    /// translucent fill the kit's default Button (Settings' Save) takes on
+    /// each of them while disabled ([`Self::default_disabled_fill`]). It keeps
+    /// [`DISABLED_LABEL_MARGIN`] of room above that for 1x rendering, unless
+    /// the step that does would take more than [`DISABLED_SHARE`] of enabled
+    /// secondary text's contrast on one of them or on the highlighted row
+    /// (`selected`), as in Kanagawa Lotus. Half of a dark secondary text reads
+    /// about 2:1 on a light surface, where most dark palettes already read 3:1
+    /// at half. A translucent layer still dims with whatever it lies on, and
+    /// the three-quarter bound keeps it fainter than enabled secondary text
+    /// even where `muted` itself is weak.
     pub fn disabled_label(self) -> Rgba {
-        let surfaces = [self.canvas, self.panel, self.subtle, self.raised()];
+        let page = [self.canvas, self.panel, self.subtle, self.raised()];
+        let fill = self.default_disabled_fill();
+        let surfaces = page
+            .into_iter()
+            .chain(page.map(|surface| composite(fill, surface)));
+        let reading = |label, surface| custom::contrast(composite(label, surface), surface);
+        let reads = |label, floor| {
+            surfaces
+                .clone()
+                .all(|surface| reading(label, surface) >= floor)
+        };
+        let fainter = |label| {
+            surfaces.clone().chain([self.selected]).all(|surface| {
+                reading(label, surface) <= custom::contrast(self.muted, surface) * DISABLED_SHARE
+            })
+        };
         let layer = |step: u8| Rgba {
             a: 0.5 + f32::from(step) / 64.,
             ..rgb(self.muted)
         };
-        (0..=16)
-            .map(layer)
-            .find(|&label| {
-                surfaces.iter().all(|&surface| {
-                    custom::contrast(composite(label, surface), surface) >= DISABLED_LABEL
-                })
-            })
+        let steps = || (0..=16).map(layer);
+        steps()
+            .find(|&label| reads(label, DISABLED_LABEL + DISABLED_LABEL_MARGIN) && fainter(label))
+            .or_else(|| steps().find(|&label| reads(label, DISABLED_LABEL)))
             .unwrap_or(layer(16))
+    }
+
+    /// The fill the kit's default Button (no variant: Settings' Save, a
+    /// dialog's Cancel) paints over its surface while disabled: half of the
+    /// kit's input background, which is the `input` color (the app's `border`)
+    /// at 30% in a dark palette and the `background` (`canvas`) in a light
+    /// one. Over Settings' panel card it is Midnight's #1a222f, where the dim
+    /// fitted without it read 3.002:1.
+    fn default_disabled_fill(self) -> Rgba {
+        if self.is_light() {
+            Rgba {
+                a: 0.5,
+                ..rgb(self.canvas)
+            }
+        } else {
+            Rgba {
+                a: 0.15,
+                ..rgb(self.border)
+            }
+        }
     }
 
     /// A sidebar row's label and icon colors. The label stays `text`, which
@@ -776,6 +814,13 @@ const LABEL_MARGIN: f64 = 0.25;
 /// ([`Palette::disabled_label`]): readable, and well under the text rule
 /// enabled labels keep, so it still reads as unavailable.
 const DISABLED_LABEL: f64 = 3.0;
+/// The room [`Palette::disabled_label`] keeps above [`DISABLED_LABEL`] on its
+/// closest surface: a label at 1x renders below its token, so one fitted to
+/// exactly 3:1 (Midnight's disabled Save, 3.002:1) read under it natively.
+const DISABLED_LABEL_MARGIN: f64 = 0.05;
+/// The most of enabled secondary text's contrast a disabled label keeps on a
+/// surface, so disabled stays clearly fainter than enabled text.
+const DISABLED_SHARE: f64 = 0.6;
 
 /// The contrast below which a disabled Button's neutral fill reads as part of
 /// the surface beneath it rather than as a shape ([`Palette::disabled_edge`]).
@@ -4084,13 +4129,15 @@ mod tests {
 
     /// The disabled Buttons [`DisabledControls`] draws, by kind: the kit's
     /// secondary (Fetch and Pull) and primary (Push, Commit), the shared helper
-    /// at rest and selected (a dialog's default action), and the kit's ghost.
-    const DISABLED_BUTTONS: [&str; 5] = [
+    /// at rest and selected (a dialog's default action), the kit's ghost, and
+    /// its default Button with no variant (Settings' Save, a dialog's Cancel).
+    const DISABLED_BUTTONS: [&str; 6] = [
         "secondary",
         "primary",
         "control",
         "control-selected",
         "ghost",
+        "default",
     ];
 
     /// `kind-surface`, the debug selector [`DisabledControls`] gives a Button.
@@ -4135,7 +4182,8 @@ mod tests {
                                 "control-selected" => button
                                     .with_variant(control_button_variant(true))
                                     .selected(true),
-                                _ => button.ghost(),
+                                "ghost" => button.ghost(),
+                                _ => button,
                             }
                             .disabled(true)
                         }))
@@ -4156,11 +4204,17 @@ mod tests {
     /// Light's toolbar 2.12:1), and Switch labels `text` at half (the Follow
     /// system label 2.35:1 in Latte). In every palette the dim reads 3:1 on
     /// every surface a disabled label rests on, the page's and the menu's, and
-    /// on the fill each disabled Button paints there; where it had to move off
-    /// half strength it reads no more than 3.15:1 on its closest surface, about
-    /// 3:1. It keeps at most 60% of enabled secondary text's contrast on each
-    /// of those and on the selected row (a highlighted disabled command), so
-    /// disabled stays clearly fainter than enabled text.
+    /// on the fill each disabled Button paints there, the kit's default
+    /// Button's translucent one included: that one was left out of the fit, so
+    /// Midnight's disabled Save on Settings' card read 3.002:1, under 3
+    /// natively, and Nord's and Solarized Dark's below 3:1. It keeps the margin
+    /// 1x rendering takes above that, unless the first step that does would
+    /// break the 60% bound below (Kanagawa Lotus's highlighted row), and
+    /// Midnight keeps it. Where it had to move off half strength it reads no
+    /// more than 0.15 above its floor on its closest surface, about 3:1. It keeps
+    /// at most 60% of enabled secondary text's contrast on each of those and
+    /// on the selected row (a highlighted disabled command), so disabled stays
+    /// clearly fainter than enabled text.
     #[gpui::test]
     fn every_palette_shares_one_disabled_dim_that_reads_three_to_one(
         cx: &mut gpui::TestAppContext,
@@ -4170,7 +4224,7 @@ mod tests {
         cx.update(gpui_kit::init);
         let (_, cx) = cx.add_window_view(|_, _| DisabledControls);
         let mut failures = Vec::new();
-        let mut moved = 0;
+        let (mut moved, mut kept) = (0, 0);
         for (name, palette) in test_palettes() {
             cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
             cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -4188,17 +4242,18 @@ mod tests {
             let check = |failures: &mut Vec<String>, what: &str, beneath: u32| {
                 let disabled = contrast(composite(dim, beneath), beneath);
                 let enabled = contrast(palette.muted, beneath);
-                if disabled > enabled * 0.6 {
+                if disabled > enabled * DISABLED_SHARE {
                     failures.push(format!(
                         "{name} {what} {beneath:06x}: disabled {disabled:.2}:1, secondary text {enabled:.2}:1"
                     ));
                 }
                 disabled
             };
-            let mut lowest = f64::MAX;
+            // A Switch's label and a menu item's lie on the surface itself,
+            // a disabled Button's on the fills it paints there.
+            let mut readings = Vec::new();
             for (surface, color) in disabled_label_surfaces(palette) {
-                // A Switch's label and a menu item's lie on the surface itself.
-                let mut readings = vec![(format!("label on the {surface}"), color)];
+                readings.push((format!("label on the {surface}"), color));
                 for kind in DISABLED_BUTTONS {
                     let bounds = cx
                         .debug_bounds(disabled_selector(kind, surface))
@@ -4209,27 +4264,67 @@ mod tests {
                     });
                     readings.push((format!("{kind} on the {surface}"), painted));
                 }
-                for (what, beneath) in readings {
-                    let disabled = check(&mut failures, &what, beneath);
-                    lowest = lowest.min(disabled);
-                    if disabled < DISABLED_LABEL {
-                        failures.push(format!("{name} {what} {beneath:06x}: {disabled:.2}:1"));
-                    }
-                }
             }
-            if palette.disabled_label().a > 0.5 {
-                moved += 1;
-                if lowest > DISABLED_LABEL + 0.15 {
-                    failures.push(format!("{name} reads {lowest:.2}:1 at its closest"));
+            let mut lowest = f64::MAX;
+            for (what, beneath) in &readings {
+                let disabled = check(&mut failures, what, *beneath);
+                lowest = lowest.min(disabled);
+                if disabled < DISABLED_LABEL {
+                    failures.push(format!("{name} {what} {beneath:06x}: {disabled:.3}:1"));
                 }
             }
             let on_selected = check(&mut failures, "highlighted row", palette.selected);
             if on_selected < 1.5 {
                 failures.push(format!("{name} highlighted row {on_selected:.2}:1"));
             }
+            // Below the margin only where the first stronger step that keeps
+            // it would take more than 60% of secondary text's contrast.
+            let floor = if lowest >= DISABLED_LABEL + DISABLED_LABEL_MARGIN {
+                kept += 1;
+                DISABLED_LABEL + DISABLED_LABEL_MARGIN
+            } else {
+                let stronger = (1..=16u8)
+                    .map(|step| Rgba {
+                        a: dim.a + f32::from(step) / 64.,
+                        ..dim
+                    })
+                    .take_while(|layer| layer.a <= 0.75)
+                    .find(|&layer| {
+                        readings.iter().all(|&(_, beneath)| {
+                            contrast(composite(layer, beneath), beneath)
+                                >= DISABLED_LABEL + DISABLED_LABEL_MARGIN
+                        })
+                    });
+                let fainter = |layer: Rgba| {
+                    readings
+                        .iter()
+                        .map(|&(_, beneath)| beneath)
+                        .chain([palette.selected])
+                        .all(|beneath| {
+                            contrast(composite(layer, beneath), beneath)
+                                <= contrast(palette.muted, beneath) * DISABLED_SHARE
+                        })
+                };
+                if stronger.is_some_and(fainter) {
+                    failures.push(format!(
+                        "{name} reads {lowest:.3}:1 at its closest, where {stronger:?} keeps the margin"
+                    ));
+                }
+                DISABLED_LABEL
+            };
+            if name == "Midnight" && floor == DISABLED_LABEL {
+                failures.push(format!("Midnight reads {lowest:.3}:1 at its closest"));
+            }
+            if palette.disabled_label().a > 0.5 {
+                moved += 1;
+                if lowest > floor + 0.15 {
+                    failures.push(format!("{name} reads {lowest:.2}:1 at its closest"));
+                }
+            }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
         assert!(moved > 0, "some palette needs more than half strength");
+        assert!(kept > 0, "some palette keeps the margin");
     }
     /// A disabled primary Button (Push, Commit) rests on the neutral fill a
     /// disabled secondary one does, the opaque `subtle` beside it, as does the
