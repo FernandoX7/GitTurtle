@@ -210,6 +210,23 @@ cover current upstream x86-64 Omarchy.
         - Evidence still owed (capture with the window forced opaque): a hovered row beside
           the selected row in Braden and One Light, pressed Fetch in Braden and Rosé Pine
           Dawn, the Reflog's current entry, and the toolkit's own ghost controls.
+        Found by the native reviews of 2026-10-27 late, handled the same way:
+        - Linux wording: done, `5ce690b` and `69dc3de`
+          ([validation entry](../validation.md#october-27-a-linux-build-names-linux-keys-and-offers-no-mac-only-action)).
+          System preview is hidden on Linux, where it could only fail; whether Linux gets an
+          `xdg-open` equivalent is the owner's call (not on this list). The rebase dialog's
+          keyboard help is not on the accessibility bus.
+        - Compact chrome (`d1299fb`): at 18 pt in 461 × 490 the Working Changes file list has no
+          row and its focus ring collapses to a line; the commit title field, Actions and
+          Refresh are hidden; the compact Changes toggle loses its count; the History and
+          Changes toggles move between modes; inspector rows show lone ellipses, the Compare
+          footer clips mid-character, Diff/Split/Before/After wrap, History's narrow column
+          drops the subject, and the profile icon differs; the 13 pt composer is cramped and
+          the inspector's left insets differ.
+        - Copy feedback (`2133809`): start-align the copy cell, so Hash keeps its place at rest
+          and Copied replaces the icon in place; key the mark by commit, path and side; check
+          Hash at 18 pt in a half tile; frames of a copy while hovered, pressed, keyboard
+          activated, from an icon-only button and repeated.
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
