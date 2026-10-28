@@ -462,6 +462,9 @@ struct GitTurtle {
     app_focus: FocusHandle,
     focus: FocusHandle,
     file_focus: FocusHandle,
+    /// The header's Pull requests button, full or compact: the GitHub panel it
+    /// opens returns focus to it on close.
+    pull_requests_focus: FocusHandle,
     pane: Pane,
     history_scroll: UniformListScrollHandle,
     file_scroll: UniformListScrollHandle,
@@ -779,6 +782,7 @@ impl GitTurtle {
             app_focus: cx.focus_handle(),
             focus: cx.focus_handle(),
             file_focus: cx.focus_handle(),
+            pull_requests_focus: cx.focus_handle(),
             pane: Pane::History,
             history_scroll: UniformListScrollHandle::new(),
             file_scroll: UniformListScrollHandle::new(),

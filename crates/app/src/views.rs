@@ -318,11 +318,14 @@ impl GitTurtle {
                             "Pull requests",
                         )
                         .debug_selector(|| "pull-requests".into())
+                        .track_focus(&self.pull_requests_focus)
                         .disabled(busy)
                         .tooltip(
                             "Pull requests · Discover pull requests and review captured changes",
                         )
-                        .on_click(cx.listener(|this, _, window, cx| this.open_github(window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_github_from_header(window, cx)
+                        })),
                     )
             })
             .children(
@@ -471,11 +474,12 @@ impl GitTurtle {
                     .child(
                         button("pull-requests", "Pull requests", "", false)
                             .debug_selector(|| "pull-requests".into())
+                            .track_focus(&self.pull_requests_focus)
                             .disabled(busy)
                             .tooltip("Discover pull requests and review captured changes")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_github(window, cx)),
-                            ),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_github_from_header(window, cx)
+                            })),
                     )
             })
             .child(div().flex_1())
@@ -1342,6 +1346,7 @@ impl GitTurtle {
                     .child(
                         div()
                             .id("history-pane")
+                            .debug_selector(|| "history-pane".into())
                             .role(Role::ListBox)
                             .aria_label("Commit history")
                             .tab_stop(true)

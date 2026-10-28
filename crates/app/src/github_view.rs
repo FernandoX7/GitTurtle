@@ -72,13 +72,35 @@ impl WarmPanels {
     }
 }
 impl GitTurtle {
+    /// Open the panel from the header's Pull requests button, full or
+    /// compact, which closing returns focus to.
+    pub(super) fn open_github_from_header(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let opener = self.pull_requests_focus.clone();
+        self.open_github_returning_to(Some(opener), window, cx);
+    }
+    /// Open the panel from the command palette, which has already returned
+    /// focus to what it opened over, or from anywhere else: closing returns
+    /// focus to what is focused now.
     pub(super) fn open_github(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let previous = window.focused(cx);
+        self.open_github_returning_to(previous, window, cx);
+    }
+    fn open_github_returning_to(
+        &mut self,
+        opener: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.operation_busy.is_some() || self.page != AppPage::Repository {
             return;
         }
         let Some(repo) = self.repository.clone() else {
             return;
         };
+        // Closing returns focus here, and so does the repair a frame after
+        // the dialog closes. The window's root shows no focus, so with
+        // nothing else focused the mode's own list takes it instead.
+        self.modal_return_focus = opener.filter(|focus| *focus != self.app_focus);
         review::init(cx);
         let owner = cx.entity().downgrade();
         let branch = self.remote_branch.read(cx).value().to_string();
@@ -990,7 +1012,7 @@ impl Panel {
         }
         window.close_dialog(cx);
         if let Some(owner) = self.owner.upgrade() {
-            let focus = owner.read(cx).app_focus.clone();
+            let focus = owner.read(cx).modal_return(window);
             focus.focus(window, cx);
         }
     }
@@ -1501,6 +1523,149 @@ mod tests {
         cx.update(|window, cx| window.close_dialog(cx));
     }
 
+    /// Escape closes the panel and focus returns to what opened it, drawn as
+    /// keyboard focus is drawn there: the header's Pull requests button, full
+    /// or compact, takes the Button ring; from the command palette, opened by
+    /// the shortcut or a menu's Command Palette item, the control the palette
+    /// opened over takes it back, and with only the window's root focused,
+    /// which shows nothing, History's list takes it with its accent outline.
+    #[gpui::test]
+    async fn escape_returns_visible_focus_to_what_opened_the_panel(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        cx.update(|window, cx| {
+            shortcuts::bind_keys(cx);
+            app.update(cx, |app, cx| app.apply_appearance(window, cx));
+        });
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let focused = |cx: &mut VisualTestContext, handle: fn(&GitTurtle) -> &FocusHandle| {
+            cx.update(|window, cx| handle(app.read(cx)).is_focused(window))
+        };
+        let full = cx.debug_bounds("pull-requests").unwrap().size.width;
+
+        // The header's button, which a click leaves unfocused.
+        for height in [980., 360.] {
+            cx.simulate_resize(size(px(1480.), px(height)));
+            draw(cx);
+            let compact = cx.debug_bounds("pull-requests").unwrap().size.width < full;
+            assert_eq!(compact, height < 980., "the {height} px header's button");
+            crate::copy_feedback::tests::click(cx, "pull-requests");
+            settle_panel(&app, cx).await;
+            assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+            assert!(!focused(cx, |app| &app.pull_requests_focus));
+            escape(cx);
+            assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+            assert!(
+                focused(cx, |app| &app.pull_requests_focus),
+                "the {height} px header's Pull requests button takes focus back"
+            );
+            assert!(ringed(cx, "pull-requests"), "the {height} px header's ring");
+        }
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+
+        // The palette, from History's list and from the window's root.
+        for root in [false, true] {
+            cx.update(|window, cx| {
+                let focus = if root {
+                    app.read(cx).app_focus.clone()
+                } else {
+                    app.read(cx).focus.clone()
+                };
+                window.focus(&focus, cx);
+            });
+            draw(cx);
+            cx.dispatch_action(ShowCommandPalette);
+            draw(cx);
+            cx.simulate_input("GitHub pull requests");
+            cx.simulate_keystrokes("enter");
+            settle_panel(&app, cx).await;
+            assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+            assert!(!focused(cx, |app| &app.focus));
+            escape(cx);
+            assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+            assert!(
+                focused(cx, |app| &app.focus),
+                "from the {} History's list takes focus",
+                if root { "root" } else { "list" }
+            );
+            assert!(outlined(cx, "history-pane"), "History's accent outline");
+        }
+    }
+
+    /// Escape, the frame after the dialog closes, and the app's repair of
+    /// modal focus 300 ms later.
+    fn escape(cx: &mut VisualTestContext) {
+        cx.simulate_keystrokes("escape");
+        crate::tags::tests::draw(cx);
+        crate::copy_feedback::tests::wait(cx, Duration::from_millis(400));
+        crate::tags::tests::draw(cx);
+    }
+
+    /// The last frame's quads with their bounds in logical pixels.
+    fn quads(cx: &mut VisualTestContext) -> Vec<(Bounds<Pixels>, gpui_kit::Quad)> {
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .map(|quad| {
+                    let b = quad.bounds;
+                    let bounds = Bounds::from_corners(
+                        point(px(b.left().as_f32() / scale), px(b.top().as_f32() / scale)),
+                        point(
+                            px(b.right().as_f32() / scale),
+                            px(b.bottom().as_f32() / scale),
+                        ),
+                    );
+                    (bounds, quad)
+                })
+                .collect()
+        })
+    }
+
+    fn near(a: Bounds<Pixels>, b: Bounds<Pixels>) -> bool {
+        [
+            (a.left(), b.left()),
+            (a.top(), b.top()),
+            (a.right(), b.right()),
+            (a.bottom(), b.bottom()),
+        ]
+        .into_iter()
+        .all(|(a, b)| (a - b).abs() < px(0.01))
+    }
+
+    /// The window painted the installed Button focus ring around `selector`.
+    fn ringed(cx: &mut VisualTestContext, selector: &'static str) -> bool {
+        let control = cx.debug_bounds(selector).expect(selector);
+        let (ring, color, scale) = cx.update(|window, cx| {
+            let theme = gpui_kit::component::Theme::global(cx);
+            let ring = theme.button_focus_ring;
+            (ring, theme.ring.alpha(ring.opacity), window.scale_factor())
+        });
+        assert_eq!(ring, appearance::BUTTON_FOCUS_RING);
+        let around = control.dilate(ring.gap + ring.width);
+        quads(cx).into_iter().any(|(bounds, quad)| {
+            quad.background.is_transparent()
+                && quad.border_color == color
+                && quad.border_widths.top.as_f32() == ring.width.as_f32() * scale
+                && near(bounds, around)
+        })
+    }
+
+    /// `selector` painted its 1 px keyboard-focus outline in the accent.
+    fn outlined(cx: &mut VisualTestContext, selector: &'static str) -> bool {
+        let pane = cx.debug_bounds(selector).expect(selector);
+        let (accent, scale) =
+            cx.update(|window, cx| (Hsla::from(rgb(palette(cx).accent)), window.scale_factor()));
+        quads(cx).into_iter().any(|(bounds, quad)| {
+            quad.border_color == accent
+                && quad.border_widths.top.as_f32() == scale
+                && near(bounds, pane)
+        })
+    }
+
     /// The panel opened from the active repository's update, as command
     /// palette activation opens it, with its local reads drained.
     async fn open_panel(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
@@ -1510,6 +1675,11 @@ mod tests {
             app.update(cx, |app, cx| app.open_github(window, cx));
             assert!(window.has_active_dialog(cx));
         });
+        settle_panel(app, cx).await;
+    }
+
+    /// The open panel with its local reads drained.
+    async fn settle_panel(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
         let (operations_done, preferences_done) = app.read_with(cx, |app, _| {
             (
                 app.operations.submit_read(|| Ok(())),

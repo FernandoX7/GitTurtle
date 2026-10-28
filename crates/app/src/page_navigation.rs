@@ -63,6 +63,17 @@ impl GitTurtle {
         {
             return;
         }
+        self.modal_return_target(previous, window).focus(window, cx);
+        window.refresh();
+    }
+
+    /// Where focus returns as a modal closes: `previous` while it is still
+    /// drawn, else the shown mode's own list, else the window's root.
+    fn modal_return_target<'a>(
+        &'a self,
+        previous: Option<&'a FocusHandle>,
+        window: &Window,
+    ) -> &'a FocusHandle {
         // In this window every attached control inherits Root's key context,
         // including sibling popup menus outside app_focus. A missing/detached
         // handle resolves to GPUI's synthetic dispatch root with no contexts.
@@ -72,16 +83,23 @@ impl GitTurtle {
             (AppPage::Repository, _) => &self.file_focus,
             _ => &self.app_focus,
         };
-        let focus = previous
+        previous
             .filter(|focus| self.app_focus.contains(focus, window))
             .or_else(|| {
                 self.app_focus
                     .contains(fallback, window)
                     .then_some(fallback)
             })
-            .unwrap_or(&self.app_focus);
-        focus.focus(window, cx);
-        window.refresh();
+            .unwrap_or(&self.app_focus)
+    }
+
+    /// Where a modal that set `modal_return_focus` as it opened returns focus
+    /// as it closes, so it can do so before the next frame's repair, which
+    /// returns it to the same place: no frame leaves focus on the window's
+    /// root, where nothing shows it.
+    pub(super) fn modal_return(&self, window: &Window) -> FocusHandle {
+        self.modal_return_target(self.modal_return_focus.as_ref(), window)
+            .clone()
     }
 
     pub(super) fn back_label(&self) -> &'static str {
