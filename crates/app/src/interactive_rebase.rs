@@ -116,21 +116,28 @@ impl GitTurtle {
                 })
             });
         self.interactive_rebase.draft = Some(draft.clone());
-        let sequence = draft.update(cx, |draft, _| {
+        let (sequence, first) = draft.update(cx, |draft, cx| {
             draft.pending = false;
             draft.closed = false;
-            draft.focus.clone()
+            (draft.focus.clone(), draft.first_focus(cx))
         });
         self.dialog_hints
             .register(&sequence, shortcuts::DialogKeys::RebaseSequence);
         let review_owner = cx.entity().downgrade();
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
             let close = draft.clone();
             let cancel = draft.clone();
             let button_close = draft.clone();
+            // The form keeps the focus ring's room below its last control,
+            // inside the dialog's clip of its body; the footer's gap gives
+            // it back, so the footer stays put.
             dialog
-                .title(label("interactive-rebase-title", "Edit local commits"))
+                .title(
+                    label("interactive-rebase-title", "Edit local commits")
+                        .debug_selector(|| "interactive-rebase-title".into()),
+                )
                 .width(px(720.))
+                .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                 .child(draft.clone())
                 .footer(
                     DialogFooter::new()
@@ -168,6 +175,11 @@ impl GitTurtle {
                     false
                 })
         });
+        // Opening the dialog focuses its shell, which draws no ring, so the
+        // form opened with focus nowhere to be seen. Focus its first stop
+        // worth a key now, as the palette does its query, so keys typed
+        // before the next frame reach it and the first frame draws its ring.
+        first.focus(window, cx);
         window.refresh();
     }
 
@@ -334,6 +346,17 @@ impl RebaseForm {
         self.closed = true;
         self.pending = false;
         close_rebase_dialog(&self.owner, self.path.as_deref(), window, cx);
+    }
+
+    /// Where focus starts as the form opens: the sequence this form already
+    /// loaded, on its selected row, or else the base field, which the
+    /// sequence needs first.
+    fn first_focus(&self, cx: &App) -> FocusHandle {
+        if self.steps.is_empty() {
+            self.base.read(cx).focus_handle(cx)
+        } else {
+            self.focus.clone()
+        }
     }
 
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -557,8 +580,23 @@ impl Render for RebaseForm {
         )
         .size_full()
         .track_scroll(&self.scroll);
+        // The form scrolls, so it clips its controls to its bounds on both
+        // axes. It keeps the focus ring's room beside and below them, giving
+        // the sides back through its margin and the foot through the
+        // dialog's footer gap, so the base field, Load commits and the
+        // action buttons draw their rings whole and nothing moves.
+        let room = appearance::button_ring_room(cx);
+        // The sequence draws its keyboard ring on its own 1 px edge, as
+        // History's lists do: after a key, until a pointer press.
+        let ringed = self
+            .owner
+            .upgrade()
+            .is_some_and(|owner| owner.read(cx).focus_ring.shows(&self.focus));
         div().id("rebase-plan-scroll")
-            .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
+            .max_h((window.viewport_size().height - px(240.)).max(px(160.)) + room)
+            .px(room)
+            .mx(-room)
+            .pb(room)
             .overflow_y_scroll()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
@@ -566,7 +604,7 @@ impl Render for RebaseForm {
             .child(div().flex().flex_col().gap_3()
             .child(label("rebase-base-explanation", "Base stays unchanged. Review up to 100 commits after it on the current branch. Merge-preserving and root rewrites are unsupported.").text_size(crate::appearance::ui_text(12.)))
             .child(div().flex().gap_2().items_center().child(div().flex_1().child(Input::new(&self.base).aria_label("Exclusive base revision")))
-                .child(button("load-rebase-commits", if self.pending { "Loading…" } else { "Load commits" }, "", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.load(window, cx)))))
+                .child(button("load-rebase-commits", if self.pending { "Loading…" } else { "Load commits" }, "", false).debug_selector(|| "load-rebase-commits".into()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.load(window, cx)))))
             .when_some(self.plan.as_ref(), |element, plan| element
                 .child(label("rebase-resolved-base", format!("{} · {} commits · base {} · branch tip {}", plan.branch, plan.commits.len(), &plan.base[..10], &plan.head[..10])).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
                 .child(div().flex().flex_wrap().gap_1().children([RebaseAction::Pick, RebaseAction::Reword, RebaseAction::Squash, RebaseAction::Fixup, RebaseAction::Drop].into_iter().map(|action| {
@@ -574,7 +612,7 @@ impl Render for RebaseForm {
                     button(action.label(), action.label(), "", active).toggled(active).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| this.choose(action, cx)))
                 })).child(button("rebase-move-up", "Move up", "", false).disabled(self.pending || self.selected == 0).on_click(cx.listener(|this, _, _, cx| this.move_selected(true, cx))))
                     .child(button("rebase-move-down", "Move down", "", false).disabled(self.pending || self.selected + 1 >= self.steps.len()).on_click(cx.listener(|this, _, _, cx| this.move_selected(false, cx)))))
-                .child(div().id("rebase-list-focus").role(Role::ListBox).aria_label("Planned commits, oldest first").tab_stop(true).key_context("RebaseSequence").track_focus(&self.focus).h(px(220.)).border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden()
+                .child(div().id("rebase-list-focus").debug_selector(|| "rebase-list-focus".into()).role(Role::ListBox).aria_label("Planned commits, oldest first").tab_stop(true).key_context("RebaseSequence").track_focus(&self.focus).h(px(220.)).border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(5.)).overflow_hidden()
                     .on_action(cx.listener(|this, _: &MoveCommitUp, _, cx| this.move_selected(true, cx)))
                     .on_action(cx.listener(|this, _: &MoveCommitDown, _, cx| this.move_selected(false, cx)))
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
@@ -746,8 +784,85 @@ impl Render for MessageForm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tags::tests::{draw, tagged_repository, window};
+    use crate::tags::tests::{assert_room_for_rings, draw, tagged_repository, window};
     use core::prelude::v1::test;
+
+    /// The rebase form opens with focus in its base field, which draws its
+    /// focus whole: its 1 px accent edge and the kit's ring outside it, whose
+    /// left side and foot the form's clip cut. It opened with focus on the
+    /// dialog's shell, which draws nothing. Once commits load, the sequence
+    /// holds focus and, after a key, draws its 1 px edge in the accent on all
+    /// four sides; reopened on that sequence, the form starts there, ringed.
+    #[gpui::test]
+    async fn the_rebase_form_opens_with_its_first_stop_focused_and_ringed(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(directory.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        let open = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.open_interactive_rebase(None, window, cx))
+            });
+            draw(cx);
+        };
+        let accent = cx.read(|cx| gpui_kit::Hsla::from(rgb(palette(cx).accent)));
+        let sequence_ringed = |cx: &mut VisualTestContext| {
+            let list = cx
+                .debug_bounds("rebase-list-focus")
+                .expect("the sequence is drawn");
+            focus_ring::painted_outlines(cx, accent)
+                .into_iter()
+                .find(|edge| {
+                    (edge.bounds.left() - list.left()).abs() <= px(1.)
+                        && (edge.bounds.top() - list.top()).abs() <= px(1.)
+                        && (edge.bounds.right() - list.right()).abs() <= px(1.)
+                        && (edge.bounds.bottom() - list.bottom()).abs() <= px(1.)
+                })
+                .is_some_and(|edge| edge.width == px(1.) && edge.whole)
+        };
+
+        open(cx);
+        let form = app.read_with(cx, |app, _| app.interactive_rebase.draft.clone().unwrap());
+        let (base, text) = cx.read(|cx| {
+            let base = form.read(cx).base.read(cx);
+            (base.focus_handle(cx), base.input_bounds())
+        });
+        assert!(
+            cx.update(|window, _| base.is_focused(window)),
+            "the base field holds focus as the form opens"
+        );
+        focus_ring::assert_input_ringed(cx, text, "the rebase base field");
+        // Load commits, at the form's other side, keeps its ring whole too,
+        // and the room for both moves neither the form nor its footer.
+        assert_room_for_rings(
+            cx,
+            &app,
+            &["load-rebase-commits"],
+            &["interactive-rebase-title", "dialog-dismiss: Close"],
+        );
+
+        cx.update(|window, cx| form.update(cx, |form, cx| form.load(window, cx)));
+        let read = app.update(cx, |app, _| app.interactive_rebase.task.take());
+        read.expect("the plan is read").await;
+        draw(cx);
+        let sequence = form.read_with(cx, |form, _| form.focus.clone());
+        assert!(cx.update(|window, _| sequence.is_focused(window)));
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert!(sequence_ringed(cx), "a key rings the focused sequence");
+
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(!cx.update(|window, _| sequence.is_focused(window)));
+        open(cx);
+        assert!(
+            cx.update(|window, _| sequence.is_focused(window)),
+            "the form reopens on the sequence it loaded"
+        );
+        assert!(sequence_ringed(cx), "the reopened sequence is ringed");
+    }
 
     /// Under a modal dialog the status bar names the keys of the dialog
     /// control holding focus, or nothing: never the page's hints, whose keys
