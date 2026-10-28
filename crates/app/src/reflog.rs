@@ -774,7 +774,7 @@ mod tests {
     /// Twelve HEAD reflog entries, as on the native fixture, so the entry list
     /// fills its height; the newest commit changes `files` files.
     fn changed_repository(directory: &std::path::Path, files: usize) -> GitRepository {
-        let repo = GitRepository::init(directory.join("repository"), "main").unwrap();
+        let repo = crate::views::tests::fixture_repository(directory.join("repository"));
         for index in 0..11 {
             let message = format!("Commit {index}");
             git(

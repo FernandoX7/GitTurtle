@@ -629,7 +629,7 @@ pub(crate) mod tests {
     /// Three tagged commits: three local tags and three entries in HEAD's
     /// reflog.
     pub(crate) fn tagged_repository(directory: &std::path::Path) -> GitRepository {
-        let repo = GitRepository::init(directory.join("repository"), "main").unwrap();
+        let repo = crate::views::tests::fixture_repository(directory.join("repository"));
         for index in 0..3 {
             let message = format!("Commit {index}");
             git(

@@ -6848,7 +6848,7 @@ pub(crate) mod tests {
             image_lifetime::init(cx);
         });
         let fixture = tempfile::tempdir().unwrap();
-        let repo = GitRepository::init(fixture.path().join("narrow"), "main").unwrap();
+        let repo = fixture_repository(fixture.path().join("narrow"));
         let mut command = Command::new("git");
         command
             .arg("-C")
@@ -6901,6 +6901,14 @@ pub(crate) mod tests {
         let app = observed.borrow_mut().take().unwrap();
         cx.simulate_resize(size(px(1000.), px(680.)));
         settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app
+                .profile
+                .as_ref()
+                .map(|profile| (profile.name.clone(), profile.email.clone()))),
+            Some(("Fixture".to_owned(), "fixture@example.invalid".to_owned())),
+            "the app reads the fixture's own identity, never the caller's"
+        );
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
         settle(&app, cx).await;
         (fixture, app, cx)
@@ -14818,6 +14826,31 @@ pub(crate) mod tests {
             "git {args:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    /// Gives the fixture repository at `repository` a commit identity of its
+    /// own, the committer its history names. The app reads the repository's
+    /// effective identity, a developer's global configuration included, and
+    /// the identity lays out the composer: with one, the composer keeps room
+    /// for its description and the Changes list gets less. A fixture without
+    /// its own identity therefore drew one way under the gate's empty global
+    /// configuration and another on a machine whose configuration names its
+    /// developer. A test that needs no identity sets empty values, which
+    /// win over global ones too.
+    pub(crate) fn fixture_identity(repository: &std::path::Path) {
+        fixture_git(repository, &["config", "user.name", "Fixture"]);
+        fixture_git(
+            repository,
+            &["config", "user.email", "fixture@example.invalid"],
+        );
+    }
+
+    /// A new, empty repository at `path` on `main`, with its own commit
+    /// identity ([`fixture_identity`]).
+    pub(crate) fn fixture_repository(path: impl AsRef<std::path::Path>) -> GitRepository {
+        let repository = GitRepository::init(path, "main").unwrap();
+        fixture_identity(repository.path());
+        repository
     }
 
     /// Draw, advancing simulated time past debounces, until `done` holds

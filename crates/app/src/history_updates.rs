@@ -590,7 +590,7 @@ mod tests {
         // the deterministic scheduler from another thread, including on macOS.
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
-        let repo = GitRepository::init(fixture.path().join("repo"), "main").unwrap();
+        let repo = crate::views::tests::fixture_repository(fixture.path().join("repo"));
         let snapshot = move |commits: Vec<Commit>| worker::Snapshot {
             repository: repo.clone(),
             branches: vec![],

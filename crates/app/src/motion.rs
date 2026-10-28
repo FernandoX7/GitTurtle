@@ -658,8 +658,7 @@ mod tests {
     async fn a_tab_left_before_new_rows_land_keeps_no_earlier_rows(cx: &mut TestAppContext) {
         let (fixture, app, cx) = working(cx, false).await;
         let root = fixture.path().join("narrow");
-        let other = GitRepository::init(fixture.path().join("other"), "main")
-            .unwrap()
+        let other = crate::views::tests::fixture_repository(fixture.path().join("other"))
             .path()
             .to_owned();
         let held = app.update(cx, |app, _| app.file_paths.executor().hold());

@@ -56,6 +56,7 @@ impl Fixture {
         let main = directory.path().join("main");
         std::fs::create_dir(&main).unwrap();
         git(&main, &["init", "--initial-branch=main"]);
+        crate::views::tests::fixture_identity(&main);
         std::fs::write(main.join("tracked.txt"), "original\n").unwrap();
         std::fs::write(main.join(".gitignore"), "*.ignored\n").unwrap();
         git(&main, &["add", "."]);

@@ -2344,7 +2344,7 @@ mod tests {
 
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
-        let repository = GitRepository::init(fixture.path().join("repository"), "main").unwrap();
+        let repository = crate::views::tests::fixture_repository(fixture.path().join("repository"));
         let canonical = repository.path().to_owned();
         let nested = canonical.join("nested");
         std::fs::create_dir(&nested).unwrap();
@@ -2488,8 +2488,9 @@ mod tests {
         let mut apps = Vec::new();
         let mut editors = Vec::new();
         for index in 0..2 {
-            let repository =
-                GitRepository::init(fixture.path().join(format!("repo-{index}")), "main").unwrap();
+            let repository = crate::views::tests::fixture_repository(
+                fixture.path().join(format!("repo-{index}")),
+            );
             let saved = fixture.path().join(format!("session-{index}.json"));
             let mut captured = None;
             let window = cx.add_window(|window, cx| {
@@ -2636,7 +2637,7 @@ mod tests {
             process::{Command, Stdio},
         };
 
-        let repo = GitRepository::init(path, "main").unwrap();
+        let repo = crate::views::tests::fixture_repository(path);
         let mut input = String::new();
         for index in 0..commits {
             let message = format!("history commit {index}");
@@ -2976,8 +2977,8 @@ mod tests {
 
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
-        let first = GitRepository::init(fixture.path().join("first"), "main").unwrap();
-        let second = GitRepository::init(fixture.path().join("second"), "main").unwrap();
+        let first = crate::views::tests::fixture_repository(fixture.path().join("first"));
+        let second = crate::views::tests::fixture_repository(fixture.path().join("second"));
         let initial = first.path().to_owned();
         let next = second.path().to_owned();
         let destination = fixture.path().join("isolated-session.json");
@@ -3073,8 +3074,8 @@ mod tests {
 
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
-        let first = GitRepository::init(fixture.path().join("first"), "main").unwrap();
-        let second = GitRepository::init(fixture.path().join("second"), "main").unwrap();
+        let first = crate::views::tests::fixture_repository(fixture.path().join("first"));
+        let second = crate::views::tests::fixture_repository(fixture.path().join("second"));
         let initial = first.path().to_owned();
         let next = second.path().to_owned();
         let destination = fixture.path().join("isolated-session.json");
@@ -3206,10 +3207,11 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let paths = (0..4)
             .map(|index| {
-                GitRepository::init(fixture.path().join(format!("repository-{index}")), "main")
-                    .unwrap()
-                    .path()
-                    .to_owned()
+                crate::views::tests::fixture_repository(
+                    fixture.path().join(format!("repository-{index}")),
+                )
+                .path()
+                .to_owned()
             })
             .collect::<Vec<_>>();
         let initial = paths[0].clone();
@@ -3436,10 +3438,11 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let paths = (0..TABS.len())
             .map(|index| {
-                GitRepository::init(fixture.path().join(format!("repository-{index}")), "main")
-                    .unwrap()
-                    .path()
-                    .to_owned()
+                crate::views::tests::fixture_repository(
+                    fixture.path().join(format!("repository-{index}")),
+                )
+                .path()
+                .to_owned()
             })
             .collect::<Vec<_>>();
         let initial = paths[0].clone();
@@ -3648,10 +3651,11 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let paths = (0..2)
             .map(|index| {
-                GitRepository::init(fixture.path().join(format!("repository-{index}")), "main")
-                    .unwrap()
-                    .path()
-                    .to_owned()
+                crate::views::tests::fixture_repository(
+                    fixture.path().join(format!("repository-{index}")),
+                )
+                .path()
+                .to_owned()
             })
             .collect::<Vec<_>>();
         let initial = paths[0].clone();
@@ -3804,8 +3808,7 @@ mod tests {
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
         let paths = ["compact", "second"].map(|name| {
-            GitRepository::init(fixture.path().join(name), "main")
-                .unwrap()
+            crate::views::tests::fixture_repository(fixture.path().join(name))
                 .path()
                 .to_owned()
         });
@@ -4418,7 +4421,7 @@ mod tests {
 
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
-        let repository = GitRepository::init(fixture.path().join("repository"), "main").unwrap();
+        let repository = crate::views::tests::fixture_repository(fixture.path().join("repository"));
         let path = repository.path().to_owned();
         let destination = fixture.path().join("isolated-session.json");
         cx.update(|cx| {
@@ -4483,8 +4486,8 @@ mod tests {
         cx.executor().allow_parking();
         cx.executor().set_block_on_ticks(100..=100);
         let fixture = tempfile::tempdir().unwrap();
-        let first = GitRepository::init(fixture.path().join("first"), "main").unwrap();
-        let second = GitRepository::init(fixture.path().join("new-tab"), "main").unwrap();
+        let first = crate::views::tests::fixture_repository(fixture.path().join("first"));
+        let second = crate::views::tests::fixture_repository(fixture.path().join("new-tab"));
         let first_path = first.path().canonicalize().unwrap();
         let second_path = second.path().canonicalize().unwrap();
         let save_path = fixture.path().join("isolated-session.json");
@@ -4637,7 +4640,7 @@ mod tests {
 
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
-        let repo = GitRepository::init(fixture.path().join("history"), "main").unwrap();
+        let repo = crate::views::tests::fixture_repository(fixture.path().join("history"));
         let output = std::process::Command::new("git")
             .arg("-C")
             .arg(repo.path())
@@ -4760,7 +4763,7 @@ mod tests {
             .map(|index| fixture.path().join(format!("repository-{index}")))
             .collect();
         for path in [&paths[3], &paths[6]] {
-            let repo = GitRepository::init(path, "main").unwrap();
+            let repo = crate::views::tests::fixture_repository(path);
             let output = std::process::Command::new("git")
                 .arg("-C")
                 .arg(repo.path())

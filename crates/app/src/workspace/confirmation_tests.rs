@@ -114,6 +114,11 @@ async fn a_rows_stage_and_unstage_confirm_on_its_row_where_the_file_arrives(
     cx: &mut TestAppContext,
 ) {
     let (_fixture, app, cx, repository) = working(cx).await;
+    // Tall enough that both files' rows stay in view once one moves to
+    // Staged: the fixture's commit identity gives the composer room for its
+    // description, which leaves the Changes list 134 px at 1000 × 680.
+    cx.simulate_resize(size(px(1000.), px(900.)));
+    draw(cx);
     let notes = |area| confirmations::file(&repository, Path::new("notes.txt"), area);
     let control = |area: ChangeArea| notes(area).control().to_string();
     let other = confirmations::file(&repository, Path::new("other.txt"), ChangeArea::Unstaged)

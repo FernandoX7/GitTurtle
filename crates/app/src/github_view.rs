@@ -2739,6 +2739,7 @@ mod tests {
             .output()
             .unwrap();
         assert!(result.status.success());
+        crate::views::tests::fixture_identity(fixture.path());
         let repo = GitRepository::open(fixture.path()).unwrap();
         let view: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let captured = view.clone();

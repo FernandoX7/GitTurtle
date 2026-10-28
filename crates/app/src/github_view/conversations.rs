@@ -644,6 +644,7 @@ mod tests {
                 .status
                 .success()
         );
+        crate::views::tests::fixture_identity(fixture.path());
         let repo = GitRepository::open(fixture.path()).unwrap();
         let panel_repo = repo.clone();
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
