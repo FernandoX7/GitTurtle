@@ -129,32 +129,6 @@ struct Known {
 }
 
 const KNOWN: &[Known] = &[
-    // At 18 pt in 478 × 980, a width the parent controls' breakpoint brings
-    // into the walk, the repository tab's name is less than a pixel wider
-    // than the 59.5 px its tab leaves it, and the kit's Button label, which
-    // GPUI ends in an ellipsis only once the name's width rounded down
-    // exceeds the room, draws it whole and cut by half a pixel.
-    Known {
-        page: Page::History,
-        sizes: &[18],
-        rule: Rule::CutText,
-        region: "repository-tab-strip",
-        follow_up: "a repository tab ends its name inside its tab",
-    },
-    Known {
-        page: Page::CompareText,
-        sizes: &[18],
-        rule: Rule::CutText,
-        region: "repository-tab-strip",
-        follow_up: "a repository tab ends its name inside its tab",
-    },
-    Known {
-        page: Page::CompareImage,
-        sizes: &[18],
-        rule: Rule::CutText,
-        region: "repository-tab-strip",
-        follow_up: "a repository tab ends its name inside its tab",
-    },
     // A PR's detail rows and their controls run past a narrow panel.
     Known {
         page: Page::GitHub,
