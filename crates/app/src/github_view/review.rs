@@ -228,11 +228,14 @@ fn source_presentation(patch: &str) -> Option<text::PatchPresentation> {
 }
 /// The key context entry that names a part of the panel's body ([`Panel::part`]).
 const PART: &str = "GitTurtleGithubPart";
+/// The key context entry that names a part of the conversation list, a conversation's
+/// actions ([`Panel::conversation_part`]).
+const CONVERSATION: &str = "GitTurtleGithubConversation";
 
-/// Scrolls the panel's body, `scroll`, by the least that shows `bounds`, the children of
-/// what focus has moved into, `inset` clear of its edges, after this frame paints, unless
-/// focus or a scroll supersedes it. Only a change of focus since the frame `revealed`
-/// records reveals.
+/// Scrolls `scroll`, the panel's body or a list inside it, by the least that shows
+/// `bounds`, the children of what focus has moved into, `inset` clear of its edges, after
+/// this frame paints, unless focus or a scroll supersedes it. Only a change of focus since
+/// the frame `revealed` records reveals.
 fn reveal(
     scroll: &ScrollHandle,
     revealed: &std::cell::RefCell<FocusObservation>,
@@ -286,6 +289,35 @@ fn reveal(
     });
 }
 
+/// `element`, named `name` under `key` in its key context, as a part of what `scroll`
+/// scrolls: when the keyboard moves focus onto a control in it, and no smaller part under
+/// `key` holds that control, `scroll` scrolls by the least that shows the part's children,
+/// `inset` clear of its edges ([`reveal`]). The key context names the part on the focus path
+/// of the frame that drew the control, so a control needs no focus handle of the panel's.
+fn revealing(
+    element: Div,
+    key: &'static str,
+    name: SharedString,
+    scroll: ScrollHandle,
+    revealed: std::rc::Rc<std::cell::RefCell<FocusObservation>>,
+    inset: Pixels,
+) -> Div {
+    let mut context = KeyContext::default();
+    context.set(key, name.clone());
+    element
+        .key_context(context)
+        .on_children_prepainted(move |bounds, window, cx| {
+            let innermost = window
+                .context_stack()
+                .iter()
+                .rev()
+                .find_map(|context| context.get(key).cloned());
+            if window.last_input_was_keyboard() && innermost.as_ref() == Some(&name) {
+                reveal(&scroll, &revealed, bounds, inset, window, cx);
+            }
+        })
+}
+
 impl Panel {
     pub(super) fn reveal_on_focus(
         &self,
@@ -306,23 +338,29 @@ impl Panel {
     /// part's key context names it on the focus path of the frame that drew the control, so
     /// a control needs no focus handle of the panel's to be revealed.
     pub(super) fn part(&self, name: &'static str, element: Div, cx: &App) -> Div {
-        let scroll = self.review.body_scroll.clone();
-        let revealed = self.review.revealed_focus.clone();
-        let inset = appearance::button_ring_room(cx);
-        let mut context = KeyContext::default();
-        context.set(PART, name);
-        element
-            .key_context(context)
-            .on_children_prepainted(move |bounds, window, cx| {
-                let innermost = window
-                    .context_stack()
-                    .iter()
-                    .rev()
-                    .find_map(|context| context.get(PART).cloned());
-                if window.last_input_was_keyboard() && innermost.as_deref() == Some(name) {
-                    reveal(&scroll, &revealed, bounds, inset, window, cx);
-                }
-            })
+        revealing(
+            element,
+            PART,
+            name.into(),
+            self.review.body_scroll.clone(),
+            self.review.revealed_focus.clone(),
+            appearance::button_ring_room(cx),
+        )
+    }
+    /// `element`, the actions of the conversation at `index`, as a part of the conversation
+    /// list, which scrolls inside the panel's body: when the keyboard moves focus onto one of
+    /// them, the list scrolls by the least that shows them with their focus rings, as the
+    /// body does for its parts. The list is a part of the body ([`Panel::part`]), so the body
+    /// shows the list while the list shows the actions.
+    pub(super) fn conversation_part(&self, index: usize, element: Div, cx: &App) -> Div {
+        revealing(
+            element,
+            CONVERSATION,
+            index.to_string().into(),
+            self.conversations.list_scroll.clone(),
+            self.conversations.list_revealed.clone(),
+            appearance::button_ring_room(cx),
+        )
     }
     /// Whether the pane that `focus` tracks draws the window's keyboard ring:
     /// after a key, and still while the pointer moves, until a pointer press.
@@ -1225,7 +1263,7 @@ impl Panel {
                         )
                         .child(match self.review.mode {
                             1 => self.render_source(cx),
-                            2 => self.render_threads(Some(&file.filename), cx),
+                            2 => self.render_threads(Some(&file.filename), window, cx),
                             _ => self.render_patch(window, cx),
                         }),
                 )
@@ -3441,8 +3479,15 @@ mod tests {
 
     /// The focus sweep (`focus_ring::sweep`) over the panel on the offline
     /// fixture, at the default and the largest interface size: its pull
-    /// request list, then a pull request's Overview, its Files with the first
-    /// file's patch open, and its Review.
+    /// request list, then a pull request's Overview with the first page of
+    /// its conversations, as the native review loads it, its Files with the
+    /// first file's patch open, and its Review. Tab shows every stop whole:
+    /// the conversations pane fits inside the body, and the conversation list
+    /// scrolls to the actions Tab moves onto. Review's first stop once drew
+    /// no ring at 18 pt, with a frame drawn before the walk too: a long draft
+    /// status pushed Review submission… past the panel's right edge, so the
+    /// product, not the walk, was at fault
+    /// (`github_view::tests::the_draft_status_gives_way_to_review_submission`).
     #[gpui::test]
     async fn the_panel_draws_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
         use crate::focus_ring::sweep;
@@ -3463,6 +3508,13 @@ mod tests {
             .files(&captured, 1, &OperationControl::default())
             .unwrap()
             .items;
+        let threads = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&captured, None, &OperationControl::default())
+            .unwrap();
+        assert!(
+            !threads.items.is_empty(),
+            "the fixture's first page of conversations"
+        );
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
                 panel.destination.update(cx, |input, cx| {
@@ -3470,6 +3522,8 @@ mod tests {
                 });
                 panel.rows = vec![pull.clone()];
                 panel.review.fixture = true;
+                panel.account = Some("offline-reviewer".into());
+                panel.receive_threads(threads, None);
                 panel.close(window, cx);
             });
             app.update(cx, |app, cx| app.open_github(window, cx));
@@ -3518,31 +3572,6 @@ mod tests {
                 sweep::walk(&app, cx, name, interface, &mut failures);
             }
         }
-        // Follow-ups (focus sweep, 2026-10-28). The body keeps the rings' room
-        // and Tab scrolls the part it moves into into view (`Panel::part`);
-        // still failing: at 18 pt in Overview two buttons outside any part
-        // (Open captured local comparison and a conversation's) stay below
-        // the fold, and a conversation pane's ring is cut at its sides and by
-        // the fold; and Review's first stop follows a focus the frame before
-        // had not drawn, so no part names it.
-        let known = [
-            (
-                "the GitHub panel's Overview at 18 pt, stop 0",
-                "paints no ring",
-            ),
-            (
-                "the GitHub panel's Overview at 18 pt, stop 1",
-                "paints no ring",
-            ),
-            (
-                "the GitHub panel's Overview at 18 pt, stop 12",
-                "a clip cuts",
-            ),
-            (
-                "the GitHub panel's Review at 18 pt, stop 0",
-                "paints no ring",
-            ),
-        ];
-        sweep::assert_whole_except(failures, &known);
+        sweep::assert_whole(failures);
     }
 }

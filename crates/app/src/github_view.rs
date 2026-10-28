@@ -68,6 +68,13 @@ fn phrases(id: &'static str, text: impl Into<SharedString>) -> Stateful<Div> {
 fn text_inset() -> Pixels {
     appearance::ui_size(crate::LABEL_INSET)
 }
+/// The tallest the panel's scrolling body grows in `window`, its padding included: the
+/// window less the dialog's chrome around it, scaled with the interface text.
+fn body_max_height(window: &Window) -> Pixels {
+    (window.viewport_size().height
+        - window.rem_size() * (220. / f32::from(appearance::DEFAULT_INTERFACE_TEXT_SIZE)))
+    .clamp(px(120.), px(660.))
+}
 /// One line of a PR row: left-aligned in its column and cut with an ellipsis
 /// where the row is too narrow, the whole text in the row's tooltip.
 fn row_text(selector: String, text: String) -> Div {
@@ -1214,8 +1221,8 @@ impl Render for Panel {
                     .when_some(self.status.as_ref(),|element,status|element.child(div().py_3().px(text_inset()).bg(rgb(p.subtle)).rounded(px(6.)).flex().flex_col().gap_1()
                         .child(label("github-review-status",format!("Reviews · {}",if status.reviews.is_empty(){"None reported".into()}else{status.reviews.join(" · ")})))
                         .child(label("github-check-status",format!("Checks · {}{}",if status.checks.is_empty(){"None reported".into()}else{status.checks.join(" · ")},if status.incomplete{" · Additional status entries are outside this preview"}else{""})))))
-                    .child(self.render_threads(None,cx))
-                    .child(button("github-open-changes","Open captured local comparison","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.changes(window,cx)))))
+                    .child(self.render_threads(None,window,cx))
+                    .child(self.part("open-changes",div(),cx).flex().child(button("github-open-changes","Open captured local comparison","",false).debug_selector(||"github-open-changes".into()).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.changes(window,cx))))))
                 .when(self.review.section==Section::Files,|element|element.child(self.render_files(window,cx)))
                 .when(self.review.section==Section::Review,|element|element.child(self.render_collected(cx))))
             .when(self.create,|element|element
@@ -1231,8 +1238,12 @@ impl Render for Panel {
                     .children([ReviewEvent::Comment,ReviewEvent::Approve,ReviewEvent::RequestChanges].map(|event|button(event.label(),event.label(),"",!self.discussion&&self.event==event).toggled(!self.discussion&&self.event==event).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.discussion=false;this.event=event;this.confirm=None;this.save_draft(window,cx);}))))
                     .child(button("github-discussion","Discussion only","",self.discussion).toggled(self.discussion).disabled(pending||!self.review.comments.is_empty()||self.review.composing.is_some()).on_click(cx.listener(|this,_,_,cx|{this.discussion=true;this.confirm=None;cx.notify();})))))
                 .child(div().debug_selector(||"github-review-summary".into()).on_children_prepainted(self.reveal_on_focus(self.body.read(cx).focus_handle(cx))).child(Textarea::new(&self.body).h(appearance::ui_size(130.)).aria_label(if self.create{"Pull request description"}else{"Review summary"}).disabled(pending)))
-                .child(self.part("submit",div(),cx).flex().items_center().gap_2().child(label("github-draft-status",self.save_status.clone()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted)))
-                    .child(div().flex_1()).child(button("github-review-submit","Review submission…","",true).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.review_submission(window,cx))))))
+                // The draft status beside Review submission… where it fits there whole, at the
+                // panel's text inset; otherwise on a line of its own below it, wrapping, so its
+                // remedy stays readable and the button stays inside the panel (at 18 pt a failed
+                // save's status pushed the button past the panel's right edge).
+                .child(self.part("submit",div(),cx).flex().flex_wrap_reverse().items_center().gap_2().child(label("github-draft-status",self.save_status.clone()).debug_selector(||"github-draft-status".into()).min_w_0().mx(text_inset()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted)))
+                    .child(button("github-review-submit","Review submission…","",true).debug_selector(||"github-review-submit".into()).ml_auto().disabled(pending).on_click(cx.listener(|this,_,window,cx|this.review_submission(window,cx))))))
             .child(self.render_reply_composer(cx))
             .when_some(self.confirm.as_ref(),|element,confirmation|element.child(div().debug_selector(||"github-confirmation".into()).on_children_prepainted(self.reveal_on_focus(self.conversations.confirm_focus.clone())).track_focus(&self.conversations.confirm_focus).tab_stop(true).p_3().border_1().border_color(rgb(p.accent)).rounded(px(7.)).flex().flex_col().gap_2()
                 .child(label("github-confirm-destination",format!("{}\nAccount · {}",confirmation.action.destination(),confirmation.account)).font_weight(FontWeight::SEMIBOLD))
@@ -1267,12 +1278,7 @@ impl Render for Panel {
                 .debug_selector(|| "github-panel".into())
                 .track_scroll(&self.review.body_scroll)
                 .min_w_0()
-                .max_h(
-                    (window.viewport_size().height
-                        - window.rem_size()
-                            * (220. / f32::from(appearance::DEFAULT_INTERFACE_TEXT_SIZE)))
-                    .clamp(px(120.), px(660.)),
-                )
+                .max_h(body_max_height(window))
                 .p(room)
                 .mx(-room)
                 .overflow_y_scroll()
@@ -2273,6 +2279,125 @@ mod tests {
                 }
             }
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.update(|window, cx| window.close_dialog(cx));
+    }
+
+    /// Review's draft status gives way to Review submission… as the status beside the tabs
+    /// gives way to them: where it fits beside the button whole it stays on its line, from
+    /// the panel's text inset; where it does not, it takes a line of its own below the
+    /// button, wrapping inside the panel's text column, and the button keeps the panel's
+    /// right edge. At 18 pt in a 1280 × 800 window the unsaved draft's status pushed the
+    /// button past the panel's right edge, where Tab focused it with nothing drawn. At 13
+    /// and 18 pt in a 1480 × 980 and a 1000 × 700 window, with "Draft saved locally", the
+    /// failed save's status and the unsaved draft's longer one.
+    #[gpui::test]
+    async fn the_draft_status_gives_way_to_review_submission(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        let repo = cx.read(|cx| app.read(cx).repository.clone().unwrap());
+        let panel = cx.update(|window, cx| {
+            cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx))
+        });
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.run_until_parked();
+        let pull = github::review::fixture_pull(false);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.rows = vec![pull.clone()];
+                panel.review.fixture = true;
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        settle_panel(&app, cx).await;
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull);
+                panel.review.section = Section::Review;
+                panel.review.show_list = false;
+                cx.notify();
+            })
+        });
+        settle_panel(&app, cx).await;
+        let saved = "Draft saved locally";
+        let failed = "Draft save failed — keep this window open or copy the text";
+        let unsaved = DraftIssue::Selection.save_message();
+        let mut wrapped = false;
+        for (interface, width, height) in [
+            (13, 1480., 980.),
+            (18, 1480., 980.),
+            (13, 1000., 700.),
+            (18, 1000., 700.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            for status in [saved, failed, unsaved] {
+                cx.update(|_, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.save_status = status.into();
+                        cx.notify();
+                    })
+                });
+                draw(cx);
+                let at = format!("{interface} pt in {width} × {height}, {status:?}");
+                let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                    cx.debug_bounds(selector)
+                        .unwrap_or_else(|| panic!("{at}: {selector}"))
+                };
+                let edge = bounds(cx, "github-panel-content");
+                let submit = bounds(cx, "github-review-submit");
+                let shown = bounds(cx, "github-draft-status");
+                let (line, whole) = cx.update(|window, _| {
+                    let size = appearance::ui_text(12.);
+                    (
+                        window
+                            .text_style()
+                            .line_height
+                            .to_pixels(size.into(), window.rem_size()),
+                        crate::views::shaped_width(
+                            status,
+                            size,
+                            window.text_style().font_weight,
+                            window,
+                        ),
+                    )
+                });
+                let slack = px(0.5);
+                let (start, end) = (edge.left() + text_inset(), edge.right() - text_inset());
+                // The button keeps the panel's right edge.
+                assert!(
+                    (submit.right() - edge.right()).abs() < slack,
+                    "{at}: Review submission… {submit:?} ends at the panel's edge {edge:?}"
+                );
+                assert!(
+                    (shown.left() - start).abs() < slack && shown.right() <= end + slack,
+                    "{at}: the status {shown:?} lies from {start:?} to at most {end:?}"
+                );
+                let lines = (shown.size.height / line).round();
+                if shown.top() < submit.bottom() {
+                    // Beside the button, whole on one line centred on it.
+                    assert!(
+                        shown.right() <= submit.left()
+                            && lines == 1.
+                            && shown.size.width + slack >= whole
+                            && (shown.center().y - submit.center().y).abs() < slack,
+                        "{at}: {shown:?} ({whole:?} on one line) beside {submit:?}"
+                    );
+                } else {
+                    // Below it, its lines holding the whole text.
+                    wrapped = true;
+                    assert!(
+                        status != saved
+                            && (shown.size.height - line * lines).abs() < slack
+                            && shown.size.width * lines + slack >= whole,
+                        "{at}: {shown:?} ({whole:?}) below {submit:?} in {lines} lines of \
+                         {line:?}"
+                    );
+                }
+            }
+        }
+        assert!(wrapped, "a long status takes a line of its own somewhere");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         cx.update(|window, cx| window.close_dialog(cx));
     }

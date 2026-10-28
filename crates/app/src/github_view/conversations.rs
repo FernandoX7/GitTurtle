@@ -31,6 +31,13 @@ pub(super) struct State {
     pub deferred: DeferredDraft,
     pub timer: Option<Task<()>>,
     pub confirm_focus: FocusHandle,
+    /// The conversation list's scroll, which Tab moves to show a conversation's actions
+    /// (`Panel::conversation_part`), and the focus it last showed.
+    pub list_scroll: ScrollHandle,
+    pub list_revealed: std::rc::Rc<std::cell::RefCell<super::review::FocusObservation>>,
+    /// What the conversations pane draws besides its list, laid out last frame: the list
+    /// keeps the pane inside the panel's body.
+    pub list_chrome: std::rc::Rc<std::cell::Cell<Pixels>>,
 }
 impl State {
     pub fn new(window: &mut Window, cx: &mut Context<Panel>) -> Self {
@@ -52,6 +59,9 @@ impl State {
             deferred: DeferredDraft::default(),
             timer: None,
             confirm_focus: cx.focus_handle(),
+            list_scroll: ScrollHandle::new(),
+            list_revealed: Default::default(),
+            list_chrome: Default::default(),
         }
     }
     pub fn reset_content(&mut self) {
@@ -63,6 +73,7 @@ impl State {
         self.pagination_notice = None;
         self.invalid_threads.clear();
         self.active = None;
+        self.list_scroll.set_offset(point(px(0.), px(0.)));
     }
 }
 
@@ -472,8 +483,24 @@ impl Panel {
                 .child(label("github-reply-save",self.save_status.clone()).role(Role::Status).text_color(rgb(p.muted))))
             .into_any_element()
     }
-    pub(super) fn render_threads(&self, path: Option<&str>, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_threads(
+        &self,
+        path: Option<&str>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
+        // The pane, its own focus ring on its edge, fits inside the panel's body with the
+        // room the body keeps for rings, so Tab shows it whole: its list takes what the
+        // body has beyond the rest of the pane, up to its own bound.
+        let room = appearance::button_ring_room(cx);
+        let chrome = self.conversations.list_chrome.clone();
+        let list_height = appearance::ui_size(360.).min(
+            (super::body_max_height(window) - room * 2. - chrome.get())
+                .max(appearance::ui_size(120.)),
+        );
+        let list_scroll = self.conversations.list_scroll.clone();
+        let list_revealed = self.conversations.list_revealed.clone();
         let visible = self
             .conversations
             .threads
@@ -488,13 +515,31 @@ impl Panel {
             .checked_sub(2)
             .map(|index| self.conversations.cursors[index].clone());
         let next = self.conversations.next_cursor.clone();
-        crate::native_accessibility::clips_children(div().id("github-thread-section").min_w_0().role(Role::Group).aria_label("GitHub review conversations with authoritative resolution status")
+        // The pane is a part of the body, and so are its header, its list and its pager:
+        // Tab into one shows that one, and onto the pane itself shows the whole pane.
+        self.part("conversations", div(), cx).min_w_0().child(crate::native_accessibility::clips_children(div()
+            .on_children_prepainted(move |bounds, window, cx| {
+                // Everything but the list, the second child: the pane's padding and border
+                // around the span of its children, less the list.
+                let (Some(list), Some(span)) = (bounds.get(1).copied(), bounds.iter().copied().reduce(|a, b| a.union(&b))) else { return };
+                let measured = span.size.height - list.size.height + window.rem_size() * 1.5 + px(2.);
+                if (measured - chrome.get()).abs() > px(0.5) {
+                    chrome.set(measured);
+                    window.defer(cx, |window, _| window.refresh());
+                }
+            })
+            .id("github-thread-section").debug_selector(||"github-thread-section".into()).min_w_0().role(Role::Group).aria_label("GitHub review conversations with authoritative resolution status")
             .track_focus(&self.review.section_focus).border_1().border_color(rgb(if self.ringed(&self.review.section_focus, cx) { p.accent } else { p.border })).rounded(px(7.)).flex().flex_col().gap_2().p_3()
-            .child(div().flex().flex_wrap().items_center().gap_2()
+            .child(self.part("conversations-header", div(), cx).flex().flex_wrap().items_center().gap_2()
                 .child(label("github-conversations-heading",format!("Conversations · {} unresolved on this page",unresolved)).font_weight(FontWeight::SEMIBOLD))
                 .child(div().flex_1())
                 .child(button("github-threads-refresh","Refresh conversations","refresh",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|this.thread_page(None,window,cx)))))
-            .child(crate::native_accessibility::clips_children(div().id("github-threads").debug_selector(||"github-threads".into()).flex_shrink_0().min_w_0().max_h(appearance::ui_size(360.)).overflow_y_scroll().flex().flex_col().gap_3()
+            .child(self.part("conversation-list", div(), cx).flex_shrink_0().min_w_0().child(crate::native_accessibility::clips_children(div()
+                .on_children_prepainted(move |_, window, cx| {
+                    *list_revealed.borrow_mut() = super::review::FocusObservation { focus: window.focused(cx), viewport: list_scroll.bounds(), rem_size: window.rem_size() };
+                })
+                .id("github-threads").debug_selector(||"github-threads".into())
+                .track_scroll(&self.conversations.list_scroll).flex_shrink_0().min_w_0().max_h(list_height).overflow_y_scroll().flex().flex_col().gap_3()
                 .when(visible.is_empty(),|element|element.child(label("github-no-threads",if self.conversations.loaded{"No conversations for this file on the loaded page."}else{"Conversations are unavailable. Refresh conversations to load their current status."}).text_color(rgb(p.muted))))
                 .children(visible.into_iter().enumerate().map(|(index,thread)|{
                     let target=thread.target.clone(); let reply=target.clone(); let resolve=target.clone(); let refresh=target.clone(); let more=target.clone();
@@ -519,19 +564,19 @@ impl Panel {
                                     .child(label(("github-conversation-time",index * 1000 + comment_index),format!("{}{}",comment.created_at.replace('T'," ").trim_end_matches('Z'),if is_reply{" · reply"}else{""})).text_color(rgb(p.muted))))
                                 .child(label(("github-conversation-body",index * 1000 + comment_index),comment.body.clone()).min_w_0())
                         }))
-                        .child(div().flex().flex_wrap().items_center().gap_2().pt_1()
+                        .child(self.conversation_part(index, div(), cx).flex().flex_wrap().items_center().gap_2().pt_1()
                             .child(button(("github-thread-reply",index),"Reply","",false).disabled(self.pending||!can_reply).on_click(cx.listener(move|this,_,window,cx|this.begin_reply(reply.clone(),window,cx))))
                             .child(button(("github-thread-resolution",index),if resolved{"Reopen"}else{"Resolve"},"",false).disabled(self.pending||!can_resolve).on_click(cx.listener(move|this,_,window,cx|this.review_resolution(resolve.clone(),!resolved,window,cx))))
                             .child(button(("github-thread-reload",index),if opening_missing{"Opening comments"}else{"Refresh thread"},"refresh",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(refresh.clone(),None,window,cx))))
                             .when(cursor.is_some(),|element|element.child(button(("github-thread-more",index),"Next comment page","",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(more.clone(),cursor.clone(),window,cx)))))
                             .child(label(("github-thread-count",index),format!("{} of {} comments",thread.comments.len(),thread.comments_total)).text_color(rgb(p.muted))))
                         .when(!stale && (!can_reply || !can_resolve),|element|element.child(label(("github-thread-permissions",index),"Unavailable actions need complete context and GitHub permission; refresh to check again.").text_color(rgb(p.muted))))
-                }))))
+                })))))
             .when_some(self.conversations.pagination_notice.as_ref(),|element,notice|element.child(label("github-thread-pagination-limit",notice.clone()).text_color(rgb(p.warning))))
-            .child(div().flex().flex_wrap().items_center().gap_2()
+            .child(self.part("conversations-pager", div(), cx).flex().flex_wrap().items_center().gap_2()
                 .child(button("github-threads-previous","Previous conversations","",false).disabled(self.pending||previous.is_none()).on_click(cx.listener(move|this,_,window,cx|{if let Some(cursor)=previous.clone(){this.thread_page(cursor,window,cx);}})))
                 .child(label("github-threads-page",format!("Page {} · {} total conversations",self.conversations.cursors.len(),self.conversations.total)).text_color(rgb(p.muted)))
-                .child(button("github-threads-next","Next conversations","",false).disabled(self.pending||next.is_none()).on_click(cx.listener(move|this,_,window,cx|this.thread_page(next.clone(),window,cx)))))).into_any_element()
+                .child(button("github-threads-next","Next conversations","",false).disabled(self.pending||next.is_none()).on_click(cx.listener(move|this,_,window,cx|this.thread_page(next.clone(),window,cx))))))).into_any_element()
     }
 }
 
