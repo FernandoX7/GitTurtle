@@ -593,7 +593,7 @@ mod tests {
             history_next_offset: None,
             graph: vec![graph::GraphRow::default(); commits.len()],
             graph_notice: None,
-            refs: HashMap::new(),
+            refs: Default::default(),
             elapsed: std::time::Duration::ZERO,
             vanished_scope: None,
             commits,

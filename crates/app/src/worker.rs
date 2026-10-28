@@ -36,12 +36,82 @@ pub struct Snapshot {
     pub history_next_offset: Option<usize>,
     pub graph: Vec<graph::GraphRow>,
     pub graph_notice: Option<String>,
-    /// Each commit's local and remote branch names, HEAD's branch first.
-    pub refs: HashMap<String, CommitReferences>,
+    /// Each commit's local and remote branches, HEAD's first, then its tags.
+    pub refs: HistoryReferences,
     pub elapsed: Duration,
     /// An explicit Open whose branch or worktree scope no longer resolves
     /// reads All history instead and names the vanished scope here once.
     pub vanished_scope: Option<VanishedScope>,
+}
+
+/// Every commit's references as History shows them, prepared with the
+/// snapshot on the worker: a row reads its commit's and shares their
+/// strings, and a frame reads the most any commit has, so neither joins,
+/// formats or counts anything.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistoryReferences {
+    by_commit: HashMap<String, CommitReferences>,
+    /// The most references any commit has, which narrow History's compact
+    /// pill is sized for.
+    widest: usize,
+}
+
+impl HistoryReferences {
+    /// Each commit's `branches`, HEAD's first and the others in Git's order,
+    /// then its `tags` in Git's order, by name. A tag names the commit it
+    /// peels to; one of a tree, a blob or another tag names no row.
+    fn new(branches: &[Branch], tags: &[gitturtle_core::Tag]) -> Self {
+        let mut names: HashMap<&str, (Vec<&str>, Vec<&str>)> = HashMap::new();
+        for branch in branches {
+            let (branches, _) = names.entry(&branch.oid).or_default();
+            if branch.current {
+                branches.insert(0, &branch.name);
+            } else {
+                branches.push(&branch.name);
+            }
+        }
+        for tag in tags.iter().filter(|tag| tag.target_kind == "commit") {
+            names.entry(&tag.target_oid).or_default().1.push(&tag.name);
+        }
+        let by_commit: HashMap<_, _> = names
+            .into_iter()
+            .map(|(oid, (branches, tags))| {
+                (oid.to_owned(), CommitReferences::new(&branches, &tags))
+            })
+            .collect();
+        Self {
+            widest: by_commit
+                .values()
+                .map(|refs| refs.names.len())
+                .max()
+                .unwrap_or(0),
+            by_commit,
+        }
+    }
+
+    /// The references of the commit `oid`, if it has any.
+    pub fn get(&self, oid: &str) -> Option<&CommitReferences> {
+        self.by_commit.get(oid)
+    }
+
+    /// The most references any commit has.
+    pub fn widest(&self) -> usize {
+        self.widest
+    }
+
+    /// Every commit's references.
+    #[cfg(test)]
+    pub fn commits(&self) -> impl Iterator<Item = &CommitReferences> {
+        self.by_commit.values()
+    }
+
+    /// The bytes these references keep, for a retained tab's accounting.
+    pub fn retained_bytes(&self) -> usize {
+        self.by_commit
+            .iter()
+            .map(|(oid, refs)| oid.capacity() + refs.retained_bytes())
+            .sum()
+    }
 }
 
 /// One commit's references as History shows them, prepared with the
@@ -49,24 +119,46 @@ pub struct Snapshot {
 /// name share these strings rather than joining them per row and frame.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommitReferences {
-    /// HEAD's branch first, then the others in Git's order.
+    /// Its branches, HEAD's first and the others in Git's order, then its
+    /// tags.
     pub names: Vec<SharedString>,
+    /// How many of `names`, from the first, are branches.
+    pub branches: usize,
     /// "+N" for the names after the first, which the badge counts.
     pub more: Option<SharedString>,
-    /// Every name on its own line: the badge's and the pill's tooltip.
+    /// Every name on its own line, a tag's as "tag ‹name›": the badge's and
+    /// the pill's tooltip.
     pub lines: SharedString,
-    /// Every name, comma-separated, as the row's accessible name says them.
+    /// Every name, comma-separated, a tag's as "tag ‹name›", as the row's
+    /// accessible name says them.
     pub listed: SharedString,
 }
 
 impl CommitReferences {
-    fn new(names: Vec<String>) -> Self {
+    fn new(branches: &[&str], tags: &[&str]) -> Self {
+        let count = branches.len() + tags.len();
+        // A tag is said as one, so it reads apart from a branch of its name.
+        let said: Vec<String> = branches
+            .iter()
+            .map(|name| (*name).to_owned())
+            .chain(tags.iter().map(|name| format!("tag {name}")))
+            .collect();
         Self {
-            more: (names.len() > 1).then(|| format!("+{}", names.len() - 1).into()),
-            lines: names.join("\n").into(),
-            listed: names.join(", ").into(),
-            names: names.into_iter().map(SharedString::from).collect(),
+            more: (count > 1).then(|| format!("+{}", count - 1).into()),
+            lines: said.join("\n").into(),
+            listed: said.join(", ").into(),
+            branches: branches.len(),
+            names: branches
+                .iter()
+                .chain(tags)
+                .map(|name| SharedString::from((*name).to_owned()))
+                .collect(),
         }
+    }
+
+    /// Whether the first name, which the badge and the pill show, is a tag.
+    pub fn leads_with_tag(&self) -> bool {
+        self.branches == 0
     }
 
     /// The bytes these strings keep, for a retained tab's accounting.
@@ -1339,21 +1431,13 @@ fn read_snapshot(
         )
     };
     cancellation.check()?;
-    // Each commit's references in Git's order, HEAD's branch first: History
-    // shows the first one in its badge and in narrow History's pill.
-    let mut names: HashMap<String, Vec<String>> = HashMap::new();
-    for branch in &branches {
-        let names = names.entry(branch.oid.clone()).or_default();
-        if branch.current {
-            names.insert(0, branch.name.clone());
-        } else {
-            names.push(branch.name.clone());
-        }
-    }
-    let refs = names
-        .into_iter()
-        .map(|(oid, names)| (oid, CommitReferences::new(names)))
-        .collect();
+    // Each commit's references in Git's order, HEAD's branch first, then its
+    // tags: History shows the first one in its badge and in narrow History's
+    // pill. A tag list Git cannot give leaves History without tags rather
+    // than without history; the Tags page reports why.
+    let tags = repository.tags().map(|list| list.tags).unwrap_or_default();
+    cancellation.check()?;
+    let refs = HistoryReferences::new(&branches, &tags);
     cancellation.check()?;
     Ok(Snapshot {
         repository,
@@ -2994,7 +3078,7 @@ mod image_tests {
         assert!(
             metadata
                 .refs
-                .values()
+                .commits()
                 .flat_map(|refs| &refs.names)
                 .all(|name| name != "departing")
         );
@@ -4165,6 +4249,72 @@ mod image_tests {
             matches!(available, Output::Preview(content, _) if matches!(content.as_ref(), Content::Text { new, partial, .. } if new.as_bytes() == SVG && partial.is_none()))
         );
         assert_eq!(cache.entries.len(), 1);
+    }
+
+    /// A snapshot names each commit's tags after its branches, by name, an
+    /// annotated tag at the commit it peels to; a tag of a blob or a tree
+    /// names no commit. Each commit's strings are prepared once: the
+    /// tooltip's lines and the accessible name's list say "tag ‹name›",
+    /// "+N" counts the tags, and the most references any commit has is kept.
+    #[test]
+    fn snapshots_name_each_commits_tags_after_its_branches() {
+        let fixture = Fixture::new();
+        fixture.git(&["symbolic-ref", "HEAD", "refs/heads/main"], &[]);
+        let tree = fixture.git(&["mktree"], &[]);
+        let first = fixture.git(&["commit-tree", &tree, "-m", "first"], &[]);
+        let second = fixture.git(&["commit-tree", &tree, "-p", &first, "-m", "second"], &[]);
+        fixture.git(&["update-ref", "refs/heads/main", &second], &[]);
+        fixture.git(&["update-ref", "refs/heads/side", &first], &[]);
+        fixture.git(&["tag", "v0.1", &first], &[]);
+        fixture.git(&["tag", "-a", "-m", "Release", "v1.0", &second], &[]);
+        fixture.git(&["tag", "a-first", &first], &[]);
+        let blob = fixture.blob(b"notes\n");
+        fixture.git(&["tag", "blob", &blob], &[]);
+        fixture.git(&["tag", "-a", "-m", "Tree", "tree", &tree], &[]);
+        let snapshot = read_snapshot(
+            fixture.0.clone(),
+            None,
+            MissingScope::Fail,
+            10,
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap();
+        let names = |oid: &str| {
+            snapshot.refs.get(oid).map(|refs| {
+                refs.names
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(names(&first).unwrap(), ["side", "a-first", "v0.1"]);
+        assert_eq!(names(&second).unwrap(), ["main", "v1.0"]);
+        assert_eq!(names(&blob), None);
+        assert_eq!(names(&tree), None);
+        let first = snapshot.refs.get(&first).unwrap();
+        assert_eq!(first.branches, 1);
+        assert!(!first.leads_with_tag());
+        assert_eq!(first.more.as_deref(), Some("+2"));
+        assert_eq!(first.lines.as_ref(), "side\ntag a-first\ntag v0.1");
+        assert_eq!(first.listed.as_ref(), "side, tag a-first, tag v0.1");
+        assert_eq!(snapshot.refs.widest(), 3);
+
+        // A commit with tags alone leads with a tag.
+        fixture.git(&["update-ref", "-d", "refs/heads/side"], &[]);
+        let snapshot = read_snapshot(
+            fixture.0.clone(),
+            None,
+            MissingScope::Fail,
+            10,
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap();
+        let first = snapshot.refs.get(&snapshot.commits[1].oid).unwrap();
+        assert!(first.leads_with_tag());
+        assert_eq!(first.listed.as_ref(), "tag a-first, tag v0.1");
+        assert_eq!(snapshot.refs.widest(), 2);
     }
 
     #[test]

@@ -432,7 +432,7 @@ struct GitTurtle {
     graph_lanes: usize,
     graph_offset: usize,
     graph_notice: Option<String>,
-    refs: HashMap<String, worker::CommitReferences>,
+    refs: worker::HistoryReferences,
     selected_commit: Option<usize>,
     selected_file: Option<usize>,
     parent: usize,
@@ -762,7 +762,7 @@ impl GitTurtle {
             graph_lanes: 1,
             graph_offset: 0,
             graph_notice: None,
-            refs: HashMap::new(),
+            refs: Default::default(),
             selected_commit: None,
             selected_file: None,
             parent: 0,
@@ -1089,7 +1089,7 @@ impl GitTurtle {
         }
         self.automatic.retained_commit = None;
         self.path = Some(path.clone());
-        self.refs.clear();
+        self.refs = Default::default();
         self.scope = scope;
         self.clear_preview();
         self.files.clear();

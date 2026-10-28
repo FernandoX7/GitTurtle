@@ -1600,11 +1600,7 @@ impl GitTurtle {
         if !self.settings.columns.refs.visible {
             return 0;
         }
-        self.refs
-            .values()
-            .map(|refs| refs.names.len())
-            .max()
-            .unwrap_or(0)
+        self.refs.widest()
     }
 
     fn graph_lane_offset(&self) -> usize {
@@ -1685,9 +1681,24 @@ impl GitTurtle {
                 .text_size(crate::appearance::ui_text(10.))
                 .text_color(rgb(label))
                 .bg(tint);
+            // A chip led by a tag, a commit's first reference where it has
+            // no branch, carries the tag glyph, as a compact pill led by a
+            // branch carries the branch glyph; the colours are the badge's.
+            let tag = refs.leads_with_tag();
+            let glyph = |path: &'static str| {
+                svg()
+                    .path(SharedString::new_static(path))
+                    .size(crate::appearance::ui_size(10.))
+                    .flex_shrink_0()
+                    .text_color(rgb(label))
+                    .when(tag, |glyph| {
+                        glyph.debug_selector(move || format!("history-ref-tag-{index}"))
+                    })
+            };
             let chip = if columns.narrow && rows.pill.compact {
-                // A branch glyph and how many references there are; the
-                // names are the tooltip's and the row's accessible name's.
+                // The first reference's glyph and how many references there
+                // are, tags included; the names are the tooltip's and the
+                // row's accessible name's.
                 let count = reference_count(refs.names.len());
                 #[cfg(test)]
                 HISTORY_PILLS.with(|pills| {
@@ -1696,18 +1707,16 @@ impl GitTurtle {
                         .insert(index, (None, Some(count.to_string()), label))
                 });
                 chip.gap_0p5()
-                    .child(
-                        svg()
-                            .path(SharedString::new_static("icons/branch.svg"))
-                            .size(crate::appearance::ui_size(10.))
-                            .flex_shrink_0()
-                            .text_color(rgb(label)),
-                    )
+                    .child(glyph(if tag {
+                        "icons/tag.svg"
+                    } else {
+                        "icons/branch.svg"
+                    }))
                     .child(div().flex_shrink_0().child(count))
             } else {
-                // HEAD's branch comes first (`worker::Snapshot::refs`), and
-                // "+N" counts the others inside the chip, whole while the
-                // name truncates.
+                // HEAD's branch comes first (`worker::Snapshot::refs`), then
+                // the other branches and the tags, and "+N" counts the others
+                // inside the chip, whole while the name truncates.
                 let name = refs.names[0].clone();
                 let more = refs.more.clone();
                 #[cfg(test)]
@@ -1722,7 +1731,15 @@ impl GitTurtle {
                     )
                 });
                 chip.gap_1()
-                    .child(div().min_w_0().truncate().child(name))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap_0p5()
+                            .when(tag, |name| name.child(glyph("icons/tag.svg")))
+                            .child(div().min_w_0().truncate().child(name)),
+                    )
                     .children(more.map(|more| {
                         div()
                             .debug_selector(move || format!("history-ref-more-{index}"))
@@ -9321,6 +9338,129 @@ pub(crate) mod tests {
             assert!(
                 name.starts_with("Main work · Fixture · ") && tooltip.is_none(),
                 "{name} {at}"
+            );
+        }
+    }
+
+    /// [`references_script`] with a lightweight tag, `v0.1-demo`, on the
+    /// root, as the demo fixture has, and an annotated one, `v1.0`, on the
+    /// merge.
+    fn tagged_references_script() -> String {
+        let script = references_script(2);
+        let script = script.strip_suffix("done\n").unwrap();
+        let merge = 2 + 3;
+        format!(
+            "{script}reset refs/tags/v0.1-demo\nfrom :1\n\ntag v1.0\nfrom :{merge}\ntagger Fixture <fixture@example.invalid> 1700000100 +0000\ndata 7\nRelease\ndone\n"
+        )
+    }
+
+    /// History shows tags as references, after a commit's branches. A row
+    /// with tags alone shows its first tag in the badge, led by the tag
+    /// glyph, in the badge's lane tint and label colour; in narrow History's
+    /// compact pill the tag glyph leads the count. A row with branches leads
+    /// with HEAD's branch and counts its tags in "+N" and the compact count.
+    /// The tooltip and the row's accessible name say "tag ‹name›". At
+    /// 1000 × 680, and narrow at 461 and 640 px wide.
+    #[gpui::test]
+    async fn history_shows_tags_as_references(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &tagged_references_script()).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        let merge = commit_index(&app, cx, MERGE_SUBJECT);
+        let root = commit_index(&app, cx, "Linear 1");
+        let colors = |cx: &mut VisualTestContext, row: usize| {
+            cx.update(|_, cx| {
+                let lane = app.read(cx).graph[row].color % 6;
+                (
+                    appearance::labels(cx).refs[lane],
+                    gpui_kit::Background::from(gpui_kit::Hsla::from(rgba(
+                        (graph::colors(cx)[lane] << 8) | crate::appearance::REF_TINT_ALPHA,
+                    ))),
+                )
+            })
+        };
+        let (root_label, root_tint) = colors(cx, root);
+        let (merge_label, _) = colors(cx, merge);
+        for (width, height, narrow, compact) in [
+            (1000., 680., false, false),
+            (640., 900., true, false),
+            (461., 900., true, true),
+        ] {
+            HISTORY_PILLS.with(|pills| pills.borrow_mut().clear());
+            HISTORY_ROW_NAMES.with(|names| names.borrow_mut().clear());
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{width} × {height}");
+            assert_eq!(
+                app.read_with(cx, |app, _| app.history_column_layout().narrow),
+                narrow,
+                "{at}"
+            );
+            let pill = |row: usize| HISTORY_PILLS.with(|pills| pills.borrow().get(&row).cloned());
+            let row = |row: usize| {
+                HISTORY_ROW_NAMES
+                    .with(|names| names.borrow().get(&row).cloned())
+                    .unwrap()
+            };
+            if compact {
+                assert_eq!(
+                    pill(root),
+                    Some((None, Some("1".into()), root_label)),
+                    "{at}"
+                );
+                assert_eq!(
+                    pill(merge),
+                    Some((None, Some("5".into()), merge_label)),
+                    "{at}"
+                );
+            } else {
+                assert_eq!(
+                    pill(root),
+                    Some((Some("v0.1-demo".into()), None, root_label)),
+                    "{at}"
+                );
+                assert_eq!(
+                    pill(merge),
+                    Some((Some("main".into()), Some("+4".into()), merge_label)),
+                    "{at}"
+                );
+            }
+            // The tag glyph leads the root's chip, inside it, and no other.
+            let chip = bounds_of(cx, format!("history-ref-pill-{root}")).unwrap();
+            let glyph = bounds_of(cx, format!("history-ref-tag-{root}"))
+                .unwrap_or_else(|| panic!("the tag glyph {at}"));
+            assert!(
+                glyph.left() >= chip.left()
+                    && glyph.right() <= chip.right()
+                    && glyph.left() - chip.left() < px(8.),
+                "the glyph {glyph:?} leads {chip:?} {at}"
+            );
+            assert!(
+                bounds_of(cx, format!("history-ref-tag-{merge}")).is_none(),
+                "{at}"
+            );
+            assert_eq!(
+                painted_fills(cx, format!("history-ref-pill-{root}").leak()),
+                vec![root_tint],
+                "the badge's tint {at}"
+            );
+            let (name, tooltip) = row(root);
+            assert!(
+                name.starts_with("Linear 1 · References: tag v0.1-demo · Fixture · "),
+                "{name} {at}"
+            );
+            assert_eq!(tooltip.as_deref(), Some("tag v0.1-demo"), "{at}");
+            let (name, tooltip) = row(merge);
+            assert!(
+                name.starts_with(&format!(
+                    "{MERGE_SUBJECT} · References: main, feature/alpha, release, origin/main, \
+                     tag v1.0 · Fixture · "
+                )),
+                "{name} {at}"
+            );
+            assert_eq!(
+                tooltip.as_deref(),
+                Some("main\nfeature/alpha\nrelease\norigin/main\ntag v1.0"),
+                "{at}"
             );
         }
     }
