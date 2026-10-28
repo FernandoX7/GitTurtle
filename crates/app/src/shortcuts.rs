@@ -772,10 +772,16 @@ impl Render for ShortcutHelpView {
                                 .border_color(rgb(p.raised_edge()))
                                 .child(*group),
                             HelpRow::Entry(entry) => row
+                                .debug_selector(move || format!("shortcut-help-row-{index}"))
                                 .role(Role::ListBoxOption)
                                 .aria_label(format!("{}: {}", entry.label, entry.key))
                                 .aria_selected(index == this.selected)
-                                .when(index == this.selected, |row| row.bg(rgb(p.selected)))
+                                .relative()
+                                // The highlight is the keyboard's cursor, as
+                                // in the other pickers.
+                                .when(index == this.selected, |row| {
+                                    row.bg(rgb(p.selected)).child(appearance::cursor_marker(p))
+                                })
                                 .child(div().flex_1().min_w_0().truncate().child(entry.label))
                                 .child(
                                     div()

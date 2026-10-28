@@ -370,6 +370,10 @@ pub struct PopupMenu {
     /// own focus path (through the trigger element's ancestors).
     pub(crate) previous_focus_handle: Option<FocusHandle>,
     selected_index: Option<usize>,
+    /// GitTurtle patch: the keyboard placed the selection (Up, Down, or Right
+    /// into a submenu), so the item draws as the keyboard's cursor rather than
+    /// the pointer's hover; the pointer entering an item clears it.
+    keyboard_selection: bool,
     min_width: Option<Pixels>,
     max_width: Option<Pixels>,
     max_height: Option<Pixels>,
@@ -410,6 +414,7 @@ impl PopupMenu {
             parent_menu: None,
             menu_items: Vec::new(),
             selected_index: None,
+            keyboard_selection: false,
             min_width: None,
             max_width: None,
             max_height: None,
@@ -964,9 +969,12 @@ impl PopupMenu {
         window.dispatch_action(action.boxed_clone(), cx);
     }
 
+    /// Select `ix` for the keyboard, this method's only caller (Up, Down and
+    /// a submenu's first item).
     fn set_selected_index(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if self.selected_index != Some(ix) {
+        if self.selected_index != Some(ix) || !self.keyboard_selection {
             self.selected_index = Some(ix);
+            self.keyboard_selection = true;
             self.scroll_handle.scroll_to_item(ix);
             cx.notify();
         }
@@ -1292,10 +1300,12 @@ impl PopupMenu {
             .rounded(radius)
             .items_center()
             .selected(selected)
+            .keyboard(self.keyboard_selection)
             .checked(item.check_state())
             .on_hover(cx.listener(move |this, hovered, _, cx| {
                 if *hovered {
                     this.selected_index = Some(ix);
+                    this.keyboard_selection = false;
                 } else if !is_submenu && this.selected_index == Some(ix) {
                     // TODO: Better handle the submenu unselection when hover out
                     this.selected_index = None;

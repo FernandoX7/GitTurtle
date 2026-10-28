@@ -916,9 +916,14 @@ impl Render for Palette {
                             .flex_col()
                             .justify_center()
                             .gap_1()
+                            .relative()
                             // A resting row shows the raised surface beneath
-                            // it, as a menu's rows do.
-                            .when(selected, |row| row.bg(rgb(colors.selected)))
+                            // it, as a menu's rows do; the highlight is the
+                            // keyboard's cursor and marked as such.
+                            .when(selected, |row| {
+                                row.bg(rgb(colors.selected))
+                                    .child(appearance::cursor_marker(colors))
+                            })
                             .text_color(if disabled.is_some() {
                                 Theme::global(cx).disabled_foreground()
                             } else {
@@ -1479,6 +1484,82 @@ mod render_tests {
                 "{dialog}"
             );
         }
+    }
+
+    /// A picker's highlighted row is the keyboard's cursor, so each picker
+    /// marks it as the menus do: the `selected` fill and a 2 px leading
+    /// marker of `accent`, at 3:1 or more against that fill and against the
+    /// raised surface, in every palette. The fill alone stood 1.40:1 off the
+    /// raised surface in Midnight and 1.28:1 in Braden.
+    #[gpui::test]
+    async fn every_picker_marks_its_keyboard_cursor_at_three_to_one(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        for name in ["notes.txt", "readme.txt"] {
+            std::fs::write(repo.path().join(name), "text\n").unwrap();
+        }
+        git(repo.path(), &["add", "--all"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add files"]);
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        type Open = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+        let pickers: [(&str, Open, &str); 3] = [
+            (
+                "Command palette",
+                GitTurtle::open_command_palette,
+                "palette-command-",
+            ),
+            ("Quick Open", GitTurtle::open_quick_file, "quick-file-"),
+            (
+                "Keyboard Shortcuts",
+                GitTurtle::shortcut_help,
+                "shortcut-help-row-",
+            ),
+        ];
+        let mut failures = Vec::new();
+        for (picker, open, rows) in pickers {
+            cx.update(|window, cx| app.update(cx, |app, cx| open(app, window, cx)));
+            // The highlighted row: the one painting the `selected` fill.
+            let mut cursor = None;
+            // Quick Open reads its paths on the worker after a 120 ms pause
+            // for typing.
+            for _ in 0..20 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(150));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                draw(cx);
+                let selected = cx.update(|_, cx| palette(cx).selected);
+                let selected = Background::from(Hsla::from(rgb(selected)));
+                let shown: Vec<_> = (0..8)
+                    .filter_map(|row| cx.debug_bounds(format!("{rows}{row}").leak()))
+                    .collect();
+                cursor = shown
+                    .into_iter()
+                    .find(|&bounds| appearance::painted_row(cx, bounds).0.contains(&selected));
+                if cursor.is_some() {
+                    break;
+                }
+            }
+            let cursor = cursor.unwrap_or_else(|| panic!("{picker} highlights a row"));
+            for (name, palette) in appearance::test_palettes() {
+                cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+                draw(cx);
+                failures.extend(appearance::cursor_issues(
+                    cx,
+                    cursor,
+                    palette,
+                    &format!("{picker} {name}"),
+                ));
+            }
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{picker}"
+            );
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// The rows among the first `rows` that the last frame painted with the

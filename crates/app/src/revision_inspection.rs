@@ -973,6 +973,7 @@ impl Render for QuickForm {
                         let path = entry.path.display().to_string();
                         div()
                             .id(("quick-file", index))
+                            .debug_selector(move || format!("quick-file-{index}"))
                             .role(Role::ListBoxOption)
                             .aria_label(path.clone())
                             .aria_selected(index == this.selected)
@@ -981,10 +982,14 @@ impl Render for QuickForm {
                             .px_2()
                             .flex()
                             .items_center()
+                            .relative()
                             // A resting row shows the raised surface beneath
-                            // it, as a menu's rows do.
+                            // it, as a menu's rows do; the highlight is the
+                            // keyboard's cursor and marked as such.
                             .when(index == this.selected, |row| {
-                                row.bg(rgb(palette(cx).selected))
+                                let colors = palette(cx);
+                                row.bg(rgb(colors.selected))
+                                    .child(crate::appearance::cursor_marker(colors))
                             })
                             .child(div().truncate().child(path))
                             .on_click(cx.listener(move |this, _, window, cx| {

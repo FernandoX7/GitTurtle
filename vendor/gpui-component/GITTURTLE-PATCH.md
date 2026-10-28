@@ -695,3 +695,35 @@ not by its label, and
 each item's label and name. Remove this part of the patch when upstream menu
 items take an accessible name apart from their label and those tests pass
 without it.
+
+The menu-cursor patch modifies `src/menu/popup_menu.rs` and
+`src/menu/menu_item.rs`. Upstream draws a menu's selected item, whether the
+keyboard or the pointer put it there, in the theme's `accent` fill, which is
+the keyboard's only cursor in a menu. GitTurtle sets that fill to its quiet
+hover surface, 1.19:1 off the menu in Midnight and 1.23:1 in Braden, below the
+3:1 a state indicator needs. `PopupMenu` now remembers whether the keyboard
+placed the selection (Up, Down, or Right into a submenu, through
+`set_selected_index`); the pointer entering an item takes the selection back.
+`MenuItemElement::keyboard` passes that on, and a selected item the keyboard
+placed draws as the kit's lists draw their active row: the `list_active` fill
+and a 2 px leading border in `list_active_border`, on a child laid over the
+item with the item's corner radii, so it moves nothing. The pointer's hover and
+a pointer-placed selection keep upstream's `accent` fill, and a keyboard item
+under a resting pointer keeps the cursor rather than the hover fill. A theme
+that sets neither list token draws the kit's defaults.
+
+The consumers are every kit menu the keyboard drives: the Linux Menu, context
+menus and dropdown menus such as the review Options, profile and project row
+menus. GitTurtle sets `list_active` to its `selected` row surface and
+`list_active_border` to `accent` (`crates/app/src/appearance.rs`), which holds
+3:1 on `selected` and every page surface; its pickers draw the same marker
+(`appearance::cursor_marker`).
+`cargo test --locked -p gitturtle the_keyboard_cursor_in_a_menu_reads_three_to_one_in_every_palette`
+moves the cursor with Down and reads the item's painted fill and marker, at
+3:1 or more against the fill and the menu, in every built-in and embedded
+Omarchy palette, then hovers another item and reads the hover fill without a
+marker there and nothing on the item the keyboard had;
+`menu_keys_pass_over_labels_and_disabled_items` finds the cursor by its fill.
+Remove this part of the patch when upstream marks a keyboard-selected menu item
+apart from the pointer's hover with a cue a theme can hold at 3:1, and those
+tests pass without it.

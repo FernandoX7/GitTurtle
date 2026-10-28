@@ -864,6 +864,24 @@ pub fn keep_disabled_shape(
     }
 }
 
+/// The keyboard's cursor on a picker's highlighted row (the command palette,
+/// Quick Open and Keyboard Shortcuts), marked as the kit's menus mark theirs
+/// and as a list's selected row is: over the row's `selected` fill, 2 px of
+/// `accent` along its leading edge, laid over the row, which must be
+/// `relative`, so it moves nothing. The fill alone stood 1.40:1 off the raised
+/// surface in Midnight and 1.28:1 in Braden; `accent` holds 3:1 on `selected`
+/// and on every page surface, the raised one among them.
+pub fn cursor_marker(palette: Palette) -> gpui_kit::Div {
+    gpui_kit::div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .bottom_0()
+        .right_0()
+        .border_l_2()
+        .border_color(rgb(palette.accent))
+}
+
 /// The contrast a popup's 1 px edge keeps against its surface and the page
 /// beneath it ([`Palette::raised_edge`]). Antialiasing and fractional scales
 /// draw a hairline below its token: an edge fitted to the border rule's 1.3
@@ -982,6 +1000,88 @@ pub(crate) fn test_palettes() -> Vec<(String, Palette)> {
     #[cfg(not(target_os = "linux"))]
     let omarchy = std::iter::empty();
     built_in.chain(omarchy).collect()
+}
+
+/// A painted color as `0xRRGGBB`, its alpha dropped.
+#[cfg(test)]
+pub(crate) fn packed(color: gpui_kit::Hsla) -> u32 {
+    let color = color.to_rgb();
+    let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u32;
+    (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)
+}
+
+/// What the last frame painted at a row's `bounds` (logical pixels, within a
+/// device pixel): its fill, and a leading marker, a border on the leading side
+/// alone, as its color and logical width. A border-only quad is painted as a
+/// copy per side, which count once.
+#[cfg(test)]
+pub(crate) fn painted_row(
+    cx: &mut gpui_kit::VisualTestContext,
+    bounds: gpui_kit::Bounds<Pixels>,
+) -> (Vec<gpui_kit::Background>, Vec<(gpui_kit::Hsla, Pixels)>) {
+    cx.update(|window, _| {
+        let scale = window.scale_factor();
+        let near = |device: gpui_kit::ScaledPixels, logical: Pixels| {
+            (device.as_f32() - logical.as_f32() * scale).abs() <= 1.
+        };
+        let (mut fills, mut markers) = (Vec::new(), Vec::new());
+        for quad in window.painted_quads() {
+            let at = near(quad.bounds.left(), bounds.left())
+                && near(quad.bounds.top(), bounds.top())
+                && near(quad.bounds.right(), bounds.right())
+                && near(quad.bounds.bottom(), bounds.bottom());
+            if !at {
+                continue;
+            }
+            if !quad.background.is_transparent() && !fills.contains(&quad.background) {
+                fills.push(quad.background);
+            }
+            let widths = quad.border_widths;
+            let leading = widths.left.as_f32() > 0.
+                && [widths.top, widths.right, widths.bottom]
+                    .into_iter()
+                    .all(|width| width.as_f32() == 0.);
+            let marker = (quad.border_color, px(widths.left.as_f32() / scale));
+            if leading && !quad.border_color.is_transparent() && !markers.contains(&marker) {
+                markers.push(marker);
+            }
+        }
+        (fills, markers)
+    })
+}
+
+/// How the keyboard's cursor painted at `bounds` misses its contract in
+/// `palette`, named `name`: the `selected` fill, and one leading marker at
+/// least 2 px wide at 3:1 or more against that fill and against the raised
+/// surface of the menu or picker it lies on (`Palette::raised`).
+#[cfg(test)]
+pub(crate) fn cursor_issues(
+    cx: &mut gpui_kit::VisualTestContext,
+    bounds: gpui_kit::Bounds<Pixels>,
+    palette: Palette,
+    name: &str,
+) -> Vec<String> {
+    let (fills, markers) = painted_row(cx, bounds);
+    let mut issues = Vec::new();
+    let selected = gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(palette.selected)));
+    if fills != [selected] {
+        issues.push(format!("{name}: cursor fills {fills:?}, not selected"));
+    }
+    match markers[..] {
+        [(color, width)] if width >= px(2.) => {
+            for (what, beneath) in [("fill", palette.selected), ("surface", palette.raised())] {
+                let ratio = custom::contrast(packed(color), beneath);
+                if ratio < 3. {
+                    issues.push(format!(
+                        "{name}: marker #{:06x} on the {what} #{beneath:06x} {ratio:.2}:1",
+                        packed(color)
+                    ));
+                }
+            }
+        }
+        _ => issues.push(format!("{name}: cursor markers {markers:?}")),
+    }
+    issues
 }
 
 pub fn palette(cx: &App) -> Palette {
@@ -4467,7 +4567,7 @@ mod tests {
             // Separators lie on the menu, where `border` alone read 1.16:1 in
             // Omarchy Matte Black and 1.25:1 in Lumon.
             assert_eq!(separator, ring, "{name} separator");
-            // The menu's hover and keyboard row.
+            // The menu's hover row; the keyboard's cursor takes `list_active`.
             assert_eq!(hover, Hsla::from(rgb(palette.hover)), "{name} hover row");
             let (popover, hover) = (palette.raised(), palette.hover);
             let mut check = |what: &str, ratio: f64, minimum: f64| {

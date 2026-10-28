@@ -3,7 +3,8 @@ use gpui::{
     A11ySubtreeBuilder, AnyElement, App, Bounds, ClickEvent, Div, Element, ElementId,
     GlobalElementId, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton,
     ParentElement, Pixels, RenderOnce, Role, SharedString, Stateful,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, prelude::FluentBuilder as _,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
+    prelude::FluentBuilder as _,
 };
 use smallvec::SmallVec;
 
@@ -28,6 +29,9 @@ pub(crate) struct MenuItemElement {
     style: StyleRefinement,
     disabled: bool,
     selected: bool,
+    /// GitTurtle patch: the selection is the keyboard's cursor rather than
+    /// the pointer's hover, so it is marked as a list's selected row is.
+    keyboard: bool,
     /// GitTurtle patch: `Some(checked)` for a checkable item, announced as a
     /// check menu item with its state; `None` for a plain item.
     checked: Option<bool>,
@@ -49,6 +53,7 @@ impl MenuItemElement {
             style: StyleRefinement::default(),
             disabled: false,
             selected: false,
+            keyboard: false,
             checked: None,
             entry: Entry::Item,
             on_click: None,
@@ -60,6 +65,13 @@ impl MenuItemElement {
     /// Set ListItem as the selected item style.
     pub(crate) fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// Whether a selection came from the keyboard (Up, Down, or Right into a
+    /// submenu) rather than the pointer.
+    pub(crate) fn keyboard(mut self, keyboard: bool) -> Self {
+        self.keyboard = keyboard;
         self
     }
 
@@ -146,6 +158,26 @@ impl RenderOnce for MenuItemElement {
         // and is not announced as unavailable.
         let disabled = item && self.disabled;
         let interactive = item && !self.disabled;
+        // GitTurtle patch: the keyboard's cursor is marked as a list's
+        // selected row is, with the list's selected fill and a 2 px leading
+        // marker in its active border, laid over the item and following its
+        // corners so it moves nothing. Upstream drew it in the hover fill,
+        // which is the cursor's only cue and stood 1.19:1 off the menu in
+        // GitTurtle's Midnight; the marker holds 3:1 against the fill and the
+        // menu. The pointer's hover keeps that quieter fill.
+        let cursor = interactive && self.selected && self.keyboard;
+        let marker = cursor.then(|| {
+            let mut marker = div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .bottom_0()
+                .right_0()
+                .border_l_2()
+                .border_color(cx.theme().list_active_border);
+            marker.style().corner_radii = self.style.corner_radii.clone();
+            marker
+        });
         let content = h_flex()
             .id(self.id)
             .role(role)
@@ -166,14 +198,17 @@ impl RenderOnce for MenuItemElement {
                 this.on_hover(move |hovered, window, cx| (on_hover)(hovered, window, cx))
             })
             .when(interactive, |this| {
-                this.group_hover(self.group_name, |this| {
+                this.when(!cursor, |this| {
+                    this.group_hover(self.group_name, |this| {
+                        this.bg(cx.theme().tokens.accent)
+                            .text_color(cx.theme().accent_foreground)
+                    })
+                })
+                .when(self.selected && !cursor, |this| {
                     this.bg(cx.theme().tokens.accent)
                         .text_color(cx.theme().accent_foreground)
                 })
-                .when(self.selected, |this| {
-                    this.bg(cx.theme().tokens.accent)
-                        .text_color(cx.theme().accent_foreground)
-                })
+                .when(cursor, |this| this.bg(cx.theme().list_active))
                 .when_some(self.on_click, |this, on_click| {
                     this.on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         cx.stop_propagation();
@@ -187,7 +222,8 @@ impl RenderOnce for MenuItemElement {
             .when(self.entry == Entry::Label, |this| {
                 this.text_color(crate::menu_label_color(cx))
             })
-            .children(self.children);
+            .children(self.children)
+            .children(marker);
         AccessibleMenuItem { content, disabled }.described()
     }
 }

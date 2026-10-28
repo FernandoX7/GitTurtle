@@ -70,11 +70,12 @@ fn shown(cx: &mut VisualTestContext, selector: String) -> Option<Bounds<Pixels>>
     cx.debug_bounds(selector.leak())
 }
 
-/// The entry the probe menu highlights, by the label of the item whose
-/// bounds hold the highlight's fill, or `None` when nothing is highlighted.
+/// The entry the probe menu highlights for the keyboard, by the label of the
+/// item whose bounds hold the cursor's fill, or `None` when nothing is
+/// highlighted.
 fn highlighted(cx: &mut VisualTestContext) -> Option<&'static str> {
     let highlight = cx.update(|window, cx| {
-        let fill = Background::from(Theme::global(cx).tokens.accent.color);
+        let fill = Background::from(Theme::global(cx).list_active);
         let scale = window.scale_factor();
         window
             .painted_quads()
@@ -134,6 +135,49 @@ fn menu_keys_pass_over_labels_and_disabled_items(cx: &mut TestAppContext) {
         cx.debug_bounds("menu-item: First · MenuItem").is_none(),
         "the menu closed"
     );
+}
+
+/// The keyboard's cursor in a menu is marked as a list's selected row is:
+/// the `selected` fill and a 2 px leading marker of `accent`, at 3:1 or more
+/// against that fill and against the menu's raised surface, in every
+/// palette. It was the hover fill alone, the cursor's only cue, 1.19:1 off
+/// the menu in Midnight and 1.23:1 in Braden. The pointer's hover keeps that
+/// quieter fill and no marker, and takes the highlight from the keyboard.
+#[gpui::test]
+fn the_keyboard_cursor_in_a_menu_reads_three_to_one_in_every_palette(cx: &mut TestAppContext) {
+    let (cx, _) = open_menu(cx);
+    cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+    draw(cx);
+    cx.simulate_keystrokes("down");
+    draw(cx);
+    let item = |cx: &mut VisualTestContext, name: &str| {
+        shown(cx, format!("menu-item: {name} · MenuItem")).expect(name)
+    };
+    let mut failures = Vec::new();
+    for (name, palette) in appearance::test_palettes() {
+        cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+        draw(cx);
+        let first = item(cx, "First");
+        failures.extend(appearance::cursor_issues(cx, first, palette, &name));
+    }
+
+    let second = item(cx, "Second");
+    cx.simulate_mouse_move(second.center(), None, Modifiers::default());
+    for (name, palette) in appearance::test_palettes() {
+        cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+        draw(cx);
+        let (first, second) = (item(cx, "First"), item(cx, "Second"));
+        let hover = Background::from(Hsla::from(rgb(palette.hover)));
+        let (fills, markers) = appearance::painted_row(cx, second);
+        if fills != [hover] || !markers.is_empty() {
+            failures.push(format!("{name}: hovered {fills:?} {markers:?}"));
+        }
+        let (fills, markers) = appearance::painted_row(cx, first);
+        if !fills.is_empty() || !markers.is_empty() {
+            failures.push(format!("{name}: the keyboard's row {fills:?} {markers:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// A label is text, not a fourth command: it is announced as a label, never
