@@ -489,6 +489,26 @@ and lockfile, `--features tree-sitter-languages`, placeholders for those files
 and the input test module compiled out. Remove this part of the patch when
 upstream drops the import.
 
+The injection-deadline patch also modifies `src/highlighter/highlighter.rs`.
+Upstream stops each injected layer's parse (a Markdown file's inline layer, a
+fenced code block's language) after 20 ms of wall time and leaves that layer
+out, even under `SyntaxHighlighter::update` without a timeout, which its
+documentation says parses to completion. A complete highlight therefore
+depended on how long the thread ran: on a loaded machine one pass over a short
+Markdown document lost its inline layer (code spans, emphasis, links) and the
+next kept it, and a long paragraph lost it on every pass. `update` without a
+timeout now parses its injected layers to completion. With a timeout each
+injected layer keeps the 20 ms bound, as does the editor's background reparse
+(`compute_injection_layers`), so the editor's UI-thread work is unchanged. The
+consumers are the kit's code-block highlighter in `src/text/mod.rs`, which
+highlights without a timeout, and the application's syntax-theme tests in
+`crates/app/src/appearance.rs`:
+`cargo test --locked -p gitturtle a_complete_markdown_highlight_keeps_inline_styles_however_long_they_parse`
+fails without the patch, and `a_diff_fence_in_markdown_draws_the_patch_colours`
+failed in 6 of 30 runs on a loaded host without it. Remove this part of the
+patch when upstream bounds injected parses only under a timeout and those tests
+pass without it.
+
 The ghost-hover patch modifies `src/button/button.rs` and adds
 `Theme::ghost_hover` to `src/theme/mod.rs`. Upstream fills a hovered ghost
 Button with `secondary` lightened by 10% in a dark theme, or darkened by 10% in

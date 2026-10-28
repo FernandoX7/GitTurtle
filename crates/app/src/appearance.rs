@@ -3076,6 +3076,37 @@ mod tests {
         }
     }
 
+    /// A complete highlight, `update` without a timeout, keeps every layer it injects however
+    /// long one takes to parse. The toolkit stopped each injected parse after 20 ms of wall
+    /// time even then and dropped that layer, so Markdown's inline layer (code spans, emphasis,
+    /// links) went missing from a long paragraph, and from a short one whenever a loaded
+    /// machine paused the thread mid-parse: `a_diff_fence_in_markdown_draws_the_patch_colours`
+    /// once compared a pass without the inline layer with one that had it. This paragraph,
+    /// within the toolkit's 512 KiB bound on one injected language, parses for far longer.
+    #[test]
+    fn a_complete_markdown_highlight_keeps_inline_styles_however_long_they_parse() {
+        use gpui_kit::{
+            FontWeight,
+            component::{Rope, highlighter::SyntaxHighlighter},
+        };
+        let document = format!(
+            "{}The last **word**.\n",
+            "Some `code` and **bold** text.\n".repeat(16_000)
+        );
+        let mut highlighter = SyntaxHighlighter::new("markdown");
+        assert!(highlighter.update(None, &Rope::from(document.as_str()), None));
+        let palette = ThemeChoice::Midnight.palette();
+        let theme = palette.configured_theme(palette.is_light()).highlight_theme;
+        let start = document.rfind("**word**").unwrap();
+        let styles = highlighter.styles(&(start..start + "**word**".len()), theme.as_ref());
+        assert!(
+            styles
+                .iter()
+                .all(|(_, style)| style.font_weight == Some(FontWeight::BOLD)),
+            "the last bold run draws {styles:?}"
+        );
+    }
+
     #[test]
     fn syntax_colors_read_on_every_editor_background() {
         let mut custom = CustomTheme::from_base(1, "Faint statuses", ThemeChoice::Porcelain);
