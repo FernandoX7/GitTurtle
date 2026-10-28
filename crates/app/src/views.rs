@@ -1864,11 +1864,11 @@ impl GitTurtle {
                         uniform_list(
                             "files",
                             visible.len(),
-                            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                            cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                                 let visible = this.filtered_file_indices(cx);
                                 range
                                     .filter_map(|i| visible.get(i).copied())
-                                    .map(|i| this.render_file_row(i, cx))
+                                    .map(|i| this.render_file_row(i, header.status, cx))
                                     .collect::<Vec<_>>()
                             }),
                         )
@@ -1880,7 +1880,16 @@ impl GitTurtle {
             )
             .into_any_element()
     }
-    pub(super) fn render_file_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+    /// A changed file's row. `status` shows its status word beside the name;
+    /// without it, in an inspector too narrow for both (`FilesHeader`), the
+    /// status tile's icon and colour carry the status and the name takes the
+    /// width, the word staying in the row's accessible name.
+    pub(super) fn render_file_row(
+        &self,
+        index: usize,
+        status: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = palette(cx);
         let file = &self.files[index];
         let active = self.selected_file == Some(index);
@@ -1968,16 +1977,19 @@ impl GitTurtle {
                             ),
                     ),
             )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .px_1()
-                    .py_0p5()
-                    .rounded(px(3.))
-                    .text_size(crate::appearance::ui_text(10.))
-                    .text_color(rgb(colors.text))
-                    .child(label),
-            )
+            .when(status, |row| {
+                row.child(
+                    div()
+                        .debug_selector(|| "changed-file-status".into())
+                        .flex_shrink_0()
+                        .px_1()
+                        .py_0p5()
+                        .rounded(px(3.))
+                        .text_size(crate::appearance::ui_text(10.))
+                        .text_color(rgb(colors.text))
+                        .child(label),
+                )
+            })
             .on_click(cx.listener(move |this, _, window, cx| this.select_file(index, window, cx)))
             .context_menu(move |menu, _, _| {
                 let owner = history_owner.clone();
@@ -2063,6 +2075,7 @@ impl GitTurtle {
             .child(
                 div()
                     .id("preview-file-path")
+                    .debug_selector(|| "preview-file-path".into())
                     .flex_1()
                     .min_w_0()
                     .truncate()
@@ -2106,16 +2119,32 @@ impl GitTurtle {
         if let Some(index) =
             blame_index.filter(|_| matches!(self.content.as_deref(), Some(Content::Text { .. })))
         {
-            path_controls = path_controls.child(
-                button("open-blame", "Blame", "", false)
-                    .debug_selector(|| "open-blame".into())
-                    .tooltip(
-                        "Line attribution and history; working files include uncommitted lines",
-                    )
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| this.open_blame(index, window, cx)),
-                    ),
-            );
+            const DETAIL: &str =
+                "Line attribution and history; working files include uncommitted lines";
+            // Blame keeps its label where the whole path fits beside it;
+            // otherwise its icon, so the path is not cut for a label.
+            let labelled = file.is_none_or(|file| {
+                self.path_fits_beside_labelled_blame(
+                    &file.path().display().to_string(),
+                    column,
+                    column_min,
+                    window,
+                )
+            });
+            let blame = if labelled {
+                button("open-blame", "Blame", "", false).tooltip(DETAIL)
+            } else {
+                compact_control_name(
+                    button("open-blame", "", "user", false),
+                    "open-blame",
+                    "Blame",
+                )
+                .tooltip(format!("Blame · {DETAIL}"))
+            };
+            path_controls =
+                path_controls.child(blame.debug_selector(|| "open-blame".into()).on_click(
+                    cx.listener(move |this, _, window, cx| this.open_blame(index, window, cx)),
+                ));
         }
         // Keep the path and its actions together. At narrow widths or larger
         // interface sizes, modes form another row instead of crushing the path.
@@ -2358,7 +2387,42 @@ impl GitTurtle {
                     }),
             )
             .children(file.map(|file| {
+                let (line, short) = if quick_source {
+                    let line = format!("Tracked source · mode {}", file.new_mode);
+                    (line.clone(), line)
+                } else {
+                    let modes = format!(
+                        "{}   ·   {} → {}",
+                        file.status.label(),
+                        if file.old_mode == "000000" {
+                            "absent"
+                        } else {
+                            &file.old_mode
+                        },
+                        if file.new_mode == "000000" {
+                            "absent"
+                        } else {
+                            &file.new_mode
+                        },
+                    );
+                    (
+                        format!(
+                            "{modes}   ·   {} → {}",
+                            file.old_oid.as_deref().map(short_oid).unwrap_or("—".into()),
+                            file.new_oid.as_deref().map(short_oid).unwrap_or("—".into())
+                        ),
+                        modes,
+                    )
+                };
+                // Narrower than its line, the footer drops the object IDs
+                // first and then truncates with an ellipsis; its tooltip
+                // keeps the whole line.
+                let fits = cached_text_width(&FOOTER_LINE, &line, window, || {
+                    line_widths(&[(&line, appearance::ui_text(10.))], window)
+                }) <= column - window.rem_size() * 1.5;
+                let shown = if fits { line.clone() } else { short };
                 div()
+                    .id("compare-footer")
                     .debug_selector(|| "compare-footer".into())
                     .h(crate::appearance::ui_size(24.))
                     .flex_shrink_0()
@@ -2369,26 +2433,17 @@ impl GitTurtle {
                     .text_color(rgb(colors.muted))
                     .border_t_1()
                     .border_color(rgb(colors.border))
-                    .child(if quick_source {
-                        format!("Tracked source · mode {}", file.new_mode)
-                    } else {
-                        format!(
-                            "{}   ·   {} → {}   ·   {} → {}",
-                            file.status.label(),
-                            if file.old_mode == "000000" {
-                                "absent"
-                            } else {
-                                &file.old_mode
-                            },
-                            if file.new_mode == "000000" {
-                                "absent"
-                            } else {
-                                &file.new_mode
-                            },
-                            file.old_oid.as_deref().map(short_oid).unwrap_or("—".into()),
-                            file.new_oid.as_deref().map(short_oid).unwrap_or("—".into())
-                        )
+                    .when(!fits, |footer| {
+                        footer
+                            .tooltip(move |window, cx| Tooltip::new(line.clone()).build(window, cx))
                     })
+                    .child(
+                        div()
+                            .debug_selector(|| "compare-footer-text".into())
+                            .min_w_0()
+                            .truncate()
+                            .child(shown),
+                    )
             }))
             .into_any_element()
     }
@@ -2523,6 +2578,8 @@ impl GitTurtle {
 pub(super) struct FilesHeader {
     label: bool,
     count: bool,
+    /// Whether the file rows below show their status words.
+    status: bool,
 }
 
 impl FilesHeader {
@@ -2531,6 +2588,7 @@ impl FilesHeader {
     pub(super) const WHOLE: Self = Self {
         label: true,
         count: true,
+        status: true,
     };
 
     /// The header of an inspector the window pins `width` wide, holding
@@ -2550,9 +2608,22 @@ impl FilesHeader {
                 shaped_width(count, appearance::ui_text(10.), FontWeight::MEDIUM, window).ceil()
             });
         let shows_count = count <= room;
+        // A file row has the same borders and inset, its 26 px status tile
+        // and then the name, `gap_2` after it. The status word, between
+        // `px_1` on either side and `gap_2` after the name, stays where the
+        // name keeps at least the widest word's width beside it.
+        let word = rem * 0.25 * 2.
+            + cached_width(&STATUS_WORDS, &LineKey::current(window), || {
+                ["New", "Deleted", "Renamed", "Type", "Modified"]
+                    .into_iter()
+                    .map(|word| line_widths(&[(word, appearance::ui_text(10.))], window))
+                    .fold(px(0.), Pixels::max)
+            });
+        let name = width - px(2.) - rem * 1.5 - px(26.) - gap;
         Self {
             label: shows_count && room - count - gap >= files_label_min_width(window),
             count: shows_count,
+            status: name - gap - word >= word,
         }
     }
 }
@@ -2786,6 +2857,59 @@ impl GitTurtle {
             + scaled(34.)
             + window.pixel_snap(px(1.)) * 2.
             + window.pixel_snap(px(self.settings.density.history_row_height())) * 3.
+    }
+
+    /// Whether the comparison path, `path`, fits whole on its row beside its
+    /// actions with Blame labelled, in a preview `column` wide whose
+    /// narrowest is `column_min`: the row the toolbar gives the path (all of
+    /// it where the modes wrap below), less a Working file's area badge, Copy
+    /// path, File history and the labelled Blame, `gap_1` apart.
+    fn path_fits_beside_labelled_blame(
+        &self,
+        path: &str,
+        column: Pixels,
+        column_min: Pixels,
+        window: &Window,
+    ) -> bool {
+        let rem = window.rem_size();
+        let room = column - rem * 1.5;
+        let control = appearance::ui_size(28.);
+        let allotment =
+            appearance::ui_size(220.).min((column_min - appearance::ui_size(19.5)).max(px(0.)));
+        let modes = text_modes_width(&["Diff", "Split", "Before", "After"], window);
+        let row = if modes <= room && allotment + rem * 0.375 + modes <= room {
+            room - rem * 0.375 - modes
+        } else {
+            room
+        };
+        let working = self.mode == WorkspaceMode::Working;
+        let badge = self
+            .working_selected
+            .filter(|_| working)
+            .map_or(px(0.), |(_, area)| {
+                let word = if area == gitturtle_core::ChangeArea::Staged {
+                    "Staged"
+                } else {
+                    "Unstaged"
+                };
+                rem * 0.5 * 2.
+                    + cached_text_width(&AREA_BADGE, word, window, || {
+                        line_widths(&[(word, appearance::ui_text(10.))], window)
+                    })
+                    + rem * 0.25
+            });
+        let history = if working || self.file_history.is_active() {
+            px(0.)
+        } else {
+            control + rem * 0.25
+        };
+        let blame = cached_width(&BLAME_LABEL, &LineKey::current(window), || {
+            line_widths(&[("Blame", appearance::ui_text(12.))], window)
+        }) + appearance::ui_size(20.);
+        let needed = cached_text_width(&BLAME_PATH, path, window, || {
+            shaped_width(path, appearance::ui_text(12.), FontWeight::MEDIUM, window).ceil()
+        });
+        row - badge - (control + rem * 0.25) - history - (blame + rem * 0.25) >= needed
     }
 
     /// What Compare needs below the chrome to show three whole diff lines of
@@ -3115,6 +3239,11 @@ thread_local! {
     static FILES_COUNT: TextWidth = const { RefCell::new(None) };
     static FILES_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static TEXT_MODES: TextWidth = const { RefCell::new(None) };
+    static FOOTER_LINE: TextWidth = const { RefCell::new(None) };
+    static BLAME_PATH: TextWidth = const { RefCell::new(None) };
+    static AREA_BADGE: TextWidth = const { RefCell::new(None) };
+    static STATUS_WORDS: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+    static BLAME_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static TEXT_MODE_WIDEST: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
 }
 #[cfg(test)]
@@ -4953,6 +5082,8 @@ mod tests {
                     ("previous-text-change", "Previous change"),
                     ("next-text-change", "Next change"),
                     ("text-review-menu", "Review options"),
+                    // The whole path does not fit beside a labelled Blame.
+                    ("open-blame", "Blame"),
                 ]
             )
         );
@@ -5490,6 +5621,69 @@ mod tests {
         draw(cx);
         assert!(app.read_with(cx, |app, _| app.text_mode == TextMode::Split));
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// In the 156 px inspector and 243 px comparison column of a 461 × 490
+    /// window at 18 pt, no text gives way to a lone ellipsis or a clipped
+    /// character: the changed-file rows leave out their status words so the
+    /// name takes the width, Blame keeps only its icon so the path is whole,
+    /// and the footer drops its object IDs and stays inside the column. At
+    /// the default size, and in a wide window at 18 pt, each keeps its word.
+    #[gpui::test]
+    async fn narrow_large_text_rows_and_footer_keep_their_text(cx: &mut TestAppContext) {
+        // A path that fits whole at 18 pt only once Blame gives up its label.
+        let script = history_script(2, 40).replace("notes.txt", "note.txt");
+        let (_fixture, app, cx) = history_window_from(cx, &script).await;
+        let control = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.)))
+        };
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert!(cx.debug_bounds("changed-file-status").is_none(), "History");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        assert!(cx.debug_bounds("changed-file-status").is_none(), "Compare");
+        let footer = cx.debug_bounds("compare-footer").unwrap();
+        let text = cx.debug_bounds("compare-footer-text").unwrap();
+        let inset = cx.update(|window, _| window.rem_size() * 0.75);
+        assert!(
+            text.right() <= footer.right() - inset + px(0.5),
+            "footer text {text:?} in {footer:?}"
+        );
+        let blame = cx.debug_bounds("open-blame").unwrap();
+        assert_eq!(blame.size.width, control(cx), "Blame keeps its icon");
+        assert_eq!(
+            COMPACT_NAMES.with(|names| names.borrow().get("open-blame").copied()),
+            Some("Blame")
+        );
+        let (path, whole) = (
+            cx.debug_bounds("preview-file-path").unwrap(),
+            cx.update(|window, _| {
+                shaped_width(
+                    "note.txt",
+                    appearance::ui_text(12.),
+                    FontWeight::MEDIUM,
+                    window,
+                )
+            }),
+        );
+        assert!(path.size.width >= whole, "path {path:?}, whole {whole:?}");
+        // Wide enough each keeps its word; at the default size the file rows
+        // keep theirs even in the half tile.
+        for (text, width, height) in [(18, 1000., 680.), (13, 1000., 680.), (13, 461., 490.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt at {width}");
+            assert!(cx.debug_bounds("changed-file-status").is_some(), "{at}");
+            if width > 461. {
+                let blame = cx.debug_bounds("open-blame").unwrap();
+                assert!(blame.size.width > control(cx), "{at}: {blame:?}");
+                assert!(cx.debug_bounds("compare-footer").is_some());
+            }
+        }
     }
 
     /// A 40-commit History in Working Changes with two staged new files and
