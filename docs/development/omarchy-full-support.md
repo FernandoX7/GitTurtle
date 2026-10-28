@@ -394,7 +394,10 @@ cover current upstream x86-64 Omarchy.
         Research notes (2026-10-28): [GitHub account in the Secret Service](2026-10-28-linux-github-secret-service.md)
         (oo7, already in the Linux build) and [reduced motion and contrast from the settings
         portal](2026-10-28-linux-portal-motion-contrast.md) (extend the `desktop_text` observer); each
-        lists the owner decisions it needs before implementation.
+        lists the owner decisions it needs before implementation. Also [PDF pages](2026-10-28-linux-pdf-pages.md)
+        (hayro in a limited helper process) and [AVIF, HEIF/HEIC and JPEG
+        2000](2026-10-28-linux-avif-heif-jpeg2000.md) (hayro-jpeg2000; mp4parse with the system dav1d;
+        HEIC deferred pending the owner's HEVC patent position).
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
