@@ -133,6 +133,14 @@ pub(super) struct WorkingForms {
     header_icon: bool,
     header_label: bool,
     header_count: bool,
+    /// The Staged and Unstaged headings, fitted together so both keep one
+    /// form: Unstage all and Stage all keep only their icons first, then the
+    /// leading glyph leaves, then the group's name, the glyph returning beside
+    /// the count to tell the groups apart, and last the glyph again. The count
+    /// stays, naming its group in its tooltip once the name has left.
+    section_action_label: bool,
+    section_icon: bool,
+    section_label: bool,
     /// The short composer heading's icon, then its staged badge, leave where
     /// the heading beside them could not keep "Commit to" and the branch's
     /// first character and ellipsis, so it truncates only the branch.
@@ -156,6 +164,11 @@ thread_local! {
     /// The wrapped lines of the selection controls' texts, by text, size and
     /// width, so a steady render lays none of them out.
     static WRAPPED_LINES: RefCell<Vec<WrappedText>> = const { RefCell::new(Vec::new()) };
+    /// "Staged", "Unstaged", "Unstage all" and "Stage all".
+    static SECTION_LABELS: RefCell<Option<(crate::views::LineKey, [Pixels; 4])>> =
+        const { RefCell::new(None) };
+    static STAGED_HEADING_COUNT: crate::views::TextWidth = const { RefCell::new(None) };
+    static UNSTAGED_HEADING_COUNT: crate::views::TextWidth = const { RefCell::new(None) };
 }
 
 /// A text's wrapped line count, with what it was laid out with: the font and
@@ -199,6 +212,16 @@ fn wrapped_lines(text: &str, size: Pixels, width: Pixels, window: &Window) -> us
         lines
     })
 }
+
+/// The Staged and Unstaged headings' forms, widest first, as
+/// (labelled action, glyph, name): see `WorkingForms::section_action_label`.
+const SECTION_FORMS: [(bool, bool, bool); 5] = [
+    (true, true, true),
+    (false, true, true),
+    (false, false, true),
+    (false, true, false),
+    (false, false, false),
+];
 
 impl GitTurtle {
     /// `WorkingForms` for an inspector `width` wide. Each text is laid out
@@ -291,6 +314,58 @@ impl GitTurtle {
             }
         }
 
+        // The Staged and Unstaged headings, inside the file list's border and
+        // its 1 px margin: the glyph, the group's name and count, and Unstage
+        // all or Stage all at the trailing edge. Both take the first form in
+        // which each fits.
+        let (mut section_action_label, mut section_icon, mut section_label) = (true, true, true);
+        if let Some((staged_rows, unstaged_rows)) = self.section_counts() {
+            let [staged_name, unstaged_name, unstage_all, stage_all] =
+                cached_width(&SECTION_LABELS, &key, || {
+                    let name = |text| measure(text, ui_text(12.), FontWeight::SEMIBOLD);
+                    let action = |text| measure(text, ui_text(12.), regular);
+                    [
+                        name("Staged"),
+                        name("Unstaged"),
+                        action("Unstage all"),
+                        action("Stage all"),
+                    ]
+                });
+            let count = |cache, rows: usize| {
+                let text = rows.to_string();
+                cached_text_width(cache, &text, window, || {
+                    measure(&text, ui_text(11.), regular)
+                })
+            };
+            // The labelled helper: its padding either side, icon and gap.
+            let labelled = |text: Pixels| ui_size(10.) * 2. + ui_size(16.) + ui_size(6.) + text;
+            let rows = [
+                (
+                    staged_name,
+                    count(&STAGED_HEADING_COUNT, staged_rows),
+                    labelled(unstage_all),
+                ),
+                (
+                    unstaged_name,
+                    count(&UNSTAGED_HEADING_COUNT, unstaged_rows),
+                    labelled(stage_all),
+                ),
+            ];
+            let section_room = room - px(3.);
+            let fits = |(action_label, glyph, label): (bool, bool, bool)| {
+                rows.iter().all(|&(name, count, action)| {
+                    let glyph = if glyph { px(15.) + gap } else { px(0.) };
+                    let name = if label { name + gap } else { px(0.) };
+                    glyph + name + count + gap + if action_label { action } else { control }
+                        <= section_room
+                })
+            };
+            (section_action_label, section_icon, section_label) = SECTION_FORMS
+                .into_iter()
+                .find(|&form| fits(form))
+                .unwrap_or((false, false, false));
+        }
+
         // The composer heading: "Commit to" and at least the branch's first
         // character and ellipsis, a truncated line keeping the characters
         // that fit strictly before its ellipsis, as `scope_name_min_width`
@@ -330,6 +405,9 @@ impl GitTurtle {
             header_icon,
             header_label,
             header_count,
+            section_action_label,
+            section_icon,
+            section_label,
             heading_icon,
             heading_badge,
         }
@@ -411,6 +489,26 @@ impl GitTurtle {
         WorkingFit {
             tight: true,
             heading: working_toolbar_height(window) + body(true) <= height,
+        }
+    }
+
+    /// The counts the Staged and Unstaged headings show, the first row and
+    /// the first Unstaged one, found by bisection: the rows hold every Staged
+    /// row before every Unstaged one.
+    fn section_counts(&self) -> Option<(usize, usize)> {
+        let area = |row: &WorkingRow| match row {
+            WorkingRow::Heading(area, _)
+            | WorkingRow::Directory(_, area)
+            | WorkingRow::File(_, area) => *area,
+        };
+        let unstaged = self
+            .working_rows
+            .partition_point(|row| area(row) == ChangeArea::Staged);
+        match (self.working_rows.first(), self.working_rows.get(unstaged)) {
+            (Some(WorkingRow::Heading(_, staged)), Some(WorkingRow::Heading(_, unstaged))) => {
+                Some((*staged, *unstaged))
+            }
+            _ => None,
         }
     }
 }
@@ -1411,9 +1509,9 @@ impl GitTurtle {
         let list = uniform_list(
             "working-files",
             self.working_rows.len(),
-            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+            cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
                 range
-                    .map(|i| this.render_working_row(i, window, cx))
+                    .map(|i| this.render_working_row(i, forms, window, cx))
                     .collect::<Vec<_>>()
             }),
         )
@@ -1723,6 +1821,7 @@ impl GitTurtle {
     fn render_working_row(
         &self,
         position: usize,
+        forms: WorkingForms,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1749,6 +1848,40 @@ impl GitTurtle {
             }
             WorkingRow::Heading(area, count) => {
                 let staged = area == ChangeArea::Staged;
+                let name = if staged { "Staged" } else { "Unstaged" };
+                let (selector, action, symbol, detail) = if staged {
+                    (
+                        "unstage-all",
+                        "Unstage all",
+                        "minus",
+                        "Remove all staged changes from the next commit",
+                    )
+                } else {
+                    (
+                        "stage-all",
+                        "Stage all",
+                        "plus",
+                        "Include all local changes in the next commit",
+                    )
+                };
+                // Where its label does not fit, the action keeps its icon,
+                // with its name and a tooltip that leads with it.
+                let control = if forms.section_action_label {
+                    button(selector, action, symbol, false).tooltip(detail)
+                } else {
+                    crate::views::compact_control_name(
+                        button(selector, "", symbol, false),
+                        selector,
+                        action,
+                    )
+                    .tooltip(format!("{action} · {detail}"))
+                };
+                let part = move |part: &'static str| -> String {
+                    format!(
+                        "{}-heading-{part}",
+                        if staged { "staged" } else { "unstaged" }
+                    )
+                };
                 div()
                     .debug_selector(move || format!("working-row-{position}"))
                     .w_full()
@@ -1760,44 +1893,51 @@ impl GitTurtle {
                     .border_b_1()
                     .border_color(rgb(p.border))
                     .bg(rgb(p.subtle))
-                    .child(icon(
-                        if staged { "check" } else { "code" },
-                        15.,
-                        if staged { p.added } else { p.modified },
-                    ))
+                    .when(forms.section_icon, |el| {
+                        el.child(div().debug_selector(move || part("icon")).child(icon(
+                            if staged { "check" } else { "code" },
+                            15.,
+                            if staged { p.added } else { p.modified },
+                        )))
+                    })
+                    .when(forms.section_label, |el| {
+                        el.child(
+                            div()
+                                .debug_selector(move || part("label"))
+                                .text_size(crate::appearance::ui_text(12.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(name),
+                        )
+                    })
                     .child(
                         div()
-                            .text_size(crate::appearance::ui_text(12.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(if staged { "Staged" } else { "Unstaged" }),
-                    )
-                    .child(
-                        div()
+                            .id(if staged {
+                                "staged-heading-count"
+                            } else {
+                                "unstaged-heading-count"
+                            })
+                            .debug_selector(move || part("count"))
                             .text_size(crate::appearance::ui_text(11.))
                             .text_color(rgb(p.muted))
+                            // Without its name the count says what it counts.
+                            .when(!forms.section_label, |el| {
+                                el.tooltip(move |window, cx| {
+                                    Tooltip::new(format!("{name} · {count}")).build(window, cx)
+                                })
+                            })
                             .child(count.to_string()),
                     )
-                    .child(div().flex_1())
                     .child(
-                        button(
-                            if staged { "unstage-all" } else { "stage-all" },
-                            if staged { "Unstage all" } else { "Stage all" },
-                            if staged { "minus" } else { "plus" },
-                            false,
-                        )
-                        .disabled(
-                            busy || count == 0
-                                || self.working_paths.pending
-                                || self.working_paths.error.is_some()
-                                || !self.working_filter.read(cx).value().is_empty(),
-                        )
-                        .tooltip(if staged {
-                            "Remove all staged changes from the next commit"
-                        } else {
-                            "Include all local changes in the next commit"
-                        })
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
+                        control
+                            .debug_selector(move || selector.into())
+                            .ml_auto()
+                            .disabled(
+                                busy || count == 0
+                                    || self.working_paths.pending
+                                    || self.working_paths.error.is_some()
+                                    || !self.working_filter.read(cx).value().is_empty(),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 this.write(
                                     if staged {
                                         WriteCommand::UnstageAll
@@ -1812,8 +1952,7 @@ impl GitTurtle {
                                     window,
                                     cx,
                                 )
-                            },
-                        )),
+                            })),
                     )
                     .into_any_element()
             }

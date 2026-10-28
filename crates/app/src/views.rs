@@ -3666,12 +3666,13 @@ pub(crate) fn compact_control_name(
 }
 
 /// `width` for `key`, computed again only when `key` changes, so a steady
-/// render asks the text system nothing.
-pub(crate) fn cached_width(
-    cache: &'static std::thread::LocalKey<RefCell<Option<(LineKey, Pixels)>>>,
+/// render asks the text system nothing. `T` is one width or several taken
+/// together.
+pub(crate) fn cached_width<T: Copy>(
+    cache: &'static std::thread::LocalKey<RefCell<Option<(LineKey, T)>>>,
     key: &LineKey,
-    width: impl FnOnce() -> Pixels,
-) -> Pixels {
+    width: impl FnOnce() -> T,
+) -> T {
     cache.with(|cache| {
         let mut cache = cache.borrow_mut();
         match &*cache {
@@ -6492,6 +6493,118 @@ pub(crate) mod tests {
                 shown += 1;
             }
             assert_eq!(shown as f32, rows.round(), "{at}");
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The Staged and Unstaged headings keep their texts and their trailing
+    /// Unstage all and Stage all inside the file list's inset, in a 461 × 490
+    /// window at the default size and at 18 pt and in a 1480 × 980 one. At
+    /// 18 pt in the 156 px inspector each action keeps its icon as a 28 px
+    /// control named "Unstage all" or "Stage all", and the group's name
+    /// leaves with the glyph kept beside the count; at the default size and
+    /// in the wide window each heading keeps its labelled form.
+    #[gpui::test]
+    async fn section_headings_keep_their_actions_inside_the_list(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        let unstaged = app.read_with(cx, |app, _| {
+            app.working_rows
+                .iter()
+                .position(|row| {
+                    matches!(
+                        row,
+                        crate::workspace::WorkingRow::Heading(
+                            gitturtle_core::ChangeArea::Unstaged,
+                            _
+                        )
+                    )
+                })
+                .unwrap()
+        });
+        let headings = [
+            (
+                0,
+                "unstage-all",
+                "Unstage all",
+                [
+                    "staged-heading-icon",
+                    "staged-heading-label",
+                    "staged-heading-count",
+                ],
+            ),
+            (
+                unstaged,
+                "stage-all",
+                "Stage all",
+                [
+                    "unstaged-heading-icon",
+                    "unstaged-heading-label",
+                    "unstaged-heading-count",
+                ],
+            ),
+        ];
+        for (text, width, height) in [(13, 461., 490.), (18, 461., 490.), (13, 1480., 980.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt at {width} × {height}");
+            let (inset, control) = cx.update(|window, _| {
+                (
+                    window.pixel_snap(window.rem_size() * 0.75),
+                    window.pixel_snap(appearance::ui_size(28.)),
+                )
+            });
+            let narrow = text == 18;
+            for (row, selector, name, [glyph, label, count]) in headings {
+                app.update(cx, |app, _| {
+                    app.working_scroll.scroll_to_item(row, ScrollStrategy::Top)
+                });
+                draw(cx);
+                // Only the names the settled layout gives: a frame laid out
+                // at the previous width can have named a compact form.
+                COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+                app.update(cx, |_, cx| cx.notify());
+                draw(cx);
+                let pane = cx.debug_bounds("working-pane").unwrap();
+                // Inside the list's 1 px border, at the rows' leading inset.
+                let (start, end) = (
+                    pane.left() + px(1.) + inset - px(0.5),
+                    pane.right() - px(1.) - inset + px(0.5),
+                );
+                let action = cx
+                    .debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{selector} at {at}"));
+                let count = cx
+                    .debug_bounds(count)
+                    .unwrap_or_else(|| panic!("{count} at {at}"));
+                let mut parts = vec![(selector, action)];
+                for part in [glyph, label] {
+                    parts.extend(cx.debug_bounds(part).map(|bounds| (part, bounds)));
+                }
+                parts.push(("count", count));
+                for (part, bounds) in &parts {
+                    assert!(
+                        bounds.left() >= start && bounds.right() <= end,
+                        "{at}: {part} {bounds:?} outside {start:?}..{end:?}"
+                    );
+                }
+                assert!(
+                    count.right() <= action.left(),
+                    "{at}: {count:?} before {action:?}"
+                );
+                // The glyph tells the groups apart wherever the name has left.
+                assert!(cx.debug_bounds(glyph).is_some(), "{at}: {glyph}");
+                assert_eq!(cx.debug_bounds(label).is_some(), !narrow, "{at}: {label}");
+                let names = COMPACT_NAMES.with(|names| names.borrow().clone());
+                if narrow {
+                    assert_eq!(action.size.width, control, "{at}: {selector} {action:?}");
+                    assert_eq!(names.get(selector), Some(&name), "{at}: {selector}");
+                } else {
+                    assert!(action.size.width > control, "{at}: {selector} {action:?}");
+                    assert_eq!(names.get(selector), None, "{at}: {selector}");
+                }
+            }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
