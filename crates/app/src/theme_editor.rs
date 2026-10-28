@@ -2535,84 +2535,91 @@ impl ThemeForm {
     fn render_warnings(&self, p: Palette, window: &Window) -> AnyElement {
         let count = self.warnings.len();
         let focused = self.warnings_focus.is_focused(window);
-        div()
-            .id("theme-editor-warnings")
-            // A tab stop after the last row: the list is content, not a
-            // control, but focusing it scrolls it into view.
-            .track_focus(&self.warnings_focus)
-            .role(Role::Group)
-            .aria_label(format!(
-                "Readability, {count} warning{}",
-                if count == 1 { "" } else { "s" }
-            ))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(transparent_black())
-            .when(focused, |list| list.border_color(rgb(p.accent)))
-            .p_1()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_size(appearance::ui_text(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(p.text))
-                    .child("Readability")
-                    .when(count > 0, |heading| {
-                        heading.child(
-                            div()
-                                .text_color(rgb(p.muted))
-                                .font_weight(FontWeight::NORMAL)
-                                .child(format!(
-                                    "{count} warning{}",
-                                    if count == 1 { "" } else { "s" }
-                                )),
-                        )
-                    }),
-            )
-            .when(count == 0, |list| {
-                list.child(
+        // The group sits between the scrolling column and its warnings, and
+        // AccessKit compares a child with its nearest clipping parent alone,
+        // so the group clips its warnings: those below the column's edge
+        // leave the tree with the part of the group the window does not draw.
+        crate::native_accessibility::clips_children(
+            div()
+                .id("theme-editor-warnings")
+                .debug_selector(|| "theme-editor-warnings".into())
+                // A tab stop after the last row: the list is content, not a
+                // control, but focusing it scrolls it into view.
+                .track_focus(&self.warnings_focus)
+                .role(Role::Group)
+                .aria_label(format!(
+                    "Readability, {count} warning{}",
+                    if count == 1 { "" } else { "s" }
+                ))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(transparent_black())
+                .when(focused, |list| list.border_color(rgb(p.accent)))
+                .p_1()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
                     div()
-                        .debug_selector(|| "theme-editor-no-warnings".into())
-                        .text_size(appearance::ui_text(11.))
-                        .text_color(rgb(p.muted))
-                        .child(NO_READABILITY_WARNINGS),
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_size(appearance::ui_text(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(rgb(p.text))
+                        .child("Readability")
+                        .when(count > 0, |heading| {
+                            heading.child(
+                                div()
+                                    .text_color(rgb(p.muted))
+                                    .font_weight(FontWeight::NORMAL)
+                                    .child(format!(
+                                        "{count} warning{}",
+                                        if count == 1 { "" } else { "s" }
+                                    )),
+                            )
+                        }),
                 )
-            })
-            .children(self.warnings.iter().enumerate().map(|(index, issue)| {
-                let text = issue.to_string();
-                div()
-                    .id(("theme-warning", index))
-                    .debug_selector(move || format!("theme-warning-{index}"))
-                    .role(Role::Label)
-                    .aria_label(text.clone())
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .child(warning_glyph(p))
-                    .child(
+                .when(count == 0, |list| {
+                    list.child(
                         div()
-                            .flex_1()
-                            .min_w_0()
+                            .debug_selector(|| "theme-editor-no-warnings".into())
                             .text_size(appearance::ui_text(11.))
-                            .line_height(relative(1.4))
-                            .text_color(rgb(p.text))
-                            .child(text),
+                            .text_color(rgb(p.muted))
+                            .child(NO_READABILITY_WARNINGS),
                     )
-            }))
-            .when(count > 0, |list| {
-                list.child(
+                })
+                .children(self.warnings.iter().enumerate().map(|(index, issue)| {
+                    let text = issue.to_string();
                     div()
-                        .text_size(appearance::ui_text(11.))
-                        .text_color(rgb(p.muted))
-                        .child("Warnings do not prevent saving."),
-                )
-            })
-            .into_any_element()
+                        .id(("theme-warning", index))
+                        .debug_selector(move || format!("theme-warning-{index}"))
+                        .role(Role::Label)
+                        .aria_label(text.clone())
+                        .flex()
+                        .items_start()
+                        .gap_2()
+                        .child(warning_glyph(p))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(appearance::ui_text(11.))
+                                .line_height(relative(1.4))
+                                .text_color(rgb(p.text))
+                                .child(text),
+                        )
+                }))
+                .when(count > 0, |list| {
+                    list.child(
+                        div()
+                            .text_size(appearance::ui_text(11.))
+                            .text_color(rgb(p.muted))
+                            .child("Warnings do not prevent saving."),
+                    )
+                }),
+        )
+        .into_any_element()
     }
 }
 
@@ -4541,6 +4548,95 @@ mod tests {
             type_hex(cx, &form, kind, &custom::format_hex(original.get(kind)));
         }
         fits(cx);
+    }
+
+    /// No readability warning is reachable wholly below the part of the side
+    /// column the window draws. The warnings sit in a group between the
+    /// column, which clips them, and themselves, and AccessKit compares a
+    /// child with its nearest clipping parent alone: with the group partly
+    /// drawn, or kept as the first node past the column's edge, every warning
+    /// in it stayed in the tree.
+    #[gpui::test]
+    fn warnings_past_the_side_column_are_out_of_reach(cx: &mut TestAppContext) {
+        use crate::native_accessibility::{reachable, written};
+        use gpui::accesskit::{Node, Rect};
+
+        let (app, cx) = open_app(cx);
+        cx.simulate_resize(size(px(1440.), px(900.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        cx.run_until_parked();
+        let form = form(cx, &app);
+        for kind in TokenKind::ALL {
+            type_hex(cx, &form, kind, "#808080");
+        }
+        let count = cx.read(|cx| form.read(cx).warnings.len());
+        written::forget();
+        cx.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+        let physical = |bounds: Bounds<Pixels>| Rect {
+            x0: f64::from(f32::from(bounds.left())) * scale,
+            y0: f64::from(f32::from(bounds.top())) * scale,
+            x1: f64::from(f32::from(bounds.right())) * scale,
+            y1: f64::from(f32::from(bounds.bottom())) * scale,
+        };
+        let window = physical(Bounds::new(
+            point(px(0.), px(0.)),
+            size(px(1440.), px(900.)),
+        ));
+        let meets = |a: Rect, b: Rect| !a.intersect(b).is_empty();
+        // The part of the column the window draws, from layout alone.
+        let column = physical(bounds(cx, "theme-editor-side".into())).intersect(window);
+        let warnings: Vec<Rect> = (0..count)
+            .map(|index| physical(bounds(cx, format!("theme-warning-{index}"))))
+            .collect();
+        assert!(
+            warnings.iter().any(|warning| !meets(*warning, column)),
+            "{count} warnings run past the column's visible bottom at {}",
+            column.y1
+        );
+        let mut tree = written::Assembly::default().written("theme-editor-warnings", None);
+        if !tree.has("theme-editor-warnings") {
+            // Without its wrapper the group is the node GPUI writes from
+            // layout, inside the column.
+            tree = tree.written("theme-editor-side", None);
+            let mut group = Node::new(Role::Group);
+            group.set_label("Readability warnings");
+            group.set_bounds(physical(bounds(cx, "theme-editor-warnings".into())));
+            tree = tree.node("theme-editor-warnings", group, Some("theme-editor-side"));
+        }
+        for (index, bounds) in warnings.iter().enumerate() {
+            let mut warning = Node::new(Role::Label);
+            warning.set_label(format!("warning {index}"));
+            warning.set_bounds(*bounds);
+            tree = tree.node(
+                &format!("theme-warning-{index}"),
+                warning,
+                Some("theme-editor-warnings"),
+            );
+        }
+        let found = reachable(tree.tree(window, None));
+        for (index, bounds) in warnings.iter().enumerate() {
+            let label = format!("warning {index}");
+            if meets(*bounds, column)
+                || !found.iter().any(|node| node.label.as_ref() == Some(&label))
+            {
+                continue;
+            }
+            // AccessKit keeps the first warning past the edge.
+            let neighbour = [index.checked_sub(1), Some(index + 1)]
+                .into_iter()
+                .flatten()
+                .filter_map(|other| warnings.get(other))
+                .any(|other| meets(*other, column));
+            assert!(
+                neighbour,
+                "{label} at {bounds:?} is reached, wholly below the column's visible bottom at {}",
+                column.y1
+            );
+        }
     }
 
     /// The Accent row carries the longest description. In the QA host's UI

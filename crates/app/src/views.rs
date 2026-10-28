@@ -2050,22 +2050,28 @@ impl GitTurtle {
             )
             .into(),
         ]);
-        div()
-            .id("commit-metadata")
-            .debug_selector(|| "commit-metadata".into())
-            .role(Role::Group)
-            .aria_label("Commit author and comparison parents")
-            .min_w_0()
-            .p_3()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .text_size(appearance::ui_text(11.))
-            .text_color(rgb(colors.muted))
-            .child(div().child(author))
-            .child(date)
-            .child(parents)
-            .into_any_element()
+        // The message's document is read as a whole and clips nothing, and
+        // AccessKit compares a control with its nearest clipping parent
+        // alone, so this group clips its controls: the parents below the
+        // part of the details the window draws leave the tree.
+        native_accessibility::clips_children(
+            div()
+                .id("commit-metadata")
+                .debug_selector(|| "commit-metadata".into())
+                .role(Role::Group)
+                .aria_label("Commit author and comparison parents")
+                .min_w_0()
+                .p_3()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .text_size(appearance::ui_text(11.))
+                .text_color(rgb(colors.muted))
+                .child(div().child(author))
+                .child(date)
+                .child(parents),
+        )
+        .into_any_element()
     }
 
     pub(super) fn render_files(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -11753,6 +11759,112 @@ pub(crate) mod tests {
                 &at,
             );
         }
+    }
+
+    /// No control in the inspector's commit details is reachable wholly
+    /// outside the part of the details the window draws. At 13 pt in a
+    /// 461 × 490 window, in History and Compare, AT-SPI reached "Compare
+    /// against parent 1" and "Selected commit actions" at y 346 and 380.5,
+    /// below the details' visible bottom at 322.5, where the window draws the
+    /// Changed files header: their group, "Commit author and comparison
+    /// parents", was partly drawn and clipped nothing, and AccessKit compares
+    /// a child only with its nearest clipping parent. Actions has since moved
+    /// to the message's toolbar; the parents remain in the group.
+    #[gpui::test]
+    async fn commit_details_reach_only_the_controls_drawn(cx: &mut TestAppContext) {
+        use crate::native_accessibility::{reachable, written};
+        use gpui::accesskit::{Node, Rect};
+
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle(&app, cx).await;
+        let meets = |a: Rect, b: Rect| !a.intersect(b).is_empty();
+        // Actions now sits in the message's toolbar, which stays in view;
+        // the group holds the parents.
+        let controls = [("commit-parent-0", "Compare against parent 1")];
+        for page in ["History", "Compare"] {
+            if page == "Compare" {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+                settle(&app, cx).await;
+            }
+            for (text, width, height) in [(13, 461., 490.), (18, 461., 490.), (13, 640., 490.)] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                written::forget();
+                draw(cx);
+                let at = format!("{page} at {text} pt in {width} × {height}");
+                let window = node_bounds(
+                    cx,
+                    Bounds::new(point(px(0.), px(0.)), size(px(width), px(height))),
+                );
+                let viewport = cx
+                    .debug_bounds("commit-message-viewport")
+                    .unwrap_or_else(|| panic!("{at}: the details are drawn"));
+                // The part of the details the window draws, from layout alone.
+                let drawn = node_bounds(cx, viewport).intersect(window);
+                let Some(group) = cx.debug_bounds("commit-metadata") else {
+                    // A message long enough keeps the metadata out of view.
+                    continue;
+                };
+                // The tree as GPUI builds it: the details' document, which
+                // clips nothing, holding the group, which clips where it is
+                // wrapped and is otherwise the node GPUI writes from layout.
+                let mut document = Node::new(Role::Document);
+                document.set_bounds(node_bounds(cx, viewport));
+                let mut tree = written::Assembly::default()
+                    .node("commit-message-viewport", document, None)
+                    .written("commit-metadata", Some("commit-message-viewport"));
+                if !tree.has("commit-metadata") {
+                    let mut node = Node::new(Role::Group);
+                    node.set_label("Commit author and comparison parents");
+                    node.set_bounds(node_bounds(cx, group));
+                    tree = tree.node("commit-metadata", node, Some("commit-message-viewport"));
+                }
+                let mut placed = Vec::new();
+                for (selector, label) in controls {
+                    let laid_out = cx
+                        .debug_bounds(selector)
+                        .unwrap_or_else(|| panic!("{at}: {label} is laid out"));
+                    let bounds = node_bounds(cx, laid_out);
+                    let mut control = Node::new(Role::Button);
+                    control.set_label(label);
+                    control.set_bounds(bounds);
+                    tree = tree.node(selector, control, Some("commit-metadata"));
+                    placed.push((label, bounds));
+                }
+                if text == 13 && width == 461. {
+                    assert!(
+                        placed.iter().all(|(_, bounds)| bounds.y0 >= drawn.y1),
+                        "{at}: the controls lie below the details' visible bottom at {}: \
+                         {placed:?}",
+                        drawn.y1
+                    );
+                }
+                let found = reachable(tree.tree(window, None));
+                for (index, (label, bounds)) in placed.iter().enumerate() {
+                    if meets(*bounds, drawn)
+                        || !found
+                            .iter()
+                            .any(|node| node.label.as_deref() == Some(*label))
+                    {
+                        continue;
+                    }
+                    // AccessKit keeps the first control past each edge.
+                    let neighbour = [index.checked_sub(1), Some(index + 1)]
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|other| placed.get(other))
+                        .any(|(_, other)| meets(*other, drawn));
+                    assert!(
+                        neighbour,
+                        "{at}: {label} at {bounds:?} is reached, wholly outside the part of \
+                         the details the window draws, {drawn:?}"
+                    );
+                }
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// Each History row's node reports the part of the row the list draws,
