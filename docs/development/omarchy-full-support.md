@@ -227,6 +227,14 @@ cover current upstream x86-64 Omarchy.
           and Copied replaces the icon in place; key the mark by commit, path and side; check
           Hash at 18 pt in a half tile; frames of a copy while hovered, pressed, keyboard
           activated, from an icon-only button and repeated.
+        - Item 9 wave 1 (`0aa3352`, `d5f7f9c`, `268dc23`, `5d543db`, `0a1e652`, `6ab4dc7`, natively
+          checked): a menu label (the moved review caption, and the project pane's, profiles',
+          branch actions' and model view's labels) draws in the disabled colour and is announced
+          as a menu item, and the kit's first Down selects a leading label; the popover drops its
+          trigger's style; the narrow "More context" item's accessible name differs from the
+          button's; `native-accessibility.md` still says "Context"; the Reflog's tooltip shows
+          when nothing is cut, and its header, entries and filter start at three insets; Quick
+          Open and Keyboard Shortcuts are not yet on the raised surface.
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
