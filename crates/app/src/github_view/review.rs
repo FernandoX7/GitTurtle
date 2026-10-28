@@ -840,7 +840,10 @@ impl Panel {
             )
             .child(div().flex_1())
             .child(
+                // Ends where the Buttons at the panel's right edge end their labels.
                 label("github-local-save", self.save_status.clone())
+                    .debug_selector(|| "github-local-save".into())
+                    .mr(super::text_inset())
                     .text_color(rgb(palette(cx).muted)),
             )
             .into_any_element()

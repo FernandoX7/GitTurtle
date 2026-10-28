@@ -1701,6 +1701,8 @@ mod tests {
     /// where the Changes button starts its label: the prompt before a file is
     /// chosen, then the file's path and the range hint, with the patch box at
     /// the edge. The path and hint started at the edge, the prompt 16 px in.
+    /// The draft status beside the section tabs ends one inset in from the
+    /// panel's right edge, where the Buttons there end their labels.
     #[gpui::test]
     async fn the_panel_starts_its_text_at_one_edge(cx: &mut TestAppContext) {
         use crate::tags::tests::draw;
@@ -1769,6 +1771,7 @@ mod tests {
                 panel.review.files = files;
                 panel.review.section = Section::Files;
                 panel.review.show_list = false;
+                panel.save_status = "Draft saved locally".into();
                 cx.notify();
             })
         });
@@ -1809,6 +1812,14 @@ mod tests {
                      {starts:?}"
                 );
             }
+            // The draft status ends where the Buttons at the panel's right edge end their
+            // labels.
+            let end = at(cx, "github-panel").right() - text_inset();
+            let saved = at(cx, "github-local-save").right();
+            assert!(
+                (saved - end).abs() < px(0.5),
+                "{interface} pt: the draft status ends at {saved:?}, not {end:?}"
+            );
             let text = at(cx, "github-panel").left() + text_inset();
             let list = at(cx, "github-file-focus");
             let bound = at(cx, "github-file-bound");
