@@ -2818,17 +2818,19 @@ impl GitTurtle {
                                     })
                                 },
                             )
+                            // Each line fits whole or ends in an ellipsis
+                            // inside the row, never cut by half a pixel.
                             .child(
-                                div()
-                                    .debug_selector(move || format!("working-name-{position}"))
-                                    .truncate()
-                                    .text_size(crate::appearance::ui_text(12.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(name),
+                                crate::views::ellipsis_end(
+                                    div()
+                                        .debug_selector(move || format!("working-name-{position}")),
+                                )
+                                .text_size(crate::appearance::ui_text(12.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(name),
                             )
                             .child(
-                                div()
-                                    .truncate()
+                                crate::views::ellipsis_end(div())
                                     .text_size(crate::appearance::ui_text(10.))
                                     .text_color(rgb(p.muted))
                                     .child(parent),

@@ -152,15 +152,6 @@ const KNOWN: &[Known] = &[
         region: "commit-message-viewport",
         follow_up: "the commit details fit an 18 pt half-tile inspector",
     },
-    // At 18 pt in 515 × 980 a Working row's name is 0.5 px wider than the
-    // room the row fits it to.
-    Known {
-        page: Page::Working,
-        sizes: &[18],
-        rule: Rule::CutText,
-        region: "working-pane",
-        follow_up: "a Working row measures its name as it draws it",
-    },
     // A PR's detail rows and their controls run past a narrow panel.
     Known {
         page: Page::GitHub,
@@ -689,4 +680,70 @@ async fn the_github_panel_keeps_its_text_whole_at_13_pt(cx: &mut TestAppContext)
 #[gpui::test]
 async fn the_github_panel_keeps_its_text_whole_at_18_pt(cx: &mut TestAppContext) {
     walk(Page::GitHub, 18, cx).await;
+}
+
+/// A Working row's name fits its room whole or ends in an ellipsis inside
+/// it: at 18 pt in a 515 × 980 window "turtle.png", 99.7 px in the unit
+/// tests' text system, was drawn whole in its 99 px box and cut by half a
+/// pixel, since GPUI ends a line in an ellipsis only once its width, rounded
+/// down, exceeds the room.
+#[gpui::test]
+async fn a_working_row_ends_a_name_it_cannot_hold_inside_its_room(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, _) = open(Page::Working, cx).await;
+    cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+    cx.simulate_resize(size(px(515.), px(980.)));
+    frame(cx);
+    app.update(cx, |_, cx| cx.notify());
+    frame(cx);
+    let row = app.read_with(cx, |app, _| {
+        let entries = &app.work_status.as_ref().unwrap().entries;
+        app.working_rows
+            .iter()
+            .position(|row| {
+                matches!(row, crate::workspace::WorkingRow::File(index, _)
+                    if entries[*index].path == std::path::Path::new("assets/turtle.png"))
+            })
+            .expect("assets/turtle.png among the Working rows")
+    });
+    let selector: &'static str = format!("working-name-{row}").leak();
+    let name = cx.debug_bounds(selector).expect("the row's name");
+    let whole = cx.update(|window, _| {
+        shaped_width(
+            "turtle.png",
+            appearance::ui_text(12.),
+            FontWeight::MEDIUM,
+            window,
+        )
+    });
+    assert!(
+        whole > name.size.width && whole < name.size.width + px(1.),
+        "less than a pixel too wide, as the rounding misses: {whole:?} in {name:?}"
+    );
+    let (scale, quads) = cx.update(|window, _| (window.scale_factor(), window.painted_quads()));
+    let logical = |value: ScaledPixels| px(value.0 / scale);
+    let text = gpui_kit::Background::from(text_mark());
+    let runs: Vec<(Pixels, Pixels)> = quads
+        .iter()
+        .filter(|quad| quad.background == text)
+        .filter(|quad| {
+            (logical(quad.bounds.left()) - name.left()).abs() < px(0.5)
+                && logical(quad.bounds.top()) >= name.top()
+                && logical(quad.bounds.top()) < name.bottom()
+        })
+        .map(|quad| {
+            (
+                logical(quad.bounds.right()),
+                logical(quad.content_mask.bounds.right()),
+            )
+        })
+        .collect();
+    let [(right, clip)] = runs.as_slice() else {
+        panic!("one run for the name, not {runs:?}");
+    };
+    assert!(
+        *right <= *clip && *right <= name.right(),
+        "the name ends at {right:?} beside a clip at {clip:?}, its box at {:?}",
+        name.right()
+    );
+    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
 }

@@ -3986,14 +3986,20 @@ type FileAction = fn(&mut GitTurtle, usize, &mut Window, &mut Context<GitTurtle>
 /// The room GPUI's truncation needs past a line's width. It ends a line in an
 /// ellipsis only once the line's width, rounded down, exceeds the room, so a
 /// line up to a pixel wider than its box is drawn whole and cut by the box's
-/// side. A pixel of trailing padding, inside the box's clip, holds what the
-/// rounding leaves out, so the line fits its box whole or ends in an
-/// ellipsis inside it.
+/// side: at 18 pt in a 515 × 980 window a Working row drew its 99.7 px
+/// "turtle.png" whole in a 99 px box and lost half a pixel of it. A pixel of
+/// trailing padding, inside the box's clip, holds what the rounding leaves
+/// out, so the line fits its box whole or ends in an ellipsis inside it.
 const ELLIPSIS_SLACK: f32 = 1.;
 
-/// One line that fits its box whole or elides from its start inside it at a
-/// character boundary, never cut by the box's side ([`ELLIPSIS_SLACK`]), so
-/// a path keeps its file name.
+/// One line that fits its box whole or ends in an ellipsis inside it at a
+/// character boundary, never cut by the box's side ([`ELLIPSIS_SLACK`]).
+pub(crate) fn ellipsis_end<E: Styled>(element: E) -> E {
+    element.truncate().pr(px(ELLIPSIS_SLACK))
+}
+
+/// [`ellipsis_end`] eliding from the line's start, so a path keeps its file
+/// name.
 pub(crate) fn ellipsis_start<E: Styled>(element: E) -> E {
     element
         .overflow_hidden()
