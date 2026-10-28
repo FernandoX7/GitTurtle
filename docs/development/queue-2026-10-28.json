@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "core-passive-read-wait-without-poll",
+      "title": "Wait for passive Git reads without a fixed 1 ms poll",
+      "description": "Found on 2026-10-28 while measuring History's tag read (docs/benchmarks/2026-10-28-history-snapshot-tags.md; the implementer of 7bb43ab): git-core's `bounded_output` (crates/git-core/src/lib.rs, around its 1 ms sleep poll at ~879) checks the child, its pipes, the deadline and cancellation once per millisecond, so every passive Git read pays up to about 0.8 ms after its child has exited: `GitRepository::tags()` took 1.2 ms on a repository with no tags while its `git for-each-ref` child took 0.4 ms. Outside the Omarchy plan; queued at the owner's request. Keep every existing bound and the kill-and-reap path (`work::worktrees::tests::cancelling_inspection_terminates_the_active_process_and_clears_scope`).",
+      "depends_on": [],
+      "scope": [
+        "crates/git-core/src/**",
+        "crates/git-core/tests/**",
+        "crates/git-core/README.md",
+        "docs/benchmarks/**"
+      ],
+      "acceptance": [
+        {
+          "id": "wait",
+          "description": "`bounded_output` returns as soon as the child has exited and both pipes reached end of file, without a fixed sleep between checks and without busy waiting; a unit test shows a child that exits at once is collected well under 1 ms after exit on an idle host, and an idle wait for a slow child does not spin a core."
+        },
+        {
+          "id": "bounds",
+          "description": "Cancellation still kills the process group, reaps the child and joins both readers within the existing bound, the 15 s `GIT_TIMEOUT` and the 128 MiB / 128 KiB output limits are unchanged, and the existing cancellation, timeout and output-limit tests pass unchanged."
+        },
+        {
+          "id": "performance",
+          "description": "A release measurement against the parent, pinned to performance cores with a same-session base, records `GitRepository::tags()` on a repository without tags and a short passive read (for example `branches()`), raw samples and percentiles in a dated record under docs/benchmarks/, showing the per-read overhead removed."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "performance"
+      ],
+      "commit": "perf(core): collect passive Git reads without a fixed poll"
+    },
+    {
+      "id": "editor-injected-layer-reparse",
+      "title": "Reparse injected highlight layers a timed parse left out",
+      "description": "Found on 2026-10-28 by the implementer of 78dd0e8 (`fix(vendor): parse injected highlight layers to completion without a timeout`): in the vendored kit, the editor's timed highlight path stops each injected layer's parse (a Markdown file's inline layer, a fenced block's language) after 20 ms of wall time and leaves it out, and nothing parses it again (vendor/gpui-component/src/input/input_adapter.rs ~78-88 with `INJECTION_PARSE_TIMEOUT` in src/highlighter/highlighter.rs). On a loaded machine a read-only Markdown source view can lose its inline highlighting (code spans, emphasis, links) until it is reopened. Outside the Omarchy plan; queued at the owner's request. Keep the UI thread's work bounded as today.",
+      "depends_on": [],
+      "scope": [
+        "vendor/gpui-component/**",
+        "vendor/AGENTS.md"
+      ],
+      "acceptance": [
+        {
+          "id": "reparse",
+          "description": "An injected layer that a timed update left out is handed to the background reparse and drawn once it has parsed, without a new edit; a test with a layer that cannot finish within the timed bound (for example a long Markdown paragraph) shows its styles missing after the timed update and present after the background reparse."
+        },
+        {
+          "id": "bounded",
+          "description": "The background reparse is bounded by cancellation rather than wall time: a newer edit or closing the editor cancels it, and the UI thread's timed update keeps its 20 ms bound per layer; tests cover both."
+        },
+        {
+          "id": "docs",
+          "description": "vendor/gpui-component/GITTURTLE-PATCH.md records the change with its consumers, the test command and the removal condition, and vendor/AGENTS.md's gpui-component row names it."
+        },
+        {
+          "id": "vendor",
+          "description": "Vendor attestation: the focused kit tests and the app's syntax-theme tests (`cargo test --locked -p gitturtle appearance::`) pass against the patched kit, recorded with the patch's source identity."
+        }
+      ],
+      "profiles": [
+        "rust",
+        "vendor"
+      ],
+      "commit": "fix(vendor): reparse injected highlight layers a timed parse left out"
+    },
+    {
+      "id": "app-tests-ignore-git-identity-variables",
+      "title": "Keep a developer's Git identity variables out of the app tests",
+      "description": "Found on 2026-10-28 by the implementer of 9b2e8f7 (`test(app): keep a developer's Git identity out of the composer test`): `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_AUTHOR_DATE`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` and `GIT_COMMITTER_DATE` set in a developer's environment reach the Git processes the app's tests and the product under test spawn, and neither `scripts/gate.py` nor the fixtures clear them, so a test that asserts an identity, or its absence, passes or fails with the shell it runs in. AGENTS.md names plain `cargo test` as the iteration command. Outside the Omarchy plan; queued at the owner's request. The product's write path honours these variables on purpose; only the tests must not inherit them.",
+      "depends_on": [],
+      "scope": [
+        "crates/app/src/**",
+        "crates/app/AGENTS.md",
+        "crates/app/docs/**"
+      ],
+      "acceptance": [
+        {
+          "id": "isolated",
+          "description": "`GIT_AUTHOR_NAME=Leak GIT_AUTHOR_EMAIL=leak@example.invalid GIT_COMMITTER_NAME=Leak GIT_COMMITTER_EMAIL=leak@example.invalid GIT_AUTHOR_DATE=2001-01-01T00:00:00Z cargo test --locked -p gitturtle` passes, and no commit any app test creates carries the leaked name, email or date."
+        },
+        {
+          "id": "product",
+          "description": "The product's own Git write path still honours these variables outside tests: a test that sets them for one spawned commit (not process-wide) shows the commit takes them, so the isolation lives in the test harness or fixtures, not in product code."
+        },
+        {
+          "id": "docs",
+          "description": "crates/app/AGENTS.md's validation section says the app tests run with the developer's Git identity variables cleared, and where that happens."
+        }
+      ],
+      "profiles": [
+        "rust"
+      ],
+      "commit": "test(app): keep a developer's Git identity variables out of the tests"
+    }
+  ]
+}
