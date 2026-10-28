@@ -673,6 +673,32 @@ impl Palette {
         toward_extreme(self.border, extreme, clears)
     }
 
+    /// The label of a control that cannot be used, the one dim disabled
+    /// Buttons, Switch labels, menu items with their shortcuts and command
+    /// palette rows share (the kit's `Theme::disabled_foreground`): a layer of
+    /// `muted` at half strength, or at the first of 16 even steps toward three
+    /// quarters that reads [`DISABLED_LABEL`] on every surface such a label
+    /// rests on, the page's surfaces and the raised menu surface. Half of a
+    /// dark secondary text reads about 2:1 on a light surface, where most dark
+    /// palettes already read 3:1 at half. A translucent layer still dims with
+    /// whatever it lies on, and the three-quarter bound keeps it fainter than
+    /// enabled secondary text even where `muted` itself is weak.
+    pub fn disabled_label(self) -> Rgba {
+        let surfaces = [self.canvas, self.panel, self.subtle, self.raised()];
+        let layer = |step: u8| Rgba {
+            a: 0.5 + f32::from(step) / 64.,
+            ..rgb(self.muted)
+        };
+        (0..=16)
+            .map(layer)
+            .find(|&label| {
+                surfaces.iter().all(|&surface| {
+                    custom::contrast(composite(label, surface), surface) >= DISABLED_LABEL
+                })
+            })
+            .unwrap_or(layer(16))
+    }
+
     /// A sidebar row's label and icon colors. The label stays `text`, which
     /// reads at the text rule on every row state, and selection marks the icon
     /// in `accent`, a graphic at 3:1, beside the selected surface: `accent` is
@@ -729,6 +755,11 @@ impl Palette {
 /// at 1x renders about 0.2 lower (DESIGN.md, semantic palette ownership).
 const LABEL_RULE: f64 = 4.5;
 const LABEL_MARGIN: f64 = 0.25;
+
+/// The contrast a disabled label keeps on the surfaces it rests on
+/// ([`Palette::disabled_label`]): readable, and well under the text rule
+/// enabled labels keep, so it still reads as unavailable.
+const DISABLED_LABEL: f64 = 3.0;
 
 /// The first of 32 even steps from `from` to `extreme`, `from` included, that
 /// `accepts`, or `extreme`.
@@ -1638,6 +1669,7 @@ impl Palette {
         theme.colors.list_even = rgb(palette.subtle).into();
         theme.colors.popover = rgb(palette.raised()).into();
         theme.popover_edge = Some(rgb(palette.raised_edge()).into());
+        theme.disabled_label = Some(palette.disabled_label().into());
         theme.colors.popover_foreground = rgb(palette.text).into();
         theme.colors.sidebar = rgb(palette.panel).into();
         theme.colors.sidebar_foreground = rgb(palette.text).into();
@@ -3695,32 +3727,6 @@ mod tests {
         );
     }
 
-    /// A disabled Switch's label fades to half of the enabled label's colour
-    /// in every palette, so it reads as unavailable even where the palette's
-    /// secondary text is as strong as its text (Omarchy Catppuccin Latte):
-    /// over the panel it keeps at most two thirds of the enabled label's
-    /// contrast, and stays at least 1.5:1 so it can still be read.
-    #[gpui::test]
-    fn every_palette_fades_a_disabled_switch_label(cx: &mut gpui::TestAppContext) {
-        use gpui_kit::component::switch;
-
-        cx.update(gpui_kit::init);
-        let mut failures = Vec::new();
-        for (name, palette) in test_palettes() {
-            let label = cx.update(|cx| {
-                palette.apply(palette.is_light(), None, cx);
-                switch::disabled_label_color(cx)
-            });
-            assert_eq!(label, Hsla::from(rgb(palette.text)).opacity(0.5), "{name}");
-            let enabled = contrast(palette.text, palette.panel);
-            let faded = contrast(composite(label.to_rgb(), palette.panel), palette.panel);
-            if !(1.5..=enabled * 2. / 3.).contains(&faded) {
-                failures.push(format!("{name} {faded:.2}:1 against {enabled:.2}:1"));
-            }
-        }
-        assert!(failures.is_empty(), "{}", failures.join("\n"));
-    }
-
     /// Every pair of a small label and a surface it sits on that falls below
     /// the text rule with its rasterization margin, as `name label on surface
     /// ratio`.
@@ -3858,36 +3864,159 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
-    /// Disabled menu items with their shortcuts, disabled Buttons and disabled
-    /// command palette rows share the kit's `disabled_foreground`, `muted` at
-    /// half strength. Disabled rows used to take `muted`, which the Omarchy
-    /// mapping can lift to `text` (Catppuccin Latte), so an unavailable command
-    /// read like an available one. In every palette the dim keeps at most 60%
-    /// of enabled secondary text's contrast on the panel, the menu and palette
-    /// surface, and on the selected row, and stays at least 1.5:1.
+    /// The surfaces a disabled control's label rests on, by name: the page's
+    /// surfaces and the raised menu surface.
+    fn disabled_label_surfaces(palette: Palette) -> [(&'static str, u32); 4] {
+        [
+            ("canvas", palette.canvas),
+            ("panel", palette.panel),
+            ("subtle", palette.subtle),
+            ("menu", palette.raised()),
+        ]
+    }
+
+    /// The disabled Buttons [`DisabledControls`] draws, by kind: the kit's
+    /// secondary (Fetch and Pull), the shared helper at rest and selected (a
+    /// dialog's default action), and the kit's ghost.
+    const DISABLED_BUTTONS: [&str; 4] = ["secondary", "control", "control-selected", "ghost"];
+
+    /// `kind-surface`, the debug selector [`DisabledControls`] gives a Button.
+    fn disabled_selector(kind: &str, surface: &str) -> &'static str {
+        Box::leak(format!("{kind}-{surface}").into_boxed_str())
+    }
+
+    /// Each kind of disabled Button and a disabled Switch with its label, in
+    /// a row on each of [`disabled_label_surfaces`] of the applied palette.
+    struct DisabledControls;
+
+    impl gpui::Render for DisabledControls {
+        fn render(
+            &mut self,
+            _: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui_kit::component::button::{Button, ButtonVariants as _};
+            use gpui_kit::component::switch::Switch;
+            use gpui_kit::component::{Disableable as _, Selectable as _};
+            use gpui_kit::{InteractiveElement as _, ParentElement as _, div};
+
+            let surfaces = disabled_label_surfaces(palette(cx));
+            div()
+                .flex()
+                .flex_col()
+                .children(surfaces.map(|(surface, color)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .p_2()
+                        .bg(rgb(color))
+                        .children(DISABLED_BUTTONS.map(|kind| {
+                            let button = Button::new(disabled_selector(kind, surface))
+                                .debug_selector(move || format!("{kind}-{surface}"))
+                                .label("Push");
+                            match kind {
+                                "secondary" => button.secondary(),
+                                "control" => button.with_variant(control_button_variant(false)),
+                                "control-selected" => button
+                                    .with_variant(control_button_variant(true))
+                                    .selected(true),
+                                _ => button.ghost(),
+                            }
+                            .disabled(true)
+                        }))
+                        .child(
+                            Switch::new(disabled_selector("switch", surface))
+                                .label("Follow system appearance")
+                                .disabled(true),
+                        )
+                }))
+        }
+    }
+
+    /// Disabled Buttons, Switch labels, menu items with their shortcuts and
+    /// command palette rows share one dim, `Palette::disabled_label`, which the
+    /// kit's `disabled_foreground` returns. There were two, and in light
+    /// palettes both fell near 2:1: Buttons and menus drew `muted` at half
+    /// strength (Omarchy Catppuccin Latte's disabled Push 2.06:1, Flexoki
+    /// Light's toolbar 2.12:1), and Switch labels `text` at half (the Follow
+    /// system label 2.35:1 in Latte). In every palette the dim reads 3:1 on
+    /// every surface a disabled label rests on, the page's and the menu's, and
+    /// on the fill each disabled Button paints there; where it had to move off
+    /// half strength it reads no more than 3.15:1 on its closest surface, about
+    /// 3:1. It keeps at most 60% of enabled secondary text's contrast on each
+    /// of those and on the selected row (a highlighted disabled command), so
+    /// disabled stays clearly fainter than enabled text.
     #[gpui::test]
-    fn every_palette_dims_disabled_rows_well_below_enabled_text(cx: &mut gpui::TestAppContext) {
+    fn every_palette_shares_one_disabled_dim_that_reads_three_to_one(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui_kit::component::switch;
+
         cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|_, _| DisabledControls);
         let mut failures = Vec::new();
+        let mut moved = 0;
         for (name, palette) in test_palettes() {
-            let dim = cx.update(|cx| {
-                palette.apply(palette.is_light(), None, cx);
-                Theme::global(cx).disabled_foreground()
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let (dim, switch_label) = cx.update(|_, cx| {
+                (
+                    Theme::global(cx).disabled_foreground(),
+                    switch::disabled_label_color(cx),
+                )
             });
-            assert_eq!(dim, Hsla::from(rgb(palette.muted)).opacity(0.5), "{name}");
-            for surface in [palette.panel, palette.selected] {
-                let disabled = contrast(composite(dim.to_rgb(), surface), surface);
-                let enabled = contrast(palette.muted, surface);
-                if !(1.5..=enabled * 0.6).contains(&disabled) {
+            assert_eq!(dim, Hsla::from(palette.disabled_label()), "{name} dim");
+            assert_eq!(switch_label, dim, "{name} Switch label");
+            let dim = dim.to_rgb();
+            // The dim's contrast on `beneath`, recording a failure where it
+            // keeps more than 60% of enabled secondary text's.
+            let check = |failures: &mut Vec<String>, what: &str, beneath: u32| {
+                let disabled = contrast(composite(dim, beneath), beneath);
+                let enabled = contrast(palette.muted, beneath);
+                if disabled > enabled * 0.6 {
                     failures.push(format!(
-                        "{name} on {surface:06x}: disabled {disabled:.2}:1, secondary text {enabled:.2}:1"
+                        "{name} {what} {beneath:06x}: disabled {disabled:.2}:1, secondary text {enabled:.2}:1"
                     ));
                 }
+                disabled
+            };
+            let mut lowest = f64::MAX;
+            for (surface, color) in disabled_label_surfaces(palette) {
+                // A Switch's label and a menu item's lie on the surface itself.
+                let mut readings = vec![(format!("label on the {surface}"), color)];
+                for kind in DISABLED_BUTTONS {
+                    let bounds = cx
+                        .debug_bounds(disabled_selector(kind, surface))
+                        .expect("the button");
+                    let (fills, _) = painted_button(cx, bounds);
+                    let painted = fills.iter().fold(color, |beneath, fill| {
+                        composite(fill.as_solid().expect("a solid fill").to_rgb(), beneath)
+                    });
+                    readings.push((format!("{kind} on the {surface}"), painted));
+                }
+                for (what, beneath) in readings {
+                    let disabled = check(&mut failures, &what, beneath);
+                    lowest = lowest.min(disabled);
+                    if disabled < DISABLED_LABEL {
+                        failures.push(format!("{name} {what} {beneath:06x}: {disabled:.2}:1"));
+                    }
+                }
+            }
+            if palette.disabled_label().a > 0.5 {
+                moved += 1;
+                if lowest > DISABLED_LABEL + 0.15 {
+                    failures.push(format!("{name} reads {lowest:.2}:1 at its closest"));
+                }
+            }
+            let on_selected = check(&mut failures, "highlighted row", palette.selected);
+            if on_selected < 1.5 {
+                failures.push(format!("{name} highlighted row {on_selected:.2}:1"));
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(moved > 0, "some palette needs more than half strength");
     }
-
     /// Compare's gutter numbers on added and removed lines are code-size text
     /// on the diff tiles, in `added` and `removed`, which the palettes fit to
     /// the text rule with no room: 4.51:1 and 4.57:1 in Omarchy Flexoki Light,

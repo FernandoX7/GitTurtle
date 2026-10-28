@@ -140,11 +140,12 @@ pub fn thumb_color(checked: bool, cx: &App) -> Hsla {
     }
 }
 
-/// A disabled Switch's label: the enabled label's `foreground` at the track's
-/// half strength. `muted_foreground` cannot mark it, because a theme may set
-/// its secondary text as strong as its text.
+/// A disabled Switch's label: the dim disabled Buttons and menu items draw
+/// their labels in, [`crate::Theme::disabled_foreground`], so one dim marks
+/// every unavailable control. Plain `muted_foreground` cannot mark it, because
+/// a theme may set its secondary text as strong as its text.
 pub fn disabled_label_color(cx: &App) -> Hsla {
-    cx.theme().foreground.opacity(0.5)
+    cx.theme().disabled_foreground()
 }
 
 impl RenderOnce for Switch {

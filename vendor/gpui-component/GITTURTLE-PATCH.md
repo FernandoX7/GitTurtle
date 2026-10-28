@@ -248,17 +248,19 @@ Settings Switch (`crates/app/src/settings.rs`).
 
 A checked thumb now takes `primary_foreground`, the colour primary Buttons put
 on the accent (`thumb_color`); an unchecked thumb keeps `switch_thumb`. A
-disabled Switch's label takes `foreground` at the track's half strength
-(`disabled_label_color`). Both functions are public so the application's tests
-can read what the Switch paints with. Geometry, travel, activation, focus and
-the unchecked look are unchanged.
+disabled Switch's label takes the dim disabled Buttons and menu items share,
+`Theme::disabled_foreground` (`disabled_label_color`; see the
+disabled-foreground patch below). Both functions are public so the
+application's tests can read what the Switch paints with. Geometry, travel,
+activation, focus and the unchecked look are unchanged.
 
 `cargo test --locked -p gitturtle every_palette_paints_a_checked_switch_knob_that_reads_on_its_track`
 applies every built-in palette and every embedded Omarchy fixture's palette,
 draws a checked, an unchecked and a disabled checked Switch, and reads their
 track and thumb fills from the scene; the checked thumb is the accent's label at
-3:1 or more on its track. `every_palette_fades_a_disabled_switch_label` checks
-the disabled label colour in the same palettes; GPUI's test scene exposes quads
+3:1 or more on its track.
+`every_palette_shares_one_disabled_dim_that_reads_three_to_one` checks the
+disabled label colour in the same palettes; GPUI's test scene exposes quads
 but not glyph colours, so it reads the colour the Switch paints its label with
 rather than the painted glyphs. Native frames record the rendered result. Remove
 this part of the patch when upstream gives a checked thumb a colour that
@@ -329,7 +331,8 @@ upstream Switch and Checkbox accept a caller focus handle or expose their
 focus state.
 
 The disabled-foreground patch modifies `src/theme/mod.rs`,
-`src/button/button.rs`, `src/menu/menu_item.rs` and `src/menu/popup_menu.rs`.
+`src/button/button.rs`, `src/menu/menu_item.rs`, `src/menu/popup_menu.rs` and
+`src/switch.rs`.
 Upstream dims a disabled Button's label to `muted_foreground` at half strength
 but draws a disabled menu item's label in plain `muted_foreground` and its
 shortcut in the same `muted_foreground` as an enabled item's. GitTurtle's
@@ -341,16 +344,29 @@ draws its own rows.
 
 `Theme::disabled_foreground` is `muted_foreground` at half strength, the value
 disabled Buttons already used; Buttons now read it from there, a disabled menu
-item draws its label in it, and its shortcut takes it through the Kbd's
-caller style. Enabled items and every Button paint as before.
+item draws its label in it, its shortcut takes it through the Kbd's caller
+style, and a disabled Switch's label takes it too. Enabled items and every
+Button paint as before.
 
-`cargo test --locked -p gitturtle every_palette_dims_disabled_rows_well_below_enabled_text`
-applies every built-in and embedded Omarchy palette and checks the dim against
-enabled secondary text on the panel and the selected row. GPUI's test scene does
-not expose glyph colours, so native frames of the Menu and the command palette
-record the painted result. Remove this part of the patch when upstream gives
-disabled menu items and their shortcuts a disabled colour distinct from
-secondary text.
+Half of a dark secondary text reads only 2.1:1 to 2.4:1 on a light palette's
+surfaces, and the Switch label, which drew `foreground` at half strength, read
+up to 5.3:1 in dark palettes, so the two dims disagreed. `Theme::disabled_label`, `None` by default, set in code and
+skipped by theme files, replaces the half-strength value where an application
+sets it; unset, the dim is upstream's Button dim. The app sets it to
+`Palette::disabled_label` (`crates/app/src/appearance.rs`), `muted` at half
+strength or at the first step toward three quarters that reads 3:1 on the
+page's surfaces and the menu's.
+
+`cargo test --locked -p gitturtle every_palette_shares_one_disabled_dim_that_reads_three_to_one`
+applies every built-in and embedded Omarchy palette, requires the kit's dim and
+the Switch's disabled label to be the palette's, draws disabled secondary,
+helper and ghost Buttons and a disabled Switch on each page surface and the
+menu's, reads each Button's painted fill, and checks the dim against what lies
+beneath and against enabled secondary text there and on the selected row. GPUI's
+test scene does not expose glyph colours, so native frames of the Menu, the
+command palette and Settings record the painted result. Remove this part of the
+patch when upstream gives disabled menu items and their shortcuts a disabled
+colour distinct from secondary text and lets a theme set it.
 
 The popover-edge patch modifies `src/theme/mod.rs`, `src/styled.rs` and
 `src/menu/popup_menu.rs`.

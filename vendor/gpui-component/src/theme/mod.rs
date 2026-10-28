@@ -166,6 +166,15 @@ pub struct Theme {
     /// its surfaces can fit the edge against them too.
     #[serde(skip)]
     pub popover_edge: Option<Hsla>,
+    /// The label of a control that cannot be used, which
+    /// [`Self::disabled_foreground`] resolves, or `None` for
+    /// `muted_foreground` at half strength.
+    ///
+    /// Set in code, not read from theme files, so an application that fits
+    /// its surfaces can fit the dim to them: half of a dark secondary text
+    /// reads about 2:1 on a light surface.
+    #[serde(skip)]
+    pub disabled_label: Option<Hsla>,
     pub transparent: Hsla,
     /// Show the scrollbar mode, default: Scrolling
     #[serde(alias = "scrollbar_show")]
@@ -446,13 +455,15 @@ impl Theme {
         }
     }
 
-    /// The label of a control that cannot be used: `muted_foreground` at half
-    /// strength. Disabled Buttons, menu items with their shortcuts, and callers
-    /// that draw their own disabled rows share it, so one dim marks every
-    /// unavailable action; `muted_foreground` alone can be as strong as
-    /// `foreground`.
+    /// The label of a control that cannot be used: [`Self::disabled_label`]
+    /// where the application sets it, otherwise `muted_foreground` at half
+    /// strength. Disabled Buttons, Switch labels, menu items with their
+    /// shortcuts, and callers that draw their own disabled rows share it, so
+    /// one dim marks every unavailable action; `muted_foreground` alone can be
+    /// as strong as `foreground`.
     pub fn disabled_foreground(&self) -> Hsla {
-        self.muted_foreground.opacity(0.5)
+        self.disabled_label
+            .unwrap_or_else(|| self.muted_foreground.opacity(0.5))
     }
 
     /// Returns the next surface radius above the existing `xl` theme tier.
@@ -686,6 +697,7 @@ impl From<&ThemeColor> for Theme {
             ghost_hover: None,
             ghost_active: None,
             popover_edge: None,
+            disabled_label: None,
             scrollbar_mode: ScrollbarMode::default(),
             notification: NotificationSettings::default(),
             tile_grid_size: px(8.),
