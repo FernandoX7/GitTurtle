@@ -3229,6 +3229,10 @@ struct ChromeText {
     edge: String,
     edge_short: String,
     edge_action: String,
+    /// The compact bar's line and branch picker label, where an edge makes
+    /// them differ from the full bar's.
+    edge_compact: String,
+    compact_branch: String,
 }
 
 /// The widths `ChromeText` and the chrome's fixed labels take, each as its
@@ -3247,6 +3251,8 @@ struct ChromeWidths {
     edge: Pixels,
     edge_short: Pixels,
     edge_action: Pixels,
+    edge_compact: Pixels,
+    compact_branch: Pixels,
     operation: Pixels,
     fetch: Pixels,
     pull: Pixels,
@@ -3279,6 +3285,8 @@ impl ChromeWidths {
             edge: regular(&text.edge, label),
             edge_short: regular(&text.edge_short, label),
             edge_action: regular(&text.edge_action, label),
+            edge_compact: regular(&text.edge_compact, label),
+            compact_branch: medium(&text.compact_branch),
             operation: regular(&text.operation, small),
             fetch: medium("Fetch"),
             pull: medium("Pull"),
@@ -3718,12 +3726,17 @@ impl GitTurtle {
     fn chrome_widths(&self, window: &Window) -> ChromeWidths {
         let status = self.work_status.as_ref();
         let edge = self.repository_edge();
+        let branch = status
+            .and_then(|status| status.branch.clone())
+            .unwrap_or("Detached HEAD".into());
         let text = ChromeText {
             changes: self.changes_label(),
             profile: self.profile_title(),
-            branch: status
-                .and_then(|status| status.branch.clone())
-                .unwrap_or("Detached HEAD".into()),
+            compact_branch: edge
+                .as_ref()
+                .and_then(|edge| edge.compact_branch())
+                .unwrap_or_else(|| branch.clone()),
+            branch,
             ahead: status.map_or_else(String::new, |s| format!("{} ahead", s.ahead)),
             behind: status.map_or_else(String::new, |s| format!("{} behind", s.behind)),
             operation: status
@@ -3737,6 +3750,9 @@ impl GitTurtle {
                 .as_ref()
                 .and_then(|edge| edge.action())
                 .map_or_else(String::new, |action| action.label.to_owned()),
+            edge_compact: edge
+                .as_ref()
+                .map_or_else(String::new, |edge| edge.compact_line()),
         };
         let key = LineKey::current(window);
         CHROME_WIDTHS.with(|cache| {
@@ -3903,19 +3919,58 @@ impl GitTurtle {
     /// (`EdgeForm::ORDER`) that costs the bar no row over the barest, as
     /// "One responsive order" makes an action an icon, then lets a caption
     /// go, before anything else gives way. Measured for the repository page
-    /// as the chrome measures it.
-    pub(super) fn edge_form(&self, window: &Window) -> empty_state::EdgeForm {
+    /// as the chrome measures it. The `compact` bar, one row that never
+    /// wraps, draws the barest form, and its line as its glyph where even
+    /// its shortest whole form would be cut ([`Self::compact_edge_fits`]).
+    pub(super) fn edge_form(&self, compact: bool, window: &Window) -> empty_state::EdgeForm {
         let [.., barest] = empty_state::EdgeForm::ORDER;
-        if self.repository_edge().is_none() {
+        let Some(edge) = self.repository_edge() else {
             return barest;
-        }
+        };
         let widths = self.chrome_widths(window);
+        if compact {
+            return empty_state::EdgeForm {
+                glyph: !self.compact_edge_fits(&edge, &widths, window),
+                ..barest
+            };
+        }
         let page = self.full_actions_page(window);
         let least = self.full_actions_height_with(page, &widths, barest, window);
         empty_state::EdgeForm::ORDER
             .into_iter()
             .find(|form| self.full_actions_height_with(page, &widths, *form, window) <= least)
             .unwrap_or(barest)
+    }
+
+    /// Whether the compact action bar's row holds `edge`'s compact line
+    /// whole beside the branch picker's whole label: the row's 28 px
+    /// actions (Fetch, Pull, Push, the edge's own and Targets) keep their
+    /// room, and the picker and the line share what is left, the line in
+    /// its `px_2` box (`render_git_actions`). Where it would be cut, the
+    /// bar draws the line's glyph, so the picker's name, the content, stays
+    /// whole before a word of the line is cut.
+    fn compact_edge_fits(
+        &self,
+        edge: &empty_state::RepositoryEdge,
+        widths: &ChromeWidths,
+        window: &Window,
+    ) -> bool {
+        let rem = window.rem_size();
+        let snap = |length: Pixels| window.pixel_snap(length);
+        let control = snap(appearance::ui_size(28.));
+        let gap = snap(rem * 0.5);
+        let actions = 4. + if edge.action().is_some() { 1. } else { 0. };
+        let room =
+            self.full_actions_page(window) - snap(rem * 0.75) * 2. - (control + gap) * actions;
+        // A medium kit Button: `px_3`, the 16 px icon and the label `gap_2`
+        // apart, the caret after it, within its 280 px limit.
+        let picker = (snap(rem * 0.75) * 2.
+            + px(16.)
+            + snap(rem * 0.5) * 2.
+            + widths.compact_branch
+            + snap(rem))
+        .min(snap(px(280.)));
+        picker + gap + snap(rem * 0.5) * 2. + widths.edge_compact <= room
     }
 
     /// The repository page's width beside the project pane, which the action
@@ -4889,7 +4944,11 @@ impl GitTurtle {
             .size_full()
             .flex()
             .flex_col()
-            .child(self.render_git_actions(chrome.is_compact(), self.edge_form(window), cx))
+            .child(self.render_git_actions(
+                chrome.is_compact(),
+                self.edge_form(chrome.is_compact(), window),
+                cx,
+            ))
             .child(self.render_operation_state(cx))
             .child(div().flex_1().min_h_0().child(workspace))
             .into_any_element()

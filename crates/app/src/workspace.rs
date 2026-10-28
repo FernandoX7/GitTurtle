@@ -2981,10 +2981,12 @@ impl GitTurtle {
     /// Targets keep only their icons, their accessible names, and tooltips
     /// that lead with those names. Their actions, states and order are the
     /// full form's.
-    /// `edge_form`, in the full form, is how the repository edge is drawn
+    /// `edge_form` is how the repository edge is drawn
     /// (`views::GitTurtle::edge_form`); the compact form draws its barest
-    /// form. An action drawn as its icon keeps its label as its accessible
-    /// name and tooltip, and a line without its caption keeps the whole line
+    /// form, its shortest line or, where even that would be cut, its glyph,
+    /// and a detached HEAD's picker names the commit. An action drawn as its
+    /// icon keeps its label as its accessible name and tooltip, and a line
+    /// without its caption, or a glyph, keeps the whole line as its name and
     /// in its tooltip.
     pub(super) fn render_git_actions(
         &self,
@@ -3058,7 +3060,9 @@ impl GitTurtle {
                     .child(
                         EmptyState::new(
                             "branch-edge",
-                            if caption {
+                            if compact {
+                                edge.compact_line()
+                            } else if caption {
                                 edge.line()
                             } else {
                                 edge.short_line()
@@ -3066,6 +3070,7 @@ impl GitTurtle {
                         )
                         .named(edge.line())
                         .tooltip(edge.explanation())
+                        .glyph((compact && edge_form.glyph).then(|| edge.glyph()))
                         .truncating(compact)
                         .inline(cx),
                     )

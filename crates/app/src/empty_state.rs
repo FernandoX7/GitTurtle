@@ -23,16 +23,21 @@ const GAP: f32 = 8.;
 /// The widest a pane's line runs before it wraps, at the default interface
 /// size.
 const LINE_MAX: f32 = 480.;
+/// A glyph drawn in a line's place, at the default interface size: the
+/// line's own height, as the bar's counts' icons sit in theirs.
+pub(crate) const GLYPH: f32 = 14.;
 
 #[cfg(test)]
 thread_local! {
-    /// The line each state drew last, by its id, for a test to read back.
+    /// What each state drew last, by its id, for a test to read back: its
+    /// line, or `glyph:` and the icon drawn in its place.
     static SHOWN: std::cell::RefCell<HashMap<&'static str, SharedString>> =
         Default::default();
 }
 
-/// The line the state `id` drew last; a test pairs it with the line's
-/// bounds in the last frame.
+/// The line the state `id` drew last, or `glyph:` and the icon it drew in
+/// the line's place; a test pairs it with the line's bounds in the last
+/// frame.
 #[cfg(test)]
 pub(crate) fn shown(id: &str) -> Option<SharedString> {
     SHOWN.with(|shown| shown.borrow().get(id).cloned())
@@ -46,6 +51,7 @@ pub(crate) struct EmptyState {
     tooltip: Option<SharedString>,
     action: Option<AnyElement>,
     truncate: bool,
+    glyph: Option<&'static str>,
 }
 
 impl EmptyState {
@@ -59,7 +65,17 @@ impl EmptyState {
             tooltip: None,
             action: None,
             truncate: false,
+            glyph: None,
         }
+    }
+
+    /// In a row with no room for even the shortest whole line, as the
+    /// compact action bar's in a half tile at 18 pt, the `icons/` asset
+    /// `glyph` in the line's place, muted as the line is: the whole line
+    /// stays its accessible name and leads its tooltip.
+    pub(crate) fn glyph(mut self, glyph: Option<&'static str>) -> Self {
+        self.glyph = glyph;
+        self
     }
 
     /// The whole line, where the drawn one says less, as the Git action
@@ -103,15 +119,23 @@ impl EmptyState {
         let id = self.id;
         let line = self.line.clone();
         #[cfg(test)]
-        SHOWN.with(|shown| shown.borrow_mut().insert(id, line.clone()));
+        SHOWN.with(|shown| {
+            let drawn = self
+                .glyph
+                .map_or_else(|| line.clone(), |glyph| format!("glyph:{glyph}").into());
+            shown.borrow_mut().insert(id, drawn)
+        });
         let name = self.name();
+        // A glyph says nothing itself, so its tooltip always leads with the
+        // whole line.
         let tooltip = self.tooltip.clone().map(|explanation| -> SharedString {
-            if name == line {
+            if name == line && self.glyph.is_none() {
                 explanation
             } else {
                 format!("{name} · {explanation}").into()
             }
         });
+        let muted = palette(cx).muted;
         div()
             .id(SharedString::from(format!("{id}-line")))
             .debug_selector(move || format!("{id}-line"))
@@ -119,12 +143,21 @@ impl EmptyState {
                 line.aria_description(explanation)
             })
             .text_size(appearance::ui_text(LINE_TEXT))
-            .text_color(rgb(palette(cx).muted))
-            .when(self.truncate, |line| line.min_w_0().truncate())
+            .text_color(rgb(muted))
             .when_some(tooltip, |line, tooltip| {
                 line.tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             })
-            .child(line)
+            .map(|drawn| match self.glyph {
+                Some(glyph) => drawn.flex_shrink_0().child(
+                    svg()
+                        .path(format!("icons/{glyph}.svg"))
+                        .size(appearance::ui_size(GLYPH))
+                        .text_color(rgb(muted)),
+                ),
+                None => drawn
+                    .when(self.truncate, |line| line.min_w_0().truncate())
+                    .child(line),
+            })
     }
 
     /// `line`, placed, as the static text an assistive technology reads by
@@ -250,23 +283,30 @@ pub(crate) struct EdgeForm {
     pub(crate) caption: bool,
     /// The action with its label rather than as its icon.
     pub(crate) labelled: bool,
+    /// In the compact bar, the line's glyph in its place, where even its
+    /// shortest whole form (`compact_line`) would be cut beside the branch
+    /// picker's whole label: the line stays its name and tooltip.
+    pub(crate) glyph: bool,
 }
 
 impl EdgeForm {
-    /// The forms the bar tries, richest first; the last always fits as well
-    /// as any.
+    /// The forms the full bar tries, richest first; the last always fits as
+    /// well as any.
     pub(crate) const ORDER: [Self; 3] = [
         Self {
             caption: true,
             labelled: true,
+            glyph: false,
         },
         Self {
             caption: true,
             labelled: false,
+            glyph: false,
         },
         Self {
             caption: false,
             labelled: false,
+            glyph: false,
         },
     ];
 }
@@ -328,6 +368,34 @@ impl RepositoryEdge {
             Self::NoRemote => "No remote".into(),
             Self::Unborn => "No commits to push yet".into(),
             Self::NoUpstream => "No upstream".into(),
+        }
+    }
+
+    /// The line in the compact bar, where a detached HEAD's branch picker
+    /// names the commit (`compact_branch`), so the line need not.
+    pub(crate) fn compact_line(&self) -> String {
+        match self {
+            Self::Detached { .. } => "Detached".into(),
+            _ => self.short_line(),
+        }
+    }
+
+    /// The compact bar's branch picker label at this edge, if it is not the
+    /// branch's name: a detached HEAD's short commit ID, which says what
+    /// HEAD is in fewer words than "Detached HEAD".
+    pub(crate) fn compact_branch(&self) -> Option<String> {
+        match self {
+            Self::Detached { oid } => Some(short_oid(oid)),
+            _ => None,
+        }
+    }
+
+    /// The `icons/` asset the compact bar draws in the line's place where
+    /// even [`Self::compact_line`] would be cut.
+    pub(crate) fn glyph(&self) -> &'static str {
+        match self {
+            Self::Detached { .. } | Self::Unborn => "commit",
+            Self::NoRemote | Self::NoUpstream => "remote",
         }
     }
 
@@ -624,6 +692,23 @@ mod tests {
         draw(cx);
     }
 
+    /// At 18 pt in a 461 × 490 half tile, where the Git action bar is
+    /// compact: what its edge drew, and the branch picker's icon.
+    fn compact_edge(cx: &mut VisualTestContext) -> (Option<SharedString>, Option<SharedString>) {
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        crate::views::CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
+        draw(cx);
+        let drawn = (
+            shown("branch-edge"),
+            crate::views::CONTROL_ICONS.with(|icons| icons.borrow().get("current-branch").cloned()),
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1280.), px(800.)));
+        draw(cx);
+        drawn
+    }
+
     fn click(cx: &mut VisualTestContext, selector: &'static str) {
         let control = cx
             .debug_bounds(selector)
@@ -690,12 +775,18 @@ mod tests {
             app.read_with(cx, |app, _| app.repository_edge()),
             Some(RepositoryEdge::NoRemote)
         );
-        check(
+        // In the compact half tile at 18 pt "No remote" read "No r…" beside
+        // the picker; there the bar draws the remote glyph instead.
+        check_lines(
             cx,
             "branch-edge",
-            "No remote",
+            &["No remote", "glyph:remote"],
             Some("edge-add-remote"),
             "git-actions",
+        );
+        assert_eq!(
+            compact_edge(cx),
+            (Some("glyph:remote".into()), Some("icons/branch.svg".into()))
         );
         click(cx, "edge-add-remote");
         assert!(
@@ -714,10 +805,11 @@ mod tests {
         check_lines(
             cx,
             "branch-edge",
-            &["No upstream · Push sets one", "No upstream"],
+            &["No upstream · Push sets one", "No upstream", "glyph:remote"],
             Some("push"),
             "git-actions",
         );
+        assert_eq!(compact_edge(cx).0.as_deref(), Some("glyph:remote"));
         assert_eq!(
             shown("branch-edge").as_deref(),
             Some("No upstream · Push sets one"),
@@ -739,12 +831,19 @@ mod tests {
                 .unwrap()
         });
         let line = format!("Detached at {}", &head[..7]);
-        check(
+        // In the compact bar the picker names the commit, and the line says
+        // only "Detached", or where even that would be cut, as at 18 pt in
+        // a half tile, where the line was not drawn at all, its glyph.
+        check_lines(
             cx,
             "branch-edge",
-            &line,
+            &[&line, "Detached", "glyph:commit"],
             Some("edge-create-branch"),
             "git-actions",
+        );
+        assert_eq!(
+            compact_edge(cx),
+            (Some("glyph:commit".into()), Some("icons/commit.svg".into()))
         );
         click(cx, "edge-create-branch");
         let (open, field) = app.read_with(cx, |app, cx| {
@@ -786,10 +885,10 @@ mod tests {
         );
         fixture_git(&root, &["remote", "add", "origin", "../origin.git"]);
         refresh(&app, cx).await;
-        check(
+        check_lines(
             cx,
             "branch-edge",
-            "No commits to push yet",
+            &["No commits to push yet", "glyph:commit"],
             None,
             "git-actions",
         );

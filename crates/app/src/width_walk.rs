@@ -1,8 +1,12 @@
 //! The width walk: History, Compare (text and image), Working Changes and
 //! the GitHub panel on the offline fixture, laid out at every width from 461
 //! to 1,480 px at 13 and 18 pt in a short and a tall window, fail on cut or
-//! orphaned text, and on a repository tab's name cut while the tab strip's
-//! Menu or Workspaces keeps its label (DESIGN.md, "One responsive order").
+//! orphaned text, on a repository tab's name cut while the tab strip's
+//! Menu or Workspaces keeps its label, and on the Git action bar's
+//! repository edge left out, its line short of its text or a control
+//! running into the next (DESIGN.md, "One responsive order"). The
+//! fixture has no remote, so every page's bar shows that edge; History is
+//! walked again on a detached HEAD and on a branch with no upstream.
 //!
 //! The test text system paints no glyphs, so the walk marks what it checks
 //! with fills a test can find among the painted quads, each with the content
@@ -52,6 +56,14 @@ enum Rule {
     /// A repository tab's name is cut while the strip's Menu or Workspaces
     /// keeps its label: actions become icons before content is cut.
     TabNameCut,
+    /// The Git action bar's repository edge is not drawn, or its line is
+    /// drawn short of its whole text, as "No r…", or a line no wider than
+    /// nothing beside a detached HEAD's picker, was at 18 pt in a 461 × 490
+    /// half tile: a line is whole or gives way to its glyph.
+    StateCut,
+    /// A control in the Git action bar runs into the one after it on its
+    /// row, as a detached HEAD's "Detached HEAD" picker ran under Fetch.
+    Overlap,
 }
 
 /// The pages the walk lays out.
@@ -322,6 +334,66 @@ impl Walk<'_> {
             }
         }
         self.inspect_tabs(width, height, cx);
+        self.inspect_edge(width, height, cx);
+    }
+
+    /// Records the repository edge left out of the Git action bar or its
+    /// line drawn short of its whole text, and any of the bar's controls
+    /// running into the next on its row. A truncated line is whole inside
+    /// its clip, so the cut-text rule cannot see it: its box is narrower
+    /// than the text it says.
+    fn inspect_edge(&mut self, width: f32, height: f32, cx: &mut VisualTestContext) {
+        let at = (width, height);
+        if self
+            .app
+            .read_with(cx, |app, _| app.repository_edge().is_some())
+        {
+            let drawn = cx.debug_bounds("branch-edge-line");
+            let shown = crate::empty_state::shown("branch-edge");
+            let need = shown.as_ref().map(|shown| {
+                cx.update(|window, _| match shown.strip_prefix("glyph:") {
+                    Some(_) => appearance::ui_size(crate::empty_state::GLYPH),
+                    None => shaped_width(
+                        shown,
+                        appearance::ui_text(12.),
+                        window.text_style().font_weight,
+                        window,
+                    )
+                    .ceil(),
+                })
+            });
+            match (drawn, need) {
+                (Some(drawn), Some(need)) if drawn.size.width < need - px(0.5) => {
+                    let detail = format!("{shown:?} in {:?} of its {need:?}", drawn.size.width);
+                    self.found(Rule::StateCut, "git-actions", at, detail);
+                }
+                (Some(_), Some(_)) => {}
+                _ => self.found(Rule::StateCut, "git-actions", at, "not drawn".into()),
+            }
+        }
+        let row: Vec<(&str, Bounds<Pixels>)> = [
+            "current-branch",
+            "branch-edge",
+            "fetch",
+            "pull",
+            "push",
+            "edge-create-branch",
+            "edge-add-remote",
+            "git-actions-toggle",
+        ]
+        .into_iter()
+        .filter_map(|control| cx.debug_bounds(control).map(|bounds| (control, bounds)))
+        .collect();
+        for pair in row.windows(2) {
+            let [(first, a), (second, b)] = pair else {
+                continue;
+            };
+            let same_row = a.top() < b.bottom() && b.top() < a.bottom();
+            if same_row && a.right() > b.left() + px(0.5) {
+                let detail = format!("{first} {a:?} runs into {second} {b:?}");
+                self.found(Rule::Overlap, "git-actions", at, detail);
+            }
+        }
     }
 
     /// Records the fixture's repository tab cut short of its whole label
@@ -513,9 +585,26 @@ fn fixture_script() -> Vec<u8> {
 }
 
 /// Walks `page` at `text` pt in a window on the fixture, its every text run
-/// and shared control marked.
+/// and shared control marked. The fixture has no remote, so the Git action
+/// bar says so on every page.
 async fn walk(page: Page, text: u8, cx: &mut TestAppContext) {
+    walk_at_edge(page, text, &[], cx).await;
+}
+
+/// [`walk`], once the Git commands `edge` have moved the fixture to another
+/// repository edge, as a detached HEAD or a branch with no upstream.
+async fn walk_at_edge(page: Page, text: u8, edge: &[&[&str]], cx: &mut TestAppContext) {
     let (_fixture, app, cx, path) = open(page, cx).await;
+    if !edge.is_empty() {
+        let root = app.read_with(cx, |app, _| {
+            app.repository.as_ref().unwrap().path().to_owned()
+        });
+        for args in edge {
+            fixture_git(&root, args);
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+    }
     cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
     let mut walk = Walk {
         page,
@@ -638,6 +727,31 @@ async fn working_changes_keep_their_text_whole_at_13_pt(cx: &mut TestAppContext)
 #[gpui::test]
 async fn working_changes_keep_their_text_whole_at_18_pt(cx: &mut TestAppContext) {
     walk(Page::Working, 18, cx).await;
+}
+
+/// Detaching HEAD, as `git checkout --detach` does.
+const DETACHED: &[&[&str]] = &[&["checkout", "--detach"]];
+/// A remote the branch does not track.
+const NO_UPSTREAM: &[&[&str]] = &[&["remote", "add", "origin", "../origin.git"]];
+
+#[gpui::test]
+async fn a_detached_head_keeps_the_bar_whole_at_13_pt(cx: &mut TestAppContext) {
+    walk_at_edge(Page::History, 13, DETACHED, cx).await;
+}
+
+#[gpui::test]
+async fn a_detached_head_keeps_the_bar_whole_at_18_pt(cx: &mut TestAppContext) {
+    walk_at_edge(Page::History, 18, DETACHED, cx).await;
+}
+
+#[gpui::test]
+async fn no_upstream_keeps_the_bar_whole_at_13_pt(cx: &mut TestAppContext) {
+    walk_at_edge(Page::History, 13, NO_UPSTREAM, cx).await;
+}
+
+#[gpui::test]
+async fn no_upstream_keeps_the_bar_whole_at_18_pt(cx: &mut TestAppContext) {
+    walk_at_edge(Page::History, 18, NO_UPSTREAM, cx).await;
 }
 
 #[gpui::test]

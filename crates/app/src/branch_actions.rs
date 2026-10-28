@@ -118,8 +118,25 @@ impl GitTurtle {
         // name stay (`copy_feedback`).
         let switched =
             copy_feedback::confirmed(&workspace::confirmations::picker(&self.path, &branch), cx);
+        // Detached, HEAD is a commit: the picker says which, as "Detached
+        // HEAD at" its short ID, and in the compact bar, whose line then
+        // says only "Detached", its label is that ID beside the commit glyph,
+        // whole where "Detached HEAD" would be cut (`empty_state`).
+        let head = self
+            .work_status
+            .as_ref()
+            .filter(|status| status.branch.is_none())
+            .and_then(|status| status.head.as_deref())
+            .map(short_oid);
+        let (label, named) = match &head {
+            Some(head) if compact => (head.clone(), format!("Detached HEAD at {head}")),
+            Some(head) => (branch.clone(), format!("Detached HEAD at {head}")),
+            None => (branch.clone(), branch.clone()),
+        };
         let symbol = if switched {
             "icons/check.svg"
+        } else if head.is_some() && compact {
+            "icons/commit.svg"
         } else {
             "icons/branch.svg"
         };
@@ -133,17 +150,17 @@ impl GitTurtle {
             .max_w(px(280.))
             .text_size(crate::appearance::ui_text(12.))
             .font_weight(FontWeight::MEDIUM)
-            .label(branch.clone())
+            .label(label)
             .icon(Icon::default().path(symbol).size(px(16.)))
             .dropdown_caret(true)
             .disabled(self.operation_busy.is_some())
             .accessibility_label(format!(
-                "Current branch: {branch}. Switch or manage branches"
+                "Current branch: {named}. Switch or manage branches"
             ))
             .tooltip(if switched {
                 format!("{} · {branch}", workspace::confirmations::SWITCH.done)
             } else {
-                format!("{branch} · Switch branch and repository actions")
+                format!("{named} · Switch branch and repository actions")
             })
             .dropdown_menu(move |mut menu, _, cx| {
                 let Some(view) = owner.upgrade() else {
