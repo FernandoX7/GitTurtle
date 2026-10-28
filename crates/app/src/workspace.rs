@@ -141,6 +141,12 @@ pub(super) struct WorkingForms {
     section_action_label: bool,
     section_icon: bool,
     section_label: bool,
+    /// A file row's status word and then its Stage or Unstage control leave,
+    /// on every row together, where its name would keep less than a short
+    /// name such as "notes.txt" whole beside them. The status glyph stays;
+    /// the word joins the path's tooltip, and the action the row's menu.
+    file_status: bool,
+    file_action: bool,
     /// The short composer heading's icon, then its staged badge, leave where
     /// the heading beside them could not keep "Commit to" and the branch's
     /// first character and ellipsis, so it truncates only the branch.
@@ -182,6 +188,9 @@ thread_local! {
         const { RefCell::new(None) };
     static STAGED_HEADING_COUNT: crate::views::TextWidth = const { RefCell::new(None) };
     static UNSTAGED_HEADING_COUNT: crate::views::TextWidth = const { RefCell::new(None) };
+    /// A file row's name floor and its widest status word.
+    static FILE_ROW_TEXTS: RefCell<Option<(crate::views::LineKey, [Pixels; 2])>> =
+        const { RefCell::new(None) };
     static TITLE_NAME: RefCell<Option<(crate::views::LineKey, Pixels)>> =
         const { RefCell::new(None) };
     static TITLE_COUNTER: crate::views::TextWidth = const { RefCell::new(None) };
@@ -236,6 +245,12 @@ fn wrapped_lines(text: &str, size: Pixels, width: Pixels, window: &Window) -> us
 /// A placeholder as it fits a field's width, with the font and sizes and the
 /// width it was fitted to.
 type PlaceholderFit = RefCell<Option<(crate::views::LineKey, Pixels, SharedString)>>;
+
+/// The status words a file row shows (`render_working_row`).
+const FILE_STATUS_WORDS: [&str; 6] = ["Conflict", "New", "Modified", "Deleted", "Renamed", "Type"];
+
+/// The name a file row keeps whole at least, whatever leaves beside it.
+const FILE_NAME_FLOOR: &str = "notes.txt";
 
 /// The Staged and Unstaged headings' forms, widest first, as
 /// (labelled action, glyph, name): see `WorkingForms::section_action_label`.
@@ -390,6 +405,25 @@ impl GitTurtle {
                 .unwrap_or((false, false, false));
         }
 
+        // A file row, inside the list's border and its 1 px margin: `pl` 10
+        // px with the 2 px selection edge, the 26 px status glyph, the name,
+        // then the status word and the Stage or Unstage control, and `pr_3`.
+        // The word leaves first, then the control, so the name keeps its floor.
+        let [name_floor, status_word] = cached_width(&FILE_ROW_TEXTS, &key, || {
+            let widest = FILE_STATUS_WORDS
+                .iter()
+                .map(|word| measure(word, ui_text(10.), regular))
+                .fold(px(0.), Pixels::max);
+            [
+                measure(FILE_NAME_FLOOR, ui_text(12.), FontWeight::MEDIUM),
+                widest,
+            ]
+        });
+        let file_room = width - px(3.) - px(12.) - rem * 0.75;
+        let leading = px(26.) + gap + name_floor;
+        let file_action = leading + gap + control <= file_room;
+        let file_status = file_action && leading + gap + status_word + gap + control <= file_room;
+
         // The composer heading: "Commit to" and at least the branch's first
         // character and ellipsis, a truncated line keeping the characters
         // that fit strictly before its ellipsis, as `scope_name_min_width`
@@ -451,6 +485,8 @@ impl GitTurtle {
             section_action_label,
             section_icon,
             section_label,
+            file_status,
+            file_action,
             heading_icon,
             heading_badge,
             counter_word,
@@ -1297,6 +1333,27 @@ impl GitTurtle {
         self.choose_working_selection(index, area, false, false, window, cx);
         self.working_scroll
             .scroll_to_item(position, ScrollStrategy::Center);
+    }
+
+    /// One file row's Stage, or Unstage where `staged`, from its control or,
+    /// where the control has left a narrow row, its menu.
+    fn stage_working_paths(
+        &mut self,
+        paths: Vec<PathBuf>,
+        staged: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if staged {
+            self.write(
+                WriteCommand::Unstage { paths },
+                "Unstaging file…",
+                window,
+                cx,
+            );
+        } else {
+            self.write(WriteCommand::Stage { paths }, "Staging file…", window, cx);
+        }
     }
 
     pub(super) fn write(
@@ -2189,6 +2246,13 @@ impl GitTurtle {
                         ChangeStatus::TypeChanged => ("file-type", "Type", p.warning, p.hover),
                     }
                 };
+                // Without its status word the row's tooltip names the status.
+                let path_detail = if forms.file_status {
+                    path_detail
+                } else {
+                    format!("{path_detail} · {status_label}")
+                };
+                let menu_paths = paths.clone();
                 div()
                     .id((
                         if staged {
@@ -2273,6 +2337,7 @@ impl GitTurtle {
                             )
                             .child(
                                 div()
+                                    .debug_selector(move || format!("working-name-{position}"))
                                     .truncate()
                                     .text_size(crate::appearance::ui_text(12.))
                                     .font_weight(FontWeight::MEDIUM)
@@ -2286,47 +2351,36 @@ impl GitTurtle {
                                     .child(parent),
                             ),
                     )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_size(crate::appearance::ui_text(10.))
-                            .text_color(rgb(p.text))
-                            .child(status_label),
-                    )
-                    .child(
-                        button(
-                            (if staged { "unstage" } else { "stage" }, index),
-                            "",
-                            if staged { "minus" } else { "plus" },
-                            false,
+                    .when(forms.file_status, |row| {
+                        row.child(
+                            div()
+                                .debug_selector(move || format!("working-status-{position}"))
+                                .flex_shrink_0()
+                                .text_size(crate::appearance::ui_text(10.))
+                                .text_color(rgb(p.text))
+                                .child(status_label),
                         )
-                        .accessibility_label(stage_label.clone())
-                        .tooltip(stage_label)
-                        .disabled(busy)
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.write(
-                                    if staged {
-                                        WriteCommand::Unstage {
-                                            paths: paths.clone(),
-                                        }
-                                    } else {
-                                        WriteCommand::Stage {
-                                            paths: paths.clone(),
-                                        }
-                                    },
-                                    if staged {
-                                        "Unstaging file…"
-                                    } else {
-                                        "Staging file…"
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            },
-                        )),
-                    )
+                    })
+                    .when(forms.file_action, |row| {
+                        row.child(
+                            button(
+                                (if staged { "unstage" } else { "stage" }, index),
+                                "",
+                                if staged { "minus" } else { "plus" },
+                                false,
+                            )
+                            .debug_selector(move || format!("working-stage-{position}"))
+                            .accessibility_label(stage_label.clone())
+                            .tooltip(stage_label)
+                            .disabled(busy)
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.stage_working_paths(paths.clone(), staged, window, cx);
+                                },
+                            )),
+                        )
+                    })
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         let modifiers = event.modifiers();
                         this.choose_working_selection(
@@ -2345,6 +2399,30 @@ impl GitTurtle {
                         let discard_owner = owner.clone();
                         let discard_repository = repository.clone();
                         let discard_entry = entry.clone();
+                        // Without its Stage or Unstage control the row's menu
+                        // leads with that action.
+                        let menu = if forms.file_action {
+                            menu
+                        } else {
+                            let (owner, repository) = (owner.clone(), repository.clone());
+                            let paths = menu_paths.clone();
+                            menu.item(
+                                PopupMenuItem::new(if staged { "Unstage" } else { "Stage" })
+                                    .disabled(busy)
+                                    .on_click(move |_, window, cx| {
+                                        let _ = owner.update(cx, |this, cx| {
+                                            if this.path == repository {
+                                                this.stage_working_paths(
+                                                    paths.clone(),
+                                                    staged,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                        });
+                                    }),
+                            )
+                        };
                         menu.item(
                             PopupMenuItem::new(if entry.untracked {
                                 "Ignore…"

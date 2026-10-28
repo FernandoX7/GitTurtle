@@ -6751,6 +6751,111 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A file row keeps its name whole, at least a short one such as
+    /// "notes.txt": at 18 pt in the 156 px inspector of a 461 × 490 window
+    /// every row gives up its status word and then its Stage or Unstage
+    /// control, which its menu then leads with, and the fixture's names
+    /// ("alpha.txt", "beta.txt", "notes.txt") are whole inside the list. At
+    /// the default size and in a 1480 × 980 window the rows keep both.
+    #[gpui::test]
+    async fn narrow_file_rows_keep_their_names_whole(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        let files = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                let entries = &app.work_status.as_ref().unwrap().entries;
+                app.working_rows
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(position, row)| match row {
+                        crate::workspace::WorkingRow::File(index, area) => Some((
+                            position,
+                            *area,
+                            entries[*index].path.to_string_lossy().into_owned(),
+                        )),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(files(cx).len(), 3);
+        for (text, width, height) in [(13, 461., 490.), (18, 461., 490.), (13, 1480., 980.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt at {width} × {height}");
+            let narrow = text == 18;
+            let inset = cx.update(|window, _| window.pixel_snap(window.rem_size() * 0.75));
+            for (position, _, name) in files(cx) {
+                app.update(cx, |app, _| {
+                    app.working_scroll
+                        .scroll_to_item(position, ScrollStrategy::Top)
+                });
+                draw(cx);
+                let pane = cx.debug_bounds("working-pane").unwrap();
+                let end = pane.right() - px(1.) - inset + px(0.5);
+                let selector =
+                    |part: &str| -> &'static str { format!("working-{part}-{position}").leak() };
+                let shown = cx
+                    .debug_bounds(selector("name"))
+                    .unwrap_or_else(|| panic!("{at}: {name}"));
+                let whole = cx.update(|window, _| {
+                    shaped_width(&name, appearance::ui_text(12.), FontWeight::MEDIUM, window)
+                });
+                assert!(
+                    shown.size.width >= whole && shown.right() <= end,
+                    "{at}: {name:?} ({whole:?}) in {shown:?}, the list ending at {end:?}"
+                );
+                for part in ["status", "stage"] {
+                    let bounds = cx.debug_bounds(selector(part));
+                    assert_eq!(bounds.is_some(), !narrow, "{at}: {name:?}'s {part}");
+                    if let Some(bounds) = bounds {
+                        assert!(
+                            bounds.left() >= shown.right() && bounds.right() <= end,
+                            "{at}: {name:?}'s {part} {bounds:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // At 18 pt in the narrow window, the unstaged row's menu leads with
+        // Stage.
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let (position, _, name) = files(cx)
+            .into_iter()
+            .find(|(_, area, _)| *area == gitturtle_core::ChangeArea::Unstaged)
+            .unwrap();
+        app.update(cx, |app, _| {
+            app.working_scroll
+                .scroll_to_item(position, ScrollStrategy::Top)
+        });
+        draw(cx);
+        let selector: &'static str = format!("working-row-{position}").leak();
+        let row = cx.debug_bounds(selector).unwrap();
+        cx.simulate_mouse_move(row.center(), None, Modifiers::default());
+        cx.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
+        // The kit builds the menu in a deferred callback.
+        cx.run_until_parked();
+        draw(cx);
+        let stage = cx
+            .debug_bounds("menu-item: Stage · MenuItem")
+            .expect("the row's menu offers Stage");
+        cx.simulate_click(stage.center(), Modifiers::default());
+        wait_until(cx, &app, "the menu's Stage", |app| {
+            app.operation_busy.is_none() && app.working_paths.staged_count == 3
+        });
+        assert!(
+            files(cx)
+                .iter()
+                .any(|(_, area, path)| *path == name && *area == gitturtle_core::ChangeArea::Staged),
+            "{name:?} staged from its menu"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// With two staged files in a 461 × 490 window, the composer's heading
     /// is drawn whole or not at all, above the commit action and the status
     /// bar: whole at the default size, and at 18 pt, where the inspector
