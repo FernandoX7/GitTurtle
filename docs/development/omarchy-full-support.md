@@ -322,6 +322,31 @@ cover current upstream x86-64 Omarchy.
           without the bar, a submenu, "Saved Git profiles" with saved profiles, the profile menu in
           a 461 px window or with a long identity (its width caps at 500 px), a light palette whose
           menu equals its canvas, label and separator roles on the bus.
+        - Linux System preview security reviews (2026-10-27 night): the first failed (F1 a malformed
+          ZIP cost 25.6 s per side at Compare open and made the external-link verdict
+          order-dependent; F2 `xdg-open` typed some copies differently from the content check; F3
+          OpenDocument skipped the external-link check), all fixed; the second failed on office
+          documents (a ZIP Unicode Path field hides a relationship part; Word field codes and Excel
+          data connections reach outside the package without relationships; an OOXML/OpenDocument
+          hybrid passes as Word) and on the portal typing PNG and Ogg copies by content (a PNG with an
+          SVG marker opens in the browser as SVG). Coordinator's decision, failing closed: office
+          documents get no Linux offer for now, and every portal request first checks GIO's content
+          type against the kind. Deferred, for a later task: office documents with a bounded body
+          scan (field codes, data connections, hybrids, extra-field names) and a release measurement
+          at Compare open.
+        - Working inspector after `67ce1fb`…`147c37c` (`wi-f5e70d3` → `wi-0aca11e`; one-row
+          controls, list and first-row bounds, icon-only Unstage all, "0/72", "Commit" verified):
+          the composer's "Description · optional" label is cut by the commit button and its entry
+          is an undrawn Tab stop below the window (regression from `84761b2`); at 18 pt in 461 px
+          "README.md" still reads "README…" beside its status tile; the filter placeholder reads
+          "Filter wo"; the Actions trigger is a bare chevron; the repository tab clips its own close
+          button at 18 pt in 461 px (pre-existing); not captured: the Actions menu's new items,
+          the row context menu's Stage/Unstage, tooltips.
+        - Narrow History after `c2ac707`…`3a3c56f` and fix-ups after `0e8ecd6`…`0aca11e`: at
+          461 × 490, 13 pt the graph draws a third lane cut in half at its edge (regression); the
+          floor figures in DESIGN.md are macOS's; the review Changes list's 13th row is 35 of 40 px;
+          the hint's baseline sits 4.5 px above the page buttons'; Changes and Source use different
+          insets; the pill tooltip is still to capture.
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
