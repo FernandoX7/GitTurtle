@@ -414,6 +414,33 @@ cover current upstream x86-64 Omarchy.
           18 pt in 461 px; a long draft status (`7b2adc1`); a branched fixture for narrow History's
           lanes at 18 pt; Back hovered, pressed and focused at 18 pt; the tab's close button focused
           at 18 pt in 461 px.
+        Found by the native reviews of 2026-10-28 evening (frames `.local/item8-2026-10-27/tools/qa/{pre,prf,prg,prm,t2,f2,sp2,sp2m,sp2c}-{04b6bc9,00f0add}/`):
+        - Regressions: at 13 pt in a 279 px inspector labelled Actions wraps onto its own row (the
+          toolbar is sized from the saved inspector width, not the drawn one; `f07233b`); at
+          461 × 490 a refusal paints over the image's two notes (`64d5d89`).
+        - Empty and edge states: no state line is on the accessibility bus; at 18 pt in 461 px the
+          detached line is not drawn, "No remote" reads "No r…", and a search with no match leaves
+          the list 11 px tall; the Tags line starts 10 px right of the dialog's edge; Tags offers
+          Create tag… with no commit; Add remote…'s cloud glyph beside Fetch's; Name repository's
+          magnifier and its invisible focus move.
+        - Feedback and motion: on Changes the next refresh replaces the outcome in the status line;
+          Stage all confirms on a heading scrolled out of view; after Fetch a full-width
+          "1 new commit" bar moves the page 35 px (pre-existing); before a row's flight the list is
+          empty for a frame with "Filtering working paths…" pushing the header 21 px (the filter
+          clears its rows before its worker answers); a still pointer ends over another row's
+          control after a re-sort; the candidate's idle capture cadence was slower (measure idle
+          CPU for continuous redraws); taste: a 1 px edge on the travelling row, "Fetched" centred.
+        - Menus and inspector: a keyboard-opened menu highlights nothing until Down; the Working
+          Actions menu covers the status bar at 461 × 490; "Ignore applies to untracked files"
+          reads as one phrase; at 18 pt in 1,000 × 680 the metadata scrolls 13 px of padding; at
+          18 pt the navigation's mode buttons wrap; "GitTurtle QA" is clipped in the inspector at
+          18 pt.
+        - System preview: notes cut to one line at 640 × 680 with room for two; the image stage is
+          27 px at 13 pt and 0 at 18 pt in 461 × 490.
+        - From implementers: every app dialog has the alert role; the per-row accessibility clip
+          needs a release History scroll measurement; History's commit list has no Shift-F10 menu
+          and the trees no Menu key; "Up to date" and tracking-branch creation still use the
+          window notice.
         Owner decision, 2026-10-28: Linux reaches feature parity with macOS where possible; macOS is
         checked later on a Mac. The gaps (README "Linux gaps", `docs/file-previews.md`,
         `docs/linux.md`), each a separate change with a dated research note on the dependency
