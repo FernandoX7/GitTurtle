@@ -565,7 +565,9 @@ impl GitTurtle {
                     .debug_selector(|| "working-filter".into())
                     .relative()
                     .child(
-                        Input::new(&self.working_filter).text_size(crate::appearance::ui_text(12.)),
+                        Input::new(&self.working_filter)
+                            .aria_label(crate::workspace::FILTER_NAME)
+                            .text_size(crate::appearance::ui_text(12.)),
                     )
                     // Painted after the field, it fits its placeholder.
                     .child(self.fit_filter_placeholder()),

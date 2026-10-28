@@ -287,9 +287,16 @@ pub(super) struct WorkingForms {
 /// each field shows as much as fits its width (`placeholder_fit`).
 pub(super) const FILTER_PLACEHOLDER: &str = "Filter working paths…";
 /// The filter's placeholder where the whole one does not fit: a shorter
-/// whole word reads better than a cut one ("Filte…").
+/// whole word reads better than a cut one ("Filte…"). The History
+/// inspector's changed-file filter shortens to it too.
 pub(super) const FILTER_SHORT_PLACEHOLDER: &str = "Filter";
+/// The filter's accessible name, whole whatever form its placeholder takes,
+/// so a screen reader never hears only "Filter".
+pub(super) const FILTER_NAME: &str = "Filter working paths";
 pub(super) const TITLE_PLACEHOLDER: &str = "Summarize the change";
+/// The title's placeholder where the whole one does not fit, rather than
+/// "Summarize t…".
+pub(super) const TITLE_SHORT_PLACEHOLDER: &str = "Summarize";
 pub(super) const DESCRIPTION_PLACEHOLDER: &str = "Explain why this change is needed…";
 
 /// The composer's texts below its title, whose wrapped lines the
@@ -382,7 +389,7 @@ fn wrapped_lines(text: &str, size: Pixels, width: Pixels, window: &Window) -> us
 
 /// A placeholder as it fits a field's width, with the font and sizes and the
 /// width it was fitted to.
-type PlaceholderFit = RefCell<Option<(crate::views::LineKey, Pixels, SharedString)>>;
+pub(super) type PlaceholderFit = RefCell<Option<(crate::views::LineKey, Pixels, SharedString)>>;
 
 /// The status words a file row shows (`render_working_row`).
 const FILE_STATUS_WORDS: [&str; 6] = ["Conflict", "New", "Modified", "Deleted", "Renamed", "Type"];
@@ -926,8 +933,10 @@ fn whole_form(forms: &[&str], room: Pixels, size: Pixels, window: &Window) -> Sh
 /// wordings from the longest, that fits, else the shortest ending with an
 /// ellipsis rather than clipping a glyph (`whole_form`). It sets the
 /// placeholder only when that changes, and then draws again, since refresh is
-/// ignored during paint. Its parent is positioned; it takes no room.
-fn placeholder_fit<M: gpui_kit::base::input::InputModeKind + 'static>(
+/// ignored during paint. Its parent is positioned; it takes no room. The
+/// placeholder is no name: the field keeps its whole accessible name
+/// (`aria_label`) whichever form shows.
+pub(super) fn placeholder_fit<M: gpui_kit::base::input::InputModeKind + 'static>(
     field: Entity<gpui_kit::base::input::InputBaseState<M>>,
     cache: &'static std::thread::LocalKey<PlaceholderFit>,
     forms: &'static [&'static str],
@@ -2062,6 +2071,7 @@ impl GitTurtle {
                             .min_w_0()
                             .child(
                                 Input::new(&self.working_filter)
+                                    .aria_label(FILTER_NAME)
                                     .text_size(crate::appearance::ui_text(12.)),
                             )
                             // Painted after the field, it fits its placeholder.
@@ -2341,7 +2351,11 @@ impl GitTurtle {
                         }))
                     }))
                     // Painted after both fields, it fits their placeholders.
-                    .child(placeholder_fit(self.commit_title.clone(), &TITLE_FIT, &[TITLE_PLACEHOLDER]))
+                    .child(placeholder_fit(
+                        self.commit_title.clone(),
+                        &TITLE_FIT,
+                        &[TITLE_PLACEHOLDER, TITLE_SHORT_PLACEHOLDER],
+                    ))
                     .child(placeholder_fit(
                         self.commit_message.clone(),
                         &DESCRIPTION_FIT,

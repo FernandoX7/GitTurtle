@@ -2089,9 +2089,23 @@ impl GitTurtle {
             )
             .child(
                 div()
+                    .relative()
                     .px_3()
                     .pb_2()
-                    .child(Input::new(&self.file_filter).text_size(appearance::ui_text(12.))),
+                    .child(
+                        Input::new(&self.file_filter)
+                            .aria_label(CHANGED_FILTER_NAME)
+                            .text_size(appearance::ui_text(12.)),
+                    )
+                    // Painted after the field, it fits its placeholder.
+                    .child(crate::workspace::placeholder_fit(
+                        self.file_filter.clone(),
+                        &CHANGED_FILTER_FIT,
+                        &[
+                            CHANGED_FILTER_PLACEHOLDER,
+                            crate::workspace::FILTER_SHORT_PLACEHOLDER,
+                        ],
+                    )),
             )
             .child(native_accessibility::clips_children(
                 div()
@@ -3830,7 +3844,18 @@ thread_local! {
     static SUBJECT_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static GRAPH_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static COMPACT_COUNT: TextWidth = const { RefCell::new(None) };
+    /// The changed-file filter's placeholder as it fits the width its field
+    /// last painted at (`workspace::placeholder_fit`).
+    static CHANGED_FILTER_FIT: crate::workspace::PlaceholderFit = const { RefCell::new(None) };
 }
+
+/// The History inspector's changed-file filter's placeholder, which reads
+/// the short "Filter" where it does not fit whole, as the Working filter's
+/// does, rather than a word cut at the field's edge ("Filter changed").
+pub(crate) const CHANGED_FILTER_PLACEHOLDER: &str = "Filter changed paths…";
+/// Its accessible name, whole whatever form the placeholder takes.
+pub(crate) const CHANGED_FILTER_NAME: &str = "Filter changed paths";
+
 #[cfg(test)]
 thread_local! {
     /// Lines [`line_widths`] has asked the text system to lay out.
@@ -7675,14 +7700,17 @@ pub(crate) mod tests {
     /// column in a 461 × 490 window at the default size and at 18 pt, in a
     /// 461 × 1400 one at 18 pt and in a 1480 × 980 one. At 18 pt in the 156 px
     /// inspector the title counter reads "0/72", named "0/72 suggested";
-    /// each placeholder ends with an ellipsis at a character boundary inside
-    /// its field (the description's where the composer draws it); and the
-    /// commit action reads "Commit", named with its whole label, such as
-    /// "Write a commit title". Wherever they fit, the counter, the title's
-    /// placeholder and the label stay whole.
+    /// the title's placeholder reads its short whole word, "Summarize", where
+    /// it once read "Summarize t…", and the description's, where the composer
+    /// draws it, ends with an ellipsis at a character boundary inside its
+    /// field; and the commit action reads "Commit", named with its whole
+    /// label, such as "Write a commit title". Wherever they fit, the counter,
+    /// the title's placeholder and the label stay whole.
     #[gpui::test]
     async fn narrow_composer_keeps_its_texts_inside_the_column(cx: &mut TestAppContext) {
-        use crate::workspace::{DESCRIPTION_PLACEHOLDER, TITLE_PLACEHOLDER};
+        use crate::workspace::{
+            DESCRIPTION_PLACEHOLDER, TITLE_PLACEHOLDER, TITLE_SHORT_PLACEHOLDER,
+        };
         let (_fixture, app, cx) = working_window(cx).await;
         cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
         let sizes = [
@@ -7769,8 +7797,8 @@ pub(crate) mod tests {
                 compact.then(|| whole.clone()),
                 "{at}"
             );
-            // Each placeholder fits the field it painted in, whole or cut
-            // before an ellipsis.
+            // Each placeholder fits the field it painted in: whole, the
+            // title's in its short whole word, or cut before an ellipsis.
             let placeholders = app.read_with(cx, |app, cx| {
                 [
                     (
@@ -7804,18 +7832,48 @@ pub(crate) mod tests {
                     width_of(cx, &shown, appearance::ui_text(12.)) <= field.size.width,
                     "{at}: {shown:?} in {field:?}"
                 );
+                // Its whole-word forms, from the longest; only the shortest
+                // is ever cut.
+                let forms: &[&str] = if whole == TITLE_PLACEHOLDER {
+                    &[TITLE_PLACEHOLDER, TITLE_SHORT_PLACEHOLDER]
+                } else {
+                    &[whole]
+                };
+                let shortest = forms[forms.len() - 1];
                 let stem = shown.trim_end_matches('…');
                 assert!(
-                    shown == whole
-                        || (shown.ends_with('…') && !stem.is_empty() && whole.starts_with(stem)),
+                    forms.contains(&shown.as_ref())
+                        || (shown.ends_with('…') && !stem.is_empty() && shortest.starts_with(stem)),
                     "{at}: {shown:?} for {whole:?}"
                 );
                 if whole == TITLE_PLACEHOLDER {
-                    assert_eq!(shown == whole, !narrow, "{at}: {shown:?}");
+                    // Where the whole title placeholder does not fit, it reads
+                    // the short "Summarize", not "Summarize t…".
+                    let expected = if narrow {
+                        TITLE_SHORT_PLACEHOLDER
+                    } else {
+                        TITLE_PLACEHOLDER
+                    };
+                    assert_eq!(shown.as_ref(), expected, "{at}");
                 }
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The accessible name the last frame gave `field`: what AccessKit reads
+    /// from its editing element, which the kit names after the field's
+    /// `aria_label`, or without one after the placeholder it shows.
+    fn field_name(cx: &mut VisualTestContext, field: &Entity<InputState>) -> Option<String> {
+        use gpui::Element as _;
+        cx.update(|window, cx| {
+            field.update(cx, |state, cx| {
+                let element = Render::render(state, window, cx).into_element();
+                let mut node = gpui::accesskit::Node::new(element.a11y_role().unwrap());
+                element.write_a11y_info(&mut node);
+                node.label().map(str::to_owned)
+            })
+        })
     }
 
     /// The Changes filter's placeholder fits its field in whole words. In
@@ -7823,10 +7881,12 @@ pub(crate) mod tests {
     /// field is about 86 px, it reads the short "Filter", whole, where it
     /// once read "Filte…", a cut word; in its own row in a 1480 × 980 window,
     /// at 13 and at 18 pt, it is the whole "Filter working paths…". Only a
-    /// field too narrow for "Filter" cuts it before an ellipsis.
+    /// field too narrow for "Filter" cuts it before an ellipsis. Whichever
+    /// form shows, the field keeps its whole name, "Filter working paths",
+    /// where it was once announced as its fitted placeholder ("Filter…").
     #[gpui::test]
     async fn working_filter_placeholder_fits_its_field(cx: &mut TestAppContext) {
-        use crate::workspace::{FILTER_PLACEHOLDER, FILTER_SHORT_PLACEHOLDER};
+        use crate::workspace::{FILTER_NAME, FILTER_PLACEHOLDER, FILTER_SHORT_PLACEHOLDER};
         let (_fixture, app, cx) = working_window(cx).await;
         cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
         for (text, width, height, tight) in [
@@ -7867,6 +7927,65 @@ pub(crate) mod tests {
                 FILTER_PLACEHOLDER
             };
             assert_eq!(shown.as_ref(), expected, "{at}: in {field:?}");
+            let filter = app.read_with(cx, |app, _| app.working_filter.clone());
+            assert_eq!(
+                field_name(cx, &filter).as_deref(),
+                Some(FILTER_NAME),
+                "{at}: the name"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The History inspector's changed-file filter fits its placeholder in
+    /// whole words as the Working filter does: in the 156 px inspector at 18
+    /// pt in a 461 × 490 window it reads the short "Filter", where it once
+    /// showed "Filter changed" cut at the field's edge, and in a 1480 × 980
+    /// window the whole "Filter changed paths…". Either way the field keeps
+    /// its whole name, "Filter changed paths".
+    #[gpui::test]
+    async fn changed_file_filter_fits_in_whole_words_and_keeps_its_name(cx: &mut TestAppContext) {
+        use crate::workspace::FILTER_SHORT_PLACEHOLDER;
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        for (text, width, height, short) in [
+            (18, 461., 490., true),
+            (13, 1480., 980., false),
+            (18, 1480., 980., false),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let filter = app.read_with(cx, |app, _| app.file_filter.clone());
+            let (field, shown) = filter.read_with(cx, |filter, _| {
+                (
+                    filter.text_bounds(),
+                    filter.presentation().placeholder().clone(),
+                )
+            });
+            let field = field.unwrap_or_else(|| panic!("{at}: the filter unpainted"));
+            let drawn = cx.update(|window, _| {
+                shaped_width(
+                    &shown,
+                    appearance::ui_text(12.),
+                    window.text_style().font_weight,
+                    window,
+                )
+            });
+            assert!(drawn <= field.size.width, "{at}: {shown:?} in {field:?}");
+            let expected = if short {
+                FILTER_SHORT_PLACEHOLDER
+            } else {
+                CHANGED_FILTER_PLACEHOLDER
+            };
+            assert_eq!(shown.as_ref(), expected, "{at}: in {field:?}");
+            assert_eq!(
+                field_name(cx, &filter).as_deref(),
+                Some(CHANGED_FILTER_NAME),
+                "{at}: the name"
+            );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }

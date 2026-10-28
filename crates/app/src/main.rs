@@ -606,7 +606,7 @@ impl GitTurtle {
             .map(|selection| (selection, cx.focus_handle()))
             .collect();
         let file_filter =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter changed paths…"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(views::CHANGED_FILTER_PLACEHOLDER));
         let working_filter =
             cx.new(|cx| InputState::new(window, cx).placeholder(workspace::FILTER_PLACEHOLDER));
         // The Settings page's own view; `render` embeds it cached and the app
