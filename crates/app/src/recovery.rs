@@ -918,6 +918,9 @@ struct StashBrowser {
     preview_worker: Worker,
     generation: u64,
     preview_generation: u64,
+    /// This showing of the file preview, which a line beneath an open
+    /// control belongs to; [`Self::clear_preview`] starts a new one.
+    showing: crate::system_preview::Showing,
     metadata_task: Option<Task<()>>,
     preview_task: Option<Task<()>>,
     page: Option<StashPage>,
@@ -962,6 +965,7 @@ impl StashBrowser {
             preview_worker: Worker::new(),
             generation: 0,
             preview_generation: 0,
+            showing: crate::system_preview::Showing::next(),
             metadata_task: None,
             preview_task: None,
             page: None,
@@ -996,9 +1000,16 @@ impl StashBrowser {
         })
     }
 
+    /// Opens captured bytes for this showing's open controls through the
+    /// window's `GitTurtle`.
+    fn opener(&self) -> crate::system_preview::Opener {
+        crate::system_preview::Opener::new(self.owner.clone(), self.showing)
+    }
+
     fn clear_preview(&mut self) {
         crate::model_view::pause(self.content.as_deref());
         self.preview_generation = self.preview_generation.wrapping_add(1);
+        self.showing = crate::system_preview::Showing::next();
         self.preview_worker.cancel();
         self.preview_task = None;
         self.content = None;
@@ -1362,17 +1373,12 @@ impl StashBrowser {
                             .into_any_element()
                     },
                     |preview| {
-                        crate::rich_preview::render_comparison(
-                            preview,
-                            false,
-                            self.owner.clone(),
-                            cx,
-                        )
+                        crate::rich_preview::render_comparison(preview, false, self.opener(), cx)
                     },
                 )
             }
             Some(Content::Rich(preview)) => {
-                crate::rich_preview::render_comparison(preview, false, self.owner.clone(), cx)
+                crate::rich_preview::render_comparison(preview, false, self.opener(), cx)
             }
             Some(Content::Text { .. }) if self.text_mode == 0 => {
                 self.patch_view.as_ref().map_or_else(

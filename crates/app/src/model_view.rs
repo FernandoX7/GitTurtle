@@ -515,7 +515,7 @@ pub(super) fn pause(content: Option<&Content>) {
 pub(super) fn render_comparison<T: 'static>(
     preview: &rich_preview::Comparison,
     quick: bool,
-    owner: WeakEntity<GitTurtle>,
+    opener: crate::system_preview::Opener,
     cx: &mut Context<T>,
 ) -> AnyElement {
     let colors = palette(cx);
@@ -571,7 +571,7 @@ pub(super) fn render_comparison<T: 'static>(
                         label,
                         side,
                         if quick { None } else { other.model.clone() },
-                        owner.clone(),
+                        opener.clone(),
                         cx,
                     )
                 }),
@@ -615,7 +615,7 @@ fn render_side<T: 'static>(
     label: &'static str,
     side: &Arc<rich_preview::Side>,
     partner: Option<Arc<Document>>,
-    owner: WeakEntity<GitTurtle>,
+    opener: crate::system_preview::Opener,
     cx: &mut Context<T>,
 ) -> AnyElement {
     let colors = palette(cx);
@@ -691,14 +691,9 @@ fn render_side<T: 'static>(
             }),
         );
     }
-    if let (Some(offer), Some(_), false) = (side.system_preview, &side.captured, lfs_pointer) {
-        let side = side.clone();
-        let mut control = button(
-            ("model-external", index),
-            offer.label(),
-            "external-link",
-            false,
-        );
+    if let (Some(offer), Some(bytes), false) = (side.system_preview, &side.captured, lfs_pointer) {
+        let target = opener.target(("model-external", index), label, bytes, &side.name, offer);
+        let mut control = target.button(offer.label(), cx);
         control = if cfg!(target_os = "macos") {
             control.accessibility_label(format!("Open captured {label} model in system preview"))
         } else {
@@ -706,11 +701,8 @@ fn render_side<T: 'static>(
                 .accessibility_label(offer.accessible_name(label))
                 .tooltip(offer.tooltip())
         };
-        source_actions = source_actions.child(control.on_click(move |_, window, cx| {
-            let _ = owner.update(cx, |this, cx| {
-                this.open_captured_preview(side.clone(), window, cx)
-            });
-        }));
+        // Why the last open opened nothing, on a line under the actions.
+        source_actions = source_actions.child(control).children(target.note(cx));
     }
     header = header.child(source_actions);
     let Some(document) = side.model.clone() else {

@@ -285,20 +285,22 @@ pub fn control_selected_hover(style: StyleRefinement) -> StyleRefinement {
 
 #[cfg(test)]
 thread_local! {
-    /// The weight each [`weight_probe`] last saw its label's text shaped at,
-    /// by key.
-    static DRAWN_WEIGHTS: std::cell::RefCell<std::collections::HashMap<String, gpui_kit::FontWeight>> =
-        Default::default();
+    /// The weight and color each [`text_probe`] last saw its label's text
+    /// drawn with, by key.
+    static DRAWN_TEXT: std::cell::RefCell<
+        std::collections::HashMap<String, (gpui_kit::FontWeight, gpui_kit::Hsla)>,
+    > = Default::default();
 }
 
 /// In tests, a zero-size child for a label's element that records, under
-/// `key`, the font weight the label's text is shaped at, for
-/// [`drawn_weight`]; in other builds, nothing. Text takes its weight from the
-/// window's text style where it is laid out, which is what the probe reads,
-/// so a test sees what the label draws, inherited weights included. The test
-/// text system draws every weight in one face, so neither the shaped runs nor
-/// the glyph widths carry it. Absolutely positioned, it moves nothing.
-pub(crate) fn weight_probe(key: impl FnOnce() -> String) -> Option<gpui_kit::AnyElement> {
+/// `key`, the font weight the label's text is shaped at and the color it is
+/// painted in, for [`drawn_weight`] and [`drawn_color`]; in other builds,
+/// nothing. Text takes both from the window's text style where it is laid
+/// out, which is what the probe reads, so a test sees what the label draws,
+/// inherited values included. The test text system draws every weight in one
+/// face and paints no glyphs a test can read, so neither the shaped runs nor
+/// the frame carry them. Absolutely positioned, it moves nothing.
+pub(crate) fn text_probe(key: impl FnOnce() -> String) -> Option<gpui_kit::AnyElement> {
     #[cfg(test)]
     {
         use gpui_kit::{IntoElement, canvas};
@@ -306,8 +308,12 @@ pub(crate) fn weight_probe(key: impl FnOnce() -> String) -> Option<gpui_kit::Any
         Some(
             canvas(
                 move |_, window, _| {
-                    let weight = window.text_style().font_weight;
-                    DRAWN_WEIGHTS.with(|drawn| drawn.borrow_mut().insert(key, weight));
+                    let style = window.text_style();
+                    DRAWN_TEXT.with(|drawn| {
+                        drawn
+                            .borrow_mut()
+                            .insert(key, (style.font_weight, style.color))
+                    });
                 },
                 |_, _, _, _| {},
             )
@@ -323,10 +329,16 @@ pub(crate) fn weight_probe(key: impl FnOnce() -> String) -> Option<gpui_kit::Any
     }
 }
 
-/// The weight the [`weight_probe`] under `key` last saw its label shaped at.
+/// The weight the [`text_probe`] under `key` last saw its label shaped at.
 #[cfg(test)]
 pub(crate) fn drawn_weight(key: &str) -> Option<gpui_kit::FontWeight> {
-    DRAWN_WEIGHTS.with(|drawn| drawn.borrow().get(key).copied())
+    DRAWN_TEXT.with(|drawn| drawn.borrow().get(key).map(|(weight, _)| *weight))
+}
+
+/// The color the [`text_probe`] under `key` last saw its label painted in.
+#[cfg(test)]
+pub(crate) fn drawn_color(key: &str) -> Option<gpui_kit::Hsla> {
+    DRAWN_TEXT.with(|drawn| drawn.borrow().get(key).map(|(_, color)| *color))
 }
 
 /// What the last frame painted for the Button at `element`, for tests: the
@@ -954,6 +966,10 @@ pub struct Labels {
     pub removed: u32,
     /// A count chip's number: `text` on its `hover` fill.
     pub count: u32,
+    /// A failure message beside the control that failed, such as a refused
+    /// Open in default app: `warning` on the canvas, panel and raised
+    /// surfaces a comparison and its dialogs rest on.
+    pub warning: u32,
 }
 
 impl Global for Labels {}
@@ -980,6 +996,10 @@ impl Labels {
             added: palette.small_label(palette.added, &[palette.added_background]),
             removed: palette.small_label(palette.removed, &[palette.removed_background]),
             count: palette.small_label(palette.text, &[palette.hover]),
+            warning: palette.small_label(
+                palette.warning,
+                &[palette.canvas, palette.panel, palette.raised()],
+            ),
         }
     }
 }

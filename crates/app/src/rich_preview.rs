@@ -320,32 +320,34 @@ pub(super) fn prepare_mermaid(
 }
 
 /// Render only supplied content. A dialog child must not borrow its parent
-/// entity while that parent is already rendering the dialog layer.
+/// entity while that parent is already rendering the dialog layer; `opener`
+/// opens captured bytes for the comparison's open controls.
 pub(super) fn render_comparison<T: 'static>(
     preview: &Comparison,
     quick: bool,
-    owner: WeakEntity<GitTurtle>,
+    opener: crate::system_preview::Opener,
     cx: &mut Context<T>,
 ) -> AnyElement {
     if preview.old.pdf.is_some() || preview.new.pdf.is_some() {
-        return crate::pdf_view::render_comparison(preview, quick, owner, cx);
+        return crate::pdf_view::render_comparison(preview, quick, opener, cx);
     }
     if [&preview.old, &preview.new]
         .into_iter()
         .any(|side| side.model.is_some() || gitturtle_preview::model3d::is_model_path(&side.name))
     {
-        return crate::model_view::render_comparison(preview, quick, owner, cx);
+        return crate::model_view::render_comparison(preview, quick, opener, cx);
     }
     let colors = palette(cx);
     div().size_full().min_w_0().flex().children([("Before",&preview.old),(if quick {"Source"}else{"After"},&preview.new)].into_iter().enumerate().filter(|(index,_)|!quick||*index==1).map(|(index,(label,side))| {
             let selected=side.selected_page.load(Ordering::Relaxed).min(side.pages.len().saturating_sub(1));
             let mut header=div().flex().items_center().flex_wrap().gap_2().px_3().py_2().border_b_1().border_color(rgb(colors.border)).child(div().text_size(appearance::ui_text(12.)).font_weight(FontWeight::SEMIBOLD).child(label)).child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(side.metadata.format.clone()));
-            if let (Some(offer), Some(_)) = (side.system_preview, &side.captured) {
-                let captured=Arc::clone(side);
-                let target=owner.clone();
-                let mut control=button(("system-preview",index),offer.label(),"external-link",false).debug_selector(move || format!("system-preview-{index}"));
-                control = if cfg!(target_os = "macos") { control.tooltip("Inspect an isolated copy of these captured revision bytes") } else { control.tooltip(offer.tooltip()).accessibility_label(offer.accessible_name(label)) };
-                header=header.child(control.on_click(move |_,window,cx| { let _=target.update(cx,|this,cx|this.open_captured_preview(Arc::clone(&captured),window,cx)); window.refresh(); }));
+            let mut note=None;
+            if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
+                let target=opener.target(("system-preview",index),label,bytes,&side.name,offer);
+                let control=target.button(offer.label(),cx);
+                let control = if cfg!(target_os = "macos") { control.tooltip("Inspect an isolated copy of these captured revision bytes") } else { control.tooltip(offer.tooltip()).accessibility_label(offer.accessible_name(label)) };
+                header=header.child(control);
+                note=target.note(cx);
             }
             if !side.pages.is_empty() {
                 for (name,delta,disabled) in [(format!("Previous {}",side.page_kind.to_ascii_lowercase()),-1isize,selected==0),(format!("Next {}",side.page_kind.to_ascii_lowercase()),1isize,selected+1>=side.pages.len())] {
@@ -354,6 +356,9 @@ pub(super) fn render_comparison<T: 'static>(
                 }
                 header=header.child(div().text_size(appearance::ui_text(11.)).child(format!("{} {} / {}{}",side.page_kind,selected+1,side.page_count,if side.pages.len()<side.page_count {format!(" · first {} available",side.pages.len())}else{String::new()})));
             }
+            // Why the last click opened nothing, on a line of its own under
+            // the header's controls.
+            header=header.children(note);
             let mut body=div().id(("rich-side-scroll",index)).flex_1().min_h_0().overflow_y_scroll().p_3().flex().flex_col().gap_3();
             if !side.present { body=body.child(div().text_color(rgb(colors.muted)).child("No file on this side")); }
             if let Some(page)=side.pages.get(selected) {
@@ -405,42 +410,20 @@ impl GitTurtle {
         preview: &Comparison,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        render_comparison(preview, self.is_quick_source(), cx.entity().downgrade(), cx)
+        let opener =
+            crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing);
+        render_comparison(preview, self.is_quick_source(), opener, cx)
     }
 
-    pub(super) fn open_captured_preview(
-        &mut self,
-        side: Arc<Side>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let (Some(bytes), Some(offer)) = (side.captured.clone(), side.system_preview) else {
-            return;
-        };
-        let name = side.name.clone();
-        self.open_captured_bytes(bytes, name, offer, window, cx);
-    }
-    /// Linux types the copy from content alone and never uses `name`.
-    #[cfg(target_os = "linux")]
-    pub(super) fn open_captured_bytes(
-        &mut self,
-        bytes: Arc<[u8]>,
-        _name: PathBuf,
-        offer: crate::system_preview::Offer,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_in_default_app(bytes, offer, window, cx);
-    }
+    /// Quick Look's copy of captured `bytes`, suffixed from what they are
+    /// with `name` as a hint; the task ends with whether it opened.
     #[cfg(not(target_os = "linux"))]
-    pub(super) fn open_captured_bytes(
+    pub(crate) fn quick_look(
         &mut self,
         bytes: Arc<[u8]>,
         name: PathBuf,
-        _offer: crate::system_preview::Offer,
-        window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Task<Result<(), crate::system_preview::NotOpened>> {
         let response = self.preferences_writer.submit_read(move || {
             #[cfg(target_os = "macos")]
             let slot = ExternalPreviewSlot::reserve()?;
@@ -468,20 +451,11 @@ impl GitTurtle {
                 anyhow::bail!("System preview is not available on this platform")
             }
         });
-        cx.spawn_in(window, async move |this, cx| {
-            let result = response.await;
-            let _ = this.update_in(cx, |this, _, cx| {
-                this.operation_notice = Some(match result {
-                    Ok(Ok(())) => {
-                        "System preview opened a read-only copy of the captured file bytes.".into()
-                    }
-                    Ok(Err(error)) => format!("System preview could not open: {error:#}"),
-                    Err(_) => "System preview stopped before reporting a result.".into(),
-                });
-                cx.notify();
-            });
+        cx.spawn(async move |_, _| match response.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(format!("{error:#}").into()),
+            Err(_) => Err("System preview stopped before reporting a result.".into()),
         })
-        .detach();
     }
 }
 
@@ -761,7 +735,11 @@ mod tests {
         struct Probe(Comparison);
         impl Render for Probe {
             fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                render_comparison(&self.0, false, WeakEntity::new_invalid(), cx)
+                let opener = crate::system_preview::Opener::new(
+                    WeakEntity::new_invalid(),
+                    crate::system_preview::Showing::next(),
+                );
+                render_comparison(&self.0, false, opener, cx)
             }
         }
         cx.update(gpui_kit::init);

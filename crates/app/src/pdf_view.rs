@@ -443,21 +443,23 @@ fn page_picker(
 pub(super) fn render_comparison<T: 'static>(
     preview: &rich_preview::Comparison,
     quick: bool,
-    owner: WeakEntity<GitTurtle>,
+    opener: crate::system_preview::Opener,
     cx: &mut Context<T>,
 ) -> AnyElement {
     let colors = palette(cx);
     div().size_full().flex().min_w_0().children([("Before", &preview.old, &preview.new), (if quick {"Source"} else {"After"}, &preview.new, &preview.old)].into_iter().enumerate().filter(|(i,_)| !quick || *i == 1).map(|(index,(label, side, other))| {
         let mut header = div().flex().flex_wrap().items_center().gap_2().p_2().border_b_1().border_color(rgb(colors.border)).child(div().font_weight(FontWeight::SEMIBOLD).child(format!("{label} · PDF")));
-        if let (Some(offer), Some(_)) = (side.system_preview, &side.captured) {
-            let side = side.clone(); let owner = owner.clone();
-            let control = button(("pdf-system",index), offer.label(), "external-link", false);
+        let mut note = None;
+        if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
+            let target = opener.target(("pdf-system",index), label, bytes, &side.name, offer);
+            let control = target.button(offer.label(), cx);
             let control = if cfg!(target_os = "macos") { control.accessibility_label(format!("{label}: open captured PDF in System preview")) } else { control.accessibility_label(offer.accessible_name(label)).tooltip(offer.tooltip()) };
-            header = header.child(control.on_click(move |_, window, cx| { let _ = owner.update(cx, |this,cx|this.open_captured_preview(side.clone(),window,cx)); }));
+            header = header.child(control);
+            note = target.note(cx);
         }
         let mut body = div().id(("pdf-scroll",index)).flex_1().min_h_0().min_w_0().overflow_scroll().p_3();
         let Some(document) = side.pdf.clone() else {
-            return div().flex_1().min_w_0().h_full().flex().flex_col().child(header).child(body.child(side.error.clone().unwrap_or_else(|| if side.present {"PDF preview unavailable"} else {"No file on this side"}.into()))).into_any_element();
+            return div().flex_1().min_w_0().h_full().flex().flex_col().child(header.children(note)).child(body.child(side.error.clone().unwrap_or_else(|| if side.present {"PDF preview unavailable"} else {"No file on this side"}.into()))).into_any_element();
         };
         let partner = if quick { None } else { other.pdf.clone() };
         let (page, zoom, pending, error, cached) = {
@@ -501,6 +503,8 @@ pub(super) fn render_comparison<T: 'static>(
         if let Some(other)=&other.pdf && document.linked.load(Ordering::Relaxed) && other.count!=document.count {
             header=header.child(div().text_size(appearance::ui_text(10.)).child(format!("Different page counts: {} / {}. Each side stops at its last page.",document.count,other.count)));
         }
+        // Why the last open opened nothing, on a line under the controls.
+        header = header.children(note);
         let page_number = page + 1;
         let rendered = match side.system_preview.filter(|_| side.captured.is_some()) {
             Some(offer) => format!("Rendered page; {} opens the captured document.", offer.label()),

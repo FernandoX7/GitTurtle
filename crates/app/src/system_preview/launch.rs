@@ -13,7 +13,7 @@
 //! application for that type. A portal that answered, refused or was
 //! cancelled is never followed by a second attempt, so nothing opens twice or
 //! after the user said no.
-use super::{passive::Kind, store::Copy};
+use super::{NotOpened, passive::Kind, store::Copy};
 use crate::rich_preview::ExternalPreviewSlot;
 use ashpd::{
     PortalError,
@@ -86,7 +86,7 @@ pub(super) async fn open(
     kind: Kind,
     slot: ExternalPreviewSlot,
     executor: BackgroundExecutor,
-) -> Result<(), String> {
+) -> Result<(), NotOpened> {
     let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
     let Some(gio) = find_launcher(&GIO.map(Path::new)) else {
         return Err("This needs gio (GLib) to check what the desktop would open the copy as, and it is not installed.".into());
@@ -112,13 +112,13 @@ pub(super) async fn open(
     };
     match answer {
         Portal::Opened => Ok(()),
-        Portal::Cancelled => {
-            Err("The application chooser was closed, so nothing was opened.".into())
-        }
-        Portal::Refused(error) => Err(format!("The desktop portal refused it: {error}.")),
+        // The person's choice, not a failure.
+        Portal::Cancelled => Err(NotOpened::Dismissed),
+        Portal::Refused(error) => Err(format!("The desktop portal refused it: {error}.").into()),
         Portal::NoAnswer(error) => Err(format!(
             "The desktop portal did not finish ({error}); it may still open the copy."
-        )),
+        )
+        .into()),
         Portal::Unavailable => {
             if !kind.typed_by_signature() {
                 return Err("Text opens only through the desktop portal, which is not running here; xdg-open would choose an application from what the text contains, not its type.".into());
@@ -161,10 +161,11 @@ pub(super) async fn open(
             futures::pin_mut!(exited, running);
             futures::select! {
                 status = exited => match status {
-                    Ok(Ok(status)) => launcher_result(status),
+                    Ok(Ok(status)) => launcher_result(status).map_err(NotOpened::from),
                     Ok(Err(error)) => Err(format!(
                         "xdg-open could not be waited for ({error}); it may still open the copy."
-                    )),
+                    )
+                    .into()),
                     Err(_) => Err("xdg-open's result was lost; it may still open the copy.".into()),
                 },
                 () = running => Ok(()),
@@ -382,18 +383,22 @@ pub(super) fn xdg_open_agrees(
     Ok(())
 }
 
-/// A sniffer's answer as the notice may show it.
+/// A sniffer's answer as the line beneath the control may show it: the
+/// types a polyglot is most often taken for by name, then as reported.
 fn shown(media_type: &str) -> String {
     let shown: String = media_type
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || "/.+-_".contains(*c))
         .take(96)
         .collect();
-    if shown.is_empty() {
-        "an unknown type".into()
-    } else {
-        shown
-    }
+    let named = match shown.as_str() {
+        "" => return "an unknown type".into(),
+        "image/svg+xml" => "an SVG document",
+        "text/html" => "an HTML document",
+        "application/xhtml+xml" => "an XHTML document",
+        _ => return shown,
+    };
+    format!("{named} ({shown})")
 }
 
 /// What `tool` prints for `arguments`, read up to [`MAX_ANSWER`] bytes once
@@ -830,7 +835,7 @@ mod tests {
         let svg = check(Kind::Png, &[("TYPE", "image/svg+xml")], wait).unwrap_err();
         assert_eq!(
             svg,
-            "The desktop would open this copy as image/svg+xml rather than as a PNG image, so nothing was opened."
+            "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened."
         );
         let php = check(Kind::Pdf, &[("TYPE", "application/x-php")], wait).unwrap_err();
         assert!(php.contains(" as application/x-php rather than as a PDF document"));

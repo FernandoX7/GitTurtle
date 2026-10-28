@@ -372,6 +372,10 @@ struct GitTurtle {
     operation_outcomes: operations::RepositoryOutcomes,
     operation_error: Option<String>,
     operation_notice: Option<String>,
+    /// This showing of the preview, which a line beneath an open control
+    /// belongs to: [`Self::clear_preview`] and a restored inspection start a
+    /// new one, so the line goes when another file is shown.
+    preview_showing: system_preview::Showing,
     operation_task: Option<Task<()>>,
     status_task: Option<Task<()>>,
     work_generation: u64,
@@ -705,6 +709,7 @@ impl GitTurtle {
             operation_outcomes: operations::RepositoryOutcomes::default(),
             operation_error: None,
             operation_notice: None,
+            preview_showing: system_preview::Showing::next(),
             operation_task: None,
             status_task: None,
             work_generation: 0,
@@ -1114,6 +1119,7 @@ impl GitTurtle {
     }
 
     fn clear_preview(&mut self) {
+        self.preview_showing = system_preview::Showing::next();
         self.repository_tabs.document_restore = None;
         pdf_view::pause(self.content.as_deref());
         model_view::pause(self.content.as_deref());

@@ -1,4 +1,6 @@
-//! Confirmation of explicit copy actions.
+//! Confirmation of explicit copy actions, and of the other actions that
+//! confirm on the control they came from ([`confirm`]), such as opening
+//! captured bytes in another application (`system_preview`).
 //!
 //! Every copy a person asks for goes through [`copy`]: it writes the
 //! clipboard, marks the copy button it came from, if any, and posts one polite
@@ -7,13 +9,16 @@
 //! content; an icon-only button shows the check and the tooltip "Copied". It
 //! then reverts. A repeated copy restarts the time and is announced again.
 //! The button keeps its bounds and its accessible name throughout, and
-//! nothing animates, so reduced motion needs nothing more.
+//! nothing animates, so reduced motion needs nothing more. Another action's
+//! button, drawn by [`feedback_button`], reads its own word ("Opened") the
+//! same way.
 //!
-//! The mark is one application global: the latest copy, its window and its
-//! generation. A newer copy replaces it, so at most one button reads Copied,
-//! and dropping the older restore timer cancels it; the generation check keeps
-//! a timer from clearing a newer mark. It holds no repository or inspection
-//! state, so tab switches and restored inspections carry nothing.
+//! The mark is one application global: the latest confirmation, its window
+//! and its generation. A newer one replaces it, so at most one button reads
+//! Copied or Opened, and dropping the older restore timer cancels it; the
+//! generation check keeps a timer from clearing a newer mark. It holds no
+//! repository or inspection state, so tab switches and restored inspections
+//! carry nothing.
 //!
 //! A [`Mark`] names both the button and what it copies, such as the commit a
 //! Hash button copies, so Copied stays where the copy happened: Hash drawn
@@ -36,17 +41,35 @@ pub(crate) const RESTORE_AFTER: Duration = Duration::from_millis(1500);
 /// What a copied button reads, after its check icon.
 pub(crate) const COPIED: &str = "Copied";
 
+/// An action whose button confirms it in place ([`feedback_button`]): the
+/// icon the button leads with at rest, the word it reads after the check
+/// once [`confirm`] marks it, and the name tests find that state by
+/// (`<id>/rest`, `<id>/<state>`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Action {
+    pub(crate) icon: &'static str,
+    pub(crate) done: &'static str,
+    pub(crate) state: &'static str,
+}
+
+/// A copy: the copy icon, then Copied.
+pub(crate) const COPY: Action = Action {
+    icon: "copy",
+    done: COPIED,
+    state: "copied",
+};
+
 #[derive(Default)]
 struct Feedback {
-    /// Counts copies; each one is a fresh announcement node.
+    /// Counts confirmations; each one is a fresh announcement node.
     generation: usize,
-    latest: Option<Copied>,
-    /// Restores `latest`; replacing it cancels the previous copy's timer.
+    latest: Option<Confirmed>,
+    /// Restores `latest`; replacing it cancels the previous one's timer.
     restore: Option<Task<()>>,
 }
 impl Global for Feedback {}
 
-struct Copied {
+struct Confirmed {
     generation: usize,
     window: AnyWindowHandle,
     mark: Option<Mark>,
@@ -76,6 +99,11 @@ impl Mark {
             subject: hasher.finish(),
         }
     }
+
+    /// The id of the button this mark belongs to.
+    pub(crate) fn control(&self) -> &ElementId {
+        &self.control
+    }
 }
 
 /// Puts `text` on the clipboard and confirms it: `mark`, the copy button that
@@ -90,17 +118,29 @@ pub(crate) fn copy(
     text: String,
 ) {
     cx.write_to_clipboard(ClipboardItem::new_string(text));
+    confirm(window, cx, mark, format!("{COPIED} {what}"));
+}
+
+/// Confirms an action where it happened: `mark`, the button that asked and
+/// what it acted on, reads its [`Action`]'s word for [`RESTORE_AFTER`], and
+/// assistive technology hears `announcement` once, politely.
+pub(crate) fn confirm(
+    window: &mut Window,
+    cx: &mut App,
+    mark: Option<Mark>,
+    announcement: impl Into<SharedString>,
+) {
     let feedback = cx.default_global::<Feedback>();
     feedback.generation = feedback.generation.wrapping_add(1);
     let generation = feedback.generation;
-    feedback.latest = Some(Copied {
+    feedback.latest = Some(Confirmed {
         generation,
         window: window.window_handle(),
         mark,
-        announcement: format!("{COPIED} {what}").into(),
+        announcement: announcement.into(),
     });
-    // The whole window redraws, so a copy button inside a dialog or a child
-    // view reads Copied without its owner being notified.
+    // The whole window redraws, so a button inside a dialog or a child view
+    // reads its confirmation without its owner being notified.
     window.refresh();
     let restore = cx.spawn(async move |cx| {
         cx.background_executor().timer(RESTORE_AFTER).await;
@@ -109,7 +149,7 @@ pub(crate) fn copy(
     cx.global_mut::<Feedback>().restore = Some(restore);
 }
 
-/// Ends copy `generation`'s mark and announcement unless a newer copy
+/// Ends confirmation `generation`'s mark and announcement unless a newer one
 /// replaced it, redrawing the window it was made in.
 fn restore(generation: usize, cx: &mut App) {
     let feedback = cx.global_mut::<Feedback>();
@@ -120,13 +160,13 @@ fn restore(generation: usize, cx: &mut App) {
     {
         return;
     }
-    if let Some(copied) = feedback.latest.take() {
+    if let Some(confirmed) = feedback.latest.take() {
         // The window may have closed since.
-        let _ = copied.window.update(cx, |_, window, _| window.refresh());
+        let _ = confirmed.window.update(cx, |_, window, _| window.refresh());
     }
 }
 
-fn copied(mark: &Mark, cx: &App) -> bool {
+fn confirmed(mark: &Mark, cx: &App) -> bool {
     cx.try_global::<Feedback>()
         .and_then(|feedback| feedback.latest.as_ref())
         .is_some_and(|latest| latest.mark.as_ref() == Some(mark))
@@ -154,13 +194,27 @@ pub(crate) fn copy_button(
     tooltip: impl Into<SharedString>,
     cx: &App,
 ) -> Button {
-    let copied = copied(&mark, cx);
+    feedback_button(mark, COPY, label, tooltip, cx)
+}
+
+/// A button that confirms `action` in place as [`copy_button`] confirms a
+/// copy, with the same frame, cells, naming and tooltip: at rest it draws the
+/// action's icon and `label`, and while [`confirm`] marks `mark` the check and
+/// the action's word in the same bounds.
+pub(crate) fn feedback_button(
+    mark: Mark,
+    action: Action,
+    label: impl Into<SharedString>,
+    tooltip: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    let copied = confirmed(&mark, cx);
     let id = mark.control.clone();
     let label = label.into();
     let tooltip = tooltip.into();
     let labelled = !label.is_empty();
     let selector = id.clone();
-    let mut button = button_frame(id.clone(), &label, "copy", false)
+    let mut button = button_frame(id.clone(), &label, action.icon, false)
         .debug_selector(move || selector.to_string());
     let cell = |icon: Icon, text: SharedString, shown: bool, state: &'static str| {
         let (probe, text_probe) = (id.clone(), id.clone());
@@ -174,7 +228,8 @@ pub(crate) fn copy_button(
             .when(!shown, |cell| cell.invisible())
             .child(
                 // Drawn only while its cell is shown, so tests find
-                // `<id>/rest` or `<id>/copied`, never both.
+                // `<id>/rest` or `<id>/copied` (the action's state), never
+                // both.
                 div()
                     .debug_selector(move || format!("{probe}/{state}"))
                     .flex()
@@ -199,12 +254,21 @@ pub(crate) fn copy_button(
             .grid()
             .grid_cols(1)
             .items_center()
-            .child(cell(control_icon("copy"), label.clone(), !copied, "rest"))
+            .child(cell(
+                control_icon(action.icon),
+                label.clone(),
+                !copied,
+                "rest",
+            ))
             .child(cell(
                 control_icon("check"),
-                if labelled { COPIED.into() } else { "".into() },
+                if labelled {
+                    action.done.into()
+                } else {
+                    "".into()
+                },
                 copied,
-                "copied",
+                action.state,
             )),
     );
     if labelled {
@@ -218,7 +282,7 @@ pub(crate) fn copy_button(
     }
     if tooltip.is_empty() {
         return if copied {
-            button.tooltip(COPIED)
+            button.tooltip(action.done)
         } else {
             button
         };
@@ -230,8 +294,8 @@ pub(crate) fn copy_button(
     button
         .tooltip_through_press()
         .tooltip_view(move |window, cx| {
-            let (text, state) = if self::copied(&mark, cx) {
-                (SharedString::from(COPIED), "copied")
+            let (text, state) = if self::confirmed(&mark, cx) {
+                (SharedString::from(action.done), action.state)
             } else {
                 (tooltip.clone(), "rest")
             };
@@ -246,8 +310,8 @@ pub(crate) fn copy_button(
         })
 }
 
-/// The polite status node announcing the latest copy in `window`, drawn once
-/// at the window root until the copy is restored. Each copy is a new node,
+/// The polite status node announcing the latest confirmation in `window`,
+/// drawn once at the window root until it is restored. Each one is a new node,
 /// which screen readers announce when it appears; it is out of flow and
 /// draws nothing. AT-SPI announces its name and AccessKit's macOS adapter
 /// its value, so both carry the text.
@@ -758,7 +822,7 @@ pub(crate) mod tests {
         let mark = icon_mark.clone();
         cx.update(|window, cx| copy(window, cx, Some(mark), "path", "a".into()));
         let [_, icon, named] = buttons(cx);
-        cx.update(|_, cx| assert!(copied(&icon_mark, cx)));
+        cx.update(|_, cx| assert!(confirmed(&icon_mark, cx)));
         assert_eq!(names(cx, vec![labelled, icon, named]), expected);
     }
 }

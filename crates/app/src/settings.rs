@@ -4097,7 +4097,7 @@ fn preview_caption(
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(rgb(p.text))
                 .child(label)
-                .children(appearance::weight_probe(move || {
+                .children(appearance::text_probe(move || {
                     format!("theme-name-{miniature}")
                 }));
             if selected || warnings > 0 || tag.is_some() {
@@ -4330,7 +4330,7 @@ fn settings_field(
             div()
                 .font_weight(FontWeight::MEDIUM)
                 .child(label)
-                .children(appearance::weight_probe(|| {
+                .children(appearance::text_probe(|| {
                     format!("settings-field-label: {label}")
                 })),
         )

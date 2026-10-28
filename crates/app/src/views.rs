@@ -5040,6 +5040,162 @@ pub(crate) mod tests {
         }
     }
 
+    /// Open in default app answers on its own control, as a copy does, and
+    /// never in the window-wide notice, which once said "Opened a read-only
+    /// copy of the captured bytes in the default app." with Dismiss and kept
+    /// saying it eleven files later. Opened, the control reads Opened in its
+    /// own bounds for 1.5 s and one polite announcement names no application.
+    /// A refusal is a line beneath the header's controls in the warning color
+    /// fitted to the page, and a closed chooser a muted line saying nothing
+    /// opened, in a dark and a light palette; the line goes once another file
+    /// is shown, even though the worker's cache shows the same preview again.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn open_in_default_app_answers_on_its_control(cx: &mut TestAppContext) {
+        use crate::{
+            copy_feedback::{
+                RESTORE_AFTER,
+                tests::{announced, wait},
+            },
+            system_preview::{
+                DISMISSED, NotOpened, OPENED,
+                tests::{latest_note, queue},
+            },
+        };
+        let pdf = "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n";
+        let input = format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 5\nmedia\nM 100644 inline launcher.desktop\ndata {}\n{pdf}\nM 100644 inline notes.txt\ndata 6\nnotes\n\ndone\n",
+            pdf.len(),
+        );
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let open = |file: usize, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(file, window, cx)));
+        };
+        let click = |cx: &mut VisualTestContext| {
+            let control = cx
+                .debug_bounds("system-preview-1")
+                .expect("After offers it");
+            cx.simulate_click(control.center(), Modifiers::default());
+            cx.run_until_parked();
+            draw(cx);
+        };
+        let notice = |cx: &mut VisualTestContext| {
+            let notice = app.read_with(cx, |app, _| app.operation_notice.clone());
+            (
+                notice,
+                cx.debug_bounds("operation-notice-summary").is_some(),
+            )
+        };
+        let captured = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| match app.content.as_deref() {
+                Some(Content::Rich(preview)) => preview.new.captured.clone(),
+                _ => None,
+            })
+        };
+        open(0, cx);
+        settle(&app, cx).await;
+        let rest = cx
+            .debug_bounds("system-preview-1")
+            .expect("After offers it");
+
+        queue(Ok(()));
+        click(cx);
+        assert!(cx.debug_bounds("system-preview-1/opened").is_some());
+        assert!(cx.debug_bounds("system-preview-1/rest").is_none());
+        assert_eq!(cx.debug_bounds("system-preview-1"), Some(rest));
+        assert_eq!(announced(cx).map(|(_, name)| name).as_deref(), Some(OPENED));
+        assert_eq!(notice(cx), (None, false), "no window-wide notice");
+        assert!(cx.debug_bounds("system-preview-1/note").is_none());
+        wait(cx, RESTORE_AFTER);
+        draw(cx);
+        assert!(cx.debug_bounds("system-preview-1/rest").is_some());
+        assert_eq!(cx.debug_bounds("system-preview-1"), Some(rest));
+        assert_eq!(announced(cx), None);
+
+        let refusal = "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PDF document, so nothing was opened.";
+        for theme in [
+            appearance::ThemeChoice::Midnight,
+            appearance::ThemeChoice::Porcelain,
+        ] {
+            cx.update(|window, cx| theme.apply(Some(window), cx));
+            draw(cx);
+            let (warning, accent, muted) = cx.read(|cx| {
+                let colors = palette(cx);
+                (appearance::labels(cx).warning, colors.accent, colors.muted)
+            });
+            assert_ne!(warning, accent, "{theme:?}: unlike a confirmation");
+
+            queue(Err(NotOpened::Failed(refusal.into())));
+            click(cx);
+            let control = cx.debug_bounds("system-preview-1").unwrap();
+            let line = cx
+                .debug_bounds("system-preview-1/note")
+                .expect("the refusal stays beside its control");
+            assert!(
+                line.top() >= control.bottom() && line.left() <= control.left(),
+                "{theme:?}: {line:?} is a line beneath {control:?}"
+            );
+            assert_eq!(
+                cx.read(latest_note),
+                Some((format!("Could not open After. {refusal}"), true))
+            );
+            assert_eq!(
+                appearance::drawn_color("system-preview-1/note"),
+                Some(rgb(warning).into()),
+                "{theme:?}: the warning color"
+            );
+            assert!(cx.debug_bounds("system-preview-1/rest").is_some());
+            assert_eq!(notice(cx), (None, false), "no window-wide notice");
+
+            queue(Err(NotOpened::Dismissed));
+            click(cx);
+            assert!(cx.debug_bounds("system-preview-1/note").is_some());
+            assert_eq!(cx.read(latest_note), Some((DISMISSED.into(), false)));
+            assert_eq!(
+                appearance::drawn_color("system-preview-1/note"),
+                Some(rgb(muted).into()),
+                "{theme:?}: a closed chooser is not a failure"
+            );
+            assert_eq!(notice(cx), (None, false));
+        }
+
+        queue(Err(NotOpened::Failed(refusal.into())));
+        click(cx);
+        assert!(cx.debug_bounds("system-preview-1/note").is_some());
+        let shown = app.read_with(cx, |app, _| app.content.clone());
+        open(1, cx);
+        settle(&app, cx).await;
+        assert!(cx.debug_bounds("system-preview-1/note").is_none());
+        open(0, cx);
+        settle(&app, cx).await;
+        assert!(cx.debug_bounds("system-preview-1").is_some());
+        assert!(
+            cx.debug_bounds("system-preview-1/note").is_none(),
+            "gone once another file was shown"
+        );
+        // The worker's cache can hand back the very preview, captured bytes
+        // and all, as a restored inspection does: still a new showing.
+        open(1, cx);
+        settle(&app, cx).await;
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.clear_preview();
+                app.selected_file = Some(0);
+                app.content = shown;
+                cx.notify();
+            })
+        });
+        draw(cx);
+        assert!(captured(cx).is_some());
+        assert!(cx.debug_bounds("system-preview-1").is_some());
+        assert!(
+            cx.debug_bounds("system-preview-1/note").is_none(),
+            "the same preview shown again"
+        );
+        assert_eq!(notice(cx), (None, false));
+    }
+
     /// [`history_window`] on the repository `input` imports.
     async fn history_window_from<'a>(
         cx: &'a mut TestAppContext,

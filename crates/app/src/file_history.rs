@@ -370,6 +370,8 @@ impl GitTurtle {
         self.refresh_file_filter(cx);
         self.selected_file = retained.selected_file;
         self.preferred_file = retained.preferred_file;
+        // A restored preview is a new showing of it.
+        self.preview_showing = crate::system_preview::Showing::next();
         self.content = retained.content;
         self.conflict_view = retained.conflict_view;
         self.conflict_subscription = retained.conflict_subscription;

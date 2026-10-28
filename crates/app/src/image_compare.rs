@@ -487,6 +487,11 @@ impl GitTurtle {
             "Linked zoom and pan · Drag or scroll to move · Equal source coordinates stay aligned"
         };
         let mut captured_actions = div().flex().flex_wrap().gap_2().px_3().py_1();
+        let opener =
+            crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing);
+        // Why a side's last open opened nothing, each on a line of its own
+        // under the row, so no control moves.
+        let mut notes = Vec::new();
         for (index, side) in [old, new].into_iter().enumerate() {
             let label = if index == 0 { "Before" } else { "After" };
             let side_path = self
@@ -505,25 +510,19 @@ impl GitTurtle {
                 let copy_mark = mark.clone();
                 captured_actions = captured_actions.child(copy_feedback::copy_button(mark,format!("Copy {label} source"),"Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),&format!("{label} source"),literal.to_string())));
             }
-            if let (Some(bytes), Some(offer)) = (side.captured.clone(), side.system_preview) {
-                let path = side_path
-                    .map(std::path::Path::to_path_buf)
-                    .unwrap_or_else(|| PathBuf::from("image.bin"));
+            if let (Some(bytes), Some(offer)) = (&side.captured, side.system_preview) {
+                let path = side_path.unwrap_or(std::path::Path::new("image.bin"));
+                let target =
+                    opener.target(("image-system-preview", index), label, bytes, path, offer);
                 captured_actions = captured_actions.child(
-                    button(
-                        ("image-system-preview", index),
-                        offer.side_label(label),
-                        "external-link",
-                        false,
-                    )
-                    .debug_selector(move || format!("image-system-preview-{index}"))
-                    .tooltip(offer.tooltip())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_captured_bytes(bytes.clone(), path.clone(), offer, window, cx)
-                    })),
+                    target
+                        .button(offer.side_label(label), cx)
+                        .tooltip(offer.tooltip()),
                 );
+                notes.extend(target.note(cx));
             }
         }
+        let captured_actions = captured_actions.children(notes);
         div()
             .size_full()
             .flex()

@@ -953,7 +953,7 @@ impl Render for Palette {
                                                 FontWeight::MEDIUM
                                             })
                                             .child(spec.label)
-                                            .children(appearance::weight_probe(move || {
+                                            .children(appearance::text_probe(move || {
                                                 format!("palette-command-title-{index}")
                                             })),
                                     )
