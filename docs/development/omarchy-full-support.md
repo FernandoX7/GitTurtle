@@ -464,6 +464,41 @@ cover current upstream x86-64 Omarchy.
         (hayro in a limited helper process) and [AVIF, HEIF/HEIC and JPEG
         2000](2026-10-28-linux-avif-heif-jpeg2000.md) (hayro-jpeg2000; mp4parse with the system dav1d;
         HEIC deferred pending the owner's HEVC patent position).
+        Owner decision, 2026-10-28 night: take the coordinator's recommendations for the best
+        experience, security and engineering, and keep everything legal:
+        - GitHub account: one Secret Service item through `oo7` (already in the Linux build, MIT),
+          attributes mirroring macOS (`service=com.gitturtle.github.oauth`, `username=github.com`);
+          stored reads never prompt; Connect may show the keyring's own unlock prompt; every failure
+          fails closed, with no plaintext or file fallback. The interface says "stored in your
+          desktop keyring" and never "encrypted"; `docs/linux.md` says a keyring without a password
+          is kept unencrypted on disk and points to setting one. Native evidence uses the offline
+          fixture; a live sign-in is done by the owner on their own account, and no token appears in
+          logs, frames or files.
+        - Motion and contrast: read the portal's `reduced-motion` and `contrast` and GNOME's
+          `enable-animations`, a11y `reduced-motion` and `high-contrast` through the existing
+          `desktop_text` observer; any source asking for reduced motion reduces it. More contrast is
+          a derived palette adjustment that is never saved and applies to every palette: secondary
+          text, line numbers and syntax at 7:1, dividers and edges at 3:1, a 1 px edge on resting
+          controls, disabled labels at 4.5:1, nothing moving; macOS Increase Contrast takes the same
+          path (checked later on a Mac). Settings gains "Follow the desktop" (default), On and Off
+          for each, since Omarchy has no switch. Proposing that Omarchy's animations toggle set the
+          GNOME key belongs to item 7 (optional).
+        - Images: JPEG 2000 through `hayro-jpeg2000` (Apache-2.0 OR MIT); AVIF through `mp4parse`
+          (MPL-2.0, used unmodified with its notice) and `dav1d` over the system libdav1d
+          (BSD-2-Clause), with size, thread and delay limits before decoding. HEIF/HEIC is not
+          decoded in the app: HEVC is patent-encumbered, libheif/libde265 are LGPL and Arch links
+          them to GPL encoders, glycin brings LGPL GLib and GPL-linked loaders, and the pure-Rust
+          decoders are weeks old; HEIC keeps Open in default app, revisited only for a royalty-free,
+          permissively licensed path.
+        - PDF pages: `hayro` (Apache-2.0 OR MIT) in GitTurtle's own helper process with memory and
+          CPU limits, killed on cancel or deadline, after the architecture review accepts the helper
+          and an independent security review decides its confinement.
+        - Office documents, audio and video stay deferred, last, and only through a sandboxed handoff
+          that passes a security review.
+        - Legal rule for all of it: every dependency checked with the `research` skill and
+          `cargo deny` against `deny.toml` (no GPL, AGPL or LGPL; MPL-2.0 only unmodified), license
+          texts in `docs/licenses/` and the package notices, no patent-encumbered codec decoded in
+          the app, bundled fonts and icons only under their licenses, and no copied GPL code.
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
