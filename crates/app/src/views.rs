@@ -6287,6 +6287,60 @@ pub(crate) mod tests {
         let _ = app;
     }
 
+    /// The Working Changes list, whose five rows overflow it in a 461 × 490
+    /// and a 640 × 680 window at the default size and at 18 pt, is a whole
+    /// number of rows tall inside its border: every row it shows is whole,
+    /// and the next begins at its bottom edge rather than being cut through
+    /// its text, as the Unstaged heading was at 640 × 680. The composer takes
+    /// the remainder.
+    #[gpui::test]
+    async fn working_list_shows_whole_rows(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        let total = app.read_with(cx, |app, _| app.working_rows.len());
+        assert_eq!(total, 5);
+        for (width, height, text) in [
+            (461., 490., 13),
+            (461., 490., 18),
+            (640., 680., 13),
+            (640., 680., 18),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let (row, border) = cx.update(|window, cx| {
+                (
+                    window.pixel_snap(px(app.read(cx).settings.density.file_row_height())),
+                    window.pixel_snap(px(1.)),
+                )
+            });
+            let pane = cx.debug_bounds("working-pane").expect(&at);
+            let (top, bottom) = (pane.top() + border, pane.bottom() - border);
+            let rows = (bottom - top) / row;
+            assert!(
+                (rows - rows.round()).abs() < 0.01 && rows.round() < total as f32,
+                "{at}: the list {pane:?} holds {rows} rows of {row:?}"
+            );
+            let mut shown = 0;
+            for index in 0..total {
+                let selector: &'static str = format!("working-row-{index}").leak();
+                let Some(item) = cx.debug_bounds(selector) else {
+                    continue;
+                };
+                if item.bottom() <= top + px(0.01) || item.top() >= bottom - px(0.01) {
+                    continue;
+                }
+                assert!(
+                    item.top() >= top - px(0.01) && item.bottom() <= bottom + px(0.01),
+                    "{at}: {selector} {item:?} cut by the list {pane:?}"
+                );
+                shown += 1;
+            }
+            assert_eq!(shown as f32, rows.round(), "{at}");
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// With two staged files in a 461 × 490 window, the composer's heading
     /// is drawn whole or not at all, above the commit action and the status
     /// bar: whole at the default size, and at 18 pt, where the inspector

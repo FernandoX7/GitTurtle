@@ -1392,6 +1392,22 @@ impl GitTurtle {
         let minimum = composer_minimum(short, fit.heading, window);
         // The list keeps its floor beside the composer's minimum.
         let composer_height = composer_height.min(available - floor).max(minimum);
+        // Where its rows overflow it, the list is a whole number of rows tall,
+        // so no row is cut through its text at the list's edge: the composer
+        // takes the remainder, or, without one, it stays below the list. At
+        // its floor the list is whole rows already.
+        let row = f32::from(window.pixel_snap(px(self.settings.density.file_row_height())));
+        let border = f32::from(window.pixel_snap(px(1.))) * 2.;
+        let inner = available - if composer { composer_height } else { 0. } - border;
+        let remainder = if total > 0
+            && inner > floor - border
+            && inner < row * self.working_rows.len() as f32
+        {
+            (inner - ((inner + 0.01) / row).floor() * row).max(0.)
+        } else {
+            0.
+        };
+        let composer_height = composer_height + if composer { remainder } else { 0. };
         let list = uniform_list(
             "working-files",
             self.working_rows.len(),
@@ -1572,9 +1588,10 @@ impl GitTurtle {
                     // left edge and focus ring stay whole beside it, as the
                     // commit inspector's list does beside its own edge.
                     .ml(px(1.))
-                    // One whole row, whatever else gives way, so its focus ring
-                    // surrounds a visible list.
+                    // Its floor, whatever else gives way, so its focus ring
+                    // surrounds a list that shows a file.
                     .relative().flex_1().min_h(px(floor)).overflow_hidden()
+                    .when(!composer && remainder > 0., |el| el.max_h(px(available - remainder)))
                     .when(total > 0, |el| el.child(list))
                     .when(total == 0, |el| el.child(
                         div().size_full().flex().flex_col().items_center().justify_center().p_5().gap_2()
