@@ -134,11 +134,13 @@ impl GitTurtle {
                 .child(draft.clone())
                 .footer(
                     DialogFooter::new()
-                        .child(button("close-rebase-plan", "Close", "", false).on_click(
-                            move |_, window, cx| {
-                                button_close.update(cx, |form, cx| form.close(window, cx))
-                            },
-                        ))
+                        .child(
+                            shortcuts::DialogKeys::RebaseSequence
+                                .dismiss_button("close-rebase-plan", false)
+                                .on_click(move |_, window, cx| {
+                                    button_close.update(cx, |form, cx| form.close(window, cx))
+                                }),
+                        )
                         .child(
                             button(
                                 "review-previous-rewrite",
@@ -752,6 +754,11 @@ mod tests {
     /// do not reach the page beneath. The rebase sequence names selection
     /// and reordering in the platform's key labels; the Reflog, and the
     /// rebase dialog's base field before the sequence loads, name none.
+    /// Escape is named by the dialog's own button it stands for, which the
+    /// dialog draws, and a picker's inline help says Escape with the same
+    /// verb: the palette said "Esc Close" beside its Cancel button and
+    /// "Escape returns to your previous focus" below its list, while Quick
+    /// Open said "Esc Cancel", and Keyboard Shortcuts "Esc Close" beside Done.
     #[gpui::test]
     async fn the_status_bar_names_the_dialogs_keys_and_never_the_pages(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
@@ -761,6 +768,18 @@ mod tests {
             cx.update(|window, cx| app.update(cx, |app, cx| app.status_hints(window, cx)))
         };
         let drawn = |cx: &mut VisualTestContext| cx.debug_bounds("status-hints").is_some();
+        // The verb the hints name Escape by, and whether the open dialog
+        // draws its own button with that label.
+        let escape = |cx: &mut VisualTestContext, hints: &str| {
+            let verb = hints
+                .rsplit_once("Esc ")
+                .map(|(_, verb)| verb.to_owned())
+                .unwrap_or_default();
+            let button = cx
+                .debug_bounds(format!("dialog-dismiss: {verb}").leak())
+                .is_some();
+            (verb, button)
+        };
         let page = hints(cx).expect("History names its keys");
         assert!(
             page.contains(&format!("{}F Search", primary_label())),
@@ -800,6 +819,12 @@ mod tests {
             "the rebase sequence"
         );
         assert!(drawn(cx), "the rebase sequence");
+        let sequence = hints(cx).unwrap();
+        assert_eq!(
+            escape(cx, &sequence),
+            ("Close".to_owned(), true),
+            "the rebase sequence's Escape and its button"
+        );
 
         cx.simulate_keystrokes("escape");
         draw(cx);
@@ -807,21 +832,51 @@ mod tests {
         assert_eq!(hints(cx).as_ref(), Some(&page), "after the rebase dialog");
 
         // Each other dialog with keys of its own names them from its search.
-        for (keys, open) in [
+        for (keys, open, verb, help) in [
             (
                 shortcuts::DialogKeys::Palette,
                 GitTurtle::open_command_palette
                     as fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+                "Cancel",
+                "Escape cancels",
             ),
-            (shortcuts::DialogKeys::QuickOpen, GitTurtle::open_quick_file),
-            (shortcuts::DialogKeys::Shortcuts, GitTurtle::shortcut_help),
+            (
+                shortcuts::DialogKeys::QuickOpen,
+                GitTurtle::open_quick_file,
+                "Cancel",
+                "Escape cancels",
+            ),
+            (
+                shortcuts::DialogKeys::Shortcuts,
+                GitTurtle::shortcut_help,
+                "Close",
+                "Escape closes",
+            ),
         ] {
             cx.update(|window, cx| app.update(cx, |app, cx| open(app, window, cx)));
-            draw(cx);
+            // The inline help, which Quick Open shows once it has read its
+            // paths on the worker after a 120 ms pause for typing.
+            let help = format!("dialog-help-escape: {help}").leak();
+            for _ in 0..20 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(150));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                draw(cx);
+                if cx.debug_bounds(help).is_some() {
+                    break;
+                }
+            }
+            assert!(cx.debug_bounds(help).is_some(), "{keys:?}: {help}");
             let named = hints(cx);
             assert_eq!(named, Some(keys.hints()), "{keys:?}");
-            assert!(!named.unwrap().contains("Search"), "{keys:?}");
+            let named = named.unwrap();
+            assert!(!named.contains("Search"), "{keys:?}");
             assert!(drawn(cx), "{keys:?}");
+            assert_eq!(
+                escape(cx, &named),
+                (verb.to_owned(), true),
+                "{keys:?}: {named}"
+            );
             cx.simulate_keystrokes("escape");
             draw(cx);
             assert!(

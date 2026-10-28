@@ -612,11 +612,11 @@ impl GitTurtle {
                 .footer(
                     DialogFooter::new()
                         .child(
-                            button("cancel-command-palette", "Cancel", "", false).on_click(
-                                move |_, window, cx| {
+                            shortcuts::DialogKeys::Palette
+                                .dismiss_button("cancel-command-palette", false)
+                                .on_click(move |_, window, cx| {
                                     cancel.update(cx, |form, cx| form.cancel(window, cx))
-                                },
-                            ),
+                                }),
                         )
                         .child({
                             // Disabled, it rests on `subtle`, which is the raised
@@ -1120,15 +1120,15 @@ impl Render for Palette {
                     }),
             )
             .child(
-                div()
-                    .text_size(crate::appearance::ui_text(11.))
-                    .text_color(rgb(p.muted))
-                    .child(reason.map(str::to_owned).unwrap_or_else(|| {
-                        format!(
-                            "↑ / ↓ select · {} opens · Escape returns to your previous focus",
-                            shortcuts::ENTER
-                        )
-                    })),
+                shortcuts::dialog_help(reason.map(str::to_owned).unwrap_or_else(|| {
+                    format!(
+                        "↑ / ↓ select · {} opens · {}",
+                        shortcuts::ENTER,
+                        shortcuts::DialogKeys::Palette.escape_help()
+                    )
+                }))
+                .text_size(crate::appearance::ui_text(11.))
+                .text_color(rgb(p.muted)),
             )
             .children(
                 self.error

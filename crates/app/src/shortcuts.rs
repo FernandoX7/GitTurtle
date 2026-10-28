@@ -605,19 +605,66 @@ pub(super) enum DialogKeys {
 }
 
 impl DialogKeys {
-    /// The hints in the status bar's form, `Key Action · Key Action`.
+    /// The hints in the status bar's form, `Key Action · Key Action`. Escape
+    /// is named by the dialog's own button it stands for ([`Self::dismiss`]):
+    /// the palette's hints said "Esc Close" beside its Cancel button, while
+    /// Quick Open's said "Esc Cancel".
     pub(super) fn hints(self) -> String {
+        let escape = format!("Esc {}", self.dismiss());
         match self {
-            Self::Palette => format!("↑↓ Select · {ENTER} Open · Esc Close"),
-            Self::QuickOpen => format!("↑↓ Select · {ENTER} Open · Esc Cancel"),
-            Self::Shortcuts => "↑↓ Browse · Esc Close".to_owned(),
+            Self::Palette | Self::QuickOpen => format!("↑↓ Select · {ENTER} Open · {escape}"),
+            Self::Shortcuts => format!("↑↓ Browse · {escape}"),
             Self::RebaseSequence => format!(
-                "↑↓ Select · {} / {} Reorder · Esc Close",
+                "↑↓ Select · {} / {} Reorder · {escape}",
                 key_label("alt-up"),
                 key_label("alt-down")
             ),
         }
     }
+
+    /// The verb of the dialog's button that Escape stands for, as the button
+    /// and hints say it and as its inline help does: Cancel in the command
+    /// palette and Quick Open, which leave without acting, and Close in
+    /// Keyboard Shortcuts, a read-only sheet, and the rebase dialog.
+    fn verb(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Palette | Self::QuickOpen => ("Cancel", "cancels"),
+            Self::Shortcuts | Self::RebaseSequence => ("Close", "closes"),
+        }
+    }
+
+    /// The label of the dialog's button that Escape stands for, the one verb
+    /// its hints, its footer and its inline help share ([`Self::verb`]).
+    pub(super) fn dismiss(self) -> &'static str {
+        self.verb().0
+    }
+
+    /// The clause the dialog's inline help says Escape with, in the button's
+    /// verb: "Escape cancels" or "Escape closes".
+    pub(super) fn escape_help(self) -> String {
+        format!("Escape {}", self.verb().1)
+    }
+
+    /// The dialog's footer button that Escape stands for, labelled
+    /// [`Self::dismiss`] and named `dialog-dismiss: <label>` for tests.
+    pub(super) fn dismiss_button(self, id: &'static str, primary: bool) -> Button {
+        let label = self.dismiss();
+        button(id, label, "", primary).debug_selector(move || format!("dialog-dismiss: {label}"))
+    }
+}
+
+/// A dialog's inline help line, `text`, named for tests by the clause in it
+/// that says what Escape does (`dialog-help-escape: <clause>`, empty where
+/// the line has none), because GPUI's test scene does not expose glyphs.
+pub(super) fn dialog_help(text: String) -> Div {
+    let escape = text
+        .split(" · ")
+        .find(|clause| clause.starts_with("Escape"))
+        .unwrap_or_default()
+        .to_owned();
+    div()
+        .debug_selector(move || format!("dialog-help-escape: {escape}"))
+        .child(text)
 }
 
 /// The dialog controls whose keys the status bar names, registered as their
@@ -667,11 +714,15 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
             .bg(rgb(surface.raised()))
             .border_color(rgb(surface.raised_edge()))
             .child(help.clone())
-            .footer(DialogFooter::new().child(
-                button("close-shortcut-help", "Done", "", true).on_click(move |_, window, cx| {
-                    done.update(cx, |view, cx| view.close(window, cx))
-                }),
-            ))
+            .footer(
+                DialogFooter::new().child(
+                    DialogKeys::Shortcuts
+                        .dismiss_button("close-shortcut-help", true)
+                        .on_click(move |_, window, cx| {
+                            done.update(cx, |view, cx| view.close(window, cx))
+                        }),
+                ),
+            )
             .on_cancel(move |_, window, cx| {
                 cancel.update(cx, |view, cx| view.close(window, cx));
                 false
@@ -864,7 +915,7 @@ impl Render for ShortcutHelpView {
                     _ => String::new(),
                 }).h(px(1.)).overflow_hidden())
             .child(div().text_size(appearance::ui_text(11.)).text_color(rgb(p.muted))
-                .child("↑ / ↓ browse · Escape closes · Shortcuts act in the focused view; text editing keeps its own keys."))
+                .child(dialog_help(format!("↑ / ↓ browse · {} · Shortcuts act in the focused view; text editing keeps its own keys.", DialogKeys::Shortcuts.escape_help()))))
     }
 }
 
