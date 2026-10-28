@@ -693,7 +693,7 @@ fn render_side<T: 'static>(
     }
     if let (Some(offer), Some(bytes), false) = (side.system_preview, &side.captured, lfs_pointer) {
         let target = opener.target(("model-external", index), label, bytes, &side.name, offer);
-        let mut control = target.button(crate::system_preview::Label::Action, cx);
+        let mut control = target.button(cx);
         if cfg!(target_os = "macos") {
             control = control
                 .accessibility_label(format!("Open captured {label} model in system preview"));

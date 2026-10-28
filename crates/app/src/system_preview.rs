@@ -73,15 +73,6 @@ impl Offer {
             "Open in default app"
         }
     }
-
-    /// The label of a control that names its side ("Before", "After").
-    pub(crate) fn side_label(self, side: &str) -> String {
-        if cfg!(target_os = "macos") {
-            format!("{side} system preview")
-        } else {
-            format!("Open {side} in default app")
-        }
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -97,10 +88,11 @@ impl Offer {
 
     /// The accessible name of a control labelled `label`: one form for every
     /// open control, which starts with the visible label, so speech input
-    /// finds the control by what it shows (WCAG 2.5.3), then names the side
-    /// where the label leaves it out, and the type the application receives.
-    /// "Open in default app: After, a read-only copy as a PDF document";
-    /// "Open After in default app: a read-only copy as a PNG image".
+    /// finds the control by what it shows (WCAG 2.5.3), then names the
+    /// `side`, which the label leaves to the heading beside it, and the type
+    /// the application receives: "Open in default app: After, a read-only
+    /// copy as a PDF document" in a document's header, "Open in default app:
+    /// Before, a read-only copy as a PNG image" in an image side's caption.
     pub(crate) fn accessible_name(self, label: &str, side: Option<&str>) -> String {
         let copy = format!("a read-only copy as {}", self.kind.description());
         match side {
@@ -220,17 +212,6 @@ impl Opener {
     }
 }
 
-/// How an open control is labelled.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Label {
-    /// The action alone ("Open in default app"), under a heading that names
-    /// the side, as a document's or model's header does.
-    Action,
-    /// The action and its side ("Open After in default app"), where both
-    /// sides' controls share one row, as the image comparison's do.
-    Side,
-}
-
 /// One open control, with what its click opens: the type the copy is handed
 /// over as on Linux, and elsewhere the stored name Quick Look's copy is
 /// suffixed from.
@@ -267,17 +248,15 @@ struct Note {
 }
 
 impl Target {
-    /// The control labelled as `label` says, with the shared button frame and
-    /// the action's icon, reading Opened in its own bounds while a click's
-    /// confirmation lasts. On Linux its tooltip and accessible name
-    /// ([`Offer::accessible_name`]) name the type the application receives,
-    /// one form for every control; macOS callers name it and give its
-    /// tooltip.
-    pub(crate) fn button(&self, label: Label, cx: &App) -> Button {
-        let visible: SharedString = match label {
-            Label::Action => self.offer.label().into(),
-            Label::Side => self.offer.side_label(self.side).into(),
-        };
+    /// The control, labelled with the action alone ("Open in default app")
+    /// under the heading or caption that names its side, with the shared
+    /// button frame and the action's icon, reading Opened in its own bounds
+    /// while a click's confirmation lasts. On Linux its tooltip and
+    /// accessible name ([`Offer::accessible_name`]) name the type the
+    /// application receives, one form for every control; macOS callers name
+    /// it and give its tooltip.
+    pub(crate) fn button(&self, cx: &App) -> Button {
+        let visible: SharedString = self.offer.label().into();
         let target = self.clone();
         let button =
             copy_feedback::feedback_button(self.mark.clone(), OPEN, visible.clone(), "", cx)
@@ -288,10 +267,9 @@ impl Target {
                     });
                 });
         #[cfg(target_os = "linux")]
-        let button = button.tooltip(self.offer.tooltip()).accessibility_label(
-            self.offer
-                .accessible_name(&visible, (label == Label::Action).then_some(self.side)),
-        );
+        let button = button
+            .tooltip(self.offer.tooltip())
+            .accessibility_label(self.offer.accessible_name(&visible, Some(self.side)));
         button
     }
 
@@ -523,11 +501,46 @@ pub(crate) mod tests {
         Some((note.text.to_string(), note.failed))
     }
 
+    #[cfg(target_os = "linux")]
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &byte in data {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb8_8320 & (crc & 1).wrapping_neg());
+            }
+        }
+        !crc
+    }
+
+    /// A 1 × 1 PNG, with `text` in a tEXt chunk when given.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn png(text: Option<&[u8]>) -> Vec<u8> {
+        let chunk = |kind: &[u8], data: &[u8]| {
+            let body = [kind, data].concat();
+            [
+                &(data.len() as u32).to_be_bytes()[..],
+                &body,
+                &crc32(&body).to_be_bytes(),
+            ]
+            .concat()
+        };
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend(chunk(b"IHDR", b"\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0"));
+        if let Some(text) = text {
+            png.extend(chunk(b"tEXt", &[b"Comment\0".as_slice(), text].concat()));
+        }
+        let pixels = b"\x78\x01\x01\x05\0\xfa\xff\0\0\0\0\0\0\x05\0\x01";
+        png.extend(chunk(b"IDAT", pixels));
+        png.extend(chunk(b"IEND", b""));
+        png
+    }
+
     /// Every open control is named in one form that starts with what it
-    /// shows (WCAG 2.5.3, label in name) and then names what the application
-    /// receives: the image comparison's "Open After in default app", once
-    /// named by that label alone, as much as a document's "Open in default
-    /// app", which adds the side its label leaves out.
+    /// shows (WCAG 2.5.3, label in name) and then names the side its label
+    /// leaves to the heading beside it and what the application receives:
+    /// an image side's control, which once read "Open Before in default app"
+    /// in a row of its own, as much as a document's.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     fn every_open_control_is_named_by_its_label_then_what_it_hands_over(
@@ -539,38 +552,37 @@ pub(crate) mod tests {
         let pdf: Arc<[u8]> = Arc::from(&b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n"[..]);
         let cases = [
             (
-                ("image-system-preview", 1usize),
+                ("image-system-preview", 0usize),
                 &png,
-                Label::Side,
-                "Open After in default app",
-                "Open After in default app: a read-only copy as a PNG image",
+                "Before",
+                "Open in default app: Before, a read-only copy as a PNG image",
             ),
             (
                 ("system-preview", 1usize),
                 &pdf,
-                Label::Action,
-                "Open in default app",
+                "After",
                 "Open in default app: After, a read-only copy as a PDF document",
             ),
         ];
         let buttons = cx.update(|_, cx| {
             cases
                 .iter()
-                .map(|(control, bytes, label, ..)| {
+                .map(|(control, bytes, side, _)| {
                     let offer = offer(bytes, &|| Ok(())).unwrap().expect("offered");
                     let name = std::path::Path::new("captured");
-                    opener
-                        .target(*control, "After", bytes, name, offer)
-                        .button(*label, cx)
+                    opener.target(*control, side, bytes, name, offer).button(cx)
                 })
                 .collect::<Vec<_>>()
         });
         let names = crate::worktrees::ring_room_tests::row_nodes(cx, buttons)
             .into_iter()
             .map(|node| node.label().map(str::to_owned));
-        for ((.., shown, expected), name) in cases.iter().zip(names) {
+        for ((.., expected), name) in cases.iter().zip(names) {
             let name = name.expect("the control is named");
-            assert!(name.starts_with(shown), "{name:?} starts with {shown:?}");
+            assert!(
+                name.starts_with("Open in default app"),
+                "{name:?} starts with what it shows"
+            );
             assert_eq!(name, *expected);
         }
     }

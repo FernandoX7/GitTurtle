@@ -486,12 +486,12 @@ impl GitTurtle {
         } else {
             "Linked zoom and pan · Drag or scroll to move · Equal source coordinates stay aligned"
         };
-        let mut captured_actions = div().flex().flex_wrap().gap_2().px_3().py_1();
+        let mut copies = Vec::new();
         let opener =
             crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing);
-        // Why a side's last open opened nothing, each on a line of its own
-        // under the row, so no control moves.
-        let mut notes = Vec::new();
+        // Each side's open control and the line saying why its last click
+        // opened nothing, which its caption draws.
+        let mut opens: [Option<(Button, Option<AnyElement>)>; 2] = [None, None];
         for (index, side) in [old, new].into_iter().enumerate() {
             let label = if index == 0 { "Before" } else { "After" };
             let side_path = self
@@ -508,29 +508,48 @@ impl GitTurtle {
                 // The control's id names the side; the mark adds its path.
                 let mark = copy_feedback::Mark::new(("copy-image-source", index), side_path);
                 let copy_mark = mark.clone();
-                captured_actions = captured_actions.child(copy_feedback::copy_button(mark,format!("Copy {label} source"),"Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),&format!("{label} source"),literal.to_string())));
+                copies.push(copy_feedback::copy_button(mark,format!("Copy {label} source"),"Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),&format!("{label} source"),literal.to_string())));
             }
-            if let (Some(bytes), Some(offer)) = (&side.captured, side.system_preview) {
+            if let (Some(bytes), Some(offer), false) =
+                (&side.captured, side.system_preview, source && index == 0)
+            {
+                let label = if source { "Source" } else { label };
                 let path = side_path.unwrap_or(std::path::Path::new("image.bin"));
                 let target =
                     opener.target(("image-system-preview", index), label, bytes, path, offer);
                 // On Linux the control names itself; Quick Look's takes the
-                // tooltip it always had.
-                let control = target.button(crate::system_preview::Label::Side, cx);
-                captured_actions = captured_actions.child(if cfg!(target_os = "macos") {
-                    control.tooltip(offer.tooltip())
+                // tooltip it always had, and a name with its side.
+                let control = target.button(cx);
+                let control = if cfg!(target_os = "macos") {
+                    control
+                        .tooltip(offer.tooltip())
+                        .accessibility_label(format!(
+                            "{label}: open captured image in System preview"
+                        ))
                 } else {
                     control
-                });
-                notes.extend(target.note(cx));
+                };
+                opens[index] = Some((control, target.note(cx)));
             }
         }
-        let captured_actions = captured_actions.children(notes);
         div()
             .size_full()
             .flex()
             .flex_col()
-            .child(captured_actions)
+            // Only copies of literal source have a row of their own; each
+            // open control sits in its side's caption.
+            .when(!copies.is_empty(), |element| {
+                element.child(
+                    div()
+                        .debug_selector(|| "image-captured-actions".into())
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .px_3()
+                        .py_1()
+                        .children(copies),
+                )
+            })
             .children(self.gif_controls(cx))
             .child(
                 div()
@@ -610,17 +629,35 @@ impl GitTurtle {
                                 } else {
                                     details
                                 };
+                                // The side's caption: its name and details,
+                                // then the control that opens it, as a
+                                // document's header has them, and the line
+                                // saying why its last click opened nothing.
+                                let (control, note) = opens[i].take().unzip();
                                 div()
-                                    .id(("image-side-description", i))
-                                    .role(Role::Label)
-                                    .aria_label(format!("{name}: {details}"))
+                                    .debug_selector(move || format!("image-side-caption-{i}"))
                                     .flex_1()
                                     .min_w_0()
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .gap_2()
                                     .px_3()
                                     .py_2()
-                                    .text_size(crate::appearance::ui_text(11.))
-                                    .child(div().font_weight(FontWeight::MEDIUM).child(name))
-                                    .child(div().text_color(rgb(p.muted)).child(details))
+                                    .child(
+                                        div()
+                                            .id(("image-side-description", i))
+                                            .role(Role::Label)
+                                            .aria_label(format!("{name}: {details}"))
+                                            .min_w_0()
+                                            .text_size(crate::appearance::ui_text(11.))
+                                            .child(
+                                                div().font_weight(FontWeight::MEDIUM).child(name),
+                                            )
+                                            .child(div().text_color(rgb(p.muted)).child(details)),
+                                    )
+                                    .children(control)
+                                    .children(note.flatten())
                             }),
                     ),
             )

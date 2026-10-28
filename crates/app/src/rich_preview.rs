@@ -344,7 +344,7 @@ pub(super) fn render_comparison<T: 'static>(
             let mut note=None;
             if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
                 let target=opener.target(("system-preview",index),label,bytes,&side.name,offer);
-                let control=target.button(crate::system_preview::Label::Action,cx);
+                let control=target.button(cx);
                 let control = if cfg!(target_os = "macos") { control.tooltip("Inspect an isolated copy of these captured revision bytes") } else { control };
                 header=header.child(control);
                 note=target.note(cx);

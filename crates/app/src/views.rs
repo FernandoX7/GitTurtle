@@ -5074,6 +5074,83 @@ pub(crate) mod tests {
         }
     }
 
+    /// A `git fast-import` stream of one commit per `(message, path, bytes)`
+    /// on `main`, oldest first, each writing its file.
+    #[cfg(target_os = "linux")]
+    fn file_commits(commits: &[(&str, &str, &[u8])]) -> Vec<u8> {
+        let mut input = Vec::new();
+        for (index, (message, path, bytes)) in commits.iter().enumerate() {
+            input.extend_from_slice(
+                format!(
+                    "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\nM 100644 inline {path}\ndata {}\n",
+                    1_700_000_000 + index,
+                    message.len(),
+                    bytes.len(),
+                )
+                .as_bytes(),
+            );
+            input.extend_from_slice(bytes);
+            input.push(b'\n');
+        }
+        input.extend_from_slice(b"done\n");
+        input
+    }
+
+    /// Whether `control`, with the focus ring it draws outside its edge,
+    /// lies inside `area`.
+    #[cfg(target_os = "linux")]
+    fn holds_with_ring(area: Bounds<Pixels>, control: Bounds<Pixels>) -> bool {
+        let ring = appearance::BUTTON_FOCUS_RING.width + appearance::BUTTON_FOCUS_RING.gap;
+        let slack = px(0.5);
+        control.left() - ring >= area.left() - slack
+            && control.right() + ring <= area.right() + slack
+            && control.top() - ring >= area.top() - slack
+            && control.bottom() + ring <= area.bottom() + slack
+    }
+
+    /// A changed image offers Open in default app on each side, and each
+    /// control sits in its own side's caption, after the side's dimensions,
+    /// as a document's header has it: both once shared a row of their own
+    /// above the comparison's modes, which began at the Before column's edge
+    /// and ran over Before though one of them opens After. Without literal
+    /// source to copy, the comparison draws no such row.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn open_in_default_app_sits_in_its_image_sides_caption(cx: &mut TestAppContext) {
+        use crate::system_preview::tests::png;
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", "image.png", &before),
+            ("change", "image.png", &after),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let both = app.read_with(cx, |app, _| match app.content.as_deref() {
+            Some(Content::Images { old, new }) => {
+                old.system_preview.is_some() && new.system_preview.is_some()
+            }
+            _ => false,
+        });
+        assert!(both, "both sides of the changed PNG offer the action");
+        for (control, caption) in [
+            ("image-system-preview-0", "image-side-caption-0"),
+            ("image-system-preview-1", "image-side-caption-1"),
+        ] {
+            let control = cx.debug_bounds(control).expect("the side offers it");
+            let caption = cx.debug_bounds(caption).expect("the side's caption");
+            assert!(
+                holds_with_ring(caption, control),
+                "{control:?} and its ring lie in its side's caption {caption:?}"
+            );
+        }
+        assert!(
+            cx.debug_bounds("image-captured-actions").is_none(),
+            "no row of actions above the modes"
+        );
+    }
+
     /// Open in default app answers on its own control, as a copy does, and
     /// never in the window-wide notice, which once said "Opened a read-only
     /// copy of the captured bytes in the default app." with Dismiss and kept
@@ -5231,15 +5308,11 @@ pub(crate) mod tests {
     }
 
     /// [`history_window`] on the repository `input` imports.
-    pub(crate) async fn history_window_from<'a>(
-        cx: &'a mut TestAppContext,
-        input: &str,
-    ) -> (
-        tempfile::TempDir,
-        Entity<GitTurtle>,
-        &'a mut VisualTestContext,
-    ) {
-        styled_history_window(cx, input.as_bytes(), |root| root).await
+    pub(crate) async fn history_window_from(
+        cx: &mut TestAppContext,
+        input: impl AsRef<[u8]>,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        styled_history_window(cx, input.as_ref(), |root| root).await
     }
 
     /// [`history_window_from`] on the repository the `input` bytes import,

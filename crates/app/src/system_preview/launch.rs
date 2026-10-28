@@ -512,6 +512,7 @@ fn launcher_result(status: ExitStatus) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::system_preview::tests::png;
     use core::prelude::v1::test;
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -850,39 +851,6 @@ mod tests {
             start.elapsed() < Duration::from_secs(5),
             "the wait is bounded"
         );
-    }
-
-    fn crc32(data: &[u8]) -> u32 {
-        let mut crc = !0u32;
-        for &byte in data {
-            crc ^= u32::from(byte);
-            for _ in 0..8 {
-                crc = (crc >> 1) ^ (0xedb8_8320 & (crc & 1).wrapping_neg());
-            }
-        }
-        !crc
-    }
-
-    /// A 1 × 1 PNG, with `text` in a tEXt chunk when given.
-    fn png(text: Option<&[u8]>) -> Vec<u8> {
-        let chunk = |kind: &[u8], data: &[u8]| {
-            let body = [kind, data].concat();
-            [
-                &(data.len() as u32).to_be_bytes()[..],
-                &body,
-                &crc32(&body).to_be_bytes(),
-            ]
-            .concat()
-        };
-        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
-        png.extend(chunk(b"IHDR", b"\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0"));
-        if let Some(text) = text {
-            png.extend(chunk(b"tEXt", &[b"Comment\0".as_slice(), text].concat()));
-        }
-        let pixels = b"\x78\x01\x01\x05\0\xfa\xff\0\0\0\0\0\0\x05\0\x01";
-        png.extend(chunk(b"IDAT", pixels));
-        png.extend(chunk(b"IEND", b""));
-        png
     }
 
     /// The real `gio`, where it is installed, answers as the portal will. A
