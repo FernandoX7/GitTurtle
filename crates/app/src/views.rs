@@ -6560,13 +6560,13 @@ mod tests {
             );
             caption.is_some()
         };
-        // The caption's text and the inset before it.
+        // The caption's column and text, and the row's gap.
         let measure = |cx: &mut VisualTestContext| {
             cx.update(|window, _| {
                 (
                     collapsed_caption_width(CAPTION, window),
                     line_widths(&[(CAPTION, appearance::ui_text(11.))], window),
-                    window.rem_size() * 0.5,
+                    window.rem_size() * 0.25,
                 )
             })
         };
@@ -6581,7 +6581,7 @@ mod tests {
         assert!(menu_caption(cx), "the caption closes the menu at 461");
 
         // The window widened until the row spans exactly the caption's column.
-        let (needed, text, inset) = measure(cx);
+        let (needed, text, gap) = measure(cx);
         let mut width = px(461.);
         let mut row = cx.debug_bounds("text-review-options").unwrap();
         for _ in 0..8 {
@@ -6603,7 +6603,9 @@ mod tests {
         let caption = cx
             .debug_bounds("text-review-caption")
             .expect("the caption at its column");
-        let spare = caption.size.width - inset - text;
+        // The column holds the caption's text and no more than the
+        // rounding: the Options button's margin gives back its inset.
+        let spare = caption.size.width - text;
         assert!(
             spare > px(-0.5) && spare < px(3.),
             "{spare:?} beside the whole caption: {caption:?} in {row:?}"
@@ -6618,7 +6620,6 @@ mod tests {
         // back the caption's text inset once: the caption's text starts one
         // gap after the button, as it does after Reset review in the full
         // row, to the device pixel.
-        let gap = cx.update(|window, _| window.rem_size() * 0.25);
         assert!(
             (caption.left() - (menu.right() + gap)).abs() < px(0.5),
             "caption {caption:?} one gap after Options {menu:?}"
@@ -6639,7 +6640,7 @@ mod tests {
         for (width, height) in [(461., 490.), (493., 526.)] {
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
-            let (needed, text, inset) = measure(cx);
+            let (needed, text, _) = measure(cx);
             let row = cx.debug_bounds("text-review-options").unwrap();
             assert!(cx.debug_bounds("text-review-menu").is_some(), "collapsed");
             let caption = cx.debug_bounds("text-review-caption");
@@ -6649,7 +6650,7 @@ mod tests {
                 "at 18 pt and {width}: row {row:?}, needed {needed:?}"
             );
             if let Some(caption) = caption {
-                assert!(caption.size.width - inset - text > px(-0.5), "{caption:?}");
+                assert!(caption.size.width - text > px(-0.5), "{caption:?}");
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));

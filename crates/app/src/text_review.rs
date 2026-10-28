@@ -680,13 +680,13 @@ pub(crate) fn options_row_width(window: &Window) -> Pixels {
 /// beside them: `px_3` on either side, four items `gap_1` apart, the two
 /// arrow buttons (`size_6`), the Options button (`px_2` on either side of
 /// its `text_sm` label, `gap_1` and the small caret, `size_3p5`), and the
-/// caption's `pl_2` and 11 pt text. The menu's trigger keeps none of the
-/// Options button's own margin, so the caption starts one gap after it.
-/// The fixed part is rounded up to a whole pixel, as the texts are, so a
-/// caption shown is never cut.
+/// caption's 11 pt text. The Options button's `mr_neg_2` gives back the
+/// caption's `pl_2`, so the caption's text starts one gap after the button,
+/// as it does after Reset review in the full row. The fixed part is rounded
+/// up to a whole pixel, as the texts are, so a caption shown is never cut.
 pub(crate) fn collapsed_caption_width(caption: &str, window: &Window) -> Pixels {
     let rem = window.rem_size();
-    (rem * (2. * 0.75 + 3. * 0.25 + 2. * 1.5 + 2. * 0.5 + 0.25 + 0.875 + 0.5)).ceil()
+    (rem * (2. * 0.75 + 3. * 0.25 + 2. * 1.5 + 2. * 0.5 + 0.25 + 0.875)).ceil()
         + crate::views::cached_text_width(&COLLAPSED_CAPTION, caption, window, || {
             crate::views::line_widths(
                 &[
