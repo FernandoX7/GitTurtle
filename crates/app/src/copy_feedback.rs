@@ -140,7 +140,9 @@ fn copied(mark: &Mark, cx: &App) -> bool {
 /// A labelled button draws its content, `symbol`'s icon (if any) and `label`,
 /// and the copied content, the check icon and "Copied", in one grid cell,
 /// showing one and hiding the other, so it is as wide as the wider of the two
-/// in both states. It is named `label`, and `tooltip` (if not empty) stays.
+/// in both states. Both start at its leading inset, so the check replaces the
+/// icon in place and nothing moves. It is named `label`, and `tooltip` (if
+/// not empty) stays.
 /// An icon-only button (an empty `label`) keeps its 28 px square, swaps its
 /// icon for the check and its tooltip for "Copied", and is named as `button`
 /// names one until the caller names it.
@@ -161,11 +163,13 @@ pub(crate) fn copy_button(
         .debug_selector(move || selector.to_string());
     let cell = |icon: &str, text: SharedString, shown: bool, state: &'static str| {
         let probe = id.clone();
+        // Both contents start at the leading edge, so the check takes the
+        // icon's place and the narrower one's spare width trails it.
         div()
             .row_start(1)
             .col_start(1)
             .flex()
-            .justify_center()
+            .justify_start()
             .when(!shown, |cell| cell.invisible())
             .child(
                 // Drawn only while its cell is shown, so tests find
@@ -437,6 +441,50 @@ pub(crate) mod tests {
             shows(cx, "copy-message"),
             Shows::Rest,
             "another commit's message"
+        );
+    }
+
+    /// Copy message and Hash start their content at the button's leading
+    /// inset at rest, with no gap before the icon, and copied the check
+    /// starts where the icon did; neither state moves either button. Hash
+    /// carries Copy message's icon before its label.
+    #[gpui::test]
+    fn copied_takes_the_icons_place_and_moves_nothing(cx: &mut TestAppContext) {
+        let (_app, cx) = history(cx, vec![commit("a", "Selected title", "Body.")]);
+        let ids = ["copy-message", "copy-commit"];
+        let buttons = |cx: &mut VisualTestContext| ids.map(|id| cx.debug_bounds(id).unwrap());
+        let content = |cx: &mut VisualTestContext, id: &str, state: &str| {
+            cx.debug_bounds(format!("{id}/{state}").leak()).unwrap()
+        };
+        let rest = buttons(cx);
+        assert!(rest[0].right() <= rest[1].left(), "{rest:?}");
+        for (button, id) in rest.iter().zip(ids) {
+            let at_rest = content(cx, id, "rest");
+            assert_eq!(
+                at_rest.left(),
+                button.left() + appearance::ui_size(10.),
+                "{id} at rest starts at its inset"
+            );
+            click(cx, id);
+            assert_eq!(shows(cx, id), Shows::Copied);
+            assert_eq!(
+                content(cx, id, "copied").left(),
+                at_rest.left(),
+                "{id}'s check takes its icon's place"
+            );
+            assert_eq!(buttons(cx), rest, "{id} copied moves neither button");
+            wait(cx, RESTORE_AFTER);
+            assert_eq!(shows(cx, id), Shows::Rest);
+            assert_eq!(buttons(cx), rest);
+        }
+        let hash = content(cx, "copy-commit", "rest").size.width;
+        let label = cx.update(|window, _| {
+            crate::views::line_widths(&[("Hash", appearance::ui_text(12.))], window)
+        });
+        let icon = appearance::ui_size(16. + 6.);
+        assert!(
+            (hash - (icon + label)).abs() < px(0.5),
+            "{hash:?} is the icon and {label:?}"
         );
     }
 

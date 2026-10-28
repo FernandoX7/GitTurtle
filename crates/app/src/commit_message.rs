@@ -65,9 +65,10 @@ impl Toolbar {
     /// and the copied content, a 16 px check icon 6 px before "Copied", which
     /// `copy_feedback::copy_button` reserves. Copy message's content is a
     /// 16 px icon 6 px before its label, or it is a 28 px square of only the
-    /// icon; Hash's is its label, narrower than the copied content. Wrapped
-    /// rows are a quarter rem apart inside the toolbar's `py_1`, and the
-    /// panel's 1 px bottom border is reserved with them.
+    /// icon; Hash's is the same icon before its label, narrower than the
+    /// copied content. Wrapped rows are a quarter rem apart inside the
+    /// toolbar's `py_1`, and the panel's 1 px bottom border is reserved with
+    /// them.
     pub(super) fn within(width: Pixels, window: &Window) -> Self {
         let key = LineKey::current(window);
         let label = |cache, text| {
@@ -90,7 +91,7 @@ impl Toolbar {
         } else {
             labelled
         };
-        let hash = padding + hash_label.max(copied);
+        let hash = padding + (icon + hash_label).max(copied);
         let rows = if copy + gap + hash <= room { 1. } else { 2. };
         Self {
             compact,
@@ -411,7 +412,7 @@ impl GitTurtle {
                             copy_feedback::copy(window, cx, Some(message_copy.clone()), "commit message", message);
                         }
                     })))
-                .child(copy_feedback::copy_button(hash_mark, "Hash", "", format!("Copy full commit hash · {}", commit.oid), cx)
+                .child(copy_feedback::copy_button(hash_mark, "Hash", "copy", format!("Copy full commit hash · {}", commit.oid), cx)
                     .accessibility_label("Copy full commit hash")
                     .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(hash_copy.clone()), "commit hash", hash.clone())))
             )
