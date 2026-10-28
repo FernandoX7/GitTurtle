@@ -736,8 +736,19 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
         // palette do: on the raised surface with their fitted edge, read on
         // every frame so a theme switch retints it with them.
         let surface = palette(cx);
+        // The dialog clips its body at the body's top, where the search
+        // field stands, so the view keeps the focus ring's room above the
+        // field and the title's margin gives it back: nothing moves.
+        let room = appearance::button_ring_room(cx);
         dialog
-            .title("Keyboard Shortcuts")
+            .title(
+                div()
+                    .id("keyboard-shortcuts-title")
+                    .role(Role::Label)
+                    .aria_label("Keyboard Shortcuts")
+                    .mb(-room)
+                    .child("Keyboard Shortcuts"),
+            )
             .width(appearance::ui_size(650.))
             .bg(rgb(surface.raised()))
             .border_color(rgb(surface.raised_edge()))
@@ -898,7 +909,7 @@ impl Render for ShortcutHelpView {
         .track_scroll(&self.scroll)
         .size_full();
         div().id("keyboard-shortcuts-view").debug_selector(|| "keyboard-shortcuts-view".into()).key_context("GitTurtleShortcuts")
-            .flex().flex_col().gap_3().text_size(appearance::ui_text(12.))
+            .flex().flex_col().gap_3().pt(appearance::button_ring_room(cx)).text_size(appearance::ui_text(12.))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
                 this.close(window, cx); cx.stop_propagation();
             }))

@@ -386,17 +386,52 @@ async fn the_project_hub_and_pane_draw_a_whole_ring_at_every_stop(cx: &mut TestA
             &mut failures,
         );
     }
-    // Follow-up (focus sweep, 2026-10-28): the hub's project list clips the
-    // rings of its first project row and of that row's action button.
-    assert_whole_except(
-        failures,
-        &[
-            ("the project hub at 13 pt, stop 7", "a clip cuts"),
-            ("the project hub at 13 pt, stop 8", "a clip cuts"),
-            ("the project hub at 18 pt, stop 7", "a clip cuts"),
-            ("the project hub at 18 pt, stop 8", "a clip cuts"),
-        ],
-    );
+    assert_whole(failures);
+}
+
+/// The ring's room the project hub's list, Quick Open's form and Keyboard
+/// Shortcuts keep inside their clips moves nothing, at 13 and 18 pt: laid
+/// out without it, as a ring taking none lays out, every painted quad and
+/// named element sits where it does with it, and the controls at the clips'
+/// edges, the first project's Rename and Quick Open's scope buttons, lose
+/// their rings. The walks above find the rings whole.
+#[gpui::test]
+async fn the_ring_room_at_list_and_dialog_edges_moves_nothing(cx: &mut TestAppContext) {
+    use crate::tags::tests::assert_room_moves_nothing;
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    for interface in SIZES {
+        interface_size(cx, interface);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+        views::tests::settle(&app, cx).await;
+        assert_room_moves_nothing(
+            cx,
+            &app,
+            &["rename-recent-project-0"],
+            &["project-hub-recent"],
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        views::tests::settle(&app, cx).await;
+        let mut failures = Vec::new();
+        open_dialog(&app, cx, "Quick Open", |app, window, cx| {
+            app.open_quick_file(window, cx)
+        })
+        .await;
+        assert_room_moves_nothing(
+            cx,
+            &app,
+            &["quick-open-worktree", "quick-open-revision"],
+            &["quick-open-results"],
+        );
+        close_dialogs(cx, "Quick Open", interface, &mut failures);
+        open_dialog(&app, cx, "Keyboard Shortcuts", |app, window, cx| {
+            app.shortcut_help(window, cx)
+        })
+        .await;
+        assert_room_moves_nothing(cx, &app, &[], &["shortcut-help-results"]);
+        close_dialogs(cx, "Keyboard Shortcuts", interface, &mut failures);
+        assert_whole(failures);
+    }
 }
 
 /// The repository's dialogs: Reflog, interactive rebase, the rewrite review,
@@ -463,23 +498,5 @@ async fn repository_dialogs_draw_a_whole_ring_at_every_stop(cx: &mut TestAppCont
         )
         .await;
     }
-    // Follow-up (focus sweep, 2026-10-28): Quick Open's scrolling form and
-    // the Keyboard Shortcuts dialog's body clip at their content edges, so
-    // the scope buttons and the filters along them lose part of their rings.
-    // They should keep the ring's room inside their clips, as the rebase form
-    // and the rewrite review do, without moving their text off the dialog's
-    // inset.
-    assert_whole_except(
-        failures,
-        &[
-            ("Quick Open at 13 pt, stop 1", "a clip cuts"),
-            ("Quick Open at 13 pt, stop 2", "a clip cuts"),
-            ("Quick Open at 13 pt, stop 3", "a clip cuts"),
-            ("Keyboard Shortcuts at 13 pt, stop 1", "a clip cuts"),
-            ("Quick Open at 18 pt, stop 1", "a clip cuts"),
-            ("Quick Open at 18 pt, stop 2", "a clip cuts"),
-            ("Quick Open at 18 pt, stop 3", "a clip cuts"),
-            ("Keyboard Shortcuts at 18 pt, stop 1", "a clip cuts"),
-        ],
-    );
+    assert_whole(failures);
 }

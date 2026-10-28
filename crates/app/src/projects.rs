@@ -497,6 +497,12 @@ impl ProjectHub {
         let colors = Theme::global(cx).colors;
         let query = self.search.read(cx).value();
         let searching = !query.trim().is_empty();
+        // The list clips its rows to its bounds, so it keeps the focus ring's
+        // room inside them around its rows, and the panel's 0.5 rem padding
+        // gives the room back: a focused row and its Rename draw their rings
+        // whole and nothing moves.
+        let room = crate::appearance::button_ring_room(cx);
+        let padding = crate::appearance::ui_size(6.5);
         div()
             .debug_selector(|| "project-hub-recent".into())
             .flex_1()
@@ -544,7 +550,7 @@ impl ProjectHub {
                     .border_1()
                     .border_color(colors.border)
                     .bg(colors.background)
-                    .p_2()
+                    .p(padding)
                     .when(self.filtered.is_empty(), |panel| {
                         panel.child(
                             div()
@@ -563,11 +569,12 @@ impl ProjectHub {
                         )
                     })
                     .when(!self.filtered.is_empty(), |panel| {
-                        panel.child(
+                        panel.p(padding - room).child(
                             uniform_list("recent-projects", self.filtered.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                                 range.map(|index| this.recent_row(index, cx)).collect::<Vec<_>>()
                             }))
                             .size_full()
+                            .p(room)
                             .track_scroll(&self.recent_scroll),
                         )
                     }),

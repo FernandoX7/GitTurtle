@@ -229,9 +229,22 @@ impl GitTurtle {
             // do: on the raised surface with their fitted edge, read on every
             // frame so a theme switch retints it with them.
             let surface = palette(cx);
+            // The dialog clips its body to the body's bounds, and the form
+            // keeps the focus ring's room inside them around its controls.
+            // The title's margin and the footer's gap give the room back, so
+            // nothing in the dialog moves.
+            let room = appearance::button_ring_room(cx);
             dialog
-                .title("Quick Open File")
+                .title(
+                    div()
+                        .id("quick-open-title")
+                        .role(Role::Label)
+                        .aria_label("Quick Open File")
+                        .mb(-room)
+                        .child("Quick Open File"),
+                )
                 .width(px(700.))
+                .gap(crate::tags::DIALOG_FOOTER_GAP - room)
                 .bg(rgb(surface.raised()))
                 .border_color(rgb(surface.raised_edge()))
                 .child(form.clone())
@@ -1005,15 +1018,23 @@ impl Render for QuickForm {
         )
         .track_scroll(&self.scroll)
         .size_full();
+        // The form scrolls, so it clips its controls to its bounds on both
+        // axes. It keeps the focus ring's room around them, giving the sides
+        // back through its margin and the top and foot through the dialog's
+        // title margin and footer gap, so the scope buttons and the fields
+        // draw their rings whole and nothing moves.
+        let room = appearance::button_ring_room(cx);
         crate::native_accessibility::clips_children(div().id("quick-file-form-scroll").debug_selector(|| "quick-file-form".into())
-            .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
+            .max_h((window.viewport_size().height - px(240.)).max(px(160.)) + room * 2.)
+            .p(room)
+            .mx(-room)
             .overflow_y_scroll().text_size(crate::appearance::ui_text(12.))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &gpui_kit::component::dialog::Cancel, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,_,cx|{let count=this.page.as_ref().map_or(0,|page|page.entries.len());if count==0{return;}match event.keystroke.key.as_str(){"down"=>this.selected=(this.selected+1).min(count-1),"up"=>this.selected=this.selected.saturating_sub(1),_=>return}cx.stop_propagation();this.scroll.scroll_to_item(this.selected,ScrollStrategy::Center);cx.notify();}))
             .child(div().flex().flex_col().gap_2()
-            .child(div().flex().gap_1().children([(true,"Current worktree"),(false,"Chosen revision")].into_iter().map(|(worktree,label)|button(label,label,"",self.worktree==worktree).toggled(self.worktree==worktree).on_click(cx.listener(move |this,_,window,cx|{this.worktree=worktree;this.search(window,cx);})))) )
+            .child(div().flex().gap_1().children([(true,"Current worktree","quick-open-worktree"),(false,"Chosen revision","quick-open-revision")].into_iter().map(|(worktree,label,selector)|button(label,label,"",self.worktree==worktree).debug_selector(move || selector.into()).toggled(self.worktree==worktree).on_click(cx.listener(move |this,_,window,cx|{this.worktree=worktree;this.search(window,cx);})))) )
             .when(!self.worktree,|el|el.child(Input::new(&self.revision)))
             .child(Input::new(&self.query))
             .child({
