@@ -962,14 +962,7 @@ mod tests {
     #[gpui::test]
     async fn a_search_with_no_match_offers_clear_search(cx: &mut TestAppContext) {
         let (_fixture, app, cx, _) = window(cx, &history_script(1, 1)).await;
-        cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                app.search.update(cx, |input, cx| {
-                    input.set_value("no such commit", window, cx)
-                });
-                app.history_query_changed(window, cx);
-            })
-        });
+        search_for_nothing(&app, cx);
         wait(cx, "the search to finish", |cx| {
             app.read_with(cx, |app, _| app.history_search_no_match().is_some())
         });
@@ -978,17 +971,29 @@ mod tests {
             line.starts_with("No commits match · searched 1 commit in "),
             "{line}"
         );
-        // In the short half tile at 13 pt the search's own controls and the
-        // full chrome leave History's list no height, a limit of the search
-        // row this state does not own; the tall one shows it.
-        check_in(
+        // In a short half tile the search's labelled controls once took
+        // three rows and left History's list 2 px, so the line ran over the
+        // header below them and Clear search ended below the window.
+        check(
             cx,
             "history-no-match",
-            &[&line],
+            &line,
             Some("history-clear-search"),
             "history-empty-state",
-            &[(461., 980.)],
         );
+        // There the line beside Clear search says how much the search read,
+        // and the controls, Cancel and Continue disabled, leave it their
+        // row's height.
+        for interface in SIZES {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            assert!(
+                cx.debug_bounds("history-search-controls").is_none(),
+                "{interface} pt in 461 × 490: the controls stay over the state"
+            );
+        }
+        wide_search_controls_unchanged(cx);
         click(cx, "history-clear-search");
         let (query, visible) = app.read_with(cx, |app, cx| {
             (app.search.read(cx).value().to_string(), app.visible.len())
@@ -997,6 +1002,140 @@ mod tests {
             (query.as_str(), visible),
             ("", 1),
             "Clear search restores the list"
+        );
+    }
+
+    /// Searches for what the fixture has no commit for, its debounce still
+    /// to run: the test clock stands still until a test advances it.
+    fn search_for_nothing(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search.update(cx, |input, cx| {
+                    input.set_value("no such commit", window, cx)
+                });
+                app.history_query_changed(window, cx);
+            })
+        });
+    }
+
+    /// The search's Cancel, Continue and Restart, and the accessible name
+    /// each keeps.
+    const SEARCH_CONTROLS: [(&str, &str); 3] = [
+        ("history-search-cancel", "Cancel"),
+        ("history-search-continue", "Continue"),
+        ("history-search-restart", "Restart"),
+    ];
+
+    /// At 13 and 18 pt in a 461 × 490 half tile, the search's controls are
+    /// one row of 28 px icons inside History's column, each named, and the
+    /// summary has left them.
+    fn narrow_search_controls(cx: &mut VisualTestContext) {
+        for interface in SIZES {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            crate::views::COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+            draw(cx);
+            let at = format!("{interface} pt in 461 × 490");
+            let column = cx.debug_bounds("history-scope-toolbar").unwrap();
+            let side = f32::from(cx.update(|_, _| appearance::ui_size(28.)));
+            let mut row = None;
+            for (id, name) in SEARCH_CONTROLS {
+                let control = cx
+                    .debug_bounds(id)
+                    .unwrap_or_else(|| panic!("{at}: no {id}"));
+                assert!(
+                    (f32::from(control.size.width) - side).abs() < 0.5
+                        && (f32::from(control.size.height) - side).abs() < 0.5,
+                    "{at}: {id} {control:?} is not its {side} px icon"
+                );
+                assert!(
+                    control.left() >= column.left() && control.right() <= column.right(),
+                    "{at}: {id} {control:?} leaves History's column {column:?}"
+                );
+                assert_eq!(
+                    *row.get_or_insert(control.top()),
+                    control.top(),
+                    "{at}: {id} wraps to a row of its own"
+                );
+                assert_eq!(
+                    crate::views::COMPACT_NAMES.with(|names| names.borrow().get(id).copied()),
+                    Some(name),
+                    "{at}: {id}'s name"
+                );
+            }
+            assert!(
+                cx.debug_bounds("history-search-summary").is_none(),
+                "{at}: the summary stays beside the icons"
+            );
+        }
+    }
+
+    /// At 13 pt in a 1,280 × 800 window the search's controls are as they
+    /// were: the summary, the labelled Cancel, Continue and Restart beside it
+    /// on one row, and the status below.
+    fn wide_search_controls_unchanged(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1280.), px(800.)));
+        draw(cx);
+        crate::views::COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+        draw(cx);
+        let summary = cx
+            .debug_bounds("history-search-summary")
+            .expect("the summary beside the controls");
+        for (id, _) in SEARCH_CONTROLS {
+            let control = cx.debug_bounds(id).unwrap();
+            assert!(
+                control.size.width > px(28.5) && control.top() >= summary.top() - px(8.),
+                "{id} {control:?} keeps its label beside the summary {summary:?}"
+            );
+            assert!(
+                crate::views::COMPACT_NAMES.with(|names| !names.borrow().contains_key(id)),
+                "{id} is drawn as its icon"
+            );
+        }
+        assert!(cx.debug_bounds("history-search-status").is_some());
+    }
+
+    /// A running search with nothing to list yet says so in one line in a
+    /// half tile, its explanation the line's tooltip and description, where
+    /// the title and its wrapped explanation once ran past the list; a wide
+    /// window keeps both.
+    #[gpui::test]
+    async fn a_running_search_says_so_in_one_line_in_a_narrow_column(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _) = window(cx, &history_script(1, 1)).await;
+        search_for_nothing(&app, cx);
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.history_search_pending()));
+        check(
+            cx,
+            "history-search-state",
+            "Searching repository history…",
+            None,
+            "history-empty-state",
+        );
+        narrow_search_controls(cx);
+        let explanation = crate::native_accessibility::written::get("history-search-state-line")
+            .and_then(|line| line.node.description().map(str::to_owned));
+        assert!(
+            explanation
+                .as_deref()
+                .is_some_and(|said| said.ends_with(" · literal message, author and hash search")),
+            "the explanation is the line's description: {explanation:?}"
+        );
+        assert!(
+            cx.debug_bounds("history-search-status").is_some(),
+            "a running search keeps its status below the icons"
+        );
+        wide_search_controls_unchanged(cx);
+        assert!(
+            cx.debug_bounds("empty-state").is_some()
+                && cx.debug_bounds("history-search-state-line").is_none(),
+            "a wide window keeps the title and its explanation"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.history_search_pending()),
+            "the search still runs"
         );
     }
 

@@ -10,10 +10,11 @@
 //! hint wrapped inside a phrase, and on a field's placeholder wider than
 //! its field. The fixture has no remote, so every page's bar shows that
 //! edge; History is walked again on a detached HEAD, on a branch with no
-//! upstream and with the navigation at its 180 px minimum. The
-//! window is resized from width to width as a person or a tiling window
-//! manager resizes it, so the inspector is drawn at the size its panel
-//! group rescales it to, not only its saved width.
+//! upstream, with the navigation at its 180 px minimum, and with a search
+//! that found nothing, whose line and Clear search must lie wholly inside
+//! the list. The window is resized from width to width as a person or a
+//! tiling window manager resizes it, so the inspector is drawn at the size
+//! its panel group rescales it to, not only its saved width.
 //!
 //! The test text system paints no glyphs, so the walk marks what it checks
 //! with fills a test can find among the painted quads, each with the content
@@ -91,12 +92,19 @@ enum Rule {
     /// whole words or ends in an ellipsis. The kit draws a field's text
     /// without the marked background, so the cut-text rule cannot see it.
     PlaceholderCut,
+    /// A History search's no-match line or Clear search is not drawn wholly
+    /// inside the list and the window, as at 461 × 490, where the search's
+    /// labelled controls left the list 2 px and Clear search ended below the
+    /// window.
+    StateOutside,
 }
 
 /// The pages the walk lays out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Page {
     History,
+    /// History with a search that found nothing.
+    HistorySearch,
     CompareText,
     CompareImage,
     Working,
@@ -117,6 +125,7 @@ const REGIONS: &[&str] = &[
     "code-editor",
     "preview-content",
     "history-scope-toolbar",
+    "history-search-controls",
     "history-list-edge",
     "history-column-0",
     "history-column-1",
@@ -207,6 +216,8 @@ const LAYOUT_SELECTORS: &[&str] = &[
     "changed-files-count",
     "history-scope-name",
     "history-scope-count",
+    "history-search-summary",
+    "history-search-controls",
     "text-mode-menu",
     "working-toolbar",
     "working-header-label",
@@ -379,6 +390,34 @@ impl Walk<'_> {
         self.inspect_navigation(width, height, cx);
         self.inspect_placeholders(width, height, cx);
         self.inspect_edge(width, height, cx);
+        if self.page == Page::HistorySearch {
+            self.inspect_search_state(width, height, cx);
+        }
+    }
+
+    /// Records the no-match line or Clear search of History's search not
+    /// drawn, or drawn past the list's visible part or the window: lists
+    /// scroll, but a state stands in the list's place and does not.
+    fn inspect_search_state(&mut self, width: f32, height: f32, cx: &mut VisualTestContext) {
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let Some(list) = cx.debug_bounds("history-empty-state") else {
+            let detail = "no state in History's list".into();
+            self.found(Rule::StateOutside, "history-pane", (width, height), detail);
+            return;
+        };
+        let slack = px(0.5);
+        for part in ["history-no-match-line", "history-clear-search"] {
+            let inside = cx.debug_bounds(part).is_some_and(|drawn| {
+                drawn.left() >= list.left().max(px(0.)) - slack
+                    && drawn.right() <= list.right().min(viewport.width) + slack
+                    && drawn.top() >= list.top().max(px(0.)) - slack
+                    && drawn.bottom() <= list.bottom().min(viewport.height) + slack
+            });
+            if !inside {
+                let detail = format!("{part} {:?} in {list:?}", cx.debug_bounds(part));
+                self.found(Rule::StateOutside, "history-pane", (width, height), detail);
+            }
+        }
     }
 
     /// Records the repository edge left out of the Git action bar or its
@@ -820,6 +859,31 @@ pub(crate) async fn open(
     };
     let path = match page {
         Page::History => None,
+        Page::HistorySearch => {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.search.update(cx, |input, cx| {
+                        input.set_value("no such commit", window, cx)
+                    });
+                    app.history_query_changed(window, cx);
+                })
+            });
+            // Past its debounce, letting the reader answer.
+            for _ in 0..400 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(50));
+                frame(cx);
+                if app.read_with(cx, |app, _| app.history_search_no_match().is_some()) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(
+                app.read_with(cx, |app, _| app.history_search_no_match().is_some()),
+                "the search finds nothing"
+            );
+            None
+        }
         Page::CompareText => {
             open(cx, "README.md");
             Some("README.md")
@@ -850,7 +914,33 @@ pub(crate) async fn open(
         }
     };
     settle(&app, cx).await;
+    // The status strip names how long the last read took, so the width its
+    // line takes, and where GPUI's ellipsis lets a truncated line end up to
+    // a pixel past its box, changed from run to run; the walk reads it with
+    // that figure pinned.
+    app.update(cx, |app, cx| {
+        app.status = pinned_timing(&app.status);
+        cx.notify();
+    });
+    frame(cx);
     (fixture, app, cx, path)
+}
+
+/// `status` with each measured duration ("12.9 ms") read as 10.0 ms.
+fn pinned_timing(status: &str) -> String {
+    let words: Vec<&str> = status.split(' ').collect();
+    words
+        .iter()
+        .enumerate()
+        .map(|(index, word)| {
+            let measured = words
+                .get(index + 1)
+                .is_some_and(|unit| unit.starts_with("ms"))
+                && word.parse::<f32>().is_ok();
+            if measured { "10.0" } else { word }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[gpui::test]
@@ -861,6 +951,18 @@ async fn history_keeps_its_text_whole_at_13_pt(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn history_keeps_its_text_whole_at_18_pt(cx: &mut TestAppContext) {
     walk(Page::History, 18, cx).await;
+}
+
+/// A search with no match: its controls take their compact forms as the
+/// column narrows, and its line and Clear search stay inside the list.
+#[gpui::test]
+async fn a_search_with_no_match_keeps_its_state_whole_at_13_pt(cx: &mut TestAppContext) {
+    walk(Page::HistorySearch, 13, cx).await;
+}
+
+#[gpui::test]
+async fn a_search_with_no_match_keeps_its_state_whole_at_18_pt(cx: &mut TestAppContext) {
+    walk(Page::HistorySearch, 18, cx).await;
 }
 
 #[gpui::test]

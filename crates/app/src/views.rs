@@ -1450,7 +1450,7 @@ impl GitTurtle {
         } else if self.visible.is_empty()
             && let Some((title, description)) = self.history_search_empty()
         {
-            empty(title, &description)
+            self.history_search_state(title, description, window, cx)
         } else if self.visible.is_empty() && self.loading.is_none() && self.repository.is_some() {
             if self.commits.is_empty() {
                 // The composer makes the first commit.
@@ -1667,7 +1667,7 @@ impl GitTurtle {
                         12.,
                     )),
             )
-            .child(self.render_history_search_controls(cx))
+            .child(self.render_history_search_controls(window, cx))
             .children(self.graph_notice.as_ref().map(|notice| {
                 div()
                     .px_3()
@@ -4586,11 +4586,14 @@ fn scope_count_width(count: &str, window: &Window) -> Pixels {
 /// What the compact scope toolbar leaves its scope name and count in a
 /// `column`-wide History: the column less `px_3` on either side, three
 /// `gap_2` gaps, the branch icon, and the 28 px Columns and paging buttons,
-/// the paging buttons `gap_1` apart.
+/// the paging buttons `gap_1` apart, each as layout snaps it to the device's
+/// pixels: at 18 pt a button's 38.77 px is drawn 39 px wide, so the four
+/// left a search's "0 commits" 74.5 px where 75.4 px were counted, and the
+/// count ran half a pixel past the label it was shown in.
 fn compact_scope_room(column: Pixels, window: &Window) -> Pixels {
     column
         - window.rem_size() * (2. * 0.75 + 3. * 0.5 + 2. * 0.25)
-        - appearance::ui_size(4. * 28.)
+        - window.pixel_snap(appearance::ui_size(28.)) * 4.
         - px(15.)
 }
 

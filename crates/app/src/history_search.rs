@@ -1,11 +1,63 @@
 //! Repository-wide search shares the replaceable reader with previews.
 use crate::*;
 use gitturtle_core::{HistoryScope, HistorySearchStop};
+use gpui_kit::prelude::FluentBuilder;
 use std::time::Duration;
 
 const SEARCH_LABEL: &str = "Searching repository history…";
 const MAX_RESULTS: usize = 10_000;
 const MAX_RESULT_BYTES: usize = 64 * 1024 * 1024;
+/// The narrowest the controls' summary is drawn beside its buttons, at the
+/// default interface size: below it the summary wrapped a character to a
+/// line.
+const SUMMARY_FLOOR: f32 = 160.;
+
+thread_local! {
+    /// Cancel's, Continue's and Restart's labels, laid out together once per
+    /// font and size.
+    static CONTROL_LABELS: std::cell::RefCell<Option<(views::LineKey, Pixels)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// How the search's controls fit History's column (DESIGN.md, "One
+/// responsive order"), decided from widths measured once per font and size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ControlsForm {
+    /// Cancel, Continue and Restart keep only their icons, names and
+    /// tooltips: the column cannot hold the summary's floor beside their
+    /// labels. The list's running, paused and failed states then say only
+    /// their title, their explanation in its tooltip and accessible
+    /// description.
+    pub icons: bool,
+    /// The summary is drawn: its floor fits beside the buttons as they are
+    /// drawn. Where it does not, as in History's column of a half tile, it
+    /// leaves; the scope toolbar keeps the match count.
+    pub summary: bool,
+}
+
+impl ControlsForm {
+    /// The form for a `column`-wide History.
+    fn of(column: Pixels, window: &Window) -> Self {
+        let rem = window.rem_size();
+        // The row's room inside `px_3`, and its three `gap_2` gaps.
+        let room = column - rem * 1.5;
+        let gaps = rem * 1.5;
+        let floor = appearance::ui_size(SUMMARY_FLOOR);
+        let labels = views::cached_width(&CONTROL_LABELS, &views::LineKey::current(window), || {
+            let label = appearance::ui_text(12.);
+            views::line_widths(
+                &[("Cancel", label), ("Continue", label), ("Restart", label)],
+                window,
+            )
+        });
+        // Each labelled button is its label between the shared helper's
+        // insets; each icon a 28 px square.
+        let labelled = floor + gaps + labels + appearance::ui_size(LABEL_INSET * 6.);
+        let icons = room < labelled;
+        let summary = !icons || room >= floor + gaps + appearance::ui_size(3. * 28.);
+        Self { icons, summary }
+    }
+}
 
 #[derive(Default)]
 pub struct State {
@@ -425,12 +477,71 @@ impl GitTurtle {
         ))
     }
 
-    pub(super) fn render_history_search_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// How the search's controls fit the width History last measured.
+    pub(super) fn history_search_form(&self, window: &Window) -> ControlsForm {
+        ControlsForm::of(px(self.history_width), window)
+    }
+
+    /// History's list while a search with nothing to list runs, paused or
+    /// failed: its title and explanation, or, in a column whose controls keep
+    /// only their icons, its title alone as one line, the explanation its
+    /// tooltip and accessible description. In a half tile the explanation
+    /// wrapped over the list's whole height and ran past it.
+    pub(super) fn history_search_state(
+        &self,
+        title: &'static str,
+        description: String,
+        window: &Window,
+        cx: &App,
+    ) -> AnyElement {
+        if self.history_search_form(window).icons {
+            EmptyState::new("history-search-state", title)
+                .tooltip(description)
+                .pane(cx)
+        } else {
+            empty(title, &description)
+        }
+    }
+
+    pub(super) fn render_history_search_controls(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(progress) = &self.history_search.progress else {
             return div().into_any_element();
         };
         let colors = palette(cx);
         let running = self.history_search_pending();
+        let form = self.history_search_form(window);
+        // An exhausted search with no match says how much it searched in the
+        // list's own line beside Clear search, where Cancel and Continue are
+        // disabled. Where the controls keep only their icons the status below
+        // them, which would repeat it, leaves. In the narrowest column, as a
+        // half tile's, and in a window short enough for the compact chrome,
+        // as any 490 px tall one at 18 pt, the row leaves too, so the line
+        // and Clear search keep the list's whole height: beside the row the
+        // list was 94.5 px at 13 pt in 461 × 490 and 68.5 px at 18 pt in
+        // 861 × 490, which the state outgrew. The row returns with a wider
+        // column or a taller window; until then editing the query searches
+        // again from the current tips, as Restart does.
+        let no_match = self.visible.is_empty() && self.history_search_no_match().is_some();
+        if no_match && (!form.summary || self.chrome(window, cx).is_compact()) {
+            return div().into_any_element();
+        }
+        let status = !(form.icons && no_match);
+        // Labelled, or in a narrow column the icon, named and with a tooltip
+        // that leads with the name.
+        let control =
+            |id: &'static str, name: &'static str, symbol: &str, tooltip: &'static str| {
+                if form.icons {
+                    views::compact_control_name(button(id, "", symbol, false), id, name)
+                        .debug_selector(move || id.into())
+                        .tooltip(tooltip)
+                } else {
+                    button(id, name, "", false).debug_selector(move || id.into())
+                }
+            };
         let detail = if let Some(error) = &progress.error {
             error.clone()
         } else if running {
@@ -459,6 +570,11 @@ impl GitTurtle {
             }
             _ => progress.scope_label.clone(),
         };
+        let (continue_name, continue_tooltip) = if progress.error.is_some() {
+            ("Retry", "Retry · Search this part of history again")
+        } else {
+            ("Continue", "Continue · Search older history in this scope")
+        };
         div()
             .px_3()
             .pb_2()
@@ -467,10 +583,13 @@ impl GitTurtle {
             .gap_1()
             .text_size(crate::appearance::ui_text(10.))
             .text_color(rgb(colors.muted))
-            // In a column too narrow for the summary beside its three
-            // buttons, as History's at 461 px, the buttons wrap below it: a
-            // summary given no width wrapped a character to a line, a
-            // thousand pixels tall, and pushed the list out of the window.
+            // Where the column cannot hold the summary's floor beside the
+            // labelled buttons, they keep only their icons, and where it
+            // cannot hold the floor beside those either the summary leaves,
+            // so in a half tile the row is one line of icons: wrapped below
+            // the summary, the labels took three rows there and left the
+            // list 2 px. A summary given no width at all wrapped a character
+            // to a line and pushed the list out of the window.
             .child(
                 div()
                     .debug_selector(|| "history-search-controls".into())
@@ -478,20 +597,28 @@ impl GitTurtle {
                     .flex_wrap()
                     .items_center()
                     .gap_2()
+                    .when(form.summary, |row| {
+                        row.child(
+                            div()
+                                .debug_selector(|| "history-search-summary".into())
+                                .flex_grow(1.)
+                                .flex_basis(crate::appearance::ui_size(SUMMARY_FLOOR))
+                                .min_w_0()
+                                .child(format!(
+                                    "{scope} · {} · {} searched",
+                                    crate::counted(self.commits.len(), "match", "matches"),
+                                    crate::counted(progress.scanned, "commit", "commits")
+                                )),
+                        )
+                    })
                     .child(
-                        div()
-                            .flex_grow(1.)
-                            .flex_basis(crate::appearance::ui_size(160.))
-                            .min_w_0()
-                            .child(format!(
-                                "{scope} · {} · {} searched",
-                                crate::counted(self.commits.len(), "match", "matches"),
-                                crate::counted(progress.scanned, "commit", "commits")
-                            )),
-                    )
-                    .child(
-                        button("history-search-cancel", "Cancel", "", false)
-                            .disabled(!running)
+                        control(
+                            "history-search-cancel",
+                            "Cancel",
+                            "close",
+                            "Cancel · Stop searching; the matches found so far stay",
+                        )
+                        .disabled(!running)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.pause_history_search_for_read();
                                 this.try_automatic_refresh(window, cx);
@@ -499,15 +626,11 @@ impl GitTurtle {
                             })),
                     )
                     .child(
-                        button(
+                        control(
                             "history-search-continue",
-                            if progress.error.is_some() {
-                                "Retry"
-                            } else {
-                                "Continue"
-                            },
-                            "",
-                            false,
+                            continue_name,
+                            "chevron",
+                            continue_tooltip,
                         )
                         .disabled(
                             running
@@ -520,17 +643,30 @@ impl GitTurtle {
                         })),
                     )
                     .child(
-                        button("history-search-restart", "Restart", "", false)
-                            .disabled(self.operation_busy.is_some())
-                            .tooltip(
+                        control(
+                            "history-search-restart",
+                            "Restart",
+                            "refresh",
+                            "Restart · Restart this search at the current local branch and worktree tips",
+                        )
+                        .when(!form.icons, |restart| {
+                            restart.tooltip(
                                 "Restart this search at the current local branch and worktree tips",
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.restart_history_search(window, cx)
-                            })),
+                        })
+                        .disabled(self.operation_busy.is_some())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.restart_history_search(window, cx)
+                        })),
                     ),
             )
-            .child(detail)
+            .when(status, |controls| {
+                controls.child(
+                    div()
+                        .debug_selector(|| "history-search-status".into())
+                        .child(detail),
+                )
+            })
             .into_any_element()
     }
 
