@@ -1576,9 +1576,11 @@ impl GitTurtle {
             .filter(|names| self.settings.columns.refs.visible && !names.is_empty());
         let mut references = None;
         let mut pill = None;
-        // The whole list, which narrow History gives the row's tooltip and
-        // accessible name.
+        // The whole list, which narrow History gives the row's accessible
+        // name and the pill's tooltip.
         let mut folded = None;
+        #[cfg(test)]
+        let mut pill_tooltip = None;
         if let Some(names) = names {
             // HEAD's branch comes first (`worker::Snapshot::refs`).
             let name = names[0].clone();
@@ -1591,9 +1593,18 @@ impl GitTurtle {
                         .insert(index, (name.clone(), more.clone(), label))
                 });
                 folded = Some(names);
+                // On the pill alone, so reading the subject brings up no
+                // tooltip over it.
+                let title = SharedString::from(names.join("\n"));
+                #[cfg(test)]
+                {
+                    pill_tooltip = Some(title.clone());
+                }
                 pill = Some(
                     div()
+                        .id(("refs", index))
                         .debug_selector(move || format!("history-ref-pill-{index}"))
+                        .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
                         .flex_shrink_0()
                         .min_w_0()
                         .max_w(relative(0.5))
@@ -1668,12 +1679,11 @@ impl GitTurtle {
                 ""
             }
         );
-        let tooltip = folded.map(|names| SharedString::from(names.join("\n")));
         #[cfg(test)]
         HISTORY_ROW_NAMES.with(|names| {
             names
                 .borrow_mut()
-                .insert(index, (name.clone(), tooltip.clone()))
+                .insert(index, (name.clone(), pill_tooltip))
         });
         let row =
             div()
@@ -1684,9 +1694,6 @@ impl GitTurtle {
                 .when(active, |row| row.aria_active_descendant())
                 .aria_position_in_set(position + 1)
                 .aria_size_of_set(self.visible.len())
-                .when_some(tooltip, |row, tooltip| {
-                    row.tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                })
                 .w_full()
                 .h(px(self.settings.density.history_row_height()))
                 .flex()
@@ -3481,15 +3488,15 @@ thread_local! {
     /// index.
     static HISTORY_PILLS: RefCell<std::collections::BTreeMap<usize, PillProbe>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
-    /// Each History row's accessible name and tooltip as it last drew them,
-    /// by commit index.
+    /// Each History row's accessible name and its pill's tooltip as it last
+    /// drew them, by commit index.
     static HISTORY_ROW_NAMES: RefCell<std::collections::BTreeMap<usize, RowNameProbe>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
 }
 /// A drawn pill's name, its "+N" and its label colour.
 #[cfg(test)]
 type PillProbe = (String, Option<String>, u32);
-/// A drawn History row's accessible name and tooltip.
+/// A drawn History row's accessible name and its pill's tooltip.
 #[cfg(test)]
 type RowNameProbe = (String, Option<SharedString>);
 
@@ -7889,6 +7896,62 @@ pub(crate) mod tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Narrow History's tooltip listing a row's references belongs to its
+    /// pill: hovering the subject beside the pill shows none, so no tooltip
+    /// covers the rows being read, and hovering the pill shows the list.
+    #[gpui::test]
+    async fn narrow_history_shows_references_on_the_pill_only(cx: &mut TestAppContext) {
+        use gpui_kit::component::Theme;
+        /// gpui-base's tooltip show delay.
+        const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.history_column_layout().narrow));
+        let merge = commit_index(&app, cx, MERGE_SUBJECT);
+        let popover = cx.read(|cx| Background::from(Theme::global(cx).tokens.popover));
+        let popups = move |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == popover)
+                    .count()
+            })
+        };
+        // The popups shown while the pointer rests at `position`; then the
+        // pointer leaves the window until any tooltip has gone.
+        let hover = |cx: &mut VisualTestContext, position: Point<Pixels>| {
+            cx.simulate_mouse_move(position, None, Modifiers::default());
+            cx.executor().advance_clock(SHOW_DELAY);
+            draw(cx);
+            let shown = popups(cx);
+            cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+            cx.executor().advance_clock(SHOW_DELAY);
+            draw(cx);
+            shown
+        };
+        let resting = popups(cx);
+        let cell = bounds_of(cx, format!("history-subject-{merge}")).unwrap();
+        let pill = bounds_of(cx, format!("history-ref-pill-{merge}")).unwrap();
+        assert!(
+            pill.right() < cell.right() - px(24.),
+            "{pill:?} in {cell:?}"
+        );
+        assert_eq!(
+            hover(cx, point(cell.right() - px(16.), cell.center().y)),
+            resting,
+            "the subject beside the pill shows no tooltip"
+        );
+        assert_eq!(
+            hover(cx, pill.center()),
+            resting + 1,
+            "the pill shows its references"
+        );
     }
 
     /// In narrow History the subject ends at the table's viewport, in the
