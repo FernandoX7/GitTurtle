@@ -299,6 +299,19 @@ cover current upstream x86-64 Omarchy.
           Changes list cuts the "Unstaged 1 / Stage all" header through its glyphs; AT-SPI reports
           Reflog entries below the dialog; still owed: the rebase status bar with its commit list
           loaded, and Reflog hovers over a cut and a whole entry.
+        - Fix-ups (`fx-a762727` → `fx-2913b86`): Midnight's disabled Fetch, Pull and Push rest on
+          `subtle` at 1.046:1 with no edge (DESIGN.md names them; wrap the toolbar actions in
+          `appearance::keep_disabled_shape`); the review Source leaves a 39 px strip where a 14th
+          36 px line fits; Settings' disabled Save editor has no shape; taste: the review box's edge
+          moves 26 px between Changes and Source (Source could reserve the hint's row).
+        - Narrow History (`nh-2913b86` → `nh-f5e70d3`): at 461 × 490, 13 pt, the pill (44–45 px)
+          takes the floor and leaves the subject about four characters, against the owner's "the
+          subject never leaves": measure the floor on the subject text and, below it, shrink the
+          pill to a branch glyph plus count; a 15 px strip of cut Author letters at the viewport's
+          edge (the layout's width is about 26 px under the drawn table, and the graph cell 12 px
+          wider than computed); the list's ring has no right side at 461 and 640 px; HEAD reads
+          "main +3" while wide badges put "+N" outside the chip (one treatment); still owed: the
+          tooltip frame and the release History scroll measurement.
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
