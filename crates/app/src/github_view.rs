@@ -1206,13 +1206,17 @@ impl Render for Panel {
                     }else{
                         EmptyState::new("github-list-empty","No pull requests shown · Refresh PRs loads the open ones").tooltip("Opening this panel reads local settings and drafts only.")
                     }.block(cx))))))
-                .child(self.part("pr-pager",div(),cx).flex().items_center().gap_2().child(button("github-previous","Previous PR page","",false).debug_selector(||"github-previous".into()).disabled(pending||self.page<=1).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page-1,window,cx))))
-                    .child(label("github-page",format!("Page {} · up to {} PRs",self.page,github::PAGE_SIZE)).text_color(rgb(p.muted)))
+                // A row that cannot hold its controls wraps them below, whole. A label after a
+                // Button takes the panel's text inset, which the Button gives back, so beside it
+                // nothing moves and on a line of its own the label starts at the panel's edge
+                // for text.
+                .child(self.part("pr-pager",div(),cx).flex().flex_wrap().items_center().gap_2().child(button("github-previous","Previous PR page","",false).debug_selector(||"github-previous".into()).mr(-text_inset()).disabled(pending||self.page<=1).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page-1,window,cx))))
+                    .child(phrases("github-page",format!("Page {} · up to {} PRs",self.page,github::PAGE_SIZE)).min_w_0().ml(text_inset()).text_color(rgb(p.muted)))
                     .child(button("github-next","Next PR page","",false).disabled(pending||!self.has_next).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page+1,window,cx))))))
             .when_some(self.pull.as_ref(),|element,pull|element
                 .child(self.part("pull-header",div(),cx).flex().flex_col().gap_2()
-                    .child(div().flex().items_center().gap_2().child(button("github-back-list",if self.review.show_list{"Hide PR list"}else{"Pull requests"},"arrow-left",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.review.show_list= !this.review.show_list;cx.notify();})))
-                        .child(label("github-pull-title",format!("#{} · {}",pull.number,pull.title)).font_weight(FontWeight::SEMIBOLD).text_size(appearance::ui_text(15.))))
+                    .child(div().flex().flex_wrap().items_center().gap_2().child(button("github-back-list",if self.review.show_list{"Hide PR list"}else{"Pull requests"},"arrow-left",false).debug_selector(||"github-back-list".into()).mr(-text_inset()).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.review.show_list= !this.review.show_list;cx.notify();})))
+                        .child(label("github-pull-title",format!("#{} · {}",pull.number,pull.title)).debug_selector(||"github-pull-title".into()).min_w_0().ml(text_inset()).font_weight(FontWeight::SEMIBOLD).text_size(appearance::ui_text(15.))))
                     .child(label("github-branch-context",format!("{} → {} · {}",pull.head.branch,pull.base.branch,if pull.draft{"Draft PR"}else{"Open PR"})).ml(text_inset()).text_color(rgb(p.muted))))
                 .child(self.render_tabs(cx))
                 .when(self.review.section==Section::Overview,|element|element
@@ -1251,8 +1255,8 @@ impl Render for Panel {
                 .child(label("github-confirm-guidance","Send performs one outbound action with these exact captured targets and comments. Inspect the destination before repeating an uncertain attempt.").text_color(rgb(p.muted)))
                 .child(div().flex().gap_2().child(button("github-confirm-send",if self.review.fixture{"Send to offline fixture"}else{"Send to GitHub"},"",true).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.submit(window,cx))))
                     .child(button("github-edit-submission","Keep editing","",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.confirm=None;this.focus_visible_section(window,cx);cx.notify();}))))))
-            .child(self.part("recovery",div(),cx).flex().items_center().gap_2().child(button("github-recovery-toggle",format!("Recover drafts · {}",self.saved.len()),"",self.review.recovery_open).debug_selector(||"github-recovery-toggle".into()).toggled(self.review.recovery_open).on_click(cx.listener(|this,_,_,cx|{this.review.recovery_open= !this.review.recovery_open;cx.notify();})))
-                .child(label("github-passive-policy",if cfg!(target_os="macos"){"Drafts stay on this Mac · outbound actions are explicit"}else{"Drafts stay on this computer · outbound actions are explicit"}).text_color(rgb(p.muted))))
+            .child(self.part("recovery",div(),cx).flex().flex_wrap().items_center().gap_2().child(button("github-recovery-toggle",format!("Recover drafts · {}",self.saved.len()),"",self.review.recovery_open).debug_selector(||"github-recovery-toggle".into()).mr(-text_inset()).toggled(self.review.recovery_open).on_click(cx.listener(|this,_,_,cx|{this.review.recovery_open= !this.review.recovery_open;cx.notify();})))
+                .child(phrases("github-passive-policy",if cfg!(target_os="macos"){"Drafts stay on this Mac · outbound actions are explicit"}else{"Drafts stay on this computer · outbound actions are explicit"}).min_w_0().ml(text_inset()).text_color(rgb(p.muted))))
             .when(self.review.recovery_open,|element|element
                 .child(label("github-saved-heading","Captured drafts · Copy includes all inline text and original positions; older heads are never remapped").ml(text_inset()).text_color(rgb(p.muted)))
                 .child(crate::native_accessibility::clips_children(div().id("github-saved-drafts").debug_selector(||"github-saved-drafts".into()).flex_shrink_0().max_h(px(160.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.saved.iter().filter(|draft| !matches!(draft,Draft::Reply(reply) if reply.body.is_empty())).take(128).enumerate().map(|(index,draft)|{let draft=draft.clone();let discard=draft.clone();let mark=copy_feedback::Mark::new(("github-copy-draft",index),draft.key());let copy_mark=mark.clone();div().flex_shrink_0().flex().flex_col().gap_1().child(label(("github-draft-identity",index),match &draft {Draft::Reply(reply)=>format!("Reply · {} #{} · {} · {}",reply.target.pull.repository.label(),reply.target.pull.number,reply.target.path,reply.target.account),_=>draft.key()}).ml(text_inset()).text_color(rgb(p.muted)))
@@ -2399,6 +2403,144 @@ mod tests {
         }
         assert!(wrapped, "a long status takes a line of its own somewhere");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.update(|window, cx| window.close_dialog(cx));
+    }
+
+    /// A PR's Overview keeps its rows inside the panel at 13 and 18 pt in a 461 and a
+    /// 1,480 px window, below the body's fold too, where the width walk sees nothing drawn
+    /// (`width_walk`): a row that cannot hold its label beside its Button wraps the label
+    /// below it, at the panel's text inset. The PR title beside Pull requests, the PR
+    /// pager's page and the drafts policy beside Recover drafts ran past a narrow panel on
+    /// one line, as the Conversations heading did past its pane at 18 pt.
+    #[gpui::test]
+    async fn a_prs_overview_wraps_its_rows_inside_a_narrow_panel(cx: &mut TestAppContext) {
+        use crate::width_walk::{Page, frame, open};
+        let (_fixture, _app, cx, _) = open(Page::GitHub, cx).await;
+        let mut wrapped = Vec::new();
+        for (interface, width) in [(13, 461.), (18, 461.), (13, 1480.), (18, 1480.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(980.)));
+            for _ in 0..3 {
+                frame(cx);
+            }
+            let at = format!("{interface} pt in {width} px");
+            let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{at}: {selector}"))
+            };
+            let edge = bounds(cx, "github-panel-content");
+            let slack = px(0.5);
+            for (button, text) in [
+                ("github-back-list", "github-pull-title"),
+                ("github-previous", "github-page"),
+                ("github-recovery-toggle", "github-passive-policy"),
+            ] {
+                let (button, text) = (bounds(cx, button), bounds(cx, text));
+                assert!(
+                    text.right() <= edge.right() + slack && button.right() <= edge.right() + slack,
+                    "{at}: {button:?} and {text:?} lie inside the panel {edge:?}"
+                );
+                if text.top() >= button.bottom() {
+                    // Below its Button, at the panel's text inset.
+                    wrapped.push(at.clone());
+                    assert!(
+                        (text.left() - (edge.left() + text_inset())).abs() < slack,
+                        "{at}: {text:?} below {button:?} starts at the panel's text inset"
+                    );
+                } else {
+                    // Beside it, where the Button's gap puts it.
+                    assert!(
+                        text.left() >= button.right(),
+                        "{at}: {text:?} beside {button:?}"
+                    );
+                }
+            }
+            let pane = bounds(cx, "github-thread-section");
+            let heading = bounds(cx, "github-conversations-heading");
+            assert!(
+                heading.right() <= pane.right() + slack,
+                "{at}: the Conversations heading {heading:?} lies inside its pane {pane:?}"
+            );
+        }
+        assert!(
+            !wrapped.is_empty(),
+            "a narrow panel wraps a label below its Button"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The panel's body cues what lies below its fold with the shared always-visible
+    /// scrollbar (`tags::ScrollCue`) only while it overflows: a PR's Files in a 1000 × 680
+    /// window overflow at 13 and 18 pt, and the thumb follows the body's offset in a gutter
+    /// clear of the rings of the controls at its right; there the content narrows by that
+    /// gutter, the track and the ring's room. The PR list with none loaded in a 1480 × 1200
+    /// window fits: the body draws no thumb and its content keeps the body's width less the
+    /// ring's room on either side.
+    #[gpui::test]
+    async fn the_panel_cues_its_fold_only_while_its_body_overflows(cx: &mut TestAppContext) {
+        use crate::tags::tests::{assert_no_scroll_cue, assert_scroll_cue, draw};
+        let (_fixture, app, cx) = repository_window(cx);
+        // The dialog opens at rest, so the thumb is read where the track was measured.
+        cx.update(|_, cx| {
+            appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let repo = cx.read(|cx| app.read(cx).repository.clone().unwrap());
+        let panel = cx.update(|window, cx| {
+            cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx))
+        });
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.close(window, cx));
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        settle_panel(&app, cx).await;
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        cx.simulate_resize(size(px(1480.), px(1200.)));
+        draw(cx);
+        assert_no_scroll_cue(cx, &app, "github-panel", room, &["github-panel-content"]);
+
+        let pull = github::review::fixture_pull(false);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.rows = vec![pull.clone()];
+                panel.pull = Some(pull);
+                panel.review.files = files;
+                panel.review.section = Section::Files;
+                panel.review.show_list = false;
+                panel.select_review_file(0, window, cx);
+            })
+        });
+        settle_panel(&app, cx).await;
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        let controls = [
+            "github-panel-content",
+            "github-inline-start",
+            "github-account-options",
+        ];
+        assert_scroll_cue(cx, &app, &scroll, "github-panel", room, &controls);
+        // The content gives the gutter up: the track and the ring's room beside it.
+        let ring = appearance::BUTTON_FOCUS_RING;
+        let gutter = gpui_kit::component::scroll::Scrollbar::width() + ring.gap + ring.width;
+        let (body, content) = (
+            cx.debug_bounds("github-panel").expect("the body"),
+            cx.debug_bounds("github-panel-content")
+                .expect("its content"),
+        );
+        assert!(
+            (body.right() - room - gutter - content.right()).abs() < px(0.01)
+                && (content.left() - (body.left() + room)).abs() < px(0.01),
+            "the content {content:?} keeps the ring's room and the gutter {gutter:?} inside the \
+             body {body:?}"
+        );
         cx.update(|window, cx| window.close_dialog(cx));
     }
 

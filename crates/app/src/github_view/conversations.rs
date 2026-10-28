@@ -531,7 +531,7 @@ impl Panel {
             .id("github-thread-section").debug_selector(||"github-thread-section".into()).min_w_0().role(Role::Group).aria_label("GitHub review conversations with authoritative resolution status")
             .track_focus(&self.review.section_focus).border_1().border_color(rgb(if self.ringed(&self.review.section_focus, cx) { p.accent } else { p.border })).rounded(px(7.)).flex().flex_col().gap_2().p_3()
             .child(self.part("conversations-header", div(), cx).flex().flex_wrap().items_center().gap_2()
-                .child(label("github-conversations-heading",format!("Conversations · {} unresolved on this page",unresolved)).font_weight(FontWeight::SEMIBOLD))
+                .child(super::phrases("github-conversations-heading",format!("Conversations · {} unresolved on this page",unresolved)).min_w_0().font_weight(FontWeight::SEMIBOLD))
                 .child(div().flex_1())
                 .child(button("github-threads-refresh","Refresh conversations","refresh",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|this.thread_page(None,window,cx)))))
             .child(self.part("conversation-list", div(), cx).flex_shrink_0().min_w_0().child(crate::native_accessibility::clips_children(div()

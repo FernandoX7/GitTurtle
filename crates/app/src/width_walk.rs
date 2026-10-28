@@ -128,16 +128,7 @@ struct Known {
     follow_up: &'static str,
 }
 
-const KNOWN: &[Known] = &[
-    // A PR's detail rows and their controls run past a narrow panel.
-    Known {
-        page: Page::GitHub,
-        sizes: &[13, 18],
-        rule: Rule::CutText,
-        region: "github-panel",
-        follow_up: "the GitHub panel wraps its labels inside the panel",
-    },
-];
+const KNOWN: &[Known] = &[];
 
 /// One thing the walk fails on, where and at what size it was found.
 #[derive(Clone, Debug)]
