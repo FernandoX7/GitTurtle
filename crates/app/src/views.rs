@@ -6908,10 +6908,16 @@ pub(crate) mod tests {
             } else {
                 "Original Git diff"
             };
+            // It reads as a heading by its 12 px medium, not by colour alone.
             let muted = cx.update(|_, cx| gpui_kit::component::Theme::global(cx).muted_foreground);
             for entry in [
                 format!("menu-item: {caption} · Label"),
                 format!("menu-label: {caption} · {:?}", gpui::Rgba::from(muted)),
+                crate::native_accessibility::menu_tests::menu_label_style(
+                    caption,
+                    appearance::ui_text(appearance::MENU_LABEL_TEXT),
+                    FontWeight::MEDIUM,
+                ),
             ] {
                 assert!(cx.debug_bounds(entry.clone().leak()).is_some(), "{entry}");
             }

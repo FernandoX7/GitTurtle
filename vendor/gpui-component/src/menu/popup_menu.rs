@@ -1315,17 +1315,30 @@ impl PopupMenu {
                 .border_b(px(2.))
                 .border_color(crate::menu_separator(cx)),
             PopupMenuItem::Label(label) => {
-                // GitTurtle patch: a label is text in secondary text, not an
-                // unavailable item. Its text sets the colour it draws in, and a
-                // test build names it, because GPUI's test scene does not
-                // expose glyph colours.
+                // GitTurtle patch: a label is a heading in secondary text, not
+                // an unavailable item, and it differs from an item by size and
+                // weight as well as colour. Its row sets the size and weight
+                // and its text the colour, and a test build names each,
+                // because GPUI's test scene does not expose glyphs.
                 let color = crate::menu_label_color(cx);
+                let size = crate::menu_label_size(window, cx);
+                let weight = crate::MENU_LABEL_WEIGHT;
                 let text = label.clone();
+                let style_text = label.clone();
                 this.entry(Entry::Label).cursor_default().child(
                     h_flex()
                         .cursor_default()
                         .items_center()
                         .gap_x_1()
+                        .text_size(size)
+                        .font_weight(weight)
+                        .debug_selector(move || {
+                            format!(
+                                "menu-label-style: {style_text} · {:.2} px · weight {}",
+                                f32::from(size),
+                                weight.0
+                            )
+                        })
                         .children(Self::render_icon(has_left_icon, false, None, window, cx))
                         .child(
                             div()

@@ -1,8 +1,8 @@
 pub use crate::component_traits::{Collapsible, Disableable, Selectable};
 pub use crate::sizing::{Sizable, Size, StyleSized};
 use gpui::{
-    App, BoxShadow, Corners, Edges, Hsla, ParentElement, Pixels, StyleRefinement, Styled, Window,
-    div, hsla, px,
+    App, BoxShadow, Corners, Edges, FontWeight, Hsla, ParentElement, Pixels, StyleRefinement,
+    Styled, Window, div, hsla, px, rems,
 };
 pub use gpui_base::{FocusableExt, RoleOverride, StyledExt, box_shadow, h_flex, v_flex};
 
@@ -83,6 +83,21 @@ pub fn menu_separator(cx: &App) -> Hsla {
 /// a label acts on nothing.
 pub fn menu_label_color(cx: &App) -> Hsla {
     cx.theme().muted_foreground
+}
+
+/// GitTurtle patch: the weight of a menu label. Upstream drew a label with an
+/// item's size and weight, so only its colour set it apart, and a theme's
+/// secondary text can be nearly as strong as its text: a heading then read as
+/// one more command. A label is a section heading, at medium weight.
+pub const MENU_LABEL_WEIGHT: FontWeight = FontWeight::MEDIUM;
+
+/// GitTurtle patch: the text size of a menu label:
+/// [`crate::Theme::menu_label_size`] where the application sets it, otherwise
+/// the items' own `text_sm`.
+pub fn menu_label_size(window: &Window, cx: &App) -> Pixels {
+    cx.theme()
+        .menu_label_size
+        .unwrap_or_else(|| rems(0.875).to_pixels(window.rem_size()))
 }
 
 /// shadcn/ui's popup surface shadow — a hairline `ring` plus `shadow-md` — at

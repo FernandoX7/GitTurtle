@@ -579,7 +579,7 @@ patch when upstream menu items expose their disabled state to accessibility and
 that test passes without it.
 
 The menu-label patch modifies `src/menu/menu_item.rs`,
-`src/menu/popup_menu.rs` and `src/styled.rs`. Upstream renders a
+`src/menu/popup_menu.rs`, `src/styled.rs` and `src/theme/mod.rs`. Upstream renders a
 `PopupMenuItem::Label` and a separator as disabled menu items: a label was
 announced as one more command, which Orca counted as a fourth, dead item in
 the review Options menu, and drew in the disabled colour, so the Options
@@ -592,6 +592,18 @@ a separator; neither takes the highlight, the selected state or the disabled
 flag. A label draws in `menu_label_color`, the theme's `muted_foreground`, and
 its text sets that colour and names it in a debug selector (`menu-label:
 <label> · <rgba>`), because GPUI's test scene does not expose glyph colours.
+Colour alone did not set a label apart: drawn in secondary text at an item's
+size and weight, the profile menu's headings read only 1.86:1 off its items in
+Midnight and 1.93:1 in Braden, and One Dark's and Solarized Dark's secondary
+text is nearly their text, so a heading read as one more command. A label's
+row now draws at medium weight (`MENU_LABEL_WEIGHT`) and at
+`menu_label_size`: `Theme::menu_label_size`, `None` by default and set in code,
+not read from theme files, or the items' own `text_sm`. GitTurtle sets it to
+its 12 px section-label size, scaled with the interface text
+(`appearance::MENU_LABEL_TEXT`, through `set_theme_text_sizes` on every palette
+and text-size change), beside items at 11.375 px. The row names its size and
+weight in a debug selector (`menu-label-style: <label> · <size> px · weight
+<weight>`), since the test scene does not expose glyph sizes either.
 
 The consumers are every menu with a label: the review Options menu's caption
 (`crates/app/src/text_review.rs`), the project pane's row name and Move to
@@ -606,10 +618,13 @@ opens a menu that starts with a label and ends with a caption below a
 separator, reads both labels announced as labels and neither disabled, the
 disabled item announced disabled, and, in every built-in and embedded Omarchy
 palette, both labels' text in `muted_foreground`.
+`menu_labels_differ_from_items_by_size_and_weight` reads, in every such
+palette and at a larger interface size, both labels at the section-label size
+and medium weight, apart from the items' size.
 `review_options_menu_announces_its_toggle_checked` reads the Options menu's
-caption the same way. Remove this part of the patch when upstream gives menu
-labels a non-item role and a colour distinct from a disabled item's, and those
-tests pass without it.
+caption the same way. Remove this part of the patch when upstream gives menu labels a
+non-item role, a colour distinct from a disabled item's and a style distinct
+from an item's, and those tests pass without it.
 
 The menu-keys patch modifies `src/menu/popup_menu.rs`. Upstream's first Down
 selects a menu's first entry whatever it is, Down past the last item returns

@@ -175,6 +175,16 @@ pub struct Theme {
     /// reads about 2:1 on a light surface.
     #[serde(skip)]
     pub disabled_label: Option<Hsla>,
+    /// GitTurtle patch: the text size of a menu label, the text that titles
+    /// or explains the items around it, or `None` for the items' own size. A
+    /// label draws at medium weight either way ([`crate::MENU_LABEL_WEIGHT`]).
+    ///
+    /// Set in code, not read from theme files, so an application can draw its
+    /// menu headings at the size of its other section labels: colour alone
+    /// cannot tell a heading from an item where a theme's secondary text is
+    /// nearly as strong as its text.
+    #[serde(skip)]
+    pub menu_label_size: Option<Pixels>,
     pub transparent: Hsla,
     /// Show the scrollbar mode, default: Scrolling
     #[serde(alias = "scrollbar_show")]
@@ -698,6 +708,7 @@ impl From<&ThemeColor> for Theme {
             ghost_active: None,
             popover_edge: None,
             disabled_label: None,
+            menu_label_size: None,
             scrollbar_mode: ScrollbarMode::default(),
             notification: NotificationSettings::default(),
             tile_grid_size: px(8.),

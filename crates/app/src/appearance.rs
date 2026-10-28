@@ -209,13 +209,28 @@ pub fn sync_text_sizes(interface: u8, code: u8, window: &mut Window, cx: &mut Ap
             Ordering::Relaxed,
         );
     });
-    let theme = Theme::global_mut(cx);
-    theme.font_size = ui_text(13.);
-    theme.mono_font_size = code_text();
+    set_theme_text_sizes(Theme::global_mut(cx));
     Theme::sync_base(cx);
     // Root uses font_size for rem geometry, so native control padding and
     // heights grow together with explicit app text and custom canvas rows.
     window.set_rem_size(ui_text(13.));
+}
+
+/// A menu label's text size at the default interface size. A label titles or
+/// explains the items around it, so it takes the section-label style of the
+/// theme editor's group labels, 12 px medium in secondary text, beside items
+/// in the kit's `text_sm` (11.375 px at the 13 px root) at regular weight:
+/// secondary text alone sets a heading only 1.9:1 off an item in Midnight and
+/// Braden and barely at all in One Dark or Solarized Dark.
+pub const MENU_LABEL_TEXT: f32 = 12.;
+
+/// The kit theme's text sizes at the current interface and code sizes: its
+/// root and code text and the menu label's size. Applying a palette restores
+/// the kit's default theme first, so both paths set all three.
+fn set_theme_text_sizes(theme: &mut Theme) {
+    theme.font_size = ui_text(13.);
+    theme.mono_font_size = code_text();
+    theme.menu_label_size = Some(ui_text(MENU_LABEL_TEXT));
 }
 
 /// [`sync_text_sizes`] for callers that own no entity to notify: a text-size
@@ -1835,8 +1850,7 @@ impl Palette {
         syntax.style.editor_line_number = Some(rgb(palette.line_number).into());
         syntax.style.editor_foreground = Some(rgb(palette.text).into());
         syntax.style.syntax = roles.syntax_colors(&syntax.style.syntax);
-        theme.font_size = ui_text(13.);
-        theme.mono_font_size = code_text();
+        set_theme_text_sizes(theme);
         theme.radius = px(7.);
         theme.radius_lg = px(12.);
         // GPUI Kit 0.6 paints component backgrounds from resolved ThemeTokens,

@@ -180,6 +180,63 @@ fn menu_labels_read_as_secondary_text_and_disabled_items_as_disabled(cx: &mut Te
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// The style a menu label draws in, which the kit names for its row:
+/// `menu-label-style: <label> · <size> px · weight <weight>`.
+pub(crate) fn menu_label_style(label: &str, size: Pixels, weight: FontWeight) -> String {
+    format!(
+        "menu-label-style: {label} · {:.2} px · weight {}",
+        f32::from(size),
+        weight.0
+    )
+}
+
+/// A label is a heading, not one more item: it takes the section labels' 12
+/// px medium, scaled with the interface text, where an item draws the kit's
+/// `text_sm` (0.875 of the root size) at regular weight. Colour alone cannot
+/// set it apart, since secondary text is nearly as strong as text in One Dark
+/// and Solarized Dark, so in every palette the label differs from the items
+/// by size and weight.
+#[gpui::test]
+fn menu_labels_differ_from_items_by_size_and_weight(cx: &mut TestAppContext) {
+    let (cx, _) = open_menu(cx);
+    // The application's rem geometry: a 13 px root at the default size.
+    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    let labels = ["Saved profiles", "Original Git diff"];
+    let sizes = |cx: &mut VisualTestContext| {
+        cx.update(|window, _| {
+            (
+                appearance::ui_text(appearance::MENU_LABEL_TEXT),
+                window.rem_size() * 0.875,
+            )
+        })
+    };
+    let mut failures = Vec::new();
+    for (name, palette) in appearance::test_palettes() {
+        cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+        draw(cx);
+        let (label, item) = sizes(cx);
+        assert_ne!(label, item, "{name}");
+        for text in labels {
+            let style = menu_label_style(text, label, FontWeight::MEDIUM);
+            if shown(cx, style.clone()).is_none() {
+                failures.push(format!("{name}: no {style}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+    // The label keeps the section labels' size as the interface text grows.
+    cx.update(|window, cx| appearance::apply_text_sizes(16, 12, window, cx));
+    draw(cx);
+    let (label, item) = sizes(cx);
+    assert_ne!(label, item, "at 16 pt");
+    for text in labels {
+        let style = menu_label_style(text, label, FontWeight::MEDIUM);
+        assert!(shown(cx, style.clone()).is_some(), "at 16 pt: {style}");
+    }
+    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+}
+
 /// A dropdown's trigger keeps its place among its siblings. The kit lays the
 /// trigger out in a box of its own, which its siblings see, and that box takes
 /// the trigger's margins and flex-item properties: upstream left them on the

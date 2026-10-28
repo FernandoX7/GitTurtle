@@ -269,7 +269,7 @@ mod dialog_tests;
 #[cfg(test)]
 mod input_tests;
 #[cfg(test)]
-mod menu_tests;
+pub(crate) mod menu_tests;
 
 #[cfg(test)]
 mod tests {
