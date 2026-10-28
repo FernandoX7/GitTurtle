@@ -385,8 +385,16 @@ impl GitTurtle {
 
     /// The repository header in `chrome`'s form. The full form's `narrow`
     /// drops the Projects and profile labels, keeping their icons, tooltips
-    /// and accessible names.
-    pub(super) fn render_header(&self, chrome: Chrome, cx: &mut Context<Self>) -> AnyElement {
+    /// and accessible names. Its return action takes one slot in every
+    /// mode, as wide as the labelled Projects where that shows, so the Back
+    /// arrow outside History's root leaves the turtle, the name and the
+    /// toggles after it in place.
+    pub(super) fn render_header(
+        &self,
+        chrome: Chrome,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let compact = match chrome {
             Chrome::Compact {
                 app_icon: turtle,
@@ -429,6 +437,8 @@ impl GitTurtle {
                 )
                 .into_any_element();
         }
+        // The return slot is the labelled Projects' width outside `compact`.
+        let widths = self.chrome_widths(window);
         div()
             .debug_selector(|| "repository-header".into())
             .min_h(appearance::ui_size(48.))
@@ -442,7 +452,14 @@ impl GitTurtle {
             .bg(rgb(p.panel))
             .border_b_1()
             .border_color(rgb(p.border))
-            .child(self.render_back_button(!compact, cx))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .when(!compact, |slot| {
+                        slot.w(self.labelled_width(widths.projects, true, window))
+                    })
+                    .child(self.render_back_button(!compact, cx)),
+            )
             .child(app_icon(f32::from(appearance::ui_size(28.))))
             .child(
                 self.repository_heading()
@@ -533,6 +550,13 @@ impl GitTurtle {
             .when(busy, |header| {
                 header.child(self.render_operation_cancel(cx))
             })
+            // History's root leaves Projects to its return action but keeps
+            // its slot where that adds no row, so the name shares the same
+            // room in every mode.
+            .when(
+                back_to_projects && self.keeps_projects_slot(compact, &widths, window),
+                |header| header.child(div().flex_shrink_0().size(appearance::ui_size(28.))),
+            )
             .when(!back_to_projects, |header| {
                 header.child(self.render_projects_button(cx))
             })
@@ -3011,7 +3035,13 @@ impl GitTurtle {
             content.width
         };
         (
-            self.full_header_height(content.width, narrow, widths, window),
+            self.full_header_height(
+                content.width,
+                narrow,
+                self.back_label() != "Back to Projects",
+                widths,
+                window,
+            ),
             self.full_actions_height(page, widths, window),
         )
     }
@@ -3151,12 +3181,26 @@ impl GitTurtle {
         .max(scaled(28.))
     }
 
+    /// Whether History's root keeps an empty slot where Projects stands in
+    /// the other modes: wherever the slot adds no row to the full header,
+    /// so History lays out the controls the other modes do and the name
+    /// takes the same share of the row. Where it would add a row, the other
+    /// modes' row wraps and leaves the name its minimum, as History's
+    /// tighter row does without the slot.
+    fn keeps_projects_slot(&self, narrow: bool, widths: &ChromeWidths, window: &Window) -> bool {
+        let width = content_size(window).width;
+        self.full_header_height(width, narrow, true, widths, window)
+            <= self.full_header_height(width, narrow, false, widths, window)
+    }
+
     /// The full header's height in a window `width` wide: `render_header`'s
-    /// controls in order, wrapped as layout wraps them.
+    /// controls in order, wrapped as layout wraps them, with Projects or its
+    /// slot among the trailing controls where `projects`.
     fn full_header_height(
         &self,
         width: Pixels,
         narrow: bool,
+        projects: bool,
         widths: &ChromeWidths,
         window: &Window,
     ) -> Pixels {
@@ -3165,11 +3209,11 @@ impl GitTurtle {
         let scaled = |base: f32| snap(appearance::ui_size(base));
         let line = |size: Pixels| snap(window.text_style().line_height.to_pixels(size.into(), rem));
         let control = scaled(28.);
-        let back_to_projects = self.back_label() == "Back to Projects";
-        let back = if back_to_projects && !narrow {
-            self.labelled_width(widths.projects, true, window)
-        } else {
+        // The return slot keeps the labelled Projects' width in every mode.
+        let back = if narrow {
             control
+        } else {
+            self.labelled_width(widths.projects, true, window)
         };
         let mut items = vec![
             (back, control),
@@ -3194,7 +3238,7 @@ impl GitTurtle {
             ));
         }
         items.push((px(0.), px(0.)));
-        if !back_to_projects {
+        if projects {
             items.push((control, control));
         }
         // A medium kit Button: `px_3`, the 16 px icon, the label and the
@@ -4407,7 +4451,7 @@ impl Render for GitTurtle {
             }))
             .child(self.render_repository_tabs(window, cx))
             .when(self.page != AppPage::Projects, |root| {
-                root.child(self.render_header(chrome, cx))
+                root.child(self.render_header(chrome, window, cx))
             })
             .when(
                 self.page == AppPage::Projects && self.operation_busy.is_some(),
@@ -5944,6 +5988,69 @@ pub(crate) mod tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         settle(&app, cx).await;
         assert_eq!(toggles(cx), changes, "Compare");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// In the full header History, Changes and Pull requests keep one place
+    /// in Changes, History and Compare: the return action's slot is as wide
+    /// as the labelled Projects in every mode, so the Back arrow outside
+    /// History's root leaves the controls after it where they were, History
+    /// keeps the slot Projects takes elsewhere, so the name takes the same
+    /// share of the row, and a click where Changes was never lands on Pull
+    /// requests. At the default size and 18 pt, in 1000 × 680 and 1480 × 800
+    /// windows, and at 800 × 718, where the other modes' header wraps.
+    #[gpui::test]
+    async fn full_header_keeps_its_toggles_in_place_across_pages(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        let controls = |cx: &mut VisualTestContext| {
+            ["history-tab", "changes-tab", "pull-requests"].map(|selector| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{selector}"))
+            })
+        };
+        for (text, width, height) in [
+            (13, 1000., 680.),
+            (13, 1480., 800.),
+            (18, 1000., 680.),
+            (18, 1480., 800.),
+            (13, 800., 718.),
+        ] {
+            let at = format!("{text} pt at {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+            settle(&app, cx).await;
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            assert!(
+                matches!(predicted_chrome(&app, cx).1, Chrome::Full { .. }),
+                "{at}"
+            );
+            let changes = controls(cx);
+            let back = cx.debug_bounds("page-back").unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+            settle(&app, cx).await;
+            assert_eq!(
+                app.read_with(cx, |app, _| app.back_label()),
+                "Back to Projects"
+            );
+            assert_eq!(controls(cx), changes, "History, {at}");
+            assert_eq!(
+                cx.debug_bounds("page-back").unwrap().left(),
+                back.left(),
+                "the return action keeps its edge, {at}"
+            );
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+            settle(&app, cx).await;
+            assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Compare));
+            assert_eq!(controls(cx), changes, "Compare, {at}");
+            // A click where Changes was lands on Changes.
+            cx.simulate_click(changes[1].center(), Modifiers::default());
+            settle(&app, cx).await;
+            assert!(
+                app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working),
+                "{at}"
+            );
+        }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
