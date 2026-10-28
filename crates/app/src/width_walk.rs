@@ -195,14 +195,6 @@ const KNOWN: &[Known] = &[
         region: "working-pane",
         follow_up: "a Working row measures its name as it draws it",
     },
-    // The offline fixture's banner neither wraps nor truncates.
-    Known {
-        page: Page::GitHub,
-        sizes: &[13, 18],
-        rule: Rule::CutText,
-        region: "github-fixture-mode",
-        follow_up: "the GitHub panel wraps its labels inside the panel",
-    },
     // A PR's detail rows and their controls run past a narrow panel.
     Known {
         page: Page::GitHub,
