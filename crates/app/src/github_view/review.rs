@@ -1050,11 +1050,13 @@ impl Panel {
             )
             .child(
                 div()
+                    .min_h(appearance::ui_size(PAGER_ROW))
                     .flex()
                     .items_center()
                     .gap_1()
                     .child(
                         button("github-files-previous", "Previous", "", false)
+                            .debug_selector(|| "github-files-previous".into())
                             .disabled(self.pending || self.review.file_page <= 1)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.file_page(this.review.file_page - 1, window, cx)
@@ -1087,14 +1089,15 @@ impl Panel {
                 .unwrap_or_else(|| file.filename.clone());
             // Changes' box and Source's end where the file list beside them ends, so switching
             // modes keeps the box's edge; Changes' range hint lies below it, beside the list's
-            // pager, where it took the box's last 26 px only in Changes.
+            // pager, where it took the box's last 26 px only in Changes. Its first line centres
+            // on the pager's row, where the page buttons centre their labels, wrapped or not.
             div().flex_1().min_w_0().flex().flex_col().gap_2()
                 .child(div().flex().flex_col().gap_2().when(self.review.mode<2,|content|content.h(FILE_LIST_HEIGHT))
                     .child(label("github-file-title",title).flex_shrink_0().font_weight(FontWeight::SEMIBOLD))
                     .child(div().flex_shrink_0().flex().flex_wrap().items_center().gap_1().children(["Changes","Source","Threads"].into_iter().enumerate().map(|(mode,name)|button(("github-file-mode",mode),name,"",self.review.mode==mode).toggled(self.review.mode==mode).on_click(cx.listener(move|this,_,window,cx|this.review_source(mode,window,cx)))))
                         .child(div().flex_1()).child(button("github-inline-start",if self.review.composing.is_some(){"Continue comment"}else{"Comment on selection"},"plus",false).disabled(self.pending||self.review.preparing||file.unavailable.is_some()).on_click(cx.listener(|this,_,window,cx|this.begin_comment(window,cx)))))
                     .child(match self.review.mode {1=>self.render_source(cx),2=>self.render_threads(Some(&file.filename),cx),_=>self.render_patch(window,cx)}))
-                .when(self.review.mode==0,|element|element.child(label("github-range-hint",format!("Click a changed line · {} or {} / {} selects a same-side range · {} comments",shortcuts::SHIFT_CLICK,shortcuts::key_label("shift-up"),shortcuts::key_label("shift-down"),shortcuts::ENTER)).debug_selector(||"github-range-hint".into()).flex_shrink_0().text_color(rgb(p.muted))))
+                .when(self.review.mode==0,|element|element.child(div().flex_shrink_0().pt(appearance::ui_size((PAGER_ROW-HINT_LINE)/2.)).child(label("github-range-hint",format!("Click a changed line · {} or {} / {} selects a same-side range · {} comments",shortcuts::SHIFT_CLICK,shortcuts::key_label("shift-up"),shortcuts::key_label("shift-down"),shortcuts::ENTER)).debug_selector(||"github-range-hint".into()).line_height(appearance::ui_size(HINT_LINE)).text_color(rgb(p.muted)))))
                 .into_any_element()
         } else {
             div().flex_1().min_w_0().p_5().flex().flex_col().gap_2().child(label("github-choose-file","Choose a file to begin reviewing").font_weight(FontWeight::SEMIBOLD)).child(label("github-file-help","Changes keep their captured PR identity. Inline drafts remain local as you move between files.").text_color(rgb(p.muted))).into_any_element()
@@ -1278,6 +1281,12 @@ fn patch_line(index: usize, cx: &App) -> Stateful<Div> {
 const MIN_LINE_NUMBER_WIDTH: f32 = 36.;
 /// The changed-file list's height; Source fills its column down to the same edge.
 const FILE_LIST_HEIGHT: Pixels = px(324.);
+/// The file list's pager row: a compact Button's height at the default interface size.
+const PAGER_ROW: f32 = 28.;
+/// The range hint's line height at the default interface size. Half of what the pager's row
+/// has beyond it lies above the hint, so its first line centres on the row, where the page
+/// buttons centre their labels; at the top of its row it stood 4 px higher.
+const HINT_LINE: f32 = 20.;
 /// The kit editor's line height, a multiple of its text size.
 const EDITOR_LINE_HEIGHT: f32 = 1.5;
 /// The kit editor's padding above and below its text. In Source only the top padding lies
@@ -2457,11 +2466,11 @@ mod tests {
     }
 
     /// In a 1480 × 980 window at 13 and 18 pt, Changes' box ends at the changed-file list's
-    /// bottom edge, as Source's does, with its range hint below it. Its rows fill the box in
-    /// whole rows, counted at the height they are drawn: what a row does not fill, less than a
-    /// row, lies below them inside the box, no row runs past the rows' clip, and the box paints
-    /// nothing below its last whole row and fills that strip with the canvas a context row
-    /// paints.
+    /// bottom edge, as Source's does, with its range hint below it, on the line of the file
+    /// list's page buttons. Its rows fill the box in whole rows, counted at the height they are
+    /// drawn: what a row does not fill, less than a row, lies below them inside the box, no row
+    /// runs past the rows' clip, and the box paints nothing below its last whole row and fills
+    /// that strip with the canvas a context row paints.
     #[gpui::test]
     async fn changes_reach_the_file_lists_bottom_in_whole_rows(cx: &mut TestAppContext) {
         let (_fixture, app, panel, cx) = review_panel(cx);
@@ -2510,6 +2519,17 @@ mod tests {
                 assert!(
                     hint.top() >= patch.bottom(),
                     "{at}: the hint {hint:?} lies below the box {patch:?}"
+                );
+                // On the pager's line: the hint's first line, one of two at 18 pt, centres where
+                // Previous centres its label, within the device pixel layout snaps it to. At the
+                // top of its row it stood 4 px above.
+                let previous = cx.debug_bounds("github-files-previous").expect("Previous");
+                let line = appearance::ui_size(HINT_LINE);
+                let lines = (hint.size.height / line).round();
+                let first = hint.top() + hint.size.height / lines / 2.;
+                assert!(
+                    lines >= 1. && (first - previous.center().y).abs() < px(0.5),
+                    "{at}: the hint {hint:?} centres its first line off Previous {previous:?}"
                 );
                 let rows = cx.debug_bounds("github-patch-rows").expect("rows");
                 // The rows as drawn: at 12 pt a row of 19.8 px is drawn 20 px tall at 2x, and
