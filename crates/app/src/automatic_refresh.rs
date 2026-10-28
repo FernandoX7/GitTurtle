@@ -190,7 +190,7 @@ impl GitTurtle {
                 .width(px(620.))
                 .child(div().child("Some local changes may need Refresh. Existing watches continue where available. Refresh reads local changes and retries coverage."))
                 .child(crate::editor_find::Editor::new(&editor).readonly(true).h(px(240.)).aria_label("Automatic refresh details"))
-                .child(copy_feedback::copy_button(mark.clone(), "Copy details", "", "", cx).on_click(move |_, window, cx| {
+                .child(copy_feedback::copy_button(mark.clone(), "Copy details", "", cx).on_click(move |_, window, cx| {
                     copy_feedback::copy(window, cx, Some(copy_mark.clone()), "refresh details", details.clone());
                 }))
                 .button_props(DialogButtonProps::default().ok_text("Close"))

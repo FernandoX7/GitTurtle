@@ -33,7 +33,7 @@ impl GitTurtle {
                         .aria_label("Git operation error details"),
                 )
                 .child(
-                    copy_feedback::copy_button(mark.clone(), "Copy details", "", "", cx).on_click(
+                    copy_feedback::copy_button(mark.clone(), "Copy details", "", cx).on_click(
                         move |_, window, cx| {
                             copy_feedback::copy(
                                 window,

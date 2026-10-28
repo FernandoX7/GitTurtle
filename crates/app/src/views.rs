@@ -2101,7 +2101,7 @@ impl GitTurtle {
             .children(file.map(|file| {
                 let mark = copy_feedback::Mark::new("copy-path", file.path());
                 let copy_mark = mark.clone();
-                copy_feedback::copy_button(mark, "", "copy", "Copy file path", cx)
+                copy_feedback::copy_button(mark, "", "Copy file path", cx)
                     .accessibility_label("Copy file path")
                     .on_click(move |_, window, cx| {
                         let path = copy_path.clone();

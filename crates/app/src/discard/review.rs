@@ -182,7 +182,7 @@ impl GitTurtle {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(copy_feedback::copy_button(path_mark, "Copy path", "copy", "", cx)
+                        .child(copy_feedback::copy_button(path_mark, "Copy path", "", cx)
                             .accessibility_label("Copy full path of file to discard")
                             .on_action(move |_: &Confirm, window, cx| copy_feedback::copy(window, cx, Some(keyboard_mark.clone()), "file path", keyboard_copy_path.clone()))
                             .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(click_mark.clone()), "file path", copy_path.clone())))

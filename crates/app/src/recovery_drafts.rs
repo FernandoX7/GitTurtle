@@ -574,7 +574,7 @@ impl RecoveryList {
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        copy_feedback::copy_button(mark, "Copy exact text", "", "", cx).on_click(
+                        copy_feedback::copy_button(mark, "Copy exact text", "", cx).on_click(
                             cx.listener(move |this, _, window, cx| {
                                 if let Some(owner) = this.owner.upgrade() {
                                     let text = owner

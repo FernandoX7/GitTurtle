@@ -2507,10 +2507,11 @@ mod icon_symbol_tests {
     }
 
     /// The literal icon names in `source`: the symbol argument of each
-    /// `button(id, label, symbol, active)` and
-    /// `copy_button(mark, label, symbol, tooltip, cx)` call and each
-    /// `icons/<name>.svg` path literal. Method calls (`.button(`) and
-    /// definitions are not calls of the helper; an empty symbol draws no icon.
+    /// `button(id, label, symbol, active)` call, the argument of each
+    /// `control_icon(symbol)` call (as `copy_feedback::copy_button` draws its
+    /// copy and check icons) and each `icons/<name>.svg` path literal. Method
+    /// calls (`.button(`) and definitions are not calls of the helper; an
+    /// empty symbol draws no icon.
     fn literal_icon_symbols(source: &str) -> Vec<String> {
         let tokens = tokens(source);
         let mut symbols = Vec::new();
@@ -2523,8 +2524,13 @@ mod icon_symbol_tests {
             {
                 symbols.push(name.to_owned());
             }
-            let call = matches!(token, Token::Ident(name) if name == "button" || name == "copy_button")
-                && tokens.get(index + 1) == Some(&Token::Punct('('))
+            // The symbol's argument position in each helper.
+            let position = match token {
+                Token::Ident(name) if name == "button" => 2,
+                Token::Ident(name) if name == "control_icon" => 0,
+                _ => continue,
+            };
+            let call = tokens.get(index + 1) == Some(&Token::Punct('('))
                 && !matches!(
                     index.checked_sub(1).map(|i| &tokens[i]),
                     Some(Token::Punct('.')) | Some(Token::Ident(_))
@@ -2556,7 +2562,7 @@ mod icon_symbol_tests {
                 }
                 arguments.last_mut().unwrap().push(token);
             }
-            if let Some([Token::Str(symbol)]) = arguments.get(2).map(Vec::as_slice)
+            if let Some([Token::Str(symbol)]) = arguments.get(position).map(Vec::as_slice)
                 && !symbol.is_empty()
             {
                 symbols.push(symbol.clone());
@@ -2589,7 +2595,9 @@ mod icon_symbol_tests {
             let e = button("computed", "", symbol, false);
             let f = Icon::default().path("icons/third.svg");
             let g = svg().path(format!("icons/{name}.svg"));
-            let h = copy_feedback::copy_button("copy", "Copy", "fourth", "", cx);
+            let h = copy_feedback::copy_button(mark, "Copy", "a tooltip, not an icon", cx);
+            fn control_icon(symbol: &str) -> Icon {}
+            let i = div().child(control_icon("fourth")).child(control_icon(icon));
         "#;
         assert_eq!(
             literal_icon_symbols(source),

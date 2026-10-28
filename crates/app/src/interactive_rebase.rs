@@ -730,7 +730,7 @@ impl Render for MessageForm {
                 element.child(div().flex().flex_col().gap_2()
                     .child(label("rebase-recovered-context", if valid { "A saved message matches this rebase, staged index and Git message. Restore it to review before Continue." } else { "Saved message source changed. Copy the saved text to recover it; it cannot replace this message automatically." }).text_color(rgb(if valid { p.muted } else { p.warning })))
                     .child(div().flex().gap_2()
-                        .child(copy_feedback::copy_button(mark, "Copy saved text", "", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "saved message", copy.clone())))
+                        .child(copy_feedback::copy_button(mark, "Copy saved text", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "saved message", copy.clone())))
                         .child(button("restore-rebase-draft", "Restore saved message", "", false).disabled(!valid || self.editor.is_none()).on_click(cx.listener(move |this, _, window, cx| { if valid { if let Some(editor) = &this.editor { editor.update(cx, |editor, cx| editor.set_value(recovered.text.clone(), window, cx)); } this.recovered = None; cx.notify(); } })))))
             })
             .when_some(self.editor.as_ref(), |element, editor| element.child(Textarea::new(editor).h(px(240.)).aria_label("Rebase commit message")))

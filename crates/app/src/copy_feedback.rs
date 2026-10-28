@@ -137,19 +137,20 @@ fn copied(mark: &Mark, cx: &App) -> bool {
 /// the same content; the caller's click handler calls [`copy`] with
 /// `Some(mark)`.
 ///
-/// A labelled button draws its content, `symbol`'s icon (if any) and `label`,
-/// and the copied content, the check icon and "Copied", in one grid cell,
-/// showing one and hiding the other, so it is as wide as the wider of the two
-/// in both states. Both start at its leading inset, so the check replaces the
-/// icon in place and nothing moves. It is named `label`, and `tooltip` (if
-/// not empty) stays.
+/// A labelled button draws its content, the copy icon and `label`, and the
+/// copied content, the check icon and "Copied", in one grid cell, showing one
+/// and hiding the other, so it is as wide as the wider of the two in both
+/// states. Both start at its leading inset, so the check replaces the copy
+/// icon in place, the label and "Copied" start at one x, and nothing moves.
+/// Every copy button carries the copy icon: a label alone gained the check
+/// where no icon was and shifted 22 px when copied. It is named `label`, and
+/// `tooltip` (if not empty) stays.
 /// An icon-only button (an empty `label`) keeps its 28 px square, swaps its
 /// icon for the check and its tooltip for "Copied", and is named as `button`
 /// names one until the caller names it.
 pub(crate) fn copy_button(
     mark: Mark,
     label: impl Into<SharedString>,
-    symbol: &str,
     tooltip: impl Into<SharedString>,
     cx: &App,
 ) -> Button {
@@ -159,10 +160,10 @@ pub(crate) fn copy_button(
     let tooltip = tooltip.into();
     let labelled = !label.is_empty();
     let selector = id.clone();
-    let mut button = button_frame(id.clone(), &label, symbol, false)
+    let mut button = button_frame(id.clone(), &label, "copy", false)
         .debug_selector(move || selector.to_string());
-    let cell = |icon: &str, text: SharedString, shown: bool, state: &'static str| {
-        let probe = id.clone();
+    let cell = |icon: Icon, text: SharedString, shown: bool, state: &'static str| {
+        let (probe, text_probe) = (id.clone(), id.clone());
         // Both contents start at the leading edge, so the check takes the
         // icon's place and the narrower one's spare width trails it.
         div()
@@ -179,12 +180,11 @@ pub(crate) fn copy_button(
                     .flex()
                     .items_center()
                     .gap(appearance::ui_size(6.))
-                    .when(!icon.is_empty(), |content| {
-                        content.child(control_icon(icon))
-                    })
+                    .child(icon)
                     .when(!text.is_empty(), |content| {
                         content.child(
                             div()
+                                .debug_selector(move || format!("{text_probe}/{state}/text"))
                                 .min_w_0()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
@@ -199,9 +199,9 @@ pub(crate) fn copy_button(
             .grid()
             .grid_cols(1)
             .items_center()
-            .child(cell(symbol, label.clone(), !copied, "rest"))
+            .child(cell(control_icon("copy"), label.clone(), !copied, "rest"))
             .child(cell(
-                "check",
+                control_icon("check"),
                 if labelled { COPIED.into() } else { "".into() },
                 copied,
                 "copied",
@@ -488,6 +488,81 @@ pub(crate) mod tests {
         );
     }
 
+    /// The copy actions that once drew a label alone (Copy details, Copy saved
+    /// text, Copy exact text, Copy commit ID, Copy object ID, the GitHub
+    /// panel's Copy sign-in command, Copy complete draft and Copy reply) lead
+    /// with the copy icon, as every copy button does, so the check takes the
+    /// icon's place and "Copied" starts where the label did: copied, they
+    /// gained a check where no icon was and the label moved 22 px. Neither
+    /// state moves the button.
+    #[gpui::test]
+    fn every_copy_buttons_label_and_copied_start_at_one_x(cx: &mut TestAppContext) {
+        const LABELS: [&str; 8] = [
+            "Copy details",
+            "Copy saved text",
+            "Copy exact text",
+            "Copy commit ID",
+            "Copy object ID",
+            "Copy sign-in command",
+            "Copy complete draft",
+            "Copy reply",
+        ];
+        struct Buttons;
+        impl Render for Buttons {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().flex().flex_col().items_start().gap_2().children(
+                    LABELS.map(|label| copy_button(Mark::new(label, "subject"), label, "", cx)),
+                )
+            }
+        }
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|_, _| Buttons);
+        draw(cx);
+        let bounds = |cx: &mut VisualTestContext, selector: String| {
+            cx.debug_bounds(selector.leak())
+                .unwrap_or_else(|| panic!("drawn"))
+        };
+        let icon = appearance::ui_size(16. + 6.);
+        for label in LABELS {
+            let button = bounds(cx, label.to_owned());
+            let rest = bounds(cx, format!("{label}/rest"));
+            let text = bounds(cx, format!("{label}/rest/text"));
+            assert_eq!(
+                rest.left(),
+                button.left() + appearance::ui_size(10.),
+                "{label}"
+            );
+            assert!(
+                (text.left() - rest.left() - icon).abs() < px(0.5),
+                "{label} leads with the copy icon: {rest:?} {text:?}"
+            );
+            cx.update(|window, cx| {
+                copy(
+                    window,
+                    cx,
+                    Some(Mark::new(label, "subject")),
+                    "text",
+                    "x".into(),
+                )
+            });
+            draw(cx);
+            assert_eq!(shows(cx, label), Shows::Copied);
+            let copied = bounds(cx, format!("{label}/copied/text"));
+            assert_eq!(
+                copied.left(),
+                text.left(),
+                "{label}: Copied starts at its label"
+            );
+            assert_eq!(
+                bounds(cx, label.to_owned()),
+                button,
+                "{label} keeps its bounds"
+            );
+            wait(cx, RESTORE_AFTER);
+            assert_eq!(shows(cx, label), Shows::Rest);
+        }
+    }
+
     /// A second click restarts the time, so Hash still reads Copied after the
     /// first click's 1.5 s, and is announced again with a fresh node.
     #[gpui::test]
@@ -578,15 +653,9 @@ pub(crate) mod tests {
         let buttons = |cx: &mut VisualTestContext| {
             cx.update(|_, cx| {
                 [
-                    copy_button(
-                        labelled_mark.clone(),
-                        "Copy path",
-                        "copy",
-                        "Copy the path",
-                        cx,
-                    ),
-                    copy_button(icon_mark.clone(), "", "copy", "Copy the path", cx),
-                    copy_button(icon_mark.clone(), "", "copy", "Copy the path", cx)
+                    copy_button(labelled_mark.clone(), "Copy path", "Copy the path", cx),
+                    copy_button(icon_mark.clone(), "", "Copy the path", cx),
+                    copy_button(icon_mark.clone(), "", "Copy the path", cx)
                         .accessibility_label("Copy file path"),
                 ]
             })

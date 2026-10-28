@@ -469,7 +469,7 @@ impl Render for AboutDetails {
                     .child("Bug diagnostics include build and display settings. Repository paths, file content and account details are omitted."),
             )
             .child(
-                copy_feedback::copy_button(self.diagnostics_mark(), "Copy bug diagnostics", "copy", "", cx)
+                copy_feedback::copy_button(self.diagnostics_mark(), "Copy bug diagnostics", "", cx)
                     .on_click(cx.listener(|this, _, window, cx| {
                         let report = this.report.clone();
                         copy_feedback::copy(window, cx, Some(this.diagnostics_mark()), "bug diagnostics", report);

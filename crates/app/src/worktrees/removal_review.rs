@@ -220,7 +220,7 @@ impl GitTurtle {
                                         .child(label("worktree-force-branch", revision).truncate().font_weight(FontWeight::MEDIUM).tooltip(move |window, cx| Tooltip::new(revision_tooltip.clone()).build(window, cx)))
                                         .child(label("worktree-force-path", target).truncate().text_color(rgb(colors.muted)).tooltip(move |window, cx| Tooltip::new(target_tooltip.clone()).build(window, cx))),
                                 )
-                                .child(copy_feedback::copy_button(target_mark, "Copy path", "copy", "", cx)
+                                .child(copy_feedback::copy_button(target_mark, "Copy path", "", cx)
                                     .accessibility_label("Copy full path of worktree to remove")
                                     .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(target_copy.clone()), "worktree path", copy_target.clone()))),
                         )

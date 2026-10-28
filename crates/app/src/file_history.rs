@@ -783,7 +783,6 @@ impl GitTurtle {
                                 copy_feedback::copy_button(
                                     path_mark,
                                     "",
-                                    "copy",
                                     "Copy file history's anchor path",
                                     cx,
                                 )

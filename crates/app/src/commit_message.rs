@@ -406,9 +406,9 @@ impl GitTurtle {
                 .px_3().py_1()
                 .flex().flex_wrap().items_center().gap_1()
                 .child(if compact {
-                    compact_control_name(copy_feedback::copy_button(message_mark, "", "copy", "Copy message · Copy the complete commit title and body", cx), "copy-message", "Copy full commit message")
+                    compact_control_name(copy_feedback::copy_button(message_mark, "", "Copy message · Copy the complete commit title and body", cx), "copy-message", "Copy full commit message")
                 } else {
-                    copy_feedback::copy_button(message_mark, "Copy message", "copy", "Copy the complete commit title and body", cx)
+                    copy_feedback::copy_button(message_mark, "Copy message", "Copy the complete commit title and body", cx)
                         .accessibility_label("Copy full commit message")
                 }
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -420,9 +420,9 @@ impl GitTurtle {
                 // Compact beside the compact Copy message, so the two keep
                 // one row.
                 .child(if compact {
-                    compact_control_name(copy_feedback::copy_button(hash_mark, "", "copy", format!("Hash · Copy full commit hash · {}", commit.oid), cx), "copy-commit", "Copy full commit hash")
+                    compact_control_name(copy_feedback::copy_button(hash_mark, "", format!("Hash · Copy full commit hash · {}", commit.oid), cx), "copy-commit", "Copy full commit hash")
                 } else {
-                    copy_feedback::copy_button(hash_mark, "Hash", "copy", format!("Copy full commit hash · {}", commit.oid), cx)
+                    copy_feedback::copy_button(hash_mark, "Hash", format!("Copy full commit hash · {}", commit.oid), cx)
                         .accessibility_label("Copy full commit hash")
                 }
                     .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(hash_copy.clone()), "commit hash", hash.clone())))

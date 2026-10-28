@@ -676,7 +676,6 @@ fn render_side<T: 'static>(
                 } else {
                     "Copy source"
                 },
-                "copy",
                 "",
                 cx,
             )

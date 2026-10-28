@@ -419,7 +419,7 @@ impl GitTurtle {
                 // The control's id names the side; the mark adds its path.
                 let mark = copy_feedback::Mark::new(("copy-image-source", index), side_path);
                 let copy_mark = mark.clone();
-                captured_actions = captured_actions.child(copy_feedback::copy_button(mark,format!("Copy {label} source"),"copy","Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),&format!("{label} source"),literal.to_string())));
+                captured_actions = captured_actions.child(copy_feedback::copy_button(mark,format!("Copy {label} source"),"Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),&format!("{label} source"),literal.to_string())));
             }
             if let Some(bytes) = side
                 .captured

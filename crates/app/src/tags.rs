@@ -284,7 +284,7 @@ impl GitTurtle {
                 .when_some(annotation.as_ref(), |element, annotation| element.child(crate::editor_find::Editor::new(annotation).readonly(true).h(px(160.)).aria_label("Tag annotation and signature, if present")))
                 .when_some(details.annotation_unavailable.as_ref(), |element, message| element.child(static_text("tag-annotation-unavailable", message.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
                 .child(div().flex().gap_2()
-                    .child(copy_feedback::copy_button(tag_mark, "Copy object ID", "", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(tag_copy.clone()), "tag object ID", oid.clone())))
+                    .child(copy_feedback::copy_button(tag_mark, "Copy object ID", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(tag_copy.clone()), "tag object ID", oid.clone())))
                     .child(button("delete-local-tag", "Delete local tag…", "", false).on_click(move |_, window, cx| {
                         let _ = delete_owner.update(cx, |this, cx| {
                             if this.path == delete_path && this.operation_busy.is_none() {
