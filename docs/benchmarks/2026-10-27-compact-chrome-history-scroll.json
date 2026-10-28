@@ -1,0 +1,393 @@
+{
+ "host": "Apple M2 Pro (Asahi Linux, Omarchy), Hyprland 0.56, native Wayland, scale 2; app pinned to CPUs 8-11; AT-SPI off; notifications silenced; window forced opaque",
+ "fixture": "/tmp/gitturtle-evidence/history-scroll/history (October 5 generator, 3,000 commits, 121 refs, HEAD 1e65ca0)",
+ "builds_sha256": [
+  "d8415e14a49ba7166f4262066e21d7bda171eb2cccc7d5812518a7aacb58d805  ../gitturtle-0dd91c0",
+  "907433921b4bcac7eb807b264a4da08a4abd06d22378b081e3d5a75a57649426  ../gitturtle-d1299fb",
+  "03956daa9ed673b2e8031cb3e98b94f6fb73a632abd15a6afe1b887142647ebf  ../gitturtle-2913b86",
+  "5b499cf98247e8d14b2898f9b23906543a76acb76e85b8ef39bcc9869d1eac10  ../gitturtle-0aca11e"
+ ],
+ "first_run_2026_10_27_busy_host": {
+  "narrow": {
+   "0dd91c0": {
+    "launches": 4,
+    "notches": 480,
+    "p50": 5.702167,
+    "p95": 9.608752,
+    "p99": 15.413625,
+    "max": 17.848873,
+    "per_launch_p50": [
+     5.427,
+     5.55,
+     5.579,
+     5.989
+    ],
+    "idle_p50": 0.0,
+    "idle_max": 8.517503
+   },
+   "d1299fb": {
+    "launches": 4,
+    "notches": 480,
+    "p50": 5.615125,
+    "p95": 9.273125,
+    "p99": 14.608957,
+    "max": 16.628461,
+    "per_launch_p50": [
+     4.835,
+     4.836,
+     6.125,
+     6.231
+    ],
+    "idle_p50": 0.0,
+    "idle_max": 6.552959
+   },
+   "d_p50": {
+    "delta": -0.08704200000000029,
+    "ci95": [
+     -1.0355400000000001,
+     0.6555460000000002
+    ]
+   },
+   "d_p95": {
+    "delta": -0.33562700000000056,
+    "ci95": [
+     -2.180085,
+     1.5568720000000003
+    ]
+   }
+  },
+  "wide": {
+   "0dd91c0": {
+    "launches": 4,
+    "notches": 480,
+    "p50": 8.049542,
+    "p95": 12.927957,
+    "p99": 13.669584,
+    "max": 14.468125,
+    "per_launch_p50": [
+     6.993,
+     7.669,
+     8.656,
+     8.939
+    ],
+    "idle_p50": 0.0,
+    "idle_max": 0.066041
+   },
+   "d1299fb": {
+    "launches": 4,
+    "notches": 480,
+    "p50": 9.322423,
+    "p95": 13.148461,
+    "p99": 13.904292,
+    "max": 14.410709,
+    "per_launch_p50": [
+     9.192,
+     9.313,
+     9.378,
+     9.52
+    ],
+    "idle_p50": 0.0,
+    "idle_max": 0.063125
+   },
+   "d_p50": {
+    "delta": 1.272881,
+    "ci95": [
+     0.0987960000000001,
+     2.2276670000000003
+    ]
+   },
+   "d_p95": {
+    "delta": 0.22050400000000003,
+    "ci95": [
+     -0.09641599999999961,
+     0.507009
+    ]
+   }
+  }
+ },
+ "rerun_quiet_host": {
+  "narrowhistory": {
+   "0aca11e": {
+    "launches": 6,
+    "notches": 720,
+    "p50": 5.917543,
+    "p95": 9.406335,
+    "p99": 15.536625,
+    "max": 16.622295,
+    "per_launch_p50": [
+     4.543,
+     4.747,
+     5.281,
+     5.621,
+     7.621,
+     7.719
+    ],
+    "idle_p50": 0.0,
+    "idle_max": 8.666082
+   },
+   "2913b86": {
+    "launches": 6,
+    "notches": 720,
+    "p50": 6.090375,
+    "p95": 8.946291,
+    "p99": 14.621417,
+    "max": 15.987793,
+    "per_launch_p50": [
+     4.823,
+     5.774,
+     5.869,
+     6.247,
+     7.004,
+     7.732
+    ],
+    "idle_p50": 0.0,
+    "idle_max": 8.808625
+   },
+   "d_p50": {
+    "delta": -0.17283199999999965,
+    "ci95": [
+     -1.7847919999999995,
+     1.3119570000000005
+    ]
+   },
+   "d_p95": {
+    "delta": 0.4600439999999999,
+    "ci95": [
+     -2.2102520000000005,
+     2.7639560000000003
+    ]
+   }
+  },
+  "widechrome": {
+   "0dd91c0": {
+    "launches": 8,
+    "notches": 960,
+    "p50": 8.451791,
+    "p95": 12.783122,
+    "p99": 13.549332,
+    "max": 14.407916,
+    "per_launch_p50": [
+     6.867,
+     7.092,
+     7.894,
+     8.414,
+     8.57,
+     8.588,
+     9.109,
+     11.463
+    ],
+    "idle_p50": 0.0,
+    "idle_max": 0.064501
+   },
+   "d1299fb": {
+    "launches": 8,
+    "notches": 960,
+    "p50": 7.38429,
+    "p95": 12.701205,
+    "p99": 13.192582,
+    "max": 13.893502,
+    "per_launch_p50": [
+     6.2,
+     6.836,
+     7.254,
+     7.321,
+     7.501,
+     7.635,
+     7.805,
+     8.405
+    ],
+    "idle_p50": 0.0,
+    "idle_max": 0.0675
+   },
+   "d_p50": {
+    "delta": -1.067501,
+    "ci95": [
+     -2.0537090000000005,
+     -0.09191599999999944
+    ]
+   },
+   "d_p95": {
+    "delta": -0.08191700000000068,
+    "ci95": [
+     -0.375375,
+     0.1984969999999997
+    ]
+   }
+  },
+  "widehistory": {
+   "0aca11e": {
+    "launches": 6,
+    "notches": 720,
+    "p50": 8.150375,
+    "p95": 13.17229,
+    "p99": 13.587499,
+    "max": 14.199916,
+    "per_launch_p50": [
+     7.243,
+     7.501,
+     7.505,
+     8.358,
+     8.979,
+     9.76
+    ],
+    "idle_p50": 0.0,
+    "idle_max": 0.068541
+   },
+   "2913b86": {
+    "launches": 6,
+    "notches": 720,
+    "p50": 8.518085,
+    "p95": 13.24917,
+    "p99": 13.681955,
+    "max": 14.211874,
+    "per_launch_p50": [
+     6.74,
+     6.959,
+     7.923,
+     8.131,
+     11.001,
+     11.98
+    ],
+    "idle_p50": 0.0,
+    "idle_max": 0.065292
+   },
+   "d_p50": {
+    "delta": -0.36770999999999887,
+    "ci95": [
+     -2.2961209999999994,
+     1.2651700000000003
+    ]
+   },
+   "d_p95": {
+    "delta": -0.07687999999999917,
+    "ci95": [
+     -0.330209,
+     0.1456280000000003
+    ]
+   }
+  }
+ },
+ "rerun_launches": [
+  "1-wide-0dd91c0 start 03:38:56 load 1.10",
+  "geom 124 153 1480 800 affinity 8-11",
+  "1-wide-0dd91c0 notch p50 7.914 p95 13.243 max 13.630 ms",
+  "2-wide-d1299fb start 03:39:32 load 0.83",
+  "geom 124 153 1480 800 affinity 8-11",
+  "2-wide-d1299fb notch p50 7.284 p95 12.617 max 13.052 ms",
+  "3-wide-d1299fb start 03:40:07 load 0.57",
+  "geom 124 153 1480 800 affinity 8-11",
+  "3-wide-d1299fb notch p50 6.839 p95 12.366 max 13.748 ms",
+  "4-wide-0dd91c0 start 03:40:43 load 0.39",
+  "geom 124 153 1480 800 affinity 8-11",
+  "4-wide-0dd91c0 notch p50 7.217 p95 12.491 max 13.577 ms",
+  "5-wide-d1299fb start 03:41:19 load 0.32",
+  "geom 124 153 1480 800 affinity 8-11",
+  "5-wide-d1299fb notch p50 6.213 p95 12.274 max 13.763 ms",
+  "6-wide-0dd91c0 start 03:41:54 load 0.47",
+  "geom 124 153 1480 800 affinity 8-11",
+  "6-wide-0dd91c0 notch p50 11.509 p95 12.761 max 13.058 ms",
+  "7-wide-0dd91c0 start 03:42:30 load 0.61",
+  "geom 124 153 1480 800 affinity 8-11",
+  "7-wide-0dd91c0 notch p50 8.659 p95 12.648 max 13.859 ms",
+  "8-wide-d1299fb start 03:43:06 load 0.34",
+  "geom 124 153 1480 800 affinity 8-11",
+  "8-wide-d1299fb notch p50 7.850 p95 12.992 max 13.280 ms",
+  "9-wide-0dd91c0 start 03:43:41 load 0.32",
+  "geom 124 153 1480 800 affinity 8-11",
+  "9-wide-0dd91c0 notch p50 8.595 p95 12.952 max 13.817 ms",
+  "10-wide-d1299fb start 03:44:17 load 0.34",
+  "geom 124 153 1480 800 affinity 8-11",
+  "10-wide-d1299fb notch p50 7.642 p95 12.657 max 13.894 ms",
+  "11-wide-d1299fb start 03:44:53 load 0.41",
+  "geom 124 153 1480 800 affinity 8-11",
+  "11-wide-d1299fb notch p50 8.445 p95 12.959 max 13.558 ms",
+  "12-wide-0dd91c0 start 03:45:28 load 0.56",
+  "geom 124 153 1480 800 affinity 8-11",
+  "12-wide-0dd91c0 notch p50 8.431 p95 12.829 max 14.408 ms",
+  "13-wide-d1299fb start 03:46:04 load 0.46",
+  "geom 124 153 1480 800 affinity 8-11",
+  "13-wide-d1299fb notch p50 7.344 p95 12.736 max 13.392 ms",
+  "14-wide-0dd91c0 start 03:46:40 load 0.38",
+  "geom 124 153 1480 800 affinity 8-11",
+  "14-wide-0dd91c0 notch p50 7.053 p95 12.215 max 13.153 ms",
+  "15-wide-0dd91c0 start 03:47:15 load 0.27",
+  "geom 124 153 1480 800 affinity 8-11",
+  "15-wide-0dd91c0 notch p50 9.237 p95 12.802 max 13.371 ms",
+  "16-wide-d1299fb start 03:47:51 load 0.20",
+  "geom 124 153 1480 800 affinity 8-11",
+  "16-wide-d1299fb notch p50 7.517 p95 12.653 max 13.496 ms",
+  "17-wide-2913b86 start 03:48:26 load 0.16",
+  "geom 124 153 1480 800 affinity 8-11",
+  "17-wide-2913b86 notch p50 11.446 p95 13.481 max 13.983 ms",
+  "18-wide-0aca11e start 03:49:02 load 0.15",
+  "geom 124 153 1480 800 affinity 8-11",
+  "18-wide-0aca11e notch p50 7.574 p95 13.068 max 13.970 ms",
+  "19-wide-0aca11e start 03:49:38 load 0.12",
+  "geom 124 153 1480 800 affinity 8-11",
+  "19-wide-0aca11e notch p50 7.460 p95 13.352 max 14.200 ms",
+  "20-wide-2913b86 start 03:50:13 load 0.23",
+  "geom 124 153 1480 800 affinity 8-11",
+  "20-wide-2913b86 notch p50 6.776 p95 13.228 max 14.212 ms",
+  "21-wide-0aca11e start 03:50:49 load 0.42",
+  "geom 124 153 1480 800 affinity 8-11",
+  "21-wide-0aca11e notch p50 8.426 p95 12.865 max 13.685 ms",
+  "22-wide-2913b86 start 03:51:25 load 0.30",
+  "geom 124 153 1480 800 affinity 8-11",
+  "22-wide-2913b86 notch p50 12.151 p95 13.328 max 13.727 ms",
+  "23-wide-2913b86 start 03:52:00 load 0.41",
+  "geom 124 153 1480 800 affinity 8-11",
+  "23-wide-2913b86 notch p50 8.305 p95 13.216 max 13.766 ms",
+  "24-wide-0aca11e start 03:52:36 load 0.38",
+  "geom 124 153 1480 800 affinity 8-11",
+  "24-wide-0aca11e notch p50 9.838 p95 13.321 max 13.649 ms",
+  "25-wide-2913b86 start 03:53:11 load 0.21",
+  "geom 124 153 1480 800 affinity 8-11",
+  "25-wide-2913b86 notch p50 7.961 p95 13.405 max 13.821 ms",
+  "26-wide-0aca11e start 03:53:47 load 0.11",
+  "geom 124 153 1480 800 affinity 8-11",
+  "26-wide-0aca11e notch p50 7.593 p95 13.066 max 13.546 ms",
+  "27-wide-0aca11e start 03:54:23 load 0.06",
+  "geom 124 153 1480 800 affinity 8-11",
+  "27-wide-0aca11e notch p50 9.021 p95 13.217 max 13.532 ms",
+  "28-wide-2913b86 start 03:54:58 load 0.08",
+  "geom 124 153 1480 800 affinity 8-11",
+  "28-wide-2913b86 notch p50 7.239 p95 12.872 max 13.497 ms",
+  "29-narrow-2913b86 start 03:55:34 load 0.11",
+  "geom 12 38 461 490 affinity 8-11",
+  "29-narrow-2913b86 notch p50 6.261 p95 8.769 max 15.603 ms",
+  "30-narrow-0aca11e start 03:56:13 load 0.22",
+  "geom 12 38 461 490 affinity 8-11",
+  "30-narrow-0aca11e notch p50 4.766 p95 10.085 max 15.587 ms",
+  "31-narrow-0aca11e start 03:56:51 load 0.34",
+  "geom 12 38 461 490 affinity 8-11",
+  "31-narrow-0aca11e notch p50 5.659 p95 8.895 max 15.722 ms",
+  "32-narrow-2913b86 start 03:57:29 load 0.22",
+  "geom 12 38 461 490 affinity 8-11",
+  "32-narrow-2913b86 notch p50 7.021 p95 8.946 max 12.107 ms",
+  "33-narrow-0aca11e start 03:58:08 load 0.18",
+  "geom 12 38 461 490 affinity 8-11",
+  "33-narrow-0aca11e notch p50 7.721 p95 11.548 max 15.166 ms",
+  "34-narrow-2913b86 start 03:58:46 load 0.35",
+  "geom 12 38 461 490 affinity 8-11",
+  "34-narrow-2913b86 notch p50 4.837 p95 9.013 max 15.741 ms",
+  "35-narrow-2913b86 start 03:59:25 load 0.24",
+  "geom 12 38 461 490 affinity 8-11",
+  "35-narrow-2913b86 notch p50 7.744 p95 11.841 max 15.988 ms",
+  "36-narrow-0aca11e start 04:00:03 load 0.35",
+  "geom 12 38 461 490 affinity 8-11",
+  "36-narrow-0aca11e notch p50 5.321 p95 11.324 max 15.860 ms",
+  "37-narrow-2913b86 start 04:00:41 load 0.34",
+  "geom 12 38 461 490 affinity 8-11",
+  "37-narrow-2913b86 notch p50 5.976 p95 9.080 max 14.976 ms",
+  "38-narrow-0aca11e start 04:01:20 load 0.24",
+  "geom 12 38 461 490 affinity 8-11",
+  "38-narrow-0aca11e notch p50 4.600 p95 8.754 max 16.053 ms",
+  "39-narrow-0aca11e start 04:01:58 load 0.27",
+  "geom 12 38 461 490 affinity 8-11",
+  "39-narrow-0aca11e notch p50 7.622 p95 14.488 max 16.622 ms",
+  "40-narrow-2913b86 start 04:02:37 load 0.15",
+  "geom 12 38 461 490 affinity 8-11",
+  "40-narrow-2913b86 notch p50 5.819 p95 9.073 max 14.873 ms",
+  "done 04:03:15"
+ ]
+}
