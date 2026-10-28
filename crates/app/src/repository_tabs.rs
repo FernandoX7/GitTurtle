@@ -4178,17 +4178,6 @@ mod tests {
                 "{what} keeps {kept:?} of room, not the installed ring's {room:?}"
             );
         }
-        /// Draw until `selector` is rendered, while a worker reads.
-        fn wait_for(cx: &mut VisualTestContext, selector: &'static str) {
-            for _ in 0..500 {
-                draw(cx);
-                if cx.debug_bounds(selector).is_some() {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            panic!("{selector} is never rendered");
-        }
         fn shown(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
             settings::shown(cx, selector).unwrap_or_else(|| panic!("{selector} is rendered"))
         }
@@ -4283,8 +4272,9 @@ mod tests {
         let room = cx.read(appearance::button_ring_room);
         assert_eq!(room, px(2.), "the helper follows the installed ring");
 
-        // The repository tab list.
-        wait_for(cx, "repository-tab-0");
+        // The repository tab list. The window's deferred open adds the tab
+        // before any read, and the settles above ran it, so the frame
+        // `install_ring` drew already holds the tab: nothing to wait for.
         let tab = rendered(cx, "repository-tab-0");
         assert_room(
             "the tab list",
@@ -4293,8 +4283,11 @@ mod tests {
         );
 
         // The Tags list.
+        // Tags opens once its list, read on the operation executor's own
+        // thread, lands: wait for that read rather than for wall-clock time.
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
-        wait_for(cx, "tag-row-0");
+        crate::tags::tests::read_lands(&app, cx).await;
+        draw(cx);
         let row = rendered(cx, "tag-row-0");
         assert_room(
             "the Tags list",

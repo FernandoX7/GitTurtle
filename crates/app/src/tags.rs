@@ -697,6 +697,15 @@ pub(crate) mod tests {
         }
     }
 
+    /// Returns once the read `open_tags` or `inspect_tag` started has landed.
+    /// It runs on the app's operation executor, a thread `run_until_parked`
+    /// cannot wait for, and the dialog it prepares opens only with its reply,
+    /// so a wait in wall-clock time missed a slow read.
+    pub(crate) async fn read_lands(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        let read = app.update(cx, |app, _| app.tag_actions.task.take());
+        read.expect("a tag read was started").await;
+    }
+
     pub(crate) fn rendered(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
         cx.debug_bounds(selector)
             .unwrap_or_else(|| panic!("rendered {selector}"))
@@ -1155,8 +1164,7 @@ pub(crate) mod tests {
         let repo = tagged_repository(fixture.path());
         let (app, cx) = window(cx, &repo);
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
-        let read = app.update(cx, |app, _| app.tag_actions.task.take());
-        read.expect("the tags are read").await;
+        read_lands(&app, cx).await;
         draw(cx);
         assert_room_for_rings(
             cx,
@@ -1189,8 +1197,7 @@ pub(crate) mod tests {
         let tag = repo.tags().unwrap().tags[0].clone();
         let (app, cx) = window(cx, &repo);
         cx.update(|window, cx| app.update(cx, |app, cx| app.inspect_tag(tag, window, cx)));
-        let read = app.update(cx, |app, _| app.tag_actions.task.take());
-        read.expect("the tag is read").await;
+        read_lands(&app, cx).await;
         draw(cx);
         assert_room_for_rings(
             cx,
@@ -1230,8 +1237,7 @@ pub(crate) mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let (_repo, app, cx) = small_window_with_tags(cx, fixture.path(), 27);
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
-        let read = app.update(cx, |app, _| app.tag_actions.task.take());
-        read.expect("the tags are read").await;
+        read_lands(&app, cx).await;
         draw(cx);
         let list = app
             .read_with(cx, |app, _| app.tag_actions.list.clone())
@@ -1253,8 +1259,7 @@ pub(crate) mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let (_repo, app, cx) = small_window_with_tags(cx, fixture.path(), 27);
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
-        let read = app.update(cx, |app, _| app.tag_actions.task.take());
-        read.expect("the tags are read").await;
+        read_lands(&app, cx).await;
         draw(cx);
         let list = app
             .read_with(cx, |app, _| app.tag_actions.list.clone())
@@ -1291,8 +1296,7 @@ pub(crate) mod tests {
         }
         let tag = repo.tags().unwrap().tags[0].clone();
         cx.update(|window, cx| app.update(cx, |app, cx| app.inspect_tag(tag, window, cx)));
-        let read = app.update(cx, |app, _| app.tag_actions.task.take());
-        read.expect("the tag is read").await;
+        read_lands(&app, cx).await;
         draw(cx);
         let list = app
             .read_with(cx, |app, _| app.tag_actions.list.clone())
@@ -1343,8 +1347,7 @@ pub(crate) mod tests {
     ) -> (Entity<GitTurtle>, FocusReveal, &'a mut VisualTestContext) {
         let (_repo, app, cx) = small_window_with_tags(cx, fixture, tags.saturating_sub(3));
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
-        let read = app.update(cx, |app, _| app.tag_actions.task.take());
-        read.expect("the tags are read").await;
+        read_lands(&app, cx).await;
         draw(cx);
         let list = app
             .read_with(cx, |app, _| app.tag_actions.list.clone())
@@ -1363,8 +1366,7 @@ pub(crate) mod tests {
         add_remotes(fixture, &repo, remotes);
         let tag = repo.tags().unwrap().tags[0].clone();
         cx.update(|window, cx| app.update(cx, |app, cx| app.inspect_tag(tag, window, cx)));
-        let read = app.update(cx, |app, _| app.tag_actions.task.take());
-        read.expect("the tag is read").await;
+        read_lands(&app, cx).await;
         draw(cx);
         let list = app
             .read_with(cx, |app, _| app.tag_actions.list.clone())

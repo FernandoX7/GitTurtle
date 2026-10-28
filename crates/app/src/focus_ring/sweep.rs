@@ -242,8 +242,9 @@ pub(crate) fn close_dialogs(
 }
 
 /// What opening a dialog leaves running that a walk waits for: nothing, as
-/// for most dialogs, whose reads go through the app's own tasks, or the reads
-/// a dialog runs on a thread of its own, such as the Reflog's, which
+/// for most dialogs, whose reads go through the app's own tasks and its
+/// operation executor, which [`open_dialog`] drains, or the reads a dialog
+/// runs on a thread of its own, such as the Reflog's, which
 /// `run_until_parked` cannot wait for.
 pub(crate) trait Opened {
     /// Returns once what opening the dialog started has landed.
@@ -286,6 +287,13 @@ pub(crate) async fn open_dialog<O: Opened>(
     draw(cx, 2);
     let opened = cx.update(|window, cx| app.update(cx, |app, cx| open(app, window, cx)));
     opened.finish(cx);
+    // Tags opens only once its list, read on the app's operation executor,
+    // lands. That executor answers on its own thread, which neither
+    // `run_until_parked` nor `settle` waits for, so a slow read left the
+    // dialog unopened when the walk began; once the executor drains, every
+    // read the opener submitted has answered, and the replies land as the
+    // app settles.
+    app.read_with(cx, |app, _| app.operations.drain());
     views::tests::settle(app, cx).await;
     assert!(
         cx.update(|window, cx| window.has_active_dialog(cx)),
