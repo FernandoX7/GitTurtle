@@ -12,8 +12,19 @@ use std::{
 const DARK_COLORS: [u32; 6] = [0x7adfb4, 0x8db7f6, 0xc3a5f2, 0xe8be7a, 0xea9ca5, 0x72ccd8];
 const LIGHT_COLORS: [u32; 6] = [0x146c53, 0x315da7, 0x7651aa, 0x8c5916, 0xa42d63, 0x156b7c];
 const NODE_MARGIN: f32 = 10.;
+/// The narrowest compact lane pitch. Nodes keep their radii at every pitch,
+/// so this leaves a selected node (5 px) 2.2 px clear of a neighbouring
+/// lane's 1.6 px stroke.
+const COMPACT_PITCH_MIN: f32 = 8.;
 pub(super) fn required_width(lane_count: usize, spacing: f32) -> f32 {
     NODE_MARGIN * 2. + lane_count.saturating_sub(1).min(128) as f32 * spacing
+}
+
+/// Narrow History's lane pitch for a chosen `spacing`: half of it, so the
+/// graph keeps its shape in about half the width, and never so tight that a
+/// node touches the next lane's edge.
+pub(super) fn compact_spacing(spacing: f32) -> f32 {
+    (spacing * 0.5).max(COMPACT_PITCH_MIN)
 }
 
 /// Colors change with appearance; worker-prepared lane identities do not.
@@ -556,6 +567,20 @@ mod tests {
         let complete = layout(&commits);
         assert!(!prefix[1].edges.is_empty());
         assert_eq!(prefix, complete[..prefix.len()]);
+    }
+
+    /// Narrow History's pitch is half the chosen spacing, scaled or not, and
+    /// a selected node with its ring never reaches the next lane's stroke.
+    #[test]
+    fn compact_pitch_halves_the_spacing_and_keeps_nodes_clear() {
+        assert_eq!(compact_spacing(20.), 10.);
+        assert_eq!(compact_spacing(32. * 18. / 13.), 16. * 18. / 13.);
+        for spacing in [12., 14., 20., 32., 44.3] {
+            let pitch = compact_spacing(spacing);
+            assert!(pitch <= spacing * 0.5 || pitch == COMPACT_PITCH_MIN);
+            assert!(5. + 0.8 < pitch, "{spacing}: {pitch}");
+            assert!(required_width(8, pitch) < required_width(8, spacing));
+        }
     }
 
     #[test]

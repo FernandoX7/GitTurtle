@@ -1178,6 +1178,9 @@ impl GitTurtle {
             .as_ref()
             .map(|s| s.0.clone())
             .unwrap_or("All history".into());
+        // Before anything in this frame lays the columns out, rows included.
+        self.history_subject_floor
+            .set(f32::from(subject_floor(window)));
         let columns = self.history_column_layout();
         let history = if self.commits.is_empty() && self.error.is_some() {
             empty(
@@ -1214,8 +1217,9 @@ impl GitTurtle {
                 "commits",
                 self.visible.len(),
                 cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                    let rows = this.history_rows(cx);
                     range
-                        .map(|i| this.render_commit_row(i, cx))
+                        .map(|i| this.render_commit_row(i, &rows, cx))
                         .collect::<Vec<_>>()
                 }),
             )
@@ -1263,6 +1267,17 @@ impl GitTurtle {
             .children(columns.columns.iter().map(|column| {
                 let id = column.id;
                 let width = column.width;
+                // Narrow History sets the graph's and the subject's widths
+                // itself, so their dividers stay drawn but drag no saved
+                // width it would not show. Its compact graph shows its title
+                // only where the title fits whole, and has no room for the
+                // lane buttons: the selection reveals its lane and the
+                // palette's lane commands remain.
+                let narrow = columns.narrow;
+                let resizable = !(narrow
+                    && matches!(id, columns::ColumnId::Graph | columns::ColumnId::Subject));
+                let title =
+                    !(narrow && id == columns::ColumnId::Graph) || graph_title_fits(width, window);
                 div()
                     .debug_selector(move || format!("history-column-{}", id as usize))
                     .relative()
@@ -1273,9 +1288,9 @@ impl GitTurtle {
                     .items_center()
                     .pl(px(10.))
                     .pr_3()
-                    .child(div().truncate().child(id.label()))
-                    .when(id == columns::ColumnId::Graph, |cell| {
-                        let capacity = self.graph_lane_capacity();
+                    .when(title, |cell| cell.child(div().truncate().child(id.label())))
+                    .when(id == columns::ColumnId::Graph && !narrow, |cell| {
+                        let capacity = self.layout_lane_capacity(&columns);
                         let offset = self.graph_lane_offset();
                         cell.when(self.graph_lanes > capacity, |cell| {
                             cell.child(div().flex_1())
@@ -1312,18 +1327,21 @@ impl GitTurtle {
                             .top_0()
                             .w(px(7.))
                             .h_full()
-                            .cursor_col_resize()
                             .border_r_1()
                             .border_color(rgb(colors.border))
-                            .hover(|style| style.bg(rgb(colors.hover)))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                    this.column_drag = Some((id, event.position.x, width));
-                                    cx.stop_propagation();
-                                    cx.notify();
-                                }),
-                            ),
+                            .when(resizable, |divider| {
+                                divider
+                                    .cursor_col_resize()
+                                    .hover(|style| style.bg(rgb(colors.hover)))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                            this.column_drag = Some((id, event.position.x, width));
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        }),
+                                    )
+                            }),
                     )
             }));
         div()
@@ -1424,27 +1442,76 @@ impl GitTurtle {
             .into_any_element()
     }
 
+    /// The chosen graph lane spacing at the interface size.
+    fn lane_spacing(&self) -> f32 {
+        f32::from(self.settings.graph_spacing) * appearance::ui_scale()
+    }
+
+    /// History's columns for the width it last recorded: the chosen ones,
+    /// or narrow History's below the width that leaves the subject its
+    /// floor (`ColumnSettings::history_layout`).
     fn history_column_layout(&self) -> columns::ColumnLayout {
-        self.settings.columns.layout_for_graph(
+        let spacing = self.lane_spacing();
+        let compact = graph::compact_spacing(spacing);
+        self.settings.columns.history_layout(
             self.history_width - 26.,
-            graph::required_width(
-                self.graph_lanes,
-                f32::from(self.settings.graph_spacing) * appearance::ui_scale(),
-            ),
+            graph::required_width(self.graph_lanes, spacing),
+            columns::NarrowHistory {
+                subject_floor: self.history_subject_floor.get(),
+                graph: graph::required_width(self.graph_lanes, compact),
+                graph_min: graph::required_width(1, compact),
+            },
         )
     }
 
+    /// The lane pitch `layout` draws the graph at: narrow History's compact
+    /// pitch, or the chosen spacing.
+    fn layout_lane_spacing(&self, layout: &columns::ColumnLayout) -> f32 {
+        if layout.narrow {
+            graph::compact_spacing(self.lane_spacing())
+        } else {
+            self.lane_spacing()
+        }
+    }
+
     fn graph_lane_capacity(&self) -> usize {
-        let width = self
-            .history_column_layout()
+        self.layout_lane_capacity(&self.history_column_layout())
+    }
+
+    fn layout_lane_capacity(&self, layout: &columns::ColumnLayout) -> usize {
+        let width = layout
             .columns
             .iter()
             .find(|column| column.id == columns::ColumnId::Graph)
             .map_or(112., |column| column.width);
-        graph::visible_lane_capacity(
-            width,
-            f32::from(self.settings.graph_spacing) * appearance::ui_scale(),
-        )
+        graph::visible_lane_capacity(width, self.layout_lane_spacing(layout))
+    }
+
+    /// What every History row of a frame shares, laid out once per frame
+    /// rather than once per row.
+    fn history_rows(&self, cx: &App) -> HistoryRows {
+        let columns = self.history_column_layout();
+        let filtered = history_paging::graph_is_filtered(
+            self.commits.len(),
+            self.visible.len(),
+            self.automatic.retained_commit,
+            self.history_search_active(),
+        ) || self.graph_notice.is_some();
+        HistoryRows {
+            spacing: self.layout_lane_spacing(&columns),
+            lane_offset: if filtered {
+                0
+            } else {
+                self.graph_offset.min(
+                    self.graph_lanes
+                        .saturating_sub(self.layout_lane_capacity(&columns)),
+                )
+            },
+            filtered,
+            lane_colors: graph::colors(cx),
+            labels: appearance::labels(cx),
+            columns,
+        }
     }
 
     fn graph_lane_offset(&self) -> usize {
@@ -1480,164 +1547,221 @@ impl GitTurtle {
         };
     }
 
-    pub(super) fn render_commit_row(&self, position: usize, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_commit_row(
+        &self,
+        position: usize,
+        rows: &HistoryRows,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = palette(cx);
         let index = self.visible[position];
         let commit = &self.commits[index];
         let subject = commit_message::summary(&commit.subject);
         let author = commit_message::summary(&commit.author);
         let active = self.selected_commit == Some(index);
-        let columns = self.history_column_layout();
-        let lane_colors = graph::colors(cx);
-        let lane = self.graph[index].color % lane_colors.len();
-        let color = lane_colors[lane];
-        let refs_width = self.settings.columns.refs.width;
-        let mut references = div()
-            .w(px(refs_width))
-            .flex_shrink_0()
-            .pl(px(10.))
-            .pr_2()
-            .flex()
-            .items_center()
-            .gap_1()
-            .overflow_hidden();
-        if let Some(names) = self
+        let columns = &rows.columns;
+        let lane = self.graph[index].color % rows.lane_colors.len();
+        let color = rows.lane_colors[lane];
+        let label = rows.labels.refs[lane];
+        let tint = rgba((color << 8) | crate::appearance::REF_TINT_ALPHA);
+        let names = self
             .refs
             .get(&commit.oid)
-            .filter(|_| self.settings.columns.refs.visible)
-        {
-            if let Some(name) = names.first() {
-                let title = names.join("\n");
-                references = references.child(
+            .filter(|names| self.settings.columns.refs.visible && !names.is_empty());
+        let mut references = None;
+        let mut pill = None;
+        // The whole list, which narrow History gives the row's tooltip and
+        // accessible name.
+        let mut folded = None;
+        if let Some(names) = names {
+            // HEAD's branch comes first (`worker::Snapshot::refs`).
+            let name = names[0].clone();
+            let more = (names.len() > 1).then(|| format!("+{}", names.len() - 1));
+            if columns.narrow {
+                #[cfg(test)]
+                HISTORY_PILLS.with(|pills| {
+                    pills
+                        .borrow_mut()
+                        .insert(index, (name.clone(), more.clone(), label))
+                });
+                folded = Some(names);
+                pill = Some(
                     div()
-                        .id(("refs", index))
+                        .debug_selector(move || format!("history-ref-pill-{index}"))
+                        .flex_shrink_0()
                         .min_w_0()
-                        .max_w(px(refs_width - 22.))
-                        .truncate()
+                        .max_w(relative(0.5))
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .overflow_hidden()
                         .px_1()
                         .py_0p5()
                         .rounded(px(3.))
                         .text_size(crate::appearance::ui_text(10.))
-                        .text_color(rgb(crate::appearance::labels(cx).refs[lane]))
-                        .bg(rgba((color << 8) | crate::appearance::REF_TINT_ALPHA))
-                        .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
-                        .child(name.clone()),
+                        .text_color(rgb(label))
+                        .bg(tint)
+                        .child(div().min_w_0().truncate().child(name))
+                        .children(more.map(|more| div().flex_shrink_0().child(more))),
                 );
-            }
-            if names.len() > 1 {
-                references = references.child(
+            } else {
+                let refs_width = self.settings.columns.refs.width;
+                let title = names.join("\n");
+                references = Some(
                     div()
+                        .w(px(refs_width))
                         .flex_shrink_0()
-                        .text_size(crate::appearance::ui_text(10.))
-                        .text_color(rgb(colors.muted))
-                        .child(format!("+{}", names.len() - 1)),
+                        .pl(px(10.))
+                        .pr_2()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .id(("refs", index))
+                                .min_w_0()
+                                .max_w(px(refs_width - 22.))
+                                .truncate()
+                                .px_1()
+                                .py_0p5()
+                                .rounded(px(3.))
+                                .text_size(crate::appearance::ui_text(10.))
+                                .text_color(rgb(label))
+                                .bg(tint)
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(title.clone()).build(window, cx)
+                                })
+                                .child(name),
+                        )
+                        .children(more.map(|more| {
+                            div()
+                                .flex_shrink_0()
+                                .text_size(crate::appearance::ui_text(10.))
+                                .text_color(rgb(colors.muted))
+                                .child(more)
+                        }))
+                        .into_any_element(),
                 );
             }
         }
-        let references = references.into_any_element();
-        let mut references = Some(references);
-        let graph_filtered = history_paging::graph_is_filtered(
-            self.commits.len(),
-            self.visible.len(),
-            self.automatic.retained_commit,
-            self.history_search_active(),
-        ) || self.graph_notice.is_some();
-        let row = div()
-            .id(("commit", index))
-            .role(Role::ListBoxOption)
-            .aria_label(format!(
-                "{} · {} · {} · {} parent{}{}",
-                subject,
-                author,
-                short_oid(&commit.oid),
-                commit.parents.len(),
-                if commit.parents.len() == 1 { "" } else { "s" },
-                if commit.parents.len() > 1 {
-                    " · merge commit"
-                } else {
-                    ""
-                }
-            ))
-            .aria_selected(active)
-            .when(active, |row| row.aria_active_descendant())
-            .aria_position_in_set(position + 1)
-            .aria_size_of_set(self.visible.len())
-            .w_full()
-            .h(px(self.settings.density.history_row_height()))
-            .flex()
-            .items_center()
-            .px_3()
-            .gap_0()
-            .bg(rgb(if active {
-                colors.selected
+        let name = format!(
+            "{}{} · {} · {} · {} parent{}{}",
+            subject,
+            folded.map_or_else(String::new, |names| format!(
+                " · References: {}",
+                names.join(", ")
+            )),
+            author,
+            short_oid(&commit.oid),
+            commit.parents.len(),
+            if commit.parents.len() == 1 { "" } else { "s" },
+            if commit.parents.len() > 1 {
+                " · merge commit"
             } else {
-                colors.canvas
-            }))
-            .border_l_2()
-            .border_color(rgb(if active { colors.accent } else { colors.canvas }))
-            .hover(|s| s.bg(rgb(colors.row_hover(active))))
-            .active(|s| s.bg(rgb(colors.selected)))
-            .cursor_pointer()
-            .children(columns.columns.iter().map(|column| {
-                let cell = div()
-                    .w(px(column.width))
-                    .flex_shrink_0()
-                    .min_w_0()
-                    .overflow_hidden();
-                match column.id {
-                    ColumnId::Refs => cell.children(references.take()).into_any_element(),
-                    ColumnId::Graph => cell
-                        .child(graph::render(
-                            self.graph[index].clone(),
-                            column.width,
-                            if graph_filtered {
-                                0
-                            } else {
-                                self.graph_lane_offset()
-                            },
-                            f32::from(self.settings.graph_spacing) * appearance::ui_scale(),
-                            self.settings.density.history_row_height(),
-                            graph::RowStyle {
-                                active,
-                                merge: commit.parents.len() > 1,
-                                filtered: graph_filtered,
-                            },
-                        ))
-                        .into_any_element(),
-                    ColumnId::Subject => cell
-                        .pl(px(10.))
-                        .pr_3()
-                        .truncate()
-                        .text_size(crate::appearance::ui_text(13.))
-                        .child(subject.clone())
-                        .into_any_element(),
-                    ColumnId::Author => cell
-                        .pl(px(10.))
-                        .pr_3()
-                        .truncate()
-                        .text_size(crate::appearance::ui_text(11.))
-                        .text_color(rgb(colors.muted))
-                        .child(author.clone())
-                        .into_any_element(),
-                    ColumnId::Date => cell
-                        .pl(px(10.))
-                        .pr_3()
-                        .truncate()
-                        .text_size(crate::appearance::ui_text(11.))
-                        .text_color(rgb(colors.muted))
-                        .child(short_date(commit.timestamp))
-                        .into_any_element(),
-                    ColumnId::Sha => cell
-                        .pl(px(10.))
-                        .pr_3()
-                        .truncate()
-                        .font_family(mono())
-                        .text_size(crate::appearance::ui_text(11.))
-                        .text_color(rgb(colors.muted))
-                        .child(short_oid(&commit.oid))
-                        .into_any_element(),
-                }
-            }));
+                ""
+            }
+        );
+        let tooltip = folded.map(|names| SharedString::from(names.join("\n")));
+        #[cfg(test)]
+        HISTORY_ROW_NAMES.with(|names| {
+            names
+                .borrow_mut()
+                .insert(index, (name.clone(), tooltip.clone()))
+        });
+        let row =
+            div()
+                .id(("commit", index))
+                .role(Role::ListBoxOption)
+                .aria_label(name)
+                .aria_selected(active)
+                .when(active, |row| row.aria_active_descendant())
+                .aria_position_in_set(position + 1)
+                .aria_size_of_set(self.visible.len())
+                .when_some(tooltip, |row, tooltip| {
+                    row.tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                })
+                .w_full()
+                .h(px(self.settings.density.history_row_height()))
+                .flex()
+                .items_center()
+                .px_3()
+                .gap_0()
+                .bg(rgb(if active {
+                    colors.selected
+                } else {
+                    colors.canvas
+                }))
+                .border_l_2()
+                .border_color(rgb(if active { colors.accent } else { colors.canvas }))
+                .hover(|s| s.bg(rgb(colors.row_hover(active))))
+                .active(|s| s.bg(rgb(colors.selected)))
+                .cursor_pointer()
+                .children(columns.columns.iter().map(|column| {
+                    let cell = div()
+                        .w(px(column.width))
+                        .flex_shrink_0()
+                        .min_w_0()
+                        .overflow_hidden();
+                    match column.id {
+                        ColumnId::Refs => cell.children(references.take()).into_any_element(),
+                        ColumnId::Graph => cell
+                            .child(graph::render(
+                                self.graph[index].clone(),
+                                column.width,
+                                rows.lane_offset,
+                                rows.spacing,
+                                self.settings.density.history_row_height(),
+                                graph::RowStyle {
+                                    active,
+                                    merge: commit.parents.len() > 1,
+                                    filtered: rows.filtered,
+                                },
+                            ))
+                            .into_any_element(),
+                        ColumnId::Subject => {
+                            let cell = cell
+                                .debug_selector(move || format!("history-subject-{index}"))
+                                .pl(px(10.))
+                                .pr_3()
+                                .text_size(crate::appearance::ui_text(13.));
+                            // Narrow History folds References into the cell's
+                            // start, and the subject truncates beside the pill.
+                            match pill.take() {
+                                Some(pill) => cell.flex().items_center().gap_1().child(pill).child(
+                                    div().flex_1().min_w_0().truncate().child(subject.clone()),
+                                ),
+                                None => cell.truncate().child(subject.clone()),
+                            }
+                            .into_any_element()
+                        }
+                        ColumnId::Author => cell
+                            .pl(px(10.))
+                            .pr_3()
+                            .truncate()
+                            .text_size(crate::appearance::ui_text(11.))
+                            .text_color(rgb(colors.muted))
+                            .child(author.clone())
+                            .into_any_element(),
+                        ColumnId::Date => cell
+                            .pl(px(10.))
+                            .pr_3()
+                            .truncate()
+                            .text_size(crate::appearance::ui_text(11.))
+                            .text_color(rgb(colors.muted))
+                            .child(short_date(commit.timestamp))
+                            .into_any_element(),
+                        ColumnId::Sha => cell
+                            .pl(px(10.))
+                            .pr_3()
+                            .truncate()
+                            .font_family(mono())
+                            .text_size(crate::appearance::ui_text(11.))
+                            .text_color(rgb(colors.muted))
+                            .child(short_oid(&commit.oid))
+                            .into_any_element(),
+                    }
+                }));
         let recovery_owner = cx.entity().downgrade();
         let recovery_repository = self.path.clone();
         let recovery_commit = recovery::commit_target(commit);
@@ -3218,6 +3342,47 @@ fn scope_name_min_width(scope: &str, window: &Window) -> Pixels {
     })
 }
 
+/// What every History row of a frame shares (`GitTurtle::history_rows`).
+pub(super) struct HistoryRows {
+    columns: columns::ColumnLayout,
+    /// The lane pitch the graph is drawn at, compact in narrow History.
+    spacing: f32,
+    lane_offset: usize,
+    filtered: bool,
+    lane_colors: [u32; 6],
+    labels: appearance::Labels,
+}
+
+/// What a History column header cell needs for its whole `title` at the
+/// header's 11 pt medium at the interface size: the title and the cell's
+/// 10 px and `pr_3` insets. The title is measured from the interface font,
+/// and again only when the font or the sizes change, so a steady render asks
+/// the text system nothing.
+fn header_cell_width(
+    cache: &'static std::thread::LocalKey<RefCell<Option<(LineKey, Pixels)>>>,
+    title: &str,
+    window: &Window,
+) -> Pixels {
+    let title = cached_width(cache, &LineKey::current(window), || {
+        shaped_width(title, appearance::ui_text(11.), FontWeight::MEDIUM, window).ceil()
+    });
+    px(10.) + window.rem_size() * 0.75 + title
+}
+
+/// Narrow History's subject floor: the cell the subject's column header
+/// needs for its whole title, "Commit message", so neither the title nor a
+/// row's subject is cut to nothing. About 113 px at the default size and
+/// 152 px at 18 pt with the embedded font.
+pub(super) fn subject_floor(window: &Window) -> Pixels {
+    header_cell_width(&SUBJECT_TITLE, ColumnId::Subject.label(), window)
+}
+
+/// Whether narrow History's Graph title fits whole in its `width`-wide
+/// header cell.
+fn graph_title_fits(width: f32, window: &Window) -> bool {
+    px(width) >= header_cell_width(&GRAPH_TITLE, ColumnId::Graph.label(), window)
+}
+
 /// What a line of interface text is laid out with besides its text: the
 /// inherited font, and the interface and rem sizes its text size comes from.
 #[derive(Clone, PartialEq)]
@@ -3253,6 +3418,8 @@ thread_local! {
     static STATUS_WORDS: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static BLAME_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static TEXT_MODE_WIDEST: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+    static SUBJECT_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+    static GRAPH_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
 }
 #[cfg(test)]
 thread_local! {
@@ -3270,7 +3437,21 @@ thread_local! {
     /// it shows, such as the Changes count (`compact_control_label`).
     pub(crate) static COMPACT_LABELS: RefCell<std::collections::BTreeMap<&'static str, SharedString>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
+    /// Narrow History's reference pill as each row last drew it, by commit
+    /// index.
+    static HISTORY_PILLS: RefCell<std::collections::BTreeMap<usize, PillProbe>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
+    /// Each History row's accessible name and tooltip as it last drew them,
+    /// by commit index.
+    static HISTORY_ROW_NAMES: RefCell<std::collections::BTreeMap<usize, RowNameProbe>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
 }
+/// A drawn pill's name, its "+N" and its label colour.
+#[cfg(test)]
+type PillProbe = (String, Option<String>, u32);
+/// A drawn History row's accessible name and tooltip.
+#[cfg(test)]
+type RowNameProbe = (String, Option<SharedString>);
 
 /// The compact Changes toggle's working-file count, a small accent pill on
 /// the icon's top-right corner inside the toggle, so the toggle keeps its
@@ -7207,6 +7388,329 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    /// The newest commit of [`references_script`], a merge that HEAD's
+    /// `main`, `feature/alpha`, `release` and `origin/main` point at.
+    const MERGE_SUBJECT: &str =
+        "Merge the side work so this subject has to truncate in narrow History";
+    /// The side branch's commit, which `side` alone points at, on lane 1.
+    const SIDE_SUBJECT: &str = "Side work";
+
+    /// A `git fast-import` stream of `linear` commits on `main`, then a side
+    /// commit and a main commit from the last of them and a merge of both on
+    /// `main`, so the graph has two lanes. The merge carries four
+    /// references, HEAD's branch second in Git's order; the side commit one.
+    fn references_script(linear: usize) -> String {
+        let mut input = String::new();
+        let mut commit = |reference: &str,
+                          mark: usize,
+                          from: Option<usize>,
+                          merge: Option<usize>,
+                          message: &str| {
+            input.push_str(&format!(
+                "commit {reference}\nmark :{mark}\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\n",
+                1_700_000_000 + mark,
+                message.len(),
+            ));
+            if let Some(from) = from {
+                input.push_str(&format!("from :{from}\n"));
+            }
+            if let Some(merge) = merge {
+                input.push_str(&format!("merge :{merge}\n"));
+            }
+            input.push_str(&format!(
+                "M 100644 inline notes.txt\ndata {}\n{mark}\n\n",
+                mark.to_string().len() + 1
+            ));
+        };
+        for mark in 1..=linear {
+            commit(
+                "refs/heads/main",
+                mark,
+                None,
+                None,
+                &format!("Linear {mark}"),
+            );
+        }
+        commit(
+            "refs/heads/side",
+            linear + 1,
+            Some(linear),
+            None,
+            SIDE_SUBJECT,
+        );
+        commit(
+            "refs/heads/main",
+            linear + 2,
+            Some(linear),
+            None,
+            "Main work",
+        );
+        commit(
+            "refs/heads/main",
+            linear + 3,
+            None,
+            Some(linear + 1),
+            MERGE_SUBJECT,
+        );
+        for reference in [
+            "refs/heads/feature/alpha",
+            "refs/heads/release",
+            "refs/remotes/origin/main",
+        ] {
+            input.push_str(&format!("reset {reference}\nfrom :{}\n\n", linear + 3));
+        }
+        input + "done\n"
+    }
+
+    /// The bounds the last frame drew `selector` at, for a selector built at
+    /// run time.
+    fn bounds_of(cx: &mut VisualTestContext, selector: String) -> Option<Bounds<Pixels>> {
+        cx.debug_bounds(selector.leak())
+    }
+
+    /// The index of the loaded commit whose subject is `subject`.
+    fn commit_index(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, subject: &str) -> usize {
+        app.read_with(cx, |app, _| {
+            app.commits
+                .iter()
+                .position(|commit| commit.subject == subject)
+                .expect(subject)
+        })
+    }
+
+    /// In a 461 × 490 half tile and a 640 × 680 window, at 13 and 18 pt,
+    /// History is too narrow for the chosen References and Graph to leave
+    /// the subject anything readable. The subject keeps at least its floor,
+    /// about 120 px scaled with the interface size, inside the viewport;
+    /// References fold into one pill at its start, HEAD's branch and "+3",
+    /// in the badge's colours, with the whole list in the row's tooltip and
+    /// accessible name; and the graph takes its compact pitch, its selected
+    /// node on its lane and centred in its row.
+    #[gpui::test]
+    async fn narrow_history_keeps_the_subject_and_folds_references(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
+        let merge = commit_index(&app, cx, MERGE_SUBJECT);
+        let side = commit_index(&app, cx, SIDE_SUBJECT);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(side, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        let (lanes, side_lane, merge_color) = app.read_with(cx, |app, _| {
+            (
+                app.graph_lanes,
+                app.graph[side].lane,
+                app.graph[merge].color,
+            )
+        });
+        assert_eq!((lanes, side_lane), (2, 1), "the fixture draws two lanes");
+        let list = "main\nfeature/alpha\nrelease\norigin/main";
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for (width, height) in [(461., 490.), (640., 680.)] {
+                HISTORY_PILLS.with(|pills| pills.borrow_mut().clear());
+                HISTORY_ROW_NAMES.with(|names| names.borrow_mut().clear());
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let at = format!("{width} × {height} at {text} pt");
+                let (floor, available, spacing) = app.read_with(cx, |app, _| {
+                    (
+                        app.history_subject_floor.get(),
+                        app.history_width - 26.,
+                        app.lane_spacing(),
+                    )
+                });
+                let scale = appearance::ui_scale();
+                assert!(
+                    (100. * scale..=140. * scale).contains(&floor),
+                    "a floor of about 120 px scaled {at}: {floor}"
+                );
+                assert!(
+                    cx.debug_bounds("history-column-0").is_none(),
+                    "References fold {at}"
+                );
+
+                // The subject cell, inside the viewport the History column
+                // shows, keeps its floor.
+                let view = cx.debug_bounds("history-scope-toolbar").unwrap();
+                for row in [merge, side] {
+                    let cell = bounds_of(cx, format!("history-subject-{row}")).unwrap();
+                    let visible = cell.right().min(view.right()) - cell.left().max(view.left());
+                    assert!(
+                        visible >= px(floor) - px(0.5),
+                        "row {row}'s subject shows {visible:?} of {floor} {at}: {cell:?} in {view:?}"
+                    );
+                }
+
+                // One pill at the subject's start, at most half its text.
+                let cell = bounds_of(cx, format!("history-subject-{merge}")).unwrap();
+                let pill = bounds_of(cx, format!("history-ref-pill-{merge}")).unwrap();
+                assert!(
+                    (pill.left() - cell.left() - px(10.)).abs() < px(0.5)
+                        && pill.right() <= cell.left() + cell.size.width / 2.
+                        && pill.top() >= cell.top()
+                        && pill.bottom() <= cell.bottom(),
+                    "the pill {pill:?} at the start of {cell:?} {at}"
+                );
+                let label = cx.update(|_, cx| appearance::labels(cx).refs[merge_color % 6]);
+                assert_eq!(
+                    HISTORY_PILLS.with(|pills| pills.borrow().get(&merge).cloned()),
+                    Some(("main".to_owned(), Some("+3".to_owned()), label)),
+                    "HEAD's branch and the others' count {at}"
+                );
+                assert_eq!(
+                    HISTORY_PILLS
+                        .with(|pills| pills.borrow().get(&side).map(|pill| pill.1.clone())),
+                    Some(None),
+                    "a lone reference has no count {at}"
+                );
+                let lane = cx.update(|_, cx| graph::colors(cx)[merge_color % 6]);
+                assert_eq!(
+                    painted_fills(cx, format!("history-ref-pill-{merge}").leak()),
+                    vec![gpui_kit::Background::from(gpui_kit::Hsla::from(rgba(
+                        (lane << 8) | crate::appearance::REF_TINT_ALPHA
+                    )))],
+                    "the badge's tint {at}"
+                );
+                let (name, tooltip) = HISTORY_ROW_NAMES
+                    .with(|names| names.borrow().get(&merge).cloned())
+                    .unwrap();
+                assert!(
+                    name.starts_with(&format!(
+                        "{MERGE_SUBJECT} · References: main, feature/alpha, release, origin/main · "
+                    )) && name.ends_with(" · 2 parents · merge commit"),
+                    "{name} {at}"
+                );
+                assert_eq!(tooltip.as_deref(), Some(list), "{at}");
+
+                // The graph at half the pitch, within what the floor leaves.
+                let compact = graph::compact_spacing(spacing);
+                assert!(compact < spacing, "{at}");
+                let expected = graph::required_width(lanes, compact)
+                    .min(available - floor)
+                    .max(graph::required_width(1, compact));
+                let column = cx.debug_bounds("history-column-1").unwrap();
+                assert!(
+                    (f32::from(column.size.width) - expected).abs() < 0.5
+                        && f32::from(column.size.width) < graph::required_width(lanes, spacing),
+                    "a compact graph of {expected} {at}: {column:?}"
+                );
+                // The selected side commit's node, 5 px in radius, on lane 1
+                // at the compact pitch in its row's graph cell, which ends
+                // where the row's subject cell starts, and centred in its row.
+                let side_cell = bounds_of(cx, format!("history-subject-{side}")).unwrap();
+                let right = f32::from(side_cell.left());
+                let left = right - f32::from(column.size.width);
+                let nodes: Vec<_> = cx.update(|window, _| {
+                    let scale = window.scale_factor();
+                    let near = |device: gpui_kit::ScaledPixels, logical: f32| {
+                        (device.as_f32() / scale - logical).abs() < 0.01
+                    };
+                    window
+                        .painted_quads()
+                        .into_iter()
+                        .filter(|quad| {
+                            near(quad.bounds.size.width, 10.)
+                                && near(quad.bounds.size.height, 10.)
+                                && near(quad.corner_radii.top_left, 5.)
+                        })
+                        .map(|quad| {
+                            (
+                                (quad.bounds.left().as_f32() + quad.bounds.right().as_f32())
+                                    / 2.
+                                    / scale,
+                                (quad.bounds.top().as_f32() + quad.bounds.bottom().as_f32())
+                                    / 2.
+                                    / scale,
+                            )
+                        })
+                        .filter(|(x, _)| (left..right).contains(x))
+                        .collect()
+                });
+                let [(x, y)] = nodes.as_slice() else {
+                    panic!("one selected node in {left}–{right} {at}: {nodes:?}");
+                };
+                // Paint snaps the node to device pixels, half a pixel here.
+                assert!(
+                    (x - (left + 10. + compact)).abs() <= 0.25,
+                    "the selected node at x {x} on lane 1 of {left}–{right} {at}"
+                );
+                assert!(
+                    (y - f32::from(side_cell.center().y)).abs() < 0.5,
+                    "the selected node at y {y} beside its subject {side_cell:?} {at}"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Narrow History changes no preference: widening the window gives the
+    /// chosen columns back exactly, from 461 and 640 px at 13 and 18 pt.
+    #[gpui::test]
+    async fn widening_narrow_history_restores_the_chosen_columns(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
+        let settings = app.read_with(cx, |app, _| app.settings.clone());
+        let chosen = history_columns(&app, cx);
+        assert_eq!(chosen.1.len(), 6, "the 1000 px window shows every column");
+        for text in [13, 18] {
+            for (width, height) in [(461., 490.), (640., 680.)] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let at = format!("{width} × {height} at {text} pt");
+                assert!(
+                    app.read_with(cx, |app, _| app.history_column_layout().narrow),
+                    "narrow {at}"
+                );
+                assert_eq!(history_columns(&app, cx).1.len(), 5, "References fold {at}");
+                cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+                cx.simulate_resize(size(px(1000.), px(680.)));
+                draw(cx);
+                assert_eq!(history_columns(&app, cx), chosen, "after {at}");
+                assert_eq!(
+                    app.read_with(cx, |app, _| app.settings.clone()),
+                    settings,
+                    "the preferences after {at}"
+                );
+            }
+        }
+    }
+
+    /// A steady narrow History frame, and a scroll through its rows, ask the
+    /// text system nothing: the floor and the Graph title are measured once
+    /// for the font and sizes, and the pills are not measured at all.
+    #[gpui::test]
+    async fn narrow_history_scrolls_without_measuring_text(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(60)).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.history_column_layout().narrow));
+        let merge = commit_index(&app, cx, MERGE_SUBJECT);
+        let first = bounds_of(cx, format!("history-subject-{merge}")).unwrap();
+        let layouts = || LINE_LAYOUTS.with(std::cell::Cell::get);
+        let before = layouts();
+        app.update(cx, |_, cx| cx.notify());
+        draw(cx);
+        let row = app.read_with(cx, |app, _| app.settings.density.history_row_height());
+        for _ in 0..4 {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: first.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-row * 3.))),
+                modifiers: Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            draw(cx);
+        }
+        assert_ne!(
+            bounds_of(cx, format!("history-subject-{merge}")),
+            Some(first),
+            "the rows scrolled"
+        );
+        assert_eq!(
+            layouts(),
+            before,
+            "text laid out by a steady or scrolled frame"
+        );
     }
 
     /// Toggle Sidebar in a History window too narrow for navigation changes

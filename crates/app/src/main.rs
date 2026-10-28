@@ -488,6 +488,12 @@ struct GitTurtle {
     /// returning there announces nothing stale.
     navigation_refusals: usize,
     history_width: f32,
+    /// Narrow History's subject floor, measured from the interface font by
+    /// the last History render (`views::subject_floor`), so the lane
+    /// commands between frames lay the columns out as that frame did. It is
+    /// derived from the window's font and sizes, never saved or retained by
+    /// a tab, and zero until History first renders.
+    history_subject_floor: std::cell::Cell<f32>,
     mode: WorkspaceMode,
     restore_commit: Option<String>,
     preferred_file: Option<PathBuf>,
@@ -803,6 +809,7 @@ impl GitTurtle {
             history_sidebar: true,
             navigation_refusals: 0,
             history_width: 900.,
+            history_subject_floor: Default::default(),
             mode: WorkspaceMode::History,
             restore_commit: None,
             preferred_file: None,

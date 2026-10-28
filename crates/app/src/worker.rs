@@ -36,6 +36,7 @@ pub struct Snapshot {
     pub history_next_offset: Option<usize>,
     pub graph: Vec<graph::GraphRow>,
     pub graph_notice: Option<String>,
+    /// Each commit's local and remote branch names, HEAD's branch first.
     pub refs: HashMap<String, Vec<String>>,
     pub elapsed: Duration,
     /// An explicit Open whose branch or worktree scope no longer resolves
@@ -1302,11 +1303,16 @@ fn read_snapshot(
         )
     };
     cancellation.check()?;
+    // Each commit's references in Git's order, HEAD's branch first: History
+    // shows the first one in its badge and in narrow History's pill.
     let mut refs: HashMap<String, Vec<String>> = HashMap::new();
     for branch in &branches {
-        refs.entry(branch.oid.clone())
-            .or_default()
-            .push(branch.name.clone());
+        let names = refs.entry(branch.oid.clone()).or_default();
+        if branch.current {
+            names.insert(0, branch.name.clone());
+        } else {
+            names.push(branch.name.clone());
+        }
     }
     cancellation.check()?;
     Ok(Snapshot {
