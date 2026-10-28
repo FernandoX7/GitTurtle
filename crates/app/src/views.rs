@@ -2332,7 +2332,7 @@ impl GitTurtle {
                 button("open-blame", "Blame", "", false).tooltip(DETAIL)
             } else {
                 compact_control_name(
-                    button("open-blame", "", "user", false),
+                    button("open-blame", "", "blame", false),
                     "open-blame",
                     "Blame",
                 )
@@ -3677,6 +3677,11 @@ thread_local! {
     /// it shows, such as the Changes count (`compact_control_label`).
     pub(crate) static COMPACT_LABELS: RefCell<std::collections::BTreeMap<&'static str, SharedString>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
+    /// The icon asset each control drew since the map was last cleared, by
+    /// its element ID: the shared `button` helper's and the profile's
+    /// (`note_control_icon`).
+    pub(crate) static CONTROL_ICONS: RefCell<std::collections::BTreeMap<SharedString, SharedString>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
     /// Each History row's reference chip as it last drew it, the References
     /// column's badge or narrow History's pill, by commit index.
     static HISTORY_PILLS: RefCell<std::collections::BTreeMap<usize, PillProbe>> =
@@ -3741,6 +3746,22 @@ pub(crate) fn compact_control_label(
     let name = name.into();
     note_compact_label(selector, &name);
     control.accessibility_label(name)
+}
+
+/// Notes `path`, an `icons/` asset, as the icon the control with element ID
+/// `id` draws, for a test to read back ([`CONTROL_ICONS`]); outside tests it
+/// does nothing.
+pub(crate) fn note_control_icon(id: &ElementId, path: &str) {
+    #[cfg(test)]
+    if let ElementId::Name(id) = id {
+        CONTROL_ICONS.with(|icons| {
+            icons
+                .borrow_mut()
+                .insert(id.clone(), path.to_owned().into())
+        });
+    }
+    #[cfg(not(test))]
+    let _ = (id, path);
 }
 
 /// Notes `name` as the accessible name the compact form of the element whose
@@ -6298,6 +6319,51 @@ pub(crate) mod tests {
         cx.simulate_keystrokes("down down enter");
         draw(cx);
         assert!(app.read_with(cx, |app, _| app.text_mode == TextMode::Split));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Blame keeps its own artwork beside the profile's person: at 18 pt in a
+    /// 461 × 490 window Compare shows Blame as an icon and the compact
+    /// header the profile as one, and the two draw different icons, which
+    /// the app's assets hold as different artwork.
+    #[gpui::test]
+    async fn blame_and_the_profile_draw_different_icons(cx: &mut TestAppContext) {
+        let script = history_script(2, 40).replace("notes.txt", "note.txt");
+        let (_fixture, app, cx) = history_window_from(cx, &script).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
+        draw(cx);
+        let control = cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.)));
+        for selector in ["open-blame", "profile-button"] {
+            let bounds = cx.debug_bounds(selector).expect(selector);
+            assert_eq!(bounds.size.width, control, "{selector} is an icon");
+        }
+        let icons = CONTROL_ICONS.with(|icons| icons.borrow().clone());
+        let (blame, profile) = (
+            icons.get("open-blame").expect("Blame's icon").clone(),
+            icons.get("profile").expect("the profile's icon").clone(),
+        );
+        assert_eq!(
+            profile.as_ref(),
+            "icons/user.svg",
+            "the profile keeps the person"
+        );
+        assert_ne!(blame, profile, "Blame and the profile share an icon");
+        let artwork = |path: &SharedString| {
+            crate::Assets
+                .load(path)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{path} is an app asset"))
+                .into_owned()
+        };
+        assert_ne!(
+            artwork(&blame),
+            artwork(&profile),
+            "{blame} repeats {profile}"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

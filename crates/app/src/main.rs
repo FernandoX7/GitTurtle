@@ -1893,7 +1893,12 @@ fn button(
     symbol: &str,
     active: bool,
 ) -> Button {
-    let label = label.into();
+    let (id, label) = (id.into(), label.into());
+    // Only tests read the icon back; a render builds no path for it.
+    #[cfg(test)]
+    if !symbol.is_empty() {
+        views::note_control_icon(&id, &format!("icons/{symbol}.svg"));
+    }
     let mut button = button_frame(id, &label, symbol, active);
     if !label.is_empty() {
         button = button.label(label);

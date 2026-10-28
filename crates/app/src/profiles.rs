@@ -30,6 +30,9 @@ pub(super) struct State {
 /// controls, among which the profile picker takes their form.
 pub(super) const COMPACT_ROW_CONTROL: f32 = 28.;
 
+/// The profile's icon, the person artwork, which only the profile draws.
+const PROFILE_ICON: &str = "icons/user.svg";
+
 fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
     let value = value.into();
     div()
@@ -119,6 +122,7 @@ impl GitTurtle {
         // In the compact header's row of 28 px controls the profile is one of
         // them: the shared helper's transparent frame and its scaled icon.
         let row = size == COMPACT_ROW_CONTROL;
+        crate::views::note_control_icon(&"profile".into(), PROFILE_ICON);
         Button::new("profile")
             .debug_selector(|| "profile-button".into())
             .map(|button| {
@@ -142,7 +146,7 @@ impl GitTurtle {
                     button.px_3().label(title.clone())
                 }
             })
-            .icon(Icon::default().path("icons/user.svg").size(if row {
+            .icon(Icon::default().path(PROFILE_ICON).size(if row {
                 crate::appearance::ui_size(16.)
             } else {
                 px(16.)
