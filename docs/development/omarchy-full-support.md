@@ -391,6 +391,10 @@ cover current upstream x86-64 Omarchy.
         - Screen reader (Orca) and input-method coverage, established and recorded.
         - Office documents, audio and video for Open in default app, only through a sandboxed or
           network-restricted handoff that passes a security review (deferred on 2026-10-27).
+        Research notes (2026-10-28): [GitHub account in the Secret Service](2026-10-28-linux-github-secret-service.md)
+        (oo7, already in the Linux build) and [reduced motion and contrast from the settings
+        portal](2026-10-28-linux-portal-motion-contrast.md) (extend the `desktop_text` observer); each
+        lists the owner decisions it needs before implementation.
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
