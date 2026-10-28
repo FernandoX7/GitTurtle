@@ -5339,6 +5339,16 @@ mod picker_tests {
                 settle(cx);
             }
         };
+        // A lookup's process starts with the clock held, so however slowly a
+        // loaded host starts it, the wait spends none of the lookup's bound.
+        let started = |cx: &mut VisualTestContext, fake: &StandIn| {
+            let since = std::time::Instant::now();
+            while fake.code_font_queries() != 1 {
+                assert!(since.elapsed() < Duration::from_secs(30), "timed out");
+                desktop_text::pass_real_time_only(&cx.executor());
+                settle(cx);
+            }
+        };
         let pass = |cx: &mut VisualTestContext, time: Duration| {
             cx.executor().advance_clock(time);
             settle(cx);
@@ -5356,7 +5366,7 @@ mod picker_tests {
         toggle(cx);
         let slow = StandIn::new();
         let _slow = lookup(cx, &slow);
-        until(cx, &|_| slow.code_font_queries() == 1);
+        started(cx, &slow);
         pass(cx, Duration::from_millis(1500));
         describes(cx, pending);
         slow.answer(bundled);
@@ -5381,7 +5391,7 @@ mod picker_tests {
         let stale = cx.update(|_, cx| desktop_text::code_font_lookup_generation(cx));
         let stopped = StandIn::new();
         let _stopped = lookup(cx, &stopped);
-        until(cx, &|_| stopped.code_font_queries() == 1);
+        started(cx, &stopped);
         toggle(cx);
         toggle(cx);
         until(cx, &|_| stopped.reaped());
@@ -5397,7 +5407,7 @@ mod picker_tests {
         // A lookup that never answers is unavailable at the bound, not before.
         let silent = StandIn::new();
         let _silent = lookup(cx, &silent);
-        until(cx, &|_| silent.code_font_queries() == 1);
+        started(cx, &silent);
         pass(cx, CODE_FONT_WAIT - Duration::from_millis(50));
         describes(cx, pending);
         pass(cx, Duration::from_millis(50));

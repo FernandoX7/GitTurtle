@@ -408,6 +408,29 @@ pub(super) fn pass_real_time(executor: &gpui_kit::BackgroundExecutor) {
     executor.run_until_parked();
 }
 
+/// Tests: whether the child `pid` has exited and awaits its reaping. A query
+/// reaps its child only as it ends, at a read poll or deadline on the test
+/// clock, so while a test holds that clock, `pid` cannot name a newer process.
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn exited_unreaped(pid: libc::pid_t) -> bool {
+    // The state follows the parenthesised command name.
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(')')
+            .is_some_and(|(_, fields)| fields.trim_start().starts_with('Z'))
+    })
+}
+
+/// Tests: lets one read poll of real time pass with the test executor's
+/// clock held, while a real child starts or writes its answer. A loaded host
+/// can take tens of milliseconds to start one, and waiting with
+/// [`pass_real_time`] would spend them from the query's bound, which runs on
+/// that clock from the spawn.
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn pass_real_time_only(executor: &gpui_kit::BackgroundExecutor) {
+    std::thread::sleep(portal::READ_POLL);
+    executor.run_until_parked();
+}
+
 /// Tests: a stand-in for `fc-match`. It logs each query with its process id,
 /// notes a query that starts while another runs, answers the rendering
 /// defaults at once, and answers the code font query only once the test
@@ -468,6 +491,14 @@ rmdir "$d/running""#;
 
     pub(super) fn overlapped(&self) -> bool {
         self.0.path().join("overlap").exists()
+    }
+
+    /// Whether the latest query's process has exited, so its answer is
+    /// whole in its pipe; see [`exited_unreaped`].
+    pub(super) fn latest_exited(&self) -> bool {
+        self.queries()
+            .last()
+            .is_some_and(|(pid, _)| exited_unreaped(*pid))
     }
 
     /// Whether every query's process has exited and been reaped: a zombie
@@ -1254,9 +1285,11 @@ mod portal {
             assert!(!sender.send(Observed::default().resolve(true)));
         }
 
-        /// Runs `query` on the executor while real time and its clock pass.
+        /// Runs `query` on the executor: real time passes alone until
+        /// `ready`, then with its clock until the query ends.
         fn finish<T: Send + 'static>(
             cx: &gpui_kit::TestAppContext,
+            ready: impl FnMut() -> bool,
             query: impl Future<Output = T> + Send + 'static,
         ) -> T {
             let result = Arc::new(Mutex::new(None));
@@ -1264,15 +1297,29 @@ mod portal {
             cx.executor()
                 .spawn(async move { *slot.lock().unwrap() = Some(query.await) })
                 .detach();
+            until_clock_held(cx, ready);
             until(cx, || result.lock().unwrap().is_some());
             result.lock().unwrap().take().unwrap()
         }
 
+        /// Waits while real time and the test clock pass together, for a
+        /// real child's output to reach a query that reads it on that clock.
         fn until(cx: &gpui_kit::TestAppContext, mut done: impl FnMut() -> bool) {
             let started = std::time::Instant::now();
             while !done() {
                 assert!(started.elapsed() < Duration::from_secs(30), "timed out");
                 super::super::pass_real_time(&cx.executor());
+            }
+        }
+
+        /// [`until`] with the test clock held, for a stand-in to start or to
+        /// answer: however slowly a loaded host runs it, the wait spends
+        /// none of its query's bound, which the test then passes exactly.
+        fn until_clock_held(cx: &gpui_kit::TestAppContext, mut done: impl FnMut() -> bool) {
+            let started = std::time::Instant::now();
+            while !done() {
+                assert!(started.elapsed() < Duration::from_secs(30), "timed out");
+                super::super::pass_real_time_only(&cx.executor());
             }
         }
 
@@ -1282,55 +1329,46 @@ mod portal {
             command
         }
 
+        /// Each script first records its process id, and the clock is held
+        /// until the script has exited, or for one that does not, until it
+        /// has recorded the id: its start spends none of the bound.
         #[gpui_kit::test]
         fn fontconfig_child_output_and_lifetime_are_bounded(cx: &mut gpui_kit::TestAppContext) {
-            let output = |script: &'static str, timeout: Duration| {
+            let output = |script: &str, timeout: Duration, exits: bool| {
+                let pid_file = tempfile::NamedTempFile::new().unwrap();
+                let pid = || -> Option<libc::pid_t> {
+                    let recorded = std::fs::read_to_string(pid_file.path()).ok()?;
+                    recorded.strip_suffix('\n')?.parse().ok()
+                };
+                let mut command = sh(&format!("echo $$ > \"$1\"; {script}"));
+                command.arg(pid_file.path());
                 let executor = cx.executor();
-                finish(cx, async move {
-                    command_output(
-                        &executor,
-                        &mut sh(script),
-                        timeout,
-                        FONTCONFIG_BYTES,
-                        || true,
-                    )
-                    .await
-                })
+                let output = finish(
+                    cx,
+                    || pid().is_some_and(|pid| !exits || super::super::exited_unreaped(pid)),
+                    async move {
+                        command_output(&executor, &mut command, timeout, FONTCONFIG_BYTES, || true)
+                            .await
+                    },
+                );
+                (output, pid().unwrap())
             };
             let second = Duration::from_secs(1);
-            assert_eq!(output("printf 'True|1'", second), Some("True|1".into()));
-            assert_eq!(output("printf 'True|1'; exit 1", second), None);
             assert_eq!(
-                output("while :; do printf '0123456789'; done", second),
+                output("printf 'True|1'", second, true).0,
+                Some("True|1".into())
+            );
+            assert_eq!(output("printf 'True|1'; exit 1", second, true).0, None);
+            assert_eq!(
+                output("while :; do printf '0123456789'; done", second, false).0,
                 None
             );
             // The direct child replaces its shell, so this also detects a leaked
             // sleeper without creating an unrelated descendant process.
-            let pid_file = tempfile::NamedTempFile::new().unwrap();
-            let path = pid_file.path().to_owned();
-            let executor = cx.executor();
             let started = std::time::Instant::now();
-            assert_eq!(
-                finish(cx, async move {
-                    let mut command = sh("echo $$ > \"$1\"; exec sleep 30");
-                    command.arg(path);
-                    command_output(
-                        &executor,
-                        &mut command,
-                        Duration::from_millis(40),
-                        FONTCONFIG_BYTES,
-                        || true,
-                    )
-                    .await
-                }),
-                None
-            );
+            let (sleeper, pid) = output("exec sleep 30", Duration::from_millis(40), false);
+            assert_eq!(sleeper, None);
             assert!(started.elapsed() < Duration::from_secs(2));
-            let pid: libc::pid_t = std::fs::read_to_string(pid_file.path())
-                .unwrap()
-                .trim()
-                .parse()
-                .unwrap();
             // SAFETY: signal zero checks existence and does not send a signal.
             assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
             assert_eq!(
@@ -1382,8 +1420,16 @@ mod portal {
                 seen.extend(latest.lock().unwrap().take());
             };
 
-            until(cx, || fake.code_font_queries() == 1);
-            collect(&mut seen);
+            // Real time passes alone while a query's process starts and
+            // answers, and the clock one read poll once it has exited, so a
+            // slow start spends none of the query's bound.
+            let read_answer = |count: usize, seen: &mut Vec<DesktopText>| {
+                until_clock_held(cx, || fake.queries().len() == count && fake.latest_exited());
+                super::super::pass_real_time(&executor);
+                collect(seen);
+            };
+            read_answer(1, &mut seen);
+            until_clock_held(cx, || fake.code_font_queries() == 1);
             // The defaults answered, and launch's snapshot did not wait.
             assert_eq!(seen.len(), 1);
             assert_eq!(seen[0].rendering, gpui_kit::TextRenderingMode::Subpixel);
@@ -1400,15 +1446,16 @@ mod portal {
             assert_eq!(fake.code_font_queries(), 1, "a refresh waits for it");
 
             fake.answer("DejaVu Sans Mono");
-            let answered = |seen: &[DesktopText]| {
-                seen.iter()
-                    .filter(|snapshot| snapshot.code_font.is_some())
-                    .count()
-            };
-            until(cx, || {
-                collect(&mut seen);
-                answered(&seen) == 2
-            });
+            // The late answer, then the refreshes' one pass: its defaults and
+            // its code font.
+            for count in 2..=4 {
+                read_answer(count, &mut seen);
+            }
+            let answered = seen
+                .iter()
+                .filter(|snapshot| snapshot.code_font.is_some())
+                .count();
+            assert_eq!(answered, 2);
             let found = Some((1, Ok(gpui_kit::SharedString::from("DejaVu Sans Mono"))));
             assert!(
                 seen.iter()
@@ -1444,7 +1491,7 @@ mod portal {
                     *slot.lock().unwrap() = Some(fontconfig.code_font(&lookup).await);
                 })
                 .detach();
-            until(cx, || fake.queries().len() == 1);
+            until_clock_held(cx, || fake.queries().len() == 1);
             executor.advance_clock(FAMILY_WAIT - Duration::from_millis(50));
             executor.run_until_parked();
             assert!(result.lock().unwrap().is_none());
@@ -1474,7 +1521,7 @@ mod portal {
                         *slot.lock().unwrap() = Some(fontconfig.code_font(&lookup).await);
                     })
                     .detach();
-                until(cx, || fake.queries().len() == 1);
+                until_clock_held(cx, || fake.queries().len() == 1);
                 generation.store(next, Ordering::Release);
                 super::super::pass_real_time(&executor);
                 assert_eq!(result.lock().unwrap().take(), Some(None), "{next}");
