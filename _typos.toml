@@ -52,3 +52,5 @@ extend-ignore-re = [
 [default.extend-words]
 # Accepted spellings that typos would otherwise rewrite.
 unparseable = "unparseable"
+# PDF's Flate (zlib) stream filter, as in FlateDecode.
+flate = "flate"
