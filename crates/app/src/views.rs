@@ -1551,8 +1551,7 @@ impl GitTurtle {
             graph::required_width(self.graph_lanes, spacing),
             columns::NarrowHistory {
                 subject_floor: metrics.subject_floor,
-                graph: graph::required_width(self.graph_lanes, compact),
-                graph_min: graph::required_width(1, compact),
+                lanes: self.graph_lanes,
                 pitch: compact,
                 pill: metrics.pill_room(),
                 trailing_inset: metrics.trailing,
@@ -10164,13 +10163,21 @@ pub(crate) mod tests {
         input + "done\n"
     }
 
-    /// Narrow History's graph holds whole lanes only: at 461 × 490 and
-    /// 640 × 680, at 13 and 18 pt, the graph column is a whole number of
-    /// compact lanes wide, every node drawn lies whole inside its row's graph
-    /// cell, unclipped, and a node is drawn for every row whose lane the
-    /// column holds and for no other. The graph was given whatever the floor
-    /// left, about 29 px at 461 × 490, where one lane fits, and drew the next
-    /// lanes' nodes cut at its edge.
+    /// Narrow History's graph draws a lane whole or not at all, and keeps
+    /// every lane the subject's floor leaves room for: at 461 × 490 and
+    /// 640 × 680, at 13 and 18 pt, the graph column holds each lane whose
+    /// node and half a pitch past it fit, the next lane's would not fit even
+    /// with the subject at its floor, the column is no wider than its lanes'
+    /// full margin, every node drawn lies whole inside its row's graph cell,
+    /// unclipped, and a node is drawn for every row whose lane the column
+    /// holds and for no other. The graph was first given whatever the floor
+    /// left, about 29 px at 461 × 490 and 13 pt, and drew the next lanes'
+    /// nodes cut at its edge; then it kept only lanes with their full 10 px
+    /// margin, so at 18 pt in a 640 px window on Linux the third lane, whose
+    /// node fitted with half a pitch to spare, lost its nodes for about a
+    /// character of subject. The unit tests' text system leaves other room
+    /// than IBM Plex Sans, so the lane spacings of 14 and 16 px, beside the
+    /// default 20, put such a lane in the room at 461 and 640 px.
     #[gpui::test]
     async fn narrow_history_draws_whole_lanes_only(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window_from(cx, &lanes_script()).await;
@@ -10182,12 +10189,21 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>()
         });
         assert!(rows.iter().any(|(_, lane)| *lane == 2), "{rows:?}");
-        for text in [13, 18] {
+        // Lanes kept with less than their full margin, by half a pitch.
+        let mut short = Vec::new();
+        let cases = [20, 14, 16]
+            .into_iter()
+            .flat_map(|spacing| [13, 18].map(|text| (spacing, text)));
+        for (spacing, text) in cases {
+            app.update(cx, |app, cx| {
+                app.settings.graph_spacing = spacing;
+                cx.notify();
+            });
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             for (width, height) in [(461., 490.), (640., 680.)] {
                 cx.simulate_resize(size(px(width), px(height)));
                 draw(cx);
-                let at = format!("{width} × {height} at {text} pt");
+                let at = format!("{width} × {height} at {text} pt, {spacing} px lanes");
                 let (layout, offset) = cx.update(|_, cx| {
                     let app = app.read(cx);
                     let rows = app.history_rows(cx);
@@ -10195,15 +10211,58 @@ pub(crate) mod tests {
                 });
                 assert!(layout.narrow, "{at}");
                 let pitch = graph::compact_spacing(app.read_with(cx, |app, _| app.lane_spacing()));
+                let (floor, pill) = app.read_with(cx, |app, _| {
+                    let metrics = app.history_metrics.get();
+                    (metrics.subject_floor, metrics.pill_room())
+                });
+                let width_of = |id| {
+                    layout
+                        .columns
+                        .iter()
+                        .find(|column| column.id == id)
+                        .map(|column| column.width)
+                        .unwrap()
+                };
+                let graph_width = width_of(ColumnId::Graph);
                 let column = cx.debug_bounds("history-column-1").unwrap();
-                let lanes =
-                    (f32::from(column.size.width) - graph::required_width(1, pitch)) / pitch;
                 assert!(
                     // Layout rounds the column to half a device pixel.
-                    ((lanes - lanes.round()) * pitch).abs() <= 0.5,
-                    "whole lanes of {pitch} px {at}: {column:?}"
+                    (f32::from(column.size.width) - graph_width).abs() <= 0.5,
+                    "the graph column of {graph_width} px {at}: {column:?}"
                 );
-                let held = lanes.round() as usize + 1;
+                // A lane's node, its 10 px margin and a pitch per lane in,
+                // and what the cell needs past it: half a pitch, and at the
+                // narrowest pitch the selected node's 5 px radius.
+                let node = |lane: usize| 10. + lane as f32 * pitch;
+                let reach = (pitch / 2.).max(5.);
+                let held = (0..3)
+                    .take_while(|&lane| node(lane) + reach <= graph_width + 1e-3)
+                    .count()
+                    .max(1);
+                if node(held - 1) + 10. > graph_width + 1e-3 {
+                    short.push(at.clone());
+                }
+                // The next lane's node and half a pitch would not fit even
+                // with the subject at its floor beside the pill.
+                let room = graph_width + width_of(ColumnId::Subject) - floor - pill;
+                if offset + held < 3 {
+                    assert!(
+                        node(held) + reach > room + 1e-3,
+                        "lane {} fits whole in {room} px beside the subject's floor, \
+                         yet the graph holds {held} in {graph_width} px {at}",
+                        offset + held
+                    );
+                }
+                assert!(
+                    graph_width <= graph::required_width(held, pitch) + 1e-3,
+                    "the room short of lane {} is the subject's: {graph_width} px for {held} \
+                     lanes {at}",
+                    offset + held
+                );
+                if (width, text) == (461., 13) {
+                    // The third lane, which the graph once cut in half here.
+                    assert!(offset + held < 3, "{held} lanes from {offset} {at}");
+                }
                 let list = cx.debug_bounds("history-pane").unwrap();
                 let mut beyond = 0;
                 for &(row, lane) in &rows {
@@ -10267,6 +10326,10 @@ pub(crate) mod tests {
                 }
             }
         }
+        assert!(
+            short.len() >= 3,
+            "lanes kept short of their full margin, by half a pitch: {short:?}"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
@@ -10606,13 +10669,7 @@ pub(crate) mod tests {
                 let compact = graph::compact_spacing(spacing);
                 assert!(compact < spacing, "{at}");
                 // In whole lanes: the room short of the next is the subject's.
-                let room = graph::required_width(lanes, compact)
-                    .min(available - floor)
-                    .max(graph::required_width(1, compact));
-                let expected = graph::required_width(
-                    graph::visible_lane_capacity(room + 1e-3, compact),
-                    compact,
-                );
+                let expected = graph::fitted_width(lanes, available - floor, compact);
                 let column = cx.debug_bounds("history-column-1").unwrap();
                 assert!(
                     (f32::from(column.size.width) - expected).abs() < 0.5
@@ -10655,8 +10712,8 @@ pub(crate) mod tests {
                     panic!("one selected node in {left}–{right} {at}: {nodes:?}");
                 };
                 // Paint snaps the node to device pixels, half a pixel here.
-                // Narrowing revealed lane 1 where the graph has room for one
-                // lane, so the frame's lanes start there.
+                // Where the graph holds one lane, narrowing revealed lane 1,
+                // so the frame's lanes start there.
                 let offset = cx.update(|_, cx| app.read(cx).history_rows(cx).lane_offset);
                 assert!(
                     (x - (left + 10. + (1 - offset) as f32 * compact)).abs() <= 0.25

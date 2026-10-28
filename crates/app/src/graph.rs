@@ -12,6 +12,8 @@ use std::{
 const DARK_COLORS: [u32; 6] = [0x7adfb4, 0x8db7f6, 0xc3a5f2, 0xe8be7a, 0xea9ca5, 0x72ccd8];
 const LIGHT_COLORS: [u32; 6] = [0x146c53, 0x315da7, 0x7651aa, 0x8c5916, 0xa42d63, 0x156b7c];
 const NODE_MARGIN: f32 = 10.;
+/// The selected node's radius, the widest a node is drawn.
+const SELECTED_RADIUS: f32 = 5.;
 /// The narrowest compact lane pitch. Nodes keep their radii at every pitch,
 /// so this leaves a selected node (5 px) 2.2 px clear of a neighbouring
 /// lane's 1.6 px stroke.
@@ -274,13 +276,35 @@ fn layout_page<E>(
     Ok((rows, frontier, next_color))
 }
 
+/// How far past its node a cell must reach to hold a lane whole: half a
+/// pitch, where the lane's strokes end, short of the next lane, yet never
+/// less than the selected node's radius, so the node is whole at the
+/// narrowest pitch, nor more than the margin `required_width` leaves after
+/// its last lane, so a graph of that width holds every one of its lanes.
+fn lane_reach(lane_spacing: f32) -> f32 {
+    (lane_spacing / 2.).clamp(SELECTED_RADIUS, NODE_MARGIN)
+}
+
 /// A shared horizontal lane viewport keeps true spacing and continuous edges
 /// across every visible row. Clipping is explicit; lanes are never compressed
-/// into indistinguishable pixels to accommodate offscreen ancestry. A width
-/// of whole lanes, as narrow History's, holds every one of them, rounding
-/// aside.
+/// into indistinguishable pixels to accommodate offscreen ancestry. A lane is
+/// held, and drawn, where its node and `lane_reach` past it fit in `width`,
+/// rounding aside, and not at all otherwise.
 pub fn visible_lane_capacity(width: f32, lane_spacing: f32) -> usize {
-    (((width - NODE_MARGIN * 2.).max(0.) / lane_spacing.max(1.) + 1e-3).floor() as usize + 1).max(1)
+    (((width - NODE_MARGIN - lane_reach(lane_spacing)).max(0.) / lane_spacing.max(1.) + 1e-3)
+        .floor() as usize
+        + 1)
+    .max(1)
+}
+
+/// Narrow History's graph within `room`: every one of its `lanes` that
+/// `room` holds whole (`visible_lane_capacity`), and no wider than those
+/// lanes take at their full margin, so the room short of the next lane is
+/// the subject's. Never less than one lane.
+pub(super) fn fitted_width(lanes: usize, room: f32, lane_spacing: f32) -> f32 {
+    let held = visible_lane_capacity(room, lane_spacing).min(lanes.max(1));
+    room.min(required_width(held, lane_spacing))
+        .max(required_width(1, lane_spacing))
 }
 
 fn lane_x(width: f32, lane_offset: usize, lane: usize, lane_spacing: f32) -> f32 {
@@ -373,7 +397,7 @@ pub fn render(
                     let center = point(x(lane), middle);
                     let color = rgb(colors[row.color % colors.len()]);
                     let radius = if active {
-                        5.
+                        SELECTED_RADIUS
                     } else if merge {
                         4.3
                     } else {
@@ -611,6 +635,46 @@ mod tests {
         assert_eq!(lane_x(84., 4, 4, 20.), 10.);
         assert_eq!(lane_x(84., 4, 3, 20.), -10.);
         assert_eq!(lane_x(84., 4, 7, 20.), 70.);
+    }
+
+    #[test]
+    fn a_lane_is_held_where_its_node_and_half_a_pitch_fit() {
+        // Narrow History's compact pitch at 13 and 18 pt.
+        for pitch in [compact_spacing(20.), compact_spacing(20. * 18. / 13.)] {
+            for lanes in 1..=4 {
+                let node = NODE_MARGIN + (lanes - 1) as f32 * pitch;
+                assert_eq!(visible_lane_capacity(node + pitch / 2., pitch), lanes);
+                assert_eq!(
+                    visible_lane_capacity(node + pitch / 2. - 0.1, pitch),
+                    (lanes - 1).max(1),
+                    "{pitch}: {lanes}"
+                );
+            }
+        }
+        // At the narrowest pitch the selected node, not half a pitch, needs
+        // the room; at a wide one, the margin after the last lane suffices.
+        assert_eq!(visible_lane_capacity(NODE_MARGIN + 8. + 4.9, 8.), 1);
+        assert_eq!(visible_lane_capacity(NODE_MARGIN + 8. + 5., 8.), 2);
+        for spacing in [8., 10., 20., 27.7, 44.3] {
+            for lanes in 1..=4 {
+                assert_eq!(
+                    visible_lane_capacity(required_width(lanes, spacing), spacing),
+                    lanes,
+                    "{spacing}: {lanes}"
+                );
+            }
+        }
+        // Narrow History's graph keeps each lane the room holds whole and
+        // leaves the room short of the next to the subject: at 29 px the
+        // second lane's node and half a pitch (25 px) fit and the third's
+        // (35 px) do not.
+        assert_eq!(fitted_width(3, 24., 10.), 20.);
+        assert_eq!(fitted_width(3, 29., 10.), 29.);
+        assert_eq!(fitted_width(3, 33., 10.), 30.);
+        assert_eq!(fitted_width(3, 36., 10.), 36.);
+        assert_eq!(fitted_width(3, 60., 10.), 40.);
+        assert_eq!(fitted_width(3, 12., 10.), 20.);
+        assert_eq!(fitted_width(0, 60., 10.), 20.);
     }
 
     #[test]
