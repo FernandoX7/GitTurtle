@@ -2314,7 +2314,7 @@ impl GitTurtle {
                 });
             }).absolute().inset_0())
             .children(controls)
-            .child(div().relative().flex_1().min_h(px(floor + if composer { minimum } else { 0. })).flex().flex_col()
+            .child(div().debug_selector(|| "working-body".into()).relative().flex_1().min_h(px(floor + if composer { minimum } else { 0. })).flex().flex_col()
             .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
                 layout.update(cx, |layout, cx| {
                     if layout.height != bounds.size.height || layout.width != bounds.size.width {
@@ -2364,6 +2364,11 @@ impl GitTurtle {
             .when(composer, |el| el.child(
                 div().debug_selector(|| "commit-composer".into())
                     .relative().flex_shrink_0().min_h_0().h(px(drawn)).flex().flex_col()
+                    // It ends at the body's foot, above the status bar: what
+                    // the list's whole rows leave, less than a row, lies
+                    // between the list's last row and the composer rather
+                    // than below the commit action.
+                    .mt_auto()
                     .bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
                     // The heading is pinned above the scrolling fields, as the
                     // commit action is below them; where the body is short the

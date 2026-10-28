@@ -8959,9 +8959,10 @@ pub(crate) mod tests {
     /// window at the default size and at 18 pt and in a 640 × 680 one at
     /// both: the height its share leaves over once gathered between the
     /// field and the action (10 px at the default size and 16.5 px at 18 pt
-    /// in 640 × 680). Below the action is only the composer's padding; the
-    /// rest, less than a row, lies between the list's last whole row and the
-    /// composer.
+    /// in 640 × 680). Below the action is only the composer's padding, and
+    /// the composer ends at the body's foot above the status bar; the rest,
+    /// less than a row, lies between the list's last whole row and the
+    /// composer, where it once lay below the action.
     #[gpui::test]
     async fn short_composer_keeps_its_rhythm_down_to_the_commit_action(cx: &mut TestAppContext) {
         let (fixture, app, cx) = working_window(cx).await;
@@ -8982,11 +8983,12 @@ pub(crate) mod tests {
             draw(cx);
             draw(cx);
             let at = format!("{text} pt in {width} × {height}");
-            let (gap, padding, row) = cx.update(|window, cx| {
+            let (gap, padding, row, status) = cx.update(|window, cx| {
                 (
                     window.pixel_snap(appearance::ui_size(4.)),
                     window.pixel_snap(window.rem_size() * 0.5),
                     window.pixel_snap(px(app.read(cx).settings.density.file_row_height())),
+                    window.pixel_snap(appearance::ui_size(26.)),
                 )
             });
             let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
@@ -9014,11 +9016,20 @@ pub(crate) mod tests {
                 "{at}: {commit:?} then the composer's end {composer:?}"
             );
             // The list, whole rows, ends at the composer or less than a row
-            // above it.
+            // above it, and the composer ends at the body's foot: the rest
+            // once lay below the commit action, a band of the inspector's
+            // background above the status bar (6 px at the default size and
+            // 3.5 px at 18 pt in 461 × 490, 11 and 14 px in 640 × 680).
             let list = bounds(cx, "working-pane");
+            let body = bounds(cx, "working-body");
             assert!(
                 list.bottom() <= composer.top() + slack && composer.top() - list.bottom() < row,
                 "{at}: the list {list:?} above {composer:?}"
+            );
+            assert!(
+                (body.bottom() - composer.bottom()).abs() <= slack
+                    && (px(height) - status - body.bottom()).abs() <= slack,
+                "{at}: {composer:?} ends at the body's foot {body:?}, above the status bar"
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
@@ -9028,11 +9039,12 @@ pub(crate) mod tests {
     /// rhythm down to the commit action, as a short one keeps its scaled
     /// 4 px: the title's label and field, the Description section's label,
     /// field and hint, and the action, each a gap apart, with the composer's
-    /// padding below the action. The height its share leaves over goes to
-    /// the description's field, which grows past its preference to take it,
-    /// so nothing gathers above the action: at the default size in a
-    /// 1480 × 980 window the hint and the action stood 32 px apart, where the
-    /// rhythm gives 6.5 px, the composer's floor and its padding between
+    /// padding below the action and the composer ending at the body's foot.
+    /// The height its share leaves over goes to the description's field,
+    /// which grows past its preference to take it, so nothing gathers above
+    /// the action: at the default size in a 1480 × 980 window the hint and
+    /// the action stood 32 px apart, where the rhythm gives 6.5 px, the
+    /// composer's floor and its padding between
     /// them. The hint wraps inside the column, as the rows are predicted: at
     /// 18 pt in a 461 × 1400 window it ran on one line past the column, and
     /// the three lines predicted for it lay empty above the action. In
@@ -9059,9 +9071,13 @@ pub(crate) mod tests {
             draw(cx);
             draw(cx);
             let at = format!("{text} pt in {width} × {height}");
-            let (gap, padding) = cx.update(|window, _| {
+            let (gap, padding, status) = cx.update(|window, _| {
                 let rem = window.rem_size();
-                (window.pixel_snap(rem * 0.5), window.pixel_snap(rem * 0.75))
+                (
+                    window.pixel_snap(rem * 0.5),
+                    window.pixel_snap(rem * 0.75),
+                    window.pixel_snap(appearance::ui_size(26.)),
+                )
             });
             let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
                 cx.debug_bounds(selector)
@@ -9096,6 +9112,13 @@ pub(crate) mod tests {
             assert!(
                 (composer.bottom() - commit.bottom() - padding).abs() <= slack,
                 "{at}: {commit:?} then the composer's end {composer:?}"
+            );
+            // The composer ends at the body's foot, above the status bar.
+            let body = bounds(cx, "working-body");
+            assert!(
+                (body.bottom() - composer.bottom()).abs() <= slack
+                    && (px(height) - status - body.bottom()).abs() <= slack,
+                "{at}: {composer:?} ends at the body's foot {body:?}, above the status bar"
             );
             // The hint wraps inside the column, as the composer's rows are
             // predicted: at 18 pt in a 461 px window it ran on one 308 px
