@@ -235,6 +235,29 @@ cover current upstream x86-64 Omarchy.
           button's; `native-accessibility.md` still says "Context"; the Reflog's tooltip shows
           when nothing is cut, and its header, entries and filter start at three insets; Quick
           Open and Keyboard Shortcuts are not yet on the raised surface.
+        Owner decision, 2026-10-27 late night: approved the coordinator's UX recommendations,
+        each with its DESIGN.md change in the commit that implements it:
+        - Narrow History keeps the subject: below a measured width the subject never leaves
+          (floor about 120 px, then an ellipsis); References fold into the start of the subject
+          cell as one pill (HEAD's branch, else the first ref, plus "+N"; the full list in the
+          tooltip and accessible name); the graph takes a compact lane pitch. The saved column
+          choice is untouched, as the rail leaves the saved navigation choice; widening restores
+          the chosen columns. Not chosen: scrolling the table to the subject, hiding columns.
+        - One responsive system: a single priority order for every page as width shrinks
+          (content first, then actions become icons, then labels go, then secondary columns),
+          replacing per-control breakpoints where they disagree, with a test that walks widths
+          from 461 to 1,480 px at 13 and 18 pt and fails on cut or orphaned text.
+        - A layout grid: shared inset tokens and a test that measures each panel's text start
+          positions, so a panel's header, rows and fields share one left edge.
+        - A focus-visibility sweep: a test that tabs through every page and dialog and asserts
+          a visible, whole ring (all four sides) at every stop and never focus on nothing.
+        - Feedback where the action happened, as Copied does: stage and unstage, fetch, pull and
+          push finishing, branch creation and similar confirm on the control or row the user
+          touched; the status bar keeps history, not confirmation.
+        - Empty and edge states as designed screens: no working changes, no remote, no upstream,
+          detached HEAD and similar each show one deliberate line with their next action.
+        - Motion with intent: short, reduced-motion-aware transitions only where they explain a
+          change (a row moving between Staged and Unstaged, the compact chrome switching).
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
