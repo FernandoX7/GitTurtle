@@ -5858,6 +5858,10 @@ pub(crate) mod tests {
             queue(Err(NotOpened::Dismissed));
             click(cx);
             assert!(cx.debug_bounds("system-preview-1/note").is_some());
+            // The portal answers a closed chooser with no application to
+            // offer as it answers one the person closed, so the line names
+            // no cause.
+            assert_eq!(DISMISSED, "Nothing opened.");
             assert_eq!(cx.read(latest_note), Some((DISMISSED.into(), false)));
             assert_eq!(
                 appearance::drawn_color("system-preview-1/note"),

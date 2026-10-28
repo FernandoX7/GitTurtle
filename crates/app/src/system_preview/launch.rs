@@ -71,7 +71,9 @@ const LAUNCHER_FAILURE_WAIT: Duration = Duration::from_secs(2);
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Portal {
     Opened,
-    /// The user dismissed the portal's application chooser.
+    /// The request was cancelled: the user closed the portal's application
+    /// chooser, which the portal answers alike whether or not the chooser
+    /// offered an application.
     Cancelled,
     /// The portal answered with an error, such as no application.
     Refused(String),
@@ -112,7 +114,8 @@ pub(super) async fn open(
     };
     match answer {
         Portal::Opened => Ok(()),
-        // The person's choice, not a failure.
+        // Not a failure; the portal does not say whether the chooser had an
+        // application to offer.
         Portal::Cancelled => Err(NotOpened::Dismissed),
         Portal::Refused(error) => Err(format!("The desktop portal refused it: {error}.").into()),
         Portal::NoAnswer(error) => Err(format!(

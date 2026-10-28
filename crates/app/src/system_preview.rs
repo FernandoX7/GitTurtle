@@ -18,8 +18,9 @@
 //! [`copy_feedback::RESTORE_AFTER`] and "Opened a read-only copy of the
 //! captured bytes." is announced. When nothing opened, a line beneath the
 //! control's row says why ([`Target::note`]): a failure in the warning color,
-//! announced at once, or, when the person closed the application chooser, a
-//! muted line. The line stays while that comparison is shown and goes when
+//! announced at once, or, when the portal reports the request cancelled (a
+//! closed application chooser, whether or not it offered an application), a
+//! muted "Nothing opened.". The line stays while that comparison is shown and goes when
 //! another is ([`Showing`]); nothing reaches the window-wide notice.
 
 use crate::copy_feedback::{self, Action, Mark};
@@ -141,14 +142,18 @@ pub(crate) const OPEN: Action = Action {
 /// can let the person choose the application, so it names none.
 pub(crate) const OPENED: &str = "Opened a read-only copy of the captured bytes.";
 
-/// What a muted line beneath the control says when the person closed the
-/// application chooser: their choice, not a failure.
-pub(crate) const DISMISSED: &str = "Nothing opened: the application chooser was closed.";
+/// What a muted line beneath the control says when the portal reports the
+/// request cancelled, which is not a failure. The portal answers the same
+/// whether the person closed an application chooser or closed one that
+/// offered no application ("No Apps available"), so the line names no
+/// cause: "the application chooser was closed" once hid the second.
+pub(crate) const DISMISSED: &str = "Nothing opened.";
 
 /// Why a click opened nothing.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum NotOpened {
-    /// The person closed the application chooser.
+    /// The portal reports the request cancelled: the person closed its
+    /// application chooser, with or without an application to offer.
     Dismissed,
     /// Nothing could be opened, for this reason, a sentence.
     Failed(String),
