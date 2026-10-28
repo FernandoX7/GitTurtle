@@ -56,3 +56,122 @@ impl FocusRing {
         .size_0()
     }
 }
+
+/// An outline the last frame painted, read back for tests: its bounds and
+/// width in logical pixels, and whether it is whole.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PaintedOutline {
+    pub(crate) bounds: Bounds<Pixels>,
+    pub(crate) width: Pixels,
+    pub(crate) whole: bool,
+}
+
+/// The outlines of `color`, borders with no fill, that the last frame
+/// painted. GPUI paints such a border as one strip per side, each masked to
+/// its side and to every clip around it, and drops a strip a clip hides
+/// whole; the clips are rectangles, so an outline is whole when its four
+/// strips are drawn and their masks together reach its bounds.
+#[cfg(test)]
+pub(crate) fn painted_outlines(
+    cx: &mut gpui_kit::VisualTestContext,
+    color: Hsla,
+) -> Vec<PaintedOutline> {
+    use gpui_kit::ScaledPixels;
+    cx.update(|window, _| {
+        let scale = window.scale_factor();
+        let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+        let strips: Vec<_> = window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background.is_transparent() && quad.border_color == color)
+            .map(|quad| {
+                (
+                    quad.bounds,
+                    quad.border_widths.top,
+                    quad.content_mask.bounds,
+                )
+            })
+            .collect();
+        let mut outlines: Vec<PaintedOutline> = Vec::new();
+        let mut seen = Vec::new();
+        for (bounds, width, _) in &strips {
+            if seen.contains(bounds) {
+                continue;
+            }
+            seen.push(*bounds);
+            let masks: Vec<_> = strips
+                .iter()
+                .filter(|(other, _, _)| other == bounds)
+                .map(|(_, _, mask)| *mask)
+                .collect();
+            let covered = masks.iter().copied().reduce(|a, b| a.union(&b)).unwrap();
+            let whole = masks.len() == 4
+                && covered.left() <= bounds.left()
+                && covered.top() <= bounds.top()
+                && covered.right() >= bounds.right()
+                && covered.bottom() >= bounds.bottom();
+            outlines.push(PaintedOutline {
+                bounds: Bounds::from_corners(
+                    point(logical(bounds.left()), logical(bounds.top())),
+                    point(logical(bounds.right()), logical(bounds.bottom())),
+                ),
+                width: logical(*width),
+                whole,
+            });
+        }
+        outlines
+    })
+}
+
+/// The focused kit Input whose text lies in `text` draws its focus whole in
+/// the last frame: its own 1 px edge in the theme's ring colour, the accent,
+/// and the kit's ring outside that edge, every side of both inside the clips
+/// around the field.
+#[cfg(test)]
+pub(crate) fn assert_input_ringed(
+    cx: &mut gpui_kit::VisualTestContext,
+    text: Bounds<Pixels>,
+    field: &str,
+) {
+    use gpui_kit::component::{FocusRing, Theme};
+    let kit = FocusRing::default();
+    let (edge_color, ring_color) = cx.read(|cx| {
+        let ring = Theme::global(cx).ring;
+        (ring, ring.alpha(kit.opacity))
+    });
+    let edges: Vec<_> = painted_outlines(cx, edge_color)
+        .into_iter()
+        .filter(|edge| edge.bounds.contains(&text.center()))
+        .collect();
+    let [edge] = edges[..] else {
+        panic!("{field}: one accent edge around the field, {text:?}: {edges:?}");
+    };
+    assert_eq!(edge.width, px(1.), "{field}: {edge:?}");
+    assert!(
+        edge.whole,
+        "{field}: a clip cuts the field's edge: {edge:?}"
+    );
+    let around = edge.bounds.dilate(kit.gap + kit.width);
+    let slack = px(1.);
+    let rings: Vec<_> = painted_outlines(cx, ring_color)
+        .into_iter()
+        .filter(|ring| {
+            [
+                (ring.bounds.left(), around.left()),
+                (ring.bounds.top(), around.top()),
+                (ring.bounds.right(), around.right()),
+                (ring.bounds.bottom(), around.bottom()),
+            ]
+            .into_iter()
+            .all(|(drawn, expected)| (drawn - expected).abs() <= slack)
+        })
+        .collect();
+    let [ring] = rings[..] else {
+        panic!("{field}: one ring around the field's edge, {around:?}: {rings:?}");
+    };
+    assert!(
+        ring.whole,
+        "{field}: a clip cuts the field's ring: {ring:?}"
+    );
+}

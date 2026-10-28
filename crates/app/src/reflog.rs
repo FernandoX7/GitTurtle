@@ -142,8 +142,9 @@ impl GitTurtle {
     }
 }
 impl ReflogBrowser {
-    /// Opens `browser` in its dialog.
+    /// Opens `browser` in its dialog, with focus in its filter field.
     fn show(browser: Entity<Self>, window: &mut Window, cx: &mut App) {
+        let filter = browser.read(cx).query.read(cx).focus_handle(cx);
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let done = browser.clone();
             let cancel = browser.clone();
@@ -178,6 +179,13 @@ impl ReflogBrowser {
                     });
                 })
         });
+        // Opening the dialog focuses its shell, which draws no ring, so the
+        // dialog opened with focus nowhere to be seen. The filter is the
+        // first stop worth a key: focus it now, as the palette does its
+        // query, so keys typed before the next frame reach it and the first
+        // frame draws its ring. The dialog keeps the opener to return to.
+        filter.focus(window, cx);
+        window.refresh();
     }
 }
 
@@ -500,6 +508,53 @@ mod tests {
                 "reflog-scope-summary",
                 "reflog-entry-1",
             ],
+        );
+    }
+
+    /// The Reflog opens with focus in its filter field, which draws its focus
+    /// whole: the field's 1 px accent edge and the kit's ring 3 px around it,
+    /// every side inside the dialog's clips. It opened with focus on the
+    /// dialog's shell, which draws nothing. Escape still closes it and
+    /// returns focus to the History list that opened it.
+    #[gpui::test]
+    async fn the_reflog_opens_with_its_filter_focused_and_ringed(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        let opener = app.read_with(cx, |app, _| app.focus.clone());
+        cx.update(|window, cx| window.focus(&opener, cx));
+        draw(cx);
+        let browser = cx.update(|window, cx| {
+            let browser =
+                cx.new(|cx| ReflogBrowser::new(app.downgrade(), repo.clone(), window, cx));
+            browser.update(cx, |this, cx| this.refresh(window, cx));
+            ReflogBrowser::show(browser.clone(), window, cx);
+            browser
+        });
+        let read = browser.update(cx, |this, _| this.task.take());
+        read.expect("the log is read").await;
+        draw(cx);
+        park_pointer(cx);
+
+        let (filter, text) = cx.read(|cx| {
+            let query = browser.read(cx).query.read(cx);
+            (query.focus_handle(cx), query.input_bounds())
+        });
+        assert!(
+            cx.update(|window, _| filter.is_focused(window)),
+            "the filter holds focus as the Reflog opens"
+        );
+        focus_ring::assert_input_ringed(cx, text, "the Reflog's filter");
+
+        cx.simulate_keystrokes("escape");
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        draw(cx);
+        assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "Escape returns focus to the opener"
         );
     }
 
