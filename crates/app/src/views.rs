@@ -1263,28 +1263,39 @@ impl GitTurtle {
                 self.error.as_deref().unwrap_or_default(),
             )
         } else if self.visible.is_empty()
+            && let Some(line) = self.history_search_no_match()
+        {
+            self.history_no_match(line, cx)
+        } else if self.visible.is_empty()
             && let Some((title, description)) = self.history_search_empty()
         {
             empty(title, &description)
+        } else if self.visible.is_empty() && self.loading.is_none() && self.repository.is_some() {
+            if self.commits.is_empty() {
+                // The composer makes the first commit.
+                EmptyState::new(
+                    "history-no-commits",
+                    "No commits yet · Your first commit starts in Changes",
+                )
+                .action(
+                    empty_state::action("history-open-changes", "Open Changes", "changes")
+                        .on_click(cx.listener(|this, _, window, cx| this.show_working(window, cx))),
+                )
+                .pane(cx)
+            } else {
+                self.history_no_match("No loaded commits match this search".into(), cx)
+            }
         } else if self.visible.is_empty() {
             empty(
                 if self.loading.is_some() {
                     "Reading local history…"
-                } else if self.repository.is_none() {
-                    "Your history, at a glance"
-                } else if !self.commits.is_empty() {
-                    "No commits match this search"
                 } else {
-                    "No commits yet"
+                    "Your history, at a glance"
                 },
                 if self.loading.is_some() {
                     "Loading commit history from this repository."
-                } else if self.repository.is_none() {
-                    "Open a Git repository to explore branches, worktrees and changes."
-                } else if self.commits.is_empty() {
-                    "Add files to your project, then open Changes to make your first commit."
                 } else {
-                    "Search applies to the loaded history."
+                    "Open a Git repository to explore branches, worktrees and changes."
                 },
             )
         } else {
@@ -2058,6 +2069,25 @@ impl GitTurtle {
     fn render_files_with(&self, header: FilesHeader, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
         let visible = self.filtered_file_indices(cx);
+        // A filter that matches nothing offers Clear beside it, where the
+        // list below, as short as 74 px at 18 pt in a half tile, has room
+        // only for its line.
+        let no_match = visible.is_empty()
+            && !self.file_paths.pending
+            && self.file_paths.error.is_none()
+            && self.loading.is_none()
+            && !self.file_filter.read(cx).value().is_empty();
+        let clear = no_match.then(|| {
+            empty_state::action("files-clear-filter", "", "close")
+                .accessibility_label("Clear path filter")
+                .tooltip("Clear path filter")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.file_filter
+                        .update(cx, |input, cx| input.set_value("", window, cx));
+                    this.change_file_filter(cx);
+                    window.focus(&this.file_focus, cx);
+                }))
+        });
         div()
             .size_full()
             .flex()
@@ -2111,11 +2141,17 @@ impl GitTurtle {
                     .relative()
                     .px_3()
                     .pb_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .child(
-                        Input::new(&self.file_filter)
-                            .aria_label(CHANGED_FILTER_NAME)
-                            .text_size(appearance::ui_text(12.)),
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.file_filter)
+                                .aria_label(CHANGED_FILTER_NAME)
+                                .text_size(appearance::ui_text(12.)),
+                        ),
                     )
+                    .children(clear)
                     // Painted after the field, it fits its placeholder.
                     .child(crate::workspace::placeholder_fit(
                         self.file_filter.clone(),
@@ -2155,25 +2191,25 @@ impl GitTurtle {
                             window.focus(&this.file_focus, cx);
                         }),
                     )
-                    .child(if visible.is_empty() {
+                    .child(if visible.is_empty() && self.file_paths.pending {
                         empty(
-                            if self.file_paths.pending {
-                                "Filtering changed paths…"
-                            } else if self.file_paths.error.is_some() {
-                                "Path filter unavailable"
-                            } else {
-                                self.loading.unwrap_or("No file changes")
-                            },
-                            self.file_paths.error.as_deref().unwrap_or(
-                                if self.file_paths.pending {
-                                    "Matching the current file snapshot."
-                                } else if self.file_filter.read(cx).value().is_empty() {
-                                    "No changes between the displayed targets."
-                                } else {
-                                    "No matching paths. Clear the path filter to see all files."
-                                },
-                            ),
+                            "Filtering changed paths…",
+                            "Matching the current file snapshot.",
                         )
+                    } else if visible.is_empty()
+                        && let Some(error) = &self.file_paths.error
+                    {
+                        empty("Path filter unavailable", error)
+                    } else if visible.is_empty()
+                        && let Some(loading) = self.loading
+                    {
+                        empty(loading, "")
+                    } else if visible.is_empty() && self.file_filter.read(cx).value().is_empty() {
+                        EmptyState::new("files-empty", "No file changes against this parent")
+                            .pane(cx)
+                    } else if visible.is_empty() {
+                        // Clear sits beside the filter, above.
+                        EmptyState::new("files-no-match", "No matches").pane(cx)
                     } else {
                         uniform_list(
                             "files",
@@ -2485,10 +2521,11 @@ impl GitTurtle {
                 .as_ref()
                 .is_some_and(|status| status.entries.is_empty())
         {
-            empty(
-                "Working tree clean",
-                "Add or edit files in your project, then review and stage them here.",
+            EmptyState::new(
+                "working-preview-clean",
+                empty_state::working_clean_line(self.work_status.as_deref(), true),
             )
+            .pane(cx)
         } else if file.is_none() {
             empty(self.loading.unwrap_or("Choose a file"), CHOOSE_A_FILE)
         } else if let Some(content) = &self.content {
@@ -3003,6 +3040,11 @@ struct ChromeText {
     ahead: String,
     behind: String,
     operation: String,
+    /// The repository edge's line and its action's label, if any
+    /// (`empty_state::RepositoryEdge`).
+    edge: String,
+    edge_short: String,
+    edge_action: String,
 }
 
 /// The widths `ChromeText` and the chrome's fixed labels take, each as its
@@ -3018,7 +3060,9 @@ struct ChromeWidths {
     branch: Pixels,
     ahead: Pixels,
     behind: Pixels,
-    no_upstream: Pixels,
+    edge: Pixels,
+    edge_short: Pixels,
+    edge_action: Pixels,
     operation: Pixels,
     fetch: Pixels,
     pull: Pixels,
@@ -3045,7 +3089,9 @@ impl ChromeWidths {
             branch: medium(&text.branch),
             ahead: regular(&text.ahead, small),
             behind: regular(&text.behind, small),
-            no_upstream: regular("No upstream", small),
+            edge: regular(&text.edge, label),
+            edge_short: regular(&text.edge_short, label),
+            edge_action: regular(&text.edge_action, label),
             operation: regular(&text.operation, small),
             fetch: medium("Fetch"),
             pull: medium("Pull"),
@@ -3196,12 +3242,7 @@ impl GitTurtle {
     fn full_chrome_heights(&self, widths: &ChromeWidths, window: &Window) -> (Pixels, Pixels) {
         let content = content_size(window);
         let narrow = window.viewport_size().width < appearance::ui_size(COMPACT_HEADER_WIDTH);
-        // Beside the pane the page keeps its 520 px minimum (`render`).
-        let page = if self.settings.project_pane {
-            (content.width - self.project_pane_width(window)).max(px(520.))
-        } else {
-            content.width
-        };
+        let page = self.full_actions_page(window);
         (
             self.full_header_height(
                 content.width,
@@ -3307,6 +3348,7 @@ impl GitTurtle {
     /// text system nothing.
     fn chrome_widths(&self, window: &Window) -> ChromeWidths {
         let status = self.work_status.as_ref();
+        let edge = self.repository_edge();
         let text = ChromeText {
             changes: self.changes_label(),
             profile: self.profile_title(),
@@ -3318,6 +3360,14 @@ impl GitTurtle {
             operation: status
                 .and_then(|s| s.operation.as_ref())
                 .map_or_else(String::new, |operation| format!("{operation} in progress")),
+            edge: edge.as_ref().map_or_else(String::new, |edge| edge.line()),
+            edge_short: edge
+                .as_ref()
+                .map_or_else(String::new, |edge| edge.short_line()),
+            edge_action: edge
+                .as_ref()
+                .and_then(|edge| edge.action())
+                .map_or_else(String::new, |action| action.label.to_owned()),
         };
         let key = LineKey::current(window);
         CHROME_WIDTHS.with(|cache| {
@@ -3473,9 +3523,54 @@ impl GitTurtle {
     }
 
     /// The full action bar's height, Targets collapsed, in a repository page
-    /// `width` wide: `render_git_actions`' controls in order, wrapped as
-    /// layout wraps them.
+    /// `width` wide, with the repository edge in its barest form, which the
+    /// bar keeps wherever a richer one would cost it a row (`edge_form`).
     fn full_actions_height(&self, width: Pixels, widths: &ChromeWidths, window: &Window) -> Pixels {
+        let barest = empty_state::EdgeForm::ORDER[2];
+        self.full_actions_height_with(width, widths, barest, window)
+    }
+
+    /// How the full action bar draws the repository edge: the richest form
+    /// (`EdgeForm::ORDER`) that costs the bar no row over the barest, as
+    /// "One responsive order" makes an action an icon, then lets a caption
+    /// go, before anything else gives way. Measured for the repository page
+    /// as the chrome measures it.
+    pub(super) fn edge_form(&self, window: &Window) -> empty_state::EdgeForm {
+        let [.., barest] = empty_state::EdgeForm::ORDER;
+        if self.repository_edge().is_none() {
+            return barest;
+        }
+        let widths = self.chrome_widths(window);
+        let page = self.full_actions_page(window);
+        let least = self.full_actions_height_with(page, &widths, barest, window);
+        empty_state::EdgeForm::ORDER
+            .into_iter()
+            .find(|form| self.full_actions_height_with(page, &widths, *form, window) <= least)
+            .unwrap_or(barest)
+    }
+
+    /// The repository page's width beside the project pane, which the action
+    /// bar spans.
+    fn full_actions_page(&self, window: &Window) -> Pixels {
+        let content = content_size(window);
+        // Beside the pane the page keeps its 520 px minimum (`render`).
+        if self.settings.project_pane {
+            (content.width - self.project_pane_width(window)).max(px(520.))
+        } else {
+            content.width
+        }
+    }
+
+    /// The full action bar's height, Targets collapsed, in a repository page
+    /// `width` wide: `render_git_actions`' controls in order, wrapped as
+    /// layout wraps them, the repository edge in `form`.
+    fn full_actions_height_with(
+        &self,
+        width: Pixels,
+        widths: &ChromeWidths,
+        form: empty_state::EdgeForm,
+        window: &Window,
+    ) -> Pixels {
         let rem = window.rem_size();
         let snap = |length: Pixels| window.pixel_snap(length);
         let scaled = |base: f32| snap(appearance::ui_size(base));
@@ -3491,14 +3586,22 @@ impl GitTurtle {
         )];
         if let Some(status) = &self.work_status {
             let inset = snap(rem * 0.5) * 2.;
-            items.push(if status.upstream.is_some() {
+            items.push(if self.repository_edge().is_some() {
+                // The edge's line and its action after it, the action below
+                // the line where the row cannot hold both.
+                let line = line(appearance::ui_text(12.));
+                let words = if form.caption {
+                    widths.edge
+                } else {
+                    widths.edge_short
+                };
+                (inset + words, line)
+            } else {
                 let count = px(12.) + snap(rem * 0.25);
                 (
                     inset + count * 2. + widths.ahead + snap(rem * 0.5) + widths.behind,
                     text.max(px(12.)),
                 )
-            } else {
-                (inset + widths.no_upstream, text)
             });
             if status.operation.is_some() {
                 items.push((inset + widths.operation, snap(rem * 0.25) * 2. + text));
@@ -3509,6 +3612,20 @@ impl GitTurtle {
             items.push((
                 snap(rem * 0.75) * 2. + scaled(16.) + snap(rem * 0.5) + label,
                 action,
+            ));
+        }
+        // The edge's action, after Push.
+        if self
+            .repository_edge()
+            .is_some_and(|edge| edge.action().is_some())
+        {
+            items.push((
+                if form.labelled {
+                    self.labelled_width(widths.edge_action, true, window)
+                } else {
+                    scaled(28.)
+                },
+                scaled(28.),
             ));
         }
         items.push((
@@ -4335,7 +4452,7 @@ impl GitTurtle {
             .size_full()
             .flex()
             .flex_col()
-            .child(self.render_git_actions(chrome.is_compact(), cx))
+            .child(self.render_git_actions(chrome.is_compact(), self.edge_form(window), cx))
             .child(self.render_operation_state(cx))
             .child(div().flex_1().min_h_0().child(workspace))
             .into_any_element()

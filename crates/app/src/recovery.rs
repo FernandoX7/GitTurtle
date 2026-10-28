@@ -427,7 +427,7 @@ impl GitTurtle {
         show_stash_form(form, window, cx);
     }
 
-    fn open_stashes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_stashes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.operation_busy.is_some() {
             return;
         }
@@ -436,8 +436,10 @@ impl GitTurtle {
         };
         let owner = cx.entity().downgrade();
         let browser = cx.new(|cx| StashBrowser::new(owner, repo, window, cx));
-        let width = (f32::from(window.viewport_size().width) - 48.).clamp(400., 1060.);
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
+            // Measured each frame, so a window narrowed while it is open,
+            // as to a 461 px half tile, keeps the dialog inside it.
+            let width = (f32::from(window.viewport_size().width) - 48.).clamp(400., 1060.);
             dialog
                 .title("Stashes")
                 .width(px(width))
@@ -1522,7 +1524,7 @@ impl Render for StashBrowser {
                         }
                     }))
                     .when(self.page.as_ref().is_some_and(|page| !page.entries.is_empty()), |element| element.child(list))
-                    .when(self.page.as_ref().is_some_and(|page| page.entries.is_empty()), |element| element.child(div().p_4().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("No saved stashes. Save current changes from the Actions menu in Changes.")))))
+                    .when(self.page.as_ref().is_some_and(|page| page.entries.is_empty()), |element| element.child(div().p_4().child(EmptyState::new("stash-list-empty", "No saved stashes · Save one from the Actions menu in Changes").block(cx))))))
                 .child(div().h(crate::appearance::ui_size(36.)).flex().items_center().justify_between().px_2().border_t_1().border_color(rgb(p.border))
                     .child(button("previous-stashes", "Previous", "", false).disabled(busy || self.offset == 0).on_click(cx.listener(|this, _, window, cx| this.load_page(this.offset.saturating_sub(STASH_PAGE_SIZE), window, cx))))
                     .child(button("next-stashes", "More", "", false).disabled(busy || self.page.as_ref().and_then(|page| page.next_offset).is_none()).on_click(cx.listener(|this, _, window, cx| { if let Some(offset) = this.page.as_ref().and_then(|page| page.next_offset) { this.load_page(offset, window, cx); } })))))

@@ -15,6 +15,7 @@ mod desktop_text;
 mod diff_view;
 mod discard;
 mod editor_find;
+mod empty_state;
 mod file_history;
 mod focus_reveal;
 mod focus_ring;
@@ -80,6 +81,7 @@ mod workspace;
 mod worktrees;
 
 use appearance::palette;
+use empty_state::EmptyState;
 use gitturtle_core::{Branch, Commit, FileChange, GitRepository, Worktree};
 use gpui_kit::component::{
     Disableable, Icon, Root, Selectable, Sizable, WindowExt,
@@ -1881,10 +1883,7 @@ impl GitTurtle {
             self.repaint_page(window, cx);
             return;
         }
-        self.search.update(cx, |s, cx| s.set_value("", window, cx));
-        self.history_query_changed(window, cx);
-        window.focus(&self.focus, cx);
-        cx.notify();
+        self.clear_history_search(window, cx);
     }
 }
 

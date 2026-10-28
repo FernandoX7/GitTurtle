@@ -307,8 +307,10 @@ async fn history_and_compare_draw_a_whole_ring_at_every_stop(cx: &mut TestAppCon
     assert_whole_except(
         failures,
         &[
-            ("Compare at 13 pt, stop 26", "paints no ring"),
-            ("Compare at 18 pt, stop 25", "paints no ring"),
+            // The fixture has no remote, so the action bar offers Add
+            // remote… as a stop before these (`empty_state`).
+            ("Compare at 13 pt, stop 27", "paints no ring"),
+            ("Compare at 18 pt, stop 26", "paints no ring"),
         ],
     );
 }

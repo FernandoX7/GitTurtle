@@ -351,6 +351,42 @@ impl GitTurtle {
         self.history_query_changed(window, cx);
     }
 
+    /// An exhausted search's one line, when it found nothing: how much of
+    /// which scope it searched (`empty_state`).
+    pub(super) fn history_search_no_match(&self) -> Option<String> {
+        let progress = self.history_search.progress.as_ref()?;
+        (progress.error.is_none() && !self.history_search_pending() && progress.exhausted()).then(
+            || {
+                format!(
+                    "No commits match · searched {} in {}",
+                    crate::counted(progress.scanned, "commit", "commits"),
+                    progress.scope_label
+                )
+            },
+        )
+    }
+
+    /// History's state for a search with no match: `line`, and Clear search.
+    pub(super) fn history_no_match(&self, line: String, cx: &mut Context<Self>) -> AnyElement {
+        EmptyState::new("history-no-match", line)
+            .action(
+                crate::empty_state::action("history-clear-search", "Clear search", "close")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.clear_history_search(window, cx)),
+                    ),
+            )
+            .pane(cx)
+    }
+
+    /// Empties the search and restores the selection context it replaced,
+    /// the list holding focus, as Escape and Clear search do.
+    pub(super) fn clear_history_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |s, cx| s.set_value("", window, cx));
+        self.history_query_changed(window, cx);
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
     pub(super) fn history_search_empty(&self) -> Option<(&'static str, String)> {
         let progress = self.history_search.progress.as_ref()?;
         if let Some(error) = &progress.error {
@@ -431,16 +467,28 @@ impl GitTurtle {
             .gap_1()
             .text_size(crate::appearance::ui_text(10.))
             .text_color(rgb(colors.muted))
+            // In a column too narrow for the summary beside its three
+            // buttons, as History's at 461 px, the buttons wrap below it: a
+            // summary given no width wrapped a character to a line, a
+            // thousand pixels tall, and pushed the list out of the window.
             .child(
                 div()
+                    .debug_selector(|| "history-search-controls".into())
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
-                    .child(div().flex_1().min_w_0().child(format!(
-                        "{scope} · {} · {} searched",
-                        crate::counted(self.commits.len(), "match", "matches"),
-                        crate::counted(progress.scanned, "commit", "commits")
-                    )))
+                    .child(
+                        div()
+                            .flex_grow(1.)
+                            .flex_basis(crate::appearance::ui_size(160.))
+                            .min_w_0()
+                            .child(format!(
+                                "{scope} · {} · {} searched",
+                                crate::counted(self.commits.len(), "match", "matches"),
+                                crate::counted(progress.scanned, "commit", "commits")
+                            )),
+                    )
                     .child(
                         button("history-search-cancel", "Cancel", "", false)
                             .disabled(!running)

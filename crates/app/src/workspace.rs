@@ -1969,6 +1969,23 @@ impl GitTurtle {
         let status_ready = self.work_status.is_some()
             && !self.working_paths.pending
             && self.working_paths.error.is_none();
+        // With nothing to list, one line says why (`empty_state`).
+        let clean = (total == 0).then(|| {
+            if status_ready {
+                EmptyState::new(
+                    "working-clean",
+                    empty_state::working_clean_line(self.work_status.as_deref(), false),
+                )
+                .pane(cx)
+            } else if refreshing {
+                EmptyState::new("working-reading", "Reading the working tree…").pane(cx)
+            } else {
+                // Refresh, in the header just above, reads it again.
+                EmptyState::new("working-unavailable", "Changes unavailable")
+                    .tooltip("Refresh to read the working tree again.")
+                    .pane(cx)
+            }
+        });
         let branch = self
             .work_status
             .as_ref()
@@ -2296,20 +2313,7 @@ impl GitTurtle {
                     })
                     .when(total > 0, |el| el.child(list))
                     .children(travelling.filter(|_| total > 0))
-                    .when(total == 0, |el| el.child(
-                        div().size_full().flex().flex_col().items_center().justify_center().p_5().gap_2()
-                            .child(div().size(px(40.)).rounded(px(12.))
-                                .bg(rgb(if status_ready { p.added_background } else { p.hover }))
-                                .flex().items_center().justify_center()
-                                .child(icon(if status_ready { "check" } else if refreshing { "refresh" } else { "changes" },
-                                    22., if status_ready { p.added } else { p.muted })))
-                            .child(div().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::MEDIUM)
-                                .child(if status_ready { "Working tree clean" } else if refreshing { "Reading working tree…" } else { "Changes unavailable" }))
-                            .child(div().max_w(px(220.)).text_center().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))
-                                .child(if status_ready { "No staged changes or local edits. Your next changes will appear here." }
-                                    else if refreshing { "Checking staged changes and local edits." }
-                                    else { "Refresh to try reading this working tree again." })),
-                    ))
+                    .children(clean)
                     .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
                         list_layout.update(cx, |layout, cx| {
                             if layout.list_size != Some(bounds.size) {
@@ -2877,7 +2881,17 @@ impl GitTurtle {
     /// Targets keep only their icons, their accessible names, and tooltips
     /// that lead with those names. Their actions, states and order are the
     /// full form's.
-    pub(super) fn render_git_actions(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// `edge_form`, in the full form, is how the repository edge is drawn
+    /// (`views::GitTurtle::edge_form`); the compact form draws its barest
+    /// form. An action drawn as its icon keeps its label as its accessible
+    /// name and tooltip, and a line without its caption keeps the whole line
+    /// in its tooltip.
+    pub(super) fn render_git_actions(
+        &self,
+        compact: bool,
+        edge_form: crate::empty_state::EdgeForm,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
         let branch = self
@@ -2903,12 +2917,65 @@ impl GitTurtle {
                 text
             }
         };
+        // A repository at an edge (detached HEAD, no remote, no commits yet
+        // or no upstream) says so in the counts' place, and its next action, if any,
+        // joins the actions (`empty_state`).
+        let edge = self.repository_edge();
+        // The edge's action joins the actions, after Push and before
+        // Targets, so in a half tile it wraps with Targets rather than
+        // pushing Push to a row of its own.
+        let edge_action =
+            edge.as_ref().and_then(|edge| edge.action()).map(|action| {
+                let labelled = edge_form.labelled && !compact;
+                let control = if labelled {
+                    button(action.id, action.label, action.symbol, false).secondary()
+                } else {
+                    crate::views::compact_control_name(
+                        button(action.id, "", action.symbol, false).secondary(),
+                        action.id,
+                        action.label,
+                    )
+                    .tooltip(action.label)
+                };
+                let inset = appearance::ui_size(if labelled {
+                    crate::LABEL_INSET
+                } else {
+                    crate::ICON_INSET
+                });
+                appearance::keep_disabled_shape(control, busy, p.panel, Some(inset), cx)
+                    .debug_selector(move || action.id.into())
+                    .disabled(busy)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.run_edge_action(action, window, cx)
+                    }))
+            });
         let sync_state = self.work_status.as_ref().map(|status| {
+            if let Some(edge) = &edge {
+                let caption = edge_form.caption && !compact;
+                return div()
+                    .px_2()
+                    .when(compact, |el| el.min_w_0())
+                    .child(
+                        EmptyState::new(
+                            "branch-edge",
+                            if caption {
+                                edge.line()
+                            } else {
+                                edge.short_line()
+                            },
+                        )
+                        .tooltip(if caption {
+                            edge.explanation()
+                        } else {
+                            format!("{} · {}", edge.line(), edge.explanation())
+                        })
+                        .truncating(compact)
+                        .inline(cx),
+                    )
+                    .into_any_element();
+            }
             let explanation = status.upstream.as_ref().map_or_else(
-                || {
-                    "No upstream is configured. Choose a remote and branch in Targets to push."
-                        .to_owned()
-                },
+                || "No upstream is configured.".to_owned(),
                 |upstream| {
                     format!("Compared with local {upstream}. Fetch to update remote information.")
                 },
@@ -2966,13 +3033,7 @@ impl GitTurtle {
                             .child(shrinking(div()).child(format!("{} behind", status.behind))),
                     )
                 })
-                .when(status.upstream.is_none(), |el| {
-                    el.child(
-                        shrinking(div())
-                            .text_color(rgb(p.muted))
-                            .child("No upstream"),
-                    )
-                })
+                .into_any_element()
         });
         let operation_state = self
             .work_status
@@ -3117,6 +3178,7 @@ impl GitTurtle {
                         .children(operation_state),
                 )
                 .children(actions)
+                .children(edge_action)
                 .child(targets)
         } else {
             div()
@@ -3132,6 +3194,7 @@ impl GitTurtle {
                 .children(operation_state)
                 .child(div().flex_1())
                 .children(actions)
+                .children(edge_action)
                 .child(targets)
         };
         div().debug_selector(|| "git-actions".into()).flex().flex_col().flex_shrink_0().bg(rgb(p.panel)).border_b_1().border_color(rgb(p.border))

@@ -170,7 +170,7 @@ impl GitTurtle {
                     {
                         this.tag_actions.list = Some(browser.read(cx).rows.clone());
                     }
-                    window.open_alert_dialog(cx, move |dialog, _, cx| {
+                    window.open_alert_dialog(cx, move |dialog, window, cx| {
                         // The dialog clips its body to the body's bounds, and
                         // the browser keeps the focus ring's room inside them
                         // above Create tag… and below the last row. The
@@ -179,7 +179,8 @@ impl GitTurtle {
                         let room = appearance::button_ring_room(cx);
                         dialog
                             .title(static_text("tags-dialog-title", "Tags").mb(-room))
-                            .width(px(600.))
+                            // Within a 461 px window, as the stash browser is.
+                            .width(px(600.).min(window.viewport_size().width - px(48.)))
                             .gap(DIALOG_FOOTER_GAP - room)
                             .child(browser.clone())
                             .button_props(DialogButtonProps::default().ok_text("Done"))
@@ -469,7 +470,7 @@ impl Render for TagBrowser {
             .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("tags-list").debug_selector(|| "tags-list".into()).max_h(px(360.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap_1().children(matches.iter().zip(rows).enumerate().map(|(index, (tag, focus))| {
                 let tag = (*tag).clone(); let label = format!("{} · {} · {}", tag.name, if tag.annotated { "Annotated" } else { "Lightweight" }, short_oid(&tag.target_oid));
                 Button::new(("tag-row", index)).track_focus(&focus).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).label(label.clone()).accessibility_label(label).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
-            })).when(matches.is_empty(), |element| element.child(static_text("tag-list-empty", if self.list.tags.is_empty() { "No local tags yet. Create a tag to name a commit." } else { "No tags match this filter." }).p_3().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "tags-scrollbar"))
+            })).when(matches.is_empty(), |element| element.child(div().p_3().child(EmptyState::new("tag-list-empty", if self.list.tags.is_empty() { "No local tags yet · Create tag… names a commit" } else { "No tags match this filter" }).block(cx)))), "tags-scrollbar"))
             .when(matches.len() > 100, |element| element.child(static_text("tag-list-match-limit", "Showing 100 matches. Narrow the filter to find another tag.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .when(self.list.truncated, |element| element.child(static_text("tag-list-load-limit", "Loaded the first 10,000 local tags by name. Additional tags are outside this bounded browser.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
     }

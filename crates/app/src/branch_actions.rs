@@ -753,7 +753,7 @@ impl GitTurtle {
         }, window, cx);
     }
 
-    fn open_remote_form(
+    pub(super) fn open_remote_form(
         &mut self,
         expected: Option<Arc<RemoteConfig>>,
         window: &mut Window,

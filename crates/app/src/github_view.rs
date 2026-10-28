@@ -1144,7 +1144,15 @@ impl Render for Panel {
                             .child(crate::button_frame(("github-pr",number),&name,"",selected).key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx))))
                             .child(div().id(("github-pr-context",number)).flex().role(Role::Label).aria_label(context.clone()).mx(text_inset()).text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).child(row_text(format!("github-pr-context-{number}"),context)))
                     }))
-                    .when(self.rows.is_empty(),|element|element.child(div().py_5().px(text_inset()).flex().flex_col().gap_2().child(label("github-list-empty","Your pull requests, ready to review").font_weight(FontWeight::SEMIBOLD)).child(label("github-list-empty-help","Choose a repository and Refresh PRs to load open requests. Opening this panel reads local settings and drafts only.").text_color(rgb(p.muted)))))))
+                    // One line with the next step: a repository with no GitHub remote names
+                    // the destination first, and one with a destination reads its PRs with
+                    // Refresh PRs, above. Opening the panel itself contacts nothing.
+                    .when(self.rows.is_empty(),|element|element.child(div().py_5().px(text_inset()).child(if self.local_loaded&&self.destination.read(cx).value().trim().is_empty(){
+                        EmptyState::new("github-list-empty","No GitHub remote · Name the repository to load its pull requests").tooltip("Enter the destination as owner/repository or a GitHub.com remote URL. Opening this panel reads local settings and drafts only.")
+                            .action(crate::empty_state::action("github-choose-destination","Name repository","search").disabled(pending).on_click(cx.listener(|this,_,window,cx|{let focus=this.destination.read(cx).focus_handle(cx);window.focus(&focus,cx);})))
+                    }else{
+                        EmptyState::new("github-list-empty","No pull requests shown · Refresh PRs loads the open ones").tooltip("Opening this panel reads local settings and drafts only.")
+                    }.block(cx))))))
                 .child(div().flex().items_center().gap_2().child(button("github-previous","Previous PR page","",false).debug_selector(||"github-previous".into()).disabled(pending||self.page<=1).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page-1,window,cx))))
                     .child(label("github-page",format!("Page {} · up to {} PRs",self.page,github::PAGE_SIZE)).text_color(rgb(p.muted)))
                     .child(button("github-next","Next PR page","",false).disabled(pending||!self.has_next).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page+1,window,cx))))))
