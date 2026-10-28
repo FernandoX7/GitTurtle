@@ -655,22 +655,23 @@ impl Palette {
     }
 
     /// The edge of menus, popovers and selects: `border`, which the border
-    /// rule holds only against the panel, unless it misses that rule against
-    /// the raised surface or a page surface the popup may lie on. Then it takes
-    /// the first step toward black in a light palette or white in a dark one
-    /// that clears it on all of them.
+    /// rule holds only against the panel, unless it misses [`POPUP_EDGE`]
+    /// against the raised surface or a page surface the popup may lie on. Then
+    /// it takes the first of 256 even steps toward black in a light palette or
+    /// white in a dark one that clears it on all of them, which lands it just
+    /// above the floor rather than a coarse step past it.
     pub fn raised_edge(self) -> u32 {
         let surfaces = [self.raised(), self.subtle, self.canvas, self.panel];
         let clears = |edge| {
             surfaces
                 .iter()
-                .all(|&surface| custom::contrast(edge, surface) >= custom::BORDER_SURFACE)
+                .all(|&surface| custom::contrast(edge, surface) >= POPUP_EDGE)
         };
         if clears(self.border) {
             return self.border;
         }
         let extreme = if self.is_light() { 0x000000 } else { 0xffffff };
-        toward_extreme(self.border, extreme, clears)
+        toward_extreme_in(256, self.border, extreme, clears)
     }
 
     /// The label of a control that cannot be used, the one dim disabled
@@ -763,15 +764,27 @@ const LABEL_MARGIN: f64 = 0.25;
 /// enabled labels keep, so it still reads as unavailable.
 const DISABLED_LABEL: f64 = 3.0;
 
+/// The contrast a popup's 1 px edge keeps against its surface and the page
+/// beneath it ([`Palette::raised_edge`]). Antialiasing and fractional scales
+/// draw a hairline below its token: an edge fitted to the border rule's 1.3
+/// drew 1.21:1 to 1.26:1 natively, so the token keeps room above that rule.
+const POPUP_EDGE: f64 = 1.4;
+
 /// The first of 32 even steps from `from` to `extreme`, `from` included, that
 /// `accepts`, or `extreme`.
 fn toward_extreme(from: u32, extreme: u32, accepts: impl Fn(u32) -> bool) -> u32 {
-    (0..=32)
+    toward_extreme_in(32, from, extreme, accepts)
+}
+
+/// The first of `steps` even steps from `from` to `extreme`, `from` included,
+/// that `accepts`, or `extreme`.
+fn toward_extreme_in(steps: u32, from: u32, extreme: u32, accepts: impl Fn(u32) -> bool) -> u32 {
+    (0..=steps)
         .map(|step| {
             [16, 8, 0].into_iter().fold(0, |color, shift| {
                 let from = (from >> shift) & 0xff;
                 let to = (extreme >> shift) & 0xff;
-                color | (((from * (32 - step) + to * step) / 32) << shift)
+                color | (((from * (steps - step) + to * step) / steps) << shift)
             })
         })
         .find(|&label| accepts(label))
@@ -4132,14 +4145,18 @@ mod tests {
     /// Catppuccin Latte, Flexoki Light, Ethereal and Hackerman, and `border`
     /// alone would read 1.17:1 on Omarchy Matte Black's raised surface. In
     /// every palette the surface is at least as light as each page surface,
-    /// its edge clears the border rule against the surface and against every
-    /// page surface beneath it, separators take that edge, text and secondary
-    /// text clear the text rule on it, and the menu's hover row keeps the
-    /// hover step off it.
+    /// its edge reads 1.4:1 against the surface and against every page surface
+    /// beneath it, the canvas included, separators take that edge, text and
+    /// secondary text clear the text rule on it, and the menu's hover row keeps
+    /// the hover step off it. An edge fitted to the border rule's 1.3 alone
+    /// (1.31:1 in Braden, 1.33:1 in Omarchy Everforest) drew 1.21:1 to 1.26:1
+    /// once antialiased; one that has to move off `border` stops within 0.03
+    /// above 1.4 on its closest surface, rather than a coarse step past it.
     #[gpui::test]
     fn every_palette_raises_menus_above_the_page_with_a_border_edge(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_kit::init);
         let mut failures = Vec::new();
+        let mut moved = 0;
         for (name, palette) in test_palettes() {
             let (popover, ring, separator, hover) = cx.update(|cx| {
                 palette.apply(palette.is_light(), None, cx);
@@ -4177,12 +4194,12 @@ mod tests {
                 };
                 check(&format!("lift over {page}"), lift, 1.);
                 let edge = palette.raised_edge();
-                check(&format!("edge on {page}"), contrast(edge, surface), 1.3);
+                check(&format!("edge on {page}"), contrast(edge, surface), 1.4);
             }
             check(
                 "edge on the menu",
                 contrast(palette.raised_edge(), popover),
-                1.3,
+                1.4,
             );
             check(
                 "text on the menu",
@@ -4195,7 +4212,21 @@ mod tests {
                 LABEL_RULE,
             );
             check("hover row on the menu", contrast(hover, popover), 1.08);
+            let edge = palette.raised_edge();
+            if edge != palette.border {
+                moved += 1;
+                let closest = [popover, palette.subtle, palette.canvas, palette.panel]
+                    .map(|surface| contrast(edge, surface))
+                    .into_iter()
+                    .fold(f64::MAX, f64::min);
+                if closest > 1.43 {
+                    failures.push(format!(
+                        "{name} edge {edge:06x} {closest:.3}:1 at its closest"
+                    ));
+                }
+            }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(moved > 0, "some palette's edge moves off its border");
     }
 }

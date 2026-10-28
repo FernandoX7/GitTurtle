@@ -411,8 +411,9 @@ set the ring's colour; unset, the ring is upstream's. `popover_ring` is now
 public so the application's tests can read the colour it resolves to. The
 consumers are the Linux Menu, context menus, selects and popovers, whose
 surface GitTurtle sets to the lightest page surface and whose edge it fits to
-1.3:1 against that surface and every page surface (`Palette::raised` and
-`Palette::raised_edge` in `crates/app/src/appearance.rs`). Menu separators
+1.4:1 against that surface and every page surface, room above the border rule's
+1.3:1 for antialiasing (`Palette::raised` and `Palette::raised_edge` in
+`crates/app/src/appearance.rs`). Menu separators
 lie on that surface, where upstream's `border` token read 1.16:1 in Omarchy
 Matte Black, so `menu_separator` draws them in the edge when the theme sets
 one and in `border` otherwise. `popover_shadow` paints the ring after the two
