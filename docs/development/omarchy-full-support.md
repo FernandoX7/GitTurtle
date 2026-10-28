@@ -375,6 +375,45 @@ cover current upstream x86-64 Omarchy.
           807.75 px caption move, History search's "1 match", Quick Open's count on AT-SPI (Orca).
         - System preview: the image control's accessible name omits the type ("Open After in
           default app") where PDF and text name it ("…as a PDF document in the default app").
+        Found by the native reviews of 2026-10-28 afternoon (frames `.local/item8-2026-10-27/tools/qa/{t2,f2,d2,g2}-{48660d6,04b6bc9}/`):
+        - Regressions: the Working composer's leftover height falls below the composer, a 3.5–14 px
+          band under the commit action (`cc52a97`/`403563e`); at 18 pt in 1480 × 800 History's
+          metadata draws a scrollbar for about 16 px of overflow since Actions became 28 px
+          (`eac91cd`); at 18 pt "GitHub limit 3,000" sits below the review body's fold (`5c32386`).
+        - Accessibility: a Working row's menu opens only on a right press (no Menu key or
+          Shift-F10 in `GitTurtleList`); at 13 pt in 461 px "Compare against parent 1" and
+          "Selected commit actions" stay in the tree below the revision details' clip; History rows
+          still report bounds past the window; the Reflog and rebase dialogs are announced as the
+          fallback "Alert dialog", not by their titles.
+        - Polish: History's search field is named by its placeholder, which its clip cuts at 18 pt
+          ("…history, a"); at 18 pt in 461 px the tab name gives way ("com…") while Menu and
+          Workspaces keep their labels, and the inspector heading reads "Change…" (drop the label,
+          keep icon and count); at 18 pt in 1000 × 680 commit Actions sit below the metadata's fold;
+          the review body has no scroll affordance when it overflows ("Recover drafts · 1" at 18 pt);
+          the Changes hint wraps inside its last phrase at 18 pt; a 0.5 px teal fringe outside the
+          compact badge's cut-out (1.23:1, 1.43:1); DESIGN.md's keyboard section still says narrow
+          History has room for one lane.
+        - Taste: Copy message and Copy hash share one glyph; the profile button is a filled 50 px
+          tile beside a 39 px unfilled Settings at 18 pt; review Changes rows 20 against Source's
+          18 px; unselected PR rows have no resting surface.
+        - Found by the layout grid (`c757a0e`): its `KNOWN` entries (inspector, narrow History,
+          Working files and composer, GitHub panel, project hub and pane); Settings is not measured
+          yet; the rebase (720 px) and Quick Open (700 px) dialogs draw past a 461 px window's left.
+        - System preview at 461 × 490: the image control wraps under the file-status line, on the
+          bus but not visible (regression from `7e0e472`/`1bab68d`); PDF side headers differ by 10
+          and 14.5 px; one wrapped image caption drops the shared top; the image mode and zoom
+          groups are cut at the column's edge (pre-existing).
+        - Viewport: after one resize with no input the base kept its wide layout for 2.5 s
+          (one candidate run did not, unexplained); a 180 px sidebar wraps its segments and the
+          footer hint (pre-existing).
+        - From the implementers: after a Stage the Working list moved down 41 px in the first frame
+          (the post-write status above it); a running History search leaves the list 2 px tall at
+          13 pt in 461 × 490; the GitHub panel's Name repository sits below its fold at 18 pt in
+          461 × 490 with a cut ring.
+        - Not captured yet: the composer's conflict note (`56c2d69`) on a conflicted fixture at
+          18 pt in 461 px; a long draft status (`7b2adc1`); a branched fixture for narrow History's
+          lanes at 18 pt; Back hovered, pressed and focused at 18 pt; the tab's close button focused
+          at 18 pt in 461 px.
         Owner decision, 2026-10-28: Linux reaches feature parity with macOS where possible; macOS is
         checked later on a Mac. The gaps (README "Linux gaps", `docs/file-previews.md`,
         `docs/linux.md`), each a separate change with a dated research note on the dependency
