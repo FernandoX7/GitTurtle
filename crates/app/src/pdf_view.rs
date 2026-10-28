@@ -449,9 +449,11 @@ pub(super) fn render_comparison<T: 'static>(
     let colors = palette(cx);
     div().size_full().flex().min_w_0().children([("Before", &preview.old, &preview.new), (if quick {"Source"} else {"After"}, &preview.new, &preview.old)].into_iter().enumerate().filter(|(i,_)| !quick || *i == 1).map(|(index,(label, side, other))| {
         let mut header = div().flex().flex_wrap().items_center().gap_2().p_2().border_b_1().border_color(rgb(colors.border)).child(div().font_weight(FontWeight::SEMIBOLD).child(format!("{label} · PDF")));
-        if crate::rich_preview::SYSTEM_PREVIEW && side.captured.is_some() {
+        if let (Some(offer), Some(_)) = (side.system_preview, &side.captured) {
             let side = side.clone(); let owner = owner.clone();
-            header = header.child(button(("pdf-system",index), "System preview", "external-link", false).accessibility_label(format!("{label}: open captured PDF in System preview")).on_click(move |_, window, cx| { let _ = owner.update(cx, |this,cx|this.open_captured_preview(side.clone(),window,cx)); }));
+            let control = button(("pdf-system",index), offer.label(), "external-link", false);
+            let control = if cfg!(target_os = "macos") { control.accessibility_label(format!("{label}: open captured PDF in System preview")) } else { control.accessibility_label(offer.accessible_name(label)).tooltip(offer.tooltip()) };
+            header = header.child(control.on_click(move |_, window, cx| { let _ = owner.update(cx, |this,cx|this.open_captured_preview(side.clone(),window,cx)); }));
         }
         let mut body = div().id(("pdf-scroll",index)).flex_1().min_h_0().min_w_0().overflow_scroll().p_3();
         let Some(document) = side.pdf.clone() else {
@@ -500,8 +502,12 @@ pub(super) fn render_comparison<T: 'static>(
             header=header.child(div().text_size(appearance::ui_text(10.)).child(format!("Different page counts: {} / {}. Each side stops at its last page.",document.count,other.count)));
         }
         let page_number = page + 1;
+        let rendered = match side.system_preview.filter(|_| side.captured.is_some()) {
+            Some(offer) => format!("Rendered page; {} opens the captured document.", offer.label()),
+            None => "Rendered page.".into(),
+        };
         if let Some(page) = cached && let Some(render) = &page.render {
-            body = body.child(div().id(("pdf-rendered-page",index)).role(Role::Image).aria_label(format!("{label}: PDF page {} of {}. Rendered page; System preview opens the captured document.",page_number,document.count)).w(relative(zoom)).min_w(px(100.)).aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff)).child(crate::gif_playback::static_image(render.clone())));
+            body = body.child(div().id(("pdf-rendered-page",index)).role(Role::Image).aria_label(format!("{label}: PDF page {} of {}. {rendered}",page_number,document.count)).w(relative(zoom)).min_w(px(100.)).aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff)).child(crate::gif_playback::static_image(render.clone())));
         } else {
             body=body.child(div().text_color(rgb(colors.muted)).child(error.unwrap_or_else(|| if pending {"Preparing selected page…"}else{"Page preparation pending…"}.into())));
         }

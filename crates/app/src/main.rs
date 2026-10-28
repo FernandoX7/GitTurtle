@@ -61,6 +61,7 @@ mod scroll_tests;
 mod settings;
 mod shortcuts;
 mod split_diff;
+mod system_preview;
 mod tags;
 mod text;
 mod text_review;
@@ -2131,6 +2132,7 @@ fn main() {
         image_lifetime::init(cx);
         interactive_rebase::init(cx);
         theme_editor::init(cx);
+        system_preview::init(cx);
         preferences
             .settings
             .effective_theme(cx, &preferences.custom_themes)

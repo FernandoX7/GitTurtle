@@ -408,7 +408,15 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
   Markdown and finite mesh/GLB/STEP previews have portable decoders; the
   [format matrix](file-previews.md) defines bounds and unsupported variants.
   Recognizing metadata is not the same as rendering a format.
-- System Preview uses macOS Quick Look and has no Linux launcher.
+- System preview is **Open in default app** on Linux: an explicit click hands a
+  private read-only copy of the captured bytes to the desktop's default
+  application through the OpenURI portal, or `xdg-open` where no portal
+  answers, once GIO (and, for `xdg-open`, `xdg-mime`) types the copy as
+  what its content is. Only passive types decided from content offer it
+  (images, PDF, audio and video, plain text); office documents, SVG, HTML,
+  scripts, desktop entries, executables, archives, fonts and unrecognized
+  bytes do not. See the
+  [handoff contract](file-previews.md#background-work-and-resource-lifetime).
 - Automatic refresh skips ignored working-tree directories while preserving
   coverage for tracked files inside them and essential Git metadata. Linux
   coverage is bounded to 16,384 directory registrations and a scan budget;

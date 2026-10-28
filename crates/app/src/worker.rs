@@ -175,6 +175,8 @@ impl CommitReferences {
 pub struct ImageSide {
     pub animation: Option<Arc<crate::gif_playback::Timeline>>,
     pub captured: Option<Arc<[u8]>>,
+    /// Whether the captured bytes offer the open action, decided with them.
+    pub system_preview: Option<crate::system_preview::Offer>,
     pub literal_source: Option<Arc<str>>,
     pub image: Option<ImagePreview>,
     /// BGRA conversion happens on the worker; the UI only shares this allocation.
@@ -1686,7 +1688,7 @@ fn captured_model_side(
     // Keep the captured identity available to Copy and explicit download actions.
     // Its error prevents immutable caching while the local store can change.
     side.metadata.source = std::str::from_utf8(&bytes).ok().map(Arc::from);
-    side.captured = Some(bytes.into());
+    side.capture(bytes.into(), &|| cancellation.check())?;
     Ok(side)
 }
 
@@ -1747,6 +1749,7 @@ fn nontext_history_content(
                     bytes: 0,
                     lfs_pointer: None,
                     captured: None,
+                    system_preview: None,
                     literal_source: None,
                 },
             }
@@ -2026,6 +2029,7 @@ fn working_image_side(
         return ImageSide {
             animation: None,
             captured: None,
+            system_preview: None,
             literal_source: None,
             image: None,
             render: None,
@@ -2081,10 +2085,17 @@ fn working_image_side(
         .flatten();
     let captured = (bytes.len() <= MAX_INPUT_BYTES && missing_pointer.is_none())
         .then(|| Arc::<[u8]>::from(bytes));
+    // A cancelled decision offers nothing; the caller's next check ends the job.
+    let system_preview = captured.as_deref().and_then(|bytes| {
+        crate::system_preview::offer(bytes, &|| cancellation.check())
+            .ok()
+            .flatten()
+    });
     match result {
         Ok((image, render, bytes)) => ImageSide {
             animation,
             captured,
+            system_preview,
             literal_source,
             image: Some(image),
             render: Some(render),
@@ -2095,6 +2106,7 @@ fn working_image_side(
         Err(error) => ImageSide {
             animation: None,
             captured,
+            system_preview,
             literal_source,
             image: None,
             render: None,
@@ -3255,6 +3267,7 @@ mod image_tests {
             old: ImageSide {
                 animation: None,
                 captured: None,
+                system_preview: None,
                 literal_source: None,
                 image: Some(preview),
                 render: Some(rendered),
@@ -3266,6 +3279,7 @@ mod image_tests {
             new: ImageSide {
                 animation: None,
                 captured: None,
+                system_preview: None,
                 literal_source: None,
                 image: None,
                 render: None,
@@ -3991,6 +4005,38 @@ mod image_tests {
         assert_eq!(new.captured.as_deref(), Some(SVG));
         assert_eq!(new.literal_source.as_deref().unwrap().as_bytes(), SVG);
         assert!(image.bytes() >= SVG.len() * 2 + 8);
+    }
+
+    /// Whether a side offers Open in default app is decided here, with its
+    /// captured bytes and from them alone: a GIF named like a launcher and a
+    /// WAV named like a script offer their own types, and SVG, whatever its
+    /// name, offers nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_default_app_offer_is_decided_with_the_captured_bytes() {
+        let fixture = Fixture::new();
+        let repo = GitRepository::open(&fixture.0).unwrap();
+        let gif = include_bytes!("../../preview/tests/fixtures/disposal-transparency.gif");
+        let content = captured_preview(&repo, added_file(&fixture, "launcher.desktop", gif));
+        let Content::Images { old, new } = &*content else {
+            panic!("GIF magic routes to images")
+        };
+        assert_eq!(old.system_preview, None, "an absent side offers nothing");
+        let offer = new.system_preview.expect("a GIF offers the action");
+        assert!(offer.tooltip().contains(" as a GIF image "));
+        let svg = captured_preview(&repo, added_file(&fixture, "picture.png", SVG));
+        let Content::Images { new, .. } = &*svg else {
+            panic!("content should identify SVG")
+        };
+        assert!(new.captured.is_some());
+        assert_eq!(new.system_preview, None);
+        let wav = b"RIFF\x24\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88\x58\x01\0\x02\0\x10\0data\0\0\0\0";
+        let rich = captured_preview(&repo, added_file(&fixture, "install.sh", wav));
+        let Content::Rich(preview) = &*rich else {
+            panic!("WAV is captured metadata")
+        };
+        let offer = preview.new.system_preview.expect("WAV offers the action");
+        assert!(offer.tooltip().contains(" as WAV audio "));
     }
 
     #[test]

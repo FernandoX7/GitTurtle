@@ -33,8 +33,10 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Reads the desktop's font antialiasing and text scaling through the XDG
-# settings portal; the version matches the toolkit's own portal client.
-ashpd = { version = "=0.13.13", default-features = false, features = ["async-io", "settings"] }
+# settings portal, and hands Open in default app's private copy to the OpenURI
+# portal; the version matches the toolkit's own portal client, which already
+# enables `open_uri`.
+ashpd = { version = "=0.13.13", default-features = false, features = ["async-io", "settings", "open_uri"] }
 
 [dev-dependencies]
 gpui-kit = { version = "=0.6.0", features = ["test-support"] }

@@ -175,6 +175,7 @@ impl GitTurtle {
                 .position(key, duration, std::time::Instant::now());
         let mut labels = Vec::new();
         let mut truncated = false;
+        let mut complete = None;
         if let Some(Content::Images { old, new }) = self.content.as_deref() {
             for (index, side) in [old, new].iter().enumerate() {
                 if let Some(animation) = &side.animation {
@@ -191,18 +192,101 @@ impl GitTurtle {
                         animation.end_ms.len()
                     ));
                     truncated |= animation.truncated;
+                    if animation.truncated && side.captured.is_some() {
+                        complete = complete.or(side.system_preview);
+                    }
                 }
             }
         }
-        Some(div().flex().flex_col().gap_1().px_3().py_2().border_b_1().border_color(rgb(p.border))
-            .child(div().flex().flex_wrap().items_center().gap_2()
-                .child(button("gif-playback-toggle", if playing { "Pause GIF" } else { "Play GIF" }, "", playing).toggled(playing).disabled(cx.reduce_motion()).on_click(cx.listener(|this, _, _, cx| { if cx.reduce_motion() { return; } let (key, duration, _) = this.gif_context(); this.image_comparison.playback.toggle(key, duration, std::time::Instant::now()); cx.notify(); })))
-                .child(button("gif-first-frame", "First frame", "", false).on_click(cx.listener(|this, _, _, cx| { let (key, _, _) = this.gif_context(); this.image_comparison.playback.seek(key, 0); cx.notify(); })))
-                .child(button("gif-previous-frame", "Previous frame", "", false).on_click(cx.listener(|this, _, _, cx| this.gif_step(false, cx))))
-                .child(button("gif-next-frame", "Next frame", "", false).on_click(cx.listener(|this, _, _, cx| this.gif_step(true, cx))))
-                .child(div().text_size(appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("{:.2} / {:.2} s · {}", position as f64 / 1000., duration as f64 / 1000., labels.join(" · ")))))
-            .child(div().text_size(appearance::ui_text(10.)).text_color(rgb(p.muted)).child(if cx.reduce_motion() { "Reduce Motion is enabled. Use First, Previous, and Next frame for static inspection." } else if truncated && crate::rich_preview::SYSTEM_PREVIEW { "Playback is limited to the decoded segment (120 frames, 30 seconds, 16 million output pixels). Open captured bytes in system preview for the complete animation." } else if truncated { "Playback is limited to the decoded segment (120 frames, 30 seconds, 16 million output pixels)." } else if self.is_quick_source() { "Frame controls pause playback for inspection." } else { "Both versions share one clock; a shorter animation holds its final frame. Frame controls pause playback for inspection." }))
-            .into_any_element())
+        const SEGMENT: &str = "Playback is limited to the decoded segment (120 frames, 30 seconds, 16 million output pixels).";
+        let note: SharedString = if cx.reduce_motion() {
+            "Reduce Motion is enabled. Use First, Previous, and Next frame for static inspection."
+                .into()
+        } else if let (true, Some(offer)) = (truncated, complete) {
+            // Only where the truncated side offers the action that shows it.
+            format!("{SEGMENT} {}", offer.complete_animation()).into()
+        } else if truncated {
+            SEGMENT.into()
+        } else if self.is_quick_source() {
+            "Frame controls pause playback for inspection.".into()
+        } else {
+            "Both versions share one clock; a shorter animation holds its final frame. Frame controls pause playback for inspection.".into()
+        };
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(rgb(p.border))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            button(
+                                "gif-playback-toggle",
+                                if playing { "Pause GIF" } else { "Play GIF" },
+                                "",
+                                playing,
+                            )
+                            .toggled(playing)
+                            .disabled(cx.reduce_motion())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if cx.reduce_motion() {
+                                    return;
+                                }
+                                let (key, duration, _) = this.gif_context();
+                                this.image_comparison.playback.toggle(
+                                    key,
+                                    duration,
+                                    std::time::Instant::now(),
+                                );
+                                cx.notify();
+                            })),
+                        )
+                        .child(
+                            button("gif-first-frame", "First frame", "", false).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    let (key, _, _) = this.gif_context();
+                                    this.image_comparison.playback.seek(key, 0);
+                                    cx.notify();
+                                }),
+                            ),
+                        )
+                        .child(
+                            button("gif-previous-frame", "Previous frame", "", false)
+                                .on_click(cx.listener(|this, _, _, cx| this.gif_step(false, cx))),
+                        )
+                        .child(
+                            button("gif-next-frame", "Next frame", "", false)
+                                .on_click(cx.listener(|this, _, _, cx| this.gif_step(true, cx))),
+                        )
+                        .child(
+                            div()
+                                .text_size(appearance::ui_text(11.))
+                                .text_color(rgb(p.muted))
+                                .child(format!(
+                                    "{:.2} / {:.2} s · {}",
+                                    position as f64 / 1000.,
+                                    duration as f64 / 1000.,
+                                    labels.join(" · ")
+                                )),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(appearance::ui_text(10.))
+                        .text_color(rgb(p.muted))
+                        .debug_selector(|| "gif-playback-note".into())
+                        .child(note),
+                )
+                .into_any_element(),
+        )
     }
     fn image_geometry(&self) -> Geometry {
         let sides = match self.content.as_deref() {
@@ -421,15 +505,23 @@ impl GitTurtle {
                 let copy_mark = mark.clone();
                 captured_actions = captured_actions.child(copy_feedback::copy_button(mark,format!("Copy {label} source"),"Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),&format!("{label} source"),literal.to_string())));
             }
-            if let Some(bytes) = side
-                .captured
-                .clone()
-                .filter(|_| crate::rich_preview::SYSTEM_PREVIEW)
-            {
+            if let (Some(bytes), Some(offer)) = (side.captured.clone(), side.system_preview) {
                 let path = side_path
                     .map(std::path::Path::to_path_buf)
                     .unwrap_or_else(|| PathBuf::from("image.bin"));
-                captured_actions = captured_actions.child(button(("image-system-preview",index),format!("{label} system preview"),"external-link",false).tooltip("Open an isolated read-only copy of these captured bytes in system Quick Look").on_click(cx.listener(move |this,_,window,cx|this.open_captured_bytes(bytes.clone(),path.clone(),window,cx))));
+                captured_actions = captured_actions.child(
+                    button(
+                        ("image-system-preview", index),
+                        offer.side_label(label),
+                        "external-link",
+                        false,
+                    )
+                    .debug_selector(move || format!("image-system-preview-{index}"))
+                    .tooltip(offer.tooltip())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_captured_bytes(bytes.clone(), path.clone(), offer, window, cx)
+                    })),
+                );
             }
         }
         div()

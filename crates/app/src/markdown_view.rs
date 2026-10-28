@@ -179,7 +179,8 @@ impl Comparison {
             side.page_kind = "Diagram";
             side.metadata.format = "Mermaid diagrams".into();
             if document.present {
-                side.captured = Some(Arc::from(document.source.as_bytes()));
+                // Called on the worker; text needs no cancellation point.
+                let _ = side.capture(Arc::from(document.source.as_bytes()), &|| Ok(()));
                 side.metadata.source = Some(document.source.clone());
             }
             side.pages = document

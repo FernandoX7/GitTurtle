@@ -6,30 +6,31 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-/// System preview hands an isolated copy of captured bytes to Quick Look,
-/// which only macOS has; elsewhere no surface offers the action.
-pub(super) const SYSTEM_PREVIEW: bool = cfg!(target_os = "macos");
-
-#[cfg(target_os = "macos")]
+/// At most four external viewers or launchers at once: a Quick Look process
+/// until it closes on macOS, and on Linux a portal request until it answers or
+/// an `xdg-open`, which runs the application in the foreground, until it ends.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 static EXTERNAL_PREVIEWS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(target_os = "macos")]
-struct ExternalPreviewSlot;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) struct ExternalPreviewSlot;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl ExternalPreviewSlot {
-    fn reserve() -> anyhow::Result<Self> {
+    pub(crate) fn reserve() -> anyhow::Result<Self> {
         EXTERNAL_PREVIEWS
             .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < 4).then_some(count + 1)
             })
             .map_err(|_| {
-                anyhow::anyhow!(
+                anyhow::anyhow!(if cfg!(target_os = "macos") {
                     "Close an existing system preview before opening another (four-viewer limit)."
-                )
+                } else {
+                    "Close a file GitTurtle opened before opening another (four at a time)."
+                })
             })?;
         Ok(Self)
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 impl Drop for ExternalPreviewSlot {
     fn drop(&mut self) {
         EXTERNAL_PREVIEWS.fetch_sub(1, Ordering::AcqRel);
@@ -49,6 +50,8 @@ pub struct Side {
     pub model: Option<Arc<crate::model_view::Document>>,
     pub metadata: metadata::Metadata,
     pub captured: Option<Arc<[u8]>>,
+    /// Whether the captured bytes offer the open action, decided with them.
+    pub system_preview: Option<crate::system_preview::Offer>,
     pub name: PathBuf,
     pub pages: Vec<Page>,
     pub page_count: usize,
@@ -74,6 +77,7 @@ impl Side {
                 source: None,
             },
             captured: None,
+            system_preview: None,
             name: name.into(),
             pages: Vec::new(),
             page_count: 0,
@@ -82,6 +86,17 @@ impl Side {
             present,
             selected_page: AtomicUsize::new(0),
         }
+    }
+    /// Retains the captured bytes and decides, here on the worker, whether
+    /// they offer the open action, so a render only reads the answer.
+    pub fn capture(
+        &mut self,
+        bytes: Arc<[u8]>,
+        check: &impl Fn() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        self.system_preview = crate::system_preview::offer(&bytes, check)?;
+        self.captured = Some(bytes);
+        Ok(())
     }
     pub fn prepare(
         bytes: Vec<u8>,
@@ -98,6 +113,7 @@ impl Side {
             model: None,
             metadata: metadata::inspect(&bytes, name),
             captured: None,
+            system_preview: None,
             name: name.into(),
             pages: Vec::new(),
             page_count: 0,
@@ -163,7 +179,7 @@ impl Side {
             )?));
             side.pages.clear();
         }
-        side.captured = Some(captured);
+        side.capture(captured, &check)?;
         Ok(side)
     }
     pub fn retained_bytes(&self) -> usize {
@@ -254,7 +270,7 @@ pub(super) fn prepare_mermaid(
         side.page_kind = "Diagram";
         side.metadata.format = "Mermaid diagrams".into();
         if present {
-            side.captured = Some(Arc::from(source.as_bytes()));
+            side.capture(Arc::from(source.as_bytes()), &check)?;
             side.metadata.source = Some(Arc::from(source));
         }
         if let Some(document) = document {
@@ -324,10 +340,12 @@ pub(super) fn render_comparison<T: 'static>(
     div().size_full().min_w_0().flex().children([("Before",&preview.old),(if quick {"Source"}else{"After"},&preview.new)].into_iter().enumerate().filter(|(index,_)|!quick||*index==1).map(|(index,(label,side))| {
             let selected=side.selected_page.load(Ordering::Relaxed).min(side.pages.len().saturating_sub(1));
             let mut header=div().flex().items_center().flex_wrap().gap_2().px_3().py_2().border_b_1().border_color(rgb(colors.border)).child(div().text_size(appearance::ui_text(12.)).font_weight(FontWeight::SEMIBOLD).child(label)).child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(side.metadata.format.clone()));
-            if SYSTEM_PREVIEW && side.captured.is_some() {
+            if let (Some(offer), Some(_)) = (side.system_preview, &side.captured) {
                 let captured=Arc::clone(side);
                 let target=owner.clone();
-                header=header.child(button(("system-preview",index),"System preview","external-link",false).tooltip("Inspect an isolated copy of these captured revision bytes").on_click(move |_,window,cx| { let _=target.update(cx,|this,cx|this.open_captured_preview(Arc::clone(&captured),window,cx)); window.refresh(); }));
+                let mut control=button(("system-preview",index),offer.label(),"external-link",false).debug_selector(move || format!("system-preview-{index}"));
+                control = if cfg!(target_os = "macos") { control.tooltip("Inspect an isolated copy of these captured revision bytes") } else { control.tooltip(offer.tooltip()).accessibility_label(offer.accessible_name(label)) };
+                header=header.child(control.on_click(move |_,window,cx| { let _=target.update(cx,|this,cx|this.open_captured_preview(Arc::clone(&captured),window,cx)); window.refresh(); }));
             }
             if !side.pages.is_empty() {
                 for (name,delta,disabled) in [(format!("Previous {}",side.page_kind.to_ascii_lowercase()),-1isize,selected==0),(format!("Next {}",side.page_kind.to_ascii_lowercase()),1isize,selected+1>=side.pages.len())] {
@@ -396,16 +414,30 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(bytes) = side.captured.clone() else {
+        let (Some(bytes), Some(offer)) = (side.captured.clone(), side.system_preview) else {
             return;
         };
         let name = side.name.clone();
-        self.open_captured_bytes(bytes, name, window, cx);
+        self.open_captured_bytes(bytes, name, offer, window, cx);
     }
+    /// Linux types the copy from content alone and never uses `name`.
+    #[cfg(target_os = "linux")]
+    pub(super) fn open_captured_bytes(
+        &mut self,
+        bytes: Arc<[u8]>,
+        _name: PathBuf,
+        offer: crate::system_preview::Offer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_in_default_app(bytes, offer, window, cx);
+    }
+    #[cfg(not(target_os = "linux"))]
     pub(super) fn open_captured_bytes(
         &mut self,
         bytes: Arc<[u8]>,
         name: PathBuf,
+        _offer: crate::system_preview::Offer,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -455,6 +487,9 @@ impl GitTurtle {
 
 /// A private directory and newly created file prevent following any stored path
 /// or symlink. Never reuse the worktree filename as a path or executable suffix.
+/// Quick Look's copy; Linux writes its own through `system_preview`, typed by
+/// content alone, and keeps these tests of the macOS copy running.
+#[cfg(any(test, not(target_os = "linux")))]
 fn captured_copy(bytes: &[u8], name: &Path) -> anyhow::Result<(tempfile::TempDir, PathBuf)> {
     use std::io::Write;
     anyhow::ensure!(
@@ -717,6 +752,40 @@ mod tests {
             );
         }
     }
+    /// Before holds a desktop entry, which offers nothing; After holds PDF
+    /// bytes under that launcher's name, which open as a PDF. The decision
+    /// travels with the prepared side, so the render only reads it.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn open_in_default_app_shows_for_a_passive_type_and_not_a_launcher(cx: &mut TestAppContext) {
+        struct Probe(Comparison);
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                render_comparison(&self.0, false, WeakEntity::new_invalid(), cx)
+            }
+        }
+        cx.update(gpui_kit::init);
+        let launcher = b"[Desktop Entry]\nType=Application\nName=Readme\nExec=sh -c id\n".to_vec();
+        let refused = Side::prepare(launcher, Path::new("readme.desktop"), || Ok(())).unwrap();
+        let pdf = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<>>\nendobj\n".to_vec();
+        let allowed = Side::prepare(pdf, Path::new("launcher.desktop"), || Ok(())).unwrap();
+        assert!(refused.captured.is_some() && allowed.captured.is_some());
+        let comparison = Comparison {
+            old: Arc::new(refused),
+            new: Arc::new(allowed),
+        };
+        let (_, cx) = cx.add_window_view(move |_, _| Probe(comparison));
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.run_until_parked();
+        }
+        assert!(cx.debug_bounds("system-preview-1").is_some());
+        assert!(cx.debug_bounds("system-preview-0").is_none());
+    }
+
     #[test]
     fn absent_and_empty_are_distinct_and_source_is_counted() {
         let empty = Side::prepare(vec![], Path::new("empty.bin"), || Ok(())).unwrap();

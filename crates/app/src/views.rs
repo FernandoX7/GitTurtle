@@ -4844,6 +4844,57 @@ pub(crate) mod tests {
         input + "done\n"
     }
 
+    /// On Linux, Compare offers Open in default app for what the captured
+    /// bytes are, never for what the file is called: a WAV named like a
+    /// launcher offers it in its After header and an ELF stub offers nothing.
+    /// The control stays whole in a full window and in the narrowest one.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn open_in_default_app_follows_content_in_compare(cx: &mut TestAppContext) {
+        // Every byte is below 0x80, so the import stream stays a string:
+        // 8 kHz mono 8-bit WAV, and the start of a 64-bit ELF header.
+        let wav = "RIFF\x2c\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x40\x1f\0\0\x01\0\x08\0data\x08\0\0\0\x10\x20\x30\x40\x50\x60\x70\x7f";
+        let elf = "\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0\x02\0\x3e\0";
+        let input = format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 5\nmedia\nM 100644 inline launcher.desktop\ndata {}\n{wav}\nM 100644 inline tool\ndata {}\n{elf}\ndone\n",
+            wav.len(),
+            elf.len()
+        );
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        let open = |file: usize, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(file, window, cx)));
+        };
+        for (width, height) in [(1480., 980.), (461., 490.)] {
+            cx.simulate_resize(size(px(width), px(height)));
+            open(0, cx);
+            settle(&app, cx).await;
+            assert!(
+                cx.debug_bounds("system-preview-0").is_none(),
+                "Before is absent"
+            );
+            let control = cx
+                .debug_bounds("system-preview-1")
+                .expect("captured WAV offers the action");
+            assert!(
+                control.origin.x >= px(0.)
+                    && control.origin.y >= px(0.)
+                    && control.right() <= px(width)
+                    && control.bottom() <= px(height),
+                "{control:?} lies inside {width} × {height}"
+            );
+            open(1, cx);
+            settle(&app, cx).await;
+            let refused = app.read_with(cx, |app, _| match app.content.as_deref() {
+                Some(Content::Rich(preview)) => {
+                    preview.new.captured.is_some() && preview.new.system_preview.is_none()
+                }
+                _ => false,
+            });
+            assert!(refused, "the ELF stub is captured and offers nothing");
+            assert!(cx.debug_bounds("system-preview-1").is_none());
+        }
+    }
+
     /// [`history_window`] on the repository `input` imports.
     async fn history_window_from<'a>(
         cx: &'a mut TestAppContext,

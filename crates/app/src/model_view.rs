@@ -691,22 +691,26 @@ fn render_side<T: 'static>(
             }),
         );
     }
-    if crate::rich_preview::SYSTEM_PREVIEW && side.captured.is_some() && !lfs_pointer {
+    if let (Some(offer), Some(_), false) = (side.system_preview, &side.captured, lfs_pointer) {
         let side = side.clone();
-        source_actions = source_actions.child(
-            button(
-                ("model-external", index),
-                "System preview",
-                "external-link",
-                false,
-            )
-            .accessibility_label(format!("Open captured {label} model in system preview"))
-            .on_click(move |_, window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    this.open_captured_preview(side.clone(), window, cx)
-                });
-            }),
+        let mut control = button(
+            ("model-external", index),
+            offer.label(),
+            "external-link",
+            false,
         );
+        control = if cfg!(target_os = "macos") {
+            control.accessibility_label(format!("Open captured {label} model in system preview"))
+        } else {
+            control
+                .accessibility_label(offer.accessible_name(label))
+                .tooltip(offer.tooltip())
+        };
+        source_actions = source_actions.child(control.on_click(move |_, window, cx| {
+            let _ = owner.update(cx, |this, cx| {
+                this.open_captured_preview(side.clone(), window, cx)
+            });
+        }));
     }
     header = header.child(source_actions);
     let Some(document) = side.model.clone() else {
