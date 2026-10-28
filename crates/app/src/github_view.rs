@@ -1856,6 +1856,143 @@ mod tests {
         cx.update(|window, cx| window.close_dialog(cx));
     }
 
+    /// The local draft status at the end of a PR's section tabs ends at the panel's label
+    /// inset whatever its length, and gives way to the tabs rather than run past the panel:
+    /// where it fits beside them whole it stays on their line, centred on it; where it does
+    /// not, it takes a line of its own below them inside the panel's text column, wrapping
+    /// there, so its whole text, the failed save's remedy included, stays drawn. The tabs
+    /// keep their place. At 13 and 18 pt in a 1480 × 980 and a 1000 × 700 window, with
+    /// "Draft saved locally", the failed save's status and the unsaved draft's longer one:
+    /// at 18 pt in 1480 × 980 the unsaved draft's status was 1,067 px wide on one line and
+    /// ran past the window.
+    #[gpui::test]
+    async fn the_draft_status_gives_way_to_the_tabs(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        let repo = cx.read(|cx| app.read(cx).repository.clone().unwrap());
+        let panel = cx.update(|window, cx| {
+            cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx))
+        });
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.run_until_parked();
+        let pull = github::review::fixture_pull(false);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.rows = vec![pull.clone()];
+                panel.review.fixture = true;
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        settle_panel(&app, cx).await;
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull);
+                panel.review.section = Section::Overview;
+                panel.review.show_list = false;
+                cx.notify();
+            })
+        });
+        settle_panel(&app, cx).await;
+        let saved = "Draft saved locally";
+        let failed = "Draft save failed — keep this window open or copy the text";
+        let unsaved = DraftIssue::Selection.save_message();
+        for (interface, width, height) in [
+            (13, 1480., 980.),
+            (18, 1480., 980.),
+            (13, 1000., 700.),
+            (18, 1000., 700.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            let mut tabs = None;
+            for status in [saved, failed, unsaved] {
+                cx.update(|_, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.save_status = status.into();
+                        cx.notify();
+                    })
+                });
+                draw(cx);
+                let at = format!("{interface} pt in {width} × {height}, {status:?}");
+                let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                    cx.debug_bounds(selector)
+                        .unwrap_or_else(|| panic!("{at}: {selector}"))
+                };
+                let edge = bounds(cx, "github-panel");
+                let row = ["github-section-0", "github-section-1", "github-section-2"]
+                    .map(|selector| bounds(cx, selector));
+                let shown = bounds(cx, "github-local-save");
+                let (line, whole) = cx.update(|window, _| {
+                    let size = appearance::ui_text(12.);
+                    (
+                        window
+                            .text_style()
+                            .line_height
+                            .to_pixels(size.into(), window.rem_size()),
+                        crate::views::shaped_width(
+                            status,
+                            size,
+                            window.text_style().font_weight,
+                            window,
+                        ),
+                    )
+                });
+                // The tabs stay where the short status leaves them in the panel, which the
+                // dialog places.
+                let placed = row.map(|tab| tab.origin - edge.origin);
+                assert_eq!(*tabs.get_or_insert(placed), placed, "{at}: the tabs moved");
+                let slack = px(0.5);
+                let (start, end) = (edge.left() + text_inset(), edge.right() - text_inset());
+                let last = row[2];
+                if shown.top() < last.bottom() {
+                    // Beside the tabs, whole on one line centred on theirs, ending where the
+                    // Buttons at the panel's right edge end their labels.
+                    assert!(
+                        shown.left() >= last.right()
+                            && (shown.right() - end).abs() < slack
+                            && shown.size.width + slack >= whole
+                            && shown.size.height <= line + slack
+                            && (shown.center().y - last.center().y).abs() < slack,
+                        "{at}: {shown:?} ({whole:?} on one line) beside {last:?}, ending at \
+                         {end:?}"
+                    );
+                } else {
+                    // Below them, from the panel's text inset to at most that end, its lines
+                    // holding the whole text: one line as wide as the text, or several that
+                    // span the column.
+                    let lines = (shown.size.height / line).round();
+                    let holds = if lines == 1. {
+                        shown.size.width + slack >= whole
+                    } else {
+                        (shown.right() - end).abs() < slack && shown.size.width * lines >= whole
+                    };
+                    assert!(
+                        status != saved
+                            && shown.top() >= last.bottom()
+                            && (shown.left() - start).abs() < slack
+                            && shown.right() <= end + slack
+                            && lines >= 1.
+                            && (shown.size.height - line * lines).abs() < slack
+                            && holds,
+                        "{at}: {shown:?} ({whole:?}) below {last:?} from {start:?} to {end:?}, \
+                         {lines} lines of {line:?}"
+                    );
+                }
+                // The unsaved draft's status, 1,067 px on one line at 18 pt, wraps below the
+                // tabs inside the 1480 px window.
+                if interface == 18 && status == unsaved {
+                    assert!(
+                        shown.top() >= last.bottom() && shown.size.height > line * 1.5,
+                        "{at}: {shown:?} wraps below {last:?}"
+                    );
+                }
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.update(|window, cx| window.close_dialog(cx));
+    }
+
     /// Escape, the frame after the dialog closes, and the app's repair of
     /// modal focus 300 ms later.
     fn escape(cx: &mut VisualTestContext) {

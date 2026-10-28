@@ -805,6 +805,7 @@ impl Panel {
         let count = self.review.comments.len();
         div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_1()
             .border_b_1()
@@ -832,18 +833,26 @@ impl Panel {
                         "",
                         self.review.section == section,
                     )
+                    .debug_selector(move || format!("github-section-{i}"))
                     .toggled(self.review.section == section)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.change_section(section, window, cx)
                     }))
                 }),
             )
+            // Grows to push the draft status to the row's end beside the tabs; where the status
+            // wraps below them this stays on the tabs' line.
             .child(div().flex_1())
             .child(
-                // Ends where the Buttons at the panel's right edge end their labels.
+                // Beside the tabs where it fits there whole, ending where the Buttons at the
+                // panel's right edge end their labels; otherwise on a line of its own below
+                // them, from the panel's text inset, wrapping at that end. The long statuses
+                // are the failed ones, whose remedy ("keep this window open or copy the text")
+                // stays readable rather than cut behind an ellipsis.
                 label("github-local-save", self.save_status.clone())
                     .debug_selector(|| "github-local-save".into())
-                    .mr(super::text_inset())
+                    .min_w_0()
+                    .mx(super::text_inset())
                     .text_color(rgb(palette(cx).muted)),
             )
             .into_any_element()
