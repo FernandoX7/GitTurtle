@@ -392,7 +392,7 @@ cover current upstream x86-64 Omarchy.
           the review body has no scroll affordance when it overflows ("Recover drafts · 1" at 18 pt);
           the Changes hint wraps inside its last phrase at 18 pt; a 0.5 px teal fringe outside the
           compact badge's cut-out (1.23:1, 1.43:1); DESIGN.md's keyboard section still says narrow
-          History has room for one lane.
+          History keeps the whole lanes its room fits.
         - Taste: Copy message and Copy hash share one glyph; the profile button is a filled 50 px
           tile beside a 39 px unfilled Settings at 18 pt; review Changes rows 20 against Source's
           18 px; unselected PR rows have no resting surface.
