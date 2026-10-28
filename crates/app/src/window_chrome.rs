@@ -13,9 +13,11 @@ fn client_decorated(window: &Window) -> bool {
     matches!(window.window_decorations(), Decorations::Client { .. })
 }
 
-pub(super) fn controls(side: Side, busy: bool, window: &Window, cx: &App) -> Option<AnyElement> {
+/// The window buttons drawn on `side`: none where the window is not
+/// client-decorated.
+fn buttons(side: Side, window: &Window, cx: &App) -> Vec<WindowButton> {
     if !client_decorated(window) {
-        return None;
+        return Vec::new();
     }
     let layout = cx
         .button_layout()
@@ -25,12 +27,40 @@ pub(super) fn controls(side: Side, busy: bool, window: &Window, cx: &App) -> Opt
         Side::Left => layout.left,
         Side::Right => layout.right,
     };
-    let buttons = buttons.into_iter().flatten().filter(|button| match button {
-        WindowButton::Minimize => supported.minimize,
-        WindowButton::Maximize => supported.maximize,
-        WindowButton::Close => true,
-    });
-    let buttons: Vec<_> = buttons
+    buttons
+        .into_iter()
+        .flatten()
+        .filter(|button| match button {
+            WindowButton::Minimize => supported.minimize,
+            WindowButton::Maximize => supported.maximize,
+            WindowButton::Close => true,
+        })
+        .collect()
+}
+
+/// The width the window controls and the drag region take from the
+/// repository tab strip, its `gap_1` beside each included: each side's 28 px
+/// buttons, `gap_1` apart, with the group's `mr_2` or `ml_2`, and the drag
+/// region's least width after the tabs. Nothing where the window is not
+/// client-decorated.
+pub(super) fn strip_width(window: &Window, cx: &App) -> Pixels {
+    if !client_decorated(window) {
+        return px(0.);
+    }
+    let snap = |length: Pixels| window.pixel_snap(length);
+    let rem = window.rem_size();
+    let gap = snap(rem * 0.25);
+    let control = snap(appearance::ui_size(28.));
+    let group = |side| match buttons(side, window, cx).len() {
+        0 => px(0.),
+        count => control * count as f32 + gap * (count - 1) as f32 + snap(rem * 0.5) + gap,
+    };
+    group(Side::Left) + group(Side::Right) + gap + snap(appearance::ui_size(32.))
+}
+
+pub(super) fn controls(side: Side, busy: bool, window: &Window, cx: &App) -> Option<AnyElement> {
+    let buttons: Vec<_> = buttons(side, window, cx)
+        .into_iter()
         .map(|kind| control(kind, busy, window.is_maximized()))
         .collect();
     if buttons.is_empty() {

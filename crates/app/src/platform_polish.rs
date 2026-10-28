@@ -31,6 +31,10 @@ pub(super) struct PrimaryMenu {
     return_focus: Option<FocusHandle>,
     _dismiss: Option<Subscription>,
     _focus_out: Option<Subscription>,
+    /// Whether the trigger shows "Menu" beside its icon, as the tab strip
+    /// decides each frame (`GitTurtle::tab_strip_labels`) before this view
+    /// renders inside it.
+    labelled: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -42,7 +46,16 @@ impl PrimaryMenu {
             return_focus: None,
             _dismiss: None,
             _focus_out: None,
+            labelled: true,
         }
+    }
+
+    /// Shows the trigger's label, or only its icon where the tab strip
+    /// gives its room to the tabs' names. The strip sets it while it
+    /// renders, before this view renders inside it in the same frame, so it
+    /// needs no notification.
+    pub(super) fn set_labelled(&mut self, labelled: bool) {
+        self.labelled = labelled;
     }
 
     pub(super) fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -159,11 +172,20 @@ impl Render for PrimaryMenu {
         use gpui_kit::{base::Popup, component::IconName, prelude::FluentBuilder};
         // Popup owns anchoring only. Keeping focus and opening in this entity
         // avoids a popover shell taking focus before we capture the editor.
+        let open = self.menu.is_some();
+        // Where the tab strip needs the room for its tabs' names, the
+        // trigger is its icon alone, its name and tooltip unchanged.
+        const NAME: &str = "Main Menu";
+        let trigger = if self.labelled {
+            button("main-menu", "Menu", "", open).accessibility_label(NAME)
+        } else {
+            crate::views::compact_control_name(button("main-menu", "", "", open), "main-menu", NAME)
+        };
         let mut popup = Popup::new(
             "gitturtle-primary-menu",
-            button("main-menu", "Menu", "", self.menu.is_some())
+            trigger
+                .debug_selector(|| "main-menu".into())
                 .icon(Icon::new(IconName::Menu).size(appearance::ui_size(16.)))
-                .accessibility_label("Main Menu")
                 .tooltip(format!(
                     "Main Menu · {}",
                     shortcuts::label(shortcuts::ShortcutId::MainMenu)

@@ -1,7 +1,8 @@
 //! The width walk: History, Compare (text and image), Working Changes and
 //! the GitHub panel on the offline fixture, laid out at every width from 461
 //! to 1,480 px at 13 and 18 pt in a short and a tall window, fail on cut or
-//! orphaned text (DESIGN.md, "One responsive order").
+//! orphaned text, and on a repository tab's name cut while the tab strip's
+//! Menu or Workspaces keeps its label (DESIGN.md, "One responsive order").
 //!
 //! The test text system paints no glyphs, so the walk marks what it checks
 //! with fills a test can find among the painted quads, each with the content
@@ -48,6 +49,9 @@ enum Rule {
     PathCut,
     /// A count or caption is drawn without the control it belongs to.
     Orphan,
+    /// A repository tab's name is cut while the strip's Menu or Workspaces
+    /// keeps its label: actions become icons before content is cut.
+    TabNameCut,
 }
 
 /// The pages the walk lays out.
@@ -372,6 +376,50 @@ impl Walk<'_> {
                 let detail = format!("{caption} without {controls:?}");
                 self.found(Rule::Orphan, caption, (width, height), detail);
             }
+        }
+        self.inspect_tabs(width, height, cx);
+    }
+
+    /// Records the fixture's repository tab cut short of its whole label
+    /// while Menu or Workspaces, drawn, keeps its label (one named in
+    /// `views::COMPACT_NAMES` is drawn as its icon). A truncated label is
+    /// whole inside its clip, so the cut-text rule cannot see it: the tab
+    /// is narrower than its insets and its label's unrounded width.
+    fn inspect_tabs(&mut self, width: f32, height: f32, cx: &mut VisualTestContext) {
+        let icons = crate::views::COMPACT_NAMES.with(|names| names.borrow().clone());
+        let labelled: Vec<&str> = ["main-menu", "repository-workspaces"]
+            .into_iter()
+            .filter(|control| cx.debug_bounds(control).is_some() && !icons.contains_key(control))
+            .collect();
+        let Some(tab) = cx.debug_bounds("repository-tab-0") else {
+            return;
+        };
+        if labelled.is_empty() {
+            return;
+        }
+        let (label, whole) = cx.update(|window, cx| {
+            let app = self.app.read(cx);
+            let (label, _) = app.tab_label(&app.repository_tabs.tabs[0]);
+            let text = shaped_width(
+                &label,
+                appearance::ui_text(12.),
+                window.text_style().font_weight,
+                window,
+            );
+            let insets = window.pixel_snap(appearance::ui_size(crate::LABEL_INSET)) * 2.;
+            (label, (insets + text).min(appearance::ui_size(220.)))
+        });
+        if tab.size.width < whole - px(0.5) {
+            let detail = format!(
+                "{label:?} in {:?} of its {whole:?} beside labelled {labelled:?}",
+                tab.size.width
+            );
+            self.found(
+                Rule::TabNameCut,
+                "repository-tab-strip",
+                (width, height),
+                detail,
+            );
         }
     }
 

@@ -3198,6 +3198,9 @@ struct ChromeWidths {
     pull: Pixels,
     push: Pixels,
     targets: Pixels,
+    /// The tab strip's labelled actions (`GitTurtle::tab_strip_labels`).
+    menu: Pixels,
+    workspaces: Pixels,
 }
 
 impl ChromeWidths {
@@ -3227,6 +3230,8 @@ impl ChromeWidths {
             pull: medium("Pull"),
             push: medium("Push"),
             targets: regular("Targets", label),
+            menu: regular("Menu", label),
+            workspaces: regular("Workspaces", label),
         }
     }
 }
@@ -3364,6 +3369,68 @@ impl GitTurtle {
             app_icon,
             name: (if app_icon { name - control - gap } else { name }).max(px(0.)),
         }
+    }
+
+    /// Whether the repository tab strip's labelled actions, Menu (on Linux)
+    /// and Workspaces, keep their labels in this window: only where every
+    /// tab's whole label, to the tab's cap, fits the tab list beside them
+    /// (`tabs_whole_width`). Content comes first (DESIGN.md, "One responsive
+    /// order"), so elsewhere both become 28 px icons before any tab's name
+    /// is cut, as at 18 pt in a 461 × 490 half tile. Like the chrome, it is
+    /// decided before layout from the interface font
+    /// ([`Self::tab_list_room`]).
+    pub(super) fn tab_strip_labels(&self, window: &Window, cx: &App) -> bool {
+        self.tabs_whole_width(window) <= self.tab_list_room(true, window, cx)
+    }
+
+    /// The widths Menu (none off Linux, where the menu bar holds it) and
+    /// Workspaces take labelled: Menu's measured label beside its 16 px
+    /// icon, and Workspaces' between its icon and its caret, in the shared
+    /// `button` helper's padding and gaps.
+    pub(super) fn tab_strip_labelled_actions(&self, window: &Window) -> (Pixels, Pixels) {
+        let widths = self.chrome_widths(window);
+        let menu = if cfg!(target_os = "linux") {
+            self.labelled_width(widths.menu, true, window)
+        } else {
+            px(0.)
+        };
+        let workspaces = self.labelled_width(widths.workspaces, true, window)
+            + window.pixel_snap(appearance::ui_size(6.))
+            + window.pixel_snap(window.rem_size() * 0.875);
+        (menu, workspaces)
+    }
+
+    /// The room the tab strip leaves its tab list in this window, with Menu
+    /// and Workspaces `labelled` or as their 28 px icons: the strip spans
+    /// the window inside its `px_2`, its controls `gap_1` apart, and holds
+    /// the window controls (`window_chrome::strip_width`), Menu, the list,
+    /// the 28 px New tab and Workspaces, every length snapped to device
+    /// pixels as layout snaps it. Labels are measured rounded up to a whole
+    /// pixel, as the chrome's are, so the labelled room is less than a pixel
+    /// per label short of what layout gives: the labels give way that much
+    /// early, never late.
+    pub(super) fn tab_list_room(&self, labelled: bool, window: &Window, cx: &App) -> Pixels {
+        let rem = window.rem_size();
+        let gap = window.pixel_snap(rem * 0.25);
+        let control = window.pixel_snap(appearance::ui_size(28.));
+        let (menu, workspaces) = if labelled {
+            self.tab_strip_labelled_actions(window)
+        } else {
+            (control, control)
+        };
+        #[cfg(target_os = "linux")]
+        let (menu, decorations) = (menu + gap, crate::window_chrome::strip_width(window, cx));
+        #[cfg(not(target_os = "linux"))]
+        let (menu, decorations) = {
+            let _ = (cx, menu);
+            (px(0.), px(0.))
+        };
+        content_size(window).width
+            - window.pixel_snap(rem * 0.5) * 2.
+            - decorations
+            - menu
+            - (gap + control)
+            - (gap + workspaces)
     }
 
     /// The full header's and action bar's heights in this window: the header

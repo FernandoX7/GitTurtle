@@ -1778,12 +1778,29 @@ impl GitTurtle {
                 .is_some_and(|repository| repository.path() == path)
     }
 
-    fn repository_tabs_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The Workspaces menu's trigger: labelled with its caret, or, where the
+    /// tab strip gives its room to the tabs' names (`labelled` false), its
+    /// worktree glyph alone in a 28 px control, as the compact Actions menus
+    /// are, its name and the tooltip that leads with it unchanged.
+    fn repository_tabs_menu(&self, labelled: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        const NAME: &str = "Workspaces and tab actions";
+        const DETAIL: &str = "Switch, pin or reorder tabs; manage saved workspaces";
         let owner = cx.entity().downgrade();
-        button("repository-workspaces", "Workspaces", "worktree", false)
-            .dropdown_caret(true)
-            .accessibility_label("Workspaces and tab actions")
-            .tooltip("Switch, pin or reorder tabs; manage saved workspaces")
+        let trigger = if labelled {
+            button("repository-workspaces", "Workspaces", "worktree", false)
+                .dropdown_caret(true)
+                .accessibility_label(NAME)
+                .tooltip(DETAIL)
+        } else {
+            crate::views::compact_control_name(
+                button("repository-workspaces", "", "worktree", false),
+                "repository-workspaces",
+                NAME,
+            )
+            .tooltip(format!("Workspaces · {DETAIL}"))
+        };
+        trigger
+            .debug_selector(|| "repository-workspaces".into())
             .dropdown_menu(move |mut menu, _, cx| {
                 let Some(view) = owner.upgrade() else {
                     return menu;
@@ -1904,6 +1921,13 @@ impl GitTurtle {
         // margin so the tabs do not move. The strip is the window's first row,
         // so the room above a tab can only come from the strip itself.
         let ring_room = appearance::button_ring_room(cx);
+        // Menu and Workspaces keep their labels only where every tab's name
+        // stays whole beside them; the menu renders inside this strip, after
+        // this, so it reads the decision in this frame.
+        let labels = self.tab_strip_labels(window, cx);
+        #[cfg(target_os = "linux")]
+        self.primary_menu
+            .update(cx, |menu, _| menu.set_labelled(labels));
         div()
             .debug_selector(|| "repository-tab-strip".into())
             .flex()
@@ -1923,6 +1947,7 @@ impl GitTurtle {
             .child(crate::native_accessibility::clips_children(
                 div()
                     .id("repository-tabs")
+                    .debug_selector(|| "repository-tabs".into())
                     .role(Role::TabList)
                     .aria_label("Repository tabs")
                     .flex_1()
@@ -1944,27 +1969,17 @@ impl GitTurtle {
                                 let busy = self.operation_busy.is_some()
                                     && self.operation_repository.as_ref() == Some(&tab.path);
                                 let name = self.project_name(&tab.path);
-                                let pin = if pinned { "★ " } else { "" };
-                                let label = format!(
-                                    "{}{}{}",
-                                    pin,
-                                    name,
-                                    if busy {
-                                        " · working"
-                                    } else if tab.error.is_some() {
-                                        " · unavailable"
-                                    } else {
-                                        ""
-                                    }
-                                );
+                                let (label, pin) = self.tab_label(tab);
                                 // Content before decoration: where the list is
-                                // too narrow for every tab whole, each tab's name
-                                // gives way, down to its first character and an
-                                // ellipsis, before its close button (which keeps
-                                // the kit's `flex_shrink_0`) is cut at the edge.
-                                // Only past that floor does the list scroll.
+                                // too narrow for every tab whole, even with
+                                // Menu and Workspaces as icons, each tab's
+                                // name gives way, down to its first character
+                                // and an ellipsis, before its close button
+                                // (which keeps the kit's `flex_shrink_0`) is
+                                // cut at the edge. Only past that floor does
+                                // the list scroll.
                                 let name_floor = appearance::ui_size(crate::LABEL_INSET * 2.)
-                                    + tab_label_floor(&label, pin.len(), window);
+                                    + tab_label_widths(&label, pin, window).1;
                                 div()
                                     .flex()
                                     .items_center()
@@ -2040,42 +2055,99 @@ impl GitTurtle {
                         this.choose_repository(&OpenRepository, window, cx)
                     })),
             )
-            .child(self.repository_tabs_menu(cx))
+            .child(self.repository_tabs_menu(labels, cx))
             .children(right_controls)
             .into_any_element()
+    }
+
+    /// A repository tab's label, its pin, project name and what it reports,
+    /// and the pin's length in bytes.
+    pub(super) fn tab_label(&self, tab: &Tab) -> (String, usize) {
+        let pin = if self.tab_is_pinned(&tab.path) {
+            "★ "
+        } else {
+            ""
+        };
+        let busy =
+            self.operation_busy.is_some() && self.operation_repository.as_ref() == Some(&tab.path);
+        let label = format!(
+            "{pin}{}{}",
+            self.project_name(&tab.path),
+            if busy {
+                " · working"
+            } else if tab.error.is_some() {
+                " · unavailable"
+            } else {
+                ""
+            }
+        );
+        (label, pin.len())
+    }
+
+    /// Each tab's width with its label whole, to the tab's scaled 220 px
+    /// cap, without its close button: its label, rounded up to a whole
+    /// pixel, between its insets, snapped to device pixels as layout snaps
+    /// them.
+    pub(super) fn tab_whole_widths(&self, window: &Window) -> Vec<Pixels> {
+        let insets = window.pixel_snap(appearance::ui_size(crate::LABEL_INSET)) * 2.;
+        let cap = appearance::ui_size(220.);
+        self.repository_tabs
+            .tabs
+            .iter()
+            .map(|tab| {
+                let (label, pin) = self.tab_label(tab);
+                (insets + tab_label_widths(&label, pin, window).0).min(cap)
+            })
+            .collect()
+    }
+
+    /// The width the tab list takes with every tab whole
+    /// (`tab_whole_widths`) beside its 28 px close button, `gap_1` apart:
+    /// what the strip's labelled actions give way to
+    /// (`GitTurtle::tab_strip_labels`).
+    pub(super) fn tabs_whole_width(&self, window: &Window) -> Pixels {
+        let gap = window.pixel_snap(window.rem_size() * 0.25);
+        let close = window.pixel_snap(appearance::ui_size(28.));
+        self.tab_whole_widths(window)
+            .into_iter()
+            .enumerate()
+            .map(|(index, tab)| tab + close + if index > 0 { gap } else { px(0.) })
+            .fold(px(0.), |total, width| total + width)
     }
 }
 
 /// The rule under the repository tab strip, inside its height.
 const TAB_STRIP_BORDER: Pixels = px(1.);
 
-/// Tab labels' floors by label, with the font and sizes they were laid out
-/// with.
-type LabelFloors = std::cell::RefCell<Option<(crate::views::LineKey, Vec<(String, Pixels)>)>>;
+/// Tab labels' whole widths and floors by label, with the font and sizes
+/// they were laid out with.
+type LabelWidths =
+    std::cell::RefCell<Option<(crate::views::LineKey, Vec<(String, (Pixels, Pixels))>)>>;
 
 thread_local! {
-    /// Each tab label's floor (`tab_label_floor`), so a steady render lays
-    /// none out.
-    static TAB_LABEL_FLOORS: LabelFloors = const { std::cell::RefCell::new(None) };
+    /// Each tab label's whole width and floor (`tab_label_widths`), so a
+    /// steady render lays none out.
+    static TAB_LABEL_WIDTHS: LabelWidths = const { std::cell::RefCell::new(None) };
 }
 
-/// The narrowest a repository tab's label is drawn in without a lone
-/// ellipsis, in the interface font at the tab's text size: the whole label,
-/// or, where that is narrower, its pin (the first `pin` bytes) and the
-/// name's first character before the ellipsis. The toolkit's truncation keeps
-/// the characters that fit strictly before its ellipsis and drops trailing
-/// whitespace and ASCII punctuation, so the cut runs to the first character
-/// it keeps, and takes the next whole pixel past its width.
-fn tab_label_floor(label: &str, pin: usize, window: &Window) -> Pixels {
+/// A repository tab label's whole width, rounded up to a whole pixel, and
+/// its floor: the narrowest it is drawn in without a lone ellipsis, in the
+/// interface font at the tab's text size: the whole label, or, where that is
+/// narrower, its pin (the first `pin` bytes) and the name's first character
+/// before the ellipsis. The toolkit's truncation keeps the characters that
+/// fit strictly before its ellipsis and drops trailing whitespace and ASCII
+/// punctuation, so the cut runs to the first character it keeps, and takes
+/// the next whole pixel past its width.
+fn tab_label_widths(label: &str, pin: usize, window: &Window) -> (Pixels, Pixels) {
     let key = crate::views::LineKey::current(window);
-    TAB_LABEL_FLOORS.with(|cache| {
+    TAB_LABEL_WIDTHS.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
             *cache = Some((key, Vec::new()));
         }
         let floors = &mut cache.as_mut().expect("the cache for this key").1;
-        if let Some((_, floor)) = floors.iter().find(|(cached, _)| cached == label) {
-            return *floor;
+        if let Some((_, widths)) = floors.iter().find(|(cached, _)| cached == label) {
+            return *widths;
         }
         let size = appearance::ui_text(12.);
         let weight = window.text_style().font_weight;
@@ -2093,8 +2165,8 @@ fn tab_label_floor(label: &str, pin: usize, window: &Window) -> Pixels {
         if floors.len() >= MAX_TABS * 4 {
             floors.clear();
         }
-        floors.push((label.to_owned(), floor));
-        floor
+        floors.push((label.to_owned(), (whole, floor)));
+        (whole, floor)
     })
 }
 
@@ -3693,76 +3765,29 @@ mod tests {
         settle_tab_test(&app, cx).await;
     }
 
-    /// Content before decoration: a tab too wide for the strip's list cuts
-    /// its name, never its close button. At 13 and 18 pt in 461 and 640 px
-    /// windows the close button and the ring a focused one draws,
-    /// `button_ring_room` outside its edge, lie whole inside the list's clip
-    /// and the window, right of the tab, which is no wider than its whole
-    /// label and no narrower than its first character and ellipsis, so it
-    /// never shows a lone one. The native fixture's "compact" is cut only at
-    /// 18 pt in the 461 × 490 half tile, where the list's clip is about 116
-    /// px and the button was cut instead; a long name is cut in every narrow
-    /// window. In a 1480 × 980 window the tab keeps the width it had, the
-    /// long name its scaled 220 px. With two tabs, the list scrolls only once
-    /// both names are down to their floors, and no tab overlaps the next.
-    #[gpui::test]
-    async fn a_narrow_tab_strip_cuts_the_name_before_the_close_button(cx: &mut TestAppContext) {
-        use crate::tags::tests::{content_mask, draw, holds, rendered};
+    /// The text sizes and windows the narrow tab strip tests lay out.
+    const STRIP_SIZES: [(u8, f32, f32); 6] = [
+        (13, 1480., 980.),
+        (13, 640., 680.),
+        (13, 461., 490.),
+        (18, 1480., 980.),
+        (18, 640., 680.),
+        (18, 461., 490.),
+    ];
+
+    /// A 1480 × 980 window on two fresh repositories, "compact" and
+    /// "second", the first open in the only tab, and their paths. Keep the
+    /// returned directory until the test ends.
+    async fn strip_window(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &mut VisualTestContext,
+        [PathBuf; 2],
+    ) {
         use gpui_kit::component::Root;
         use std::{cell::RefCell, rc::Rc};
-
-        const SIZES: [(u8, f32, f32); 6] = [
-            (13, 1480., 980.),
-            (13, 640., 680.),
-            (13, 461., 490.),
-            (18, 1480., 980.),
-            (18, 640., 680.),
-            (18, 461., 490.),
-        ];
-        /// Lays the window out at `interface` pt in `width` × `height`.
-        async fn resize(
-            cx: &mut VisualTestContext,
-            app: &Entity<GitTurtle>,
-            (interface, width, height): (u8, f32, f32),
-        ) {
-            cx.update(|window, cx| {
-                app.update(cx, |app, cx| {
-                    app.settings.interface_text_size = interface;
-                    let code = app.settings.code_text_size;
-                    appearance::apply_text_sizes(interface, code, window, cx);
-                    cx.notify();
-                })
-            });
-            cx.simulate_resize(size(px(width), px(height)));
-            settle_tab_test(app, cx).await;
-            draw(cx);
-        }
-        /// A tab's width with `name` whole, and at its floor, the name's
-        /// first character and ellipsis, both with the tab's insets.
-        fn widths(cx: &mut VisualTestContext, name: &str) -> (Pixels, Pixels) {
-            cx.update(|window, _| {
-                let weight = window.text_style().font_weight;
-                let size = appearance::ui_text(12.);
-                let insets = appearance::ui_size(crate::LABEL_INSET * 2.);
-                let width = |text: &str| crate::views::shaped_width(text, size, weight, window);
-                let cut = format!("{}…", &name[..1]);
-                (
-                    insets + width(name).ceil(),
-                    insets + width(&cut).floor() + px(1.),
-                )
-            })
-        }
-        /// The list's clip, read from the first tab, which the pointer can
-        /// always reach, and the window's bounds.
-        fn clips(cx: &mut VisualTestContext) -> (Bounds<Pixels>, Bounds<Pixels>) {
-            let mask = content_mask(cx, "repository-tab-0");
-            cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
-            draw(cx);
-            let viewport = cx.update(|window, _| {
-                Bounds::new(point(Pixels::ZERO, Pixels::ZERO), window.viewport_size())
-            });
-            (mask, viewport)
-        }
 
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
@@ -3802,6 +3827,88 @@ mod tests {
         settle_tab_test(&app, cx).await;
         cx.update(|window, cx| app.update(cx, |app, cx| app.apply_appearance(window, cx)));
         settle_tab_test(&app, cx).await;
+        (fixture, app, cx, paths)
+    }
+
+    /// Lays the strip's window out at `interface` pt in `width` × `height`.
+    async fn resize_strip(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        (interface, width, height): (u8, f32, f32),
+    ) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.interface_text_size = interface;
+                let code = app.settings.code_text_size;
+                appearance::apply_text_sizes(interface, code, window, cx);
+                cx.notify();
+            })
+        });
+        cx.simulate_resize(size(px(width), px(height)));
+        settle_tab_test(app, cx).await;
+        crate::tags::tests::draw(cx);
+    }
+
+    /// Puts the strip's window back at the default interface size.
+    fn reset_strip_text(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let size = appearance::DEFAULT_INTERFACE_TEXT_SIZE;
+                app.settings.interface_text_size = size;
+                let code = app.settings.code_text_size;
+                appearance::apply_text_sizes(size, code, window, cx);
+            })
+        });
+    }
+
+    /// A tab's width with `name` whole, and at its floor, the name's first
+    /// character and ellipsis, both with the tab's insets.
+    fn tab_widths(cx: &mut VisualTestContext, name: &str) -> (Pixels, Pixels) {
+        cx.update(|window, _| {
+            let weight = window.text_style().font_weight;
+            let size = appearance::ui_text(12.);
+            let insets = appearance::ui_size(crate::LABEL_INSET * 2.);
+            let width = |text: &str| crate::views::shaped_width(text, size, weight, window);
+            let cut = format!("{}…", &name[..1]);
+            (
+                insets + width(name).ceil(),
+                insets + width(&cut).floor() + px(1.),
+            )
+        })
+    }
+
+    /// Content before decoration: a tab too wide for the strip's list cuts
+    /// its name, never its close button. At 13 and 18 pt in 461 and 640 px
+    /// windows the close button and the ring a focused one draws,
+    /// `button_ring_room` outside its edge, lie whole inside the list's clip
+    /// and the window, right of the tab, which is no wider than its whole
+    /// label and no narrower than its first character and ellipsis, so it
+    /// never shows a lone one. The native fixture's "compact" is whole in
+    /// every window: at 18 pt in the 461 × 490 half tile, where the list's
+    /// clip was about 116 px beside a labelled Menu and Workspaces and the
+    /// button was once cut, then the name, both are icons
+    /// (`tab_strip_actions_become_icons_before_a_tab_name_is_cut`). In a
+    /// 1480 × 980 window the tab keeps the width it had, the long name its
+    /// scaled 220 px. With two tabs, the list scrolls only once both names
+    /// are down to their floors, and no tab overlaps the next.
+    #[gpui::test]
+    async fn a_narrow_tab_strip_cuts_the_name_before_the_close_button(cx: &mut TestAppContext) {
+        use crate::tags::tests::{content_mask, draw, holds, rendered};
+
+        /// The list's clip, read from the first tab, which the pointer can
+        /// always reach, and the window's bounds.
+        fn clips(cx: &mut VisualTestContext) -> (Bounds<Pixels>, Bounds<Pixels>) {
+            let mask = content_mask(cx, "repository-tab-0");
+            cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+            draw(cx);
+            let viewport = cx.update(|window, _| {
+                Bounds::new(point(Pixels::ZERO, Pixels::ZERO), window.viewport_size())
+            });
+            (mask, viewport)
+        }
+
+        let (_fixture, app, cx, paths) = strip_window(cx).await;
+
         let (ring_room, device) = cx.update(|window, cx| {
             (
                 appearance::button_ring_room(cx),
@@ -3814,11 +3921,11 @@ mod tests {
                 app.project_names.insert(paths[0].clone(), name.to_owned());
                 cx.notify();
             });
-            for sizes in SIZES {
+            for sizes in STRIP_SIZES {
                 let (interface, width, height) = sizes;
                 let at = format!("{name:?} at {interface} pt in {width} × {height}");
-                resize(cx, &app, sizes).await;
-                let (whole, floor) = widths(cx, name);
+                resize_strip(cx, &app, sizes).await;
+                let (whole, floor) = tab_widths(cx, name);
                 let tab = rendered(cx, "repository-tab-0");
                 let close = rendered(cx, "repository-tab-close-0");
                 let (mask, viewport) = clips(cx);
@@ -3847,7 +3954,7 @@ mod tests {
                         "{at}: the tab {tab:?} keeps its width {widest:?}"
                     );
                 } else if name == "compact" {
-                    assert_eq!(cut, interface == 18 && width < 500., "{at}: {tab:?}");
+                    assert!(!cut, "{at}: the name is whole in {tab:?}");
                 } else {
                     assert!(cut, "{at}: the long name is cut in {tab:?}");
                 }
@@ -3863,10 +3970,10 @@ mod tests {
             })
         });
         settle_tab_test(&app, cx).await;
-        for sizes in SIZES {
+        for sizes in STRIP_SIZES {
             let (interface, width, height) = sizes;
             let at = format!("two tabs at {interface} pt in {width} × {height}");
-            resize(cx, &app, sizes).await;
+            resize_strip(cx, &app, sizes).await;
             let (mask, viewport) = clips(cx);
             let tabs = [
                 (
@@ -3877,7 +3984,7 @@ mod tests {
                 ("second", "repository-tab-1", "repository-tab-close-1"),
             ]
             .map(|(name, tab, close)| {
-                let (_, floor) = widths(cx, name);
+                let (_, floor) = tab_widths(cx, name);
                 let (tab, close) = (rendered(cx, tab), rendered(cx, close));
                 assert!(
                     tab.size.width >= floor - device && tab.right() <= close.left() + device,
@@ -3904,14 +4011,125 @@ mod tests {
                  floors: {tabs:?}"
             );
         }
-        cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                let size = appearance::DEFAULT_INTERFACE_TEXT_SIZE;
-                app.settings.interface_text_size = size;
-                let code = app.settings.code_text_size;
-                appearance::apply_text_sizes(size, code, window, cx);
-            })
+        reset_strip_text(cx, &app);
+    }
+
+    /// One responsive order in the tab strip: Menu (on Linux) and Workspaces
+    /// keep their labels only where every tab's name is whole beside them,
+    /// and become 28 px icons, keeping their names, "Main Menu" and
+    /// "Workspaces and tab actions", before a tab's name is cut. At 13 and 18
+    /// pt in 461 × 490, 640 × 680 and 1480 × 980 windows, with one tab named
+    /// "compact" or "a much longer repository name" and then with "second"
+    /// beside it, the form drawn is the one `tab_strip_labels` decides before
+    /// layout, and the list takes the room `tab_list_room` predicts for it;
+    /// a labelled control is as wide as predicted, and while one shows every
+    /// tab is whole. At 18 pt in the 461 × 490 half tile, where "compact" was
+    /// cut to "com…" beside a 100 px Menu and a 173 px Workspaces, both are
+    /// icons and the name is whole.
+    #[gpui::test]
+    async fn tab_strip_actions_become_icons_before_a_tab_name_is_cut(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, rendered};
+        use crate::views::COMPACT_NAMES;
+
+        let (_fixture, app, cx, paths) = strip_window(cx).await;
+        let (ring_room, device) = cx.update(|window, cx| {
+            (
+                appearance::button_ring_room(cx),
+                px(1. / window.scale_factor()),
+            )
         });
+        let controls: &[(&str, &str)] = if cfg!(target_os = "linux") {
+            &[
+                ("main-menu", "Main Menu"),
+                ("repository-workspaces", "Workspaces and tab actions"),
+            ]
+        } else {
+            &[("repository-workspaces", "Workspaces and tab actions")]
+        };
+        let mut forms = std::collections::BTreeSet::new();
+        for tabs in [1, 2] {
+            if tabs == 2 {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.open_repository_tab(paths[1].clone(), window, cx)
+                    })
+                });
+                settle_tab_test(&app, cx).await;
+            }
+            for name in ["compact", "a much longer repository name"] {
+                app.update(cx, |app, cx| {
+                    app.project_names.insert(paths[0].clone(), name.to_owned());
+                    cx.notify();
+                });
+                for sizes in STRIP_SIZES {
+                    let (interface, width, height) = sizes;
+                    let at =
+                        format!("{name:?} of {tabs} tabs at {interface} pt in {width} × {height}");
+                    resize_strip(cx, &app, sizes).await;
+                    COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+                    draw(cx);
+                    let names = COMPACT_NAMES.with(|names| names.borrow().clone());
+                    let (labels, room, (menu, workspaces)) = cx.update(|window, cx| {
+                        let app = app.read(cx);
+                        let labels = app.tab_strip_labels(window, cx);
+                        (
+                            labels,
+                            app.tab_list_room(labels, window, cx),
+                            app.tab_strip_labelled_actions(window),
+                        )
+                    });
+                    forms.insert((interface, width as u32, tabs, name, labels));
+                    // A label is measured rounded up to a whole pixel, as the
+                    // chrome measures its labels, so a labelled control is
+                    // predicted no narrower than it is drawn and less than a
+                    // pixel wider: the labels give way early by less than
+                    // that, never late.
+                    let slack = |labelled: bool| if labelled { px(1.) } else { device };
+                    for &(control, accessible) in controls {
+                        let drawn = rendered(cx, control).size.width;
+                        let predicted = match (labels, control) {
+                            (false, _) => {
+                                cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.)))
+                            }
+                            (true, "main-menu") => menu,
+                            (true, _) => workspaces,
+                        };
+                        assert!(
+                            drawn <= predicted + px(0.01) && predicted - drawn < slack(labels),
+                            "{at}: {control} is {drawn:?}, predicted {predicted:?} wide"
+                        );
+                        assert_eq!(
+                            names.get(control).copied(),
+                            (!labels).then_some(accessible),
+                            "{at}: {control}'s compact name"
+                        );
+                    }
+                    // The list's bounds hold the ring's room on either side.
+                    let list = rendered(cx, "repository-tabs").size.width - ring_room * 2.;
+                    let labelled = controls.len() as f32 * if labels { 1. } else { 0. };
+                    assert!(
+                        list >= room - px(0.01) && list - room < slack(false) + px(labelled),
+                        "{at}: the tab list takes {list:?}, predicted {room:?}"
+                    );
+                    let names = [name, "second"];
+                    for index in 0..tabs {
+                        let (whole, _) = tab_widths(cx, names[index]);
+                        let whole = whole.min(appearance::ui_size(220.));
+                        let tab = rendered(cx, ["repository-tab-0", "repository-tab-1"][index]);
+                        assert!(
+                            !labels || tab.size.width >= whole - device,
+                            "{at}: tab {index}, {tab:?}, is cut to less than {whole:?} \
+                             beside labelled actions"
+                        );
+                    }
+                }
+            }
+        }
+        // Both forms are reached: labels where the tabs leave room, icons
+        // where they do not, as at 18 pt in the 461 × 490 half tile.
+        assert!(forms.contains(&(13, 1480, 1, "compact", true)), "{forms:?}");
+        assert!(forms.contains(&(18, 461, 1, "compact", false)), "{forms:?}");
+        reset_strip_text(cx, &app);
     }
 
     /// Every clip that keeps room for the ring a focused Button draws outside
