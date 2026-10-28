@@ -1279,12 +1279,12 @@ impl GitTurtle {
         };
         let view = cx.entity().downgrade();
         let header = div()
-            .h(crate::appearance::ui_size(34.))
+            .h(crate::appearance::ui_size(HISTORY_HEADER_HEIGHT))
             .flex_shrink_0()
             .flex()
             .items_center()
             // Its columns start and end where the rows' do, inside the list's
-            // 1 px border (`HistoryMetrics`).
+            // 1 px edge (`HistoryMetrics`).
             .pl(px(metrics.leading - 2.))
             .pr(px(metrics.trailing))
             .border_l_2()
@@ -1425,51 +1425,83 @@ impl GitTurtle {
                         .child(self.render_columns_controls(false, cx)),
                 )
             })
-            .child(history_scroll_viewport(
-                &self.history_horizontal,
+            .child(
                 div()
-                    .w(px(table_width))
-                    .h_full()
-                    .flex_shrink_0()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(header)
-                    .child(
+                    .child(history_scroll_viewport(
+                        &self.history_horizontal,
                         div()
-                            .id("history-pane")
-                            .debug_selector(|| "history-pane".into())
-                            .role(Role::ListBox)
-                            .aria_label("Commit history")
-                            .tab_stop(true)
-                            .key_context("GitTurtleList")
-                            .track_focus(&self.focus)
-                            .on_action(cx.listener(
-                                |this, _: &gpui_kit::component::input::Copy, window, cx| {
-                                    this.copy_list_item(ListCopy::CommitHash, window, cx)
-                                },
-                            ))
-                            .border_1()
-                            .border_color(rgb(colors.border))
-                            .when(self.focus_ring.shows(&self.focus), |pane| {
-                                pane.border_color(rgb(colors.accent))
-                            })
-                            .relative()
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_hidden()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    this.pane = Pane::History;
-                                    window.focus(&this.focus, cx);
-                                }),
-                            )
-                            .child(history)
-                            .child(self.list_viewport_probe(true, cx)),
-                    ),
-            ))
+                            .w(px(table_width))
+                            .h_full()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_col()
+                            .child(header)
+                            .child(
+                                div()
+                                    .id("history-pane")
+                                    .debug_selector(|| "history-pane".into())
+                                    .role(Role::ListBox)
+                                    .aria_label("Commit history")
+                                    .tab_stop(true)
+                                    .key_context("GitTurtleList")
+                                    .track_focus(&self.focus)
+                                    .on_action(cx.listener(
+                                        |this, _: &gpui_kit::component::input::Copy, window, cx| {
+                                            this.copy_list_item(ListCopy::CommitHash, window, cx)
+                                        },
+                                    ))
+                                    // The list's 1 px edge is `history_list_edge`'s,
+                                    // over the part of the table the viewport shows.
+                                    .p(px(1.))
+                                    .relative()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_hidden()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, window, cx| {
+                                            this.pane = Pane::History;
+                                            window.focus(&this.focus, cx);
+                                        }),
+                                    )
+                                    .child(history)
+                                    .child(self.list_viewport_probe(true, cx)),
+                            ),
+                    ))
+                    .child(self.history_list_edge(colors)),
+            )
             .child(Scrollbar::horizontal(&self.history_horizontal).mode(ScrollbarMode::Always))
             .into_any_element()
+    }
+
+    /// The commit list's 1 px edge and keyboard ring, drawn over the part of
+    /// the list the viewport shows rather than around the whole table: where
+    /// the columns run sideways past the viewport, as narrow History's
+    /// Author, Date and SHA do under the inspector, the table's own right
+    /// edge lay beyond the window, and its left one too once it scrolled.
+    /// It starts below the column header, whose height it shares, and ends
+    /// above the horizontal scrollbar's reserved track, as the list does;
+    /// it has no hitbox, so the pointer reaches the rows beneath it.
+    fn history_list_edge(&self, colors: appearance::Palette) -> impl IntoElement {
+        div()
+            .debug_selector(|| "history-list-edge".into())
+            .absolute()
+            .left_0()
+            .right_0()
+            .top(crate::appearance::ui_size(HISTORY_HEADER_HEIGHT))
+            .bottom(Scrollbar::width())
+            .border_1()
+            .border_color(rgb(if self.focus_ring.shows(&self.focus) {
+                colors.accent
+            } else {
+                colors.border
+            }))
     }
 
     /// The chosen graph lane spacing at the interface size.
@@ -3065,13 +3097,13 @@ impl GitTurtle {
 
     /// What History needs below the chrome to show three whole rows: its
     /// scope toolbar, search row, the horizontal scrollbar's reserved track,
-    /// the column header, the list's border and three rows.
+    /// the column header, the list's edge and three rows.
     pub(super) fn history_minimum(&self, window: &Window) -> Pixels {
         let scaled = |base: f32| window.pixel_snap(appearance::ui_size(base));
         scaled(40.)
             + scaled(38.)
             + Scrollbar::width()
-            + scaled(34.)
+            + scaled(HISTORY_HEADER_HEIGHT)
             + window.pixel_snap(px(1.)) * 2.
             + window.pixel_snap(px(self.settings.density.history_row_height())) * 3.
     }
@@ -3464,6 +3496,9 @@ fn scope_name_min_width(scope: &str, window: &Window) -> Pixels {
     })
 }
 
+/// History's column header, above the commit list, before scaling.
+const HISTORY_HEADER_HEIGHT: f32 = 34.;
+
 /// What History's table is laid out with besides its columns, from the
 /// window's font and sizes. `render_history` records it before anything in
 /// its frame lays the columns out (`GitTurtle::history_metrics`).
@@ -3480,11 +3515,11 @@ pub(super) struct HistoryMetrics {
     /// references (`compact_pill_width`), zero where no row has a pill.
     compact_pill: f32,
     /// Where the first column starts in the table: inside the list's 1 px
-    /// border, a row's 2 px selection edge and its `px_3` inset. The header,
+    /// edge, a row's 2 px selection edge and its `px_3` inset. The header,
     /// above the list, starts its columns there too.
     leading: f32,
     /// What the table keeps after its last column: a row's `px_3` inset and
-    /// the list's border.
+    /// the list's edge.
     trailing: f32,
 }
 
@@ -7591,6 +7626,14 @@ pub(crate) mod tests {
         selector: &'static str,
     ) -> [Option<gpui_kit::Background>; 4] {
         let bounds = cx.debug_bounds(selector).expect(selector);
+        painted_sides_of(cx, bounds)
+    }
+
+    /// [`painted_sides`] for `bounds`.
+    fn painted_sides_of(
+        cx: &mut VisualTestContext,
+        bounds: Bounds<Pixels>,
+    ) -> [Option<gpui_kit::Background>; 4] {
         cx.update(|window, _| {
             let scale = window.scale_factor();
             let quads = window.painted_quads();
@@ -7791,6 +7834,78 @@ pub(crate) mod tests {
             ring,
             "Working Changes keeps its ring as the pointer moves"
         );
+    }
+
+    /// History's commit list draws its ring whole, on all four sides of the
+    /// part of the list the window shows, where the table runs sideways past
+    /// that part, as narrow History's Author, Date and SHA do under the
+    /// inspector: at 461 × 490 and 640 × 680, at 13 and 18 pt, with the
+    /// table at its start and scrolled to its end. The list's own edge ran
+    /// with the table, so its right side lay beyond the viewport, and its
+    /// left side too once the table scrolled.
+    #[gpui::test]
+    async fn narrow_history_draws_its_ring_whole(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        let (ring, edge) = cx.update(|_, cx| {
+            let p = palette(cx);
+            let solid = |color| Some(gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(color))));
+            ([solid(p.accent); 4], [solid(p.border); 4])
+        });
+        let (focus, elsewhere) =
+            app.read_with(cx, |app, _| (app.focus.clone(), app.app_focus.clone()));
+        let scroll = app.read_with(cx, |app, _| app.history_horizontal.clone());
+        // The part of the list inside History's column.
+        let shown = |cx: &mut VisualTestContext| {
+            let list = cx.debug_bounds("history-pane").unwrap();
+            let view = cx.debug_bounds("history-scope-toolbar").unwrap();
+            (
+                Bounds::from_corners(
+                    point(list.left().max(view.left()), list.top()),
+                    point(list.right().min(view.right()), list.bottom()),
+                ),
+                list,
+            )
+        };
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for (width, height) in [(461., 490.), (640., 680.)] {
+                cx.simulate_resize(size(px(width), px(height)));
+                cx.update(|window, cx| window.focus(&elsewhere, cx));
+                draw(cx);
+                let at = format!("{width} × {height} at {text} pt");
+                assert!(
+                    app.read_with(cx, |app, _| app.history_column_layout().narrow),
+                    "narrow {at}"
+                );
+                let (bounds, list) = shown(cx);
+                assert!(
+                    list.right() > bounds.right() + px(100.),
+                    "the table runs past the viewport {at}: {list:?}"
+                );
+                assert_eq!(painted_sides_of(cx, bounds), edge, "at rest {at}");
+                cx.update(|window, cx| window.focus(&focus, cx));
+                cx.simulate_keystrokes("down");
+                draw(cx);
+                assert_eq!(painted_sides_of(cx, bounds), ring, "focused by a key {at}");
+
+                scroll.set_offset(point(-scroll.max_offset().x, px(0.)));
+                draw(cx);
+                let (scrolled, list) = shown(cx);
+                assert!(
+                    list.left() < scrolled.left() - px(100.),
+                    "the table scrolled to its end {at}: {list:?}"
+                );
+                assert_eq!(scrolled, bounds, "{at}");
+                assert_eq!(
+                    painted_sides_of(cx, scrolled),
+                    ring,
+                    "scrolled to the table's end {at}"
+                );
+                scroll.set_offset(point(px(0.), px(0.)));
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// While an operation runs, the toolbar's Push, a primary Button, rests
