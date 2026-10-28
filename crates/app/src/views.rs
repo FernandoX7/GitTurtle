@@ -4821,7 +4821,8 @@ pub(crate) mod tests {
                 });
             }
             draw(cx);
-            let selection = cx.debug_bounds("working-selection").unwrap();
+            // The half tile at 18 pt takes the tight form's one row.
+            let selection = cx.debug_bounds("working-toolbar").unwrap();
             let (field, text) = cx.read(|cx| {
                 let filter = app.read(cx).working_filter.read(cx);
                 (filter.input_bounds(), filter.text_bounds().unwrap())
@@ -4991,24 +4992,23 @@ pub(crate) mod tests {
         }
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
         settle(&app, cx).await;
-        // The selection controls scroll so that the file list keeps a whole
-        // row and the composer its title field (`short_working_inspector_
-        // keeps_a_row_the_title_and_its_actions`); origin/main left them all
-        // 136 px and the list 6 px.
-        for (width, height, inspector, controls) in
-            [(461., 490., 221., 40.), (493., 526., 253., 76.)]
-        {
+        // The filter, Actions and Refresh share one row so that the file
+        // list keeps its heading and first file whole and the composer its
+        // title field (`short_working_inspector_keeps_a_whole_file_row_and_
+        // whole_controls`); origin/main left the controls 136 px and the list
+        // 6 px.
+        for (width, height, inspector) in [(461., 490., 221.), (493., 526., 253.)] {
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
             assert_eq!(
-                cx.debug_bounds("working-selection"),
-                Some(bounds(inspector, 207., 240., controls)),
+                cx.debug_bounds("working-toolbar"),
+                Some(bounds(inspector, 207., 240., 34.)),
                 "Changes at {width} × {height}"
             );
             let field = cx.read(|cx| app.read(cx).working_filter.read(cx).input_bounds());
             assert_eq!(
                 field,
-                bounds(inspector + 20.5, 218.5, 199., 16.),
+                bounds(inspector + 20.5, 216., 137., 16.),
                 "at {width}"
             );
         }
@@ -5968,35 +5968,54 @@ pub(crate) mod tests {
         })
     }
 
-    /// In a 461 × 490 half tile with two staged files and one modified, the
-    /// Working Changes inspector keeps a usable list and composer at the
-    /// default size and at 18 pt: the file list one whole row, which its
-    /// focus ring surrounds; the composer's heading reading "Commit to" and
-    /// at least the branch's first character, a scaled 4 px above the title,
-    /// whose field is whole above the commit action; Actions and Refresh
-    /// inside the Changes header; Stage and Unstage on one row; and every
-    /// row at one leading inset. The controls above the list scroll first.
-    /// A wide window keeps every control labelled, and a steady frame asks
-    /// the text system nothing.
+    /// The Working Changes inspector with two staged files and one modified,
+    /// in a 461 × 490 half tile and a 640 × 680 window, at the default size
+    /// and at 18 pt. The file list keeps its Staged heading and its first
+    /// file row whole inside its border, which its focus ring surrounds.
+    /// Every control above the list is whole: where the filter, the selection
+    /// controls and the Changes header fit whole beside the list's floor and
+    /// the composer's minimum they keep their rows, and otherwise the filter,
+    /// Actions and Refresh share one row, Refresh joining the Actions menu
+    /// where the filter would lose its room beside it. The composer keeps the
+    /// title's label and field a scaled 4 px apart above the commit action;
+    /// its heading reads "Commit to" and the branch's first character, or, in
+    /// the tightest inspector, leaves whole. Every row starts at one leading
+    /// inset, and a steady frame asks the text system nothing.
     #[gpui::test]
-    async fn short_working_inspector_keeps_a_row_the_title_and_its_actions(
+    async fn short_working_inspector_keeps_a_whole_file_row_and_whole_controls(
         cx: &mut TestAppContext,
     ) {
         let (_fixture, app, cx) = working_window(cx).await;
         cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
-        for text in [13, 18] {
+        assert!(app.read_with(cx, |app, _| matches!(
+            app.working_rows[..2],
+            [
+                workspace::WorkingRow::Heading(..),
+                workspace::WorkingRow::File(..)
+            ]
+        )));
+        // Each size's form: whether the controls share one row, whether
+        // Refresh keeps its control there, and whether the composer keeps its
+        // heading.
+        for (width, height, text, tight, refresh, heading) in [
+            (461., 490., 13, true, true, true),
+            (461., 490., 18, true, false, false),
+            (640., 680., 13, false, true, true),
+            (640., 680., 18, true, true, true),
+        ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             COMPACT_NAMES.with(|names| names.borrow_mut().clear());
-            COMPACT_LABELS.with(|names| names.borrow_mut().clear());
-            cx.simulate_resize(size(px(461.), px(490.)));
+            cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
-            let at = format!("{text} pt");
-            let (row, inset, gap, status, cut) = cx.update(|window, cx| {
+            let at = format!("{text} pt in {width} × {height}");
+            let (row, border, inset, gap, field, status, cut) = cx.update(|window, cx| {
                 let snap = |length: Pixels| window.pixel_snap(length);
                 (
                     snap(px(app.read(cx).settings.density.file_row_height())),
+                    snap(px(1.)),
                     snap(window.rem_size() * 0.75),
                     snap(appearance::ui_size(4.)),
+                    window.rem_size() * 2.,
                     snap(appearance::ui_size(26.)),
                     shaped_width(
                         "Commit to m…",
@@ -6011,79 +6030,120 @@ pub(crate) mod tests {
                 cx.debug_bounds(selector)
                     .unwrap_or_else(|| panic!("{selector} at {at}"))
             };
-            let selection = bounds(cx, "working-selection");
-            let header = bounds(cx, "working-header");
+            // The Staged heading and the first file, whole inside the border.
             let pane = bounds(cx, "working-pane");
-            let heading = bounds(cx, "commit-composer-heading");
+            for selector in ["working-row-0", "working-row-1"] {
+                let item = bounds(cx, selector);
+                assert!(
+                    item.size.height >= row - px(0.01)
+                        && item.top() >= pane.top() + border - px(0.01)
+                        && item.bottom() <= pane.bottom() - border + px(0.01),
+                    "{at}: {selector} {item:?} in the list {pane:?}"
+                );
+            }
+            // Each control whole, inside the inspector's inset.
+            let whole = |outer: Bounds<Pixels>, inner: Bounds<Pixels>| {
+                inner.top() >= outer.top() - px(0.01)
+                    && inner.bottom() <= outer.bottom() + px(0.01)
+                    && inner.left() >= outer.left() + inset - px(0.5)
+                    && inner.right() <= outer.right() - inset + px(0.5)
+            };
+            let toolbar = cx.debug_bounds("working-toolbar");
+            assert_eq!(toolbar.is_some(), tight, "{at}: {toolbar:?}");
+            let (inspector, first) = if let Some(toolbar) = toolbar {
+                for selector in [
+                    "working-selection",
+                    "working-header",
+                    "group-working",
+                    "stage-selection",
+                    "unstage-selection",
+                ] {
+                    assert!(cx.debug_bounds(selector).is_none(), "{at}: {selector}");
+                }
+                assert_eq!(
+                    cx.debug_bounds("refresh-working").is_some(),
+                    refresh,
+                    "{at}: Refresh"
+                );
+                let mut controls = vec!["working-filter", "working-recovery-menu"];
+                if refresh {
+                    controls.push("refresh-working");
+                }
+                for selector in controls {
+                    let control = bounds(cx, selector);
+                    assert!(
+                        whole(toolbar, control),
+                        "{at}: {selector} {control:?} in {toolbar:?}"
+                    );
+                }
+                assert!(
+                    toolbar.bottom() <= pane.top() + px(0.01),
+                    "{at}: {toolbar:?}"
+                );
+                (toolbar, bounds(cx, "working-filter"))
+            } else {
+                let selection = bounds(cx, "working-selection");
+                for selector in [
+                    "working-filter",
+                    "group-working",
+                    "stage-selection",
+                    "unstage-selection",
+                    "working-selection-count",
+                ] {
+                    let control = bounds(cx, selector);
+                    assert!(
+                        whole(selection, control),
+                        "{at}: {selector} {control:?} in {selection:?}"
+                    );
+                }
+                let header = bounds(cx, "working-header");
+                for selector in ["working-recovery-menu", "refresh-working"] {
+                    let control = bounds(cx, selector);
+                    assert!(
+                        whole(header, control),
+                        "{at}: {selector} {control:?} in {header:?}"
+                    );
+                }
+                let first_in_header = cx
+                    .debug_bounds("working-header-icon")
+                    .or_else(|| cx.debug_bounds("working-header-count"))
+                    .unwrap();
+                assert!(
+                    (first_in_header.left() - selection.left() - inset).abs() < px(0.5),
+                    "{at}: the header starts at {first_in_header:?}"
+                );
+                (selection, bounds(cx, "working-filter"))
+            };
+            // The composer below the list: its heading whole or absent, then
+            // the title's label and field a scaled 4 px apart, whole above the
+            // commit action and the status bar.
+            let composer = bounds(cx, "commit-composer");
             let label = bounds(cx, "commit-title-label");
             let title = bounds(cx, "commit-title");
             let commit = bounds(cx, "commit-staged");
-            // The list keeps one whole row inside its border, below the
-            // header and above the composer.
+            let shown = cx.debug_bounds("commit-composer-heading");
+            assert_eq!(shown.is_some(), heading, "{at}: heading {shown:?}");
+            let above = shown.map_or(composer.top(), |shown| {
+                assert!(shown.size.width >= cut, "{at}: heading {shown:?}");
+                shown.bottom()
+            });
             assert!(
-                pane.size.height >= row + px(2.)
-                    && pane.top() >= header.bottom()
-                    && pane.bottom() <= heading.top(),
-                "{at}: list {pane:?} below {header:?}, row {row:?}"
-            );
-            // The heading keeps its verb and the branch's first character,
-            // then the title's label and field follow a scaled 4 px apart.
-            assert!(heading.size.width >= cut, "{at}: heading {heading:?}");
-            assert!(
-                label.top() - heading.bottom() >= gap - px(0.01)
+                composer.top() >= pane.bottom() - px(0.01)
+                    && label.top() - above >= gap - px(0.01)
                     && title.top() - label.bottom() >= gap - px(0.01)
                     && commit.top() - title.bottom() >= gap - px(0.01)
-                    && title.size.height >= cx.update(|window, _| window.rem_size()) * 2.
-                    && commit.bottom() <= px(490.) - status,
-                "{at}: heading {heading:?}, title {label:?} {title:?}, commit {commit:?}"
-            );
-            // The title's name and its counter share their line.
-            let (name, counter) = (
-                bounds(cx, "commit-title-name"),
-                bounds(cx, "commit-title-counter"),
-            );
-            assert!(
-                counter.top() == name.top() && counter.left() >= name.right(),
-                "{at}: {name:?} beside {counter:?}"
-            );
-            if let Some(badge) = cx.debug_bounds("commit-staged-count") {
-                assert!(
-                    commit.top() - badge.bottom() >= gap && badge.right() <= label.right(),
-                    "{at}: badge {badge:?} above {commit:?}"
-                );
-            }
-            // Actions and Refresh inside the header and the inspector.
-            for selector in ["working-recovery-menu", "refresh-working"] {
-                let control = bounds(cx, selector);
-                assert!(
-                    control.top() >= header.top()
-                        && control.bottom() <= header.bottom()
-                        && control.left() >= header.left() + inset
-                        && control.right() <= header.right() - inset + px(0.5),
-                    "{at}: {selector} {control:?} outside {header:?}"
-                );
-            }
-            // Stage and Unstage share a row, inside the inspector.
-            let (stage, unstage) = (
-                bounds(cx, "stage-selection"),
-                bounds(cx, "unstage-selection"),
-            );
-            assert!(
-                stage.top() == unstage.top()
-                    && unstage.right() <= selection.right() - inset + px(0.5),
-                "{at}: {stage:?} and {unstage:?}"
+                    && title.size.height >= field
+                    && commit.bottom() <= px(height) - status,
+                "{at}: {composer:?}, title {label:?} {title:?}, commit {commit:?}"
             );
             // One leading inset for every row.
-            let leading = selection.left() + inset;
-            let first_in_header = cx
-                .debug_bounds("working-header-icon")
-                .or_else(|| cx.debug_bounds("working-header-count"))
-                .unwrap();
-            let first_in_heading = cx.debug_bounds("commit-composer-icon").unwrap_or(heading);
+            let leading = inspector.left() + inset;
+            let first_in_heading = cx
+                .debug_bounds("commit-composer-icon")
+                .or(shown)
+                .unwrap_or(title);
             for (what, edge) in [
-                ("filter", bounds(cx, "working-filter").left()),
-                ("Directories", bounds(cx, "group-working").left()),
-                ("header", first_in_header.left()),
+                ("filter", first.left()),
                 ("heading", first_in_heading.left()),
                 ("title", title.left()),
                 ("commit", commit.left()),
@@ -6093,7 +6153,7 @@ pub(crate) mod tests {
                     "{at}: {what} at {edge:?}, the inset at {leading:?}"
                 );
             }
-            // The focused list draws its ring around the visible list.
+            // The focused list draws its ring around both rows.
             cx.update(|window, cx| {
                 let focus = app.read(cx).file_focus.clone();
                 window.focus(&focus, cx);
@@ -6104,7 +6164,7 @@ pub(crate) mod tests {
             let focused = bounds(cx, "working-pane");
             let ring = bordered_quad(cx, focused, accent);
             assert!(
-                ring.is_some_and(|ring| ring.size.height >= row + px(2.)),
+                ring.is_some_and(|ring| ring.size.height >= row * 2. + border * 2.),
                 "{at}: the focused list's ring {ring:?}"
             );
             // A steady frame lays out no text.
@@ -6112,29 +6172,36 @@ pub(crate) mod tests {
             app.update(cx, |_, cx| cx.notify());
             draw(cx);
             assert_eq!(LINE_LAYOUTS.with(std::cell::Cell::get), layouts, "{at}");
+            if tight {
+                assert_eq!(
+                    COMPACT_NAMES
+                        .with(|names| names.borrow().get("working-recovery-menu").copied()),
+                    Some("Working changes and recovery actions"),
+                    "{at}"
+                );
+            }
         }
-        // At 18 pt the controls that lose their labels keep their names.
-        let names = COMPACT_NAMES.with(|names| names.borrow().clone());
-        for (selector, name) in [
-            ("group-working", "Directories"),
-            (
-                "working-recovery-menu",
-                "Working changes and recovery actions",
-            ),
+        // In the tightest form the Actions menu leads with the selection
+        // controls and Refresh, and they act.
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let menu = cx.debug_bounds("working-recovery-menu").unwrap();
+        cx.simulate_click(menu.center(), Modifiers::default());
+        draw(cx);
+        for selector in [
+            "menu-item: Stage 0 selected · MenuItem disabled",
+            "menu-item: Unstage 0 selected · MenuItem disabled",
+            "menu-item: Refresh working changes · MenuItem",
         ] {
-            assert_eq!(names.get(selector), Some(&name), "{selector}");
+            assert!(cx.debug_bounds(selector).is_some(), "{selector}");
         }
-        let labels = COMPACT_LABELS.with(|names| names.borrow().clone());
-        for (selector, name) in [
-            ("stage-selection", "Stage 0"),
-            ("unstage-selection", "Unstage 0"),
-        ] {
-            assert_eq!(
-                labels.get(selector).map(|name| name.as_ref()),
-                Some(name),
-                "{selector}"
-            );
-        }
+        let directories = cx
+            .debug_bounds("menu-item: Directories · MenuItemCheckBox False")
+            .expect("Directories, unchecked");
+        cx.simulate_click(directories.center(), Modifiers::default());
+        settle(&app, cx).await;
+        assert!(app.read_with(cx, |app, _| app.working_selection.grouped));
         // A wide window keeps the labelled forms.
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         cx.simulate_resize(size(px(1000.), px(680.)));
@@ -6153,9 +6220,78 @@ pub(crate) mod tests {
         assert!(cx.debug_bounds("commit-composer-icon").is_some());
     }
 
+    /// From a 461 and a 640 px wide window's shortest height to a tall one,
+    /// at the default size and at 18 pt, the Working Changes inspector never
+    /// cuts a control above its list: the selection controls are whole in
+    /// their own rows, the icon-only ones in a narrow inspector included, or
+    /// they have given way to the one row of the tight form, and the list
+    /// keeps its heading and first file whole.
+    #[gpui::test]
+    async fn working_controls_stay_whole_at_every_height(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        let mut forms = std::collections::BTreeSet::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for width in [461., 640.] {
+                for height in (490..=1010).step_by(26) {
+                    cx.simulate_resize(size(px(width), px(height as f32)));
+                    draw(cx);
+                    let at = format!("{text} pt in {width} × {height}");
+                    let (outer, controls) = match cx.debug_bounds("working-toolbar") {
+                        Some(toolbar) => (toolbar, vec!["working-filter", "working-recovery-menu"]),
+                        None => (
+                            cx.debug_bounds("working-selection").expect(&at),
+                            vec![
+                                "working-filter",
+                                "group-working",
+                                "stage-selection",
+                                "unstage-selection",
+                                "working-selection-count",
+                            ],
+                        ),
+                    };
+                    forms.insert((
+                        text,
+                        cx.debug_bounds("working-toolbar").is_some(),
+                        cx.debug_bounds("group-working")
+                            .is_some_and(|control| control.size.width <= control.size.height),
+                    ));
+                    for selector in controls {
+                        let control = cx.debug_bounds(selector).expect(selector);
+                        assert!(
+                            control.top() >= outer.top() - px(0.01)
+                                && control.bottom() <= outer.bottom() + px(0.01),
+                            "{at}: {selector} {control:?} in {outer:?}"
+                        );
+                    }
+                    let pane = cx.debug_bounds("working-pane").expect(&at);
+                    let file = cx.debug_bounds("working-row-1").expect(&at);
+                    assert!(
+                        file.top() >= pane.top() && file.bottom() <= pane.bottom(),
+                        "{at}: {file:?} in {pane:?}"
+                    );
+                }
+            }
+        }
+        // The sweep reached the tight form, the labelled controls and the
+        // icon-only ones at 18 pt.
+        for form in [
+            (13, true, false),
+            (13, false, false),
+            (18, true, false),
+            (18, false, true),
+        ] {
+            assert!(forms.contains(&form), "{form:?} in {forms:?}");
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        let _ = app;
+    }
+
     /// With two staged files in a 461 × 490 window, the composer's heading
-    /// is drawn whole, above the commit action and the status bar, at the
-    /// default size and at 18 pt: the staged list gives up the room.
+    /// is drawn whole or not at all, above the commit action and the status
+    /// bar: whole at the default size, and at 18 pt, where the inspector
+    /// cannot keep it beside the list's heading and first file and the
+    /// title's field, it leaves and the title's label leads the composer.
     #[gpui::test]
     async fn composer_heading_stays_whole_in_a_short_window(cx: &mut TestAppContext) {
         // The import leaves the index empty: both files are staged deletions.
@@ -6180,17 +6316,26 @@ pub(crate) mod tests {
                     ),
                 )
             });
-            let heading = cx.debug_bounds("commit-composer-heading").unwrap();
+            let composer = cx.debug_bounds("commit-composer").unwrap();
+            let label = cx.debug_bounds("commit-title-label").unwrap();
             let commit = cx.debug_bounds("commit-staged").unwrap();
-            let list = cx.debug_bounds("working-selection").unwrap();
             assert!(
-                heading.size.height >= line
-                    && heading.top() >= list.bottom()
-                    && heading.bottom() <= commit.top()
-                    && heading.right() <= px(461.)
-                    && commit.bottom() <= px(490.) - status,
-                "{text} pt: heading {heading:?} between {list:?} and {commit:?}"
+                commit.bottom() <= px(490.) - status && label.top() >= composer.top(),
+                "{text} pt: {composer:?}, {label:?}, {commit:?}"
             );
+            let heading = cx.debug_bounds("commit-composer-heading");
+            if text == 13 {
+                let heading = heading.unwrap();
+                assert!(
+                    heading.size.height >= line
+                        && heading.top() >= composer.top()
+                        && heading.bottom() <= label.top()
+                        && heading.right() <= px(461.),
+                    "{text} pt: heading {heading:?} in {composer:?}"
+                );
+            } else {
+                assert!(heading.is_none(), "{text} pt: heading {heading:?}");
+            }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }

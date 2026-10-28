@@ -18,23 +18,52 @@ struct WorkingInspectorLayout {
     /// (`WorkingForms`).
     width: Pixels,
     list_size: Option<Size<Pixels>>,
+    /// The whole inspector's height as last laid out, which no form of its
+    /// rows changes, so it can choose the form (`WorkingFit`).
+    inspector: Pixels,
+}
+
+/// The Changes header's height in the full form.
+const WORKING_HEADER: f32 = 44.;
+
+/// How the Working Changes inspector's rows fit its height, chosen before
+/// layout from the inspector's measured height and the heights its rows
+/// would take, so no row is cut and no frame shows one form and then the
+/// other.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WorkingFit {
+    /// The filter, the selection controls and the Changes header give way
+    /// to one row: the filter beside Actions (and Refresh, where the filter
+    /// keeps its room beside it), the selection controls moving into the
+    /// Actions menu, so the file list keeps its floor.
+    tight: bool,
+    /// The composer keeps its pinned heading; in the tightest inspector it
+    /// leaves, its branch staying in the commit action's tooltip and the
+    /// action bar, its count in the Staged heading and the commit action.
+    heading: bool,
 }
 
 /// The least height the composer keeps: its top border, the pinned heading
-/// row with the padding above it, the title's label and one line of its
-/// field with the gaps around them, and the commit action with the padding
-/// below it, each snapped to device pixels as layout snaps them. The
-/// list/composer body keeps it and the file list's one whole row
-/// (`working_list_floor`), so the controls above the list scroll first.
-fn composer_minimum(short: bool, window: &Window) -> f32 {
+/// row with the padding above it (unless `heading` has left), the title's
+/// label and one line of its field with the gaps around them, and the
+/// commit action with the padding below it, each snapped to device pixels as
+/// layout snaps them. The list/composer body keeps it and the file list's
+/// floor (`working_list_floor`), so the controls above the list give way
+/// first (`WorkingFit`).
+fn composer_minimum(short: bool, heading: bool, window: &Window) -> f32 {
     let rem = window.rem_size();
     let snap = |length: Pixels| window.pixel_snap(length);
     let line = |size: Pixels| snap(window.text_style().line_height.to_pixels(size.into(), rem));
     let padding = snap(rem * if short { 0.5 } else { 0.75 });
     // The heading's line beside its 16 px icon and the staged count's badge.
-    let heading = line(crate::appearance::ui_text(13.))
-        .max(px(16.))
-        .max(snap(rem * 0.125) * 2. + line(crate::appearance::ui_text(10.)));
+    let heading_row = if heading {
+        line(crate::appearance::ui_text(13.))
+            .max(px(16.))
+            .max(snap(rem * 0.125) * 2. + line(crate::appearance::ui_text(10.)))
+    } else {
+        // Without it the fields lead with the composer's own padding.
+        px(0.)
+    };
     // A short composer's fields keep a scaled 4 px from the heading, between
     // themselves and above the commit action; a taller one's lead with the
     // branch line.
@@ -48,15 +77,35 @@ fn composer_minimum(short: bool, window: &Window) -> f32 {
     } else {
         line(crate::appearance::ui_text(11.)).max(px(13.)) + gap
     };
-    let fields = gap + branch + line(crate::appearance::ui_text(11.)) + gap + snap(rem * 2.) + gap;
+    let lead = if heading { gap } else { px(0.) };
+    let fields = lead + branch + line(crate::appearance::ui_text(11.)) + gap + snap(rem * 2.) + gap;
     f32::from(
-        snap(px(1.)) + padding + heading + fields + snap(crate::appearance::ui_size(36.)) + padding,
+        snap(px(1.))
+            + padding
+            + heading_row
+            + fields
+            + snap(crate::appearance::ui_size(36.))
+            + padding,
     )
 }
 
-/// The file list's least height: one whole row inside its border.
-fn working_list_floor(density: crate::appearance::Density, window: &Window) -> f32 {
-    f32::from(window.pixel_snap(px(density.file_row_height())) + window.pixel_snap(px(1.)) * 2.)
+/// How many of the file list's rows it keeps whole whatever else gives way:
+/// those through its first file row, so the shortest list shows a file and
+/// not only the headings above it (Staged, Unstaged while nothing is staged,
+/// and a directory's label when grouped). A list without files keeps one.
+fn working_floor_rows(rows: &[WorkingRow]) -> usize {
+    rows.iter()
+        .take(4)
+        .position(|row| matches!(row, WorkingRow::File(..)))
+        .map_or(1, |index| index + 1)
+}
+
+/// The file list's least height: `rows` whole rows inside its border.
+fn working_list_floor(rows: usize, density: crate::appearance::Density, window: &Window) -> f32 {
+    f32::from(
+        window.pixel_snap(px(density.file_row_height())) * rows as f32
+            + window.pixel_snap(px(1.)) * 2.,
+    )
 }
 
 /// How the Working Changes inspector's rows fit its width, measured from the
@@ -69,6 +118,13 @@ pub(super) struct WorkingForms {
     /// Directories, Stage and Unstage as 28 px icon controls on one row,
     /// where Stage and Unstage do not fit a row of their own labelled.
     pub(super) compact_selection: bool,
+    /// The rows Directories, Stage and Unstage take: one, or two where the
+    /// labelled pair wraps below Directories.
+    selection_rows: usize,
+    /// In the tight form's one row, Refresh stays beside Actions where the
+    /// filter keeps a scaled 80 px beside both; otherwise it joins the
+    /// Actions menu.
+    toolbar_refresh: bool,
     /// The Changes header's Actions keeps only its caret, beside the icon-only
     /// Refresh, and "Refreshing…" leaves.
     compact_actions: bool,
@@ -95,6 +151,53 @@ thread_local! {
         const { RefCell::new(None) };
     static REFRESHING_LABEL: RefCell<Option<(crate::views::LineKey, Pixels)>> =
         const { RefCell::new(None) };
+    static DIRECTORIES_LABEL: RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { RefCell::new(None) };
+    /// The wrapped lines of the selection controls' texts, by text, size and
+    /// width, so a steady render lays none of them out.
+    static WRAPPED_LINES: RefCell<Vec<WrappedText>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A text's wrapped line count, with what it was laid out with: the font and
+/// sizes, the text, its size and the width it wrapped in.
+type WrappedText = (crate::views::LineKey, String, Pixels, Pixels, usize);
+
+/// The lines `text` at `size` wraps to in `width`, laid out again only when
+/// the text, the font, the sizes or the width change.
+fn wrapped_lines(text: &str, size: Pixels, width: Pixels, window: &Window) -> usize {
+    let key = crate::views::LineKey::current(window);
+    WRAPPED_LINES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(&(.., lines)) = cache
+            .iter()
+            .find(|(k, t, s, w, _)| *k == key && t == text && *s == size && *w == width)
+        {
+            return lines;
+        }
+        #[cfg(test)]
+        crate::views::LINE_LAYOUTS.with(|count| count.set(count.get() + 1));
+        let style = window.text_style();
+        let lines = window
+            .text_system()
+            .shape_text(
+                SharedString::from(text.to_owned()),
+                size,
+                &[style.to_run(text.len())],
+                Some(width),
+                None,
+            )
+            .map_or(1, |lines| {
+                lines
+                    .iter()
+                    .map(|line| line.wrap_boundaries.len() + 1)
+                    .sum()
+            });
+        if cache.len() >= 8 {
+            cache.remove(0);
+        }
+        cache.push((key, text.to_owned(), size, width, lines));
+        lines
+    })
 }
 
 impl GitTurtle {
@@ -130,6 +233,19 @@ impl GitTurtle {
             || measure(&stage, ui_text(12.), regular) + measure(&unstage, ui_text(12.), regular),
         );
         let compact_selection = ui_size(10.) * 4. + pair + tight > room;
+        let directories = cached_width(&DIRECTORIES_LABEL, &key, || {
+            measure("Directories", ui_text(12.), regular)
+        }) + ui_size(10.) * 2.;
+        let selection_rows = if compact_selection
+            || directories + tight + ui_size(10.) * 4. + pair + tight <= room
+        {
+            1
+        } else {
+            2
+        };
+        // The tight row: the filter, then Actions' caret and Refresh, each a
+        // 28 px control a `gap_1` apart.
+        let toolbar_refresh = room - (control + tight) * 2. >= ui_size(80.);
 
         // The Changes header: its icon, label and count, then Actions and
         // Refresh at the trailing edge.
@@ -208,6 +324,8 @@ impl GitTurtle {
         }
         WorkingForms {
             compact_selection,
+            selection_rows,
+            toolbar_refresh,
             compact_actions,
             header_icon,
             header_label,
@@ -216,6 +334,92 @@ impl GitTurtle {
             heading_badge,
         }
     }
+
+    /// The full selection controls' height at the inspector's `width`, as
+    /// `render_working_selection` lays them out: its padding, the filter's
+    /// field, the selection rows, the selection count's wrapped lines and any
+    /// filtering notice, each a `gap_1` apart.
+    fn working_controls_height(
+        &self,
+        forms: WorkingForms,
+        width: Pixels,
+        window: &Window,
+        cx: &App,
+    ) -> f32 {
+        use crate::appearance::{ui_size, ui_text};
+        let rem = window.rem_size();
+        let room = width - rem * 0.75 * 2.;
+        let gap = rem * 0.25;
+        let line = |size: Pixels| window.text_style().line_height.to_pixels(size.into(), rem);
+        let rows = forms.selection_rows as f32;
+        let mut height = rem * 0.5 * 2. + rem * 2. + gap + ui_size(28.) * rows + gap * (rows - 1.);
+        let (staged, unstaged) = self.selection_counts();
+        let count = format!(
+            "{} selected · filtering clears selection",
+            staged + unstaged
+        );
+        let mut texts = vec![(count, ui_text(10.))];
+        if self.working_paths.pending {
+            texts.push(("Filtering working paths…".into(), ui_text(11.)));
+        }
+        if !self.working_paths.pending
+            && self.working_paths.error.is_none()
+            && self.working_paths.visible_count == 0
+            && !self.working_filter.read(cx).value().is_empty()
+        {
+            texts.push(("No working paths match this filter".into(), ui_text(11.)));
+        }
+        if let Some(error) = &self.working_paths.error {
+            texts.push((error.clone(), ui_text(11.)));
+        }
+        for (text, size) in texts {
+            height += gap + line(size) * wrapped_lines(&text, size, room, window) as f32;
+        }
+        f32::from(height)
+    }
+
+    /// The inspector's `WorkingFit` at its measured `height` and `width`,
+    /// with a list floor of `floor` and, where `composer`, the composer.
+    #[allow(clippy::too_many_arguments)]
+    fn working_fit(
+        &self,
+        forms: WorkingForms,
+        height: Pixels,
+        width: Pixels,
+        floor: f32,
+        composer: bool,
+        short: bool,
+        window: &Window,
+        cx: &App,
+    ) -> WorkingFit {
+        let height = f32::from(height);
+        let body = |heading: bool| {
+            floor
+                + if composer {
+                    composer_minimum(short, heading, window)
+                } else {
+                    0.
+                }
+        };
+        let full = self.working_controls_height(forms, width, window, cx) + WORKING_HEADER;
+        if full + body(true) <= height {
+            return WorkingFit {
+                tight: false,
+                heading: true,
+            };
+        }
+        WorkingFit {
+            tight: true,
+            heading: working_toolbar_height(window) + body(true) <= height,
+        }
+    }
+}
+
+/// The tight form's one row: the filter's field beside 28 px controls, with
+/// a `py_1` above and below that holds a focused control's ring.
+fn working_toolbar_height(window: &Window) -> f32 {
+    let rem = window.rem_size();
+    f32::from(rem * 0.25 * 2. + (rem * 2.).max(crate::appearance::ui_size(28.)))
 }
 
 fn commit_composer_height(available: f32, row_height: f32, preferred: f32) -> f32 {
@@ -1100,18 +1304,16 @@ impl GitTurtle {
                 height: (window.viewport_size().height - px(400.)).max(px(160.)),
                 width,
                 list_size: previous_list.map(|size| size.item),
+                inspector: (window.viewport_size().height - px(200.)).max(px(160.)),
             }
         });
         let available = f32::from(layout.read(cx).height);
         let short = available < 560.;
-        let forms = self.working_forms(
-            if pinned { width } else { layout.read(cx).width },
-            short,
-            window,
-        );
+        let fitted_width = if pinned { width } else { layout.read(cx).width };
+        let forms = self.working_forms(fitted_width, short, window);
         // The measured body's height must not change the header height, which
         // would oscillate at a size threshold on successive layout passes.
-        let header_height = 44.;
+        let header_height = WORKING_HEADER;
         let normal_description = if self.settings.density == appearance::Density::Compact {
             100.
         } else {
@@ -1172,9 +1374,23 @@ impl GitTurtle {
             .work_status
             .as_ref()
             .is_none_or(|status| status.operation.is_none());
-        let floor = working_list_floor(self.settings.density, window);
-        let minimum = composer_minimum(short, window);
-        // The list keeps its one whole row beside the composer's minimum.
+        let floor = working_list_floor(
+            working_floor_rows(&self.working_rows),
+            self.settings.density,
+            window,
+        );
+        let fit = self.working_fit(
+            forms,
+            layout.read(cx).inspector,
+            fitted_width,
+            floor,
+            composer,
+            short,
+            window,
+            cx,
+        );
+        let minimum = composer_minimum(short, fit.heading, window);
+        // The list keeps its floor beside the composer's minimum.
         let composer_height = composer_height.min(available - floor).max(minimum);
         let list = uniform_list(
             "working-files",
@@ -1187,38 +1403,150 @@ impl GitTurtle {
         )
         .size_full()
         .track_scroll(&self.working_scroll);
-        div()
-            .size_full().min_h_0().relative().flex().flex_col().bg(rgb(p.panel))
-            // Where the inspector is too short for these controls, the header,
-            // the file list's one whole row and the composer's minimum, the
-            // controls give up their room first and scroll.
-            .child(div().id("working-selection").debug_selector(|| "working-selection".into()).min_h_0().overflow_y_scroll()
-                .child(self.render_working_selection(forms.compact_selection, cx)))
-            .child(
-                div().debug_selector(|| "working-header".into()).h(px(header_height)).flex_shrink_0().px_3().flex().items_center().gap_2()
-                    .border_b_1().border_color(rgb(p.border))
-                    .when(forms.header_icon, |el| el.child(div().debug_selector(|| "working-header-icon".into()).child(icon("commit", 17., p.accent))))
-                    .when(forms.header_label, |el| el.child(div().debug_selector(|| "working-header-label".into()).text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::SEMIBOLD).child("Changes")))
-                    .when(forms.header_count, |el| el.child(div().id("working-header-count").debug_selector(|| "working-header-count".into())
-                        .px_2().py_0p5().rounded(px(5.)).bg(rgb(p.hover))
-                        .text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::MEDIUM)
-                        .text_color(rgb(crate::appearance::labels(cx).count))
-                        // Without its label the count says what it counts.
-                        .when(!forms.header_label, |el| el.tooltip(move |window, cx| {
-                            Tooltip::new(format!("Changes · {total}")).build(window, cx)
-                        }))
-                        .child(total.to_string())))
+        let refresh = button("refresh-working", "", "refresh", false)
+            .debug_selector(|| "refresh-working".into())
+            .accessibility_label("Refresh working changes")
+            .tooltip(if refreshing {
+                "Refresh working changes · Refreshing…"
+            } else {
+                "Refresh working changes"
+            })
+            .disabled(busy || refreshing)
+            .on_click(cx.listener(|this, _, window, cx| this.refresh_worktree(window, cx)));
+        // Where the inspector is too short for these controls whole beside
+        // the header, the list's floor and the composer's minimum, the
+        // filter, Actions and Refresh share one row and the selection
+        // controls move into the Actions menu (`WorkingFit`), so no control
+        // is cut.
+        let controls = if fit.tight {
+            vec![
+                div()
+                    .debug_selector(|| "working-toolbar".into())
+                    .flex_shrink_0()
+                    .px_3()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .debug_selector(|| "working-filter".into())
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                Input::new(&self.working_filter)
+                                    .text_size(crate::appearance::ui_text(12.)),
+                            ),
+                    )
+                    .child(self.render_working_recovery_menu(
+                        true,
+                        Some(!forms.toolbar_refresh),
+                        cx,
+                    ))
+                    .when(forms.toolbar_refresh, |el| el.child(refresh))
+                    .into_any_element(),
+            ]
+        } else {
+            vec![
+                // The selection controls fit whole; the scroll only guards a
+                // prediction that missed.
+                div()
+                    .id("working-selection")
+                    .debug_selector(|| "working-selection".into())
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(self.render_working_selection(forms.compact_selection, cx))
+                    .into_any_element(),
+                div()
+                    .debug_selector(|| "working-header".into())
+                    .h(px(header_height))
+                    .flex_shrink_0()
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(rgb(p.border))
+                    .when(forms.header_icon, |el| {
+                        el.child(
+                            div()
+                                .debug_selector(|| "working-header-icon".into())
+                                .child(icon("commit", 17., p.accent)),
+                        )
+                    })
+                    .when(forms.header_label, |el| {
+                        el.child(
+                            div()
+                                .debug_selector(|| "working-header-label".into())
+                                .text_size(crate::appearance::ui_text(13.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Changes"),
+                        )
+                    })
+                    .when(forms.header_count, |el| {
+                        el.child(
+                            div()
+                                .id("working-header-count")
+                                .debug_selector(|| "working-header-count".into())
+                                .px_2()
+                                .py_0p5()
+                                .rounded(px(5.))
+                                .bg(rgb(p.hover))
+                                .text_size(crate::appearance::ui_text(11.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(crate::appearance::labels(cx).count))
+                                // Without its label the count says what it counts.
+                                .when(!forms.header_label, |el| {
+                                    el.tooltip(move |window, cx| {
+                                        Tooltip::new(format!("Changes · {total}")).build(window, cx)
+                                    })
+                                })
+                                .child(total.to_string()),
+                        )
+                    })
                     // Actions and Refresh hold the trailing edge; the texts
                     // before them give way, so neither is pushed out.
-                    .child(div().ml_auto().flex().flex_shrink_0().items_center().gap_2()
-                        .when(forms.compact_actions, |el| el.gap_1())
-                        .when(refreshing && !forms.compact_actions, |el| el.child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("Refreshing…")))
-                        .child(self.render_working_recovery_menu(forms.compact_actions, cx))
-                        .child(button("refresh-working", "", "refresh", false).debug_selector(|| "refresh-working".into())
-                            .accessibility_label("Refresh working changes")
-                            .tooltip(if refreshing { "Refresh working changes · Refreshing…" } else { "Refresh working changes" })
-                            .disabled(busy || refreshing).on_click(cx.listener(|this, _, window, cx| this.refresh_worktree(window, cx))))),
-            )
+                    .child(
+                        div()
+                            .ml_auto()
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap_2()
+                            .when(forms.compact_actions, |el| el.gap_1())
+                            .when(refreshing && !forms.compact_actions, |el| {
+                                el.child(
+                                    div()
+                                        .text_size(crate::appearance::ui_text(10.))
+                                        .text_color(rgb(p.muted))
+                                        .child("Refreshing…"),
+                                )
+                            })
+                            .child(self.render_working_recovery_menu(
+                                forms.compact_actions,
+                                None,
+                                cx,
+                            ))
+                            .child(refresh),
+                    )
+                    .into_any_element(),
+            ]
+        };
+        let inspector_layout = layout.clone();
+        div()
+            .size_full().min_h_0().relative().flex().flex_col().bg(rgb(p.panel))
+            // The inspector's own height, which no form of its rows changes,
+            // chooses the form.
+            .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
+                inspector_layout.update(cx, |layout, cx| {
+                    if layout.inspector != bounds.size.height {
+                        layout.inspector = bounds.size.height;
+                        cx.notify();
+                        window.defer(cx, |window, _| window.refresh());
+                    }
+                });
+            }).absolute().inset_0())
+            .children(controls)
             .child(div().relative().flex_1().min_h(px(floor + if composer { minimum } else { 0. })).flex().flex_col()
             .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
                 layout.update(cx, |layout, cx| {
@@ -1281,8 +1609,10 @@ impl GitTurtle {
                     .bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
                     // The heading is pinned above the scrolling fields, as the
                     // commit action is below them; where the body is short the
-                    // file list gives up the room for both, down to its row.
-                    .child(div().flex_shrink_0().flex().items_center().gap_2().px_3().pt_3()
+                    // file list gives up the room for both, down to its floor.
+                    // In the tightest inspector the heading leaves
+                    // (`WorkingFit`).
+                    .when(fit.heading, |el| el.child(div().flex_shrink_0().flex().items_center().gap_2().px_3().pt_3()
                         .when(short, |el| el.pt_2())
                         .when(forms.heading_icon, |el| el.child(div().debug_selector(|| "commit-composer-icon".into()).child(icon("commit", 16., p.accent))))
                         // Truncating, it keeps "Commit to" and cuts the branch.
@@ -1297,11 +1627,13 @@ impl GitTurtle {
                             .bg(rgb(if staged > 0 { p.added_background } else { p.hover }))
                             .text_size(crate::appearance::ui_text(10.)).font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(if staged > 0 { crate::appearance::labels(cx).added } else { crate::appearance::labels(cx).count }))
-                            .child(format!("{staged} staged")))))
+                            .child(format!("{staged} staged"))))))
                     .child(div().id("commit-composer-fields").flex_1().min_h_0().overflow_y_scroll()
-                    // The gap that followed the heading leads the fields.
+                    // The gap that followed the heading leads the fields;
+                    // without the heading, the composer's own padding does.
                     .child(div().flex().flex_col().gap_2().px_3().pt_2().pb_3()
                     .when(short, |el| el.gap(crate::appearance::ui_size(4.)).pt(crate::appearance::ui_size(4.)).pb_2())
+                    .when(!fit.heading, |el| if short { el.pt_2() } else { el.pt_3() })
                     .when(!short, |el| el.child(div().flex().items_center().gap_1p5().min_w_0().text_size(crate::appearance::ui_text(11.))
                         .text_color(rgb(p.muted)).child(icon("branch", 13., p.muted))
                         .child(div().truncate().child(branch.to_owned()))))
@@ -1401,6 +1733,7 @@ impl GitTurtle {
             WorkingRow::Heading(area, count) => {
                 let staged = area == ChangeArea::Staged;
                 div()
+                    .debug_selector(move || format!("working-row-{position}"))
                     .w_full()
                     .h(px(self.settings.density.file_row_height()))
                     .px_3()
@@ -1530,6 +1863,7 @@ impl GitTurtle {
                         status_label,
                         if staged { "Staged" } else { "Unstaged" }
                     ))
+                    .debug_selector(move || format!("working-row-{position}"))
                     .aria_selected(active)
                     .when(self.working_selected == Some((index, area)), |row| {
                         row.aria_active_descendant()

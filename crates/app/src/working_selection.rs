@@ -422,7 +422,12 @@ impl GitTurtle {
         }));
         cx.notify();
     }
-    fn apply_selected_files(&mut self, staged: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn apply_selected_files(
+        &mut self,
+        staged: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.operation_busy.is_some()
             || self.working_paths.pending
             || self.working_paths.error.is_some()
@@ -598,6 +603,7 @@ impl GitTurtle {
             )
             .child(
                 div()
+                    .debug_selector(|| "working-selection-count".into())
                     .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(palette(cx).muted))
                     .child(format!(

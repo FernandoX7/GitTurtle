@@ -128,12 +128,23 @@ impl GitTurtle {
     /// The Changes header's Actions menu. `compact`, in an inspector too
     /// narrow for its label beside Refresh (`workspace::WorkingForms`), it
     /// keeps only its caret in a 28 px control, with its accessible name and
-    /// a tooltip that leads with its label.
+    /// a tooltip that leads with its label. `tight`, in an inspector too
+    /// short for the selection controls (`workspace::WorkingFit`), the menu
+    /// leads with Directories and the selection's Stage and Unstage, and
+    /// with Refresh where it holds `Some(true)`, as Refresh then has no
+    /// control of its own.
     pub(super) fn render_working_recovery_menu(
         &self,
         compact: bool,
+        tight: Option<bool>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (staged, unstaged) = self.selection_counts();
+        let grouped = self.working_selection.grouped;
+        let selection_unavailable = self.operation_busy.is_some()
+            || self.working_paths.pending
+            || self.working_paths.error.is_some();
+        let refreshing = self.status_task.is_some();
         let owner = cx.entity().downgrade();
         let repository = self.path.clone();
         let head = self
@@ -154,13 +165,21 @@ impl GitTurtle {
             .filter(|entry| entry.untracked)
             .cloned();
         const DETAIL: &str = "Ignore selected untracked content, stashes, and last-commit actions";
+        const TIGHT_DETAIL: &str = "Directories, Stage and Unstage for the selection, ignore, stashes, and last-commit actions";
         let control = if compact {
             crate::views::compact_control_name(
                 button("working-recovery-menu", "", "", false),
                 "working-recovery-menu",
                 "Working changes and recovery actions",
             )
-            .tooltip(format!("Actions · {DETAIL}"))
+            .tooltip(format!(
+                "Actions · {}",
+                if tight.is_some() {
+                    TIGHT_DETAIL
+                } else {
+                    DETAIL
+                }
+            ))
         } else {
             Button::new("working-recovery-menu")
                 .small()
@@ -173,7 +192,48 @@ impl GitTurtle {
             .debug_selector(|| "working-recovery-menu".into())
             .dropdown_caret(true)
             .disabled(self.operation_busy.is_some())
-            .dropdown_menu(move |menu, _, _| {
+            .dropdown_menu(move |mut menu, _, _| {
+                if let Some(refresh) = tight {
+                    menu = menu
+                        .item(
+                            working_item(
+                                "Directories",
+                                false,
+                                &owner,
+                                &repository,
+                                |this, window, cx| {
+                                    this.working_selection.grouped =
+                                        !this.working_selection.grouped;
+                                    this.filter_working_paths(window, cx);
+                                },
+                            )
+                            .checked(grouped),
+                        )
+                        .item(working_item(
+                            format!("Stage {unstaged} selected"),
+                            unstaged == 0 || selection_unavailable,
+                            &owner,
+                            &repository,
+                            |this, window, cx| this.apply_selected_files(false, window, cx),
+                        ))
+                        .item(working_item(
+                            format!("Unstage {staged} selected"),
+                            staged == 0 || selection_unavailable,
+                            &owner,
+                            &repository,
+                            |this, window, cx| this.apply_selected_files(true, window, cx),
+                        ));
+                    if refresh {
+                        menu = menu.item(working_item(
+                            "Refresh working changes",
+                            refreshing,
+                            &owner,
+                            &repository,
+                            |this, window, cx| this.refresh_worktree(window, cx),
+                        ));
+                    }
+                    menu = menu.separator();
+                }
                 let ignore_entry = ignore_entry.clone();
                 let menu = working_menu_item(
                     menu,
@@ -457,22 +517,32 @@ fn working_menu_item(
     repository: &Option<PathBuf>,
     action: impl Fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) + 'static,
 ) -> PopupMenu {
+    menu.item(working_item(label, disabled, owner, repository, action))
+}
+
+/// A Working Changes menu item that acts only on the repository it was
+/// built for, on the repository page, while no operation runs.
+fn working_item(
+    label: impl Into<SharedString>,
+    disabled: bool,
+    owner: &WeakEntity<GitTurtle>,
+    repository: &Option<PathBuf>,
+    action: impl Fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) + 'static,
+) -> PopupMenuItem {
     let owner = owner.clone();
     let repository = repository.clone();
-    menu.item(
-        PopupMenuItem::new(label)
-            .disabled(disabled)
-            .on_click(move |_, window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    if this.path == repository
-                        && this.page == AppPage::Repository
-                        && this.operation_busy.is_none()
-                    {
-                        action(this, window, cx);
-                    }
-                });
-            }),
-    )
+    PopupMenuItem::new(label)
+        .disabled(disabled)
+        .on_click(move |_, window, cx| {
+            let _ = owner.update(cx, |this, cx| {
+                if this.path == repository
+                    && this.page == AppPage::Repository
+                    && this.operation_busy.is_none()
+                {
+                    action(this, window, cx);
+                }
+            });
+        })
 }
 
 fn commit_menu(
