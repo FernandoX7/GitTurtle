@@ -65,6 +65,61 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 28 evening empty and edge states say one line with their next action
+
+`f48a3bc` gives no remote, no upstream, detached HEAD, no commits, a clean tree, a search or filter with no match, and empty Tags, Stashes and GitHub lists one shared line with their next action.
+
+- **Automated:** `empty_state::tests` (ten, each failing with its fix removed); fast gate green at `f48a3bc`.
+- **Host and capture:** Asahi Omarchy (Hyprland 0.56, native Wayland, scale 2), windows forced opaque, empty XDG homes per launch, accessibility bus on for the launches; fixtures from `.local/item8-2026-10-27/tools/make-principles.sh` (local): no remote, no upstream, detached at HEAD~1, no commits; floating 1,480 × 980 at 13 pt in Midnight and tiled 461 × 490 at 18 pt in Braden; History, Changes, a filter and a search with no match, Tags, Stashes, the GitHub panel. Driver `run-pr.sh`, group e.
+- **Builds:** base `04b6bc9` (sha256 `cec0501e…`), candidate `00f0add` (sha256 `1080743e…`), both clean releases.
+- **Results:** at 13 pt the action bar reads "No remote" with Add remote…, "No upstream · Push sets one" and "Detached at fe33f4a" with Create branch… (the base said "No upstream" in all four), each action after Push; the muted line is 7.70:1. With no commits History says "No commits yet · Your first commit starts in Changes" with Open Changes (6.19:1, wrapped whole at 18 pt); Changes says "Working tree clean" or "No files yet" whole where the base cut its title; a search with no match says "No commits match · searched 2 commits in All local refs" with Clear search; Tags fits the 461 px window (the base ran off its left edge) and says "No local tags yet · Create tag… names a commit"; the GitHub panel says "No GitHub remote · Name the repository to load its pull requests".
+- **Review:** a read-only design reviewer verified the claims above and checked the frames for privacy. Found, queued: none of the state lines is on the accessibility bus (their actions are); at 18 pt in 461 px the detached line is not drawn, "No remote" reads "No r…", and a search with no match leaves the list 11 px tall so its line and Clear search are hidden; the Tags line starts 10 px right of the dialog's text edge; Tags offers Create tag… with no commit to name; Add remote… uses a cloud glyph beside Fetch's. Not reached: the filter's "No matches" (the fixtures' trees are clean), the Stashes dialog (the step tapped the wrong item), rings and tooltips.
+- **Evidence:** [`docs/evidence/empty-and-edge-states/`](evidence/empty-and-edge-states/).
+
+## October 28 evening Git actions confirm on their control, and one left edge per panel
+
+`817f5eb` confirms Stage and Unstage, Stage all, Fetch, Pull, Push and branch creation on the control that asked for them; `c757a0e` starts each panel's text at one left edge, checked by a layout grid.
+
+- **Automated:** `workspace::confirmation_tests` (six) and `layout_grid::` (ten), each failing with its fix removed; fast gate green at `817f5eb` and `c757a0e`.
+- **Host and capture:** as above; the `pr/work` fixture (six edited files, two staged, a local bare origin one commit ahead) floating 1,480 × 980 at 13 pt and tiled 461 × 490 at 18 pt in Midnight, frames about 0.2–0.7 s after each click; the 3,000-commit fixture floating at 13 and 18 pt with the palette open. Driver `run-pr.sh`, groups f and g.
+- **Builds:** base `04b6bc9` (sha256 `cec0501e…`), candidate `00f0add` (sha256 `1080743e…`), both clean releases.
+- **Results:** after Stage gamma.txt the row's control in Staged shows a check (14.3:1) in the bounds its "−" takes, and no window-wide notice pushes the page down 28 px as the base's "Staged gamma.txt · Dismiss" did; Unstage alpha.txt confirms the same way. Fetch reads "Fetched" in its own 68.5 px and the compact Fetch a check. The navigation's mode bar, rows and cursor row start on the pane's edge (a branch name 34 → 31.5 px at 13 pt, 37 → 38.5 at 18 pt; the cursor row now with the others), and at 18 pt the palette's rows start at the query's 28.5 px instead of 32–33.
+- **Review:** a read-only design reviewer verified the claims above and checked the frames for privacy. Found, queued: on Changes the following refresh replaces the outcome in the status line; Stage all's confirmation is on a heading scrolled out of view; after Fetch a full-width "1 new commit" bar still moves the page down 35 px (pre-existing); at 18 pt the navigation's mode buttons wrap. Not reached: Pull and Push (the step's tap matched "Pull requests"), the compact tooltip within its 1.5 s, the announcements.
+- **Evidence:** [`docs/evidence/git-feedback-in-place/`](evidence/git-feedback-in-place/), [`docs/evidence/layout-grid-one-left-edge/`](evidence/layout-grid-one-left-edge/).
+
+## October 28 evening a staged row travels to its new group
+
+`5bf154e` lets a single staged or unstaged row travel 150 ms (ease-out) from its old place to its new group, immediate under reduced motion.
+
+- **Automated:** `motion::tests` (three, each failing with its fix removed); fast gate green at `5bf154e`.
+- **Host and capture:** as above; `pr/work` floating 1,480 × 980 at 13 pt in Midnight; bursts of 24 window frames by `grim -t ppm`, about 50 ms apart, through a row's Stage and then Unstage (`gpu-screen-recorder` found no DRM device on this host). Driver `run-pr.sh`, group m.
+- **Builds:** base `04b6bc9` (sha256 `cec0501e…`), candidate `00f0add` (sha256 `1080743e…`), both clean releases.
+- **Results:** in the candidate every other row is at its final place in the first frame of the flight and the destination stays empty until the row lands; gamma's name is 57% along its 132 px path at one frame and 94% at the next, 55 ms apart, which fits a 149 ms ease-out, and lands at 411.5 with nothing moving after; Unstage alpha.txt runs the same way (43%, 85%, 96%, landed). The row keeps its x throughout, and the base re-sorts at once.
+- **Review:** a read-only design reviewer verified the claims above within what 50 ms sampling shows and checked the frames for privacy. Found, queued: for one frame before the flight the list is empty and a "Filtering working paths…" line pushes the header down 21 px with the composer reading "0 staged" (pre-existing: the filter clears its rows before its worker answers); two mid-flight frames 46 ms apart are identical and the candidate's idle capture cadence was slower than the base's (to measure); a still pointer ends over another row's control after the re-sort. Not shown: the flight's first frame, frame pacing, the clip, reduced motion.
+- **Evidence:** [`docs/evidence/working-row-travel/`](evidence/working-row-travel/).
+
+## October 28 evening the composer at the inspector's foot, file menus from the keyboard, and Actions on the copy row
+
+`2ac8310` ends the Working composer at the inspector's foot; `e52b9c9` opens a file list row's menu with Shift-F10 or the Menu key; `f07233b` keeps the selected commit's Actions on the copy row; `0a1d33e` leaves "Changed files" out rather than cut it.
+
+- **Automated:** the commits' tests, each failing with its fix removed; fast gate green at `0a1d33e`.
+- **Host and capture:** as above; tiles of 461 × 490 and 640 × 680 at 13 and 18 pt in Midnight and Braden on `compact`, and floating 1,000 × 680 and 1,480 × 800 at 13 and 18 pt in Midnight, with AT-SPI dumps and a menu dump after the Menu key. Driver `run-q2.sh`, groups t and f.
+- **Builds:** base `04b6bc9` (sha256 `cec0501e…`), candidate `00f0add` (sha256 `1080743e…`), both clean releases.
+- **Results:** the band under the commit action (6, 3.5, 14 and 11 px in the base) is 0 at every size and theme; the leftover now lies above the composer. The Menu key opens README.md's menu below its row, its items on the bus as menu items (at 18 pt in 461 px Unstage first, Ignore dimmed, Discard changes…), where the base opened nothing. At 18 pt in 1,480 × 800 Actions is a 39 px icon on the copy row and the metadata draws no scrollbar (its panel 133 px, was 181); in the 461 px half tile at 13 pt Copy message, Hash and Actions are 28 px icons on one row. At 18 pt in 461 px the inspector heading is the files icon and count, named "Changed files · 2", where the base read "Change…".
+- **Review:** a read-only design reviewer verified the claims above and checked the frames for privacy. Found, queued: at 13 pt in a 279 px inspector (1,000 × 680 and 640 × 680) labelled Actions wraps onto its own row and takes 31 px from the message, because the toolbar is sized from the saved inspector width rather than the drawn one (regression); at 18 pt in 1,000 × 680 the metadata still scrolls 13 px of padding; a keyboard-opened menu shows no highlighted item until Down; the Actions menu covers the status bar in 461 × 490; the disabled "Ignore applies to untracked files" reads as one phrase.
+- **Evidence:** [`docs/evidence/composer-row-menu-inspector/`](evidence/composer-row-menu-inspector/).
+
+## October 28 evening Open in default app in narrow windows: visible controls, folded menus, notes over the image
+
+`64d5d89` keeps Compare's open controls in view and their sides aligned (the image view's mode and zoom groups fold into menus, one-line notes below the image, a refusal drawn over the image, the PDF side headers on one row); `00f0add` says only "Nothing opened." when the portal cancels a request.
+
+- **Automated:** the commits' tests, each failing with its fix removed; fast gate at `00f0add` (red then only on the GitHub review tests since fixed by `17d61e4`).
+- **Host and capture:** as above; `sysprev` and `sysprev-mod` floating and tiled 461 × 490 at 13 and 18 pt, plus clicks in both. Drivers `run-sp2.sh`, `steps/sp2.sh`.
+- **Builds:** base `04b6bc9` (sha256 `cec0501e…`), candidate `00f0add` (sha256 `1080743e…`), both clean releases.
+- **Results:** at 461 × 490 the After control sits at y 297.5–325.5 (13 pt) and 263–302 (18 pt) inside the 440 and 421 clips, where the base drew it below them, and clicking it in the tile now opens imv; a modified PNG puts both icons on the names' line; "Side by side ▾" and "Fit ▾" replace the cut groups; the PDF headers share one height (base 10 and 14.5 px short). At 1,480 px a refusal (9.47:1) or "Nothing opened." (7.70:1) lies over the image's top while the captions and image stay put; the closed chooser now reads only "Nothing opened.".
+- **Review:** a read-only design reviewer verified the claims above and checked the frames for privacy. Found, queued: at 461 × 490 the refusal paints over the two notes below the 27 px image stage (new); at 640 × 680 the notes are cut to one line with room for two; the image stage is still 27 px at 13 pt and 0 at 18 pt in 461 × 490. Not checked natively: the menus' names, tooltips, focus on the new controls.
+- **Evidence:** [`docs/evidence/system-preview-narrow-controls/`](evidence/system-preview-narrow-controls/).
+
 ## October 28 afternoon the header, tab strip and narrow History after the 2026-10-28 integrations
 
 `7267af0` cuts a repository tab's name before its close button; `af7757e` starts the full header's trailing row at its left edge; `789fc0f` cuts the compact Changes count out of the fill beneath it; `0fdeffc` and `e7f51a0` keep undrawn controls and controls past a scroll viewport out of the accessibility tree; `7bb43ab` reads History's tags beside its page ([release record](benchmarks/2026-10-28-history-tags-beside-page.md)).
