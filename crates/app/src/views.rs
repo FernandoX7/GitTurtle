@@ -3673,9 +3673,11 @@ fn header_cell_width(
 
 /// Narrow History's subject floor: the cell the subject's column header
 /// needs for its whole title, "Commit message", so neither the title nor a
-/// row's subject is cut to nothing. About 113 px at the default size and
-/// 152 px at 18 pt with the embedded font; a row's text keeps the title's
-/// own width (`HistoryMetrics::text_floor`), about 93 and 128 px.
+/// row's subject is cut to nothing. It follows the interface font: a row's
+/// text keeps the title's own measured width (`HistoryMetrics::text_floor`),
+/// about 85.5 px at the default size and 117.5 px at 18 pt in IBM Plex Sans
+/// on Linux, and about 93 and 128 px, cells of about 113 and 152 px, in the
+/// unit tests' text system.
 pub(super) fn subject_floor(window: &Window) -> Pixels {
     header_cell_width(&SUBJECT_TITLE, ColumnId::Subject.label(), window)
 }
