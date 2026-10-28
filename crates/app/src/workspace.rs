@@ -51,42 +51,153 @@ struct WorkingFit {
 /// floor (`working_list_floor`), so the controls above the list give way
 /// first (`WorkingFit`).
 fn composer_minimum(short: bool, heading: bool, window: &Window) -> f32 {
-    let rem = window.rem_size();
-    let snap = |length: Pixels| window.pixel_snap(length);
-    let line = |size: Pixels| snap(window.text_style().line_height.to_pixels(size.into(), rem));
-    let padding = snap(rem * if short { 0.5 } else { 0.75 });
-    // The heading's line beside its 16 px icon and the staged count's badge.
-    let heading_row = if heading {
-        line(crate::appearance::ui_text(13.))
-            .max(px(16.))
-            .max(snap(rem * 0.125) * 2. + line(crate::appearance::ui_text(10.)))
-    } else {
-        // Without it the fields lead with the composer's own padding.
-        px(0.)
-    };
-    // A short composer's fields keep a scaled 4 px from the heading, between
-    // themselves and above the commit action; a taller one's lead with the
-    // branch line.
-    let gap = snap(if short {
-        crate::appearance::ui_size(4.)
-    } else {
-        rem * 0.5
-    });
-    let branch = if short {
-        px(0.)
-    } else {
-        line(crate::appearance::ui_text(11.)).max(px(13.)) + gap
-    };
-    let lead = if heading { gap } else { px(0.) };
-    let fields = lead + branch + line(crate::appearance::ui_text(11.)) + gap + snap(rem * 2.) + gap;
-    f32::from(
-        snap(px(1.))
-            + padding
-            + heading_row
-            + fields
-            + snap(crate::appearance::ui_size(36.))
-            + padding,
-    )
+    f32::from(ComposerMetrics::new(short, heading, window).minimum())
+}
+
+/// The heights the composer's rows take, snapped to device pixels as layout
+/// snaps them, from which its minimum (`composer_minimum`), its preferred
+/// height and its Description section's field (`description_field`) are
+/// predicted before layout.
+struct ComposerMetrics {
+    /// The composer's top border.
+    border: Pixels,
+    /// The padding above the heading row (or, without it, above the fields)
+    /// and below the commit action, which the fields also keep below them.
+    padding: Pixels,
+    /// Whether the pinned heading is drawn (`WorkingFit::heading`).
+    heading: bool,
+    /// The heading's line beside its 16 px icon and the staged count's
+    /// badge; nothing where the heading has left.
+    heading_row: Pixels,
+    /// The gap between the fields' rows, which also leads them below the
+    /// heading.
+    gap: Pixels,
+    /// A taller composer's branch line with the gap below it; nothing in a
+    /// short one.
+    branch: Pixels,
+    /// A label's line: "Title", "Description".
+    label: Pixels,
+    /// The title's one-line field.
+    field: Pixels,
+    /// The commit action.
+    action: Pixels,
+    /// A small line's height: the hint's and a guidance note's.
+    small: Pixels,
+    /// A line of the description at its 12 px, whole device pixels or a
+    /// little more, so a field of whole lines never cuts its last.
+    text: Pixels,
+}
+
+impl ComposerMetrics {
+    fn new(short: bool, heading: bool, window: &Window) -> Self {
+        let rem = window.rem_size();
+        let snap = |length: Pixels| window.pixel_snap(length);
+        let line = |size: Pixels| snap(window.text_style().line_height.to_pixels(size.into(), rem));
+        let heading_row = if heading {
+            line(crate::appearance::ui_text(13.))
+                .max(px(16.))
+                .max(snap(rem * 0.125) * 2. + line(crate::appearance::ui_text(10.)))
+        } else {
+            // Without it the fields lead with the composer's own padding.
+            px(0.)
+        };
+        // A short composer's fields keep a scaled 4 px from the heading,
+        // between themselves and above the commit action; a taller one's lead
+        // with the branch line.
+        let gap = snap(if short {
+            crate::appearance::ui_size(4.)
+        } else {
+            rem * 0.5
+        });
+        let branch = if short {
+            px(0.)
+        } else {
+            line(crate::appearance::ui_text(11.)).max(px(13.)) + gap
+        };
+        Self {
+            border: snap(px(1.)),
+            padding: snap(rem * if short { 0.5 } else { 0.75 }),
+            heading,
+            heading_row,
+            gap,
+            branch,
+            label: line(crate::appearance::ui_text(11.)),
+            field: snap(rem * 2.),
+            action: snap(crate::appearance::ui_size(36.)),
+            small: line(crate::appearance::ui_text(10.)),
+            text: {
+                let scale = window.scale_factor();
+                let text = window
+                    .text_style()
+                    .line_height
+                    .to_pixels(crate::appearance::ui_text(12.).into(), rem);
+                px((f32::from(text) * scale).ceil() / scale)
+            },
+        }
+    }
+
+    /// The composer's least height: its border, the heading row with the
+    /// padding above it, the title's label and one line of its field with
+    /// the gaps around them, and the commit action with the padding below.
+    fn minimum(&self) -> Pixels {
+        // Without the heading the composer's padding leads the fields.
+        let lead = if self.heading { self.gap } else { px(0.) };
+        let fields = lead + self.branch + self.label + self.gap + self.field + self.gap;
+        self.border + self.padding + self.heading_row + fields + self.action + self.padding
+    }
+
+    /// The scrolling fields' box in a composer `height` tall: what its
+    /// border, the pinned heading and the commit action leave.
+    fn fields_box(&self, height: Pixels) -> Pixels {
+        height - self.chrome()
+    }
+
+    /// The fields' rows through the title's field, with the padding that
+    /// leads them: the gap below the heading, or without it the composer's
+    /// padding.
+    fn title_rows(&self) -> Pixels {
+        let lead = if self.heading { self.gap } else { self.padding };
+        lead + self.branch + self.label + self.gap + self.field
+    }
+
+    /// What the composer takes beside its scrolling fields: its border, the
+    /// pinned heading and the commit action.
+    fn chrome(&self) -> Pixels {
+        let heading = if self.heading {
+            self.padding + self.heading_row
+        } else {
+            px(0.)
+        };
+        self.border + heading + self.action + self.padding
+    }
+
+    /// The description's least field: one line inside its 8 px above and
+    /// below.
+    fn description_least(&self) -> Pixels {
+        px(16.) + self.text
+    }
+
+    /// The description's field in a composer `height` tall whose fields'
+    /// other rows take `rows` (`GitTurtle::composer_rows`): `preferred`
+    /// where it fits, else the whole lines that fit, so its Description
+    /// section is whole. `None` where not even one line fits, so the section
+    /// leaves whole, out of the Tab order and the accessibility tree, rather
+    /// than show its label cut at the commit action or a field drawn past it.
+    fn description_field(
+        &self,
+        height: Pixels,
+        rows: Pixels,
+        preferred: f32,
+        window: &Window,
+    ) -> Option<f32> {
+        let room = self.fields_box(height) - rows;
+        if room >= px(preferred) {
+            return Some(preferred);
+        }
+        let lines = ((room - px(16.)) / self.text).floor();
+        let field = px(16.) + self.text * lines;
+        (lines >= 1.).then(|| f32::from(window.pixel_snap(field).min(room)))
+    }
 }
 
 /// How many of the file list's rows it keeps whole whatever else gives way:
@@ -157,6 +268,10 @@ pub(super) struct WorkingForms {
     /// beside "Title" has room; without it the word is in its tooltip and
     /// accessible name.
     counter_word: bool,
+    /// The description's label keeps "· optional" after "Description" where
+    /// they share the line; without it the field's accessible name keeps
+    /// the word ("Commit description, optional").
+    description_note: bool,
     /// The commit action reads "Commit" where its label does not fit beside
     /// its icon, with that label as its accessible name and leading its
     /// tooltip.
@@ -168,6 +283,15 @@ pub(super) struct WorkingForms {
 pub(super) const FILTER_PLACEHOLDER: &str = "Filter working paths…";
 pub(super) const TITLE_PLACEHOLDER: &str = "Summarize the change";
 pub(super) const DESCRIPTION_PLACEHOLDER: &str = "Explain why this change is needed…";
+
+/// The composer's texts below its title, whose wrapped lines the
+/// composer's rows count (`GitTurtle::composer_rows`).
+const LONG_TITLE_NOTE: &str = "A shorter title is easier to scan. This title is still valid.";
+const UNSTAGED_HINT: &str = "Stage files to include in your commit";
+const STAGED_HINT: &str = "Only staged changes will be committed";
+const DRAFT_SAVE_NOTE: &str =
+    "Draft could not be saved on this computer. Keep the app open and retry.";
+const CONFLICT_NOTE: &str = "Resolve conflicted files before committing.";
 
 thread_local! {
     static SELECTION_LABELS: crate::views::TextWidth = const { RefCell::new(None) };
@@ -196,6 +320,9 @@ thread_local! {
     static TITLE_NAME: RefCell<Option<(crate::views::LineKey, Pixels)>> =
         const { RefCell::new(None) };
     static TITLE_COUNTER: crate::views::TextWidth = const { RefCell::new(None) };
+    /// "Description" and "· optional".
+    static DESCRIPTION_LABEL: RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { RefCell::new(None) };
     static COMMIT_LABEL: crate::views::TextWidth = const { RefCell::new(None) };
     /// Each placeholder as it fits the width its field last painted at.
     static TITLE_FIT: PlaceholderFit = const { RefCell::new(None) };
@@ -464,6 +591,12 @@ impl GitTurtle {
             measure(&counter, ui_text(11.), regular)
         });
         let counter_word = title + gap + counter <= room;
+        // The description's label: "Description", `gap_1`, "· optional".
+        let description_note = cached_width(&DESCRIPTION_LABEL, &key, || {
+            measure("Description", ui_text(11.), FontWeight::MEDIUM)
+                + tight
+                + measure("· optional", ui_text(11.), regular)
+        }) <= room;
 
         // The commit action, as wide as the composer: the kit's Button at its
         // default size, `px_2p5` either side, its 16 px icon, `gap_2` and its
@@ -488,6 +621,7 @@ impl GitTurtle {
             heading_icon,
             heading_badge,
             counter_word,
+            description_note,
             compact_commit,
         }
     }
@@ -616,6 +750,55 @@ impl GitTurtle {
         }
     }
 
+    /// The height the composer's scrolling fields take, `width` wide, but for
+    /// the description's field: the title's rows and any note below them,
+    /// the Description section's label and hint with the gaps around its
+    /// field, the guidance after it, and the padding below, wrapped texts
+    /// laid out once per text, size and width (`wrapped_lines`).
+    fn composer_rows(
+        &self,
+        metrics: &ComposerMetrics,
+        width: Pixels,
+        identity_ready: bool,
+        status_ready: bool,
+        window: &Window,
+        cx: &App,
+    ) -> Pixels {
+        use crate::appearance::{ui_size, ui_text};
+        let rem = window.rem_size();
+        let gap = metrics.gap;
+        // Every row's `px_3`, the inspector's one leading inset.
+        let room = width - rem * 0.75 * 2.;
+        let lines =
+            |text: &str, size: Pixels, room: Pixels| wrapped_lines(text, size, room, window) as f32;
+        let mut rows = metrics.title_rows();
+        if self.commit_title.read(cx).value().chars().count() > 72 {
+            rows += gap + metrics.small * lines(LONG_TITLE_NOTE, ui_text(10.), room);
+        }
+        // The section: its label, the field and the hint, each a gap apart.
+        let hint = if self.working_paths.staged_count == 0 {
+            UNSTAGED_HINT
+        } else {
+            STAGED_HINT
+        };
+        rows += gap + metrics.label + gap + gap + metrics.small * lines(hint, ui_text(10.), room);
+        // The guidance after it, which the section leaves room for.
+        if self.draft_save_error.is_some() {
+            rows += gap
+                + metrics.small * lines(DRAFT_SAVE_NOTE, ui_text(10.), room)
+                + rem * 0.25
+                + ui_size(28.);
+        }
+        if !identity_ready && status_ready {
+            rows += gap + ui_size(28.);
+        }
+        if self.working_paths.conflicted {
+            let text = room - px(15.) - rem * 0.5;
+            rows += gap + px(15.).max(metrics.label * lines(CONFLICT_NOTE, ui_text(11.), text));
+        }
+        rows + metrics.padding
+    }
+
     /// The counts the Staged and Unstaged headings show, the first row and
     /// the first Unstaged one, found by bisection: the rows hold every Staged
     /// row before every Unstaged one.
@@ -733,7 +916,10 @@ fn commit_composer_height(available: f32, row_height: f32, preferred: f32) -> f3
     let list_reserve = (row_height * 3.5)
         .max(available * 0.30)
         .min(available * 0.50);
-    preferred.min(440.).min(available - list_reserve)
+    // The cap scales with the interface size, as the composer's rows do.
+    preferred
+        .min(f32::from(crate::appearance::ui_size(440.)))
+        .min(available - list_reserve)
 }
 
 impl GitTurtle {
@@ -1645,11 +1831,6 @@ impl GitTurtle {
             128.
         };
         let description_height = ((available - 440.) * 0.5 + 64.).clamp(64., normal_description);
-        let composer_height = commit_composer_height(
-            available,
-            self.settings.density.file_row_height(),
-            description_height + if short { 180. } else { 244. },
-        );
         let list_layout = layout.clone();
         let list_scroll = self.working_scroll.clone();
         let selected_row = self.working_rows.iter().position(
@@ -1714,7 +1895,25 @@ impl GitTurtle {
             window,
             cx,
         );
-        let minimum = composer_minimum(short, fit.heading, window);
+        let metrics = ComposerMetrics::new(short, fit.heading, window);
+        let minimum = f32::from(metrics.minimum());
+        // The fields' rows but the description's field, at the interface
+        // size: the composer prefers room for them whole with that field.
+        let rows = self.composer_rows(
+            &metrics,
+            fitted_width,
+            identity_ready,
+            status_ready,
+            window,
+            cx,
+        );
+        let description_height = description_height.max(f32::from(metrics.description_least()));
+        let composer_height = commit_composer_height(
+            available,
+            self.settings.density.file_row_height(),
+            (description_height + if short { 180. } else { 244. })
+                .max(f32::from(metrics.chrome() + rows) + description_height),
+        );
         // The list keeps its floor beside the composer's minimum.
         let composer_height = composer_height.min(available - floor).max(minimum);
         // Where its rows overflow it, the list is a whole number of rows tall,
@@ -1733,6 +1932,30 @@ impl GitTurtle {
             0.
         };
         let composer_height = composer_height + if composer { remainder } else { 0. };
+        // The Description section, whole or absent: where the composer is too
+        // short for it, it leaves rather than show its label cut at the
+        // commit action, and its field leaves the Tab order with it.
+        let description = composer
+            .then(|| {
+                metrics.description_field(px(composer_height), rows, description_height, window)
+            })
+            .flatten();
+        // A focused description that leaves hands its focus to the title, so
+        // focus never rests on a field that is not drawn.
+        if description.is_none()
+            && self
+                .commit_message
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        {
+            let title = self.commit_title.read(cx).focus_handle(cx);
+            window.defer(cx, move |window, cx| window.focus(&title, cx));
+        }
+        // A description the composer cannot show still goes into the commit,
+        // so the commit action says so.
+        let hidden_description =
+            description.is_none() && !self.commit_message.read(cx).value().trim().is_empty();
         let list = uniform_list(
             "working-files",
             self.working_rows.len(),
@@ -1968,7 +2191,7 @@ impl GitTurtle {
                             .text_size(crate::appearance::ui_text(10.)).font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(if staged > 0 { crate::appearance::labels(cx).added } else { crate::appearance::labels(cx).count }))
                             .child(format!("{staged} staged"))))))
-                    .child(div().id("commit-composer-fields").flex_1().min_h_0().overflow_y_scroll()
+                    .child(div().id("commit-composer-fields").debug_selector(|| "commit-composer-fields".into()).flex_1().min_h_0().overflow_y_scroll()
                     // The gap that followed the heading leads the fields;
                     // without the heading, the composer's own padding does.
                     .child(div().flex().flex_col().gap_2().px_3().pt_2().pb_3()
@@ -1995,20 +2218,23 @@ impl GitTurtle {
                         }))
                     .child(div().debug_selector(|| "commit-title".into()).child(Input::new(&self.commit_title).readonly(busy).aria_label("Commit title").text_size(crate::appearance::ui_text(12.))))
                     .when(summary_length > 72, |el| el.child(
-                        div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("A shorter title is easier to scan. This title is still valid."),
+                        div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child(LONG_TITLE_NOTE),
                     ))
-                    .child(div().flex().items_center().gap_1().text_size(crate::appearance::ui_text(11.))
-                        .child(div().font_weight(FontWeight::MEDIUM).child("Description"))
-                        .child(div().text_color(rgb(p.muted)).child("· optional")))
-                    .child(Textarea::new(&self.commit_message).readonly(busy)
-                        .aria_label("Commit description, optional")
-                        .h(px(description_height))
-                        .text_size(crate::appearance::ui_text(12.)))
-                    .child(div().flex().items_center().gap_2().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))
-                        .child(div().flex_1().child(if staged == 0 { "Stage files to include in your commit" } else { "Only staged changes will be committed" })))
+                    // Its label, field and hint, whole or not at all
+                    // (`ComposerMetrics::description_field`).
+                    .when_some(description, |el, field| el
+                        .child(div().debug_selector(|| "commit-description-label".into()).flex().items_center().gap_1().text_size(crate::appearance::ui_text(11.))
+                            .child(div().debug_selector(|| "commit-description-name".into()).font_weight(FontWeight::MEDIUM).child("Description"))
+                            .when(forms.description_note, |el| el.child(div().debug_selector(|| "commit-description-optional".into()).text_color(rgb(p.muted)).child("· optional"))))
+                        .child(div().debug_selector(|| "commit-description".into()).child(Textarea::new(&self.commit_message).readonly(busy)
+                            .aria_label("Commit description, optional")
+                            .h(px(field))
+                            .text_size(crate::appearance::ui_text(12.))))
+                        .child(div().debug_selector(|| "commit-description-hint".into()).flex().items_center().gap_2().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))
+                            .child(div().flex_1().child(if staged == 0 { UNSTAGED_HINT } else { STAGED_HINT }))))
                     .when_some(self.draft_save_error.as_ref(), |el, error| el.child(
                         div().flex().flex_col().gap_1().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.warning))
-                            .child("Draft could not be saved on this computer. Keep the app open and retry.")
+                            .child(DRAFT_SAVE_NOTE)
                             .child(button("retry-commit-draft", "Retry saving draft", "refresh", false)
                                 .tooltip(error.clone())
                                 .on_click(cx.listener(|this, _, window, cx| this.persist_commit_draft(window, cx)))),
@@ -2020,7 +2246,7 @@ impl GitTurtle {
                     .when(conflicted, |el| el.child(
                         div().flex().items_center().gap_2().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))
                             .child(icon("file-conflict", 15., p.warning))
-                            .child("Resolve conflicted files before committing."),
+                            .child(CONFLICT_NOTE),
                     ))))
                     .child(div().flex_shrink_0().px_3().pb_3().when(short, |el| el.pb_2()).child({
                         // Disabled, it rests on the composer's own `subtle`, so it
@@ -2030,15 +2256,19 @@ impl GitTurtle {
                             commit_disabled, p.subtle, None, cx)
                             .icon(Icon::default().path("icons/commit.svg").size(px(16.)));
                         let label = self.commit_action_label(cx);
+                        let detail = format!(
+                            "Commit staged changes to {branch}{}",
+                            if hidden_description { " · Includes the description, shown in a larger window" } else { "" }
+                        );
                         // Where its label does not fit, it reads "Commit" and
                         // keeps the label as its name and leading its tooltip.
                         if forms.compact_commit {
-                            let tooltip = format!("{label} · Commit staged changes to {branch}");
+                            let tooltip = format!("{label} · {detail}");
                             crate::views::compact_control_label(commit, "commit-staged", label)
                                 .label("Commit")
                                 .tooltip(tooltip)
                         } else {
-                            commit.label(label).tooltip(format!("Commit staged changes to {branch}"))
+                            commit.label(label).tooltip(detail)
                         }
                         .disabled(commit_disabled)
                         .on_click(cx.listener(|this, _, window, cx| {

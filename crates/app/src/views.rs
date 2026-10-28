@@ -7079,19 +7079,26 @@ pub(crate) mod tests {
     }
 
     /// The composer's title line, fields and commit action stay inside its
-    /// column in a 461 × 490 window at the default size and at 18 pt and in a
-    /// 1480 × 980 one. At 18 pt in the 156 px inspector the title counter
-    /// reads "0/72", named "0/72 suggested"; each placeholder ends with an
-    /// ellipsis at a character boundary inside its field; and the commit
-    /// action reads "Commit", named with its whole label, such as "Write a
-    /// commit title". Wherever they fit, the counter, the title's placeholder
-    /// and the label stay whole.
+    /// column in a 461 × 490 window at the default size and at 18 pt, in a
+    /// 461 × 1400 one at 18 pt and in a 1480 × 980 one. At 18 pt in the 156 px
+    /// inspector the title counter reads "0/72", named "0/72 suggested";
+    /// each placeholder ends with an ellipsis at a character boundary inside
+    /// its field (the description's where the composer draws it); and the
+    /// commit action reads "Commit", named with its whole label, such as
+    /// "Write a commit title". Wherever they fit, the counter, the title's
+    /// placeholder and the label stay whole.
     #[gpui::test]
     async fn narrow_composer_keeps_its_texts_inside_the_column(cx: &mut TestAppContext) {
         use crate::workspace::{DESCRIPTION_PLACEHOLDER, TITLE_PLACEHOLDER};
         let (_fixture, app, cx) = working_window(cx).await;
         cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
-        for (text, width, height) in [(13, 461., 490.), (18, 461., 490.), (13, 1480., 980.)] {
+        let sizes = [
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (18, 461., 1400.),
+            (13, 1480., 980.),
+        ];
+        for (text, width, height) in sizes {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
@@ -7193,7 +7200,12 @@ pub(crate) mod tests {
                     ),
                 ]
             });
+            let description = cx.debug_bounds("commit-description").is_some();
+            assert_eq!(description, height > 490., "{at}: the description");
             for (whole, field, shown) in placeholders {
+                if whole == DESCRIPTION_PLACEHOLDER && !description {
+                    continue;
+                }
                 let field = field.unwrap_or_else(|| panic!("{at}: {whole:?} unpainted"));
                 assert!(
                     width_of(cx, &shown, appearance::ui_text(12.)) <= field.size.width,
@@ -7422,6 +7434,194 @@ pub(crate) mod tests {
                 assert!(heading.is_none(), "{text} pt: heading {heading:?}");
             }
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The composer's Description section (its label, field and hint) is
+    /// drawn whole inside the scrolling fields, above the commit action, or
+    /// not at all, with and without a Git identity (whose absence adds the
+    /// "Set your commit identity" guidance below it). In a 461 × 490 window
+    /// the composer is too short for it, so no part of "Description ·
+    /// optional" shows below the title, and Tab from the title passes no
+    /// undrawn field; in a 640 × 680 window with an identity it keeps a
+    /// one-line field; in a 1480 × 980 window it shows at the default size
+    /// and at 18 pt, and in a 461 × 1400 one at 18 pt, where its label drops
+    /// "· optional". Every text and field the composer draws lies inside its
+    /// fields' box and the window, at the default size and at 18 pt, in
+    /// 461 × 490, 640 × 680, 461 × 980, 461 × 1400 and 1480 × 980 windows,
+    /// and its label keeps one line. A focused description that leaves hands
+    /// focus to the title.
+    #[gpui::test]
+    async fn composer_description_is_whole_or_absent(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        const SECTION: [&str; 3] = [
+            "commit-description-label",
+            "commit-description",
+            "commit-description-hint",
+        ];
+        // Each size, and whether the section shows there without and with
+        // an identity (`None` where either is whole).
+        let sizes = [
+            (13, 461., 490., Some((false, false))),
+            (18, 461., 490., Some((false, false))),
+            (13, 640., 680., Some((false, true))),
+            (18, 640., 680., None),
+            (18, 461., 980., None),
+            (18, 461., 1400., Some((true, true))),
+            (13, 1480., 980., Some((true, true))),
+            (18, 1480., 980., Some((true, true))),
+        ];
+        for identity in [false, true] {
+            if identity {
+                // The repository's own identity, which the app reads back.
+                let root = fixture.path().join("narrow");
+                fixture_git(&root, &["config", "user.name", "Ada"]);
+                fixture_git(&root, &["config", "user.email", "ada@example.com"]);
+                cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+                settle(&app, cx).await;
+            }
+            assert_eq!(
+                app.read_with(cx, |app, _| app
+                    .profile
+                    .as_ref()
+                    .is_some_and(|p| p.name == "Ada" && p.email == "ada@example.com")),
+                identity,
+                "the fixture's identity"
+            );
+            for (text, width, height, expected) in sizes {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let at = format!("{text} pt at {width} × {height}, identity {identity}");
+                // A new size and text size can take a few measured passes:
+                // read the layout once it holds still.
+                let geometry = |cx: &mut VisualTestContext| {
+                    ["commit-composer", "commit-composer-fields", SECTION[1]]
+                        .map(|selector| cx.debug_bounds(selector))
+                };
+                for _ in 0..4 {
+                    let before = geometry(cx);
+                    draw(cx);
+                    if geometry(cx) == before {
+                        break;
+                    }
+                }
+                let composer = cx.debug_bounds("commit-composer").unwrap();
+                let fields = cx.debug_bounds("commit-composer-fields").unwrap();
+                let commit = cx.debug_bounds("commit-staged").unwrap();
+                assert!(
+                    composer.bottom() <= px(height) && commit.bottom() <= composer.bottom(),
+                    "{at}: {commit:?} in {composer:?}"
+                );
+                // The whole section, or none of it.
+                let section = SECTION.map(|selector| cx.debug_bounds(selector));
+                let shown = section[0].is_some();
+                assert!(
+                    section.iter().all(|part| part.is_some() == shown),
+                    "{at}: {section:?}"
+                );
+                if let Some((without, with)) = expected {
+                    assert_eq!(shown, if identity { with } else { without }, "{at}");
+                }
+                // Every text and field inside the scrolling fields is whole
+                // in their box, which ends above the commit action.
+                let slack = px(0.5);
+                for selector in ["commit-title-label", "commit-title"]
+                    .into_iter()
+                    .chain(SECTION)
+                {
+                    let Some(part) = cx.debug_bounds(selector) else {
+                        continue;
+                    };
+                    assert!(
+                        part.top() + slack >= fields.top()
+                            && part.bottom() <= fields.bottom() + slack
+                            && part.bottom() <= commit.top(),
+                        "{at}: {selector} {part:?} outside {fields:?}, above {commit:?}"
+                    );
+                    assert!(
+                        part.left() >= composer.left() && part.right() <= composer.right() + slack,
+                        "{at}: {selector} {part:?} beside {composer:?}"
+                    );
+                }
+                // The label keeps one line.
+                if let Some(label) = section[0] {
+                    let line = cx.update(|window, _| {
+                        window.pixel_snap(
+                            window
+                                .text_style()
+                                .line_height
+                                .to_pixels(appearance::ui_text(11.).into(), window.rem_size()),
+                        )
+                    });
+                    assert!(
+                        label.size.height <= line + slack,
+                        "{at}: the label {label:?} keeps one line of {line:?}"
+                    );
+                    // "Description" and, where it fits, "· optional", each
+                    // drawn whole inside the label's line.
+                    let parts = [
+                        ("commit-description-name", "Description", FontWeight::MEDIUM),
+                        (
+                            "commit-description-optional",
+                            "· optional",
+                            FontWeight::NORMAL,
+                        ),
+                    ];
+                    for (selector, text, weight) in parts {
+                        let Some(part) = cx.debug_bounds(selector) else {
+                            assert!(width < 1000., "{at}: {selector}");
+                            continue;
+                        };
+                        let whole = cx.update(|window, _| {
+                            shaped_width(text, appearance::ui_text(11.), weight, window)
+                        });
+                        assert!(
+                            part.size.width + slack >= whole
+                                && part.right() <= label.right() + slack
+                                && part.size.height <= line + slack,
+                            "{at}: {text:?} ({whole:?}) in {part:?}, the label {label:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Tab from the title in the short window passes no undrawn field.
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let (title, description) = app.read_with(cx, |app, cx| {
+            (
+                app.commit_title.read(cx).focus_handle(cx),
+                app.commit_message.read(cx).focus_handle(cx),
+            )
+        });
+        cx.update(|window, cx| window.focus(&title, cx));
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(
+            !cx.update(|window, _| description.is_focused(window)),
+            "Tab from the title reaches the undrawn description"
+        );
+
+        // A focused description that leaves gives its focus to the title.
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        assert!(cx.debug_bounds("commit-description").is_some());
+        cx.update(|window, cx| window.focus(&description, cx));
+        cx.simulate_input("Why this change");
+        draw(cx);
+        assert!(cx.update(|window, _| description.is_focused(window)));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert!(cx.debug_bounds("commit-description").is_none());
+        assert!(
+            cx.update(|window, _| title.is_focused(window)),
+            "the title takes the leaving description's focus"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
