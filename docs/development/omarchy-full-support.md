@@ -351,6 +351,30 @@ cover current upstream x86-64 Omarchy.
           floor figures in DESIGN.md are macOS's; the review Changes list's 13th row is 35 of 40 px;
           the hint's baseline sits 4.5 px above the page buttons'; Changes and Source use different
           insets; the pill tooltip is still to capture.
+        Found by the native reviews of 2026-10-28 (frames `.local/item8-2026-10-27/tools/qa/{mn,wi2,hd,gr,nh3}-{0aca11e,48660d6}/`; [validation entries](../validation.md#october-28-menus-headings-at-11-px-the-original-diff-caption-as-state-1-match-and-menus-inside-a-narrow-window)):
+        - Working inspector: the filter's accessible name follows its fitted placeholder; the short
+          composer's leftover height lands between the title field and the commit action (20, 18
+          and 33 px against a scaled 4 px); the labelled Actions trigger is 39 px tall in AT-SPI
+          against the 28 px helper; the title placeholder reads "Summarize t…"; DESIGN.md's status
+          tile sentence predates the bare glyph; narrow Compare at 18 pt cuts its path to "READ…".
+        - Header: the History inspector's filter placeholder is cut mid-word at 18 pt; the wrapped
+          13 pt header's second row starts with an empty slot in History; about 65 logical px of
+          dead space after Back in the full header; the badge ring in the header's surface reads as
+          a halo on the toggle group's fill (1.05:1, 1.13:1); taste: Blame's glyph can read as a
+          list.
+        - GitHub panel: Changes' code starts 10 logical px left of Source's; "100 files per page ·
+          GitHub limit 3,000" starts off the panel's edge; in Files the path header and hint start
+          at the box edge while the mode labels start inside; taste: Changes rows 20 against
+          Source's 18 logical px, "Draft saved locally" ends off the right edge, unselected PR rows
+          have no resting surface.
+        - Narrow History: DESIGN.md says a 461 px window shows one lane where Linux draws two; at
+          18 pt the graph drops a third lane the base drew whole; rows report AT-SPI bounds past the
+          window; still owed: the pill hovered by itself, the compact pill's tag glyph and the root
+          row's tooltip, the narrowing for `7f5c7b1`.
+        - Menus: label and separator roles on the bus (the capture tool records items only), the
+          807.75 px caption move, History search's "1 match", Quick Open's count on AT-SPI (Orca).
+        - System preview: the image control's accessible name omits the type ("Open After in
+          default app") where PDF and text name it ("…as a PDF document in the default app").
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
