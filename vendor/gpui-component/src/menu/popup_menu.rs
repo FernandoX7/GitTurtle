@@ -43,6 +43,9 @@ pub enum PopupMenuItem {
         /// GitTurtle patch: whether the item toggles a state, so it is
         /// announced as a check menu item, ticked or not.
         checkable: bool,
+        /// GitTurtle patch: the name assistive technology reads, when it
+        /// should say more than the label shows.
+        accessibility_label: Option<SharedString>,
         is_link: bool,
         action: Option<Box<dyn Action>>,
         // For link item
@@ -55,6 +58,9 @@ pub enum PopupMenuItem {
         checked: bool,
         /// GitTurtle patch: as for [`PopupMenuItem::Item`].
         checkable: bool,
+        /// GitTurtle patch: the name assistive technology reads; an element
+        /// item has no label of its own.
+        accessibility_label: Option<SharedString>,
         action: Option<Box<dyn Action>>,
         render: Box<dyn Fn(&mut Window, &mut App) -> AnyElement + 'static>,
         handler: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
@@ -66,6 +72,8 @@ pub enum PopupMenuItem {
         icon: Option<Icon>,
         label: SharedString,
         disabled: bool,
+        /// GitTurtle patch: as for [`PopupMenuItem::Item`].
+        accessibility_label: Option<SharedString>,
         menu: Entity<PopupMenu>,
     },
 }
@@ -81,6 +89,7 @@ impl PopupMenuItem {
             disabled: false,
             checked: false,
             checkable: false,
+            accessibility_label: None,
             action: None,
             is_link: false,
             handler: None,
@@ -99,6 +108,7 @@ impl PopupMenuItem {
             disabled: false,
             checked: false,
             checkable: false,
+            accessibility_label: None,
             action: None,
             render: Box::new(move |window, cx| builder(window, cx).into_any_element()),
             handler: None,
@@ -112,6 +122,7 @@ impl PopupMenuItem {
             icon: None,
             label: label.into(),
             disabled: false,
+            accessibility_label: None,
             menu,
         }
     }
@@ -208,6 +219,31 @@ impl PopupMenuItem {
         self
     }
 
+    /// GitTurtle patch: set the name assistive technology reads for the item
+    /// when it should say more than the label shows, as an icon button's
+    /// accessible name does: "More context, 3 lines shown" for an item that
+    /// shows "More context (3 lines)". The label stays what is drawn.
+    ///
+    /// Only works for [`PopupMenuItem::Item`], [`PopupMenuItem::ElementItem`] and [`PopupMenuItem::Submenu`].
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        match &mut self {
+            PopupMenuItem::Item {
+                accessibility_label,
+                ..
+            }
+            | PopupMenuItem::ElementItem {
+                accessibility_label,
+                ..
+            }
+            | PopupMenuItem::Submenu {
+                accessibility_label,
+                ..
+            } => *accessibility_label = Some(label.into()),
+            _ => {}
+        }
+        self
+    }
+
     /// Add a click handler for the menu item.
     ///
     /// Only works for [`PopupMenuItem::Item`] and [`PopupMenuItem::ElementItem`].
@@ -237,6 +273,7 @@ impl PopupMenuItem {
             disabled: false,
             checked: false,
             checkable: false,
+            accessibility_label: None,
             action: None,
             is_link: true,
             handler: Some(Rc::new(move |_, _, cx| cx.open_url(&href))),
@@ -303,10 +340,22 @@ impl PopupMenuItem {
 
     fn a11y_label(&self) -> Option<SharedString> {
         match self {
-            PopupMenuItem::Item { label, .. }
-            | PopupMenuItem::Label(label)
-            | PopupMenuItem::Submenu { label, .. } => Some(label.clone()),
-            PopupMenuItem::Separator | PopupMenuItem::ElementItem { .. } => None,
+            PopupMenuItem::Item {
+                label,
+                accessibility_label,
+                ..
+            }
+            | PopupMenuItem::Submenu {
+                label,
+                accessibility_label,
+                ..
+            } => Some(accessibility_label.as_ref().unwrap_or(label).clone()),
+            PopupMenuItem::ElementItem {
+                accessibility_label,
+                ..
+            } => accessibility_label.clone(),
+            PopupMenuItem::Label(label) => Some(label.clone()),
+            PopupMenuItem::Separator => None,
         }
     }
 }
@@ -1379,6 +1428,7 @@ impl PopupMenu {
                 label,
                 menu,
                 disabled,
+                ..
             } => this
                 .selected(selected)
                 .disabled(*disabled)
@@ -1562,5 +1612,11 @@ mod tests {
         );
         assert_eq!(PopupMenuItem::separator().a11y_label(), None);
         assert_eq!(PopupMenuItem::element(|_, _| div()).a11y_label(), None);
+        assert_eq!(
+            PopupMenuItem::new("More context (3 lines)")
+                .accessibility_label("More context, 3 lines shown")
+                .a11y_label(),
+            Some("More context, 3 lines shown".into())
+        );
     }
 }

@@ -507,6 +507,7 @@ impl GitTurtle {
                         let owner = owner.clone();
                         menu.item(
                             PopupMenuItem::new(item.label)
+                                .when_some(item.name, PopupMenuItem::accessibility_label)
                                 .when_some(item.checked, PopupMenuItem::checked)
                                 .disabled(item.disabled)
                                 .on_click(move |_, window, cx| {
@@ -569,6 +570,9 @@ impl GitTurtle {
 /// One item of the collapsed review options' menu.
 struct MenuItem {
     label: String,
+    /// The accessible name, where it says more than the label: the full
+    /// row's button's name.
+    name: Option<String>,
     /// `Some` for an item that toggles, announced as a check menu item.
     checked: Option<bool>,
     disabled: bool,
@@ -591,6 +595,12 @@ fn context_label(context: usize) -> String {
     format!("More context ({context} lines)")
 }
 
+/// The context control's accessible name, its label in words, for the full
+/// row's button and the Options menu's item alike.
+fn context_name(context: usize) -> String {
+    format!("More context, {context} lines shown")
+}
+
 /// The full row's context button. Its accessible name says what it does and
 /// the context shown now, and its tooltip the step it takes.
 pub(crate) fn context_button(options: Options, busy: bool) -> Button {
@@ -601,7 +611,7 @@ pub(crate) fn context_button(options: Options, busy: bool) -> Button {
         .small()
         .ghost()
         .label(context_label(context))
-        .accessibility_label(format!("More context, {context} lines shown"))
+        .accessibility_label(context_name(context))
         .disabled(busy || next.is_none())
         .tooltip(match next {
             Some(next) => format!(
@@ -617,12 +627,14 @@ pub(crate) fn context_button(options: Options, busy: bool) -> Button {
 }
 
 /// The Options menu, as the full row's Hide whitespace, More context and
-/// Reset review buttons: whitespace a checked item, context showing its value
-/// and disabled at its last step, reset disabled as its button is.
+/// Reset review buttons: whitespace a checked item, context showing its value,
+/// named as its button is and disabled at its last step, reset disabled as its
+/// button is.
 fn options_menu(options: Options, busy: bool, reset_disabled: bool) -> [MenuItem; 3] {
     [
         MenuItem {
             label: "Hide whitespace".into(),
+            name: None,
             checked: Some(options.hide_whitespace),
             disabled: busy,
             choose: |options| {
@@ -634,12 +646,14 @@ fn options_menu(options: Options, busy: bool, reset_disabled: bool) -> [MenuItem
         },
         MenuItem {
             label: context_label(options.context),
+            name: Some(context_name(options.context)),
             checked: None,
             disabled: busy || more_context(options).is_none(),
             choose: more_context,
         },
         MenuItem {
             label: "Reset review".into(),
+            name: None,
             checked: None,
             disabled: reset_disabled,
             choose: |_| Some(Options::default()),
@@ -742,15 +756,21 @@ mod tests {
     /// chooses what that button would.
     #[test]
     fn collapsed_options_menu_keeps_each_buttons_state() {
-        let states =
-            |menu: [MenuItem; 3]| menu.map(|item| (item.label, item.checked, item.disabled));
+        let states = |menu: [MenuItem; 3]| {
+            menu.map(|item| (item.label, item.name, item.checked, item.disabled))
+        };
         let original = Options::default();
         assert_eq!(
             states(options_menu(original, false, true)),
             [
-                ("Hide whitespace".into(), Some(false), false),
-                ("More context (3 lines)".into(), None, false),
-                ("Reset review".into(), None, true),
+                ("Hide whitespace".into(), None, Some(false), false),
+                (
+                    "More context (3 lines)".into(),
+                    Some("More context, 3 lines shown".into()),
+                    None,
+                    false
+                ),
+                ("Reset review".into(), None, None, true),
             ]
         );
         let hidden = Options {
@@ -774,8 +794,16 @@ mod tests {
         };
         let [_, context, _] = options_menu(widest, false, false);
         assert_eq!(
-            (context.label.as_str(), context.disabled),
-            ("More context (192 lines)", true)
+            (
+                context.label.as_str(),
+                context.name.as_deref(),
+                context.disabled
+            ),
+            (
+                "More context (192 lines)",
+                Some("More context, 192 lines shown"),
+                true
+            )
         );
         assert_eq!((context.choose)(widest), None);
         assert!(

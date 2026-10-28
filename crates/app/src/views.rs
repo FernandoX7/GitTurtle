@@ -6348,7 +6348,7 @@ mod tests {
             };
             for item in [
                 format!("menu-item: Hide whitespace · MenuItemCheckBox {shown}"),
-                "menu-item: More context (3 lines) · MenuItem".into(),
+                "menu-item: More context, 3 lines shown · MenuItem".into(),
                 // Nothing to reset until an option changes.
                 reset(!checked),
             ] {
@@ -6356,7 +6356,7 @@ mod tests {
             }
             for item in [
                 format!("menu-item: Hide whitespace · MenuItemCheckBox {other}"),
-                "menu-item: More context (3 lines) · MenuItem disabled".into(),
+                "menu-item: More context, 3 lines shown · MenuItem disabled".into(),
                 reset(checked),
             ] {
                 assert!(cx.debug_bounds(item.clone().leak()).is_none(), "not {item}");
@@ -6457,7 +6457,8 @@ mod tests {
         }
         assert_eq!(app.read_with(cx, |app, _| app.review.options.context), 192);
 
-        // The narrow row's Options menu names the item as the button.
+        // The narrow row's Options menu names the item as the button does,
+        // in words, while it shows the button's label.
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
                 app.set_text_review(Options::default(), window, cx)
@@ -6472,8 +6473,14 @@ mod tests {
         cx.simulate_click(menu.center(), Modifiers::default());
         draw(cx);
         assert!(
+            cx.debug_bounds("menu-item: More context, 3 lines shown · MenuItem")
+                .is_some(),
+            "the item takes the button's accessible name"
+        );
+        assert!(
             cx.debug_bounds("menu-item: More context (3 lines) · MenuItem")
-                .is_some()
+                .is_none(),
+            "not its visible label"
         );
     }
 

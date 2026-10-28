@@ -633,3 +633,20 @@ and reads the trigger filling the row with one margin before the sibling;
 caption's text one gap after Options, its margin applied once. Remove this
 part of the patch when upstream applies a dropdown trigger's placement to the
 box it lays the trigger out in, and those tests pass without it.
+
+The menu-item accessible-name patch modifies `src/menu/popup_menu.rs`.
+Upstream names an item's AccessKit node with its visible label and gives an
+element item no name, so an item could not be announced with more than it
+shows, as an icon Button can through its accessibility label.
+`PopupMenuItem::accessibility_label` sets that name on an item, element item or
+submenu; the drawn label is unchanged, and an item without one keeps
+upstream's name. The consumer is the narrow review Options menu, whose "More
+context (3 lines)" is announced "More context, 3 lines shown", the full row's
+button's name (`crates/app/src/text_review.rs`).
+`cargo test --locked -p gitturtle context_control_says_what_it_does_and_how_much`
+opens the narrow Options menu and reads the item's node named as the button,
+not by its label, and
+`text_review::tests::collapsed_options_menu_keeps_each_buttons_state` pins
+each item's label and name. Remove this part of the patch when upstream menu
+items take an accessible name apart from their label and those tests pass
+without it.
