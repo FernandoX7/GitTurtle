@@ -261,6 +261,14 @@ cover current upstream x86-64 Omarchy.
         read-only copy of the captured bytes in the desktop's default application (the
         OpenURI portal or `xdg-open`), after an independent security review of the candidate
         under [security review](security-review.md) and before integration.
+        Found while implementing the late-night items (open): other lists still lose their ring
+        on pointer movement through GPUI's `focus_visible` (rewrite review, discard and removal
+        reviews, the GitHub panes, the model view; the focus sweep covers them); disabled
+        primaries and selected default actions in dialogs sit on `canvas` at 1.03–1.05:1 with no
+        edge in Rosé Pine, Graphite, Midnight, Braden and Ember; narrow History's tooltip covers
+        the whole row (the pill alone would interrupt less), wide rows' accessible names omit
+        their references, the selected lane is not scrolled into view after the window
+        narrows, and History's rows draw 1 px right of its header; History shows no tags.
         Owner decision, same evening: committed frames from before the interface-font change
         `ad04939` stand as records of their builds and are not retaken for later changes.
         Backlog, outside this plan (queue with the `queue-intake` skill): on a Mac, check
