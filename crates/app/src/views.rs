@@ -112,17 +112,22 @@ impl GitTurtle {
         .inset_0()
     }
 
-    /// The page's one return action: Projects at root History, labelled
-    /// where `labelled`, otherwise a Back arrow naming its destination.
+    /// The page's one return action: Projects at root History, otherwise a
+    /// Back arrow naming its destination in its accessible name and tooltip.
+    /// `labelled`, in the full header's slot, it reads "Projects" or "Back"
+    /// and fills the slot, the labelled Projects' width, with its icon and
+    /// label at the slot's leading edge, so Back's hit area, hover and
+    /// pressed fill and focus ring span the whole slot rather than leave
+    /// empty room before the turtle.
     fn render_back_button(&self, labelled: bool, cx: &mut Context<Self>) -> Button {
         let back_label = self.back_label();
         let back_to_projects = back_label == "Back to Projects";
         button(
             "page-back",
-            if back_to_projects && labelled {
-                "Projects"
-            } else {
-                ""
+            match (labelled, back_to_projects) {
+                (false, _) => "",
+                (true, true) => "Projects",
+                (true, false) => "Back",
             },
             if back_to_projects {
                 "folder"
@@ -135,6 +140,12 @@ impl GitTurtle {
         .accessibility_label(back_label)
         .disabled(self.operation_busy.is_some() && self.mode == WorkspaceMode::History)
         .tooltip(format!("{back_label} · {}[", primary_label()))
+        .when(labelled, |back| back.w_full())
+        // The kit centres a Button's content: the shorter "Back" keeps the
+        // leading edge "Projects" takes, and the rest of the slot trails it.
+        .when(labelled && !back_to_projects, |back| {
+            back.child(div().debug_selector(|| "page-back-room".into()).flex_1())
+        })
         .on_click(cx.listener(|this, _, window, cx| this.navigate_back(window, cx)))
     }
 
@@ -393,11 +404,11 @@ impl GitTurtle {
     /// The repository header in `chrome`'s form. The full form's `narrow`
     /// drops the Projects and profile labels, keeping their icons, tooltips
     /// and accessible names. Its return action takes one slot in every
-    /// mode, as wide as the labelled Projects where that shows, so the Back
-    /// arrow outside History's root leaves the turtle, the name and the
-    /// toggles after it in place. Where the trailing controls take a row of
-    /// their own ([`Trailing::OwnRow`]) the profile and Settings lead it in
-    /// every mode and Projects follows them.
+    /// mode, as wide as the labelled Projects where that shows and filled by
+    /// the labelled Back outside History's root, so Back leaves the turtle,
+    /// the name and the toggles after it in place. Where the trailing
+    /// controls take a row of their own ([`Trailing::OwnRow`]) the profile
+    /// and Settings lead it in every mode and Projects follows them.
     pub(super) fn render_header(
         &self,
         chrome: Chrome,
@@ -6456,6 +6467,114 @@ pub(crate) mod tests {
                 "an own row with the spacer {}: {checked:?}",
                 if spacer { "above" } else { "left out" }
             );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Outside History's root the full header's return action, Back, fills
+    /// the slot the labelled Projects takes at History's root: its bounds,
+    /// and with them its hit area, hover and pressed fill and focus ring,
+    /// are that slot's, so no empty room before the turtle reads as a
+    /// missing control, and the name and the toggles keep their place.
+    /// Hovered at the slot's trailing end it shows its hover fill, and a
+    /// click there goes back. In Changes and Compare, in 1000 × 680 and
+    /// 1480 × 800 windows, at the default size and 18 pt, where the 1000 px
+    /// window takes the narrow form and its 28 px icon slot.
+    #[gpui::test]
+    async fn full_header_back_fills_its_slot(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        let hover = cx.update(|_, cx| {
+            let p = palette(cx);
+            gpui_kit::Background::from(gpui_kit::Hsla::from(p.control_fill(p.hover)))
+        });
+        let placed = |cx: &mut VisualTestContext| {
+            [
+                "page-back",
+                "repository-heading",
+                "history-tab",
+                "changes-tab",
+            ]
+            .map(|selector| cx.debug_bounds(selector).expect(selector))
+        };
+        for (text, width, height) in [
+            (13, 1000., 680.),
+            (13, 1480., 800.),
+            (18, 1000., 680.),
+            (18, 1480., 800.),
+        ] {
+            let at = format!("{text} pt at {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+            settle(&app, cx).await;
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            // At 18 pt the 1000 px window takes the narrow form, whose slot
+            // is the 28 px icon control in every mode.
+            assert_eq!(
+                predicted_chrome(&app, cx).1,
+                Chrome::Full {
+                    narrow: text == 18 && width < 1100.
+                },
+                "{at}"
+            );
+            let root = placed(cx);
+            for (name, mode) in [
+                ("Changes", WorkspaceMode::Working),
+                ("Compare", WorkspaceMode::Compare),
+            ] {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| match mode {
+                        WorkspaceMode::Working => app.show_working(window, cx),
+                        _ => app.select_file(0, window, cx),
+                    })
+                });
+                settle(&app, cx).await;
+                assert!(app.read_with(cx, |app, _| app.mode == mode), "{name}, {at}");
+                assert_eq!(
+                    placed(cx),
+                    root,
+                    "{name}, {at}: Back fills the slot, and the name and toggles stay"
+                );
+                let back = root[0];
+                // The labelled Back's arrow and label keep the leading edge
+                // Projects' folder and label take: the slot's spare room
+                // trails them, up to the Button's inset.
+                let room = cx.debug_bounds("page-back-room");
+                if back.size.width > appearance::ui_size(28.) + px(0.5) {
+                    let room = room.unwrap_or_else(|| panic!("{name}, {at}: no trailing room"));
+                    assert!(
+                        room.size.width > px(0.)
+                            && (room.right() - (back.right() - appearance::ui_size(10.))).abs()
+                                < px(0.5),
+                        "{name}, {at}: the room {room:?} trails Back's content in {back:?}"
+                    );
+                } else {
+                    assert_eq!(room, None, "{name}, {at}: the narrow form's icon");
+                }
+                // The slot's trailing end, past the arrow and its label.
+                let end = point(back.right() - px(4.), back.center().y);
+                cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+                draw(cx);
+                assert_eq!(
+                    painted_fills(cx, "page-back"),
+                    vec![],
+                    "{name}, {at}: at rest"
+                );
+                cx.simulate_mouse_move(end, None, Modifiers::default());
+                draw(cx);
+                assert_eq!(
+                    painted_fills(cx, "page-back"),
+                    vec![hover],
+                    "{name}, {at}: hovered at the slot's end"
+                );
+                cx.simulate_click(end, Modifiers::default());
+                settle(&app, cx).await;
+                assert!(
+                    app.read_with(cx, |app, _| app.mode == WorkspaceMode::History),
+                    "{name}, {at}: a click at the slot's end goes back"
+                );
+            }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
