@@ -3,7 +3,7 @@
 //! Fetch, Pull and Push, Create and Switch on themselves, and a switch from
 //! the branch picker's menu on the picker. A quiet refresh, a write with no
 //! control and a failure confirm nothing.
-use super::confirmations;
+use super::{WorkingRow, confirmations};
 use crate::copy_feedback::{
     RESTORE_AFTER,
     tests::{announced, click, wait},
@@ -74,11 +74,28 @@ async fn working(
     &mut VisualTestContext,
     Option<std::path::PathBuf>,
 ) {
+    working_with(cx, 0).await
+}
+
+/// [`working`]'s fixture with `extra` more new files, `f00.txt` onwards,
+/// which git lists before `notes.txt`.
+async fn working_with(
+    cx: &mut TestAppContext,
+    extra: usize,
+) -> (
+    tempfile::TempDir,
+    Entity<GitTurtle>,
+    &mut VisualTestContext,
+    Option<std::path::PathBuf>,
+) {
     let (fixture, app, cx) = history_window(cx).await;
     let worktree = fixture.path().join("narrow");
     fixture_git(&worktree, &["reset", "--hard", "--quiet"]);
     std::fs::write(worktree.join("notes.txt"), "changed\n").unwrap();
     std::fs::write(worktree.join("other.txt"), "other\n").unwrap();
+    for file in 0..extra {
+        std::fs::write(worktree.join(format!("f{file:02}.txt")), "new\n").unwrap();
+    }
     cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
     settle(&app, cx).await;
     let repository = app.read_with(cx, |app, _| app.path.clone());
@@ -554,4 +571,138 @@ async fn the_status_line_keeps_a_writes_outcome_over_the_refresh_after_it(cx: &m
     );
     wait(cx, RESTORE_AFTER);
     assert_eq!(line(cx), "1 working change");
+}
+
+/// Stage all's files join Staged above its own heading, which in a list
+/// long enough to scroll once went past the viewport's foot with Staged
+/// still on it, so nobody saw its confirmation. The list now shows that
+/// heading whole once the rows arrive: with no file selected, at the list's
+/// foot; with a selected file the heading can be seen beside, with both in
+/// view. Where they cannot be seen together the selected file keeps its
+/// place, as it does whenever the list changes.
+#[gpui::test]
+async fn stage_all_brings_its_heading_into_view_beside_the_selected_file(cx: &mut TestAppContext) {
+    let (fixture, app, cx, _repository) = working_with(cx, 32).await;
+    // Tall enough that the list beside the composer shows several rows.
+    cx.simulate_resize(size(px(1000.), px(1400.)));
+    draw(cx);
+    let entries = app.read_with(cx, |app, _| app.work_status.as_ref().unwrap().entries.len());
+    let pane = bounds(cx, "working-pane");
+    let row = app.read_with(cx, |app, _| px(app.settings.density.file_row_height()));
+    // The pane's 1 px edge surrounds the list.
+    let viewport = ((pane.size.height - px(2.)) / row).floor() as usize;
+    assert!(
+        viewport >= 6 && viewport < entries,
+        "{viewport} rows of {entries}"
+    );
+    // Whether `selector` is drawn whole inside the pane drawn with it.
+    let inside = |cx: &mut VisualTestContext, selector: &str| {
+        let drawn = cx.debug_bounds(selector.to_owned().leak())?;
+        let pane = bounds(cx, "working-pane");
+        Some(drawn.top() >= pane.top() && drawn.bottom() <= pane.bottom())
+    };
+    let scroll_top = |cx: &mut VisualTestContext| {
+        app.update(cx, |app, _| {
+            app.working_scroll.scroll_to_item(0, ScrollStrategy::Top)
+        });
+        draw(cx);
+    };
+    // Stage all, pressed at the top, and the rows its refresh produces: the
+    // Staged heading, every file and the Unstaged heading, last.
+    let stage_all = |cx: &mut VisualTestContext| {
+        assert_eq!(inside(cx, "stage-all"), Some(true), "Stage all is pressed");
+        click(cx, "stage-all");
+        finish(&app, cx, "Stage all's rows", |cx| {
+            app.read_with(cx, |app, _| {
+                !app.working_paths.pending
+                    && app.working_paths.staged_count == entries
+                    && matches!(
+                        app.working_rows.last(),
+                        Some(WorkingRow::Heading(ChangeArea::Unstaged, 0))
+                    )
+            })
+        });
+    };
+    let unstage = |cx: &mut VisualTestContext| {
+        wait(cx, RESTORE_AFTER);
+        fixture_git(&fixture.path().join("narrow"), &["reset", "--quiet"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        finish(&app, cx, "the unstaged rows", |cx| {
+            app.read_with(cx, |app, _| {
+                !app.working_paths.pending && app.working_paths.staged_count == 0
+            })
+        });
+    };
+    // Selects `name` in Unstaged before Stage all.
+    let select = |cx: &mut VisualTestContext, name: &str| {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let index = app
+                    .work_status
+                    .as_ref()
+                    .unwrap()
+                    .entries
+                    .iter()
+                    .position(|entry| entry.path == Path::new(name))
+                    .unwrap();
+                app.select_working(index, ChangeArea::Unstaged, window, cx)
+            })
+        });
+        settle_frames(&app, cx);
+    };
+    // Whether the selected file's row, which followed its file into Staged,
+    // is drawn whole inside the pane.
+    let selected_inside = |cx: &mut VisualTestContext| {
+        let position = app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.working_selected.map(|(_, area)| area),
+                Some(ChangeArea::Staged),
+                "the selection followed its file"
+            );
+            app.working_rows
+                .iter()
+                .position(|row| {
+                    matches!(row, WorkingRow::File(index, area)
+                        if Some((*index, *area)) == app.working_selected)
+                })
+                .unwrap()
+        });
+        inside(cx, &format!("working-row-{position}"))
+    };
+
+    stage_all(cx);
+    assert_eq!(confirms(cx, "stage-all", "staged"), Some(true));
+    assert_eq!(inside(cx, "stage-all"), Some(true), "at the list's foot");
+    unstage(cx);
+
+    // Staged lists the files by path, f00.txt to f31.txt at rows 1 to 32,
+    // then notes.txt and other.txt, and the Unstaged heading follows them:
+    // a file `viewport` - 2 rows above the heading, where centring it would
+    // leave the heading below the viewport's foot.
+    let heading = entries + 1;
+    select(cx, &format!("f{:02}.txt", heading - (viewport - 2) - 1));
+    scroll_top(cx);
+    stage_all(cx);
+    assert_eq!(confirms(cx, "stage-all", "staged"), Some(true));
+    assert_eq!(inside(cx, "stage-all"), Some(true), "beside the selection");
+    assert_eq!(selected_inside(cx), Some(true));
+    unstage(cx);
+
+    // The first file, a list's length from the heading: it keeps its place.
+    select(cx, "f00.txt");
+    scroll_top(cx);
+    stage_all(cx);
+    assert_eq!(selected_inside(cx), Some(true));
+    assert_eq!(
+        inside(cx, "stage-all"),
+        None,
+        "the selection keeps its place"
+    );
+}
+
+/// Runs the reads a selection asks for and draws the frame they produce.
+fn settle_frames(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    finish(app, cx, "the selection's reads", |cx| {
+        app.read_with(cx, |app, _| app.task.is_none())
+    });
 }

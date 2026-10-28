@@ -911,6 +911,132 @@ impl GitTurtle {
             _ => None,
         }
     }
+
+    /// Brings the heading whose Stage all or Unstage all confirms its write
+    /// into the list's view once the rows that write produced arrive
+    /// (`schedule_working_filter` after the explicit refresh that follows
+    /// it), so its Staged or Unstaged is seen on the control that was
+    /// pressed. Stage all moves every file into Staged above its own
+    /// heading, which went past the viewport's foot with its confirmation
+    /// still on it, and centring a selected file could carry Unstage all's
+    /// heading above the top. The list moves in one frame, the least that
+    /// shows the heading whole, and only so far as `selected`, the selected
+    /// file's row, stays in view, as it does when lists change: where the
+    /// two cannot be seen together, the selected file keeps the place the
+    /// refresh gives it, and the outcome is still announced and kept in the
+    /// status line.
+    pub(super) fn reveal_confirming_heading(
+        &self,
+        selected: Option<usize>,
+        window: &Window,
+        cx: &App,
+    ) {
+        let Some(heading) = self.confirming_heading(cx) else {
+            return;
+        };
+        // A list never laid out has no viewport to reveal anything in.
+        let Some(size) = self.working_scroll.0.borrow().last_item_size else {
+            return;
+        };
+        reveal_heading(
+            &self.working_scroll,
+            size.item.height,
+            window.pixel_snap(px(self.settings.density.file_row_height())),
+            self.working_rows.len(),
+            selected,
+            heading,
+        );
+    }
+
+    /// The row of the heading whose Stage all or Unstage all reads its
+    /// confirmation now, if any.
+    fn confirming_heading(&self, cx: &App) -> Option<usize> {
+        [ChangeArea::Staged, ChangeArea::Unstaged]
+            .into_iter()
+            .filter(|area| copy_feedback::confirmed(&confirmations::all(&self.path, *area), cx))
+            .find_map(|confirming| {
+                self.working_rows.iter().position(
+                    |row| matches!(row, WorkingRow::Heading(area, _) if *area == confirming),
+                )
+            })
+    }
+}
+
+/// Scrolls `scroll`, a list of `rows` rows `row` tall in a `viewport` tall
+/// view, to show row `heading` as [`heading_reveal`] decides, beside the
+/// `selected` row. The move replaces any scroll the list was about to make,
+/// such as the refresh's centring of the selected row, which the decision
+/// accounts for, and lands when the list is next laid out, with its viewport
+/// then.
+fn reveal_heading(
+    scroll: &UniformListScrollHandle,
+    viewport: Pixels,
+    row: Pixels,
+    rows: usize,
+    selected: Option<usize>,
+    heading: usize,
+) {
+    let top = -scroll.0.borrow().base_handle.offset().y;
+    match heading_reveal(top, viewport, row, rows, selected, heading) {
+        Some(Reveal::Nearest) => scroll.scroll_to_item(heading, ScrollStrategy::Nearest),
+        Some(Reveal::Edge(strategy)) => scroll.scroll_to_item_strict(heading, strategy),
+        None => {}
+    }
+}
+
+/// How the Working list scrolls to show a confirming heading whole
+/// ([`GitTurtle::reveal_confirming_heading`]). The list places the heading
+/// when it is next laid out, with the viewport it is drawn in then, which
+/// the frames around a write change from the one last drawn: the busy
+/// composer and the controls above the list are measured again, and a
+/// 1000 × 1400 test window's list went from 681 to 660 px as Stage all's
+/// rows arrived.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Reveal {
+    /// The least move that shows it, which keeps a selected file the list
+    /// shows now in view.
+    Nearest,
+    /// The edge of the viewport on the selected file's side, `Bottom` below
+    /// it or `Top` above it, for a selected file the list does not show
+    /// now and would centre.
+    Edge(ScrollStrategy),
+}
+
+/// How a list of `rows` rows `row` tall, last drawn `viewport` tall and
+/// scrolled to `top`, shows row `heading`: where no file is selected, by
+/// the least move; with the `selected` row, only where the two fit in the
+/// viewport together with half a row to spare for the viewport's next
+/// height, by the least move where the list shows that row now and
+/// otherwise with the heading at the edge beside it. `None` leaves the
+/// selected row where the refresh puts it.
+fn heading_reveal(
+    top: Pixels,
+    viewport: Pixels,
+    row: Pixels,
+    rows: usize,
+    selected: Option<usize>,
+    heading: usize,
+) -> Option<Reveal> {
+    let Some(selected) = selected else {
+        return Some(Reveal::Nearest);
+    };
+    let span = row * (heading.abs_diff(selected) + 1) as f32;
+    if span > viewport - row / 2. {
+        return None;
+    }
+    let top = top.clamp(
+        Pixels::ZERO,
+        (row * rows as f32 - viewport).max(Pixels::ZERO),
+    );
+    let start = row * selected as f32;
+    // Within a hundredth of a pixel, as layout rounds.
+    if start >= top - px(0.01) && start + row <= top + viewport + px(0.01) {
+        Some(Reveal::Nearest)
+    } else if heading > selected {
+        Some(Reveal::Edge(ScrollStrategy::Bottom))
+    } else {
+        Some(Reveal::Edge(ScrollStrategy::Top))
+    }
 }
 
 /// The tight form's one row: the filter's field beside 28 px controls, with
@@ -2035,17 +2161,33 @@ impl GitTurtle {
         let selected_row = self.working_rows.iter().position(
             |row| matches!(row, WorkingRow::File(index, area) if Some((*index, *area)) == self.working_selected),
         );
+        let confirming_heading = self.confirming_heading(cx);
+        let (reveal_row, row_count) = (
+            window.pixel_snap(px(self.settings.density.file_row_height())),
+            self.working_rows.len(),
+        );
         // GPUI retains this content geometry in the scroll handle even while
         // Settings hides the inspector. Density changes must not reuse a pixel
-        // offset that now points at a different set of rows.
-        if previous_list.is_some_and(|size| {
-            size.contents.height
-                != window.pixel_snap(px(self.settings.density.file_row_height()))
-                    * self.working_rows.len() as f32
-        }) && let Some(selected) = selected_row
+        // offset that now points at a different set of rows. Rows that change
+        // in number, as when a write's rows replace the empty list of its
+        // pending filter, take this path too, so a confirming heading is
+        // shown as the rows' arrival showed it.
+        if let Some(size) =
+            previous_list.filter(|size| size.contents.height != reveal_row * row_count as f32)
         {
-            self.working_scroll
-                .scroll_to_item(selected, ScrollStrategy::Nearest);
+            if let Some(heading) = confirming_heading {
+                reveal_heading(
+                    &self.working_scroll,
+                    size.item.height,
+                    reveal_row,
+                    row_count,
+                    selected_row,
+                    heading,
+                );
+            } else if let Some(selected) = selected_row {
+                self.working_scroll
+                    .scroll_to_item(selected, ScrollStrategy::Nearest);
+            }
         }
         let staged = self.working_paths.staged_count;
         let total = self
@@ -2416,7 +2558,13 @@ impl GitTurtle {
                     .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
                         list_layout.update(cx, |layout, cx| {
                             if layout.list_size != Some(bounds.size) {
-                                if layout.list_size.is_some() && let Some(selected) = selected_row {
+                                // The list's height settles a frame after a
+                                // write's rows arrive, as the composer is
+                                // measured again: a confirming heading is
+                                // shown again in the height it now has.
+                                if layout.list_size.is_some() && let Some(heading) = confirming_heading {
+                                    reveal_heading(&list_scroll, bounds.size.height, reveal_row, row_count, selected_row, heading);
+                                } else if layout.list_size.is_some() && let Some(selected) = selected_row {
                                     list_scroll.scroll_to_item(selected, ScrollStrategy::Nearest);
                                 }
                                 layout.list_size = Some(bounds.size);

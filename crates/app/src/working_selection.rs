@@ -417,6 +417,7 @@ impl GitTurtle {
                         } else if center_selected && let Some(position) = selected {
                             this.working_scroll.scroll_to_item(position, ScrollStrategy::Center);
                         }
+                        if center_selected { this.reveal_confirming_heading(selected, window, cx); }
                         this.land_working_row(landing, cx);
                     }
                     Ok(Err(error)) => { this.working_paths.error = Some(error.to_string()); this.working_selection.clear(); this.land_working_row(None, cx); }
