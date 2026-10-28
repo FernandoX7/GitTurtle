@@ -2530,33 +2530,28 @@ mod tests {
         cx.executor().run_until_parked();
     }
 
-    #[gpui::test]
-    async fn cold_tab_restores_rendered_history_offset_without_revealing_manual_selection(
-        cx: &mut TestAppContext,
-    ) {
-        use gpui_kit::component::Root;
+    /// Three frames, each followed by the work it schedules.
+    fn draw_tab_frames(cx: &mut VisualTestContext) {
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            cx.executor().run_until_parked();
+        }
+    }
+
+    /// `commits` linear commits on `main` without a checkout: History lists
+    /// the oldest last, at index `commits - 1`.
+    fn linear_history_fixture(path: PathBuf, commits: u32) -> GitRepository {
         use std::{
-            cell::RefCell,
             io::Write,
             process::{Command, Stdio},
-            rc::Rc,
         };
 
-        fn draw(cx: &mut VisualTestContext) {
-            for _ in 0..3 {
-                cx.update(|window, cx| {
-                    window.simulate_next_frame(cx);
-                    window.draw(cx).clear(cx);
-                });
-                cx.executor().run_until_parked();
-            }
-        }
-
-        cx.executor().allow_parking();
-        let fixture = tempfile::tempdir().unwrap();
-        let repo = GitRepository::init(fixture.path().join("history"), "main").unwrap();
+        let repo = GitRepository::init(path, "main").unwrap();
         let mut input = String::new();
-        for index in 0..500 {
+        for index in 0..commits {
             let message = format!("history commit {index}");
             input.push_str(&format!(
                 "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{}\n",
@@ -2601,6 +2596,68 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&imported.stderr)
         );
+        repo
+    }
+
+    /// A window that is `window_size` from its first frame, opening `initial`
+    /// with `saved` as its repository session and saving to `save_path`.
+    /// `add_window_view` opens a maximized window and runs the deferred open
+    /// before it returns: on a loaded host a cold tab's reads can finish
+    /// there, and a resize afterwards is a real viewport change over the
+    /// restored layout.
+    fn open_tab_window(
+        cx: &mut TestAppContext,
+        initial: PathBuf,
+        saved: Session,
+        save_path: PathBuf,
+        window_size: Size<Pixels>,
+    ) -> (Entity<GitTurtle>, VisualTestContext) {
+        use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc};
+
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let window = cx
+            .update(|cx| {
+                cx.open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                            point(px(0.), px(0.)),
+                            window_size,
+                        ))),
+                        ..Default::default()
+                    },
+                    move |window, cx| {
+                        let app = cx.new(|cx| {
+                            let mut app = GitTurtle::new(
+                                Some(initial),
+                                Preferences::default(),
+                                saved,
+                                activity::State::default(),
+                                recovery_drafts::State::default(),
+                                window,
+                                cx,
+                            );
+                            app.repository_tabs.save_path = Some(save_path);
+                            app
+                        });
+                        *captured.borrow_mut() = Some(app.clone());
+                        cx.new(|cx| Root::new(app, window, cx))
+                    },
+                )
+            })
+            .unwrap();
+        let app = observed.borrow_mut().take().unwrap();
+        (app, VisualTestContext::from_window(*window, cx))
+    }
+
+    #[gpui::test]
+    async fn cold_tab_restores_rendered_history_offset_without_revealing_manual_selection(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = linear_history_fixture(fixture.path().join("history"), 500);
         let destination = fixture.path().join("isolated-session.json");
         cx.update(|cx| {
             gpui_kit::init(cx);
@@ -2620,34 +2677,20 @@ mod tests {
             if pass > 0 {
                 assert_eq!(Some(px(saved.tabs[0].bookmark.history_y)), expected_y);
             }
-            let initial = repo.path().to_owned();
-            let save_path = destination.clone();
-            let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
-            let observed = captured.clone();
-            let (_, window_cx) = cx.add_window_view(move |window, cx| {
-                let app = cx.new(|cx| {
-                    let mut app = GitTurtle::new(
-                        Some(initial),
-                        Preferences::default(),
-                        saved,
-                        activity::State::default(),
-                        recovery_drafts::State::default(),
-                        window,
-                        cx,
-                    );
-                    app.repository_tabs.save_path = Some(save_path);
-                    app
-                });
-                *captured.borrow_mut() = Some(app.clone());
-                Root::new(app, window, cx)
-            });
-            let app = observed.borrow_mut().take().unwrap();
-            window_cx.simulate_resize(size(px(1480.), px(981.)));
+            // The cold tab restores into a window already at its own size.
+            let (app, mut window_cx) = open_tab_window(
+                cx,
+                repo.path().to_owned(),
+                saved,
+                destination.clone(),
+                size(px(1480.), px(981.)),
+            );
+            let window_cx = &mut window_cx;
             settle_tab_test(&app, window_cx).await;
-            draw(window_cx);
+            draw_tab_frames(window_cx);
             if pass == 0 {
                 window_cx.simulate_resize(size(px(1000.), px(680.)));
-                draw(window_cx);
+                draw_tab_frames(window_cx);
                 window_cx.update(|window, cx| {
                     let focus = app.read(cx).focus.clone();
                     window.focus(&focus, cx);
@@ -2655,7 +2698,7 @@ mod tests {
                 window_cx.simulate_keystrokes("end");
                 settle_tab_test(&app, window_cx).await;
                 window_cx.simulate_resize(size(px(1480.), px(981.)));
-                draw(window_cx);
+                draw_tab_frames(window_cx);
             }
             window_cx.read(|cx| {
                 let app = app.read(cx);
@@ -2719,7 +2762,7 @@ mod tests {
                     moved
                 });
                 settle_tab_test(&app, window_cx).await;
-                draw(window_cx);
+                draw_tab_frames(window_cx);
                 window_cx.read(|cx| {
                     assert_eq!(
                         app.read(cx)
@@ -2752,6 +2795,89 @@ mod tests {
             });
             closing.await.unwrap();
         }
+    }
+
+    /// A cold tab's changed-files read can land on the first frame after the
+    /// window resizes, as it did on a loaded host. That frame still lays
+    /// History's table out for the width its previous frame measured, so the
+    /// frame after it widens the table without the window changing: the
+    /// restored viewport, scrolled away from the selected commit, must stay.
+    #[gpui::test]
+    async fn restored_viewport_survives_its_last_read_landing_after_a_resize(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = linear_history_fixture(fixture.path().join("history"), 500);
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        // A test window's maximized size, before the window manager tiles it.
+        let (app, mut window_cx) = open_tab_window(
+            cx,
+            repo.path().to_owned(),
+            Session::default(),
+            fixture.path().join("isolated-session.json"),
+            size(px(1920.), px(1080.)),
+        );
+        let window_cx = &mut window_cx;
+        settle_tab_test(&app, window_cx).await;
+        window_cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(499, window, cx)));
+        settle_tab_test(&app, window_cx).await;
+        window_cx.update(|_, cx| {
+            app.read(cx)
+                .history_scroll
+                .0
+                .borrow()
+                .base_handle
+                .set_offset(point(px(0.), px(-4000.)))
+        });
+        draw_tab_frames(window_cx);
+        let saved = window_cx.update(|_, cx| app.read(cx).tab_bookmark(cx));
+        assert_eq!(saved.history_y, -4000.);
+        // Restore the bookmark as `finish_tab_snapshot` does once the cold
+        // snapshot is in: the changed-files read is the only one pending
+        // when the window takes its tiled size.
+        window_cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.repository_tabs.restoring = Some(saved.clone());
+                app.restore_tab_selection(window, cx);
+            })
+        });
+        window_cx.simulate_resize(size(px(1480.), px(981.)));
+        settle_tab_test(&app, window_cx).await;
+        draw_tab_frames(window_cx);
+        window_cx.read(|cx| {
+            let app = app.read(cx);
+            assert!(app.repository_tabs.restoring.is_none(), "the read landed");
+            assert_eq!(app.selected_commit, Some(499));
+            let scroll = app.history_scroll.0.borrow();
+            let offset = scroll.base_handle.offset().y;
+            assert_eq!(
+                offset,
+                px(saved.history_y),
+                "the restored viewport must not reveal the selection"
+            );
+            let measured = scroll
+                .last_item_size
+                .as_ref()
+                .expect("rendered list geometry");
+            let row_height = measured.contents.height / app.visible.len() as f32;
+            assert!(
+                offset + row_height * app.visible.len() > measured.item.height,
+                "the selected commit stays below the restored viewport"
+            );
+        });
+        window_cx.update(|window, _| window.remove_window());
+        let closing = window_cx.cx.update(|cx| {
+            app.read(cx)
+                .repository_tabs
+                .save_completion
+                .clone()
+                .unwrap()
+        });
+        closing.await.unwrap();
     }
 
     #[gpui::test]

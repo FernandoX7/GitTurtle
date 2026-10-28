@@ -75,7 +75,20 @@ impl GitTurtle {
                     } else {
                         this.file_list_layout
                     };
-                    let next = (bounds.size, row_height);
+                    // History's probe sits in its table, which is as wide as
+                    // the columns and scrolls sideways inside the viewport;
+                    // the columns follow the width History's prepaint
+                    // measured a frame earlier. Take the viewport's width
+                    // from this frame's prepaint instead, so after a resize
+                    // the frame that only finishes the table is no viewport
+                    // change: a cold tab's last read can land on the frame
+                    // before it and seed the restored layout there.
+                    let width = if history {
+                        px(this.history_width)
+                    } else {
+                        bounds.size.width
+                    };
+                    let next = (size(width, bounds.size.height), row_height);
                     if previous == Some(next) {
                         return;
                     }
