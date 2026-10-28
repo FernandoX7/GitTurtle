@@ -397,7 +397,9 @@ pub(super) fn render_comparison<T: 'static>(
     let side_width = width / if quick { 1. } else { 2. };
     div().size_full().min_w_0().flex().children([("Before",&preview.old),(if quick {"Source"}else{"After"},&preview.new)].into_iter().enumerate().filter(|(index,_)|!quick||*index==1).map(|(index,(label,side))| {
             let selected=side.selected_page.load(Ordering::Relaxed).min(side.pages.len().saturating_sub(1));
-            let mut header=div().debug_selector(move || format!("rich-side-header-{index}")).flex().items_center().flex_wrap().gap_2().px_3().py_2().border_b_1().border_color(rgb(colors.border)).child(div().text_size(appearance::ui_text(12.)).font_weight(FontWeight::SEMIBOLD).child(label)).child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(side.metadata.format.clone()));
+            // The heading's line is as tall as the scaled 28 px controls, so
+            // both sides' headers align whether or not one offers a control.
+            let mut header=div().debug_selector(move || format!("rich-side-header-{index}")).flex().items_center().flex_wrap().gap_2().px_3().py_2().border_b_1().border_color(rgb(colors.border)).child(div().min_h(appearance::ui_size(28.)).flex().items_center().text_size(appearance::ui_text(12.)).font_weight(FontWeight::SEMIBOLD).child(label)).child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(side.metadata.format.clone()));
             let mut note=None;
             if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
                 let target=opener.target(("system-preview",index),label,bytes,&side.name,offer);

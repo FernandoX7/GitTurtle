@@ -5253,6 +5253,62 @@ pub(crate) mod tests {
         );
     }
 
+    /// A document's two side headers keep one height, their first line as
+    /// tall as the scaled 28 px open control, so Before and After align with
+    /// or without it: an added PDF's After header, which offers the control,
+    /// stood 8.5 px taller than Before's. An added and a changed PDF, at the
+    /// default size and at 18 pt.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn side_headers_align_with_or_without_the_open_control(cx: &mut TestAppContext) {
+        let pdf = |text: &str| format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\n%%EOF\n");
+        let (first, changed, added) = (pdf("first"), pdf("changed"), pdf("added"));
+        let input = file_commits(&[
+            ("first", &[("changed.pdf", first.as_bytes())]),
+            (
+                "second",
+                &[
+                    ("added.pdf", added.as_bytes()),
+                    ("changed.pdf", changed.as_bytes()),
+                ],
+            ),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for (path, offers) in [("added.pdf", [false, true]), ("changed.pdf", [true, true])] {
+                let index = app.read_with(cx, |app, _| {
+                    app.files
+                        .iter()
+                        .position(|file| file.path() == std::path::Path::new(path))
+                        .unwrap()
+                });
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.select_file(index, window, cx))
+                });
+                settle(&app, cx).await;
+                let at = format!("{path} at {text} pt");
+                assert_eq!(
+                    [
+                        cx.debug_bounds("system-preview-0").is_some(),
+                        cx.debug_bounds("system-preview-1").is_some(),
+                    ],
+                    offers,
+                    "{at}: the sides that offer the control"
+                );
+                let before = cx.debug_bounds("rich-side-header-0").unwrap();
+                let after = cx.debug_bounds("rich-side-header-1").unwrap();
+                assert!(
+                    (before.top() - after.top()).abs() <= px(0.5)
+                        && (before.size.height - after.size.height).abs() <= px(0.5),
+                    "{at}: Before's header {before:?} aligns with After's {after:?}"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Open in default app answers on its own control, as a copy does, and
     /// never in the window-wide notice, which once said "Opened a read-only
     /// copy of the captured bytes in the default app." with Dismiss and kept

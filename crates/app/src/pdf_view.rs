@@ -478,7 +478,9 @@ pub(super) fn render_comparison<T: 'static>(
     div().size_full().flex().min_w_0().children([("Before", &preview.old, &preview.new), (if quick {"Source"} else {"After"}, &preview.new, &preview.old)].into_iter().enumerate().filter(|(i,_)| !quick || *i == 1).map(|(index,(label, side, other))| {
         let heading = format!("{label} · PDF");
         let room = header_room(index, side_width, &heading, window);
-        let mut header = div().flex().flex_wrap().items_center().gap_2().p_2().border_b_1().border_color(rgb(colors.border)).child(div().font_weight(FontWeight::SEMIBOLD).child(heading));
+        // The heading's line is as tall as the scaled 28 px controls, so an
+        // absent side's header aligns with its partner's.
+        let mut header = div().flex().flex_wrap().items_center().gap_2().p_2().border_b_1().border_color(rgb(colors.border)).child(div().min_h(appearance::ui_size(28.)).flex().items_center().font_weight(FontWeight::SEMIBOLD).child(heading));
         let mut note = None;
         if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
             let target = opener.target(("pdf-system",index), label, bytes, &side.name, offer);
