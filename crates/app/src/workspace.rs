@@ -1161,6 +1161,12 @@ impl GitTurtle {
             .and_then(|s| s.branch.as_deref())
             .unwrap_or("detached HEAD");
         let summary_length = self.commit_title.read(cx).value().chars().count();
+        let commit_disabled = busy
+            || !status_ready
+            || staged == 0
+            || conflicted
+            || !identity_ready
+            || self.commit_title.read(cx).value().trim().is_empty();
         // An operation in progress replaces the composer with its banner.
         let composer = self
             .work_status
@@ -1270,7 +1276,8 @@ impl GitTurtle {
                     }).absolute().inset_0()),
             )
             .when(composer, |el| el.child(
-                div().flex_shrink_0().min_h_0().h(px(composer_height)).flex().flex_col()
+                div().debug_selector(|| "commit-composer".into())
+                    .flex_shrink_0().min_h_0().h(px(composer_height)).flex().flex_col()
                     .bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
                     // The heading is pinned above the scrolling fields, as the
                     // commit action is below them; where the body is short the
@@ -1332,7 +1339,11 @@ impl GitTurtle {
                             .child("Resolve conflicted files before committing."),
                     ))))
                     .child(div().flex_shrink_0().px_3().pb_3().when(short, |el| el.pb_2()).child(
-                        Button::new("commit-staged").debug_selector(|| "commit-staged".into()).primary().w_full().h(crate::appearance::ui_size(36.))
+                        // Disabled, it rests on the composer's own `subtle`, so it
+                        // keeps its shape with an edge; it is as wide as the composer.
+                        crate::appearance::keep_disabled_shape(
+                            Button::new("commit-staged").debug_selector(|| "commit-staged".into()).primary().w_full().h(crate::appearance::ui_size(36.)),
+                            commit_disabled, p.subtle, None, cx)
                             .icon(Icon::default().path("icons/commit.svg").size(px(16.)))
                             .label(if busy {
                                 "Working…".to_owned()
@@ -1349,8 +1360,7 @@ impl GitTurtle {
                             } else {
                                 format!("Commit {staged} {}", if staged == 1 { "file" } else { "files" })
                             })
-                            .disabled(busy || !status_ready || staged == 0 || conflicted || !identity_ready
-                                || self.commit_title.read(cx).value().trim().is_empty())
+                            .disabled(commit_disabled)
                             .tooltip(format!("Commit staged changes to {branch}"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 let message = this.current_commit_draft(cx).message();

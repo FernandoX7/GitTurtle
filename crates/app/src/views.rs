@@ -4249,7 +4249,7 @@ impl Render for GitTurtle {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use core::prelude::v1::test;
 
@@ -6482,6 +6482,106 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The edge colors of the quads the last frame painted exactly at
+    /// `selector`'s bounds with a border on all four sides, each color once:
+    /// GPUI paints a border once per side.
+    pub(crate) fn painted_edges(
+        cx: &mut VisualTestContext,
+        selector: &'static str,
+    ) -> Vec<gpui_kit::Hsla> {
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let near = |device: gpui_kit::ScaledPixels, logical: Pixels| {
+                (device.as_f32() - logical.as_f32() * scale).abs() < 0.5
+            };
+            let mut edges = Vec::new();
+            for quad in window.painted_quads() {
+                let widths = quad.border_widths;
+                if [widths.top, widths.right, widths.bottom, widths.left]
+                    .into_iter()
+                    .all(|width| width.as_f32() > 0.)
+                    && near(quad.bounds.left(), bounds.left())
+                    && near(quad.bounds.top(), bounds.top())
+                    && near(quad.bounds.right(), bounds.right())
+                    && near(quad.bounds.bottom(), bounds.bottom())
+                    && !edges.contains(&quad.border_color)
+                {
+                    edges.push(quad.border_color);
+                }
+            }
+            edges
+        })
+    }
+
+    /// Disabled, the commit action rests on the neutral fill, which is the
+    /// composer's own `subtle` (#edf1f7 on #edf1f7 in Braden, #131a25 on
+    /// #131a25 in Midnight, 1.000:1), so it drew only its dim label, "Set
+    /// your commit identity" under a heading of the same words. In every
+    /// palette it keeps its shape: its fill, or else a 1 px edge 1.4:1 or more
+    /// off the composer, stands off the surface beneath it, and it keeps the
+    /// composer's width and its 36 px height.
+    #[gpui::test]
+    async fn the_disabled_commit_stands_off_the_composer(cx: &mut TestAppContext) {
+        use crate::appearance::custom::contrast;
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.operation_busy = Some("Fetching remote…");
+                cx.notify()
+            })
+        });
+        let solid = |fill: gpui_kit::Background| {
+            let color = fill.as_solid().expect("a solid fill").to_rgb();
+            let channel = |value: f32| (value * 255.).round() as u32;
+            (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)
+        };
+        let mut failures = Vec::new();
+        let mut edged = 0;
+        for (name, palette) in crate::appearance::test_palettes() {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            draw(cx);
+            let [surface] = painted_fills(cx, "commit-composer")[..] else {
+                panic!("{name}: the composer paints one fill");
+            };
+            let surface = solid(surface);
+            let [fill] = painted_fills(cx, "commit-staged")[..] else {
+                panic!("{name}: the commit action paints one fill");
+            };
+            let fill = solid(fill);
+            if contrast(fill, surface) < 1.05 {
+                edged += 1;
+                match painted_edges(cx, "commit-staged")[..] {
+                    [edge] if contrast(solid(edge.into()), surface) >= 1.4 => {}
+                    ref edges => failures.push(format!(
+                        "{name}: fill {fill:06x} on {surface:06x} with edges {edges:?}"
+                    )),
+                }
+            }
+            let (commit, composer) = (
+                cx.debug_bounds("commit-staged").unwrap(),
+                cx.debug_bounds("commit-composer").unwrap(),
+            );
+            assert_eq!(
+                commit.size.height,
+                crate::appearance::ui_size(36.),
+                "{name}"
+            );
+            assert_eq!(
+                composer.right() - commit.right(),
+                commit.left() - composer.left(),
+                "{name}: {commit:?} spans {composer:?}"
+            );
+        }
+        assert!(
+            edged > 0,
+            "some palette rests the commit on its own surface"
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// A pressed ghost Button takes the shared controls' pressed layer, the

@@ -618,13 +618,23 @@ impl GitTurtle {
                                 },
                             ),
                         )
-                        .child(
-                            button("run-palette-command", "Open command", "", true)
-                                .disabled(!form.read(cx).can_activate())
-                                .on_click(move |_, window, cx| {
-                                    activate.update(cx, |form, cx| form.activate(window, cx))
-                                }),
-                        ),
+                        .child({
+                            // Disabled, it rests on `subtle`, which is the raised
+                            // surface itself in most Omarchy dark palettes.
+                            let disabled = !form.read(cx).can_activate();
+                            appearance::keep_disabled_shape(
+                                button("run-palette-command", "Open command", "", true)
+                                    .debug_selector(|| "run-palette-command".into()),
+                                disabled,
+                                surface.raised(),
+                                Some(appearance::ui_size(crate::LABEL_INSET)),
+                                cx,
+                            )
+                            .disabled(disabled)
+                            .on_click(move |_, window, cx| {
+                                activate.update(cx, |form, cx| form.activate(window, cx))
+                            })
+                        }),
                 )
                 .on_ok(move |_, window, cx| {
                     submit.update(cx, |form, cx| form.activate(window, cx));
@@ -1541,6 +1551,60 @@ mod render_tests {
             vec![first - 1],
             "after Up"
         );
+    }
+
+    /// Disabled, Open command rests on the neutral `subtle`, which is the
+    /// palette's raised surface itself in most Omarchy dark palettes
+    /// (1.000:1), so it drew only its dim label. Where its fill stands off the
+    /// raised surface by less than 1.05:1 it keeps its shape with a 1 px edge
+    /// 1.4:1 or more off that surface, and elsewhere it draws none; either way
+    /// it keeps the bounds it has in every palette, the edge taking its pixel
+    /// from the button's padding.
+    #[gpui::test]
+    fn a_disabled_open_command_keeps_its_shape_on_the_raised_surface(cx: &mut TestAppContext) {
+        use appearance::custom::contrast;
+        let (_, cx) = hub(cx);
+        // "show" on the hub highlights an available match; Up reaches the
+        // unavailable row above it, which Open command cannot run.
+        cx.simulate_input("show");
+        cx.simulate_keystrokes("up");
+        crate::tags::tests::draw(cx);
+        let mut failures = Vec::new();
+        let (mut edged, mut plain) = (0, 0);
+        let mut place = None;
+        for (name, palette) in appearance::test_palettes() {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            crate::tags::tests::draw(cx);
+            let open = cx
+                .debug_bounds("run-palette-command")
+                .expect("Open command");
+            assert_eq!(
+                *place.get_or_insert(open),
+                open,
+                "{name} moves Open command"
+            );
+            let edges = crate::views::tests::painted_edges(cx, "run-palette-command");
+            if contrast(palette.subtle, palette.raised()) < 1.05 {
+                edged += 1;
+                let edge = edges.first().map(|edge| {
+                    let color = edge.to_rgb();
+                    let channel = |value: f32| (value * 255.).round() as u32;
+                    (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)
+                });
+                if edges.len() != 1
+                    || edge.is_none_or(|edge| contrast(edge, palette.raised()) < 1.4)
+                {
+                    failures.push(format!("{name}: edges {edges:?}"));
+                }
+            } else {
+                plain += 1;
+                if !edges.is_empty() {
+                    failures.push(format!("{name}: an edge it does not need, {edges:?}"));
+                }
+            }
+        }
+        assert!(edged > 0 && plain > 0, "edged {edged}, plain {plain}");
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// An unavailable command's title is regular and an available one's

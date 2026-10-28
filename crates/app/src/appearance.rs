@@ -674,6 +674,19 @@ impl Palette {
         toward_extreme_in(256, self.border, extreme, clears)
     }
 
+    /// The edge of a disabled Button resting on the neutral `subtle` fill (a
+    /// primary action or a selected shared helper) on `surface`: none where
+    /// the fill stands off the surface, and [`Self::raised_edge`], 1.4:1 or
+    /// more on every page surface, where it nearly equals it, below
+    /// [`NEUTRAL_FILL_STEP`]. The commit action's disabled fill is the
+    /// composer's own `subtle`, so without an edge it drew only its dim label,
+    /// and the raised surface of most Omarchy dark palettes is `subtle` too.
+    /// A neutral fill one step off its surface would read about 1.08:1 at
+    /// best and pull the disabled label below 3:1 in most palettes.
+    pub fn disabled_edge(self, surface: u32) -> Option<u32> {
+        (custom::contrast(self.subtle, surface) < NEUTRAL_FILL_STEP).then(|| self.raised_edge())
+    }
+
     /// The label of a control that cannot be used, the one dim disabled
     /// Buttons, Switch labels, menu items with their shortcuts and command
     /// palette rows share (the kit's `Theme::disabled_foreground`): a layer of
@@ -763,6 +776,33 @@ const LABEL_MARGIN: f64 = 0.25;
 /// ([`Palette::disabled_label`]): readable, and well under the text rule
 /// enabled labels keep, so it still reads as unavailable.
 const DISABLED_LABEL: f64 = 3.0;
+
+/// The contrast below which a disabled Button's neutral fill reads as part of
+/// the surface beneath it rather than as a shape ([`Palette::disabled_edge`]).
+const NEUTRAL_FILL_STEP: f64 = 1.05;
+
+/// `button`, a Button that rests on the neutral `subtle` fill while disabled,
+/// drawn on `surface`: while `disabled` and where that fill nearly equals
+/// `surface`, it keeps its shape with a 1 px edge ([`Palette::disabled_edge`]).
+/// A Button as wide as its content passes the horizontal padding it set as
+/// `inset`, and the edge takes its pixel from that padding, so the Button keeps
+/// its bounds and its content its place; a Button of fixed width passes `None`.
+pub fn keep_disabled_shape(
+    button: gpui_kit::component::button::Button,
+    disabled: bool,
+    surface: u32,
+    inset: Option<Pixels>,
+    cx: &App,
+) -> gpui_kit::component::button::Button {
+    use gpui_kit::prelude::FluentBuilder as _;
+    match palette(cx).disabled_edge(surface).filter(|_| disabled) {
+        Some(edge) => button
+            .border_1()
+            .border_color(rgb(edge))
+            .when_some(inset, |button, inset| button.px(inset - px(1.))),
+        None => button,
+    }
+}
 
 /// The contrast a popup's 1 px edge keeps against its surface and the page
 /// beneath it ([`Palette::raised_edge`]). Antialiasing and fractional scales
