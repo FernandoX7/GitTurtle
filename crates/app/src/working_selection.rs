@@ -490,62 +490,110 @@ impl GitTurtle {
             cx,
         );
     }
-    pub(super) fn render_working_selection(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The selected staged and unstaged entries, which Unstage and Stage
+    /// count.
+    pub(super) fn selection_counts(&self) -> (usize, usize) {
         let staged = self
             .working_selection
             .selected
             .iter()
             .filter(|key| key.staged)
             .count();
-        let unstaged = self.working_selection.selected.len() - staged;
+        (staged, self.working_selection.selected.len() - staged)
+    }
+
+    /// The filter and the selection's controls. Stage and Unstage stay
+    /// together, wrapping below Directories as a pair; `compact`, where the
+    /// pair does not fit a row of its own labelled (`WorkingForms`), the
+    /// three keep only their icons on one row, with their accessible names
+    /// and tooltips that lead with those names.
+    pub(super) fn render_working_selection(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (staged, unstaged) = self.selection_counts();
+        let unavailable = self.operation_busy.is_some()
+            || self.working_paths.pending
+            || self.working_paths.error.is_some();
+        let grouped = self.working_selection.grouped;
+        let (stage, unstage) = (format!("Stage {unstaged}"), format!("Unstage {staged}"));
+        let directories = if compact {
+            crate::views::compact_control_name(
+                button("group-working", "", "folder", grouped),
+                "group-working",
+                "Directories",
+            )
+            .tooltip("Directories · Group the files by folder")
+        } else {
+            button("group-working", "Directories", "", grouped)
+        };
+        let (stage_button, unstage_button) = if compact {
+            (
+                crate::views::compact_control_label(
+                    button("stage-selection", "", "plus", false),
+                    "stage-selection",
+                    stage.clone(),
+                )
+                .tooltip(format!("{stage} · Stage the selected files")),
+                crate::views::compact_control_label(
+                    button("unstage-selection", "", "minus", false),
+                    "unstage-selection",
+                    unstage.clone(),
+                )
+                .tooltip(format!("{unstage} · Unstage the selected files")),
+            )
+        } else {
+            (
+                button("stage-selection", stage, "", false),
+                button("unstage-selection", unstage, "", false),
+            )
+        };
         div()
             .px_3()
             .py_2()
             .flex()
             .flex_col()
             .gap_1()
-            .child(Input::new(&self.working_filter).text_size(crate::appearance::ui_text(12.)))
+            .child(
+                div().debug_selector(|| "working-filter".into()).child(
+                    Input::new(&self.working_filter).text_size(crate::appearance::ui_text(12.)),
+                ),
+            )
             .child(
                 div()
                     .flex()
                     .flex_wrap()
                     .gap_1()
                     .child(
-                        button(
-                            "group-working",
-                            "Directories",
-                            "",
-                            self.working_selection.grouped,
-                        )
-                        .toggled(self.working_selection.grouped)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.working_selection.grouped = !this.working_selection.grouped;
-                            this.filter_working_paths(window, cx);
-                        })),
-                    )
-                    .child(
-                        button("stage-selection", format!("Stage {unstaged}"), "", false)
-                            .disabled(
-                                unstaged == 0
-                                    || self.operation_busy.is_some()
-                                    || self.working_paths.pending
-                                    || self.working_paths.error.is_some(),
-                            )
+                        directories
+                            .debug_selector(|| "group-working".into())
+                            .toggled(grouped)
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.apply_selected_files(false, window, cx)
+                                this.working_selection.grouped = !this.working_selection.grouped;
+                                this.filter_working_paths(window, cx);
                             })),
                     )
                     .child(
-                        button("unstage-selection", format!("Unstage {staged}"), "", false)
-                            .disabled(
-                                staged == 0
-                                    || self.operation_busy.is_some()
-                                    || self.working_paths.pending
-                                    || self.working_paths.error.is_some(),
+                        div()
+                            .flex()
+                            .gap_1()
+                            .child(
+                                stage_button
+                                    .debug_selector(|| "stage-selection".into())
+                                    .disabled(unstaged == 0 || unavailable)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.apply_selected_files(false, window, cx)
+                                    })),
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.apply_selected_files(true, window, cx)
-                            })),
+                            .child(
+                                unstage_button
+                                    .debug_selector(|| "unstage-selection".into())
+                                    .disabled(staged == 0 || unavailable)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.apply_selected_files(true, window, cx)
+                                    })),
+                            ),
                     ),
             )
             .child(

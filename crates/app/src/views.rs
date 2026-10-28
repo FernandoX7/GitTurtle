@@ -3050,7 +3050,12 @@ pub(crate) fn line_widths(texts: &[(&str, Pixels)], window: &Window) -> Pixels {
 }
 
 /// One line of `text` as [`line_widths`] lays it out, at `weight`, unrounded.
-fn shaped_width(text: &str, size: Pixels, weight: FontWeight, window: &Window) -> Pixels {
+pub(crate) fn shaped_width(
+    text: &str,
+    size: Pixels,
+    weight: FontWeight,
+    window: &Window,
+) -> Pixels {
     let mut style = window.text_style();
     style.font_weight = weight;
     #[cfg(test)]
@@ -3242,7 +3247,18 @@ impl GitTurtle {
                     )
                     .flex_none()
                     .child(if self.mode == WorkspaceMode::Working {
-                        self.render_working_inspector(window, cx)
+                        // Pinned, the inspector is exactly its minimum wide;
+                        // otherwise its saved width within what the column
+                        // leaves it, until it is laid out.
+                        let expected = if columns.pinned {
+                            inspector_min
+                        } else {
+                            px(self.settings.inspector_width)
+                                .min(px(480.))
+                                .min(width - content_min)
+                                .max(inspector_min)
+                        };
+                        self.render_working_inspector(expected, columns.pinned, window, cx)
                     } else {
                         self.render_inspector(files_header, cx)
                     }),
@@ -4415,12 +4431,18 @@ mod tests {
         }
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
         settle(&app, cx).await;
-        for (width, height, inspector) in [(461., 490., 221.), (493., 526., 253.)] {
+        // The selection controls scroll so that the file list keeps a whole
+        // row and the composer its title field (`short_working_inspector_
+        // keeps_a_row_the_title_and_its_actions`); origin/main left them all
+        // 136 px and the list 6 px.
+        for (width, height, inspector, controls) in
+            [(461., 490., 221., 40.), (493., 526., 253., 76.)]
+        {
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
             assert_eq!(
                 cx.debug_bounds("working-selection"),
-                Some(bounds(inspector, 207., 240., 136.)),
+                Some(bounds(inspector, 207., 240., controls)),
                 "Changes at {width} × {height}"
             );
             let field = cx.read(|cx| app.read(cx).working_filter.read(cx).input_bounds());
@@ -5133,6 +5155,246 @@ mod tests {
             predicted_chrome(&app, cx).1,
             Chrome::Compact { app_icon: true }
         );
+    }
+
+    /// A 40-commit History in Working Changes with two staged new files and
+    /// one modified file, as the native review's fixture has.
+    async fn working_window(
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        let (fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--hard", "--quiet"]);
+        std::fs::write(root.join("alpha.txt"), "alpha\n").unwrap();
+        std::fs::write(root.join("beta.txt"), "beta\n").unwrap();
+        fixture_git(&root, &["add", "alpha.txt", "beta.txt"]);
+        std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| (
+                app.working_paths.staged_count,
+                app.work_status.as_ref().map(|status| status.entries.len())
+            )),
+            (2, Some(3))
+        );
+        (fixture, app, cx)
+    }
+
+    /// The bounds of the painted quad whose border is `color` and that
+    /// matches `bounds`, if any.
+    fn bordered_quad(
+        cx: &mut VisualTestContext,
+        bounds: Bounds<Pixels>,
+        color: Hsla,
+    ) -> Option<Bounds<Pixels>> {
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |value: ScaledPixels| px(value.as_f32() / scale);
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.border_widths.top.0 > 0. && quad.border_color == color)
+                .map(|quad| {
+                    Bounds::new(
+                        point(logical(quad.bounds.origin.x), logical(quad.bounds.origin.y)),
+                        size(
+                            logical(quad.bounds.size.width),
+                            logical(quad.bounds.size.height),
+                        ),
+                    )
+                })
+                .find(|quad| {
+                    (quad.top() - bounds.top()).abs() < px(0.5)
+                        && (quad.bottom() - bounds.bottom()).abs() < px(0.5)
+                        && (quad.left() - bounds.left()).abs() < px(0.5)
+                })
+        })
+    }
+
+    /// In a 461 × 490 half tile with two staged files and one modified, the
+    /// Working Changes inspector keeps a usable list and composer at the
+    /// default size and at 18 pt: the file list one whole row, which its
+    /// focus ring surrounds; the composer's heading reading "Commit to" and
+    /// at least the branch's first character, a scaled 4 px above the title,
+    /// whose field is whole above the commit action; Actions and Refresh
+    /// inside the Changes header; Stage and Unstage on one row; and every
+    /// row at one leading inset. The controls above the list scroll first.
+    /// A wide window keeps every control labelled, and a steady frame asks
+    /// the text system nothing.
+    #[gpui::test]
+    async fn short_working_inspector_keeps_a_row_the_title_and_its_actions(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+            COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            let at = format!("{text} pt");
+            let (row, inset, gap, status, cut) = cx.update(|window, cx| {
+                let snap = |length: Pixels| window.pixel_snap(length);
+                (
+                    snap(px(app.read(cx).settings.density.file_row_height())),
+                    snap(window.rem_size() * 0.75),
+                    snap(appearance::ui_size(4.)),
+                    snap(appearance::ui_size(26.)),
+                    shaped_width(
+                        "Commit to m…",
+                        appearance::ui_text(13.),
+                        FontWeight::SEMIBOLD,
+                        window,
+                    )
+                    .floor(),
+                )
+            });
+            let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{selector} at {at}"))
+            };
+            let selection = bounds(cx, "working-selection");
+            let header = bounds(cx, "working-header");
+            let pane = bounds(cx, "working-pane");
+            let heading = bounds(cx, "commit-composer-heading");
+            let label = bounds(cx, "commit-title-label");
+            let title = bounds(cx, "commit-title");
+            let commit = bounds(cx, "commit-staged");
+            // The list keeps one whole row inside its border, below the
+            // header and above the composer.
+            assert!(
+                pane.size.height >= row + px(2.)
+                    && pane.top() >= header.bottom()
+                    && pane.bottom() <= heading.top(),
+                "{at}: list {pane:?} below {header:?}, row {row:?}"
+            );
+            // The heading keeps its verb and the branch's first character,
+            // then the title's label and field follow a scaled 4 px apart.
+            assert!(heading.size.width >= cut, "{at}: heading {heading:?}");
+            assert!(
+                label.top() - heading.bottom() >= gap - px(0.01)
+                    && title.top() - label.bottom() >= gap - px(0.01)
+                    && commit.top() - title.bottom() >= gap - px(0.01)
+                    && title.size.height >= cx.update(|window, _| window.rem_size()) * 2.
+                    && commit.bottom() <= px(490.) - status,
+                "{at}: heading {heading:?}, title {label:?} {title:?}, commit {commit:?}"
+            );
+            // The title's name and its counter share their line.
+            let (name, counter) = (
+                bounds(cx, "commit-title-name"),
+                bounds(cx, "commit-title-counter"),
+            );
+            assert!(
+                counter.top() == name.top() && counter.left() >= name.right(),
+                "{at}: {name:?} beside {counter:?}"
+            );
+            if let Some(badge) = cx.debug_bounds("commit-staged-count") {
+                assert!(
+                    commit.top() - badge.bottom() >= gap && badge.right() <= label.right(),
+                    "{at}: badge {badge:?} above {commit:?}"
+                );
+            }
+            // Actions and Refresh inside the header and the inspector.
+            for selector in ["working-recovery-menu", "refresh-working"] {
+                let control = bounds(cx, selector);
+                assert!(
+                    control.top() >= header.top()
+                        && control.bottom() <= header.bottom()
+                        && control.left() >= header.left() + inset
+                        && control.right() <= header.right() - inset + px(0.5),
+                    "{at}: {selector} {control:?} outside {header:?}"
+                );
+            }
+            // Stage and Unstage share a row, inside the inspector.
+            let (stage, unstage) = (
+                bounds(cx, "stage-selection"),
+                bounds(cx, "unstage-selection"),
+            );
+            assert!(
+                stage.top() == unstage.top()
+                    && unstage.right() <= selection.right() - inset + px(0.5),
+                "{at}: {stage:?} and {unstage:?}"
+            );
+            // One leading inset for every row.
+            let leading = selection.left() + inset;
+            let first_in_header = cx
+                .debug_bounds("working-header-icon")
+                .or_else(|| cx.debug_bounds("working-header-count"))
+                .unwrap();
+            let first_in_heading = cx.debug_bounds("commit-composer-icon").unwrap_or(heading);
+            for (what, edge) in [
+                ("filter", bounds(cx, "working-filter").left()),
+                ("Directories", bounds(cx, "group-working").left()),
+                ("header", first_in_header.left()),
+                ("heading", first_in_heading.left()),
+                ("title", title.left()),
+                ("commit", commit.left()),
+            ] {
+                assert!(
+                    (edge - leading).abs() < px(0.5),
+                    "{at}: {what} at {edge:?}, the inset at {leading:?}"
+                );
+            }
+            // The focused list draws its ring around the visible list.
+            cx.update(|window, cx| {
+                let focus = app.read(cx).file_focus.clone();
+                window.focus(&focus, cx);
+            });
+            cx.simulate_keystrokes("shift");
+            draw(cx);
+            let accent = cx.update(|_, cx| Hsla::from(rgb(palette(cx).accent)));
+            let focused = bounds(cx, "working-pane");
+            let ring = bordered_quad(cx, focused, accent);
+            assert!(
+                ring.is_some_and(|ring| ring.size.height >= row + px(2.)),
+                "{at}: the focused list's ring {ring:?}"
+            );
+            // A steady frame lays out no text.
+            let layouts = LINE_LAYOUTS.with(std::cell::Cell::get);
+            app.update(cx, |_, cx| cx.notify());
+            draw(cx);
+            assert_eq!(LINE_LAYOUTS.with(std::cell::Cell::get), layouts, "{at}");
+        }
+        // At 18 pt the controls that lose their labels keep their names.
+        let names = COMPACT_NAMES.with(|names| names.borrow().clone());
+        for (selector, name) in [
+            ("group-working", "Directories"),
+            (
+                "working-recovery-menu",
+                "Working changes and recovery actions",
+            ),
+        ] {
+            assert_eq!(names.get(selector), Some(&name), "{selector}");
+        }
+        let labels = COMPACT_LABELS.with(|names| names.borrow().clone());
+        for (selector, name) in [
+            ("stage-selection", "Stage 0"),
+            ("unstage-selection", "Unstage 0"),
+        ] {
+            assert_eq!(
+                labels.get(selector).map(|name| name.as_ref()),
+                Some(name),
+                "{selector}"
+            );
+        }
+        // A wide window keeps the labelled forms.
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        let control = cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.)));
+        for selector in [
+            "group-working",
+            "stage-selection",
+            "unstage-selection",
+            "working-recovery-menu",
+        ] {
+            let bounds = cx.debug_bounds(selector).unwrap();
+            assert!(bounds.size.width > control, "{selector} {bounds:?}");
+        }
+        assert!(cx.debug_bounds("working-header-label").is_some());
+        assert!(cx.debug_bounds("commit-composer-icon").is_some());
     }
 
     /// With two staged files in a 461 × 490 window, the composer's heading

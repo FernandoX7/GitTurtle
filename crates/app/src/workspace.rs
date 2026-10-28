@@ -3,6 +3,7 @@ use gitturtle_core::{ChangeArea, ChangeStatus, WriteCommand};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 use preferences::CommitDraft;
+use std::cell::RefCell;
 
 #[derive(Clone, Copy)]
 pub(super) enum WorkingRow {
@@ -13,14 +14,19 @@ pub(super) enum WorkingRow {
 
 struct WorkingInspectorLayout {
     height: Pixels,
+    /// The inspector's width as last laid out, which its rows fit
+    /// (`WorkingForms`).
+    width: Pixels,
     list_size: Option<Size<Pixels>>,
 }
 
 /// The least height the composer keeps: its top border, the pinned heading
-/// row with the padding above it, and the commit action with the padding
-/// below it, each snapped to device pixels as layout snaps them. A body too
-/// short for it and the file list gives the list's room to the composer.
-fn pinned_composer_height(short: bool, window: &Window) -> f32 {
+/// row with the padding above it, the title's label and one line of its
+/// field with the gaps around them, and the commit action with the padding
+/// below it, each snapped to device pixels as layout snaps them. The
+/// list/composer body keeps it and the file list's one whole row
+/// (`working_list_floor`), so the controls above the list scroll first.
+fn composer_minimum(short: bool, window: &Window) -> f32 {
     let rem = window.rem_size();
     let snap = |length: Pixels| window.pixel_snap(length);
     let line = |size: Pixels| snap(window.text_style().line_height.to_pixels(size.into(), rem));
@@ -29,7 +35,187 @@ fn pinned_composer_height(short: bool, window: &Window) -> f32 {
     let heading = line(crate::appearance::ui_text(13.))
         .max(px(16.))
         .max(snap(rem * 0.125) * 2. + line(crate::appearance::ui_text(10.)));
-    f32::from(snap(px(1.)) + padding + heading + snap(crate::appearance::ui_size(36.)) + padding)
+    // A short composer's fields keep a scaled 4 px from the heading, between
+    // themselves and above the commit action; a taller one's lead with the
+    // branch line.
+    let gap = snap(if short {
+        crate::appearance::ui_size(4.)
+    } else {
+        rem * 0.5
+    });
+    let branch = if short {
+        px(0.)
+    } else {
+        line(crate::appearance::ui_text(11.)).max(px(13.)) + gap
+    };
+    let fields = gap + branch + line(crate::appearance::ui_text(11.)) + gap + snap(rem * 2.) + gap;
+    f32::from(
+        snap(px(1.)) + padding + heading + fields + snap(crate::appearance::ui_size(36.)) + padding,
+    )
+}
+
+/// The file list's least height: one whole row inside its border.
+fn working_list_floor(density: crate::appearance::Density, window: &Window) -> f32 {
+    f32::from(window.pixel_snap(px(density.file_row_height())) + window.pixel_snap(px(1.)) * 2.)
+}
+
+/// How the Working Changes inspector's rows fit its width, measured from the
+/// interface font at the interface size. Where a row's labelled form fits,
+/// it is drawn as before; narrower, its controls keep only their icons, with
+/// their accessible names and tooltips that lead with those names, and its
+/// texts leave whole rather than show a lone ellipsis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct WorkingForms {
+    /// Directories, Stage and Unstage as 28 px icon controls on one row,
+    /// where Stage and Unstage do not fit a row of their own labelled.
+    pub(super) compact_selection: bool,
+    /// The Changes header's Actions keeps only its caret, beside the icon-only
+    /// Refresh, and "Refreshing…" leaves.
+    compact_actions: bool,
+    /// The Changes header's icon, "Changes" and count, each whole or absent:
+    /// the icon leaves first, then the label, then the count.
+    header_icon: bool,
+    header_label: bool,
+    header_count: bool,
+    /// The short composer heading's icon, then its staged badge, leave where
+    /// the heading beside them could not keep "Commit to" and the branch's
+    /// first character and ellipsis, so it truncates only the branch.
+    heading_icon: bool,
+    heading_badge: bool,
+}
+
+thread_local! {
+    static SELECTION_LABELS: crate::views::TextWidth = const { RefCell::new(None) };
+    static CHANGES_COUNT: crate::views::TextWidth = const { RefCell::new(None) };
+    static STAGED_BADGE: crate::views::TextWidth = const { RefCell::new(None) };
+    static HEADING_MIN: crate::views::TextWidth = const { RefCell::new(None) };
+    static CHANGES_LABEL: RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { RefCell::new(None) };
+    static ACTIONS_LABEL: RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { RefCell::new(None) };
+    static REFRESHING_LABEL: RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { RefCell::new(None) };
+}
+
+impl GitTurtle {
+    /// `WorkingForms` for an inspector `width` wide. Each text is laid out
+    /// again only when it, the font or the sizes change, so a steady render
+    /// asks the text system nothing. `short` is the composer's short form,
+    /// whose heading names the branch.
+    fn working_forms(&self, width: Pixels, short: bool, window: &Window) -> WorkingForms {
+        use crate::appearance::{ui_size, ui_text};
+        use crate::views::{LineKey, cached_text_width, cached_width, shaped_width};
+        let key = LineKey::current(window);
+        let rem = window.rem_size();
+        let regular = window.text_style().font_weight;
+        let measure = |text: &str, size: Pixels, weight: FontWeight| {
+            shaped_width(text, size, weight, window).ceil()
+        };
+        let (gap, tight) = (rem * 0.5, rem * 0.25);
+        // Every row's `px_3`, the inspector's one leading inset.
+        let room = width - rem * 0.75 * 2.;
+        let control = ui_size(28.);
+        let sum = |items: &[Pixels], gap: Pixels| {
+            items.iter().copied().sum::<Pixels>() + gap * items.len().saturating_sub(1) as f32
+        };
+
+        // Directories, Stage and Unstage. Stage and Unstage wrap together,
+        // below Directories, before they keep only their icons.
+        let (staged, unstaged) = self.selection_counts();
+        let (stage, unstage) = (format!("Stage {unstaged}"), format!("Unstage {staged}"));
+        let pair = cached_text_width(
+            &SELECTION_LABELS,
+            &format!("{stage}\n{unstage}"),
+            window,
+            || measure(&stage, ui_text(12.), regular) + measure(&unstage, ui_text(12.), regular),
+        );
+        let compact_selection = ui_size(10.) * 4. + pair + tight > room;
+
+        // The Changes header: its icon, label and count, then Actions and
+        // Refresh at the trailing edge.
+        let total = self
+            .work_status
+            .as_ref()
+            .map_or(0, |status| status.entries.len());
+        let count = total.to_string();
+        let chip = rem * 0.5 * 2.
+            + cached_text_width(&CHANGES_COUNT, &count, window, || {
+                measure(&count, ui_text(11.), FontWeight::MEDIUM)
+            });
+        let label = cached_width(&CHANGES_LABEL, &key, || {
+            measure("Changes", ui_text(13.), FontWeight::SEMIBOLD)
+        });
+        let icon = px(17.);
+        // The kit's small labelled Button: `px_2` either side, its label at
+        // 0.875 rem, then `gap_1` and the caret, 0.875 rem square.
+        let actions = (cached_width(&ACTIONS_LABEL, &key, || {
+            shaped_width("Actions", rem * 0.875, regular, window)
+        }) + rem * 2.125)
+            .ceil();
+        let refreshing = if self.status_task.is_some() {
+            cached_width(&REFRESHING_LABEL, &key, || {
+                measure("Refreshing…", ui_text(10.), regular)
+            }) + gap
+        } else {
+            px(0.)
+        };
+        let full = sum(&[icon, label, chip], gap) + gap + refreshing + actions + gap + control;
+        let compact_actions = full > room;
+        let (mut header_icon, mut header_label, mut header_count) = (true, true, true);
+        if compact_actions {
+            let trailing = control * 2. + tight;
+            let fits =
+                |items: &[Pixels]| items.is_empty() || sum(items, gap) + gap + trailing <= room;
+            if !fits(&[icon, label, chip]) {
+                header_icon = false;
+                if !fits(&[label, chip]) {
+                    header_label = false;
+                    header_count = fits(&[chip]);
+                }
+            }
+        }
+
+        // The composer heading: "Commit to" and at least the branch's first
+        // character and ellipsis, a truncated line keeping the characters
+        // that fit strictly before its ellipsis, as `scope_name_min_width`
+        // measures a cut scope name.
+        let (mut heading_icon, mut heading_badge) = (true, true);
+        if short {
+            let branch = self
+                .work_status
+                .as_ref()
+                .and_then(|s| s.branch.as_deref())
+                .unwrap_or("detached HEAD");
+            let heading = format!("Commit to {branch}");
+            let heading_min = cached_text_width(&HEADING_MIN, &heading, window, || {
+                let size = ui_text(13.);
+                let whole = shaped_width(&heading, size, FontWeight::SEMIBOLD, window).ceil();
+                branch.chars().next().map_or(whole, |first| {
+                    let cut = format!("Commit to {first}…");
+                    (shaped_width(&cut, size, FontWeight::SEMIBOLD, window).floor() + px(1.))
+                        .min(whole)
+                })
+            });
+            let text = format!("{} staged", self.working_paths.staged_count);
+            let badge = rem * 0.375 * 2.
+                + cached_text_width(&STAGED_BADGE, &text, window, || {
+                    measure(&text, ui_text(10.), FontWeight::MEDIUM)
+                });
+            if sum(&[px(16.), heading_min, badge], gap) > room {
+                heading_icon = false;
+                heading_badge = sum(&[heading_min, badge], gap) <= room;
+            }
+        }
+        WorkingForms {
+            compact_selection,
+            compact_actions,
+            header_icon,
+            header_label,
+            header_count,
+            heading_icon,
+            heading_badge,
+        }
+    }
 }
 
 fn commit_composer_height(available: f32, row_height: f32, preferred: f32) -> f32 {
@@ -896,8 +1082,12 @@ impl GitTurtle {
         );
     }
 
+    /// `width` is the inspector's width where the window pins it, otherwise
+    /// the width it is expected to take until it is laid out.
     pub(super) fn render_working_inspector(
         &self,
+        width: Pixels,
+        pinned: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -908,11 +1098,17 @@ impl GitTurtle {
         let layout = window.use_keyed_state("working-inspector-layout", cx, |window, _| {
             WorkingInspectorLayout {
                 height: (window.viewport_size().height - px(400.)).max(px(160.)),
+                width,
                 list_size: previous_list.map(|size| size.item),
             }
         });
         let available = f32::from(layout.read(cx).height);
         let short = available < 560.;
+        let forms = self.working_forms(
+            if pinned { width } else { layout.read(cx).width },
+            short,
+            window,
+        );
         // The measured body's height must not change the header height, which
         // would oscillate at a size threshold on successive layout passes.
         let header_height = 44.;
@@ -970,7 +1166,10 @@ impl GitTurtle {
             .work_status
             .as_ref()
             .is_none_or(|status| status.operation.is_none());
-        let pinned = pinned_composer_height(short, window);
+        let floor = working_list_floor(self.settings.density, window);
+        let minimum = composer_minimum(short, window);
+        // The list keeps its one whole row beside the composer's minimum.
+        let composer_height = composer_height.min(available - floor).max(minimum);
         let list = uniform_list(
             "working-files",
             self.working_rows.len(),
@@ -984,31 +1183,42 @@ impl GitTurtle {
         .track_scroll(&self.working_scroll);
         div()
             .size_full().min_h_0().relative().flex().flex_col().bg(rgb(p.panel))
-            // Where the inspector is too short for these controls, the header
-            // and the composer's pinned heading and action, once the file list
-            // has given up its room, the controls give up the rest and scroll.
+            // Where the inspector is too short for these controls, the header,
+            // the file list's one whole row and the composer's minimum, the
+            // controls give up their room first and scroll.
             .child(div().id("working-selection").debug_selector(|| "working-selection".into()).min_h_0().overflow_y_scroll()
-                .child(self.render_working_selection(cx)))
+                .child(self.render_working_selection(forms.compact_selection, cx)))
             .child(
-                div().h(px(header_height)).flex_shrink_0().px_4().flex().items_center().gap_2()
+                div().debug_selector(|| "working-header".into()).h(px(header_height)).flex_shrink_0().px_3().flex().items_center().gap_2()
                     .border_b_1().border_color(rgb(p.border))
-                    .child(icon("commit", 17., p.accent))
-                    .child(div().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::SEMIBOLD).child("Changes"))
-                    .child(div().px_2().py_0p5().rounded(px(5.)).bg(rgb(p.hover))
+                    .when(forms.header_icon, |el| el.child(div().debug_selector(|| "working-header-icon".into()).child(icon("commit", 17., p.accent))))
+                    .when(forms.header_label, |el| el.child(div().debug_selector(|| "working-header-label".into()).text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::SEMIBOLD).child("Changes")))
+                    .when(forms.header_count, |el| el.child(div().id("working-header-count").debug_selector(|| "working-header-count".into())
+                        .px_2().py_0p5().rounded(px(5.)).bg(rgb(p.hover))
                         .text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::MEDIUM)
-                        .text_color(rgb(crate::appearance::labels(cx).count)).child(total.to_string()))
-                    .child(div().flex_1())
-                    .when(refreshing, |el| el.child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("Refreshing…")))
-                    .child(self.render_working_recovery_menu(cx))
-                    .child(button("refresh-working", "", "refresh", false)
-                        .accessibility_label("Refresh working changes").tooltip("Refresh working changes")
-                        .disabled(busy || refreshing).on_click(cx.listener(|this, _, window, cx| this.refresh_worktree(window, cx)))),
+                        .text_color(rgb(crate::appearance::labels(cx).count))
+                        // Without its label the count says what it counts.
+                        .when(!forms.header_label, |el| el.tooltip(move |window, cx| {
+                            Tooltip::new(format!("Changes · {total}")).build(window, cx)
+                        }))
+                        .child(total.to_string())))
+                    // Actions and Refresh hold the trailing edge; the texts
+                    // before them give way, so neither is pushed out.
+                    .child(div().ml_auto().flex().flex_shrink_0().items_center().gap_2()
+                        .when(forms.compact_actions, |el| el.gap_1())
+                        .when(refreshing && !forms.compact_actions, |el| el.child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("Refreshing…")))
+                        .child(self.render_working_recovery_menu(forms.compact_actions, cx))
+                        .child(button("refresh-working", "", "refresh", false).debug_selector(|| "refresh-working".into())
+                            .accessibility_label("Refresh working changes")
+                            .tooltip(if refreshing { "Refresh working changes · Refreshing…" } else { "Refresh working changes" })
+                            .disabled(busy || refreshing).on_click(cx.listener(|this, _, window, cx| this.refresh_worktree(window, cx))))),
             )
-            .child(div().relative().flex_1().min_h(px(if composer { pinned } else { 0. })).flex().flex_col()
+            .child(div().relative().flex_1().min_h(px(floor + if composer { minimum } else { 0. })).flex().flex_col()
             .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
                 layout.update(cx, |layout, cx| {
-                    if layout.height != bounds.size.height {
+                    if layout.height != bounds.size.height || layout.width != bounds.size.width {
                         layout.height = bounds.size.height;
+                        layout.width = bounds.size.width;
                         cx.notify();
                         // Refresh is ignored during paint. Defer it so the
                         // cached workspace consumes the measured body height.
@@ -1017,13 +1227,15 @@ impl GitTurtle {
                 });
             }).absolute().inset_0())
             .child(
-                div().id("working-pane").role(Role::ListBox).aria_label("Working tree files")
+                div().id("working-pane").debug_selector(|| "working-pane".into()).role(Role::ListBox).aria_label("Working tree files")
                     .tab_stop(true).key_context("GitTurtleList").track_focus(&self.file_focus)
                     .on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, window, cx| {
                         this.copy_list_item(crate::views::ListCopy::WorkingPaths, window, cx)
                     }))
                     .border_1().border_color(rgb(p.border)).focus_visible(|style| style.border_color(rgb(p.accent)))
-                    .relative().flex_1().min_h_0().overflow_hidden()
+                    // One whole row, whatever else gives way, so its focus ring
+                    // surrounds a visible list.
+                    .relative().flex_1().min_h(px(floor)).overflow_hidden()
                     .when(total > 0, |el| el.child(list))
                     .when(total == 0, |el| el.child(
                         div().size_full().flex().flex_col().items_center().justify_center().p_5().gap_2()
@@ -1053,34 +1265,39 @@ impl GitTurtle {
                     }).absolute().inset_0()),
             )
             .when(composer, |el| el.child(
-                div().flex_shrink_0().min_h_0().h(px(composer_height.max(pinned))).flex().flex_col()
+                div().flex_shrink_0().min_h_0().h(px(composer_height)).flex().flex_col()
                     .bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
                     // The heading is pinned above the scrolling fields, as the
                     // commit action is below them; where the body is short the
-                    // file list gives up the room for both.
+                    // file list gives up the room for both, down to its row.
                     .child(div().flex_shrink_0().flex().items_center().gap_2().px_3().pt_3()
-                        .when(short, |el| el.px_2().pt_2())
-                        .child(icon("commit", 16., p.accent))
+                        .when(short, |el| el.pt_2())
+                        .when(forms.heading_icon, |el| el.child(div().debug_selector(|| "commit-composer-icon".into()).child(icon("commit", 16., p.accent))))
+                        // Truncating, it keeps "Commit to" and cuts the branch.
                         .child(div().id("commit-composer-heading").debug_selector(|| "commit-composer-heading".into()).flex_1().min_w_0().truncate().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::SEMIBOLD)
-                            .tooltip({ let branch = branch.to_owned(); move |window, cx| Tooltip::new(format!("Commit to {branch}")).build(window, cx) })
+                            .tooltip({
+                                // Without its badge the heading names the count.
+                                let tooltip = if forms.heading_badge { format!("Commit to {branch}") } else { format!("Commit to {branch} · {staged} staged") };
+                                move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+                            })
                             .child(if short { format!("Commit to {branch}") } else { "Create a commit".into() }))
-                        .child(div().px_1p5().py_0p5().rounded(px(4.))
+                        .when(forms.heading_badge, |el| el.child(div().debug_selector(|| "commit-staged-count".into()).flex_shrink_0().px_1p5().py_0p5().rounded(px(4.))
                             .bg(rgb(if staged > 0 { p.added_background } else { p.hover }))
                             .text_size(crate::appearance::ui_text(10.)).font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(if staged > 0 { crate::appearance::labels(cx).added } else { crate::appearance::labels(cx).count }))
-                            .child(format!("{staged} staged"))))
+                            .child(format!("{staged} staged")))))
                     .child(div().id("commit-composer-fields").flex_1().min_h_0().overflow_y_scroll()
                     // The gap that followed the heading leads the fields.
                     .child(div().flex().flex_col().gap_2().px_3().pt_2().pb_3()
-                    .when(short, |el| el.gap_1().px_2().pt_1().pb_2())
+                    .when(short, |el| el.gap(crate::appearance::ui_size(4.)).pt(crate::appearance::ui_size(4.)).pb_2())
                     .when(!short, |el| el.child(div().flex().items_center().gap_1p5().min_w_0().text_size(crate::appearance::ui_text(11.))
                         .text_color(rgb(p.muted)).child(icon("branch", 13., p.muted))
                         .child(div().truncate().child(branch.to_owned()))))
-                    .child(div().flex().items_center().gap_2().text_size(crate::appearance::ui_text(11.))
-                        .child(div().flex_1().font_weight(FontWeight::MEDIUM).child("Title"))
-                        .child(div().text_color(rgb(if summary_length > 72 { p.warning } else { p.muted }))
+                    .child(div().debug_selector(|| "commit-title-label".into()).flex().items_center().gap_2().text_size(crate::appearance::ui_text(11.))
+                        .child(div().debug_selector(|| "commit-title-name".into()).flex_1().font_weight(FontWeight::MEDIUM).child("Title"))
+                        .child(div().debug_selector(|| "commit-title-counter".into()).text_color(rgb(if summary_length > 72 { p.warning } else { p.muted }))
                             .child(format!("{summary_length}/72 suggested"))))
-                    .child(Input::new(&self.commit_title).readonly(busy).aria_label("Commit title").text_size(crate::appearance::ui_text(12.)))
+                    .child(div().debug_selector(|| "commit-title".into()).child(Input::new(&self.commit_title).readonly(busy).aria_label("Commit title").text_size(crate::appearance::ui_text(12.))))
                     .when(summary_length > 72, |el| el.child(
                         div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("A shorter title is easier to scan. This title is still valid."),
                     ))
@@ -1109,7 +1326,7 @@ impl GitTurtle {
                             .child(icon("file-conflict", 15., p.warning))
                             .child("Resolve conflicted files before committing."),
                     ))))
-                    .child(div().flex_shrink_0().px_3().pb_3().when(short, |el| el.px_2().pb_2()).child(
+                    .child(div().flex_shrink_0().px_3().pb_3().when(short, |el| el.pb_2()).child(
                         Button::new("commit-staged").debug_selector(|| "commit-staged".into()).primary().w_full().h(crate::appearance::ui_size(36.))
                             .icon(Icon::default().path("icons/commit.svg").size(px(16.)))
                             .label(if busy {

@@ -125,7 +125,15 @@ impl GitTurtle {
         true
     }
 
-    pub(super) fn render_working_recovery_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The Changes header's Actions menu. `compact`, in an inspector too
+    /// narrow for its label beside Refresh (`workspace::WorkingForms`), it
+    /// keeps only its caret in a 28 px control, with its accessible name and
+    /// a tooltip that leads with its label.
+    pub(super) fn render_working_recovery_menu(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let owner = cx.entity().downgrade();
         let repository = self.path.clone();
         let head = self
@@ -145,13 +153,25 @@ impl GitTurtle {
             .and_then(|index| self.work_status.as_ref()?.entries.get(index))
             .filter(|entry| entry.untracked)
             .cloned();
-        Button::new("working-recovery-menu")
-            .small()
-            .ghost()
-            .label("Actions")
+        const DETAIL: &str = "Ignore selected untracked content, stashes, and last-commit actions";
+        let control = if compact {
+            crate::views::compact_control_name(
+                button("working-recovery-menu", "", "", false),
+                "working-recovery-menu",
+                "Working changes and recovery actions",
+            )
+            .tooltip(format!("Actions · {DETAIL}"))
+        } else {
+            Button::new("working-recovery-menu")
+                .small()
+                .ghost()
+                .label("Actions")
+                .accessibility_label("Working changes and recovery actions")
+                .tooltip(DETAIL)
+        };
+        control
+            .debug_selector(|| "working-recovery-menu".into())
             .dropdown_caret(true)
-            .accessibility_label("Working changes and recovery actions")
-            .tooltip("Ignore selected untracked content, stashes, and last-commit actions")
             .disabled(self.operation_busy.is_some())
             .dropdown_menu(move |menu, _, _| {
                 let ignore_entry = ignore_entry.clone();
