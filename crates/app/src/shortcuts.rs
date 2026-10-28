@@ -458,6 +458,30 @@ pub(super) fn bind_keys(cx: &mut App) {
     }));
 }
 
+/// `field`, a multi-line prose field, in a wrapper from which Tab and
+/// Shift-Tab move focus to the next and the previous stop, as from every other
+/// stop (DESIGN.md's keyboard contract), changing none of its text. The kit's
+/// multi-line field binds them to indenting its lines, so focus never left
+/// it; the wrapper takes the indent actions in their capture phase, ahead of
+/// the field. The commit description, the rebase message, the amended
+/// description, the tag annotation and the remote form's URL and refspec
+/// lists take it. The GitHub panel's composers grow with their text, a mode
+/// the kit never indents, and the conflict editors keep Tab for indenting
+/// code.
+pub(crate) fn tab_leaves(field: impl IntoElement) -> Div {
+    use gpui_kit::component::input::{IndentInline, OutdentInline};
+    div()
+        .capture_action(|_: &IndentInline, window, cx| {
+            window.focus_next(cx);
+            cx.stop_propagation();
+        })
+        .capture_action(|_: &OutdentInline, window, cx| {
+            window.focus_prev(cx);
+            cx.stop_propagation();
+        })
+        .child(field)
+}
+
 #[cfg(target_os = "linux")]
 pub(super) fn action(id: ShortcutId) -> Option<Box<dyn Action>> {
     SHORTCUTS

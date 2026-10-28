@@ -1457,19 +1457,19 @@ impl Render for RemoteForm {
                 div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("Current fetch: {}", remote.urls.iter().map(|url| workspace::display_remote_url(url)).collect::<Vec<_>>().join(" · ")))
             }))
             .child(div().flex().flex_col().gap_1().child(field_label(if self.expected.is_some() { "New fetch URLs" } else { "Fetch URLs" }, cx))
-                .child(Textarea::new(&self.fetch).h(crate::appearance::ui_size(70.)).aria_label("Fetch URLs, one per line"))
+                .child(shortcuts::tab_leaves(Textarea::new(&self.fetch).h(crate::appearance::ui_size(70.)).aria_label("Fetch URLs, one per line")))
                 .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(if self.expected.is_some() { "One URL per line. Leave blank to preserve the existing URLs." } else { "One URL or local repository path per line." })))
             .child(Checkbox::new("remote-push-inherits-fetch").label("Use fetch URLs for push").checked(self.inherit_push)
                 .on_click(cx.listener(|this, checked, _, cx| { this.inherit_push = *checked; cx.notify(); })))
             .when(!self.inherit_push, |element| element.child(div().flex().flex_col().gap_1().child(field_label("Push URLs", cx))
                 .children(self.expected.as_ref().filter(|remote| !remote.push_urls.is_empty()).map(|remote| div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(format!("Current: {}", remote.push_urls.iter().map(|url| workspace::display_remote_url(url)).collect::<Vec<_>>().join(" · ")))))
-                .child(Textarea::new(&self.push).h(crate::appearance::ui_size(70.)).aria_label("Push URLs, one per line"))))
+                .child(shortcuts::tab_leaves(Textarea::new(&self.push).h(crate::appearance::ui_size(70.)).aria_label("Push URLs, one per line")))))
             .child(button("remote-advanced-settings", if self.advanced { "Hide fetch rules" } else { "Fetch rules…" }, "", false)
                 .on_click(cx.listener(|this, _, _, cx| { this.advanced = !this.advanced; cx.notify(); })))
             .when(self.advanced, |element| element.child(div().flex().flex_col().gap_2()
                 .child(Checkbox::new("remote-store-tracking-refs").label("Store fetched branches as remote-tracking references").checked(self.store_refs)
                     .on_click(cx.listener(|this, checked, _, cx| { this.store_refs = *checked; cx.notify(); })))
-                .when(self.store_refs, |element| element.child(Textarea::new(&self.rules).h(px(90.)).aria_label("Git fetch refspecs, one per line")))
+                .when(self.store_refs, |element| element.child(shortcuts::tab_leaves(Textarea::new(&self.rules).h(px(90.)).aria_label("Git fetch refspecs, one per line"))))
                 .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Advanced Git refspecs, one per line. The standard mapping tracks every remote branch under this remote's name."))))
             .children(self.error.as_ref().map(|error| div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone())))
     }
@@ -1481,6 +1481,33 @@ fn input_lines(value: &str) -> Vec<String> {
         .filter(|line| !line.trim().is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+/// Opens Add remote with its push URLs and fetch refspecs shown and returns
+/// its three line lists, for the prose fields' Tab regression in
+/// `views::tests`.
+#[cfg(test)]
+pub(crate) fn open_remote_lists(
+    app: &mut GitTurtle,
+    window: &mut Window,
+    cx: &mut Context<GitTurtle>,
+) -> [(&'static str, Entity<TextareaState>); 3] {
+    let owner = cx.entity().downgrade();
+    let path = app.path.clone();
+    let form = cx.new(|cx| {
+        let mut form = RemoteForm::new(owner, path, None, window, cx);
+        form.inherit_push = false;
+        form.advanced = true;
+        form.store_refs = true;
+        form
+    });
+    show_remote_form(form.clone(), window, cx);
+    let form = form.read(cx);
+    [
+        ("the fetch URLs", form.fetch.clone()),
+        ("the push URLs", form.push.clone()),
+        ("the fetch refspecs", form.rules.clone()),
+    ]
 }
 
 #[cfg(test)]

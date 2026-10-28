@@ -791,11 +791,11 @@ impl Render for AmendForm {
                     .flex_col()
                     .gap_1()
                     .child("Description · optional")
-                    .child(
+                    .child(shortcuts::tab_leaves(
                         Textarea::new(&self.description)
                             .h(px(170.))
                             .aria_label("Amended commit description"),
-                    ),
+                    )),
             )
             .child(
                 div()
@@ -1586,6 +1586,25 @@ impl Render for StashBrowser {
                     .child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("Restoring keeps this stash saved. Drop it separately after checking the restored work.")))
                 .when(self.snapshot.is_none() && self.loading.is_none() && self.error.is_none(), |element| element.child(div().flex_1().flex().items_center().justify_center().p_5().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Choose a stash to inspect its staged, unstaged and untracked files."))))
     }
+}
+
+/// Prepares Amend last commit for `head`, whose form opens once the read
+/// answers, for the prose fields' Tab regression in `views::tests`.
+#[cfg(test)]
+pub(crate) fn prepare_amend(
+    app: &mut GitTurtle,
+    head: String,
+    window: &mut Window,
+    cx: &mut Context<GitTurtle>,
+) {
+    app.prepare_commit_recovery(RecoveryKind::Amend, head, None, window, cx);
+}
+
+/// The open Amend form's description field.
+#[cfg(test)]
+pub(crate) fn amend_description(app: &GitTurtle, cx: &App) -> Option<Entity<TextareaState>> {
+    let form = app.recovery.amend.as_ref()?;
+    Some(form.read(cx).description.clone())
 }
 
 #[cfg(test)]

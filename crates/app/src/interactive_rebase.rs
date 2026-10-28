@@ -773,12 +773,20 @@ impl Render for MessageForm {
                         .child(copy_feedback::copy_button(mark, "Copy saved text", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "saved message", copy.clone())))
                         .child(button("restore-rebase-draft", "Restore saved message", "", false).disabled(!valid || self.editor.is_none()).on_click(cx.listener(move |this, _, window, cx| { if valid { if let Some(editor) = &this.editor { editor.update(cx, |editor, cx| editor.set_value(recovered.text.clone(), window, cx)); } this.recovered = None; cx.notify(); } })))))
             })
-            .when_some(self.editor.as_ref(), |element, editor| element.child(Textarea::new(editor).h(px(240.)).aria_label("Rebase commit message")))
+            .when_some(self.editor.as_ref(), |element, editor| element.child(shortcuts::tab_leaves(Textarea::new(editor).h(px(240.)).aria_label("Rebase commit message"))))
             .child(label("rebase-draft-save-status", durable_status).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .when(self.editor.is_none(), |element| element.child(label("rebase-no-message", "No message is pending. Continue will replay the next planned step and pause if a message or conflict needs attention.").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| label("rebase-message-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .child(button("review-rebase-continue", "Review Continue…", "", true).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))))))
     }
+}
+
+/// The open Continue rebase dialog's message field, for the prose fields'
+/// Tab regression in `views::tests`.
+#[cfg(test)]
+pub(crate) fn rebase_message(app: &GitTurtle, cx: &App) -> Option<Entity<TextareaState>> {
+    let form = app.interactive_rebase.message.as_ref()?;
+    form.read(cx).editor.clone()
 }
 
 #[cfg(test)]

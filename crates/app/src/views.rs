@@ -10836,6 +10836,141 @@ pub(crate) mod tests {
         assert_eq!(text(cx), "Why this change", "Shift-Tab removes nothing");
     }
 
+    /// Typed into `field`, Tab moves focus on to a drawn stop and Shift-Tab
+    /// comes back and then leaves it backwards, neither changing its text.
+    fn assert_tab_leaves(cx: &mut VisualTestContext, field: &Entity<TextareaState>, name: &str) {
+        let focus = cx.read(|cx| field.read(cx).focus_handle(cx));
+        let text = |cx: &mut VisualTestContext| cx.read(|cx| field.read(cx).value().to_string());
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, _| focus.is_focused(window));
+        let drawn =
+            |cx: &mut VisualTestContext| !cx.update(|window, _| window.context_stack().is_empty());
+        cx.update(|window, cx| window.focus(&focus, cx));
+        draw(cx);
+        assert!(focused(cx) && drawn(cx), "{name} takes focus");
+        cx.simulate_input("Why");
+        draw(cx);
+        let typed = text(cx);
+        assert!(typed.contains("Why"), "{name} takes typing: {typed:?}");
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert!(!focused(cx), "Tab leaves {name}");
+        assert!(drawn(cx), "Tab lands on a drawn stop after {name}");
+        assert_eq!(text(cx), typed, "Tab adds nothing to {name}");
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(focused(cx), "Shift-Tab comes back to {name}");
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(!focused(cx), "Shift-Tab leaves {name} backwards");
+        assert!(drawn(cx), "Shift-Tab lands on a drawn stop before {name}");
+        assert_eq!(text(cx), typed, "Shift-Tab removes nothing from {name}");
+    }
+
+    /// Every multi-line prose field lets Tab and Shift-Tab leave it, as the
+    /// commit description does, and keeps its text: the tag annotation, the
+    /// amended description, the remote form's fetch URLs, push URLs and fetch
+    /// refspecs, and the rebase message. The kit's multi-line field indented
+    /// with them, so focus never left. The GitHub panel's growing composers
+    /// never indented (`github_view::conversations::tests`).
+    #[gpui::test]
+    async fn tab_and_shift_tab_leave_every_prose_field(cx: &mut TestAppContext) {
+        use gitturtle_core::{InteractiveRebaseCommand, RebaseAction, WriteCommand};
+        use gpui_kit::component::WindowExt;
+        let (fixture, app, cx) = history_window_from(cx, history_script(2, 1)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        // Reads that open a form answer on the operation thread; settle the
+        // replies before the form is used.
+        let drain = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.operations.drain();
+                app.preferences_writer.drain();
+            });
+            cx.executor().run_until_parked();
+            draw(cx);
+        };
+        let close = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(400));
+            draw(cx);
+        };
+
+        let field = cx.update(|window, cx| {
+            app.update(cx, |app, cx| tags::open_tag_annotation(app, window, cx))
+        });
+        draw(cx);
+        assert_tab_leaves(cx, &field, "the tag annotation");
+        close(cx);
+
+        let head = app.read_with(cx, |app, _| app.commits[0].oid.clone());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| recovery::prepare_amend(app, head, window, cx))
+        });
+        drain(cx);
+        let field = app
+            .read_with(cx, recovery::amend_description)
+            .expect("Amend last commit opens");
+        assert_tab_leaves(cx, &field, "the amended description");
+        close(cx);
+
+        let lists = cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                branch_actions::open_remote_lists(app, window, cx)
+            })
+        });
+        draw(cx);
+        for (name, field) in &lists {
+            assert_tab_leaves(cx, field, name);
+        }
+        close(cx);
+
+        // Last, as it leaves the repository mid-rebase: a reword paused for
+        // its message, which Continue rebase edits.
+        // The imported fixture has no checkout, which the rebase would take
+        // for working changes.
+        let root = fixture.path().join("narrow");
+        for args in [
+            ["config", "user.name", "Fixture"],
+            ["config", "user.email", "fixture@example.invalid"],
+            ["config", "commit.gpgsign", "false"],
+            ["reset", "--hard", "--quiet"],
+        ] {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let repo = app.read_with(cx, |app, _| app.repository.clone().unwrap());
+        let plan = repo.interactive_rebase_plan("HEAD~1").unwrap();
+        let mut steps = plan.steps();
+        steps[0].action = RebaseAction::Reword;
+        repo.execute(&WriteCommand::InteractiveRebase(Arc::new(
+            InteractiveRebaseCommand::Start {
+                plan,
+                steps,
+                acknowledge_published: false,
+            },
+        )))
+        .unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.prepare_interactive_rebase_continue(window, cx)
+            })
+        });
+        drain(cx);
+        let field = app
+            .read_with(cx, interactive_rebase::rebase_message)
+            .expect("Continue rebase opens with Git's message");
+        assert_tab_leaves(cx, &field, "the rebase message");
+        close(cx);
+    }
+
     /// In a 461 × 490 window, the compact Latest and Older tooltips and the
     /// Options tooltip, each wider than the window on one line, wrap inside
     /// it above their controls, with the tooltip positioner's margin and the

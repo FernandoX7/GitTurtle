@@ -547,11 +547,26 @@ impl Render for TagForm {
             .child(static_text("tag-name-label", "Tag name").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.name).aria_label("Tag name"))
             .child(static_text("tag-target-label", "Target commit (selected commit by default)").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.target).aria_label("Target commit for tag"))
             .child(div().flex().gap_2().children([(false, "Lightweight"), (true, "Annotated")].map(|(annotated, label)| button(label, label, "", self.annotated == annotated).toggled(self.annotated == annotated).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| { this.annotated = annotated; this.error = None; cx.notify(); })))))
-            .when(self.annotated, |element| element.child(Textarea::new(&self.message).aria_label("Tag annotation")))
+            .when(self.annotated, |element| element.child(shortcuts::tab_leaves(Textarea::new(&self.message).aria_label("Tag annotation"))))
             .child(static_text("tag-signing-explanation", "Signing follows Git configuration. Signing failures are reported without an unsigned fallback.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .when(self.pending, |element| element.child(static_text("tag-preparation-status", "Preparing exact target and signing settings…").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| static_text("tag-preparation-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
     }
+}
+
+/// Opens Create tag, annotated as it opens, and returns its annotation
+/// field, for the prose fields' Tab regression in `views::tests`.
+#[cfg(test)]
+pub(crate) fn open_tag_annotation(
+    app: &mut GitTurtle,
+    window: &mut Window,
+    cx: &mut Context<GitTurtle>,
+) -> Entity<TextareaState> {
+    app.open_create_tag(window, cx);
+    let form = app.tag_actions.draft.clone().expect("Create tag opens");
+    let form = form.read(cx);
+    assert!(form.annotated, "Create tag opens annotated");
+    form.message.clone()
 }
 
 #[cfg(test)]

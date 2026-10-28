@@ -1,6 +1,5 @@
 use crate::*;
 use gitturtle_core::{ChangeArea, ChangeStatus, StatusEntry, WriteCommand};
-use gpui_kit::component::input::{IndentInline, OutdentInline};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 use preferences::CommitDraft;
@@ -2436,21 +2435,12 @@ impl GitTurtle {
                             .child(div().debug_selector(|| "commit-description-name".into()).font_weight(FontWeight::MEDIUM).child("Description"))
                             .when(forms.description_note, |el| el.child(div().debug_selector(|| "commit-description-optional".into()).text_color(rgb(p.muted)).child("· optional"))))
                         // Tab and Shift-Tab move focus on and back, as on every
-                        // other stop (DESIGN.md's keyboard contract); the kit's
-                        // multi-line field indents with them, so focus never left.
-                        .child(div().debug_selector(|| "commit-description".into())
-                            .capture_action(|_: &IndentInline, window, cx| {
-                                window.focus_next(cx);
-                                cx.stop_propagation();
-                            })
-                            .capture_action(|_: &OutdentInline, window, cx| {
-                                window.focus_prev(cx);
-                                cx.stop_propagation();
-                            })
-                            .child(Textarea::new(&self.commit_message).readonly(busy)
+                        // other stop, rather than indenting.
+                        .child(shortcuts::tab_leaves(Textarea::new(&self.commit_message).readonly(busy)
                                 .aria_label("Commit description, optional")
                                 .h(px(field))
-                                .text_size(crate::appearance::ui_text(12.))))
+                                .text_size(crate::appearance::ui_text(12.)))
+                            .debug_selector(|| "commit-description".into()))
                         .child(div().debug_selector(|| "commit-description-hint".into()).flex().items_center().gap_2().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))
                             // Shrinking below its one line, it wraps as `description_section`
                             // predicts rather than running past the column at 18 pt.
