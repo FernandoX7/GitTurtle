@@ -104,6 +104,9 @@ pub use event::{InteractiveElementExt, OngoingScrollExt};
 pub use focus_trap::FocusTrapElement;
 #[doc(hidden)]
 pub use focus_trap::active_focus_trap;
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub use focus_trap::focused_modal_nodes;
 pub use geometry::*;
 pub use global_state::{DeferredPopover, GlobalState};
 pub use history::History;

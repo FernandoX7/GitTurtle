@@ -53,6 +53,11 @@ impl<T: InteractiveElement + Sized> FocusTrapElement for T {}
 pub(crate) struct FocusTrapManager {
     /// Map from container element ID to its focus trap info
     traps: HashMap<GlobalElementId, WeakFocusHandle>,
+    /// GitTurtle patch: the node each modal trap was last laid out to write,
+    /// read by [`focused_modal_nodes`]. Debug builds only, as GPUI keeps its
+    /// own node provenance.
+    #[cfg(debug_assertions)]
+    modals: HashMap<GlobalElementId, gpui::accesskit::Node>,
 }
 
 impl Global for FocusTrapManager {}
@@ -62,6 +67,8 @@ impl FocusTrapManager {
     fn new() -> Self {
         Self {
             traps: HashMap::new(),
+            #[cfg(debug_assertions)]
+            modals: HashMap::new(),
         }
     }
 
@@ -97,6 +104,11 @@ impl FocusTrapManager {
     /// Cleanup any traps with dropped handles
     fn cleanup(&mut self) {
         self.traps.retain(|_, handle| handle.upgrade().is_some());
+        #[cfg(debug_assertions)]
+        {
+            let traps = &self.traps;
+            self.modals.retain(|id, _| traps.contains_key(id));
+        }
     }
 }
 
@@ -210,8 +222,11 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
     ) {
         Element::a11y_synthetic_children(&mut self.base, prepaint, builder);
         let role = builder.parent_node().role();
+        // A title that is a node of its own already reads in the dialog,
+        // which takes its name; a synthetic title would repeat it.
         if matches!(role, gpui::Role::Dialog | gpui::Role::AlertDialog)
             && builder.parent_node().labelled_by().is_empty()
+            && !self.dialog_label.titles_itself()
         {
             if let Some(label) = self.dialog_label.get() {
                 if builder.parent_node().label() != Some(label.as_ref()) {
@@ -236,12 +251,23 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
     ) -> (LayoutId, Self::RequestLayoutState) {
         // Register this focus trap with the manager
         FocusTrapManager::register_trap(global_id.unwrap(), self.focus_handle.downgrade(), cx);
-        let _label_scope = matches!(
-            self.base.a11y_role(),
-            Some(gpui::Role::Dialog | gpui::Role::AlertDialog)
-        )
-        .then(|| self.dialog_label.enter());
-        self.base.request_layout(global_id, None, window, cx)
+        let role = self
+            .base
+            .a11y_role()
+            .filter(|role| matches!(role, gpui::Role::Dialog | gpui::Role::AlertDialog));
+        let _label_scope = role.is_some().then(|| self.dialog_label.enter());
+        let layout = self.base.request_layout(global_id, None, window, cx);
+        // The title is captured by now: record the node GPUI would write,
+        // which it writes only while an assistive technology is active.
+        #[cfg(debug_assertions)]
+        if let (Some(role), Some(id)) = (role, global_id) {
+            let mut node = gpui::accesskit::Node::new(role);
+            self.write_a11y_info(&mut node);
+            FocusTrapManager::global_mut(cx)
+                .modals
+                .insert(id.clone(), node);
+        }
+        layout
     }
 
     fn prepaint(
@@ -283,4 +309,24 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
 #[doc(hidden)]
 pub fn active_focus_trap(window: &Window, cx: &App) -> Option<FocusHandle> {
     FocusTrapManager::find_active_trap(window, cx)
+}
+
+/// GitTurtle patch: the accessibility nodes of the modal dialogs that hold
+/// focus, each as its focus trap last laid it out to write: role, modal
+/// state and name. GPUI writes a node only while an assistive technology is
+/// active, which a test never is. Debug builds only.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn focused_modal_nodes(window: &Window, cx: &App) -> Vec<gpui::accesskit::Node> {
+    let manager = FocusTrapManager::global(cx);
+    manager
+        .traps
+        .iter()
+        .filter(|(_, handle)| {
+            handle
+                .upgrade()
+                .is_some_and(|handle| handle.contains_focused(window, cx))
+        })
+        .filter_map(|(id, _)| manager.modals.get(id).cloned())
+        .collect()
 }

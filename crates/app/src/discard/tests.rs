@@ -207,6 +207,19 @@ async fn discard_reviews_exact_entry_and_restores_tracked_file_from_head(cx: &mu
         app.update(cx, |app, cx| app.open_discard(entry, window, cx));
     });
     prepared(&app, cx).await;
+    // The review is named by its styled title, not the toolkit's fallback
+    // "Alert dialog" (`native_accessibility::dialog_tests`).
+    #[cfg(debug_assertions)]
+    {
+        let nodes = cx.update(|window, cx| gpui_kit::base::focused_modal_nodes(window, cx));
+        assert_eq!(
+            nodes
+                .iter()
+                .map(|node| (node.role(), node.label()))
+                .collect::<Vec<_>>(),
+            [(Role::AlertDialog, Some("Discard file changes?"))]
+        );
+    }
     // Tab backwards from the dialog container reaches its final action. The
     // actual focused button still accepts Enter after the user chooses it.
     cx.simulate_keystrokes("shift-tab enter");

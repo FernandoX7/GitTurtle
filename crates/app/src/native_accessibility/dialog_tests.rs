@@ -286,3 +286,141 @@ fn focused_reader_closes_find_before_the_dialog(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
     assert_eq!(*observed.borrow(), 1, "second Escape closes the dialog");
 }
+
+/// A styled title that names itself, as the Reflog's, the rebase form's and
+/// the GitHub panel's do (a `div` with an ID, a role and an accessible
+/// name, styled), names its dialog through the component Dialog's erased
+/// title, as plain text does. Each was announced by the fallback "Alert
+/// dialog".
+#[gpui::test]
+fn self_named_titles_name_their_dialog(cx: &mut TestAppContext) {
+    struct Titles {
+        nodes: Nodes,
+    }
+    impl Render for Titles {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.nodes.borrow_mut().clear();
+            let titles = [
+                div()
+                    .id("reflog-title")
+                    .role(Role::Label)
+                    .aria_label("Local reflog and recovery")
+                    .child("Local reflog and recovery")
+                    .into_any_element(),
+                div()
+                    .id("interactive-rebase-title")
+                    .role(Role::Label)
+                    .aria_label("Edit local commits")
+                    .mb(px(-2.))
+                    .child("Edit local commits")
+                    .into_any_element(),
+                // Neither readable text nor a name: the fallback stays.
+                div().child("Custom rich title").into_any_element(),
+            ];
+            div().children(titles.into_iter().enumerate().map(|(index, title)| {
+                Observe {
+                    inner: div()
+                        .id(("self-named-modal", index))
+                        .role(Role::AlertDialog)
+                        .focus_trap(("self-named-trap", index), &cx.focus_handle())
+                        .child(gpui_kit::component::dialog::DialogTitle::new().child(title)),
+                    nodes: self.nodes.clone(),
+                }
+            }))
+        }
+    }
+    cx.update(gpui_kit::init);
+    let nodes: Nodes = Default::default();
+    let observed = nodes.clone();
+    let (_, cx) = cx.add_window_view(move |_, _| Titles { nodes });
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    let nodes = observed.borrow();
+    assert_eq!(
+        nodes.iter().map(|node| node.label()).collect::<Vec<_>>(),
+        [
+            Some("Local reflog and recovery"),
+            Some("Edit local commits"),
+            Some("Alert dialog")
+        ]
+    );
+    assert!(
+        nodes
+            .iter()
+            .all(|node| node.role() == Role::AlertDialog && node.is_modal())
+    );
+}
+
+/// Every dialog the repository window opens is a modal alert dialog named
+/// by its title, never by the toolkit's fallback "Alert dialog", which
+/// announced the Reflog and the interactive rebase form, their styled
+/// titles unread. Each is read from the node its focus trap was laid out to
+/// write, which the toolkit records in debug builds: GPUI writes the
+/// window's tree only while an assistive technology is active.
+#[cfg(debug_assertions)]
+#[gpui::test]
+async fn every_repository_dialog_is_named_by_its_title(cx: &mut TestAppContext) {
+    type Open = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    crate::focus_ring::sweep::prepare(&app, cx);
+    let dialogs: [(&str, Open); 15] = [
+        ("Local reflog and recovery", |app, window, cx| {
+            app.open_reflog_browser(window, cx)
+        }),
+        ("Edit local commits", |app, window, cx| {
+            app.open_interactive_rebase(None, window, cx)
+        }),
+        ("Review rewritten series", |app, window, cx| {
+            app.open_rewrite_review(window, cx)
+        }),
+        ("Command palette", |app, window, cx| {
+            app.open_command_palette(window, cx)
+        }),
+        ("Quick Open File", |app, window, cx| {
+            app.open_quick_file(window, cx)
+        }),
+        ("Keyboard Shortcuts", |app, window, cx| {
+            app.shortcut_help(window, cx)
+        }),
+        ("Tags", |app, window, cx| app.open_tags(window, cx)),
+        ("Stashes", |app, window, cx| app.open_stashes(window, cx)),
+        ("Worktrees", |app, window, cx| {
+            app.open_worktree_manager(window, cx)
+        }),
+        ("GitHub pull requests", |app, window, cx| {
+            app.open_github(window, cx)
+        }),
+        ("New theme", |app, window, cx| {
+            app.open_theme_editor(None, window, cx)
+        }),
+        ("GitTurtle activity", |app, window, cx| {
+            app.open_activity(window, cx)
+        }),
+        ("Git profiles", |app, window, cx| {
+            app.open_profiles(window, cx)
+        }),
+        ("Compare local revisions", |app, window, cx| {
+            app.open_revision_comparison(window, cx)
+        }),
+        ("Saved recovery drafts", |app, window, cx| {
+            app.open_recovery_drafts(window, cx)
+        }),
+    ];
+    for (title, open) in dialogs {
+        crate::focus_ring::sweep::open_dialog(&app, cx, title, open).await;
+        let nodes = cx.update(|window, cx| gpui_kit::base::focused_modal_nodes(window, cx));
+        let [node] = nodes.as_slice() else {
+            panic!("{title}: one modal holds focus, {nodes:?}");
+        };
+        assert_eq!(node.role(), Role::AlertDialog, "{title}");
+        assert!(node.is_modal(), "{title}");
+        assert_eq!(node.label(), Some(title), "{title}");
+        cx.update(|window, cx| window.close_dialog(cx));
+        views::tests::draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "{title} closes"
+        );
+    }
+}

@@ -1,12 +1,22 @@
 //! The component layer passes titles as erased elements. Capture supported text
 //! only while their own modal host lays out, then name that host by a synthetic
-//! title node. No title survives outside its owning rendered modal element.
-use gpui::{AnyElement, SharedString, Text};
+//! title node. A styled title that names itself (a `div` with an ID, a role
+//! and an accessible name) names the host too, and, as GPUI writes that title
+//! as a node of its own, no synthetic node repeats it. No title survives
+//! outside its owning rendered modal element.
+use gpui::{AnyElement, Div, Element, SharedString, Stateful, Text};
 use std::{cell::RefCell, rc::Rc};
 
-type Label = Rc<RefCell<Option<SharedString>>>;
+type Label = Rc<RefCell<Option<Title>>>;
 thread_local! {
     static SCOPES: RefCell<Vec<Label>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A captured title: its text, and whether part of it is an element that
+/// GPUI writes as an accessibility node of its own.
+struct Title {
+    text: SharedString,
+    node: bool,
 }
 
 #[derive(Default)]
@@ -19,7 +29,13 @@ impl DialogLabel {
     }
 
     pub(crate) fn get(&self) -> Option<SharedString> {
-        self.0.borrow().clone()
+        self.0.borrow().as_ref().map(|title| title.text.clone())
+    }
+
+    /// Whether the title has a node of its own, which already reads it in
+    /// the dialog: then no synthetic title node repeats it.
+    pub(crate) fn titles_itself(&self) -> bool {
+        self.0.borrow().as_ref().is_some_and(|title| title.node)
     }
 }
 
@@ -42,12 +58,14 @@ pub(crate) fn capture_title(children: &mut [AnyElement]) {
         return;
     }
     let mut text = String::new();
+    let mut node = false;
     const MAX_BYTES: usize = 16 * 1024;
     for child in children {
         let value = readable_text(child, 0);
-        let Some(value) = value else {
+        let Some((value, own_node)) = value else {
             continue;
         };
+        node |= own_node;
         if !text.is_empty() {
             text.push(' ');
         }
@@ -62,11 +80,16 @@ pub(crate) fn capture_title(children: &mut [AnyElement]) {
         }
     }
     if !text.is_empty() {
-        *label.borrow_mut() = Some(text.into());
+        *label.borrow_mut() = Some(Title {
+            text: text.into(),
+            node,
+        });
     }
 }
 
-fn readable_text(element: &mut AnyElement, depth: usize) -> Option<SharedString> {
+/// The text `element` reads as, and whether GPUI writes it as a node of its
+/// own.
+fn readable_text(element: &mut AnyElement, depth: usize) -> Option<(SharedString, bool)> {
     // Component Dialog and AlertDialog first erase their title and then pass
     // it through ParentElement::child, which wraps AnyElement again. Preserve
     // those plain titles without traversing arbitrary rich component trees.
@@ -77,12 +100,26 @@ fn readable_text(element: &mut AnyElement, depth: usize) -> Option<SharedString>
         return readable_text(inner, depth + 1);
     }
     if let Some(value) = element.downcast_mut::<SharedString>() {
-        Some(value.clone())
+        Some((value.clone(), false))
     } else if let Some(value) = element.downcast_mut::<&'static str>() {
-        Some(SharedString::from(*value))
+        Some((SharedString::from(*value), false))
+    } else if let Some(value) = element.downcast_mut::<Text>() {
+        Some((value.text().clone(), false))
+    } else if let Some(title) = element.downcast_mut::<Stateful<Div>>() {
+        // A styled title that names itself, a label with an ID, a role and
+        // an accessible name: GPUI writes it as a node of its own.
+        accessible_name(title).map(|name| (name, true))
     } else {
-        element
-            .downcast_mut::<Text>()
-            .map(|value| value.text().clone())
+        None
     }
+}
+
+/// The accessible name `element` writes, if it has a role and a name.
+fn accessible_name(element: &impl Element) -> Option<SharedString> {
+    let role = element.a11y_role()?;
+    let mut node = gpui::accesskit::Node::new(role);
+    element.write_a11y_info(&mut node);
+    node.label()
+        .filter(|label| !label.is_empty())
+        .map(|label| SharedString::from(label.to_owned()))
 }
