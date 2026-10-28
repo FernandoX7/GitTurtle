@@ -56,14 +56,18 @@ fn composer_minimum(short: bool, heading: bool, window: &Window) -> f32 {
 
 /// The heights the composer's rows take, snapped to device pixels as layout
 /// snaps them, from which its minimum (`composer_minimum`), its preferred
-/// height and its Description section's field (`description_field`) are
-/// predicted before layout.
+/// height, its Description section's field (`description_field`) and a
+/// short composer's drawn height (`content`) are predicted before layout.
 struct ComposerMetrics {
     /// The composer's top border.
     border: Pixels,
     /// The padding above the heading row (or, without it, above the fields)
-    /// and below the commit action, which the fields also keep below them.
+    /// and below the commit action.
     padding: Pixels,
+    /// The space between the fields' last row and the commit action: a short
+    /// composer's gap, so its label, field and action keep one scaled 4 px
+    /// rhythm, and a taller one's padding.
+    end: Pixels,
     /// Whether the pinned heading is drawn (`WorkingFit::heading`).
     heading: bool,
     /// The heading's line beside its 16 px icon and the staged count's
@@ -114,9 +118,11 @@ impl ComposerMetrics {
         } else {
             line(crate::appearance::ui_text(11.)).max(px(13.)) + gap
         };
+        let padding = snap(rem * if short { 0.5 } else { 0.75 });
         Self {
             border: snap(px(1.)),
-            padding: snap(rem * if short { 0.5 } else { 0.75 }),
+            padding,
+            end: if short { gap } else { padding },
             heading,
             heading_row,
             gap,
@@ -138,12 +144,21 @@ impl ComposerMetrics {
 
     /// The composer's least height: its border, the heading row with the
     /// padding above it, the title's label and one line of its field with
-    /// the gaps around them, and the commit action with the padding below.
+    /// the gaps around them and the `end` below, and the commit action with
+    /// the padding below.
     fn minimum(&self) -> Pixels {
         // Without the heading the composer's padding leads the fields.
         let lead = if self.heading { self.gap } else { px(0.) };
-        let fields = lead + self.branch + self.label + self.gap + self.field + self.gap;
+        let fields = lead + self.branch + self.label + self.gap + self.field + self.end;
         self.border + self.padding + self.heading_row + fields + self.action + self.padding
+    }
+
+    /// The composer drawn with its rows whole and nothing more: its chrome,
+    /// the fields' `rows` (`GitTurtle::composer_rows`) and the description's
+    /// `field`, or, where the Description section has left, those rows less
+    /// the section's own (`GitTurtle::description_section`).
+    fn content(&self, rows: Pixels, section: Pixels, field: Option<f32>) -> Pixels {
+        self.chrome() + field.map_or(rows - section, |field| rows + px(field))
     }
 
     /// The scrolling fields' box in a composer `height` tall: what its
@@ -805,8 +820,9 @@ impl GitTurtle {
     /// The height the composer's scrolling fields take, `width` wide, but for
     /// the description's field: the title's rows and any note below them,
     /// the Description section's label and hint with the gaps around its
-    /// field, the guidance after it, and the padding below, wrapped texts
-    /// laid out once per text, size and width (`wrapped_lines`).
+    /// field (`description_section`), the guidance after it, and the `end`
+    /// above the commit action, wrapped texts laid out once per text, size
+    /// and width (`wrapped_lines`).
     fn composer_rows(
         &self,
         metrics: &ComposerMetrics,
@@ -827,13 +843,7 @@ impl GitTurtle {
         if self.commit_title.read(cx).value().chars().count() > 72 {
             rows += gap + metrics.small * lines(LONG_TITLE_NOTE, ui_text(10.), room);
         }
-        // The section: its label, the field and the hint, each a gap apart.
-        let hint = if self.working_paths.staged_count == 0 {
-            UNSTAGED_HINT
-        } else {
-            STAGED_HINT
-        };
-        rows += gap + metrics.label + gap + gap + metrics.small * lines(hint, ui_text(10.), room);
+        rows += self.description_section(metrics, width, window);
         // The guidance after it, which the section leaves room for.
         if self.draft_save_error.is_some() {
             rows += gap
@@ -848,7 +858,31 @@ impl GitTurtle {
             let text = room - px(15.) - rem * 0.5;
             rows += gap + px(15.).max(metrics.label * lines(CONFLICT_NOTE, ui_text(11.), text));
         }
-        rows + metrics.padding
+        rows + metrics.end
+    }
+
+    /// The Description section's rows in the composer's fields, `width`
+    /// wide, but for its field: the gap that leads it, its label, and the
+    /// hint, a gap either side of the field.
+    fn description_section(
+        &self,
+        metrics: &ComposerMetrics,
+        width: Pixels,
+        window: &Window,
+    ) -> Pixels {
+        let gap = metrics.gap;
+        // Every row's `px_3`, the inspector's one leading inset.
+        let room = width - window.rem_size() * 0.75 * 2.;
+        let hint = if self.working_paths.staged_count == 0 {
+            UNSTAGED_HINT
+        } else {
+            STAGED_HINT
+        };
+        let size = crate::appearance::ui_text(10.);
+        gap + metrics.label
+            + gap
+            + gap
+            + metrics.small * wrapped_lines(hint, size, room, window) as f32
     }
 
     /// The counts the Staged and Unstaged headings show, the first row and
@@ -1993,15 +2027,16 @@ impl GitTurtle {
         // its floor the list is whole rows already.
         let row = f32::from(window.pixel_snap(px(self.settings.density.file_row_height())));
         let border = f32::from(window.pixel_snap(px(1.))) * 2.;
-        let inner = available - if composer { composer_height } else { 0. } - border;
-        let remainder = if total > 0
-            && inner > floor - border
-            && inner < row * self.working_rows.len() as f32
-        {
-            (inner - ((inner + 0.01) / row).floor() * row).max(0.)
-        } else {
-            0.
+        // What is left below the list's last whole row where it has `inner`
+        // inside its border, or nothing where its rows do not overflow it.
+        let leftover = |inner: f32| {
+            if total > 0 && inner > floor - border && inner < row * self.working_rows.len() as f32 {
+                (inner - ((inner + 0.01) / row).floor() * row).max(0.)
+            } else {
+                0.
+            }
         };
+        let remainder = leftover(available - if composer { composer_height } else { 0. } - border);
         let composer_height = composer_height + if composer { remainder } else { 0. };
         // The Description section, whole or absent: where the composer is too
         // short for it, it leaves rather than show its label cut at the
@@ -2011,6 +2046,26 @@ impl GitTurtle {
                 metrics.description_field(px(composer_height), rows, description_height, window)
             })
             .flatten();
+        // A short composer is drawn no taller than its rows, so its title's
+        // label, field and commit action (and the Description section where it
+        // shows) keep their scaled 4 px rhythm, rather than the height its
+        // share leaves over gathering between the last field and the action.
+        // What it does not use goes back to the list in whole rows, and what
+        // is left, less than a row, lies between the list's last row and the
+        // composer.
+        let section = self.description_section(&metrics, fitted_width, window);
+        let drawn = if composer && short {
+            composer_height.min(f32::from(metrics.content(rows, section, description)))
+        } else {
+            composer_height
+        };
+        let below = if !composer {
+            remainder
+        } else if drawn < composer_height {
+            leftover(available - drawn - border)
+        } else {
+            0.
+        };
         // A focused description that leaves hands its focus to the title, so
         // focus never rests on a field that is not drawn.
         if description.is_none()
@@ -2211,7 +2266,9 @@ impl GitTurtle {
                     // Its floor, whatever else gives way, so its focus ring
                     // surrounds a list that shows a file.
                     .relative().flex_1().min_h(px(floor)).overflow_hidden()
-                    .when(!composer && remainder > 0., |el| el.max_h(px(available - remainder)))
+                    .when(below > 0., |el| {
+                        el.max_h(px(available - if composer { drawn } else { 0. } - below))
+                    })
                     .when(total > 0, |el| el.child(list))
                     .when(total == 0, |el| el.child(
                         div().size_full().flex().flex_col().items_center().justify_center().p_5().gap_2()
@@ -2242,7 +2299,7 @@ impl GitTurtle {
             ))
             .when(composer, |el| el.child(
                 div().debug_selector(|| "commit-composer".into())
-                    .relative().flex_shrink_0().min_h_0().h(px(composer_height)).flex().flex_col()
+                    .relative().flex_shrink_0().min_h_0().h(px(drawn)).flex().flex_col()
                     .bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
                     // The heading is pinned above the scrolling fields, as the
                     // commit action is below them; where the body is short the
@@ -2269,7 +2326,9 @@ impl GitTurtle {
                     // The gap that followed the heading leads the fields;
                     // without the heading, the composer's own padding does.
                     .child(div().flex().flex_col().gap_2().px_3().pt_2().pb_3()
-                    .when(short, |el| el.gap(crate::appearance::ui_size(4.)).pt(crate::appearance::ui_size(4.)).pb_2())
+                    // A short composer's fields end a gap above the commit
+                    // action (`ComposerMetrics::end`).
+                    .when(short, |el| el.gap(crate::appearance::ui_size(4.)).pt(crate::appearance::ui_size(4.)).pb(crate::appearance::ui_size(4.)))
                     .when(!fit.heading, |el| if short { el.pt_2() } else { el.pt_3() })
                     .when(!short, |el| el.child(div().flex().items_center().gap_1p5().min_w_0().text_size(crate::appearance::ui_text(11.))
                         .text_color(rgb(p.muted)).child(icon("branch", 13., p.muted))

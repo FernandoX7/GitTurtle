@@ -7534,8 +7534,8 @@ pub(crate) mod tests {
     /// and a 640 × 680 window at the default size and at 18 pt, is a whole
     /// number of rows tall inside its border: every row it shows is whole,
     /// and the next begins at its bottom edge rather than being cut through
-    /// its text, as the Unstaged heading was at 640 × 680. The composer takes
-    /// the remainder.
+    /// its text, as the Unstaged heading was at 640 × 680. What is left
+    /// below its last whole row lies between it and the short composer.
     #[gpui::test]
     async fn working_list_shows_whole_rows(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = working_window(cx).await;
@@ -8234,6 +8234,78 @@ pub(crate) mod tests {
             } else {
                 assert!(heading.is_none(), "{text} pt: heading {heading:?}");
             }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// With a Git identity, as the native review's fixture has, a short
+    /// composer keeps its scaled 4 px between the title's label and field
+    /// and between its last row (the title's field, or the description's
+    /// hint where the section shows) and the commit action, in a 461 × 490
+    /// window at the default size and at 18 pt and in a 640 × 680 one at
+    /// both: the height its share leaves over once gathered between the
+    /// field and the action (10 px at the default size and 16.5 px at 18 pt
+    /// in 640 × 680). Below the action is only the composer's padding; the
+    /// rest, less than a row, lies between the list's last whole row and the
+    /// composer.
+    #[gpui::test]
+    async fn short_composer_keeps_its_rhythm_down_to_the_commit_action(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = working_window(cx).await;
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["config", "user.name", "Ada"]);
+        fixture_git(&root, &["config", "user.email", "ada@example.com"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        for (text, width, height, description) in [
+            (13, 461., 490., false),
+            (18, 461., 490., false),
+            (13, 640., 680., true),
+            (18, 640., 680., false),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let (gap, padding, row) = cx.update(|window, cx| {
+                (
+                    window.pixel_snap(appearance::ui_size(4.)),
+                    window.pixel_snap(window.rem_size() * 0.5),
+                    window.pixel_snap(px(app.read(cx).settings.density.file_row_height())),
+                )
+            });
+            let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{at}: {selector}"))
+            };
+            let composer = bounds(cx, "commit-composer");
+            let label = bounds(cx, "commit-title-label");
+            let title = bounds(cx, "commit-title");
+            let commit = bounds(cx, "commit-staged");
+            let hint = cx.debug_bounds("commit-description-hint");
+            assert_eq!(hint.is_some(), description, "{at}: the description");
+            let last = hint.unwrap_or(title);
+            let slack = px(0.5);
+            assert!(
+                (title.top() - label.bottom() - gap).abs() <= slack,
+                "{at}: {label:?} then {title:?}, {gap:?} apart"
+            );
+            assert!(
+                (commit.top() - last.bottom() - gap).abs() <= slack,
+                "{at}: {last:?} then {commit:?}, {gap:?} apart"
+            );
+            assert!(
+                (composer.bottom() - commit.bottom() - padding).abs() <= slack,
+                "{at}: {commit:?} then the composer's end {composer:?}"
+            );
+            // The list, whole rows, ends at the composer or less than a row
+            // above it.
+            let list = bounds(cx, "working-pane");
+            assert!(
+                list.bottom() <= composer.top() + slack && composer.top() - list.bottom() < row,
+                "{at}: the list {list:?} above {composer:?}"
+            );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
