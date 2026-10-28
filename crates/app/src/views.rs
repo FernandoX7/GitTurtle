@@ -2932,7 +2932,7 @@ impl LineKey {
 }
 
 /// One text's laid-out width, with the text and what it was laid out with.
-type TextWidth = RefCell<Option<(LineKey, String, Pixels)>>;
+pub(crate) type TextWidth = RefCell<Option<(LineKey, String, Pixels)>>;
 
 thread_local! {
     static SCOPE_LABELS: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
@@ -3011,7 +3011,7 @@ pub(crate) fn cached_width(
 
 /// `width` of `text` for the current font and sizes, computed again only when
 /// either changes.
-fn cached_text_width(
+pub(crate) fn cached_text_width(
     cache: &'static std::thread::LocalKey<TextWidth>,
     text: &str,
     window: &Window,
@@ -5600,8 +5600,7 @@ mod tests {
     }
 
     /// "Original Git diff" and the other captions start where the buttons'
-    /// labels do when they wrap to a line of their own, and keep to the
-    /// Options row when the options collapse.
+    /// labels do when they wrap to a line of their own.
     #[gpui::test]
     async fn review_caption_aligns_with_the_button_labels(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
@@ -5645,35 +5644,126 @@ mod tests {
             first.left() + inset,
             "caption {caption:?}, first button {first:?}"
         );
+    }
+
+    /// The collapsed row never shows a cut caption such as "Origin…". From
+    /// the column its whole text needs beside the arrows and Options,
+    /// measured from the interface font, the caption shows whole after
+    /// Options; one pixel narrower it leaves the row and closes the Options
+    /// menu instead. At 13 pt a 461 × 490 tile is narrower than that.
+    #[gpui::test]
+    async fn narrow_review_caption_shows_whole_or_leaves_the_row(cx: &mut TestAppContext) {
+        use crate::text_review::collapsed_caption_width;
+        const CAPTION: &str = "Original Git diff";
+        const IN_MENU: &str = "menu-item: Original Git diff · MenuItem";
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        // Whether the open Options menu ends with the caption.
+        let menu_caption = |cx: &mut VisualTestContext| {
+            let menu = cx
+                .debug_bounds("text-review-menu")
+                .expect("the Options menu");
+            cx.simulate_click(menu.center(), Modifiers::default());
+            draw(cx);
+            let reset = cx
+                .debug_bounds("menu-item: Reset review · MenuItem")
+                .expect("the menu opened");
+            let caption = cx.debug_bounds(IN_MENU);
+            if let Some(caption) = caption {
+                assert!(caption.top() > reset.bottom(), "below the options");
+            }
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                cx.debug_bounds("menu-item: Reset review · MenuItem")
+                    .is_none(),
+                "the menu closed"
+            );
+            caption.is_some()
+        };
+        // The caption's text and the inset before it.
+        let measure = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                (
+                    collapsed_caption_width(CAPTION, window),
+                    line_widths(&[(CAPTION, appearance::ui_text(11.))], window),
+                    window.rem_size() * 0.5,
+                )
+            })
+        };
 
         cx.simulate_resize(size(px(461.), px(490.)));
         draw(cx);
-        let menu = cx.debug_bounds("text-review-menu").unwrap();
-        let row = cx.debug_bounds("text-review-options").unwrap();
-        let caption = cx.debug_bounds("text-review-caption").unwrap();
+        assert!(cx.debug_bounds("text-review-menu").is_some(), "collapsed");
         assert!(
-            caption.top() < menu.bottom()
-                && caption.left() >= menu.right()
+            cx.debug_bounds("text-review-caption").is_none(),
+            "no cut caption at 461"
+        );
+        assert!(menu_caption(cx), "the caption closes the menu at 461");
+
+        // The window widened until the row spans exactly the caption's column.
+        let (needed, text, inset) = measure(cx);
+        let mut width = px(461.);
+        let mut row = cx.debug_bounds("text-review-options").unwrap();
+        for _ in 0..8 {
+            if (row.size.width - needed).abs() < px(0.01) {
+                break;
+            }
+            width += needed - row.size.width;
+            cx.simulate_resize(size(width, px(490.)));
+            draw(cx);
+            row = cx.debug_bounds("text-review-options").unwrap();
+        }
+        assert!(
+            (row.size.width - needed).abs() < px(0.01),
+            "row {row:?}, needed {needed:?}"
+        );
+        let menu = cx
+            .debug_bounds("text-review-menu")
+            .expect("still collapsed");
+        let caption = cx
+            .debug_bounds("text-review-caption")
+            .expect("the caption at its column");
+        let spare = caption.size.width - inset - text;
+        assert!(
+            spare > px(-0.5) && spare < px(3.),
+            "{spare:?} beside the whole caption: {caption:?} in {row:?}"
+        );
+        assert!(
+            caption.left() >= menu.right()
+                && caption.top() < menu.bottom()
                 && caption.right() <= row.right(),
             "caption {caption:?} beside Options {menu:?} in {row:?}"
         );
+        assert!(!menu_caption(cx), "the row shows the caption");
 
-        // At 18 pt the column's minimum grows with the text, so in either
-        // half tile the collapsed row keeps its caption beside Options too.
+        cx.simulate_resize(size(width - px(1.), px(490.)));
+        draw(cx);
+        assert!(cx.debug_bounds("text-review-menu").is_some(), "collapsed");
+        assert!(
+            cx.debug_bounds("text-review-caption").is_none(),
+            "a pixel short of its column"
+        );
+        assert!(menu_caption(cx), "the caption closes the menu");
+
+        // At 18 pt, in either half tile, the caption shows whole or not at all.
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         for (width, height) in [(461., 490.), (493., 526.)] {
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
-            let menu = cx.debug_bounds("text-review-menu").unwrap();
+            let (needed, text, inset) = measure(cx);
             let row = cx.debug_bounds("text-review-options").unwrap();
-            let caption = cx.debug_bounds("text-review-caption").unwrap();
-            assert!(
-                caption.top() < menu.bottom()
-                    && caption.left() >= menu.right()
-                    && caption.right() <= row.right()
-                    && row.right() <= px(width),
-                "at 18 pt and {width}: caption {caption:?} beside Options {menu:?} in {row:?}"
+            assert!(cx.debug_bounds("text-review-menu").is_some(), "collapsed");
+            let caption = cx.debug_bounds("text-review-caption");
+            assert_eq!(
+                caption.is_some(),
+                row.size.width >= needed,
+                "at 18 pt and {width}: row {row:?}, needed {needed:?}"
             );
+            if let Some(caption) = caption {
+                assert!(caption.size.width - inset - text > px(-0.5), "{caption:?}");
+            }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }

@@ -10,13 +10,11 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use gpui_kit::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString,
-    StatefulInteractiveElement, Styled, Window,
+    AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, Window,
     component::{
         Disableable, Icon, Sizable,
         button::{Button, ButtonVariants},
         menu::{DropdownMenu, PopupMenuItem},
-        tooltip::Tooltip,
     },
     div, percentage,
     prelude::FluentBuilder,
@@ -408,7 +406,9 @@ impl GitTurtle {
     /// `column` is the width the row spans. Narrower than the row needs at
     /// the interface size, the change buttons keep only their arrows and the
     /// other options move into an Options menu, so the row stays one line
-    /// and the diff keeps its height.
+    /// and the diff keeps its height. The caption stays beside them only
+    /// where its whole text fits; narrower, it closes the Options menu
+    /// instead, so the row never shows a cut caption such as "Origin…".
     pub(super) fn render_text_review(
         &self,
         column: Pixels,
@@ -482,6 +482,7 @@ impl GitTurtle {
                     .rotate(percentage(turn))
             };
             let owner = cx.entity().downgrade();
+            let caption_fits = column >= collapsed_caption_width(caption_text, window);
             let menu = compact_control_name(
                 Button::new("text-review-menu")
                     .debug_selector(|| "text-review-menu".into())
@@ -496,7 +497,11 @@ impl GitTurtle {
             .tooltip(OPTIONS_TOOLTIP)
             .dropdown_menu(move |menu, _, _| {
                 // Built when opened; each item acts on the review as it
-                // is when chosen, as the buttons of the full row do.
+                // is when chosen, as the buttons of the full row do. A
+                // caption with no room in the row closes the menu, below a
+                // separator: the kit's first Down selects the first item
+                // whether or not it can act, so a label above the options
+                // would take that press.
                 options_menu(options, busy, reset_disabled)
                     .into_iter()
                     .fold(menu, |menu, item| {
@@ -517,9 +522,8 @@ impl GitTurtle {
                                 }),
                         )
                     })
+                    .when(!caption_fits, |menu| menu.separator().label(caption_text))
             });
-            // The caption truncates here; its tooltip keeps the whole text.
-            let caption_text = SharedString::from(caption_text);
             row.child(compact_control_name(
                 previous.icon(arrow(0.25)),
                 "previous-text-change",
@@ -531,22 +535,19 @@ impl GitTurtle {
                 "Next change",
             ))
             .child(menu)
-            .child(
-                caption(
-                    div()
-                        .id("text-review-caption")
-                        .debug_selector(|| "text-review-caption".into())
-                        .truncate()
-                        .tooltip({
-                            let text = caption_text.clone();
-                            move |window, cx| Tooltip::new(text.clone()).build(window, cx)
-                        })
-                        .child(caption_text)
-                        .into_any_element(),
+            .when(caption_fits, |row| {
+                row.child(
+                    caption(
+                        div()
+                            .debug_selector(|| "text-review-caption".into())
+                            .whitespace_nowrap()
+                            .child(caption_text)
+                            .into_any_element(),
+                    )
+                    .flex_1()
+                    .min_w_0(),
                 )
-                .flex_1()
-                .min_w_0(),
-            )
+            })
             .into_any_element()
         } else {
             row.child(previous.label("Previous change"))
@@ -676,10 +677,34 @@ pub(crate) fn options_row_width(window: &Window) -> Pixels {
         )
 }
 
+/// The column the collapsed review options need to show `caption` whole
+/// beside them: `px_3` on either side, four items `gap_1` apart, the two
+/// arrow buttons (`size_6`), the Options button (`px_2` on either side of
+/// its `text_sm` label, `gap_1` and the small caret, `size_3p5`), and the
+/// caption's `pl_2` and 11 pt text. The menu's trigger keeps none of the
+/// Options button's own margin, so the caption starts one gap after it.
+/// The fixed part is rounded up to a whole pixel, as the texts are, so a
+/// caption shown is never cut.
+pub(crate) fn collapsed_caption_width(caption: &str, window: &Window) -> Pixels {
+    let rem = window.rem_size();
+    (rem * (2. * 0.75 + 3. * 0.25 + 2. * 1.5 + 2. * 0.5 + 0.25 + 0.875 + 0.5)).ceil()
+        + crate::views::cached_text_width(&COLLAPSED_CAPTION, caption, window, || {
+            crate::views::line_widths(
+                &[
+                    ("Options", rem * 0.875),
+                    (caption, appearance::ui_text(11.)),
+                ],
+                window,
+            )
+        })
+}
+
 thread_local! {
     /// The review options' laid-out labels, by font and size.
     pub(crate) static OPTIONS_ROW: std::cell::RefCell<Option<(crate::views::LineKey, Pixels)>> =
         const { std::cell::RefCell::new(None) };
+    /// The collapsed row's Options label and the caption it shows, laid out.
+    static COLLAPSED_CAPTION: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
 /// A navigation action preserves selection/copy and horizontal scroll. Repeated
