@@ -737,16 +737,18 @@ impl Palette {
     }
 
     /// The selected shared button in a palette whose control label moved: the
-    /// secondary's `selected` surface with that label. The kit's secondary
-    /// paints its label in `text` for every button, and a text color on the
-    /// button itself would outlast its disabled state, because the kit replays
-    /// the caller's style over the disabled colors.
+    /// secondary's `selected` surface with that label, and disabled, the
+    /// secondary's neutral `subtle` fill, as the kit's secondary takes it. The
+    /// kit's secondary paints its label in `text` for every button, and a text
+    /// color on the button itself would outlast its disabled state, because the
+    /// kit replays the caller's style over the disabled colors.
     fn selected_control_button(self, cx: &App) -> Option<ButtonCustomVariant> {
         let label = self.control_label();
         (label != self.text).then(|| {
             ButtonCustomVariant::new(cx)
                 .foreground(rgb(label).into())
                 .active(rgb(self.selected).into())
+                .disabled(rgb(self.subtle).into())
         })
     }
 }
@@ -3391,7 +3393,8 @@ mod tests {
                     "{choice:?}"
                 );
                 // A selected helper reads the same label on the `selected`
-                // surface, through the kit's secondary where the label is `text`.
+                // surface, through the kit's secondary where the label is `text`,
+                // and disabled rests on the secondary's `subtle`.
                 match control_button_variant(true) {
                     ButtonVariant::Secondary => {
                         let theme = Theme::global(cx);
@@ -3404,6 +3407,11 @@ mod tests {
                             rgb(palette.selected).into(),
                             "{choice:?}"
                         );
+                        assert_eq!(
+                            theme.colors.button_secondary,
+                            rgb(palette.subtle).into(),
+                            "{choice:?}"
+                        );
                     }
                     ButtonVariant::Custom(variant) => {
                         assert!(
@@ -3412,7 +3420,8 @@ mod tests {
                         );
                         let expected = ButtonCustomVariant::new(cx)
                             .foreground(label)
-                            .active(rgb(palette.selected).into());
+                            .active(rgb(palette.selected).into())
+                            .disabled(rgb(palette.subtle).into());
                         assert_eq!(variant, expected, "{choice:?}");
                     }
                     variant => panic!("{choice:?} selects with {variant:?}"),
@@ -3876,9 +3885,15 @@ mod tests {
     }
 
     /// The disabled Buttons [`DisabledControls`] draws, by kind: the kit's
-    /// secondary (Fetch and Pull), the shared helper at rest and selected (a
-    /// dialog's default action), and the kit's ghost.
-    const DISABLED_BUTTONS: [&str; 4] = ["secondary", "control", "control-selected", "ghost"];
+    /// secondary (Fetch and Pull) and primary (Push, Commit), the shared helper
+    /// at rest and selected (a dialog's default action), and the kit's ghost.
+    const DISABLED_BUTTONS: [&str; 5] = [
+        "secondary",
+        "primary",
+        "control",
+        "control-selected",
+        "ghost",
+    ];
 
     /// `kind-surface`, the debug selector [`DisabledControls`] gives a Button.
     fn disabled_selector(kind: &str, surface: &str) -> &'static str {
@@ -3917,6 +3932,7 @@ mod tests {
                                 .label("Push");
                             match kind {
                                 "secondary" => button.secondary(),
+                                "primary" => button.primary(),
                                 "control" => button.with_variant(control_button_variant(false)),
                                 "control-selected" => button
                                     .with_variant(control_button_variant(true))
@@ -4017,6 +4033,39 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
         assert!(moved > 0, "some palette needs more than half strength");
     }
+    /// A disabled primary Button (Push, Commit) rests on the neutral fill a
+    /// disabled secondary one does, the opaque `subtle` beside it, as does the
+    /// shared helper's selected look (the command palette's Open command). The
+    /// primary drew a 15% tint of the accent instead, grey #2a292f in Omarchy
+    /// Retro-82's navy toolbar beside a navy Fetch, and the helper, where a
+    /// palette moves its label (Omarchy Catppuccin Latte), drew no fill at all.
+    /// Every palette, on each page surface and the menu's.
+    #[gpui::test]
+    fn every_palette_rests_disabled_primary_buttons_on_the_neutral_fill(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|_, _| DisabledControls);
+        let mut failures = Vec::new();
+        for (name, palette) in test_palettes() {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let neutral = vec![Background::from(Hsla::from(rgb(palette.subtle)))];
+            for (surface, _) in disabled_label_surfaces(palette) {
+                for kind in ["secondary", "primary", "control-selected"] {
+                    let bounds = cx
+                        .debug_bounds(disabled_selector(kind, surface))
+                        .expect("the button");
+                    let (fills, _) = painted_button(cx, bounds);
+                    if fills != neutral {
+                        failures.push(format!("{name} {kind} on the {surface}: {fills:?}"));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     /// Compare's gutter numbers on added and removed lines are code-size text
     /// on the diff tiles, in `added` and `removed`, which the palettes fit to
     /// the text rule with no room: 4.51:1 and 4.57:1 in Omarchy Flexoki Light,

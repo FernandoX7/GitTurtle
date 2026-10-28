@@ -39,6 +39,7 @@ pub struct ButtonCustomVariant {
     shadow: bool,
     hover: Hsla,
     active: Hsla,
+    disabled: Option<Hsla>,
 }
 
 pub trait ButtonVariants: Sized {
@@ -103,6 +104,7 @@ impl ButtonCustomVariant {
             hover: cx.theme().transparent,
             active: cx.theme().transparent,
             shadow: false,
+            disabled: None,
         }
     }
 
@@ -133,6 +135,17 @@ impl ButtonCustomVariant {
     /// Set shadow, default is false.
     pub fn shadow(mut self, shadow: bool) -> Self {
         self.shadow = shadow;
+        self
+    }
+
+    /// Set the disabled background and border color, default is the
+    /// background color at 15%.
+    ///
+    /// GitTurtle patch: a custom variant that stands in for a selected
+    /// secondary Button can take the neutral fill a disabled secondary one
+    /// rests on, where 15% of its transparent background drew none.
+    pub fn disabled(mut self, color: Hsla) -> Self {
+        self.disabled = Some(color);
         self
     }
 }
@@ -1300,13 +1313,17 @@ impl ButtonVariant {
     fn disabled(&self, outline: bool, cx: &mut App) -> ButtonVariantStyle {
         let bg = match self {
             Self::Default | Self::Link | Self::Ghost | Self::Text => cx.theme().transparent.into(),
-            Self::Primary => cx.theme().tokens.button_primary.background.opacity(0.15),
+            // GitTurtle patch: a disabled primary Button rests on the neutral
+            // fill a disabled secondary one does, rather than a tint of the
+            // accent that reads as a different control beside it.
+            Self::Primary | Self::Secondary => {
+                cx.theme().tokens.button_secondary.background.opacity(1.5)
+            }
             Self::Danger => cx.theme().tokens.button_danger.background.opacity(0.15),
             Self::Warning => cx.theme().tokens.button_warning.background.opacity(0.15),
             Self::Success => cx.theme().tokens.button_success.background.opacity(0.15),
             Self::Info => cx.theme().tokens.button_info.background.opacity(0.15),
-            Self::Secondary => cx.theme().tokens.button_secondary.background.opacity(1.5),
-            Self::Custom(style) => style.color.opacity(0.15).into(),
+            Self::Custom(style) => style.disabled.unwrap_or(style.color.opacity(0.15)).into(),
         };
         let fg = cx.theme().disabled_foreground();
         let (bg, border) = if outline {
@@ -1322,13 +1339,12 @@ impl ButtonVariant {
             )
         } else {
             let border = match self {
-                Self::Primary => cx.theme().button_primary.opacity(0.15),
-                Self::Secondary => cx.theme().button_secondary.opacity(1.5),
+                Self::Primary | Self::Secondary => cx.theme().button_secondary.opacity(1.5),
                 Self::Danger => cx.theme().button_danger.opacity(0.15),
                 Self::Warning => cx.theme().button_warning.opacity(0.15),
                 Self::Success => cx.theme().button_success.opacity(0.15),
                 Self::Info => cx.theme().button_info.opacity(0.15),
-                Self::Custom(style) => style.color.opacity(0.15),
+                Self::Custom(style) => style.disabled.unwrap_or(style.color.opacity(0.15)),
                 Self::Default | Self::Link | Self::Ghost | Self::Text => cx.theme().transparent,
             };
             (bg, border)

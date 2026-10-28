@@ -5381,6 +5381,42 @@ mod tests {
         })
     }
 
+    /// While an operation runs, the toolbar's Push, a primary Button, rests
+    /// on the neutral fill the disabled Fetch and Pull beside it take,
+    /// `subtle`, as the composer's disabled commit button does: the primary
+    /// drew a 15% tint of the accent, grey #2a292f in Omarchy Retro-82's navy
+    /// toolbar.
+    #[gpui::test]
+    async fn disabled_primary_actions_rest_on_the_neutral_fill(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.operation_busy = Some("Fetching remote…");
+                cx.notify()
+            })
+        });
+        let palettes = crate::appearance::test_palettes()
+            .into_iter()
+            .filter(|(name, _)| ["Midnight", "Braden", "Omarchy retro-82"].contains(&name.as_str()))
+            .collect::<Vec<_>>();
+        assert!(palettes.len() >= 2);
+        for (name, palette) in palettes {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            draw(cx);
+            let neutral =
+                gpui_kit::Background::from(gpui_kit::Hsla::from(gpui_kit::rgb(palette.subtle)));
+            for selector in ["fetch", "pull", "push", "commit-staged"] {
+                assert_eq!(
+                    painted_fills(cx, selector),
+                    vec![neutral],
+                    "{name} disabled {selector}"
+                );
+            }
+        }
+    }
+
     /// A pressed ghost Button takes the shared controls' pressed layer, the
     /// palette's `selected` over the panel, as a selected one keeps it.
     #[gpui::test]

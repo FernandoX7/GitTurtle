@@ -368,6 +368,38 @@ command palette and Settings record the painted result. Remove this part of the
 patch when upstream gives disabled menu items and their shortcuts a disabled
 colour distinct from secondary text and lets a theme set it.
 
+The disabled-primary patch modifies `src/button/button.rs`. Upstream draws a
+disabled primary Button on a 15% tint of `button_primary`, and a disabled
+custom variant on 15% of its own background, while a disabled secondary
+Button rests on its opaque `button_secondary`. In GitTurtle's toolbar the
+primary Push sits beside the secondary Fetch and Pull, so an unavailable Push
+read as another kind of control: grey `#2A292F` in Omarchy Retro-82's navy
+toolbar beside navy Fetch and Pull. The app's selected helper, which a palette
+whose control label moved draws as a custom variant with a transparent
+background (`Palette::selected_control_button` in
+`crates/app/src/appearance.rs`), drew no fill at all when disabled, where the
+secondary it stands in for draws `button_secondary`.
+
+A disabled primary Button now takes exactly the disabled secondary's fill and
+border, and `ButtonCustomVariant::disabled` sets a custom variant's disabled
+fill and border, which default to 15% of its background as before; the app
+gives its selected custom variant the palette's `subtle`, its
+`button_secondary`. Enabled Buttons, the outline and default variants, and the
+danger, warning, success and info tints are unchanged. The consumers are the
+toolbar's Push (`crates/app/src/workspace.rs`), the composer's Commit, the
+other primary Buttons the app builds and the kit's own, and the shared
+helper's selected look (`button(…, true)` in `crates/app/src/main.rs`).
+
+`cargo test --locked -p gitturtle every_palette_rests_disabled_primary_buttons_on_the_neutral_fill`
+draws disabled primary, secondary and selected helper Buttons on each page
+surface and the menu's in every built-in and embedded Omarchy palette and reads
+their painted fills; `disabled_primary_actions_rest_on_the_neutral_fill` makes
+the real toolbar busy in Midnight, Braden and, on Linux, Omarchy Retro-82, and
+reads Fetch, Pull, Push and the composer's Commit. Remove this part of the
+patch when upstream draws a disabled primary Button on its secondary's
+disabled fill and lets a custom variant set its disabled fill, and those tests
+pass without it.
+
 The popover-edge patch modifies `src/theme/mod.rs`, `src/styled.rs` and
 `src/menu/popup_menu.rs`.
 Upstream edges every popup surface (menus, popovers, selects, the combobox,
