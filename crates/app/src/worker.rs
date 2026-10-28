@@ -4009,8 +4009,8 @@ mod image_tests {
 
     /// Whether a side offers Open in default app is decided here, with its
     /// captured bytes and from them alone: a GIF named like a launcher and a
-    /// WAV named like a script offer their own types, and SVG, whatever its
-    /// name, offers nothing.
+    /// PDF named like a script offer their own types, and SVG and audio,
+    /// whatever their names, offer nothing.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_default_app_offer_is_decided_with_the_captured_bytes() {
@@ -4030,13 +4030,20 @@ mod image_tests {
         };
         assert!(new.captured.is_some());
         assert_eq!(new.system_preview, None);
-        let wav = b"RIFF\x24\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88\x58\x01\0\x02\0\x10\0data\0\0\0\0";
-        let rich = captured_preview(&repo, added_file(&fixture, "install.sh", wav));
+        let pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n";
+        let rich = captured_preview(&repo, added_file(&fixture, "install.sh", pdf));
         let Content::Rich(preview) = &*rich else {
+            panic!("PDF is a rich side")
+        };
+        let offer = preview.new.system_preview.expect("PDF offers the action");
+        assert!(offer.tooltip().contains(" as a PDF document "));
+        let wav = b"RIFF\x24\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88\x58\x01\0\x02\0\x10\0data\0\0\0\0";
+        let audio = captured_preview(&repo, added_file(&fixture, "sound.wav", wav));
+        let Content::Rich(preview) = &*audio else {
             panic!("WAV is captured metadata")
         };
-        let offer = preview.new.system_preview.expect("WAV offers the action");
-        assert!(offer.tooltip().contains(" as WAV audio "));
+        assert!(preview.new.captured.is_some());
+        assert_eq!(preview.new.system_preview, None, "audio offers nothing");
     }
 
     #[test]

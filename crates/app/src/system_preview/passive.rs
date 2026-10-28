@@ -14,7 +14,6 @@
 //! | PNG, JPEG, GIF, WebP, BMP, TIFF, ICO | `png` `jpg` `gif` `webp` `bmp` `tiff` `ico` | the image crate's magic numbers, the raster set the preview renders | pixel formats; viewers decode them |
 //! | AVIF, HEIF/HEIC, JPEG 2000 | `avif` `heic` `jp2` `j2k` | ISO `ftyp` brands and JP2/J2K signatures | image codecs |
 //! | PDF | `pdf` | `%PDF-` | viewers render pages; PDF JavaScript and launch actions are the viewer's to refuse, as Quick Look does |
-//! | WAV, MP3, FLAC, Ogg, MPEG-4/QuickTime, Matroska/WebM | `wav` `mp3` `flac` `ogg` `mp4` `m4a` `mov` `mkv` `webm` | the container signatures `inspect` reports | media players decode and play them |
 //! | Plain text | `txt` | strict UTF-8 without NUL or control characters, no `#!` line, no desktop entry group, and no markup: nothing that begins with `<`, and none of the tags by which content sniffers call text HTML, SVG or XML in its first 4 KiB | editors show text |
 //!
 //! Everything else offers no action: unknown binary, desktop entries, scripts,
@@ -23,8 +22,13 @@
 //! encodings, office documents (OOXML and OpenDocument, whose bodies reach
 //! outside the package; `docs/file-previews.md` lists how), JARs and plain
 //! ZIP, tar, gzip, bzip2, xz, 7z and RAR archives, fonts, legacy OLE
-//! documents, MPEG frame sync without a valid audio header, other raster
-//! formats and binary 3D models.
+//! documents, audio and video (WAV, MP3, FLAC, Ogg, MPEG-4/QuickTime,
+//! Matroska/WebM), other raster formats and binary 3D models. Audio and
+//! video are not passive in practice: the default player (mpv on Omarchy)
+//! probes the content rather than trusting the type, takes a stream
+//! description for a network stream, and when FFmpeg cannot open a copy
+//! retries through libarchive, plays a playlist inside it and fetches its
+//! URLs; `docs/file-previews.md` lists how.
 use anyhow::Result;
 use gitturtle_preview::{
     MAX_INPUT_BYTES,
@@ -45,15 +49,6 @@ pub(crate) enum Kind {
     Jp2,
     J2k,
     Pdf,
-    Wav,
-    Mp3,
-    Flac,
-    Ogg,
-    Mp4,
-    M4a,
-    QuickTime,
-    Matroska,
-    WebM,
     Text,
 }
 
@@ -65,31 +60,37 @@ impl Kind {
         if bytes.len() > MAX_INPUT_BYTES {
             return Ok(None);
         }
+        Ok(Self::signature(bytes))
+    }
+
+    /// The type the bytes' signature establishes. Audio and video
+    /// containers establish none (see the module documentation).
+    fn signature(bytes: &[u8]) -> Option<Self> {
         // PDF may be entirely ASCII; it comes first, as in `inspect`.
         if metadata::container(bytes) == Some(Container::Pdf) {
-            return Ok(Some(Self::Pdf));
+            return Some(Self::Pdf);
         }
         // Text is text whatever signature it begins with: "BM" or "P3" make
         // the image crate guess an image, and a text handler shows it as such.
         if metadata::is_literal_text(bytes) {
             let text = std::str::from_utf8(bytes).unwrap_or_default();
-            return Ok((passive_text(text) && !markup(bytes)).then_some(Self::Text));
+            return (passive_text(text) && !markup(bytes)).then_some(Self::Text);
         }
         if let Some(format) = metadata::jpeg2000_format(bytes) {
-            return Ok(Some(if format.ends_with("JP2") {
+            return Some(if format.ends_with("JP2") {
                 Self::Jp2
             } else {
                 Self::J2k
-            }));
+            });
         }
         match metadata::iso_image_format(bytes) {
-            Some("AVIF") => return Ok(Some(Self::Avif)),
-            Some(_) => return Ok(Some(Self::Heif)),
+            Some("AVIF") => return Some(Self::Avif),
+            Some(_) => return Some(Self::Heif),
             None => {}
         }
         if let Ok(format) = image::guess_format(bytes) {
             use image::ImageFormat::*;
-            return Ok(match format {
+            return match format {
                 Png => Some(Self::Png),
                 Jpeg => Some(Self::Jpeg),
                 Gif => Some(Self::Gif),
@@ -99,26 +100,9 @@ impl Kind {
                 Ico => Some(Self::Icon),
                 Avif => Some(Self::Avif),
                 _ => None,
-            });
+            };
         }
-        Ok(match metadata::container(bytes) {
-            Some(Container::Wav) => Some(Self::Wav),
-            Some(Container::Mp3) => mpeg_audio(bytes).then_some(Self::Mp3),
-            Some(Container::Flac) => Some(Self::Flac),
-            Some(Container::Ogg) => Some(Self::Ogg),
-            Some(Container::IsoMedia) => Some(iso_media(bytes)),
-            Some(Container::Matroska) => Some(
-                if bytes[..bytes.len().min(64)]
-                    .windows(4)
-                    .any(|doc_type| doc_type == b"webm")
-                {
-                    Self::WebM
-                } else {
-                    Self::Matroska
-                },
-            ),
-            _ => None,
-        })
+        None
     }
 
     /// The suffix the private copy is written with. GIO, which the portal
@@ -141,15 +125,6 @@ impl Kind {
             Self::Jp2 => "jp2",
             Self::J2k => "j2k",
             Self::Pdf => "pdf",
-            Self::Wav => "wav",
-            Self::Mp3 => "mp3",
-            Self::Flac => "flac",
-            Self::Ogg => "ogg",
-            Self::Mp4 => "mp4",
-            Self::M4a => "m4a",
-            Self::QuickTime => "mov",
-            Self::Matroska => "mkv",
-            Self::WebM => "webm",
             Self::Text => "txt",
         }
     }
@@ -168,15 +143,6 @@ impl Kind {
             Self::Jp2 => "a JPEG 2000 image",
             Self::J2k => "a JPEG 2000 codestream",
             Self::Pdf => "a PDF document",
-            Self::Wav => "WAV audio",
-            Self::Mp3 => "MP3 audio",
-            Self::Flac => "FLAC audio",
-            Self::Ogg => "Ogg media",
-            Self::Mp4 => "MPEG-4 media",
-            Self::M4a => "MPEG-4 audio",
-            Self::QuickTime => "a QuickTime movie",
-            Self::Matroska => "Matroska media",
-            Self::WebM => "WebM media",
             Self::Text => "plain text",
         }
     }
@@ -219,42 +185,8 @@ impl Kind {
             Self::Jp2 => &["image/jp2", "image/jpx"],
             Self::J2k => &["image/x-jp2-codestream", "image/jp2"],
             Self::Pdf => &["application/pdf", "application/x-pdf"],
-            Self::Wav => &["audio/x-wav", "audio/wav", "audio/vnd.wave", "audio/wave"],
-            Self::Mp3 => &["audio/mpeg", "audio/mp3", "audio/x-mp3", "audio/x-mpeg"],
-            Self::Flac => &["audio/flac", "audio/x-flac"],
-            Self::Ogg => &[
-                "audio/ogg",
-                "video/ogg",
-                "application/ogg",
-                "audio/x-vorbis+ogg",
-                "audio/x-opus+ogg",
-                "audio/x-flac+ogg",
-                "audio/x-speex+ogg",
-                "video/x-theora+ogg",
-            ],
-            Self::Mp4 => &["video/mp4", "audio/mp4", "application/mp4"],
-            Self::M4a => &["audio/x-m4a", "audio/mp4", "audio/m4a"],
-            Self::QuickTime => &["video/quicktime"],
-            Self::Matroska => &[
-                "video/x-matroska",
-                "video/matroska",
-                "audio/x-matroska",
-                "audio/matroska",
-            ],
-            Self::WebM => &["video/webm", "audio/webm"],
             Self::Text => &["text/plain"],
         }
-    }
-}
-
-fn iso_media(bytes: &[u8]) -> Kind {
-    if bytes.get(4..8) == Some(b"moov") {
-        return Kind::QuickTime;
-    }
-    match bytes.get(8..12) {
-        Some(b"qt  ") => Kind::QuickTime,
-        Some(b"M4A " | b"M4B " | b"M4P " | b"F4A " | b"F4B ") => Kind::M4a,
-        _ => Kind::Mp4,
     }
 }
 
@@ -311,23 +243,6 @@ fn markup(bytes: &[u8]) -> bool {
     MARKUP
         .iter()
         .any(|tag| window.windows(tag.len()).any(|candidate| candidate == *tag))
-}
-
-/// ID3, or a frame header with a defined MPEG version, layer, bitrate and
-/// sample rate. `metadata::container` accepts any frame sync, which the
-/// `0xff` padding of firmware images and other binaries also begins with.
-fn mpeg_audio(bytes: &[u8]) -> bool {
-    if bytes.starts_with(b"ID3") {
-        return true;
-    }
-    let Some(&[0xff, version_layer, rate, _]) = bytes.get(..4) else {
-        return false;
-    };
-    version_layer & 0xe0 == 0xe0
-        && (version_layer >> 3) & 0b11 != 0b01
-        && (version_layer >> 1) & 0b11 != 0b00
-        && rate >> 4 != 0b1111
-        && (rate >> 2) & 0b11 != 0b11
 }
 
 #[cfg(test)]
@@ -427,20 +342,68 @@ mod tests {
         assert_eq!(kind(&late), Some(Kind::Text));
     }
 
+    /// The default player probes content rather than trusting the type: it
+    /// takes a stream description for a network stream, and when FFmpeg
+    /// cannot open a copy it retries through libarchive and plays a playlist
+    /// inside, fetching its URLs. No audio or video copy is offered, however
+    /// well formed, and neither are the reviewed shapes that reached the
+    /// network: a media signature over an ISO 9660 image, an empty ID3 tag
+    /// before a ZIP, and an ID3 tag before an SDP description.
     #[test]
-    fn mpeg_audio_needs_id3_or_a_valid_frame_header() {
-        // MPEG-1 layer III, 128 kbit/s, 44.1 kHz.
-        assert_eq!(kind(b"\xff\xfb\x90\x64\0\0\0\0"), Some(Kind::Mp3));
-        assert_eq!(kind(b"ID3\x04\0\0\0\0\0\0"), Some(Kind::Mp3));
-        for (name, bytes) in [
-            ("firmware padding", b"\xff\xff\xff\xff\x10\x20".as_slice()),
-            ("reserved version", b"\xff\xeb\x90\x64".as_slice()),
-            ("reserved layer", b"\xff\xf9\x90\x64".as_slice()),
-            ("invalid bitrate", b"\xff\xfb\xf0\x64".as_slice()),
-            ("reserved sample rate", b"\xff\xfb\x9c\x64".as_slice()),
-        ] {
-            assert_eq!(kind(bytes), None, "{name}");
+    fn audio_and_video_offer_nothing() {
+        let mut two_frames = vec![0; 417];
+        two_frames[..4].copy_from_slice(b"\xff\xfb\x90\x64");
+        two_frames.extend_from_slice(b"\xff\xfb\x90\x64");
+        let signatures: [(&str, Vec<u8>); 11] = [
+            ("ID3", b"ID3\x04\0\0\0\0\0\0".to_vec()),
+            ("MPEG frames", two_frames),
+            (
+                "WAV",
+                b"RIFF\x24\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0".to_vec(),
+            ),
+            ("FLAC", b"fLaC\0\0\0\x22".to_vec()),
+            ("Ogg", b"OggS\0\x02\0\0".to_vec()),
+            ("MPEG-4", b"\0\0\0\x18ftypmp42\0\0\0\0mp42isom".to_vec()),
+            ("QuickTime", b"\0\0\0\x14ftypqt  \0\0\0\0".to_vec()),
+            ("M4A", b"\0\0\0\x18ftypM4A \0\0\0\0M4A ".to_vec()),
+            ("bare moov", b"\0\0\0\x08moov".to_vec()),
+            (
+                "WebM",
+                b"\x1a\x45\xdf\xa3\x8b\x42\x86\x81\x01\x42\x82\x84webm".to_vec(),
+            ),
+            (
+                "Matroska",
+                b"\x1a\x45\xdf\xa3\x8f\x42\x86\x81\x01\x42\x82\x88matroska".to_vec(),
+            ),
+        ];
+        let playlist = b"#EXTM3U\nhttp://192.0.2.1/a.mp3\n".as_slice();
+        for (name, signature) in signatures {
+            assert_eq!(kind(&signature), None, "{name}");
+            // The ISO 9660 primary volume descriptor sits at 32 KiB, and a
+            // playlist in the image is what libarchive hands the player.
+            let mut iso = signature.clone();
+            iso.resize(32768, 0);
+            iso.extend_from_slice(b"\x01CD001\x01");
+            iso.resize(40960, 0);
+            iso.extend_from_slice(playlist);
+            assert_eq!(kind(&iso), None, "{name} over an ISO 9660 image");
         }
+        // An empty ID3 tag before a ZIP whose one member is a playlist.
+        let zip = [
+            b"ID3\x04\0\0\0\0\0\0PK\x03\x04\x14\0\0\0\0\0\0\0\0\0\0\0\0\0".as_slice(),
+            &(playlist.len() as u32).to_le_bytes(),
+            &(playlist.len() as u32).to_le_bytes(),
+            b"\x05\0\0\0a.m3u",
+            playlist,
+        ]
+        .concat();
+        assert_eq!(kind(&zip), None, "ID3 before a ZIP");
+        // An ID3 tag directly before an SDP description.
+        let sdp = b"ID3\x04\0\0\0\0\0\0c=IN IP4 127.0.0.1\r\nm=audio 5004 RTP/AVP 0\r\n\xff";
+        assert_eq!(kind(sdp), None, "ID3 before SDP");
+        // The same description as plain text goes only to a text editor.
+        let text = b"v=0\nc=IN IP4 127.0.0.1\nm=audio 5004 RTP/AVP 0\n".as_slice();
+        assert_eq!(kind(text), Some(Kind::Text));
     }
 
     #[test]
@@ -469,40 +432,11 @@ mod tests {
                 Kind::Jpeg,
                 "jpg",
             ),
-            (b"RIFF\x24\0\0\0WAVEfmt ".as_slice(), Kind::Wav, "wav"),
-            (b"ID3\x04\0\0\0\0\0\0".as_slice(), Kind::Mp3, "mp3"),
-            (
-                b"\0\0\0\x18ftypmp42\0\0\0\0mp42".as_slice(),
-                Kind::Mp4,
-                "mp4",
-            ),
-            (
-                b"\0\0\0\x14ftypqt  \0\0\0\0".as_slice(),
-                Kind::QuickTime,
-                "mov",
-            ),
-            (
-                b"\0\0\0\x18ftypM4A \0\0\0\0M4A ".as_slice(),
-                Kind::M4a,
-                "m4a",
-            ),
             (
                 b"\0\0\0\x18ftypmif1\0\0\0\0mif1heic".as_slice(),
                 Kind::Heif,
                 "heic",
             ),
-            (
-                b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01\x42\x82\x84webm\0".as_slice(),
-                Kind::WebM,
-                "webm",
-            ),
-            (
-                b"\x1a\x45\xdf\xa3\x93\x42\x82\x88matroska\0".as_slice(),
-                Kind::Matroska,
-                "mkv",
-            ),
-            (b"fLaC\0\0\0\x22".as_slice(), Kind::Flac, "flac"),
-            (b"OggS\0\x02\0\0".as_slice(), Kind::Ogg, "ogg"),
         ] {
             assert_eq!(kind(bytes), Some(expected));
             assert_eq!(expected.extension(), extension);

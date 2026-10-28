@@ -630,9 +630,14 @@ mod tests {
             ("GIT_CONFIG_GLOBAL", "/repository/config".into()),
         ]
         .map(|(name, value)| (OsString::from(name), value));
-        let status = launcher_command(&program, &copy, &directory, environment)
-            .status()
-            .unwrap();
+        let status = loop {
+            match launcher_command(&program, &copy, &directory, environment.clone()).status() {
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                status => break status.unwrap(),
+            }
+        };
         assert!(status.success());
         let record = std::fs::read_to_string(&record).unwrap();
         let lines: Vec<&str> = record.lines().collect();
@@ -647,6 +652,22 @@ mod tests {
             "Git's variables are removed"
         );
         assert!(!canary.exists(), "nothing in the path ran");
+    }
+
+    /// Runs `attempt` again while a stand-in a test has just written cannot
+    /// be executed yet: a child that another test thread forked while the
+    /// script was open for writing keeps it busy (`ETXTBSY`) until that child
+    /// executes its own program. Only programs written by the tests meet it.
+    fn past_busy<T>(mut attempt: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+        for _ in 0..200 {
+            match attempt() {
+                Err(error) if error.contains("os error 26") => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+        attempt()
     }
 
     /// A stand-in `xdg-mime` that answers from its environment, as the real
@@ -689,45 +710,47 @@ mod tests {
     fn xdg_open_runs_only_when_xdg_mime_agrees_with_the_content() {
         let folder = tempfile::tempdir().unwrap();
         let (program, record) = stand_in_xdg_mime(folder.path());
-        let copy = folder.path().join("Captured revision.ogg");
+        let copy = folder.path().join("Captured revision.png");
         let wait = Duration::from_secs(5);
         let check = |kind: Kind, pairs: &[(&str, &str)]| {
-            let environment = answers(&record, pairs);
-            xdg_open_agrees(kind, &program, &copy, folder.path(), environment, wait)
+            past_busy(|| {
+                let environment = answers(&record, pairs);
+                xdg_open_agrees(kind, &program, &copy, folder.path(), environment, wait)
+            })
         };
-        let player = ("DEFAULT", "mpv.desktop");
-        assert_eq!(check(Kind::Ogg, &[("TYPE", "audio/ogg"), player]), Ok(()));
+        let player = ("DEFAULT", "imv.desktop");
+        assert_eq!(check(Kind::Png, &[("TYPE", "image/png"), player]), Ok(()));
         let queries = std::fs::read_to_string(&record).unwrap();
         assert_eq!(
             queries.lines().collect::<Vec<_>>(),
             [
                 format!("3|query|filetype|{}|unset", copy.display()),
-                "3|query|default|audio/ogg|unset".into(),
+                "3|query|default|image/png|unset".into(),
             ],
             "one argument each, and no Git variables"
         );
-        let charset = ("TYPE", "audio/x-vorbis+ogg; charset=binary");
-        assert_eq!(check(Kind::Ogg, &[charset, player]), Ok(()));
+        let charset = ("TYPE", "image/png; charset=binary");
+        assert_eq!(check(Kind::Png, &[charset, player]), Ok(()));
         let disk = check(
-            Kind::Ogg,
+            Kind::Png,
             &[("TYPE", "application/x-iso9660-image"), player],
         );
         let refused = disk.unwrap_err();
-        assert!(refused.contains("as application/x-iso9660-image rather than as Ogg media"));
-        let untyped = check(Kind::Mp3, &[("TYPE", "application/octet-stream"), player]);
+        assert!(refused.contains("as application/x-iso9660-image rather than as a PNG image"));
+        let untyped = check(Kind::Pdf, &[("TYPE", "application/octet-stream"), player]);
         assert!(untyped.unwrap_err().contains("application/octet-stream"));
         assert!(
             check(Kind::Png, &[("TYPE", "<b>")])
                 .unwrap_err()
                 .contains(" as b rather")
         );
-        let unhandled = check(Kind::Ogg, &[("TYPE", "audio/ogg"), ("DEFAULT", "")]);
+        let unhandled = check(Kind::Png, &[("TYPE", "image/png"), ("DEFAULT", "")]);
         assert!(unhandled.unwrap_err().starts_with("No default application"));
         let start = Instant::now();
-        let slow = [("TYPE", "audio/ogg"), player, ("SLEEP", "10")];
+        let slow = [("TYPE", "image/png"), player, ("SLEEP", "10")];
         let environment = answers(&record, &slow);
         let late = xdg_open_agrees(
-            Kind::Ogg,
+            Kind::Png,
             &program,
             &copy,
             folder.path(),
@@ -756,15 +779,6 @@ mod tests {
             Kind::Jp2,
             Kind::J2k,
             Kind::Pdf,
-            Kind::Wav,
-            Kind::Mp3,
-            Kind::Flac,
-            Kind::Ogg,
-            Kind::Mp4,
-            Kind::M4a,
-            Kind::QuickTime,
-            Kind::Matroska,
-            Kind::WebM,
         ] {
             assert!(kind.typed_by_signature());
             assert!(!kind.media_types().is_empty(), "{kind:?}");
@@ -798,8 +812,10 @@ mod tests {
         let (program, record) = stand_in_gio(folder.path());
         let copy = folder.path().join("Captured revision.png");
         let check = |kind: Kind, pairs: &[(&str, &str)], wait: Duration| {
-            let environment = answers(&record, pairs);
-            gio_agrees(kind, &program, &copy, folder.path(), environment, wait)
+            past_busy(|| {
+                let environment = answers(&record, pairs);
+                gio_agrees(kind, &program, &copy, folder.path(), environment, wait)
+            })
         };
         let wait = Duration::from_secs(5);
         assert_eq!(check(Kind::Png, &[("TYPE", "image/png")], wait), Ok(()));
@@ -816,8 +832,8 @@ mod tests {
             svg,
             "The desktop would open this copy as image/svg+xml rather than as a PNG image, so nothing was opened."
         );
-        let php = check(Kind::Ogg, &[("TYPE", "application/x-php")], wait).unwrap_err();
-        assert!(php.contains(" as application/x-php rather than as Ogg media"));
+        let php = check(Kind::Pdf, &[("TYPE", "application/x-php")], wait).unwrap_err();
+        assert!(php.contains(" as application/x-php rather than as a PDF document"));
         assert_eq!(check(Kind::Text, &[("TYPE", "text/plain")], wait), Ok(()));
         let untyped = check(Kind::Png, &[], wait).unwrap_err();
         assert!(untyped.contains(" as an unknown type "));
@@ -865,7 +881,7 @@ mod tests {
     }
 
     /// The real `gio`, where it is installed, answers as the portal will. A
-    /// plain PNG agrees, and each polyglot, a PNG or Ogg stream carrying an
+    /// plain PNG agrees, and each polyglot, a PNG whose text chunk carries an
     /// SVG document or a PHP opening tag, is refused exactly when GIO types
     /// it as something else, as GLib with shared-mime-info 2.2 or later does
     /// (`*.png` is also claimed by APNG there, so GIO sniffs and SVG's
@@ -876,14 +892,16 @@ mod tests {
             return;
         };
         let svg = br#"<!DOCTYPE svg><svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>"#;
-        let ogg = |marker: &[u8]| [b"OggS\0\x02".as_slice(), &[0; 22], marker, &[0; 64]].concat();
         let folder = tempfile::tempdir().unwrap();
         let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
         let samples = [
             ("plain", Kind::Png, png(None)),
             ("png-svg", Kind::Png, png(Some(svg))),
-            ("ogg-svg", Kind::Ogg, ogg(svg)),
-            ("ogg-php", Kind::Ogg, ogg(b"<?php system($_GET[0]); ?>")),
+            (
+                "png-php",
+                Kind::Png,
+                png(Some(b"<?php system($_GET[0]); ?>")),
+            ),
         ];
         for (name, kind, bytes) in samples {
             let directory = folder.path().join(name);

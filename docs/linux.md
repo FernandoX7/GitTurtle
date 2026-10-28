@@ -413,7 +413,7 @@ menu item. Linux keyboard shortcuts use Control instead of Command.
   application through the OpenURI portal, or `xdg-open` where no portal
   answers, once GIO (and, for `xdg-open`, `xdg-mime`) types the copy as
   what its content is. Only passive types decided from content offer it
-  (images, PDF, audio and video, plain text); office documents, SVG, HTML,
+  (images, PDF, plain text); audio and video, office documents, SVG, HTML,
   scripts, desktop entries, executables, archives, fonts and unrecognized
   bytes do not. See the
   [handoff contract](file-previews.md#background-work-and-resource-lifetime).
