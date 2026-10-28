@@ -2,6 +2,7 @@
 use crate::*;
 use gitturtle_core::{ReflogEntry, ReflogPage, ReflogRecoveryPlan, WriteCommand};
 use gpui_kit::{
+    base::ElementExt,
     component::{
         WindowExt,
         dialog::DialogButtonProps,
@@ -36,21 +37,45 @@ fn file_rows_shown() -> usize {
     (FILE_LIST_BOUND / (FILE_ROW_TEXT * FILE_ROW_LINE).round()).floor() as usize
 }
 
+/// Where the dialog's text starts, in from its content edge: the kit's
+/// medium Input pads its text 10 px inside its 1 px border at every text
+/// size, so the title, the explanation and the other labels, the entries'
+/// text and the changed files start where the scope and filter fields'
+/// text and placeholders do, one inset for all.
+const TEXT_INSET: Pixels = px(11.);
+
+/// The entries whose text the last layout cut, which alone carry a tooltip.
+#[derive(Clone, Default)]
+struct CutEntries(std::rc::Rc<std::cell::RefCell<HashSet<usize>>>);
+
 /// One Reflog entry. A selected entry shows its selection through the
 /// selected surface as well as its selected and toggled state, as the
 /// managed worktree rows do.
 ///
-/// Its text starts at the entry's inset and ends in an ellipsis where the
-/// entry is too narrow, rather than centred as a kit label is: a centred
-/// line wider than its entry would start left of it. The tooltip and the
-/// accessible name keep the whole text.
-fn entry_button(index: usize, text: String, selected: bool, p: appearance::Palette) -> Button {
+/// Its text starts at [`TEXT_INSET`] and ends in an ellipsis where the entry
+/// is too narrow, rather than centred as a kit label is: a centred line
+/// wider than its entry would start left of it. The accessible name keeps
+/// the whole text, and so does a tooltip, only while the entry cuts it: the
+/// text's measured width beyond its room, as `cut` recorded at the last
+/// layout. Over a whole line a tooltip only covered the entry above.
+fn entry_button(
+    index: usize,
+    text: String,
+    selected: bool,
+    cut: &CutEntries,
+    browser: WeakEntity<ReflogBrowser>,
+    p: appearance::Palette,
+) -> Button {
+    let shown_cut = cut.0.borrow().contains(&index);
+    let record = cut.clone();
+    let measured = text.clone();
     Button::new(("reflog-entry", index))
         .debug_selector(move || format!("reflog-entry-{index}"))
         .ghost()
         .w_full()
         .h_auto()
         .min_h(crate::appearance::ui_size(36.))
+        .pl(TEXT_INSET)
         .child(
             div()
                 .debug_selector(move || format!("reflog-entry-text-{index}"))
@@ -59,9 +84,28 @@ fn entry_button(index: usize, text: String, selected: bool, p: appearance::Palet
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .line_height(relative(1.))
-                .child(text.clone()),
+                .child(text.clone())
+                .on_prepaint(move |room, window, cx| {
+                    let style = window.text_style();
+                    let size = style.font_size.to_pixels(window.rem_size());
+                    let run = style.to_run(measured.len());
+                    let width = window
+                        .text_system()
+                        .shape_line(measured.into(), size, &[run], None)
+                        .width();
+                    let mut entries = record.0.borrow_mut();
+                    let changed = if width > room.size.width {
+                        entries.insert(index)
+                    } else {
+                        entries.remove(&index)
+                    };
+                    drop(entries);
+                    if changed {
+                        let _ = browser.update(cx, |_, cx| cx.notify());
+                    }
+                }),
         )
-        .tooltip(text.clone())
+        .when(shown_cut, |entry| entry.tooltip(text.clone()))
         .accessibility_label(text)
         .selected(selected)
         .toggled(selected)
@@ -79,6 +123,7 @@ fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
         .debug_selector(|| id.into())
         .role(Role::Label)
         .aria_label(value.clone())
+        .ml(TEXT_INSET)
         .child(value)
 }
 
@@ -155,6 +200,8 @@ struct ReflogBrowser {
     content_scroll: ScrollHandle,
     /// The changed-file list's scroll, which its scrollbar follows.
     files_scroll: ScrollHandle,
+    /// The entries whose text the last layout cut.
+    cut_entries: CutEntries,
     pending: bool,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -212,6 +259,7 @@ impl ReflogBrowser {
             message: None,
             content_scroll: ScrollHandle::new(),
             files_scroll: ScrollHandle::new(),
+            cut_entries: CutEntries::default(),
             pending: false,
             error: None,
             _subscriptions: vec![scope_subscription, query_subscription],
@@ -366,7 +414,7 @@ impl Render for ReflogBrowser {
             .children(self.error.as_ref().map(|error| label("reflog-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().child(div().id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(px(230.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, entry)| {
                 let entry = entry.clone(); let text = format!("{} · {} · {} · {}", entry.selector, short_oid(&entry.oid), full_date(entry.timestamp), if entry.message.is_empty() { "Reference updated" } else { &entry.message });
-                entry_button(index, text, self.selected.as_ref() == Some(&entry), p).on_click(cx.listener(move |this, _, window, cx| this.select(entry.clone(), window, cx)))
+                entry_button(index, text, self.selected.as_ref() == Some(&entry), &self.cut_entries, cx.entity().downgrade(), p).on_click(cx.listener(move |this, _, window, cx| this.select(entry.clone(), window, cx)))
             })).when(matches.is_empty() && self.page.is_some() && !self.pending, |element| element.child(label("reflog-empty", if self.page.as_ref().is_some_and(|page| page.entries.is_empty()) { "No local reflog records for this scope. Reflog recording may be disabled, the branch may not exist, or older entries may have expired." } else { "No loaded entries match this filter." }).text_size(crate::appearance::ui_text(12.))))))
             .when(matches.len() > 100, |element| element.child(label("reflog-match-limit", "Showing 100 matches. Narrow the filter to find another retained entry.").text_size(crate::appearance::ui_text(12.))))
             .when_some(self.selected.as_ref(), |element, entry| {
@@ -380,7 +428,7 @@ impl Render for ReflogBrowser {
                 // Whole rows of one line each, so the list's bound cuts no
                 // row; past that bound its scrollbar, in a gutter of its own,
                 // cues the rest.
-                .child(div().relative().flex_shrink_0().child(div().id("reflog-commit-files").debug_selector(|| "reflog-commit-files".into()).max_h(file_row * files_shown as f32).overflow_y_scroll().track_scroll(&self.files_scroll).flex().flex_col().when(files_scroll, |list| list.pr(Scrollbar::width())).children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); div().id(("reflog-commit-file", index)).debug_selector(move || format!("reflog-commit-file-{index}")).role(Role::Label).aria_label(text.clone()).flex_shrink_0().h(file_row).text_size(crate::appearance::ui_text(FILE_ROW_TEXT)).line_height(file_row).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text) }))).when(files_scroll, |list| list.child(Scrollbar::vertical(&self.files_scroll).id("reflog-files-scrollbar").mode(ScrollbarMode::Always))))
+                .child(div().relative().flex_shrink_0().child(div().id("reflog-commit-files").debug_selector(|| "reflog-commit-files".into()).max_h(file_row * files_shown as f32).overflow_y_scroll().track_scroll(&self.files_scroll).flex().flex_col().when(files_scroll, |list| list.pr(Scrollbar::width())).children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); div().id(("reflog-commit-file", index)).debug_selector(move || format!("reflog-commit-file-{index}")).role(Role::Label).aria_label(text.clone()).ml(TEXT_INSET).flex_shrink_0().h(file_row).text_size(crate::appearance::ui_text(FILE_ROW_TEXT)).line_height(file_row).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text) }))).when(files_scroll, |list| list.child(Scrollbar::vertical(&self.files_scroll).id("reflog-files-scrollbar").mode(ScrollbarMode::Always))))
                 .when(self.changes.len() > 100, |element| element.child(label("reflog-file-limit", "Showing the first 100 changed paths.").text_size(crate::appearance::ui_text(12.))))
                 .child(label("reflog-recovery-name-label", "Create a new branch at this commit to keep it reachable").text_size(crate::appearance::ui_text(12.)))
                 .child(Input::new(&self.name).aria_label("New recovery branch name"))
@@ -453,6 +501,82 @@ mod tests {
                 "reflog-entry-1",
             ],
         );
+    }
+
+    /// The tooltips hovering `selector` newly paints, by the kit's popover
+    /// fill; the pointer then leaves the window until they have gone.
+    fn hovered_tooltips(cx: &mut VisualTestContext, selector: &'static str) -> usize {
+        const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+        let popover = cx.read(|cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).tokens.popover)
+        });
+        let popups = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == popover)
+                    .map(|quad| quad.bounds)
+                    .collect::<Vec<_>>()
+            })
+        };
+        let before = popups(cx);
+        let control = rendered(cx, selector);
+        cx.simulate_mouse_move(control.center(), None, Modifiers::default());
+        cx.executor().advance_clock(SHOW_DELAY);
+        draw(cx);
+        let shown = popups(cx)
+            .into_iter()
+            .filter(|popup| !before.contains(popup))
+            .count();
+        cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+        cx.executor().advance_clock(SHOW_DELAY);
+        draw(cx);
+        shown
+    }
+
+    /// The dialog's text starts at one inset at 1480 × 980: the title, the
+    /// explanation, the entries' text and the scope and filter fields' text
+    /// started at three (the content edge, 8 px and 11 px in). An entry
+    /// whose text is whole there shows no tooltip, which covered the entry
+    /// above; in a narrow tile, where the entry cuts its text, it does.
+    #[gpui::test]
+    async fn the_reflog_text_starts_at_one_inset_and_only_cut_entries_have_tooltips(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 3);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let content = rendered(cx, "reflog-browser-content");
+        let (scope, query) = cx.read(|cx| {
+            let this = browser.read(cx);
+            (
+                this.scope.read(cx).input_bounds().left(),
+                this.query.read(cx).input_bounds().left(),
+            )
+        });
+        let starts = [
+            ("title", rendered(cx, "reflog-title").left()),
+            ("explanation", rendered(cx, "reflog-explanation").left()),
+            ("summary", rendered(cx, "reflog-scope-summary").left()),
+            ("entry", rendered(cx, "reflog-entry-text-0").left()),
+            ("scope field", scope),
+            ("filter", query),
+        ];
+        // The content keeps the focus ring's room inside its edge.
+        let edge = content.left() + cx.update(|_, cx| appearance::button_ring_room(cx));
+        for (name, start) in starts {
+            assert_eq!(start, edge + TEXT_INSET, "{name}: {starts:?}");
+        }
+        let whole = rendered(cx, "reflog-entry-text-0");
+        assert!(whole.size.width > px(400.), "{whole:?}");
+        assert_eq!(hovered_tooltips(cx, "reflog-entry-0"), 0, "a whole entry");
+
+        cx.simulate_resize(size(px(461.), px(700.)));
+        draw(cx);
+        assert_eq!(hovered_tooltips(cx, "reflog-entry-0"), 1, "a cut entry");
     }
 
     /// Runs Git in `path` with no configuration beyond the fixture identity.
@@ -808,13 +932,47 @@ mod tests {
         let (fills, _) = appearance::painted_button(cx, other);
         assert!(fills.is_empty(), "an unselected entry paints {fills:?}");
 
-        assert!(entry_button(0, "entry".into(), true, p).is_selected());
-        assert!(!entry_button(1, "entry".into(), false, p).is_selected());
+        assert!(
+            entry_button(
+                0,
+                "entry".into(),
+                true,
+                &CutEntries::default(),
+                WeakEntity::new_invalid(),
+                p
+            )
+            .is_selected()
+        );
+        assert!(
+            !entry_button(
+                1,
+                "entry".into(),
+                false,
+                &CutEntries::default(),
+                WeakEntity::new_invalid(),
+                p
+            )
+            .is_selected()
+        );
         let nodes = entry_nodes(
             cx,
             vec![
-                entry_button(0, "selected entry".into(), true, p),
-                entry_button(1, "other entry".into(), false, p),
+                entry_button(
+                    0,
+                    "selected entry".into(),
+                    true,
+                    &CutEntries::default(),
+                    WeakEntity::new_invalid(),
+                    p,
+                ),
+                entry_button(
+                    1,
+                    "other entry".into(),
+                    false,
+                    &CutEntries::default(),
+                    WeakEntity::new_invalid(),
+                    p,
+                ),
             ],
         );
         let [selected, other] = nodes.as_slice() else {
