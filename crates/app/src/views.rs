@@ -5479,8 +5479,9 @@ pub(crate) mod tests {
                 ]
             )
         );
-        // Labelled, the controls name themselves.
-        cx.simulate_resize(size(px(1100.), px(680.)));
+        // Labelled, the controls name themselves: from 1160 px the review
+        // row holds its buttons and "Showing the original Git diff" whole.
+        cx.simulate_resize(size(px(1160.), px(680.)));
         assert_eq!(drawn(cx), Default::default());
     }
 
@@ -7702,11 +7703,12 @@ pub(crate) mod tests {
                 assert!(cx.debug_bounds(item.clone().leak()).is_none(), "not {item}");
             }
             // The caption the 461 px row has no room for closes the menu as
-            // text in secondary text, not as a fourth, unavailable item.
+            // text in secondary text, not as a fourth, unavailable item, and
+            // says what the review shows rather than titling an empty group.
             let caption = if checked {
                 "Review filter active · exact source retained"
             } else {
-                "Original Git diff"
+                "Showing the original Git diff"
             };
             // It reads as a heading by the section labels' 11 px medium, not
             // by colour alone.
@@ -7831,8 +7833,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// "Original Git diff" and the other captions start where the buttons'
-    /// labels do when they wrap to a line of their own.
+    /// "Showing the original Git diff" and the other captions start where
+    /// the buttons' labels do when they wrap to a line of their own.
     #[gpui::test]
     async fn review_caption_aligns_with_the_button_labels(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
@@ -7853,10 +7855,11 @@ pub(crate) mod tests {
         });
         settle(&app, cx).await;
         let inset = cx.update(|window, _| window.rem_size() * 0.5);
-        cx.simulate_resize(size(px(1100.), px(680.)));
+        cx.simulate_resize(size(px(1160.), px(680.)));
         draw(cx);
         // The full row, its caption on a line of its own: the column holds
-        // the row as it first appears, but not with the longer caption.
+        // the row as it first appears, with "Showing the original Git diff",
+        // but not with the longer caption.
         let column = cx.debug_bounds("preview-content").unwrap().size.width;
         let needed = crate::text_review::OPTIONS_ROW
             .with(|cache| cache.borrow().as_ref().map(|(_, labels)| *labels))
@@ -7878,16 +7881,17 @@ pub(crate) mod tests {
         );
     }
 
-    /// The collapsed row never shows a cut caption such as "Origin…". From
-    /// the column its whole text needs beside the arrows and Options,
-    /// measured from the interface font, the caption shows whole after
-    /// Options; one pixel narrower it leaves the row and closes the Options
-    /// menu instead. At 13 pt a 461 × 490 tile is narrower than that.
+    /// The collapsed row never shows a cut caption such as "Showing the
+    /// orig…". From the column its whole text needs beside the arrows and
+    /// Options, measured from the interface font, the caption shows whole
+    /// after Options; one pixel narrower it leaves the row and closes the
+    /// Options menu instead, announced by the same words. At 13 pt a 461 ×
+    /// 490 tile is narrower than that.
     #[gpui::test]
     async fn narrow_review_caption_shows_whole_or_leaves_the_row(cx: &mut TestAppContext) {
         use crate::text_review::collapsed_caption_width;
-        const CAPTION: &str = "Original Git diff";
-        const IN_MENU: &str = "menu-item: Original Git diff · Label";
+        const CAPTION: &str = "Showing the original Git diff";
+        const IN_MENU: &str = "menu-item: Showing the original Git diff · Label";
         let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         settle(&app, cx).await;

@@ -31,6 +31,11 @@ const MAX_REVIEW_HUNKS: usize = 4096;
 pub(crate) const OPTIONS_TOOLTIP: &str = "Hide whitespace-only changes, expand unchanged \
      context (3, 12, 48, then 192 lines) or reset to the original diff. Source tabs keep exact \
      content; partial staging requires the original diff.";
+/// The caption while the review shows Git's own diff. Like the captions of
+/// the review's other states, it says what the review shows, so where it
+/// closes the Options menu below a separator it reads as state rather than
+/// as the title of an empty group, as "Original Git diff" did.
+pub(crate) const ORIGINAL_CAPTION: &str = "Showing the original Git diff";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -440,7 +445,7 @@ impl GitTurtle {
         } else if modified {
             "Expanded context · partial staging unavailable"
         } else {
-            "Original Git diff"
+            ORIGINAL_CAPTION
         };
         let caption = |text: AnyElement| {
             div()
@@ -662,7 +667,7 @@ fn options_menu(options: Options, busy: bool, reset_disabled: bool) -> [MenuItem
 }
 
 /// The width the review options take on one row as they first appear, with
-/// "Original Git diff": `px_3` on either side, six items `gap_1` apart, and
+/// [`ORIGINAL_CAPTION`]: `px_3` on either side, six items `gap_1` apart, and
 /// five small buttons with `px_2` on either side of a `text_sm` label. Fixed
 /// labels keep the layout from switching when an option is chosen; a longer
 /// caption wraps to a line of its own.
@@ -682,7 +687,7 @@ pub(crate) fn options_row_width(window: &Window) -> Pixels {
                         ("Hide whitespace", label),
                         (&context, label),
                         ("Reset review", label),
-                        ("Original Git diff", appearance::ui_text(11.)),
+                        (ORIGINAL_CAPTION, appearance::ui_text(11.)),
                     ],
                     window,
                 )

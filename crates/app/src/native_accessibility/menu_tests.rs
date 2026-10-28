@@ -34,7 +34,7 @@ impl Render for MenuProbe {
                         .item(item("First"))
                         .item(item("Second"))
                         .separator()
-                        .label("Original Git diff")
+                        .label("Showing the original Git diff")
                 }),
         )
     }
@@ -92,7 +92,10 @@ fn highlighted(cx: &mut VisualTestContext) -> Option<&'static str> {
         ("Unavailable", "menu-item: Unavailable · MenuItem disabled"),
         ("First", "menu-item: First · MenuItem"),
         ("Second", "menu-item: Second · MenuItem"),
-        ("Original Git diff", "menu-item: Original Git diff · Label"),
+        (
+            "Showing the original Git diff",
+            "menu-item: Showing the original Git diff · Label",
+        ),
     ];
     let mut found = None;
     for (name, selector) in entries {
@@ -189,7 +192,7 @@ fn menu_labels_read_as_secondary_text_and_disabled_items_as_disabled(cx: &mut Te
     let (cx, _) = open_menu(cx);
     for entry in [
         "menu-item: Saved profiles · Label",
-        "menu-item: Original Git diff · Label",
+        "menu-item: Showing the original Git diff · Label",
         "menu-item: Unavailable · MenuItem disabled",
         "menu-item: First · MenuItem",
         "menu-item: Second · MenuItem",
@@ -199,7 +202,7 @@ fn menu_labels_read_as_secondary_text_and_disabled_items_as_disabled(cx: &mut Te
     for entry in [
         "menu-item: Saved profiles · MenuItem disabled",
         "menu-item: Saved profiles · Label disabled",
-        "menu-item: Original Git diff · MenuItem disabled",
+        "menu-item: Showing the original Git diff · MenuItem disabled",
     ] {
         assert!(shown(cx, entry.into()).is_none(), "not {entry}");
     }
@@ -214,7 +217,7 @@ fn menu_labels_read_as_secondary_text_and_disabled_items_as_disabled(cx: &mut Te
         });
         assert_eq!(muted, Hsla::from(rgb(palette.muted)), "{name}");
         assert_ne!(muted, disabled, "{name}");
-        for label in ["Saved profiles", "Original Git diff"] {
+        for label in ["Saved profiles", "Showing the original Git diff"] {
             let text = |color: Hsla| format!("menu-label: {label} · {:?}", gpui::Rgba::from(color));
             if shown(cx, text(muted)).is_none() || shown(cx, text(disabled)).is_some() {
                 failures.push(format!("{name}: {label:?} is not in muted_foreground"));
@@ -247,7 +250,7 @@ fn menu_labels_take_the_section_label_size_and_differ_from_items_by_weight(
     cx: &mut TestAppContext,
 ) {
     let (cx, _) = open_menu(cx);
-    let labels = ["Saved profiles", "Original Git diff"];
+    let labels = ["Saved profiles", "Showing the original Git diff"];
     // At 13 pt the section labels' 11 px, and at 16 pt that scaled; the
     // items' `text_sm` and the window's own weight, which items draw in.
     let sizes = |cx: &mut VisualTestContext, label: f32| {
