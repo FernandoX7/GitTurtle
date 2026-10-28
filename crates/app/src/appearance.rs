@@ -285,6 +285,52 @@ pub fn control_selected_hover(style: StyleRefinement) -> StyleRefinement {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The weight each [`weight_probe`] last saw its label's text shaped at,
+    /// by key.
+    static DRAWN_WEIGHTS: std::cell::RefCell<std::collections::HashMap<String, gpui_kit::FontWeight>> =
+        Default::default();
+}
+
+/// In tests, a zero-size child for a label's element that records, under
+/// `key`, the font weight the label's text is shaped at, for
+/// [`drawn_weight`]; in other builds, nothing. Text takes its weight from the
+/// window's text style where it is laid out, which is what the probe reads,
+/// so a test sees what the label draws, inherited weights included. The test
+/// text system draws every weight in one face, so neither the shaped runs nor
+/// the glyph widths carry it. Absolutely positioned, it moves nothing.
+pub(crate) fn weight_probe(key: impl FnOnce() -> String) -> Option<gpui_kit::AnyElement> {
+    #[cfg(test)]
+    {
+        use gpui_kit::{IntoElement, canvas};
+        let key = key();
+        Some(
+            canvas(
+                move |_, window, _| {
+                    let weight = window.text_style().font_weight;
+                    DRAWN_WEIGHTS.with(|drawn| drawn.borrow_mut().insert(key, weight));
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_0()
+            .into_any_element(),
+        )
+    }
+    #[cfg(not(test))]
+    {
+        let _ = key;
+        None
+    }
+}
+
+/// The weight the [`weight_probe`] under `key` last saw its label shaped at.
+#[cfg(test)]
+pub(crate) fn drawn_weight(key: &str) -> Option<gpui_kit::FontWeight> {
+    DRAWN_WEIGHTS.with(|drawn| drawn.borrow().get(key).copied())
+}
+
 /// What the last frame painted for the Button at `element`, for tests: the
 /// visible fills on its bounds and the colors of the focus rings drawn around
 /// it, at the footprint of the applied `Theme::button_focus_ring`. The kit

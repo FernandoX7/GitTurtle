@@ -927,8 +927,18 @@ impl Render for Palette {
                                             .min_w_0()
                                             .flex_1()
                                             .truncate()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(spec.label),
+                                            // An unavailable command's title is
+                                            // regular, so its weight marks it as
+                                            // well as the disabled color.
+                                            .font_weight(if disabled.is_some() {
+                                                FontWeight::NORMAL
+                                            } else {
+                                                FontWeight::MEDIUM
+                                            })
+                                            .child(spec.label)
+                                            .children(appearance::weight_probe(move || {
+                                                format!("palette-command-title-{index}")
+                                            })),
                                     )
                                     .child(
                                         div()
@@ -1441,5 +1451,40 @@ mod render_tests {
             vec![first - 1],
             "after Up"
         );
+    }
+
+    /// An unavailable command's title is regular and an available one's
+    /// medium, so the weight marks an unavailable row as well as the disabled
+    /// color does; it was medium either way. "show" on the Projects hub
+    /// matches both kinds within the first screen of rows.
+    #[gpui::test]
+    fn an_unavailable_commands_title_is_regular(cx: &mut TestAppContext) {
+        let (app, cx) = hub(cx);
+        cx.simulate_input("show");
+        crate::tags::tests::draw(cx);
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window));
+        let results = matches("show");
+        let shown = results.len().min(7);
+        let mut kinds = (false, false);
+        for (row, &index) in results[..shown].iter().enumerate() {
+            let command = COMMANDS[index];
+            let available = command.id.reason(&availability).is_none();
+            if available {
+                kinds.0 = true;
+            } else {
+                kinds.1 = true;
+            }
+            assert_eq!(
+                appearance::drawn_weight(&format!("palette-command-title-{row}")),
+                Some(if available {
+                    FontWeight::MEDIUM
+                } else {
+                    FontWeight::NORMAL
+                }),
+                "{}, available: {available}",
+                command.label
+            );
+        }
+        assert_eq!(kinds, (true, true), "both kinds of row are shown");
     }
 }

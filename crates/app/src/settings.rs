@@ -4081,9 +4081,12 @@ fn preview_caption(
                 .truncate()
                 .text_size(crate::appearance::ui_text(12.))
                 .line_height(relative(1.3))
-                .font_weight(FontWeight::SEMIBOLD)
+                .font_weight(FontWeight::MEDIUM)
                 .text_color(rgb(p.text))
-                .child(label);
+                .child(label)
+                .children(appearance::weight_probe(move || {
+                    format!("theme-name-{miniature}")
+                }));
             if selected || warnings > 0 || tag.is_some() {
                 div()
                     .flex()
@@ -4308,7 +4311,16 @@ fn settings_field(
         .gap_2()
         .text_size(crate::appearance::ui_text(12.))
         .text_color(rgb(palette(cx).text))
-        .child(label)
+        .child(
+            // Medium, as the setting titles beside it are; the field's own
+            // text stays regular.
+            div()
+                .font_weight(FontWeight::MEDIUM)
+                .child(label)
+                .children(appearance::weight_probe(|| {
+                    format!("settings-field-label: {label}")
+                })),
+        )
         .child(Input::new(input).disabled(disabled))
         .into_any_element()
 }
@@ -4758,6 +4770,39 @@ mod picker_tests {
         selection: ThemeSelection,
     ) -> EntityId {
         cx.read(|cx| app.read(cx).theme_preview_body(selection).entity_id())
+    }
+
+    /// With a repository open, the Git identity's Name and Email labels are
+    /// medium, as the Projects setting titles beside them are, rather than
+    /// regular, and every theme card's name is medium rather than semibold.
+    /// On Linux the bundled interface font draws each weight in a face of its
+    /// own, so the difference shows.
+    #[gpui::test]
+    fn settings_labels_draw_in_medium(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = crate::tags::tests::tagged_repository(fixture.path());
+        let (app, cx) = crate::tags::tests::window(cx, &repo);
+        cx.update(|_, cx| theme_editor::init(cx));
+        // Tall enough that every card is on screen without scrolling.
+        cx.simulate_resize(size(px(1440.), px(2400.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        settle(cx);
+        for label in ["Name", "Email"] {
+            assert_eq!(
+                appearance::drawn_weight(&format!("settings-field-label: {label}")),
+                Some(FontWeight::MEDIUM),
+                "the {label} label"
+            );
+        }
+        for choice in ThemeChoice::ALL {
+            let body = miniature(cx, &app, ThemeSelection::BuiltIn(choice));
+            assert_eq!(
+                appearance::drawn_weight(&format!("theme-name-{body}")),
+                Some(FontWeight::MEDIUM),
+                "the {} card's name",
+                choice.label()
+            );
+        }
     }
 
     fn drawn(cx: &mut VisualTestContext, selector: String) -> Option<Bounds<Pixels>> {
