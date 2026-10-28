@@ -1939,17 +1939,23 @@ impl GitTurtle {
         let recovery_owner = cx.entity().downgrade();
         let recovery_repository = self.path.clone();
         let recovery_commit = recovery::commit_target(commit);
-        row.on_click(cx.listener(move |this, _, window, cx| this.select_commit(index, window, cx)))
-            .context_menu(move |menu, _, cx| {
-                GitTurtle::recovery_context_menu(
-                    menu,
-                    &recovery_owner,
-                    &recovery_repository,
-                    &recovery_commit,
-                    cx,
-                )
-            })
-            .into_any_element()
+        // The row is as wide as the table, which runs sideways past the
+        // list's viewport, under the inspector and past the window's edge;
+        // its node reports the part of it the list draws, as the list's own
+        // node does, rather than extents to x 542.5 in a 461 px window.
+        native_accessibility::clips_children(row.on_click(
+            cx.listener(move |this, _, window, cx| this.select_commit(index, window, cx)),
+        ))
+        .context_menu(move |menu, _, cx| {
+            GitTurtle::recovery_context_menu(
+                menu,
+                &recovery_owner,
+                &recovery_repository,
+                &recovery_commit,
+                cx,
+            )
+        })
+        .into_any_element()
     }
 
     /// The inspector, its "Changed files" header laid out as `files_header`,
@@ -11747,6 +11753,70 @@ pub(crate) mod tests {
                 &at,
             );
         }
+    }
+
+    /// Each History row's node reports the part of the row the list draws,
+    /// inside the list's own node. A row is as wide as the commit table,
+    /// which runs sideways under the inspector and past the window's edge,
+    /// and AT-SPI reported each row to x 542.5 in a 461 px window at 13 pt,
+    /// 630 at 18 pt and 681.5 in a 640 px window, across the inspector.
+    #[gpui::test]
+    async fn history_rows_report_the_part_the_list_draws(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle(&app, cx).await;
+        for (text, width, height) in [(13, 461., 490.), (18, 461., 490.), (13, 640., 680.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            crate::native_accessibility::forget_clipping_nodes();
+            draw(cx);
+            let at = format!("{text} pt at {width} × {height}");
+            let window = Bounds::new(point(px(0.), px(0.)), size(px(width), px(height)));
+            let list = crate::native_accessibility::clipping_node("history-pane")
+                .unwrap_or_else(|| panic!("{at}: the list is a clipping node"))
+                .bounds()
+                .expect("bounds");
+            let inside = |row: gpui::accesskit::Rect| {
+                row.x0 >= list.x0 - 0.01
+                    && row.y0 >= list.y0 - 0.01
+                    && row.x1 <= list.x1 + 0.01
+                    && row.y1 <= list.y1 + 0.01
+            };
+            let mut rows = 0;
+            for index in 0..40 {
+                let Some(layout) = bounds_of(cx, format!("history-row-{index}")) else {
+                    continue;
+                };
+                rows += 1;
+                assert!(
+                    layout.right() > window.right(),
+                    "{at}: row {index} at {layout:?} runs past the window"
+                );
+                let node = crate::native_accessibility::clipping_node(&format!("commit-{index}"))
+                    .unwrap_or_else(|| panic!("{at}: row {index} writes its node"));
+                assert_eq!(node.role(), Role::ListBoxOption, "{at}: row {index}");
+                let bounds = node.bounds().expect("bounds");
+                assert!(
+                    inside(bounds),
+                    "{at}: row {index} reports {bounds:?}, outside the list's {list:?}"
+                );
+                // The row from its own left edge to where the list's visible
+                // part ends, and no taller than itself: only the list cuts it.
+                let whole = node_bounds(cx, layout);
+                assert!(
+                    (bounds.x0 - whole.x0).abs() < 0.01
+                        && (bounds.x1 - list.x1).abs() < 0.01
+                        && bounds.y0 >= whole.y0 - 0.01
+                        && bounds.y1 <= whole.y1 + 0.01
+                        && bounds.y1 > bounds.y0,
+                    "{at}: row {index} reports {bounds:?}, the row is {whole:?} in the list's \
+                     {list:?}"
+                );
+            }
+            assert!(rows > 2, "{at}: rows render");
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// The Working inspector's file list, its composer's scrolling fields

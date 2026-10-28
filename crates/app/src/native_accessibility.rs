@@ -200,8 +200,11 @@ pub(super) fn assertive(builder: &mut A11ySubtreeBuilder<'_>) {
 /// each child is measured against what is drawn. A container without a role
 /// of its own becomes a scroll view; one with a role, such as a list box,
 /// keeps it. Children keep their own bounds, as AccessKit and the platforms
-/// report a partly visible control whole. Focus and the Tab order do not
-/// change: the wrapper adds no dispatch node, focus handle or listener.
+/// report a partly visible control whole; a row wider than its list, such as
+/// History's commit rows, is wrapped itself, so it reports the part the list
+/// draws. The wrapper styles, holds and handles input as the element it
+/// wraps. Focus and the Tab order do not change: the wrapper adds no
+/// dispatch node, focus handle or listener.
 pub(crate) fn clips_children<E: IntoElement>(element: E) -> ClipsChildren<E::Element> {
     ClipsChildren {
         inner: element.into_element(),
@@ -223,6 +226,29 @@ impl<E: Element> IntoElement for ClipsChildren<E> {
     type Element = Self;
     fn into_element(self) -> Self {
         self
+    }
+}
+
+// The wrapper styles, holds and handles input as the element it wraps, so a
+// row keeps its click and context menu (`ContextMenuExt` takes an element
+// that is all three).
+impl<E: InteractiveElement> InteractiveElement for ClipsChildren<E> {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.inner.interactivity()
+    }
+}
+
+impl<E: StatefulInteractiveElement> StatefulInteractiveElement for ClipsChildren<E> {}
+
+impl<E: ParentElement> ParentElement for ClipsChildren<E> {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.inner.extend(elements);
+    }
+}
+
+impl<E: Styled> Styled for ClipsChildren<E> {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.inner.style()
     }
 }
 
