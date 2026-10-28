@@ -277,25 +277,20 @@ impl GitTurtle {
             .into_any_element()
     }
 
+    /// The selected commit's Actions menu, at the trailing edge of the
+    /// message toolbar's copy controls (`commit_message::Toolbar`), labelled
+    /// where the toolbar fits its label and caret there.
     pub(super) fn render_commit_recovery_menu(
         &self,
         commit: &Commit,
+        labelled: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let owner = cx.entity().downgrade();
         let repository = self.path.clone();
         let commit = commit_target(commit);
-        // The shared 28 px compact control with its caret, as the parent
-        // Buttons above it and Working's labelled Actions are, with their
-        // palette hover and pressed fills: the kit's small Button is 1.5 rem.
-        // As wide as its label and caret from the parents' left edge, rather
-        // than stretched across the metadata's column.
-        button("commit-recovery-menu", "Actions", "", false)
-            .debug_selector(|| "commit-recovery-menu".into())
-            .self_start()
-            .max_w_full()
-            .dropdown_caret(true)
-            .accessibility_label("Selected commit actions")
+        commit_actions_trigger(labelled)
+            .ml_auto()
             .disabled(self.operation_busy.is_some())
             .dropdown_menu(move |menu, _, cx| commit_menu(menu, &owner, &repository, &commit, cx))
             .into_any_element()
@@ -524,6 +519,37 @@ pub(super) fn working_actions_trigger(compact: bool, tight: bool) -> Button {
             .dropdown_caret(true)
     };
     control.debug_selector(|| "working-recovery-menu".into())
+}
+
+/// The selected commit's Actions menu trigger: "Actions" with its caret in
+/// the shared 28 px compact control, as tall as the copy controls beside it
+/// and as wide as its label and caret, with the palette's hover and pressed
+/// fills (the kit's small Button is 1.5 rem); or, not `labelled`, a 28 px
+/// control showing the more-actions dots in the helper's frame, as Working's
+/// compact Actions does. Either is named "Selected commit actions"; the
+/// compact one's tooltip leads with "Actions".
+pub(super) fn commit_actions_trigger(labelled: bool) -> Button {
+    const NAME: &str = "Selected commit actions";
+    const DETAIL: &str = "Revert or cherry-pick this commit, or amend or undo the last commit";
+    let control = if labelled {
+        button("commit-recovery-menu", "Actions", "", false)
+            .accessibility_label(NAME)
+            .tooltip(DETAIL)
+            .dropdown_caret(true)
+    } else {
+        crate::views::compact_control_name(
+            button("commit-recovery-menu", "", "", false).child(
+                div()
+                    .debug_selector(|| "commit-recovery-more".into())
+                    .flex()
+                    .child(control_icon("more")),
+            ),
+            "commit-recovery-menu",
+            NAME,
+        )
+        .tooltip(format!("Actions · {DETAIL}"))
+    };
+    control.debug_selector(|| "commit-recovery-menu".into())
 }
 
 fn working_menu_item(

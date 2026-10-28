@@ -148,7 +148,8 @@ const KNOWN: &[Known] = &[
         follow_up: "Compare's image captions wrap or truncate in a narrow column",
     },
     // At 18 pt in 461 × 980 a line of the selected commit's details runs
-    // past the 156 px inspector.
+    // past the 156 px inspector: the parent Button, "P1 · ‹hash›", is 148 px
+    // wide where the metadata has 128.5, so the date line wraps at its width.
     Known {
         page: Page::History,
         sizes: &[18],

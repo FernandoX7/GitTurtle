@@ -39,16 +39,41 @@ struct Presentation {
 #[derive(Default)]
 pub(super) struct State(RefCell<Option<Presentation>>, Cell<Option<Toolbar>>);
 
-/// How the message toolbar lays out Copy message and Hash in an inspector
-/// whose width the window fixes: where the labelled Copy message does not fit
-/// the row, only its icon and only Hash's, which then share one row, and the
-/// height of the rows the two take, which the message panel reserves so the
-/// toolbar never runs into the files below.
-/// An inspector at least its tight minimum wide keeps both labelled on one
-/// row and reserves nothing, as before.
+/// How the message toolbar lays out Copy message, Hash and, in History and
+/// Compare, the selected commit's Actions in an inspector the window draws
+/// `width` wide, and the height of the rows they take, which the message
+/// panel reserves where the window pins the inspector, so the toolbar never
+/// runs into the files below. Actions stands at the trailing edge of the copy
+/// controls' last row, outside the scrolling message and metadata, so it
+/// stays in view however far they scroll and they keep its row for their own
+/// lines.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Toolbar {
+    /// File History's toolbar, which has no Actions.
+    plain: Form,
+    /// History's and Compare's, with the commit's Actions.
+    actions: Form,
+    /// Whether the window pins the inspector, so the panel reserves the rows.
+    /// An inspector at least its tight minimum wide keeps Copy message and
+    /// Hash labelled and reserves nothing, as before.
+    reserve: bool,
+}
+
+/// One layout of the toolbar's controls (DESIGN.md, "One responsive order":
+/// actions become icons before the content gives way). Where the labelled
+/// Copy message does not fit the row, Copy message and Hash keep only their
+/// icons and share one row. Actions keeps its label and caret where they fit
+/// on the copy controls' last row, otherwise only its more-actions icon there;
+/// where not even that fits beside the labelled copy controls, they keep only
+/// their icons too, so the three share one row rather than Actions taking a
+/// row of the message's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Form {
+    /// Copy message and Hash keep only their icons.
     compact: bool,
+    /// Actions keeps its label and caret.
+    labelled_actions: bool,
+    /// The rows' height, with the panel's bottom border.
     height: Pixels,
 }
 
@@ -56,6 +81,7 @@ thread_local! {
     static COPY_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static HASH_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static COPIED_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+    static ACTIONS_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
 }
 
 impl Toolbar {
@@ -67,10 +93,13 @@ impl Toolbar {
     /// `copy_feedback::copy_button` reserves. Copy message's content is a
     /// 16 px icon 6 px before its label, and Hash's the same icon before its
     /// label, narrower than the copied content; compact, each is a 28 px
-    /// square of only the icon. Wrapped rows are a quarter rem apart inside
-    /// the toolbar's `py_1`, and the panel's 1 px bottom border is reserved
-    /// with them.
-    pub(super) fn within(width: Pixels, window: &Window) -> Self {
+    /// square of only the icon. Actions labelled is the helper's padding
+    /// either side of its label, its 6 px gap and the caret, 0.875 rem
+    /// square; otherwise a 28 px square. The controls wrap as the toolbar's
+    /// `flex_wrap` wraps them, in rows a quarter rem apart inside its `py_1`,
+    /// and the panel's 1 px bottom border is reserved with them. `pinned`: the
+    /// window pins the inspector.
+    pub(super) fn within(width: Pixels, pinned: bool, window: &Window) -> Self {
         let key = LineKey::current(window);
         let label = |cache, text| {
             cached_width(cache, &key, || {
@@ -85,31 +114,77 @@ impl Toolbar {
         let room = width - px(1.) - rem * 1.5;
         let gap = rem * 0.25;
         let padding = appearance::ui_size(2. * 10.);
-        let labelled = padding + (icon + copy_label).max(copied);
-        let compact = labelled > room;
-        let copy = if compact {
-            appearance::ui_size(28.)
-        } else {
-            labelled
+        let square = appearance::ui_size(28.);
+        let copy = padding + (icon + copy_label).max(copied);
+        let hash = padding + (icon + hash_label).max(copied);
+        let actions =
+            (padding + label(&ACTIONS_LABEL, "Actions") + appearance::ui_size(6.) + rem * 0.875)
+                .ceil();
+        // The rows `controls` wrap to.
+        let rows = |controls: &[Pixels]| {
+            let mut rows = 1.;
+            let mut line = controls[0];
+            for &control in &controls[1..] {
+                if line + gap + control <= room {
+                    line += gap + control;
+                } else {
+                    rows += 1.;
+                    line = control;
+                }
+            }
+            rows
         };
-        let hash = if compact {
-            appearance::ui_size(28.)
+        let height = |rows: f32| square.ceil() * rows + gap * (rows - 1.) + rem * 0.5 + px(1.);
+        let compact = copy > room;
+        let (copy, hash) = if compact {
+            (square, square)
         } else {
-            padding + (icon + hash_label).max(copied)
+            (copy, hash)
         };
-        let rows = if copy + gap + hash <= room { 1. } else { 2. };
-        Self {
+        let copy_rows = rows(&[copy, hash]);
+        let plain = Form {
             compact,
-            height: appearance::ui_size(28.).ceil() * rows + gap * (rows - 1.) + rem * 0.5 + px(1.),
+            labelled_actions: false,
+            height: height(copy_rows),
+        };
+        let actions = if rows(&[copy, hash, actions]) == copy_rows {
+            Form {
+                labelled_actions: true,
+                ..plain
+            }
+        } else if rows(&[copy, hash, square]) == copy_rows {
+            plain
+        } else {
+            Form {
+                compact: true,
+                labelled_actions: false,
+                height: height(rows(&[square, square, square])),
+            }
+        };
+        Self {
+            plain,
+            actions,
+            reserve: pinned,
+        }
+    }
+
+    /// The form File History's toolbar takes, without Actions, or History's
+    /// and Compare's, with it.
+    fn form(&self, file_history: bool) -> Form {
+        if file_history {
+            self.plain
+        } else {
+            self.actions
         }
     }
 }
 
 impl State {
-    /// The toolbar of the inspector the window draws next, where the window
-    /// fixes its width; `None` keeps the labelled toolbar and reserves
-    /// nothing. The window sets it on every repository draw, before the
-    /// inspector, so a state moved with an inspection carries nothing stale.
+    /// The toolbar of the inspector the window draws next; `None`, as where
+    /// no window lays the inspector out, keeps every control labelled and
+    /// reserves nothing. The window sets it on every repository draw, before
+    /// the inspector, so a state moved with an inspection carries nothing
+    /// stale.
     pub(super) fn lay_out_toolbar(&self, toolbar: Option<Toolbar>) {
         self.1.set(toolbar);
     }
@@ -146,6 +221,17 @@ impl State {
         if let Some(selection) = selection {
             selection.detach(cx);
         }
+    }
+
+    /// How far the presented message and metadata run past their viewport,
+    /// as the list last measured them: zero where they fit, so the scrollbar
+    /// draws nothing.
+    #[cfg(test)]
+    pub(crate) fn overflow(&self) -> Option<Pixels> {
+        self.0
+            .borrow()
+            .as_ref()
+            .map(|state| state.scroll.max_offset_for_scrollbar().y)
     }
 
     pub(super) fn retained_bytes(&self) -> usize {
@@ -346,8 +432,21 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
+        // File History has no Actions; History and Compare lay out its form.
         let toolbar = self.inspector_message.1.get();
-        let compact = toolbar.is_some_and(|toolbar| toolbar.compact);
+        let form = toolbar.map(|toolbar| toolbar.form(file_history));
+        let compact = form.is_some_and(|form| form.compact);
+        let reserved = toolbar
+            .filter(|toolbar| toolbar.reserve)
+            .and(form)
+            .map(|form| form.height);
+        let actions = (!file_history).then(|| {
+            self.render_commit_recovery_menu(
+                commit,
+                form.is_none_or(|form| form.labelled_actions),
+                cx,
+            )
+        });
         let (pieces, scroll, focus, selection) = self.inspector_message.presentation(commit, cx);
         let owner = cx.entity().downgrade();
         let oid = commit.oid.clone();
@@ -398,7 +497,7 @@ impl GitTurtle {
             .flex_col()
             .border_b_1()
             .border_color(rgb(colors.border))
-            .when_some(toolbar, |panel, toolbar| panel.min_h(toolbar.height))
+            .when_some(reserved, |panel, height| panel.min_h(height))
             .child(div()
                 .id("commit-message-toolbar")
                 .debug_selector(|| "commit-message-toolbar".into())
@@ -426,6 +525,9 @@ impl GitTurtle {
                         .accessibility_label("Copy full commit hash")
                 }
                     .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(hash_copy.clone()), "commit hash", hash.clone())))
+                // At the trailing edge of the copy controls' last row, above
+                // the scrolling message and metadata, so it stays in view.
+                .children(actions)
             )
             .child(div()
                 .id("commit-message-viewport").debug_selector(|| "commit-message-viewport".into())
@@ -1414,10 +1516,11 @@ pub(crate) mod tests {
     }
 
     /// In an 18 pt 461 × 490 half tile, where Copy message keeps only its
-    /// icon, Hash does too: two 28 px squares on one toolbar row, which is
-    /// the row the panel reserves, so the commit title starts one row below
-    /// the toolbar's top. Hash keeps its name, and copied it shows only the
-    /// check in its own bounds and is announced.
+    /// icon, Hash does too, and the commit's Actions its more-actions icon:
+    /// three 28 px squares on one toolbar row, Actions at its trailing edge,
+    /// which is the row the panel reserves, so the commit title starts one
+    /// row below the toolbar's top. Hash keeps its name, and copied it shows
+    /// only the check in its own bounds and is announced.
     #[gpui::test]
     fn compact_hash_keeps_the_copy_toolbar_one_row(cx: &mut TestAppContext) {
         use crate::copy_feedback::{
@@ -1439,6 +1542,15 @@ pub(crate) mod tests {
         assert_eq!(hash.size, message.size, "{hash:?}");
         assert_eq!(hash.top(), message.top(), "one row: {message:?} {hash:?}");
         assert!(message.right() < hash.left() && hash.right() <= toolbar.right());
+        let actions = cx.debug_bounds("commit-recovery-menu").unwrap();
+        assert_eq!(actions.size, message.size, "{actions:?}");
+        assert_eq!(actions.top(), message.top(), "one row: {actions:?}");
+        assert!(
+            hash.right() < actions.left()
+                && (actions.right() - (toolbar.right() - rem * 0.75)).abs() < px(0.5),
+            "Actions at the trailing edge: {actions:?} in {toolbar:?}"
+        );
+        assert!(cx.debug_bounds("commit-recovery-more").is_some());
         assert_eq!(
             toolbar.size.height,
             message.size.height + rem * 0.5,
@@ -1448,11 +1560,13 @@ pub(crate) mod tests {
         // The reservation is that row and the panel's 1 px bottom border.
         let reserved = cx
             .read(|cx| app.read(cx).inspector_message.1.get())
-            .expect("the window pins the inspector");
-        assert!(reserved.compact);
+            .expect("the window lays the toolbar out");
+        assert!(reserved.reserve, "the window pins the inspector");
+        let form = reserved.form(false);
+        assert!(form.compact && !form.labelled_actions, "{form:?}");
         assert!(
-            (reserved.height - (toolbar.size.height + px(1.))).abs() < px(0.5),
-            "{reserved:?} for {toolbar:?}"
+            (form.height - (toolbar.size.height + px(1.))).abs() < px(0.5),
+            "{form:?} for {toolbar:?}"
         );
         assert_eq!(
             crate::views::COMPACT_NAMES.with(|names| names.borrow().get("copy-commit").copied()),

@@ -2003,7 +2003,8 @@ impl GitTurtle {
     }
 
     /// The author and the date and hash lines are selectable after the
-    /// message in `selection`'s document; parents and recovery stay controls.
+    /// message in `selection`'s document; parents stay controls. The commit's
+    /// Actions stands in the message toolbar, outside this scrolling area.
     pub(super) fn render_commit_metadata(
         &self,
         commit: &Commit,
@@ -2045,6 +2046,7 @@ impl GitTurtle {
         ]);
         div()
             .id("commit-metadata")
+            .debug_selector(|| "commit-metadata".into())
             .role(Role::Group)
             .aria_label("Commit author and comparison parents")
             .min_w_0()
@@ -2057,7 +2059,6 @@ impl GitTurtle {
             .child(div().child(author))
             .child(date)
             .child(parents)
-            .child(self.render_commit_recovery_menu(commit, cx))
             .into_any_element()
     }
 
@@ -4357,14 +4358,16 @@ impl GitTurtle {
         let rail = appearance::ui_size(44.);
         let columns = ColumnMinimums::new(width, rail, narrow);
         let (content_min, inspector_min) = (columns.content, columns.inspector);
-        // Where the inspector is pinned, its message toolbar knows its width
-        // and reserves the rows its copy controls take there.
-        self.inspector_message.lay_out_toolbar(
-            columns
-                .pinned
-                .then(|| commit_message::Toolbar::within(columns.inspector, window)),
-        );
-        // So does its "Changed files" header, which keeps its count whole.
+        // The inspector's message toolbar fits the commit's Actions beside
+        // its copy controls at the width the inspector takes, and where the
+        // inspector is pinned it reserves the rows they take there.
+        self.inspector_message
+            .lay_out_toolbar(Some(commit_message::Toolbar::within(
+                self.expected_inspector_width(width, &columns),
+                columns.pinned,
+                window,
+            )));
+        // Where it is pinned its "Changed files" header keeps its count whole.
         let files_header = if columns.pinned && self.mode != WorkspaceMode::Working {
             FilesHeader::within(columns.inspector, &self.files.len().to_string(), window)
         } else {
@@ -5851,7 +5854,8 @@ pub(crate) mod tests {
     }
 
     /// The commit inspector's message toolbar ends above "Changed files",
-    /// and the toolbar, its copy controls and the files stay in the window.
+    /// and the toolbar, its copy controls and the commit's Actions, and the
+    /// files stay in the window.
     fn assert_inspector_whole(cx: &mut VisualTestContext, width: f32, state: &str) {
         let window = Bounds::new(point(px(0.), px(0.)), size(px(width), px(10_000.)));
         let files = cx.debug_bounds("commit-inspector-files").unwrap();
@@ -5862,7 +5866,7 @@ pub(crate) mod tests {
             "{state}: toolbar {toolbar:?} over Changed files {header:?}"
         );
         assert!(within(files, window), "{state}: files {files:?}");
-        for id in ["copy-message", "copy-commit"] {
+        for id in ["copy-message", "copy-commit", "commit-recovery-menu"] {
             let control = cx.debug_bounds(id).unwrap();
             assert!(
                 within(control, toolbar) && control.left() >= files.left(),
@@ -6114,9 +6118,12 @@ pub(crate) mod tests {
     /// At the default interface size the narrow half tiles keep origin/main's
     /// layout: these are the bounds its fixed minimums gave (the rail, a
     /// 177 px column and a 240 px inspector at 461 px; a 209 px column at
-    /// 493 px), measured on origin/main at f695dce. Only Hash differs: it is
-    /// as wide as its copied state, the check icon and "Copied", and still
-    /// shares Copy message's row.
+    /// 493 px), measured on origin/main at f695dce. Only the message toolbar
+    /// differs: it holds the commit's Actions too, which the labelled Copy
+    /// message and Hash (as wide as its copied state, the check icon and
+    /// "Copied") leave no room for on their row, so the three keep only their
+    /// icons on that one row, Actions at its trailing edge, rather than take a
+    /// row of the 80 px message area.
     #[gpui::test]
     async fn default_text_size_keeps_the_narrow_layout(cx: &mut TestAppContext) {
         let (_fixture, app, cx) =
@@ -6141,8 +6148,12 @@ pub(crate) mod tests {
                     bounds(inspector, files_top, 239., files_height),
                 ),
                 ("commit-message-toolbar", bounds(inspector, 207., 239., 34.)),
-                ("copy-message", bounds(inspector + 9.5, 210., 129., 28.)),
-                ("copy-commit", bounds(inspector + 141.5, 210., 86., 28.)),
+                ("copy-message", bounds(inspector + 9.5, 210., 28., 28.)),
+                ("copy-commit", bounds(inspector + 40.5, 210., 28., 28.)),
+                (
+                    "commit-recovery-menu",
+                    bounds(inspector + 201.5, 210., 28., 28.),
+                ),
                 (
                     "changed-files-header",
                     bounds(inspector, files_top, 238., 36.),
@@ -6465,6 +6476,11 @@ pub(crate) mod tests {
                     ("history-newest", "Latest"),
                     ("history-previous", "Previous"),
                     ("load-more", "Older"),
+                    // The 240 px inspector's message toolbar holds the
+                    // commit's Actions beside its copy controls as icons.
+                    ("copy-message", "Copy full commit message"),
+                    ("copy-commit", "Copy full commit hash"),
+                    ("commit-recovery-menu", "Selected commit actions"),
                 ]
             )
         );
@@ -6481,13 +6497,23 @@ pub(crate) mod tests {
                     ("text-review-menu", "Review options"),
                     // The whole path does not fit beside a labelled Blame.
                     ("open-blame", "Blame"),
+                    ("copy-message", "Copy full commit message"),
+                    ("copy-commit", "Copy full commit hash"),
+                    ("commit-recovery-menu", "Selected commit actions"),
                 ]
             )
         );
         // Labelled, the controls name themselves: from 1160 px the review
         // row holds its buttons and "Showing the original Git diff" whole.
+        // Only the commit's Actions keeps its icon in the default 320 px
+        // inspector, where the unit tests' text system leaves its label and
+        // caret 10.5 px short beside the labelled copy controls (IBM Plex
+        // Sans fits them, with 14.5 px to spare).
         cx.simulate_resize(size(px(1160.), px(680.)));
-        assert_eq!(drawn(cx), Default::default());
+        assert_eq!(
+            drawn(cx),
+            [("commit-recovery-menu", "Selected commit actions")].into()
+        );
     }
 
     /// Visible diff lines: the patch editor's text within the preview's
@@ -8062,27 +8088,43 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// The History inspector's "Actions" for the selected commit is the
-    /// shared 28 px compact control with its caret, as the Changes header's
-    /// labelled Actions is: as tall as the parent Button above it, starting
-    /// at its left edge, as wide as its label and caret in the helper's frame,
-    /// and centred one control and the column's gap below the parent's
-    /// centre, in a 1000 × 680 and a 1480 × 980 window at the default size
-    /// and at 18 pt. It was the kit's small Button, 1.5 rem tall (19.5 px at
-    /// the default size), stretched across the column. At rest it paints no
-    /// fill; hovered and pressed it takes the palette's hover and pressed
-    /// layers, in a dark and a light palette.
+    /// The selected commit's Actions stands in the message toolbar, outside
+    /// the scrolling message and metadata, so it stays in view at every size:
+    /// at the trailing edge of the copy controls' last row, on Hash's row, as
+    /// tall as the copy controls, inside the inspector and above the message,
+    /// where scrolling the message to its end leaves it. Labelled where its
+    /// label and caret fit on that row, as in a 440 px inspector at the
+    /// default size and a 480 px one at 18 pt, it is as wide as its label and
+    /// caret in the shared 28 px compact control; otherwise it keeps only its
+    /// more-actions icon in a 28 px square named "Selected commit actions",
+    /// as in the 280 px inspector of a 1,000 × 680 window, the 388 px one at
+    /// 18 pt and the half tiles, where Copy message and Hash keep only their
+    /// icons too rather than leave Actions a row of the message's. It was
+    /// the scrolling metadata's last row, below its fold at 18 pt in
+    /// 1,000 × 680. At rest it paints no fill; hovered and pressed it takes
+    /// the palette's hover and pressed layers, in a dark and a light palette.
     #[gpui::test]
-    async fn commit_actions_matches_the_parent_above_it(cx: &mut TestAppContext) {
-        let (_fixture, _app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+    async fn commit_actions_stay_in_view_in_the_message_toolbar(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
         cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
-        for (text, width, height) in [
-            (13, 1000., 680.),
-            (13, 1480., 980.),
-            (18, 1000., 680.),
-            (18, 1480., 980.),
+        let saved = cx.read(|cx| app.read(cx).settings.inspector_width);
+        for (text, width, height, inspector, labelled, compact_copy) in [
+            (13, 1000., 680., None, false, false),
+            (13, 1480., 980., Some(440.), true, false),
+            (13, 461., 490., None, false, true),
+            (18, 1000., 680., None, false, false),
+            (18, 1480., 800., None, false, false),
+            (18, 1480., 980., Some(480.), true, false),
+            (18, 461., 490., None, false, true),
         ] {
-            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.update(|window, cx| {
+                appearance::apply_text_sizes(text, 12, window, cx);
+                app.update(cx, |app, cx| {
+                    app.settings.inspector_width = inspector.unwrap_or(saved);
+                    app.content_panels = cx.new(|_| ResizableState::default());
+                });
+            });
+            COMPACT_NAMES.with(|names| names.borrow_mut().clear());
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
             let at = format!("{text} pt in {width} × {height}");
@@ -8090,9 +8132,13 @@ pub(crate) mod tests {
                 cx.debug_bounds(selector)
                     .unwrap_or_else(|| panic!("{at}: {selector}"))
             };
-            let parent = bounds(cx, "commit-parent-0");
             let actions = bounds(cx, "commit-recovery-menu");
-            let (control, gap, whole) = cx.update(|window, _| {
+            let copy = bounds(cx, "copy-message");
+            let hash = bounds(cx, "copy-commit");
+            let toolbar = bounds(cx, "commit-message-toolbar");
+            let viewport = bounds(cx, "commit-message-viewport");
+            let panel = bounds(cx, "commit-inspector");
+            let (control, inset, whole) = cx.update(|window, _| {
                 let rem = window.rem_size();
                 let label = shaped_width(
                     "Actions",
@@ -8102,29 +8148,69 @@ pub(crate) mod tests {
                 );
                 (
                     window.pixel_snap(appearance::ui_size(28.)),
-                    // The metadata column's `gap_2`.
-                    window.pixel_snap(rem * 0.5),
+                    rem * 0.75,
                     // The helper's padding either side, its label, its 6 px
                     // gap and the caret, 0.875 rem square.
                     label + appearance::ui_size(10.) * 2. + appearance::ui_size(6.) + rem * 0.875,
                 )
             });
             let slack = px(0.5);
-            assert_eq!(parent.size.height, control, "{at}: the parent {parent:?}");
             assert_eq!(actions.size.height, control, "{at}: {actions:?}");
-            assert!(
-                (actions.left() - parent.left()).abs() <= slack,
-                "{at}: {actions:?} starts where {parent:?} does"
+            assert_eq!(
+                actions.top(),
+                hash.top(),
+                "{at}: on Hash's row: {actions:?}"
             );
             assert!(
-                (actions.size.width - whole).abs() <= px(1.),
-                "{at}: {actions:?} is as wide as its label and caret, {whole:?}"
+                hash.right() < actions.left()
+                    && (actions.right() - (toolbar.right() - inset)).abs() <= slack,
+                "{at}: {actions:?} at the trailing edge of {toolbar:?}"
             );
             assert!(
-                (actions.center().y - parent.center().y - control - gap).abs() <= slack,
-                "{at}: {actions:?} centred a control and {gap:?} below {parent:?}"
+                within(actions, toolbar) && within(actions, panel),
+                "{at}: {actions:?} inside {toolbar:?} and the inspector {panel:?}"
             );
+            assert!(
+                actions.bottom() <= viewport.top(),
+                "{at}: {actions:?} above the scrolling {viewport:?}"
+            );
+            assert_eq!(
+                (copy.size.width == control, hash.size.width == control),
+                (compact_copy, compact_copy),
+                "{at}: Copy message {copy:?}, Hash {hash:?}"
+            );
+            let named =
+                COMPACT_NAMES.with(|names| names.borrow().get("commit-recovery-menu").copied());
+            if labelled {
+                assert!(
+                    (actions.size.width - whole).abs() <= px(1.),
+                    "{at}: {actions:?} is as wide as its label and caret, {whole:?}"
+                );
+                assert_eq!(named, None, "{at}");
+                assert!(cx.debug_bounds("commit-recovery-more").is_none(), "{at}");
+            } else {
+                assert_eq!(actions.size.width, control, "{at}: {actions:?}");
+                assert_eq!(named, Some("Selected commit actions"), "{at}");
+                assert!(cx.debug_bounds("commit-recovery-more").is_some(), "{at}");
+            }
+            // Scrolled to the message's end, Actions has not moved.
+            cx.simulate_click(viewport.center(), Modifiers::default());
+            cx.simulate_keystrokes("end");
+            draw(cx);
+            assert_eq!(
+                bounds(cx, "commit-recovery-menu"),
+                actions,
+                "{at}: scrolled"
+            );
+            cx.simulate_keystrokes("home");
+            draw(cx);
         }
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.inspector_width = saved;
+                app.content_panels = cx.new(|_| ResizableState::default());
+            })
+        });
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         cx.simulate_resize(size(px(1000.), px(680.)));
         draw(cx);
@@ -8166,6 +8252,41 @@ pub(crate) mod tests {
             cx.simulate_keystrokes("escape");
             draw(cx);
         }
+    }
+
+    /// The selected commit's message and metadata draw no scrollbar where
+    /// they fit, as the compact fixture's one-line commits do at 18 pt in a
+    /// 1,480 × 800 window and at the default size in 961 and 1,240 px wide
+    /// tiles 520 px tall: the metadata ends inside the message's viewport and
+    /// the list has nothing to scroll, so its scrollbar draws nothing. With
+    /// Actions as the metadata's last row they ran 7 px past it at 18 pt,
+    /// its row's gap and the metadata's padding, and 31 px in the tiles.
+    #[gpui::test]
+    async fn commit_details_that_fit_draw_no_scrollbar(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        for (text, width, height) in [
+            (18, 1480., 800.),
+            (13, 961., 520.),
+            (13, 1240., 520.),
+            (13, 1480., 980.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let viewport = cx.debug_bounds("commit-message-viewport").unwrap();
+            let metadata = cx.debug_bounds("commit-metadata").unwrap();
+            assert!(
+                metadata.bottom() <= viewport.bottom(),
+                "{at}: {metadata:?} past {viewport:?}"
+            );
+            assert_eq!(
+                cx.read(|cx| app.read(cx).inspector_message.overflow()),
+                Some(px(0.)),
+                "{at}: nothing to scroll"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// In a 461 × 490 window, at the default size and at 18 pt, the compact
