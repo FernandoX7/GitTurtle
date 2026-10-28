@@ -478,3 +478,80 @@ async fn create_switch_and_the_pickers_switch_confirm_where_they_were_asked(
         "only its icon changed"
     );
 }
+
+/// The status line keeps a write's outcome for as long as the control that
+/// asked confirms it, over the refresh that follows the write: once a row's
+/// Stage has read the working tree again, which writes Changes' working
+/// summary to the status, the line still reads "Staged notes.txt", and
+/// 1.5 s later it reads the summary. A Commit, which no control confirms
+/// and whose quiet refresh writes the summary too, keeps its outcome the
+/// same time. Before this, the refresh's summary replaced the outcome at
+/// once.
+#[gpui::test]
+async fn the_status_line_keeps_a_writes_outcome_over_the_refresh_after_it(cx: &mut TestAppContext) {
+    let (fixture, app, cx, repository) = working(cx).await;
+    let line =
+        |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.status_line().to_owned());
+    assert_eq!(line(cx), "2 working changes");
+    let notes = |area| {
+        confirmations::file(&repository, Path::new("notes.txt"), area)
+            .control()
+            .to_string()
+    };
+    let (unstaged, staged) = (notes(ChangeArea::Unstaged), notes(ChangeArea::Staged));
+
+    let rest = bounds(cx, &format!("{unstaged}/rest"));
+    cx.simulate_click(rest.center(), Modifiers::default());
+    // `finish` waits until the write and the status read after it are done.
+    finish(&app, cx, "notes.txt arriving in Staged", |cx| {
+        confirms(cx, &staged, "staged").is_some()
+    });
+    app.read_with(cx, |app, _| {
+        assert!(
+            app.status.starts_with("2 working changes · 1 staged"),
+            "the refresh reported the working tree: {}",
+            app.status
+        )
+    });
+    assert_eq!(line(cx), "Staged notes.txt", "the refresh replaced it");
+    wait(cx, RESTORE_AFTER - Duration::from_millis(1));
+    assert_eq!(confirms(cx, &staged, "staged"), Some(true));
+    assert_eq!(line(cx), "Staged notes.txt");
+    wait(cx, Duration::from_millis(1));
+    assert_eq!(confirms(cx, &staged, "staged"), Some(false));
+    assert!(
+        line(cx).starts_with("2 working changes · 1 staged"),
+        "{}",
+        line(cx)
+    );
+
+    let worktree = fixture.path().join("narrow");
+    fixture_git(&worktree, &["config", "user.name", "Fixture"]);
+    fixture_git(
+        &worktree,
+        &["config", "user.email", "fixture@example.invalid"],
+    );
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.write(
+                gitturtle_core::WriteCommand::Commit {
+                    message: "Record notes".into(),
+                },
+                "Creating commit…",
+                window,
+                cx,
+            )
+        })
+    });
+    // The commit's quiet refresh reads the one change left.
+    finish(&app, cx, "the commit's quiet refresh", |cx| {
+        app.read_with(cx, |app, _| app.status == "1 working change")
+    });
+    let committed = line(cx);
+    assert!(
+        committed.starts_with("Committed ") && committed.ends_with(" · Record notes"),
+        "{committed}"
+    );
+    wait(cx, RESTORE_AFTER);
+    assert_eq!(line(cx), "1 working change");
+}

@@ -1633,10 +1633,11 @@ impl GitTurtle {
         path: &Path,
         notice: Option<String>,
         error: Option<String>,
+        cx: &mut Context<Self>,
     ) {
         if self.path.as_deref() == Some(path) {
             if let Some(notice) = &notice {
-                self.status = notice.clone();
+                self.record_outcome(path, notice.clone(), cx);
             }
             self.operation_notice = notice;
             self.operation_error = error;

@@ -5256,11 +5256,7 @@ impl Render for GitTurtle {
                                 "Open a project or start a new repository".to_owned()
                             }
                             AppPage::Settings => "Appearance and layout preferences".to_owned(),
-                            AppPage::Repository => self
-                                .error
-                                .as_deref()
-                                .unwrap_or(self.loading.unwrap_or(&self.status))
-                                .to_string(),
+                            AppPage::Repository => self.status_line().to_owned(),
                         }),
                     )
                     .when(self.page == AppPage::Repository && self.automatic.watch_warning().is_some(), |footer| {

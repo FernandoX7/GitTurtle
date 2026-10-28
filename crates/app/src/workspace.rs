@@ -23,6 +23,16 @@ struct WorkingInspectorLayout {
     inspector: Pixels,
 }
 
+/// A Git write's outcome in the status line ([`GitTurtle::record_outcome`]),
+/// held while the control that asked confirms it. Window-lived and never
+/// retained by a tab: it is drawn only while its repository is shown, and
+/// its timer ends it.
+pub(super) struct StatusOutcome {
+    repository: PathBuf,
+    text: String,
+    _expiry: Task<()>,
+}
+
 /// The Changes header's height in the full form.
 const WORKING_HEADER: f32 = 44.;
 
@@ -1507,6 +1517,54 @@ impl GitTurtle {
         cx.notify();
     }
 
+    /// Records `notice`, the outcome Git reported for a write in
+    /// `repository`, in the status line, which keeps it for
+    /// [`copy_feedback::RESTORE_AFTER`], the time the control that asked
+    /// reads its confirmation, over what the reads after the write report:
+    /// the refresh that follows it once wrote Changes' working summary over
+    /// "Staged notes.txt" before the row's Staged had gone. Then the line
+    /// reads what they reported. A newer outcome replaces it and restarts the
+    /// time, and a write submitted ends it.
+    pub(super) fn record_outcome(
+        &mut self,
+        repository: &std::path::Path,
+        notice: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.status = notice.clone();
+        let expiry = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(copy_feedback::RESTORE_AFTER)
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.status_outcome = None;
+                cx.notify();
+            });
+        });
+        self.status_outcome = Some(StatusOutcome {
+            repository: repository.to_owned(),
+            text: notice,
+            _expiry: expiry,
+        });
+    }
+
+    /// The status bar's line on the Repository page: a read's error, else a
+    /// write's outcome while it lasts and its repository is shown
+    /// ([`Self::record_outcome`]), else the label of a read in progress,
+    /// else the status.
+    pub(super) fn status_line(&self) -> &str {
+        let outcome = self
+            .status_outcome
+            .as_ref()
+            .filter(|outcome| self.path.as_ref() == Some(&outcome.repository))
+            .map(|outcome| outcome.text.as_str());
+        self.error
+            .as_deref()
+            .or(outcome)
+            .or(self.loading)
+            .unwrap_or(&self.status)
+    }
+
     /// The status bar's account of the working tree. Changes sets it when it
     /// is shown, refreshed or previewed, because History's figures describe a
     /// commit's files and a working preview holds only the previewed one.
@@ -1820,6 +1878,7 @@ impl GitTurtle {
         self.operation_busy = Some(label);
         self.operation_error = None;
         self.operation_notice = None;
+        self.status_outcome = None;
         self.work_generation = self.work_generation.wrapping_add(1);
         self.status_task = None;
         if self.mode == WorkspaceMode::Working && !downloading_lfs {
@@ -1877,15 +1936,15 @@ impl GitTurtle {
                         };
                         match origin.filter(|_| this.path.as_ref() == Some(&path) && this.page == AppPage::Repository) {
                             Some(control) => {
-                                this.tab_operation_feedback(&path, None, None);
-                                this.status = notice.clone();
+                                this.tab_operation_feedback(&path, None, None, cx);
+                                this.record_outcome(&path, notice.clone(), cx);
                                 copy_feedback::confirm(window, cx, Some(control), notice);
                             }
-                            None => this.tab_operation_feedback(&path, Some(notice), None),
+                            None => this.tab_operation_feedback(&path, Some(notice), None, cx),
                         }
                     }
                     Err(error) => {
-                        this.tab_operation_feedback(&path, None, Some(format!("{error:#}")));
+                        this.tab_operation_feedback(&path, None, Some(format!("{error:#}")), cx);
                     }
                 }
                 if let Some(profile) = submitted_profile { this.finish_profile_write(&path, profile, succeeded, window, cx); }

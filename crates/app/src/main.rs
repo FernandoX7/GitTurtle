@@ -496,6 +496,10 @@ struct GitTurtle {
     loading: Option<&'static str>,
     error: Option<String>,
     status: String,
+    /// A Git write's outcome, which the status line keeps over the reads
+    /// that follow it for as long as a control confirms in place
+    /// (`workspace::StatusOutcome`).
+    status_outcome: Option<workspace::StatusOutcome>,
     sidebar: bool,
     history_sidebar: bool,
     /// Toggle Sidebar presses refused because History is too narrow for its
@@ -824,6 +828,7 @@ impl GitTurtle {
             loading: None,
             error: None,
             status: "Open a repository to explore its history".into(),
+            status_outcome: None,
             sidebar: true,
             history_sidebar: true,
             navigation_refusals: 0,
