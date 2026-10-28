@@ -23,11 +23,32 @@ pub trait DropdownMenu: Styled + Selectable + InteractiveElement + IntoElement +
         anchor: impl Into<Anchor>,
         f: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
     ) -> DropdownMenuPopover<Self> {
-        let style = self.style().clone();
+        let style = take_placement(self.style());
         let id = self.interactivity().element_id.clone();
 
         DropdownMenuPopover::new(id.unwrap_or(0.into()), anchor, self, f).trigger_style(style)
     }
+}
+
+/// GitTurtle patch: the part of a trigger's style that places it among its
+/// siblings, its margins and flex-item properties, taken from the trigger.
+///
+/// The popover lays the trigger out inside a box of its own, and that box is
+/// what the trigger's siblings lay out against. Upstream copied the trigger's
+/// whole style for the popover, which dropped it, and left it on the trigger,
+/// inside that box, where flex-item properties do nothing: a `flex_1` trigger
+/// kept its content width. (Margins reached the row anyway, because a block
+/// box counts its child's margins in its size.) The box now takes the
+/// placement and the trigger keeps the rest: its size, padding, colours and
+/// opacity would apply twice on both boxes, so the whole style does not move.
+fn take_placement(style: &mut StyleRefinement) -> StyleRefinement {
+    let mut placement = StyleRefinement::default();
+    placement.margin = std::mem::take(&mut style.margin);
+    placement.flex_grow = style.flex_grow.take();
+    placement.flex_shrink = style.flex_shrink.take();
+    placement.flex_basis = style.flex_basis.take();
+    placement.align_self = style.align_self.take();
+    placement
 }
 
 impl DropdownMenu for Button {}

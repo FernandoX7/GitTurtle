@@ -179,3 +179,44 @@ fn menu_labels_read_as_secondary_text_and_disabled_items_as_disabled(cx: &mut Te
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// A dropdown's trigger keeps its place among its siblings. The kit lays the
+/// trigger out in a box of its own, which its siblings see, and that box takes
+/// the trigger's margins and flex-item properties: upstream left them on the
+/// trigger inside the box, where flex properties do nothing, so a trigger
+/// meant to fill a row kept its content width. The margin applies once.
+#[gpui::test]
+fn a_dropdown_trigger_keeps_its_place_among_its_siblings(cx: &mut TestAppContext) {
+    struct Row;
+    impl Render for Row {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .debug_selector(|| "row".into())
+                .flex()
+                .w(px(300.))
+                .child(
+                    Button::new("grow")
+                        .debug_selector(|| "grow".into())
+                        .label("Grow")
+                        .flex_1()
+                        .mr_2()
+                        .dropdown_menu(|menu, _, _| menu.item(PopupMenuItem::new("Act"))),
+                )
+                .child(div().debug_selector(|| "after".into()).w(px(50.)).h_4())
+        }
+    }
+    cx.update(gpui_kit::init);
+    let (_, cx) = cx.add_window_view(|_, _| Row);
+    draw(cx);
+    let row = cx.debug_bounds("row").expect("the row");
+    let grow = cx.debug_bounds("grow").expect("the trigger");
+    let after = cx.debug_bounds("after").expect("its sibling");
+    let margin = cx.update(|window, _| window.rem_size() * 0.5);
+    assert_eq!(grow.left(), row.left(), "{grow:?} in {row:?}");
+    assert_eq!(after.right(), row.right(), "the trigger fills the row");
+    assert_eq!(
+        after.left(),
+        grow.right() + margin,
+        "one margin between {grow:?} and {after:?}"
+    );
+}

@@ -120,6 +120,9 @@ pub struct Popover {
     children: Vec<AnyElement>,
     /// Style for trigger element.
     /// This is used for hotfix the trigger element style to support w_full.
+    ///
+    /// GitTurtle patch: applied to the box the popover lays the trigger out
+    /// in, which upstream never did.
     trigger_style: Option<StyleRefinement>,
     mouse_button: MouseButton,
     appearance: bool,
@@ -211,6 +214,11 @@ impl Popover {
     }
 
     /// Set the style for the trigger element.
+    ///
+    /// GitTurtle patch: it styles the box the popover lays the trigger out
+    /// in, the box the trigger's siblings see, so it suits the trigger's
+    /// placement (margins, flex-item properties) rather than its looks, which
+    /// the trigger draws itself.
     pub fn trigger_style(mut self, style: StyleRefinement) -> Self {
         self.trigger_style = Some(style);
         self
@@ -297,8 +305,9 @@ impl RenderOnce for Popover {
         let style = self.style;
         let children = self.children;
         let content = self.content;
+        let trigger_style = self.trigger_style;
 
-        BasePopover::new(self.id)
+        let popover = BasePopover::new(self.id)
             .anchor(self.anchor)
             .mouse_button(self.mouse_button)
             .default_open(self.default_open)
@@ -319,7 +328,17 @@ impl RenderOnce for Popover {
             .when_some(self.on_open_change, |this, callback| {
                 this.on_open_change(move |open, window, cx| callback(open, window, cx))
             })
-            .into_any_element()
+            .into_any_element();
+        // GitTurtle patch: the trigger's box takes the trigger style, so the
+        // trigger's placement among its siblings, flex-item properties
+        // included, holds as it would without the popover.
+        match trigger_style {
+            Some(trigger_style) => gpui::div()
+                .refine_style(&trigger_style)
+                .child(popover)
+                .into_any_element(),
+            None => popover,
+        }
     }
 }
 

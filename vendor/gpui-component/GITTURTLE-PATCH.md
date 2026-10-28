@@ -606,3 +606,30 @@ the item Down reached with Enter;
 pane's row menu with the keyboard and renames the group with Down and Enter.
 Remove this part of the patch when upstream menus move only between items that
 can act and those tests pass without it.
+
+The dropdown-trigger patch modifies `src/menu/dropdown_menu.rs` and
+`src/popover.rs`. `DropdownMenu` copies its trigger's style into
+`Popover::trigger_style`, which upstream stores and never applies. The popover
+lays the trigger out in a box of its own, the box the trigger's siblings see,
+so the trigger's flex-item properties never reached the flex item: a trigger
+set to `flex_1` kept its content width. Its margins did reach the row, because
+a block box counts its child's margins in its own size. The trigger's
+placement, its margins, flex grow, shrink and basis and self-alignment, now
+moves from the trigger to that box (`take_placement`), which `Popover::render`
+styles with it. The rest of the trigger's style stays on the trigger: its size,
+padding, colours and opacity would apply twice on both boxes.
+
+The consumers are the Buttons that open a dropdown menu: the review Options
+button and its `mr_neg_2` (`crates/app/src/text_review.rs`), the current-branch
+button and its compact `flex_shrink(1.)` (`branch_actions.rs`), the project
+pane's row button and its `flex_shrink_0` (`project_pane.rs`), and the profile,
+Workspaces, recovery Actions, model view, animation clip and theme editor Base
+buttons. None of them moves: their margins already applied, and their flex
+values equal the box's default or cannot change its size.
+`cargo test --locked -p gitturtle a_dropdown_trigger_keeps_its_place_among_its_siblings`
+lays out a `flex_1` trigger with `mr_2` beside a 50 px sibling in a 300 px row
+and reads the trigger filling the row with one margin before the sibling;
+`narrow_review_caption_shows_whole_or_leaves_the_row` reads the review
+caption's text one gap after Options, its margin applied once. Remove this
+part of the patch when upstream applies a dropdown trigger's placement to the
+box it lays the trigger out in, and those tests pass without it.

@@ -6614,6 +6614,15 @@ mod tests {
                 && caption.right() <= row.right(),
             "caption {caption:?} beside Options {menu:?} in {row:?}"
         );
+        // The Options trigger's `mr_neg_2`, which its dropdown places, gives
+        // back the caption's text inset once: the caption's text starts one
+        // gap after the button, as it does after Reset review in the full
+        // row, to the device pixel.
+        let gap = cx.update(|window, _| window.rem_size() * 0.25);
+        assert!(
+            (caption.left() - (menu.right() + gap)).abs() < px(0.5),
+            "caption {caption:?} one gap after Options {menu:?}"
+        );
         assert!(!menu_caption(cx), "the row shows the caption");
 
         cx.simulate_resize(size(width - px(1.), px(490.)));
