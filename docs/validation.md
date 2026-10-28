@@ -120,6 +120,17 @@ The [CI workflow](../.github/workflows/quality.yml) configures locked workspace 
 - **Review:** a read-only design reviewer verified the claims above and checked the frames at full resolution for privacy. Found, being fixed: in the 461 × 490 tile the image control wraps to a third caption line that the file-status line covers, so it is on the bus but not visible (regression); the PDF side headers still differ by 10 logical px at 13 pt and 14.5 at 18 pt in that tile; the image side names lose their shared top when one side wraps. Pre-existing: the image view's mode and zoom groups are cut at the 461 px column's edge. Not reached: the narrow Mermaid Diagrams view (its tabs fold into a menu there).
 - **Evidence:** [`docs/evidence/system-preview-captions-2026-10-28/`](evidence/system-preview-captions-2026-10-28/).
 
+## October 28 afternoon Open in default app answers on its control
+
+`470e14a` answers Open in default app on its control rather than the window: "Opened" for about 1.5 s, a failure beside the control in the warning tone, a closed chooser as "Nothing opened"; `499c2fd` names each control by its label, then what it hands over.
+
+- **Automated:** the commits' tests, each failing with its fix removed; fast gate green at `56c2d69`.
+- **Host and capture:** as the captions entry above; candidate only (the base answered in the status bar), floating 1,480 × 980 in Midnight on `sysprev`, each control clicked by its accessible name, frames 0.3 s after the click and 0.4 s after a portal chooser was answered, with the windows that opened listed. Driver `run-sp2c.sh` (local).
+- **Build:** `04b6bc9` (sha256 `cec0501e…`), clean release.
+- **Results:** the Mermaid text opened in a terminal (nvim) and the control read "Opened" with a check 0.3 s later, only the control changing (no layout shift); the PDF went through the chooser to Evince and read "Opened" 0.4 s after; the PNG opened imv through the chooser (imv then covered the control). The PNG/SVG polyglot opened nothing and the caption read "Could not open After. The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened." in the warning tone (10.4:1). The ICO's chooser offered no application and was cancelled: "Nothing opened: the application chooser was closed." (8.4:1). The status bar did not change in any of them. Copies open as "Captured revision.‹ext›".
+- **Review:** a read-only design reviewer verified the claims above and checked the window and full-screen frames for privacy. Found, being fixed: in the 461 × 490 tile the image control is not drawn (see the captions entry), so the clicks there hit the file-status line; a note under one side's control grows that caption and the other side's caption re-centres 20.5 px lower, moving the image; when the chooser had no application the note blames a closed chooser. Not checked: the accessible name while it reads "Opened", the copy's path and nvim's read-only state.
+- **Evidence:** [`docs/evidence/system-preview-answers-2026-10-28/`](evidence/system-preview-answers-2026-10-28/).
+
 ## October 28 afternoon focus rings that survive the pointer, and History's table ending at a whole column
 
 `712a64f` keeps a whole focus ring at every Tab stop (the GitHub panel's file list, patch and conversations, the discard and removal reviews, the rewrite review, the Settings theme cards); `ad6b87a` ends History's table at a whole column; `508fca7` wraps the GitHub panel's fixture banner inside the panel.
