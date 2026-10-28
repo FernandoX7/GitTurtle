@@ -1016,7 +1016,12 @@ impl Render for QuickForm {
             .child(div().flex().gap_1().children([(true,"Current worktree"),(false,"Chosen revision")].into_iter().map(|(worktree,label)|button(label,label,"",self.worktree==worktree).toggled(self.worktree==worktree).on_click(cx.listener(move |this,_,window,cx|{this.worktree=worktree;this.search(window,cx);})))) )
             .when(!self.worktree,|el|el.child(Input::new(&self.revision)))
             .child(Input::new(&self.query))
-            .child(shortcuts::dialog_help(if self.busy{"Searching local tracked paths…".into()}else{format!("{count} matches · ↑/↓ select · {} opens · {}{}",shortcuts::ENTER,shortcuts::DialogKeys::QuickOpen.escape_help(),self.page.as_ref().filter(|page|page.truncated).map_or("",|_|" · Limit reached; narrow the query"))}).text_color(rgb(p.muted)))
+            .child({
+                // The count agrees with its noun: "1 match", "2 matches".
+                let help: String = if self.busy{"Searching local tracked paths…".into()}else{format!("{} · ↑/↓ select · {} opens · {}{}",crate::counted(count,"match","matches"),shortcuts::ENTER,shortcuts::DialogKeys::QuickOpen.escape_help(),self.page.as_ref().filter(|page|page.truncated).map_or("",|_|" · Limit reached; narrow the query"))};
+                let shown = help.clone();
+                div().debug_selector(move || format!("quick-open-help: {shown}")).child(shortcuts::dialog_help(help).text_color(rgb(p.muted)))
+            })
             .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone())))
             .child(div().id("quick-open-results").debug_selector(|| "quick-open-results".into()).role(Role::ListBox).aria_label("Matching tracked files").h(desired_height.min(available_height)).border_1().border_color(rgb(p.raised_edge())).overflow_hidden().when(count>0,|el|el.child(list)).when(count==0&&!self.busy,|el|el.child(div().p_3().child("No matching tracked files. Untracked files are available in Working Changes."))))
             .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("File History and Blame are available after opening. Worktree reads show raw current bytes; a chosen revision is pinned to its resolved commit.")))

@@ -1486,6 +1486,45 @@ mod render_tests {
         }
     }
 
+    /// Quick Open counts its matches with the noun that agrees: two tracked
+    /// paths read "2 matches", and a query that leaves one reads "1 match",
+    /// where it read "1 matches".
+    #[gpui::test]
+    async fn quick_open_counts_one_match_and_many(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        for name in ["notes.txt", "readme.txt"] {
+            std::fs::write(repo.path().join(name), "text\n").unwrap();
+        }
+        git(repo.path(), &["add", "--all"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add files"]);
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_quick_file(window, cx)));
+        // Whether the help line reads `count` once Quick Open has read its
+        // paths, on the worker after a 120 ms pause for typing.
+        let reads = |cx: &mut VisualTestContext, count: &str| {
+            let help = format!(
+                "quick-open-help: {count} · ↑/↓ select · {} opens · {}",
+                crate::shortcuts::ENTER,
+                crate::shortcuts::DialogKeys::QuickOpen.escape_help()
+            );
+            (0..20).any(|_| {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(150));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                draw(cx);
+                cx.debug_bounds(help.clone().leak()).is_some()
+            })
+        };
+        assert!(reads(cx, "2 matches"), "two tracked paths");
+        cx.simulate_input("notes");
+        assert!(reads(cx, "1 match"), "one tracked path matches \"notes\"");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+    }
+
     /// A picker's highlighted row is the keyboard's cursor, so each picker
     /// marks it as the menus do: the `selected` fill and a 2 px leading
     /// marker of `accent`, at 3:1 or more against that fill and against the

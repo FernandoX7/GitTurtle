@@ -2060,6 +2060,11 @@ fn format_bytes(bytes: usize) -> String {
 fn changed_files(count: usize) -> String {
     format!("{count} changed file{}", if count == 1 { "" } else { "s" })
 }
+/// `count` with the noun that agrees with it: `one` for exactly one, `many`
+/// otherwise, as in "1 match", "0 matches" and "2 matches".
+fn counted(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
 fn mono() -> &'static str {
     if cfg!(target_os = "macos") {
         "Menlo"

@@ -369,8 +369,9 @@ impl GitTurtle {
             return Some((
                 "No matching commits",
                 format!(
-                    "Searched {} commits in {}.",
-                    progress.scanned, progress.scope_label
+                    "Searched {} in {}.",
+                    crate::counted(progress.scanned, "commit", "commits"),
+                    progress.scope_label
                 ),
             ));
         }
@@ -381,8 +382,9 @@ impl GitTurtle {
                 "No matches in this part of history"
             },
             format!(
-                "{} commits searched. Continue to inspect older history in {}.",
-                progress.scanned, progress.scope_label
+                "{} searched. Continue to inspect older history in {}.",
+                crate::counted(progress.scanned, "commit", "commits"),
+                progress.scope_label
             ),
         ))
     }
@@ -413,7 +415,11 @@ impl GitTurtle {
                 format!("{} · pinned {}", progress.scope_label, short_oid(oid))
             }
             Some(HistoryScope::PinnedRefs(refs)) => {
-                format!("{} · {} pinned tips", progress.scope_label, refs.len())
+                format!(
+                    "{} · {}",
+                    progress.scope_label,
+                    crate::counted(refs.len(), "pinned tip", "pinned tips")
+                )
             }
             _ => progress.scope_label.clone(),
         };
@@ -431,9 +437,9 @@ impl GitTurtle {
                     .items_center()
                     .gap_2()
                     .child(div().flex_1().min_w_0().child(format!(
-                        "{scope} · {} matches · {} commits searched",
-                        self.commits.len(),
-                        progress.scanned
+                        "{scope} · {} · {} searched",
+                        crate::counted(self.commits.len(), "match", "matches"),
+                        crate::counted(progress.scanned, "commit", "commits")
                     )))
                     .child(
                         button("history-search-cancel", "Cancel", "", false)
@@ -566,6 +572,23 @@ mod tests {
         assert_eq!(progress.next_offset, 42);
         assert_eq!(progress.scanned, 42);
         assert!(!progress.exhausted());
+    }
+
+    /// A count agrees with its noun wherever a search reports one: Quick
+    /// Open's and History search's matches, the commits searched and the
+    /// pinned tips. History search read "1 matches · 1 commits searched".
+    #[test]
+    fn search_counts_agree_with_their_nouns() {
+        for (count, one, many, shown) in [
+            (0, "match", "matches", "0 matches"),
+            (1, "match", "matches", "1 match"),
+            (2, "match", "matches", "2 matches"),
+            (1, "commit", "commits", "1 commit"),
+            (50_003, "commit", "commits", "50003 commits"),
+            (1, "pinned tip", "pinned tips", "1 pinned tip"),
+        ] {
+            assert_eq!(crate::counted(count, one, many), shown);
+        }
     }
 
     #[test]
