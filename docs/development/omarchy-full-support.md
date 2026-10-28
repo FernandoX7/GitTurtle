@@ -230,8 +230,7 @@ cover current upstream x86-64 Omarchy.
         - Item 9 wave 1 (`0aa3352`, `d5f7f9c`, `268dc23`, `5d543db`, `0a1e652`, `6ab4dc7`, natively
           checked): a menu label (the moved review caption, and the project pane's, profiles',
           branch actions' and model view's labels) draws in the disabled colour and is announced
-          as a menu item, and the kit's first Down selects a leading label; the popover drops its
-          trigger's style; the narrow "More context" item's accessible name differs from the
+          as a menu item, and the kit's first Down selects a leading label; (the popover was thought to drop its trigger's margin; it did not, and the narrow caption's width formula was the error, fixed in `c831033`); the narrow "More context" item's accessible name differs from the
           button's; `native-accessibility.md` still says "Context"; the Reflog's tooltip shows
           when nothing is cut, and its header, entries and filter start at three insets; Quick
           Open and Keyboard Shortcuts are not yet on the raised surface.
