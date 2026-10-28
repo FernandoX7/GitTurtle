@@ -672,9 +672,22 @@ mod tests {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.run_until_parked();
         }
+        // The refreshed row stays whole in the list, its title and its context line, rather
+        // than a list squeezed beside the retained detail.
+        let number = github::review::fixture_pull(true).number;
+        let list = cx.debug_bounds("github-pr-list").unwrap();
+        let title = cx
+            .debug_bounds(format!("github-pr-{number}").leak())
+            .unwrap();
+        let context = cx
+            .debug_bounds(format!("github-pr-context-{number}").leak())
+            .unwrap();
         assert!(
-            cx.debug_bounds("github-pr-list").unwrap().size.height >= px(60.),
-            "refreshed PR rows must remain visible beside retained PR detail at enlarged text size"
+            context.size.height > px(0.)
+                && title.top() >= list.top() - px(0.01)
+                && context.bottom() <= list.bottom() + px(0.01),
+            "refreshed PR rows must remain visible beside retained PR detail at enlarged text \
+             size: {title:?} and {context:?} in {list:?}"
         );
         let (saved_before, attempts_before, density_before) = cx.update(|_, cx| {
             let density = app.read(cx).settings.density;
