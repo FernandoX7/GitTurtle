@@ -4714,7 +4714,7 @@ mod tests {
             )
         );
         // Labelled, the controls name themselves.
-        cx.simulate_resize(size(px(1000.), px(680.)));
+        cx.simulate_resize(size(px(1100.), px(680.)));
         assert_eq!(drawn(cx), Default::default());
     }
 
@@ -5494,7 +5494,7 @@ mod tests {
                 } else {
                     "menu-item: Hide whitespace · MenuItemCheckBox False"
                 },
-                "menu-item: Context 3 + · MenuItem",
+                "menu-item: More context (3 lines) · MenuItem",
                 "menu-item: Reset review · MenuItem",
             ] {
                 assert!(cx.debug_bounds(item).is_some(), "{item}");
@@ -5507,6 +5507,96 @@ mod tests {
         assert!(app.read_with(cx, |app, _| app.review.options.hide_whitespace));
         open(cx);
         items(cx, true);
+    }
+
+    /// The context control leads with what it does and shows the context
+    /// each hunk has now, "More context (3 lines)", in the full row and in
+    /// the narrow Options menu. The button's accessible name says both in
+    /// words, and each step relabels it until the last disables it.
+    #[gpui::test]
+    async fn context_control_says_what_it_does_and_how_much(cx: &mut TestAppContext) {
+        use crate::text_review::{Options, context_button};
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        cx.simulate_resize(size(px(1200.), px(680.)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("text-review-menu").is_none(),
+            "the full row"
+        );
+        // A small button is its `text_sm` label with `px_2` on either side.
+        let button_width = |cx: &mut VisualTestContext, label: &str| {
+            cx.update(|window, _| {
+                let rem = window.rem_size();
+                line_widths(&[(label, rem * 0.875)], window) + rem
+            })
+        };
+        for (context, label, name) in [
+            (3, "More context (3 lines)", "More context, 3 lines shown"),
+            (
+                12,
+                "More context (12 lines)",
+                "More context, 12 lines shown",
+            ),
+            (
+                48,
+                "More context (48 lines)",
+                "More context, 48 lines shown",
+            ),
+            (
+                192,
+                "More context (192 lines)",
+                "More context, 192 lines shown",
+            ),
+        ] {
+            assert_eq!(
+                app.read_with(cx, |app, _| app.review.options.context),
+                context
+            );
+            let button = cx.debug_bounds("expand-text-context").expect("the button");
+            let width = button_width(cx, label);
+            assert!(
+                (button.size.width - width).abs() < px(1.),
+                "{label:?} takes {width:?}, the button {button:?}"
+            );
+            let options = Options {
+                context,
+                ..Options::default()
+            };
+            let nodes = crate::worktrees::ring_room_tests::row_nodes(
+                cx,
+                vec![context_button(options, false)],
+            );
+            let [node] = nodes.as_slice() else {
+                panic!("one node, not {nodes:?}");
+            };
+            assert_eq!(node.role(), gpui::accesskit::Role::Button);
+            assert_eq!(node.label(), Some(name));
+            assert_eq!(node.is_disabled(), context == 192, "{name}");
+            cx.simulate_click(button.center(), Modifiers::default());
+            settle(&app, cx).await;
+        }
+        assert_eq!(app.read_with(cx, |app, _| app.review.options.context), 192);
+
+        // The narrow row's Options menu names the item as the button.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.set_text_review(Options::default(), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let menu = cx
+            .debug_bounds("text-review-menu")
+            .expect("the Options menu");
+        cx.simulate_click(menu.center(), Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("menu-item: More context (3 lines) · MenuItem")
+                .is_some()
+        );
     }
 
     /// "Original Git diff" and the other captions start where the buttons'
@@ -5532,7 +5622,7 @@ mod tests {
         });
         settle(&app, cx).await;
         let inset = cx.update(|window, _| window.rem_size() * 0.5);
-        cx.simulate_resize(size(px(1000.), px(680.)));
+        cx.simulate_resize(size(px(1100.), px(680.)));
         draw(cx);
         // The full row, its caption on a line of its own: the column holds
         // the row as it first appears, but not with the longer caption.

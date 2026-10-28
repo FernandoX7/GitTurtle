@@ -419,7 +419,6 @@ impl GitTurtle {
         let options = self.review.options;
         let busy = self.loading.is_some() || self.operation_busy.is_some();
         let has_changes = matches!(self.content.as_deref(), Some(Content::Text { presentation, .. }) if !presentation.change_rows.is_empty());
-        let next_context = CONTEXT_STEPS.iter().copied().find(|&n| n > options.context);
         let modified = options != Options::default();
         let reset_disabled = busy || (!modified && self.error.is_none());
         let row = div()
@@ -556,9 +555,8 @@ impl GitTurtle {
                     .toggled(options.hide_whitespace).disabled(busy)
                     .tooltip("Hide whitespace-only changes, including indentation and line endings. Source tabs keep exact content; partial staging requires the original diff.")
                     .on_click(cx.listener(move |this, _, window, cx| this.set_text_review(Options { hide_whitespace: !options.hide_whitespace, ..options }, window, cx))))
-                .child(Button::new("expand-text-context").small().ghost().label(format!("Context {} +", options.context))
-                    .disabled(busy || next_context.is_none()).tooltip("Expand unchanged context around all hunks: 3, 12, 48, then 192 lines. Split and source tabs contain the full bounded preview.")
-                    .on_click(cx.listener(move |this, _, window, cx| { if let Some(context) = next_context { this.set_text_review(Options { context, ..options }, window, cx); } })))
+                .child(context_button(options, busy)
+                    .on_click(cx.listener(move |this, _, window, cx| { if let Some(options) = more_context(options) { this.set_text_review(options, window, cx); } })))
                 .child(Button::new("reset-text-review").small().ghost().label("Reset review")
                     .disabled(reset_disabled).mr_neg_2()
                     .on_click(cx.listener(|this, _, window, cx| this.set_text_review(Options::default(), window, cx))))
@@ -578,17 +576,50 @@ struct MenuItem {
     choose: fn(Options) -> Option<Options>,
 }
 
-/// The Options menu, as the full row's Hide whitespace, Context and Reset
-/// review buttons: whitespace a checked item, context showing its value and
-/// disabled at its last step, reset disabled as its button is.
+/// `options` with the next context step, or `None` at the last.
+fn more_context(options: Options) -> Option<Options> {
+    CONTEXT_STEPS
+        .iter()
+        .copied()
+        .find(|&n| n > options.context)
+        .map(|context| Options { context, ..options })
+}
+
+/// The context control's label, led by what it does and showing the context
+/// each hunk has now, in the full row and the Options menu alike.
+fn context_label(context: usize) -> String {
+    format!("More context ({context} lines)")
+}
+
+/// The full row's context button. Its accessible name says what it does and
+/// the context shown now, and its tooltip the step it takes.
+pub(crate) fn context_button(options: Options, busy: bool) -> Button {
+    let context = options.context;
+    let next = more_context(options);
+    Button::new("expand-text-context")
+        .debug_selector(|| "expand-text-context".into())
+        .small()
+        .ghost()
+        .label(context_label(context))
+        .accessibility_label(format!("More context, {context} lines shown"))
+        .disabled(busy || next.is_none())
+        .tooltip(match next {
+            Some(next) => format!(
+                "Show {} unchanged lines around each hunk instead of {context}, in steps of 3, \
+                 12, 48, then 192. Split and source tabs contain the full bounded preview.",
+                next.context
+            ),
+            None => format!(
+                "Each hunk shows {context} unchanged lines around it, the most this review \
+                 shows. Split and source tabs contain the full bounded preview."
+            ),
+        })
+}
+
+/// The Options menu, as the full row's Hide whitespace, More context and
+/// Reset review buttons: whitespace a checked item, context showing its value
+/// and disabled at its last step, reset disabled as its button is.
 fn options_menu(options: Options, busy: bool, reset_disabled: bool) -> [MenuItem; 3] {
-    let next_context = |options: Options| {
-        CONTEXT_STEPS
-            .iter()
-            .copied()
-            .find(|&n| n > options.context)
-            .map(|context| Options { context, ..options })
-    };
     [
         MenuItem {
             label: "Hide whitespace".into(),
@@ -602,10 +633,10 @@ fn options_menu(options: Options, busy: bool, reset_disabled: bool) -> [MenuItem
             },
         },
         MenuItem {
-            label: format!("Context {} +", options.context),
+            label: context_label(options.context),
             checked: None,
-            disabled: busy || next_context(options).is_none(),
-            choose: next_context,
+            disabled: busy || more_context(options).is_none(),
+            choose: more_context,
         },
         MenuItem {
             label: "Reset review".into(),
@@ -629,12 +660,13 @@ pub(crate) fn options_row_width(window: &Window) -> Pixels {
             &crate::views::LineKey::current(window),
             || {
                 let label = rem * 0.875;
+                let context = context_label(Options::default().context);
                 crate::views::line_widths(
                     &[
                         ("Previous change", label),
                         ("Next change", label),
                         ("Hide whitespace", label),
-                        ("Context 3 +", label),
+                        (&context, label),
                         ("Reset review", label),
                         ("Original Git diff", appearance::ui_text(11.)),
                     ],
@@ -693,7 +725,7 @@ mod tests {
             states(options_menu(original, false, true)),
             [
                 ("Hide whitespace".into(), Some(false), false),
-                ("Context 3 +".into(), None, false),
+                ("More context (3 lines)".into(), None, false),
                 ("Reset review".into(), None, true),
             ]
         );
@@ -719,7 +751,7 @@ mod tests {
         let [_, context, _] = options_menu(widest, false, false);
         assert_eq!(
             (context.label.as_str(), context.disabled),
-            ("Context 192 +", true)
+            ("More context (192 lines)", true)
         );
         assert_eq!((context.choose)(widest), None);
         assert!(
