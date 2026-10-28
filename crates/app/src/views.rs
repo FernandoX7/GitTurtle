@@ -93,6 +93,13 @@ impl GitTurtle {
                         (&mut this.file_list_layout, &this.file_scroll)
                     };
                     if reveal_resized_selection(previous, next, selected, scroll) {
+                        // The graph's lanes as this frame lays them out, its
+                        // width taken in prepaint: a window narrowed to fewer
+                        // lanes, as narrow History's one, shows the selected
+                        // commit's lane as well as its row.
+                        if history && let Some(index) = this.selected_commit {
+                            this.reveal_graph_lane(index);
+                        }
                         cx.notify();
                         // A refresh requested during paint takes effect on the
                         // next frame, after the list has its new dimensions.
@@ -1765,6 +1772,7 @@ impl GitTurtle {
         });
         let row = div()
             .id(("commit", index))
+            .debug_selector(move || format!("history-row-{index}"))
             .role(Role::ListBoxOption)
             .aria_label(name)
             .aria_selected(active)
@@ -9024,9 +9032,15 @@ pub(crate) mod tests {
                     panic!("one selected node in {left}–{right} {at}: {nodes:?}");
                 };
                 // Paint snaps the node to device pixels, half a pixel here.
+                // Narrowing revealed lane 1 where the graph has room for one
+                // lane, so the frame's lanes start there.
+                let offset = cx.update(|_, cx| app.read(cx).history_rows(cx).lane_offset);
                 assert!(
-                    (x - (left + 10. + compact)).abs() <= 0.25,
-                    "the selected node at x {x} on lane 1 of {left}–{right} {at}"
+                    (x - (left + 10. + (1 - offset) as f32 * compact)).abs() <= 0.25
+                        && x - 5. >= left
+                        && x + 5. <= right,
+                    "the selected node at x {x}, whole, on lane 1 of {left}–{right} from lane \
+                     {offset} {at}"
                 );
                 assert!(
                     (y - f32::from(side_cell.center().y)).abs() < 0.5,
@@ -9287,6 +9301,78 @@ pub(crate) mod tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Narrowing the window keeps the selected commit in view: after a
+    /// resize from 1480 × 980 to 461 × 490 the selected row, its subject and
+    /// its graph node lie inside the list, both for a row deep in the list,
+    /// which the narrower list would have left below its end, and for a
+    /// commit on the second lane, which the narrow graph's single lane would
+    /// have left out of the drawn lanes.
+    #[gpui::test]
+    async fn narrowing_history_keeps_the_selected_row_and_lane_in_view(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(60)).await;
+        let deep = app.read_with(cx, |app, _| app.visible[18]);
+        let side = commit_index(&app, cx, SIDE_SUBJECT);
+        assert_eq!(app.read_with(cx, |app, _| app.graph[side].lane), 1);
+        for row in [side, deep] {
+            cx.simulate_resize(size(px(1480.), px(980.)));
+            draw(cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(row, window, cx)));
+            settle(&app, cx).await;
+            let subject = bounds_of(cx, format!("history-subject-{row}"));
+            assert!(subject.is_some(), "row {row} shows at 1480 × 980");
+
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            assert!(app.read_with(cx, |app, _| app.history_column_layout().narrow));
+            let list = cx.debug_bounds("history-pane").unwrap();
+            let view = cx.debug_bounds("history-scope-toolbar").unwrap();
+            let whole = bounds_of(cx, format!("history-row-{row}"))
+                .unwrap_or_else(|| panic!("row {row} is drawn after narrowing"));
+            assert!(
+                whole.top() >= list.top() + px(1.) && whole.bottom() <= list.bottom() - px(1.),
+                "row {row}'s {whole:?} lies inside the list's edge {list:?}"
+            );
+            let subject = bounds_of(cx, format!("history-subject-{row}")).unwrap();
+            assert!(
+                subject.left() >= view.left() && subject.left() < view.right() - px(80.),
+                "row {row}'s subject starts inside the viewport {view:?}: {subject:?}"
+            );
+            // The selected node, 5 px in radius, inside the row's graph cell.
+            let graph = bounds_of(
+                cx,
+                format!("history-cell-{row}-{}", ColumnId::Graph as usize),
+            )
+            .unwrap();
+            let nodes: Vec<_> = cx.update(|window, _| {
+                let scale = window.scale_factor();
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        (quad.bounds.size.width.as_f32() / scale - 10.).abs() < 0.01
+                            && (quad.corner_radii.top_left.as_f32() / scale - 5.).abs() < 0.01
+                    })
+                    .map(|quad| {
+                        let left = px(quad.bounds.left().as_f32() / scale);
+                        let right = px(quad.bounds.right().as_f32() / scale);
+                        let center = px((quad.bounds.top().as_f32()
+                            + quad.bounds.bottom().as_f32())
+                            / 2.
+                            / scale);
+                        (left, right, center)
+                    })
+                    .filter(|(_, _, y)| graph.top() <= *y && *y < graph.bottom())
+                    .collect()
+            });
+            assert!(
+                nodes.iter().any(|(left, right, _)| {
+                    *left >= graph.left() - px(0.5) && *right <= graph.right() + px(0.5)
+                }),
+                "row {row}'s selected node lies inside its graph cell {graph:?}: {nodes:?}"
+            );
+        }
     }
 
     /// Narrow History changes no preference: widening the window gives the
