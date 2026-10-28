@@ -125,10 +125,9 @@ impl GitTurtle {
         true
     }
 
-    /// The Changes header's Actions menu. `compact`, in an inspector too
-    /// narrow for its label beside Refresh (`workspace::WorkingForms`), it
-    /// keeps only its caret in a 28 px control, with its accessible name and
-    /// a tooltip that leads with its label. `tight`, in an inspector too
+    /// The Changes header's Actions menu, opened by `working_actions_trigger`
+    /// (`compact` in an inspector too narrow for its label beside Refresh,
+    /// `workspace::WorkingForms`). `tight`, in an inspector too
     /// short for the selection controls (`workspace::WorkingFit`), the menu
     /// leads with Directories and the selection's Stage and Unstage, and
     /// with Refresh where it holds `Some(true)`, as Refresh then has no
@@ -164,33 +163,7 @@ impl GitTurtle {
             .and_then(|index| self.work_status.as_ref()?.entries.get(index))
             .filter(|entry| entry.untracked)
             .cloned();
-        const DETAIL: &str = "Ignore selected untracked content, stashes, and last-commit actions";
-        const TIGHT_DETAIL: &str = "Directories, Stage and Unstage for the selection, ignore, stashes, and last-commit actions";
-        let control = if compact {
-            crate::views::compact_control_name(
-                button("working-recovery-menu", "", "", false),
-                "working-recovery-menu",
-                "Working changes and recovery actions",
-            )
-            .tooltip(format!(
-                "Actions · {}",
-                if tight.is_some() {
-                    TIGHT_DETAIL
-                } else {
-                    DETAIL
-                }
-            ))
-        } else {
-            Button::new("working-recovery-menu")
-                .small()
-                .ghost()
-                .label("Actions")
-                .accessibility_label("Working changes and recovery actions")
-                .tooltip(DETAIL)
-        };
-        control
-            .debug_selector(|| "working-recovery-menu".into())
-            .dropdown_caret(true)
+        working_actions_trigger(compact, tight.is_some())
             .disabled(self.operation_busy.is_some())
             .dropdown_menu(move |mut menu, _, _| {
                 if let Some(refresh) = tight {
@@ -507,6 +480,44 @@ impl GitTurtle {
             _ => {}
         }
     }
+}
+
+/// The Working Changes Actions menu's trigger: "Actions" with its caret, or,
+/// `compact`, where its label does not fit beside Refresh, a 28 px control
+/// that shows the more-actions dots in the shared helper's frame, as
+/// Refresh beside it shows its arrows, rather than a bare caret that read
+/// as a disclosure arrow. Either is named "Working changes and recovery
+/// actions"; the compact one's tooltip leads with "Actions" and, `tight`,
+/// names the selection controls its menu then leads with.
+pub(super) fn working_actions_trigger(compact: bool, tight: bool) -> Button {
+    const NAME: &str = "Working changes and recovery actions";
+    const DETAIL: &str = "Ignore selected untracked content, stashes, and last-commit actions";
+    const TIGHT_DETAIL: &str = "Directories, Stage and Unstage for the selection, ignore, stashes, and last-commit actions";
+    let control = if compact {
+        crate::views::compact_control_name(
+            button("working-recovery-menu", "", "", false).child(
+                div()
+                    .debug_selector(|| "working-recovery-more".into())
+                    .flex()
+                    .child(control_icon("more")),
+            ),
+            "working-recovery-menu",
+            NAME,
+        )
+        .tooltip(format!(
+            "Actions · {}",
+            if tight { TIGHT_DETAIL } else { DETAIL }
+        ))
+    } else {
+        Button::new("working-recovery-menu")
+            .small()
+            .ghost()
+            .label("Actions")
+            .accessibility_label(NAME)
+            .tooltip(DETAIL)
+            .dropdown_caret(true)
+    };
+    control.debug_selector(|| "working-recovery-menu".into())
 }
 
 fn working_menu_item(

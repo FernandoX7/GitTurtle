@@ -6845,6 +6845,80 @@ pub(crate) mod tests {
         assert!(cx.debug_bounds("commit-composer-icon").is_some());
     }
 
+    /// In a 461 × 490 window, at the default size and at 18 pt, the compact
+    /// Actions trigger beside the filter is a 28 px control in Refresh's
+    /// frame showing the more-actions dots centred in it, not a bare caret;
+    /// it is a button named "Working changes and recovery actions", and Tab
+    /// from the filter and Enter open its menu, which Escape closes.
+    #[gpui::test]
+    async fn compact_actions_is_a_named_more_actions_menu(cx: &mut TestAppContext) {
+        const NAME: &str = "Working changes and recovery actions";
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        let directories = "menu-item: Directories · MenuItemCheckBox False";
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            let at = format!("{text} pt");
+            assert!(cx.debug_bounds("working-toolbar").is_some(), "{at}: tight");
+            let control = cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.)));
+            let trigger = cx.debug_bounds("working-recovery-menu").unwrap();
+            assert_eq!(
+                (trigger.size.width, trigger.size.height),
+                (control, control),
+                "{at}: {trigger:?}"
+            );
+            if let Some(refresh) = cx.debug_bounds("refresh-working") {
+                assert_eq!(refresh.size, trigger.size, "{at}: beside {refresh:?}");
+                assert_eq!(refresh.top(), trigger.top(), "{at}: beside {refresh:?}");
+            }
+            // The dots, centred: no caret beside them.
+            let dots = cx
+                .debug_bounds("working-recovery-more")
+                .unwrap_or_else(|| panic!("{at}: the more-actions dots"));
+            let slack = px(0.5);
+            assert!(
+                (dots.center().x - trigger.center().x).abs() <= slack
+                    && (dots.center().y - trigger.center().y).abs() <= slack,
+                "{at}: {dots:?} centred in {trigger:?}"
+            );
+            assert_eq!(
+                COMPACT_NAMES.with(|names| names.borrow().get("working-recovery-menu").copied()),
+                Some(NAME),
+                "{at}"
+            );
+
+            // Tab from the filter reaches it, and Enter opens its menu.
+            let filter = app.read_with(cx, |app, cx| app.working_filter.read(cx).focus_handle(cx));
+            cx.update(|window, cx| window.focus(&filter, cx));
+            draw(cx);
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            assert!(cx.debug_bounds(directories).is_none(), "{at}: closed");
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            assert!(
+                cx.debug_bounds(directories).is_some(),
+                "{at}: Enter opens the menu"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(cx.debug_bounds(directories).is_none(), "{at}: Escape");
+        }
+        // It is a button with its name.
+        let nodes = crate::worktrees::ring_room_tests::row_nodes(
+            cx,
+            vec![crate::recovery::working_actions_trigger(true, true)],
+        );
+        let [node] = nodes.as_slice() else {
+            panic!("one node, not {nodes:?}");
+        };
+        assert_eq!(node.role(), gpui::accesskit::Role::Button);
+        assert_eq!(node.label(), Some(NAME));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// From a 461 and a 640 px wide window's shortest height to a tall one,
     /// at the default size and at 18 pt, the Working Changes inspector never
     /// cuts a control above its list: the selection controls are whole in
