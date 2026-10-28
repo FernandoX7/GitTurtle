@@ -544,6 +544,10 @@ impl RecoveryList {
         let copy = key.clone();
         let retry = key.clone();
         let discard = key.clone();
+        // Keyed by the draft, so the row that takes this index after a
+        // discard is at rest.
+        let mark = copy_feedback::Mark::new(("copy-recovery", index), key);
+        let copy_mark = mark.clone();
         div()
             .h(appearance::ui_size(110.))
             .p_3()
@@ -570,15 +574,8 @@ impl RecoveryList {
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        copy_feedback::copy_button(
-                            ("copy-recovery", index),
-                            "Copy exact text",
-                            "",
-                            "",
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
+                        copy_feedback::copy_button(mark, "Copy exact text", "", "", cx).on_click(
+                            cx.listener(move |this, _, window, cx| {
                                 if let Some(owner) = this.owner.upgrade() {
                                     let text = owner
                                         .read(cx)
@@ -590,14 +587,14 @@ impl RecoveryList {
                                         copy_feedback::copy(
                                             window,
                                             cx,
-                                            Some(("copy-recovery", index).into()),
+                                            Some(copy_mark.clone()),
                                             "draft text",
                                             text,
                                         );
                                     }
                                 }
-                            },
-                        )),
+                            }),
+                        ),
                     )
                     .child(
                         button(("retry-recovery", index), "Retry save", "", false).on_click(

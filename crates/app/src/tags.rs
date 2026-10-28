@@ -264,6 +264,8 @@ impl GitTurtle {
             let p = palette(cx); let tag = &details.tag;
             let deletion = tag.clone(); let delete_owner = owner.clone(); let delete_path = path.clone();
             let oid = tag.oid.clone();
+            let tag_mark = copy_feedback::Mark::new("copy-tag-oid", &tag.oid);
+            let tag_copy = tag_mark.clone();
             // The Push to… list scrolls, so it clips its buttons to its bounds
             // on both axes: it keeps the focus ring's room around them and
             // gives it back through its margin. The content keeps the room
@@ -282,7 +284,7 @@ impl GitTurtle {
                 .when_some(annotation.as_ref(), |element, annotation| element.child(crate::editor_find::Editor::new(annotation).readonly(true).h(px(160.)).aria_label("Tag annotation and signature, if present")))
                 .when_some(details.annotation_unavailable.as_ref(), |element, message| element.child(static_text("tag-annotation-unavailable", message.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
                 .child(div().flex().gap_2()
-                    .child(copy_feedback::copy_button("copy-tag-oid", "Copy object ID", "", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some("copy-tag-oid".into()), "tag object ID", oid.clone())))
+                    .child(copy_feedback::copy_button(tag_mark, "Copy object ID", "", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(tag_copy.clone()), "tag object ID", oid.clone())))
                     .child(button("delete-local-tag", "Delete local tag…", "", false).on_click(move |_, window, cx| {
                         let _ = delete_owner.update(cx, |this, cx| {
                             if this.path == delete_path && this.operation_busy.is_none() {

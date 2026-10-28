@@ -405,24 +405,29 @@ impl GitTurtle {
         let mut captured_actions = div().flex().flex_wrap().gap_2().px_3().py_1();
         for (index, side) in [old, new].into_iter().enumerate() {
             let label = if index == 0 { "Before" } else { "After" };
+            let side_path = self
+                .selected_file
+                .and_then(|selected| self.files.get(selected))
+                .and_then(|file| {
+                    if index == 0 {
+                        file.old_path.as_deref()
+                    } else {
+                        file.new_path.as_deref()
+                    }
+                });
             if let Some(literal) = side.literal_source.clone() {
-                captured_actions = captured_actions.child(copy_feedback::copy_button(("copy-image-source",index),format!("Copy {label} source"),"copy","Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(("copy-image-source",index).into()),&format!("{label} source"),literal.to_string())));
+                // The control's id names the side; the mark adds its path.
+                let mark = copy_feedback::Mark::new(("copy-image-source", index), side_path);
+                let copy_mark = mark.clone();
+                captured_actions = captured_actions.child(copy_feedback::copy_button(mark,format!("Copy {label} source"),"copy","Copy the literal source bytes as UTF-8; rendered pixels never become a Git patch",cx).on_click(move |_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),&format!("{label} source"),literal.to_string())));
             }
             if let Some(bytes) = side
                 .captured
                 .clone()
                 .filter(|_| crate::rich_preview::SYSTEM_PREVIEW)
             {
-                let path = self
-                    .selected_file
-                    .and_then(|selected| self.files.get(selected))
-                    .and_then(|file| {
-                        if index == 0 {
-                            file.old_path.clone()
-                        } else {
-                            file.new_path.clone()
-                        }
-                    })
+                let path = side_path
+                    .map(std::path::Path::to_path_buf)
                     .unwrap_or_else(|| PathBuf::from("image.bin"));
                 captured_actions = captured_actions.child(button(("image-system-preview",index),format!("{label} system preview"),"external-link",false).tooltip("Open an isolated read-only copy of these captured bytes in system Quick Look").on_click(cx.listener(move |this,_,window,cx|this.open_captured_bytes(bytes.clone(),path.clone(),window,cx))));
             }

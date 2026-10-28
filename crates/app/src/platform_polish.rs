@@ -433,6 +433,13 @@ struct AboutDetails {
     report: String,
 }
 
+impl AboutDetails {
+    /// Copy bug diagnostics' mark, keyed by the report it copies.
+    fn diagnostics_mark(&self) -> copy_feedback::Mark {
+        copy_feedback::Mark::new("copy-bug-diagnostics", &self.report)
+    }
+}
+
 impl Render for AboutDetails {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let revision = &build_info::REVISION[..build_info::REVISION.len().min(12)];
@@ -462,10 +469,10 @@ impl Render for AboutDetails {
                     .child("Bug diagnostics include build and display settings. Repository paths, file content and account details are omitted."),
             )
             .child(
-                copy_feedback::copy_button("copy-bug-diagnostics", "Copy bug diagnostics", "copy", "", cx)
+                copy_feedback::copy_button(self.diagnostics_mark(), "Copy bug diagnostics", "copy", "", cx)
                     .on_click(cx.listener(|this, _, window, cx| {
                         let report = this.report.clone();
-                        copy_feedback::copy(window, cx, Some("copy-bug-diagnostics".into()), "bug diagnostics", report);
+                        copy_feedback::copy(window, cx, Some(this.diagnostics_mark()), "bug diagnostics", report);
                     })),
             )
     }

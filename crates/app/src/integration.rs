@@ -18,8 +18,11 @@ impl GitTurtle {
             error.clone()
         };
         let editor = text::editor(&display, "text", None, window, cx);
+        // Keyed by the details, read once: the dialog shows them unchanged.
+        let mark = copy_feedback::Mark::new("copy-operation-details", &*full);
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let full = Arc::clone(&full);
+            let copy_mark = mark.clone();
             dialog
                 .title("Git operation details")
                 .width(px(680.))
@@ -30,22 +33,17 @@ impl GitTurtle {
                         .aria_label("Git operation error details"),
                 )
                 .child(
-                    copy_feedback::copy_button(
-                        "copy-operation-details",
-                        "Copy details",
-                        "",
-                        "",
-                        cx,
-                    )
-                    .on_click(move |_, window, cx| {
-                        copy_feedback::copy(
-                            window,
-                            cx,
-                            Some("copy-operation-details".into()),
-                            "operation details",
-                            full.to_string(),
-                        )
-                    }),
+                    copy_feedback::copy_button(mark.clone(), "Copy details", "", "", cx).on_click(
+                        move |_, window, cx| {
+                            copy_feedback::copy(
+                                window,
+                                cx,
+                                Some(copy_mark.clone()),
+                                "operation details",
+                                full.to_string(),
+                            )
+                        },
+                    ),
                 )
                 .button_props(DialogButtonProps::default().ok_text("Close"))
         });

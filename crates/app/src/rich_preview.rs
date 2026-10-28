@@ -362,7 +362,10 @@ pub(super) fn render_comparison<T: 'static>(
             if let Some(source)=&side.metadata.source {
                 let copied=source.clone();
                 let what=if quick {"source".to_owned()} else {format!("{label} source")};
-                body=body.child(copy_feedback::copy_button(("copy-decoded-source",index),"Copy source","copy","",cx).on_click(move|_,window,cx|copy_feedback::copy(window,cx,Some(("copy-decoded-source",index).into()),&what,copied.to_string())));
+                // The control's id names the side; the mark adds its path.
+                let mark=copy_feedback::Mark::new(("copy-decoded-source",index),&side.name);
+                let copy_mark=mark.clone();
+                body=body.child(copy_feedback::copy_button(mark,"Copy source","copy","",cx).on_click(move|_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),&what,copied.to_string())));
                 let mut end=source.len().min(16*1024); while !source.is_char_boundary(end) { end-=1; }
                 body=body.child(decoded_source(&source[..end],cx));
                 if end<source.len() { body=body.child(div().text_color(rgb(colors.muted)).child("Excerpt limited to 16 KiB; Copy source includes the complete available text.")); }

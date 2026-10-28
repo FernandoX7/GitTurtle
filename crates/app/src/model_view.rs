@@ -665,9 +665,12 @@ fn render_side<T: 'static>(
         } else {
             "model source"
         };
+        // The control's id names the side; the mark adds its path.
+        let mark = copy_feedback::Mark::new(("model-source", index), &side.name);
+        let copy_mark = mark.clone();
         source_actions = source_actions.child(
             copy_feedback::copy_button(
-                ("model-source", index),
+                mark,
                 if lfs_pointer {
                     "Copy pointer"
                 } else {
@@ -682,7 +685,7 @@ fn render_side<T: 'static>(
                 copy_feedback::copy(
                     window,
                     cx,
-                    Some(("model-source", index).into()),
+                    Some(copy_mark.clone()),
                     &format!("{label} {content}"),
                     source.to_string(),
                 )

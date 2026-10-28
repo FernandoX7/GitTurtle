@@ -2487,7 +2487,7 @@ mod icon_symbol_tests {
 
     /// The literal icon names in `source`: the symbol argument of each
     /// `button(id, label, symbol, active)` and
-    /// `copy_button(id, label, symbol, tooltip, cx)` call and each
+    /// `copy_button(mark, label, symbol, tooltip, cx)` call and each
     /// `icons/<name>.svg` path literal. Method calls (`.button(`) and
     /// definitions are not calls of the helper; an empty symbol draws no icon.
     fn literal_icon_symbols(source: &str) -> Vec<String> {

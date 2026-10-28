@@ -709,6 +709,8 @@ impl GitTurtle {
         let entry = lineage.entry();
         let copy_path = lineage.path.display().to_string();
         let path = copy_path.clone();
+        let path_mark = copy_feedback::Mark::new("copy-history-path", &lineage.path);
+        let path_copy = path_mark.clone();
         div()
             .size_full()
             .min_w_0()
@@ -779,7 +781,7 @@ impl GitTurtle {
                             )
                             .child(
                                 copy_feedback::copy_button(
-                                    "copy-history-path",
+                                    path_mark,
                                     "",
                                     "copy",
                                     "Copy file history's anchor path",
@@ -789,7 +791,7 @@ impl GitTurtle {
                                     copy_feedback::copy(
                                         window,
                                         cx,
-                                        Some("copy-history-path".into()),
+                                        Some(path_copy.clone()),
                                         "file path",
                                         copy_path.clone(),
                                     )

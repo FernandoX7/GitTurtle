@@ -371,6 +371,12 @@ impl GitTurtle {
         let select_all = selection.clone();
         let copy_oid = commit.oid.clone();
         let hash = commit.oid.clone();
+        // Keyed by the commit, so another commit's buttons, drawn with the
+        // same ids in the same place, are at rest.
+        let message_mark = copy_feedback::Mark::new("copy-message", &commit.oid);
+        let hash_mark = copy_feedback::Mark::new("copy-commit", &commit.oid);
+        let message_copy = message_mark.clone();
+        let hash_copy = hash_mark.clone();
         let key_scroll = scroll.clone();
         let key_owner = cx.entity().downgrade();
         let click_focus = focus.clone();
@@ -394,20 +400,20 @@ impl GitTurtle {
                 .px_3().py_1()
                 .flex().flex_wrap().items_center().gap_1()
                 .child(if compact {
-                    compact_control_name(copy_feedback::copy_button("copy-message", "", "copy", "Copy message · Copy the complete commit title and body", cx), "copy-message", "Copy full commit message")
+                    compact_control_name(copy_feedback::copy_button(message_mark, "", "copy", "Copy message · Copy the complete commit title and body", cx), "copy-message", "Copy full commit message")
                 } else {
-                    copy_feedback::copy_button("copy-message", "Copy message", "copy", "Copy the complete commit title and body", cx)
+                    copy_feedback::copy_button(message_mark, "Copy message", "copy", "Copy the complete commit title and body", cx)
                         .accessibility_label("Copy full commit message")
                 }
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let message = this.message_commit(file_history).filter(|commit| commit.oid == copy_oid).map(full_message);
                         if let Some(message) = message {
-                            copy_feedback::copy(window, cx, Some("copy-message".into()), "commit message", message);
+                            copy_feedback::copy(window, cx, Some(message_copy.clone()), "commit message", message);
                         }
                     })))
-                .child(copy_feedback::copy_button("copy-commit", "Hash", "", format!("Copy full commit hash · {}", commit.oid), cx)
+                .child(copy_feedback::copy_button(hash_mark, "Hash", "", format!("Copy full commit hash · {}", commit.oid), cx)
                     .accessibility_label("Copy full commit hash")
-                    .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some("copy-commit".into()), "commit hash", hash.clone())))
+                    .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(hash_copy.clone()), "commit hash", hash.clone())))
             )
             .child(div()
                 .id("commit-message-viewport").debug_selector(|| "commit-message-viewport".into())

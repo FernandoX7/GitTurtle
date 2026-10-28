@@ -711,9 +711,12 @@ impl Render for ConflictView {
                 .child(div().id("conflict-draft-storage-status").role(Role::Status).aria_label(self.durable_status.clone()).a11y_synthetic_children(native_accessibility::polite).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(self.durable_status.clone()))
                 .when_some(self.durable_saved.clone(), |element, (valid, text)| {
                     let copy = text.clone();
+                    // Keyed by this file's draft.
+                    let mark = copy_feedback::Mark::new("copy-saved-conflict", &self.durable_key);
+                    let copy_mark = mark.clone();
                     element.child(div().flex().flex_wrap().items_center().gap_2()
                         .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(if valid { p.muted } else { p.warning })).child(if valid { "Saved draft matches this operation, index stages and working file." } else { "Saved draft belongs to changed source state. Recover its text without replacing this file." }))
-                        .child(copy_feedback::copy_button("copy-saved-conflict", "Copy saved text", "", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some("copy-saved-conflict".into()), "saved text", copy.clone())))
+                        .child(copy_feedback::copy_button(mark, "Copy saved text", "", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "saved text", copy.clone())))
                         .child(button("restore-saved-conflict", "Restore saved draft", "", false).debug_selector(|| "restore-saved-conflict".to_string()).disabled(!valid).on_click(cx.listener(move |this, _, window, cx| {
                             this.restore_saved_draft(window, cx);
                         }))))

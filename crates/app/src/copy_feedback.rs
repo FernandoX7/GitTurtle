@@ -13,17 +13,23 @@
 //! generation. A newer copy replaces it, so at most one button reads Copied,
 //! and dropping the older restore timer cancels it; the generation check keeps
 //! a timer from clearing a newer mark. It holds no repository or inspection
-//! state, so tab switches and restored inspections carry nothing. A button
-//! that leaves the screen and returns before the time is up still reads
-//! Copied, as does another button drawn with the same id, such as Hash for
-//! the next selected commit.
+//! state, so tab switches and restored inspections carry nothing.
+//!
+//! A [`Mark`] names both the button and what it copies, such as the commit a
+//! Hash button copies, so Copied stays where the copy happened: Hash drawn
+//! for the next selected commit, with the same id in the same place, is at
+//! rest, while the copied commit's Hash, or any button that leaves the screen
+//! and returns before the time is up, still reads Copied.
 //!
 //! A text selection copied with the edit command (the editors, Split's
 //! sides, the commit message's selectable text) stays silent, as native text
 //! fields are: it is the standard Copy, not a copy action.
 use crate::*;
 use gpui_kit::prelude::FluentBuilder;
-use std::time::Duration;
+use std::{
+    hash::{DefaultHasher, Hash, Hasher},
+    time::Duration,
+};
 
 /// How long a copy button reads "Copied".
 pub(crate) const RESTORE_AFTER: Duration = Duration::from_millis(1500);
@@ -43,18 +49,43 @@ impl Global for Feedback {}
 struct Copied {
     generation: usize,
     window: AnyWindowHandle,
-    control: Option<ElementId>,
+    mark: Option<Mark>,
     announcement: SharedString,
 }
 
-/// Puts `text` on the clipboard and confirms it: `control`, the copy button
-/// that asked (`None` for a keyboard copy without one), reads Copied, and
-/// assistive technology hears "Copied `what`", where `what` names the content,
-/// such as "commit hash" or "file path".
+/// A copy button and what it copies, which its Copied mark belongs to. The
+/// button draws with it ([`copy_button`]) and its click copies with it
+/// ([`copy`]), so the two cannot disagree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Mark {
+    control: ElementId,
+    /// A hash of the content's identity, such as a commit id, or a byte path
+    /// and its side, so the mark holds no copy of the content.
+    subject: u64,
+}
+
+impl Mark {
+    /// The mark of the copy button `control` while it copies the content
+    /// `subject` identifies: a commit id for Hash and Copy message, a path
+    /// for a path, the path and side for a comparison side's source.
+    pub(crate) fn new(control: impl Into<ElementId>, subject: impl Hash) -> Self {
+        let mut hasher = DefaultHasher::new();
+        subject.hash(&mut hasher);
+        Self {
+            control: control.into(),
+            subject: hasher.finish(),
+        }
+    }
+}
+
+/// Puts `text` on the clipboard and confirms it: `mark`, the copy button that
+/// asked and what it copied (`None` for a keyboard copy without a button),
+/// reads Copied, and assistive technology hears "Copied `what`", where `what`
+/// names the content, such as "commit hash" or "file path".
 pub(crate) fn copy(
     window: &mut Window,
     cx: &mut App,
-    control: Option<ElementId>,
+    mark: Option<Mark>,
     what: &str,
     text: String,
 ) {
@@ -65,7 +96,7 @@ pub(crate) fn copy(
     feedback.latest = Some(Copied {
         generation,
         window: window.window_handle(),
-        control,
+        mark,
         announcement: format!("{COPIED} {what}").into(),
     });
     // The whole window redraws, so a copy button inside a dialog or a child
@@ -95,15 +126,16 @@ fn restore(generation: usize, cx: &mut App) {
     }
 }
 
-fn copied(control: &ElementId, cx: &App) -> bool {
+fn copied(mark: &Mark, cx: &App) -> bool {
     cx.try_global::<Feedback>()
         .and_then(|feedback| feedback.latest.as_ref())
-        .is_some_and(|latest| latest.control.as_ref() == Some(control))
+        .is_some_and(|latest| latest.mark.as_ref() == Some(mark))
 }
 
-/// A copy button with the shared `button` frame, which reads Copied while
-/// [`copy`] marks `id`; the caller's click handler calls [`copy`] with
-/// `Some(id)`.
+/// A copy button with the shared `button` frame and `mark`'s control id,
+/// which reads Copied while [`copy`] marks `mark`, the same button copying
+/// the same content; the caller's click handler calls [`copy`] with
+/// `Some(mark)`.
 ///
 /// A labelled button draws its content, `symbol`'s icon (if any) and `label`,
 /// and the copied content, the check icon and "Copied", in one grid cell,
@@ -113,16 +145,16 @@ fn copied(control: &ElementId, cx: &App) -> bool {
 /// icon for the check and its tooltip for "Copied", and is named as `button`
 /// names one until the caller names it.
 pub(crate) fn copy_button(
-    id: impl Into<ElementId>,
+    mark: Mark,
     label: impl Into<SharedString>,
     symbol: &str,
     tooltip: impl Into<SharedString>,
     cx: &App,
 ) -> Button {
-    let id = id.into();
+    let copied = copied(&mark, cx);
+    let id = mark.control;
     let label = label.into();
     let tooltip = tooltip.into();
-    let copied = copied(&id, cx);
     let labelled = !label.is_empty();
     let selector = id.clone();
     let mut button = button_frame(id.clone(), &label, symbol, false)
@@ -343,6 +375,71 @@ pub(crate) mod tests {
         assert_eq!(announced(cx), None);
     }
 
+    /// Copied stays with what was copied: the commit selected next draws its
+    /// Hash and Copy message with the same ids in the same place, at rest,
+    /// while the copied commit's Hash reads Copied again on returning to it
+    /// within the 1.5 s, and reverts when they are up.
+    #[gpui::test]
+    fn copied_stays_with_the_commit_it_copied(cx: &mut TestAppContext) {
+        let (app, cx) = history(
+            cx,
+            vec![
+                commit("a", "First title", "Body."),
+                commit("b", "Second title", "Body."),
+            ],
+        );
+        let focus_history = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let focus = app.read(cx).focus.clone();
+                window.focus(&focus, cx);
+            });
+            draw(cx);
+        };
+        let selected = |cx: &mut VisualTestContext| cx.read(|cx| app.read(cx).selected_commit);
+        let hash = cx.debug_bounds("copy-commit").unwrap();
+        click(cx, "copy-commit");
+        assert_eq!(clipboard(cx), "a".repeat(40));
+        assert_eq!(shows(cx, "copy-commit"), Shows::Copied);
+
+        wait(cx, Duration::from_millis(200));
+        focus_history(cx);
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(selected(cx), Some(1));
+        assert_eq!(cx.debug_bounds("copy-commit"), Some(hash), "the same place");
+        assert_eq!(
+            shows(cx, "copy-commit"),
+            Shows::Rest,
+            "another commit's Hash"
+        );
+        assert_eq!(shows(cx, "copy-message"), Shows::Rest);
+
+        wait(cx, Duration::from_millis(300));
+        cx.simulate_keystrokes("up");
+        draw(cx);
+        assert_eq!(selected(cx), Some(0));
+        assert_eq!(
+            shows(cx, "copy-commit"),
+            Shows::Copied,
+            "the copied commit's Hash"
+        );
+        wait(cx, RESTORE_AFTER - Duration::from_millis(500));
+        assert_eq!(shows(cx, "copy-commit"), Shows::Rest);
+
+        // Copy message too belongs to its commit.
+        click(cx, "copy-message");
+        assert_eq!(shows(cx, "copy-message"), Shows::Copied);
+        focus_history(cx);
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(selected(cx), Some(1));
+        assert_eq!(
+            shows(cx, "copy-message"),
+            Shows::Rest,
+            "another commit's message"
+        );
+    }
+
     /// A second click restarts the time, so Hash still reads Copied after the
     /// first click's 1.5 s, and is announced again with a fresh node.
     #[gpui::test]
@@ -428,12 +525,20 @@ pub(crate) mod tests {
     #[gpui::test]
     fn the_accessible_name_stays_the_actions_name(cx: &mut TestAppContext) {
         let (_app, cx) = history(cx, Vec::new());
+        let labelled_mark = Mark::new("copy-labelled", "a");
+        let icon_mark = Mark::new("copy-icon", "a");
         let buttons = |cx: &mut VisualTestContext| {
             cx.update(|_, cx| {
                 [
-                    copy_button("copy-labelled", "Copy path", "copy", "Copy the path", cx),
-                    copy_button("copy-icon", "", "copy", "Copy the path", cx),
-                    copy_button("copy-icon", "", "copy", "Copy the path", cx)
+                    copy_button(
+                        labelled_mark.clone(),
+                        "Copy path",
+                        "copy",
+                        "Copy the path",
+                        cx,
+                    ),
+                    copy_button(icon_mark.clone(), "", "copy", "Copy the path", cx),
+                    copy_button(icon_mark.clone(), "", "copy", "Copy the path", cx)
                         .accessibility_label("Copy file path"),
                 ]
             })
@@ -451,11 +556,13 @@ pub(crate) mod tests {
         ];
         let [labelled, icon, named] = buttons(cx);
         assert_eq!(names(cx, vec![labelled, icon, named]), expected);
-        cx.update(|window, cx| copy(window, cx, Some("copy-labelled".into()), "path", "a".into()));
+        let mark = labelled_mark.clone();
+        cx.update(|window, cx| copy(window, cx, Some(mark), "path", "a".into()));
         let [labelled, ..] = buttons(cx);
-        cx.update(|window, cx| copy(window, cx, Some("copy-icon".into()), "path", "a".into()));
+        let mark = icon_mark.clone();
+        cx.update(|window, cx| copy(window, cx, Some(mark), "path", "a".into()));
         let [_, icon, named] = buttons(cx);
-        cx.update(|_, cx| assert!(copied(&"copy-icon".into(), cx)));
+        cx.update(|_, cx| assert!(copied(&icon_mark, cx)));
         assert_eq!(names(cx, vec![labelled, icon, named]), expected);
     }
 }

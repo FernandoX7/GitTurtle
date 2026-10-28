@@ -62,6 +62,9 @@ impl GitTurtle {
             let click_focus = focus.clone();
             let copy_path = repository.join(&plan.entry.path).display().to_string();
             let keyboard_copy_path = copy_path.clone();
+            // Keyed by the file the dialog would discard.
+            let path_mark = copy_feedback::Mark::new("copy-discard-path", (&repository, &plan.entry.path));
+            let (click_mark, keyboard_mark) = (path_mark.clone(), path_mark.clone());
             let request = requested.clone();
             let keyboard_request = requested.clone();
             let requested = requested.clone();
@@ -179,10 +182,10 @@ impl GitTurtle {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(copy_feedback::copy_button("copy-discard-path", "Copy path", "copy", "", cx)
+                        .child(copy_feedback::copy_button(path_mark, "Copy path", "copy", "", cx)
                             .accessibility_label("Copy full path of file to discard")
-                            .on_action(move |_: &Confirm, window, cx| copy_feedback::copy(window, cx, Some("copy-discard-path".into()), "file path", keyboard_copy_path.clone()))
-                            .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some("copy-discard-path".into()), "file path", copy_path.clone())))
+                            .on_action(move |_: &Confirm, window, cx| copy_feedback::copy(window, cx, Some(keyboard_mark.clone()), "file path", keyboard_copy_path.clone()))
+                            .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(click_mark.clone()), "file path", copy_path.clone())))
                         .child(div().flex_1())
                         .child(button("cancel-discard", "Cancel", "", false)
                             .secondary()

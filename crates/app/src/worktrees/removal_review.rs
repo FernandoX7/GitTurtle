@@ -167,6 +167,8 @@ impl GitTurtle {
             let revision = format!("{branch} · {}", short_oid(&details.tree.oid));
             let revision_tooltip = format!("{branch} · {}", details.tree.oid);
             let copy_target = target.clone();
+            let target_mark = copy_feedback::Mark::new("copy-worktree-removal-path", &details.tree.path);
+            let target_copy = target_mark.clone();
             let key_scroll = scroll.clone();
             let click_focus = focus.clone();
             let command = Arc::clone(&command);
@@ -218,9 +220,9 @@ impl GitTurtle {
                                         .child(label("worktree-force-branch", revision).truncate().font_weight(FontWeight::MEDIUM).tooltip(move |window, cx| Tooltip::new(revision_tooltip.clone()).build(window, cx)))
                                         .child(label("worktree-force-path", target).truncate().text_color(rgb(colors.muted)).tooltip(move |window, cx| Tooltip::new(target_tooltip.clone()).build(window, cx))),
                                 )
-                                .child(copy_feedback::copy_button("copy-worktree-removal-path", "Copy path", "copy", "", cx)
+                                .child(copy_feedback::copy_button(target_mark, "Copy path", "copy", "", cx)
                                     .accessibility_label("Copy full path of worktree to remove")
-                                    .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some("copy-worktree-removal-path".into()), "worktree path", copy_target.clone()))),
+                                    .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(target_copy.clone()), "worktree path", copy_target.clone()))),
                         )
                         .child(
                             div()
