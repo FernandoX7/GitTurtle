@@ -122,6 +122,11 @@ fn app_window(
         *captured.borrow_mut() = Some(app.clone());
         Root::new(app, window, cx)
     });
+    // A dialog slides in on a wall-clock animation, and the test context draws
+    // the window again between a click's press and release. Under load the
+    // control moves away before its release, so the click never lands. Open
+    // dialogs at rest; no worktree test covers motion.
+    cx.update(|_, cx| cx.set_reduce_motion(true));
     cx.simulate_resize(size(px(1480.), px(981.)));
     draw(cx);
     let app = observed.borrow_mut().take().unwrap();
@@ -775,6 +780,10 @@ async fn force_review_keeps_warning_target_and_actions_visible_at_large_text(
             assert!(confirm.bottom() < px(680.), "font {font}: {confirm:?}");
             assert!(cancel.bottom() < px(680.));
             assert!(confirm.left() >= px(0.) && confirm.right() <= px(1000.));
+            // Each pass copies again rather than reading the first pass's copy.
+            cx.update(|_, cx| {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("nothing copied".into()))
+            });
             click(cx, "copy-worktree-removal-path");
             cx.read(|cx| {
                 assert_eq!(
@@ -793,8 +802,8 @@ async fn force_review_keeps_warning_target_and_actions_visible_at_large_text(
             let scrolled_body = cx.debug_bounds("worktree-force-effects").unwrap();
             let fixed_warning = cx.debug_bounds("worktree-force-warning").unwrap();
             let fixed_identity = cx.debug_bounds("worktree-force-target").unwrap();
-            // The toolkit's opening animation may still translate the whole
-            // dialog; only the effect list's contents should move relative to it.
+            // Only the effect list's contents move; the warning and target stay
+            // fixed in the dialog.
             assert_eq!(fixed_warning.size, warning.size);
             assert_eq!(fixed_identity.size, identity.size);
             assert_eq!(
