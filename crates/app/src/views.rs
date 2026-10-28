@@ -3643,11 +3643,18 @@ pub(crate) fn compact_control_label(
     name: impl Into<SharedString>,
 ) -> Button {
     let name = name.into();
+    note_compact_label(selector, &name);
+    control.accessibility_label(name)
+}
+
+/// Notes `name` as the accessible name the compact form of the element whose
+/// debug selector is `selector` was given, for a test to read back
+/// ([`COMPACT_LABELS`]); outside tests it does nothing.
+pub(crate) fn note_compact_label(selector: &'static str, name: &SharedString) {
     #[cfg(test)]
     COMPACT_LABELS.with(|names| names.borrow_mut().insert(selector, name.clone()));
     #[cfg(not(test))]
-    let _ = selector;
-    control.accessibility_label(name)
+    let _ = (selector, name);
 }
 
 /// `control` named `name` for assistive technology: a control that a compact
@@ -6603,6 +6610,141 @@ pub(crate) mod tests {
                 } else {
                     assert!(action.size.width > control, "{at}: {selector} {action:?}");
                     assert_eq!(names.get(selector), None, "{at}: {selector}");
+                }
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The composer's title line, fields and commit action stay inside its
+    /// column in a 461 × 490 window at the default size and at 18 pt and in a
+    /// 1480 × 980 one. At 18 pt in the 156 px inspector the title counter
+    /// reads "0/72", named "0/72 suggested"; each placeholder ends with an
+    /// ellipsis at a character boundary inside its field; and the commit
+    /// action reads "Commit", named with its whole label, such as "Write a
+    /// commit title". Wherever they fit, the counter, the title's placeholder
+    /// and the label stay whole.
+    #[gpui::test]
+    async fn narrow_composer_keeps_its_texts_inside_the_column(cx: &mut TestAppContext) {
+        use crate::workspace::{DESCRIPTION_PLACEHOLDER, TITLE_PLACEHOLDER};
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        for (text, width, height) in [(13, 461., 490.), (18, 461., 490.), (13, 1480., 980.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            // Only the names the settled layout gives: a frame laid out at
+            // the previous width can have named a compact form.
+            COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+            app.update(cx, |_, cx| cx.notify());
+            draw(cx);
+            let at = format!("{text} pt at {width} × {height}");
+            let narrow = text == 18;
+            let (rem, inset) = cx.update(|window, _| {
+                (
+                    window.rem_size(),
+                    window.pixel_snap(window.rem_size() * 0.75),
+                )
+            });
+            let width_of = |cx: &mut VisualTestContext, text: &str, size: Pixels| {
+                cx.update(|window, _| {
+                    shaped_width(text, size, window.text_style().font_weight, window)
+                })
+            };
+            let composer = cx.debug_bounds("commit-composer").unwrap();
+            let (start, end) = (
+                composer.left() + inset - px(0.5),
+                composer.right() - inset + px(0.5),
+            );
+            let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{selector} at {at}"))
+            };
+            for selector in [
+                "commit-title-name",
+                "commit-title-counter",
+                "commit-title",
+                "commit-staged",
+            ] {
+                let bounds = bounds(cx, selector);
+                assert!(
+                    bounds.left() >= start && bounds.right() <= end,
+                    "{at}: {selector} {bounds:?} outside {start:?}..{end:?}"
+                );
+            }
+            let labels = COMPACT_LABELS.with(|names| names.borrow().clone());
+            let name = |selector| labels.get(selector).map(|name| name.to_string());
+            // The counter draws "suggested" where it fits, else names it.
+            let counter = bounds(cx, "commit-title-counter");
+            let shown = if narrow { "0/72" } else { "0/72 suggested" };
+            assert_eq!(
+                counter.size.width,
+                width_of(cx, shown, appearance::ui_text(11.)).ceil(),
+                "{at}: the counter reads {shown:?}"
+            );
+            assert_eq!(
+                name("commit-title-counter").as_deref(),
+                narrow.then_some("0/72 suggested"),
+                "{at}"
+            );
+            // The commit action's label fits beside its icon, inside the edge
+            // a disabled action keeps: its whole label, or "Commit" named
+            // with it. The label depends on the Git identity the fixture
+            // finds ("Write a commit title" with one), so it is read back.
+            let commit = bounds(cx, "commit-staged");
+            let room = commit.size.width - rem * 0.625 * 2. - px(16.) - rem * 0.5 - px(2.);
+            let whole = app.read_with(cx, |app, cx| app.commit_action_label(cx));
+            let compact = width_of(cx, &whole, rem) > room;
+            assert!(compact || !narrow, "{at}: {whole:?} in {room:?}");
+            assert!(!compact || width < 1000., "{at}: {whole:?} in {room:?}");
+            let shown = if compact { "Commit" } else { whole.as_str() };
+            assert!(
+                width_of(cx, shown, rem) <= room,
+                "{at}: {shown:?} in {room:?}"
+            );
+            assert_eq!(
+                name("commit-staged"),
+                compact.then(|| whole.clone()),
+                "{at}"
+            );
+            // Each placeholder fits the field it painted in, whole or cut
+            // before an ellipsis.
+            let placeholders = app.read_with(cx, |app, cx| {
+                [
+                    (
+                        TITLE_PLACEHOLDER,
+                        app.commit_title.read(cx).text_bounds(),
+                        app.commit_title
+                            .read(cx)
+                            .presentation()
+                            .placeholder()
+                            .clone(),
+                    ),
+                    (
+                        DESCRIPTION_PLACEHOLDER,
+                        app.commit_message.read(cx).text_bounds(),
+                        app.commit_message
+                            .read(cx)
+                            .presentation()
+                            .placeholder()
+                            .clone(),
+                    ),
+                ]
+            });
+            for (whole, field, shown) in placeholders {
+                let field = field.unwrap_or_else(|| panic!("{at}: {whole:?} unpainted"));
+                assert!(
+                    width_of(cx, &shown, appearance::ui_text(12.)) <= field.size.width,
+                    "{at}: {shown:?} in {field:?}"
+                );
+                let stem = shown.trim_end_matches('…');
+                assert!(
+                    shown == whole
+                        || (shown.ends_with('…') && !stem.is_empty() && whole.starts_with(stem)),
+                    "{at}: {shown:?} for {whole:?}"
+                );
+                if whole == TITLE_PLACEHOLDER {
+                    assert_eq!(shown == whole, !narrow, "{at}: {shown:?}");
                 }
             }
         }

@@ -146,7 +146,20 @@ pub(super) struct WorkingForms {
     /// first character and ellipsis, so it truncates only the branch.
     heading_icon: bool,
     heading_badge: bool,
+    /// The title counter keeps "suggested" after its count where the line
+    /// beside "Title" has room; without it the word is in its tooltip and
+    /// accessible name.
+    counter_word: bool,
+    /// The commit action reads "Commit" where its label does not fit beside
+    /// its icon, with that label as its accessible name and leading its
+    /// tooltip.
+    compact_commit: bool,
 }
+
+/// The title's and the description's placeholders, of which each field shows
+/// as much as fits its width (`fit_composer_placeholders`).
+pub(super) const TITLE_PLACEHOLDER: &str = "Summarize the change";
+pub(super) const DESCRIPTION_PLACEHOLDER: &str = "Explain why this change is needed…";
 
 thread_local! {
     static SELECTION_LABELS: crate::views::TextWidth = const { RefCell::new(None) };
@@ -169,6 +182,13 @@ thread_local! {
         const { RefCell::new(None) };
     static STAGED_HEADING_COUNT: crate::views::TextWidth = const { RefCell::new(None) };
     static UNSTAGED_HEADING_COUNT: crate::views::TextWidth = const { RefCell::new(None) };
+    static TITLE_NAME: RefCell<Option<(crate::views::LineKey, Pixels)>> =
+        const { RefCell::new(None) };
+    static TITLE_COUNTER: crate::views::TextWidth = const { RefCell::new(None) };
+    static COMMIT_LABEL: crate::views::TextWidth = const { RefCell::new(None) };
+    /// Each placeholder as it fits the width its field last painted at.
+    static TITLE_FIT: PlaceholderFit = const { RefCell::new(None) };
+    static DESCRIPTION_FIT: PlaceholderFit = const { RefCell::new(None) };
 }
 
 /// A text's wrapped line count, with what it was laid out with: the font and
@@ -213,6 +233,10 @@ fn wrapped_lines(text: &str, size: Pixels, width: Pixels, window: &Window) -> us
     })
 }
 
+/// A placeholder as it fits a field's width, with the font and sizes and the
+/// width it was fitted to.
+type PlaceholderFit = RefCell<Option<(crate::views::LineKey, Pixels, SharedString)>>;
+
 /// The Staged and Unstaged headings' forms, widest first, as
 /// (labelled action, glyph, name): see `WorkingForms::section_action_label`.
 const SECTION_FORMS: [(bool, bool, bool); 5] = [
@@ -228,7 +252,7 @@ impl GitTurtle {
     /// again only when it, the font or the sizes change, so a steady render
     /// asks the text system nothing. `short` is the composer's short form,
     /// whose heading names the branch.
-    fn working_forms(&self, width: Pixels, short: bool, window: &Window) -> WorkingForms {
+    fn working_forms(&self, width: Pixels, short: bool, window: &Window, cx: &App) -> WorkingForms {
         use crate::appearance::{ui_size, ui_text};
         use crate::views::{LineKey, cached_text_width, cached_width, shaped_width};
         let key = LineKey::current(window);
@@ -397,6 +421,25 @@ impl GitTurtle {
                 heading_badge = sum(&[heading_min, badge], gap) <= room;
             }
         }
+
+        // The title's line: "Title", then its counter at the trailing edge.
+        let title = cached_width(&TITLE_NAME, &key, || {
+            measure("Title", ui_text(11.), FontWeight::MEDIUM)
+        });
+        let counter = title_counter(self.commit_title.read(cx).value().chars().count());
+        let counter = cached_text_width(&TITLE_COUNTER, &counter, window, || {
+            measure(&counter, ui_text(11.), regular)
+        });
+        let counter_word = title + gap + counter <= room;
+
+        // The commit action, as wide as the composer: the kit's Button at its
+        // default size, `px_2p5` either side, its 16 px icon, `gap_2` and its
+        // label at 1 rem, inside the 1 px edge a disabled action keeps.
+        let label = self.commit_action_label(cx);
+        let label = cached_text_width(&COMMIT_LABEL, &label, window, || {
+            measure(&label, rem, regular)
+        });
+        let compact_commit = rem * 0.625 * 2. + px(16.) + gap + label + px(2.) > room;
         WorkingForms {
             compact_selection,
             selection_rows,
@@ -410,6 +453,85 @@ impl GitTurtle {
             section_label,
             heading_icon,
             heading_badge,
+            counter_word,
+            compact_commit,
+        }
+    }
+
+    /// A canvas that, painted after the title and the description, fits each
+    /// field's placeholder to the width the field just painted its text at,
+    /// so a narrow field ends its placeholder with an ellipsis rather than
+    /// clipping a glyph. It sets a placeholder only when that changes, and
+    /// then draws again, since refresh is ignored during paint.
+    fn fit_composer_placeholders(&self) -> impl IntoElement {
+        let (title, description) = (self.commit_title.clone(), self.commit_message.clone());
+        canvas(
+            |_, _, _| (),
+            move |_, _, window, cx| {
+                let mut changed = false;
+                if let Some(field) = title.read(cx).text_bounds() {
+                    let fit =
+                        fitted_placeholder(&TITLE_FIT, TITLE_PLACEHOLDER, field.size.width, window);
+                    if *title.read(cx).presentation().placeholder() != fit {
+                        title.update(cx, |state, cx| state.set_placeholder(fit, window, cx));
+                        changed = true;
+                    }
+                }
+                if let Some(field) = description.read(cx).text_bounds() {
+                    let fit = fitted_placeholder(
+                        &DESCRIPTION_FIT,
+                        DESCRIPTION_PLACEHOLDER,
+                        field.size.width,
+                        window,
+                    );
+                    if *description.read(cx).presentation().placeholder() != fit {
+                        description.update(cx, |state, cx| state.set_placeholder(fit, window, cx));
+                        changed = true;
+                    }
+                }
+                if changed {
+                    window.defer(cx, |window, _| window.refresh());
+                }
+            },
+        )
+        .absolute()
+        .size_0()
+    }
+
+    /// The commit action's label: what it commits, or why it cannot.
+    pub(super) fn commit_action_label(&self, cx: &App) -> String {
+        let staged = self.working_paths.staged_count;
+        if self.operation_busy.is_some() {
+            "Working…".to_owned()
+        } else if self.work_status.is_none()
+            || self.working_paths.pending
+            || self.working_paths.error.is_some()
+        {
+            if self.working_paths.pending {
+                "Filtering working paths…"
+            } else if self.status_task.is_some() {
+                "Reading working changes…"
+            } else {
+                "Changes unavailable"
+            }
+            .to_owned()
+        } else if self.working_paths.conflicted {
+            "Resolve conflicts to commit".to_owned()
+        } else if !self
+            .profile
+            .as_ref()
+            .is_some_and(|p| !p.name.is_empty() && !p.email.is_empty())
+        {
+            "Set your commit identity".to_owned()
+        } else if staged == 0 {
+            "Stage files to commit".to_owned()
+        } else if self.commit_title.read(cx).value().trim().is_empty() {
+            "Write a commit title".to_owned()
+        } else {
+            format!(
+                "Commit {staged} {}",
+                if staged == 1 { "file" } else { "files" }
+            )
         }
     }
 
@@ -518,6 +640,61 @@ impl GitTurtle {
 fn working_toolbar_height(window: &Window) -> f32 {
     let rem = window.rem_size();
     f32::from(rem * 0.25 * 2. + (rem * 2.).max(crate::appearance::ui_size(28.)))
+}
+
+/// The title counter's whole text, for a title `length` characters long.
+fn title_counter(length: usize) -> String {
+    format!("{length}/72 suggested")
+}
+
+/// `full`, or where it is wider than `room` at `size`, the most of it that
+/// fits with an ellipsis, cut at a character boundary after any spaces and
+/// ellipsis it ends with; empty where not even its first character does, so
+/// no lone ellipsis shows.
+fn ellipsized(full: &str, room: Pixels, size: Pixels, window: &Window) -> SharedString {
+    let weight = window.text_style().font_weight;
+    let fits = |text: &str| crate::views::shaped_width(text, size, weight, window) <= room;
+    if fits(full) {
+        return SharedString::from(full.to_owned());
+    }
+    let stem = full.trim_end_matches('…');
+    // The byte ends of `stem`'s first one, two, … characters, short of all.
+    let ends: Vec<usize> = stem.char_indices().skip(1).map(|(end, _)| end).collect();
+    let cut = |characters: usize| format!("{}…", stem[..ends[characters]].trim_end());
+    let (mut fitting, mut low, mut high) = (SharedString::default(), 0, ends.len());
+    while low < high {
+        let middle = (low + high) / 2;
+        let text = cut(middle);
+        if fits(&text) {
+            fitting = text.into();
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    fitting
+}
+
+/// `full` as it fits `room`, laid out again only when the room, the font or
+/// the sizes change.
+fn fitted_placeholder(
+    cache: &'static std::thread::LocalKey<PlaceholderFit>,
+    full: &str,
+    room: Pixels,
+    window: &Window,
+) -> SharedString {
+    let key = crate::views::LineKey::current(window);
+    cache.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        match &*cache {
+            Some((cached, width, text)) if *cached == key && *width == room => text.clone(),
+            _ => {
+                let text = ellipsized(full, room, crate::appearance::ui_text(12.), window);
+                *cache = Some((key, room, text.clone()));
+                text
+            }
+        }
+    })
 }
 
 fn commit_composer_height(available: f32, row_height: f32, preferred: f32) -> f32 {
@@ -1408,7 +1585,7 @@ impl GitTurtle {
         let available = f32::from(layout.read(cx).height);
         let short = available < 560.;
         let fitted_width = if pinned { width } else { layout.read(cx).width };
-        let forms = self.working_forms(fitted_width, short, window);
+        let forms = self.working_forms(fitted_width, short, window, cx);
         // The measured body's height must not change the header height, which
         // would oscillate at a size threshold on successive layout passes.
         let header_height = WORKING_HEADER;
@@ -1720,7 +1897,7 @@ impl GitTurtle {
             )
             .when(composer, |el| el.child(
                 div().debug_selector(|| "commit-composer".into())
-                    .flex_shrink_0().min_h_0().h(px(composer_height)).flex().flex_col()
+                    .relative().flex_shrink_0().min_h_0().h(px(composer_height)).flex().flex_col()
                     .bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
                     // The heading is pinned above the scrolling fields, as the
                     // commit action is below them; where the body is short the
@@ -1754,8 +1931,20 @@ impl GitTurtle {
                         .child(div().truncate().child(branch.to_owned()))))
                     .child(div().debug_selector(|| "commit-title-label".into()).flex().items_center().gap_2().text_size(crate::appearance::ui_text(11.))
                         .child(div().debug_selector(|| "commit-title-name".into()).flex_1().font_weight(FontWeight::MEDIUM).child("Title"))
-                        .child(div().debug_selector(|| "commit-title-counter".into()).text_color(rgb(if summary_length > 72 { p.warning } else { p.muted }))
-                            .child(format!("{summary_length}/72 suggested"))))
+                        .child({
+                            let counter = div().id("commit-title-counter").debug_selector(|| "commit-title-counter".into())
+                                .text_color(rgb(if summary_length > 72 { p.warning } else { p.muted }));
+                            let whole = SharedString::from(title_counter(summary_length));
+                            if forms.counter_word {
+                                counter.child(whole)
+                            } else {
+                                // Without "suggested" the counter names it.
+                                crate::views::note_compact_label("commit-title-counter", &whole);
+                                counter.role(Role::Label).aria_label(whole.clone())
+                                    .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
+                                    .child(format!("{summary_length}/72"))
+                            }
+                        }))
                     .child(div().debug_selector(|| "commit-title".into()).child(Input::new(&self.commit_title).readonly(busy).aria_label("Commit title").text_size(crate::appearance::ui_text(12.))))
                     .when(summary_length > 72, |el| el.child(
                         div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("A shorter title is easier to scan. This title is still valid."),
@@ -1785,35 +1974,32 @@ impl GitTurtle {
                             .child(icon("file-conflict", 15., p.warning))
                             .child("Resolve conflicted files before committing."),
                     ))))
-                    .child(div().flex_shrink_0().px_3().pb_3().when(short, |el| el.pb_2()).child(
+                    .child(div().flex_shrink_0().px_3().pb_3().when(short, |el| el.pb_2()).child({
                         // Disabled, it rests on the composer's own `subtle`, so it
                         // keeps its shape with an edge; it is as wide as the composer.
-                        crate::appearance::keep_disabled_shape(
+                        let commit = crate::appearance::keep_disabled_shape(
                             Button::new("commit-staged").debug_selector(|| "commit-staged".into()).primary().w_full().h(crate::appearance::ui_size(36.)),
                             commit_disabled, p.subtle, None, cx)
-                            .icon(Icon::default().path("icons/commit.svg").size(px(16.)))
-                            .label(if busy {
-                                "Working…".to_owned()
-                            } else if !status_ready {
-                                if self.working_paths.pending { "Filtering working paths…" } else if refreshing { "Reading working changes…" } else { "Changes unavailable" }.to_owned()
-                            } else if conflicted {
-                                "Resolve conflicts to commit".to_owned()
-                            } else if !identity_ready {
-                                "Set your commit identity".to_owned()
-                            } else if staged == 0 {
-                                "Stage files to commit".to_owned()
-                            } else if self.commit_title.read(cx).value().trim().is_empty() {
-                                "Write a commit title".to_owned()
-                            } else {
-                                format!("Commit {staged} {}", if staged == 1 { "file" } else { "files" })
-                            })
-                            .disabled(commit_disabled)
-                            .tooltip(format!("Commit staged changes to {branch}"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let message = this.current_commit_draft(cx).message();
-                                this.write(WriteCommand::Commit { message }, "Creating commit…", window, cx);
-                            })),
-                    )),
+                            .icon(Icon::default().path("icons/commit.svg").size(px(16.)));
+                        let label = self.commit_action_label(cx);
+                        // Where its label does not fit, it reads "Commit" and
+                        // keeps the label as its name and leading its tooltip.
+                        if forms.compact_commit {
+                            let tooltip = format!("{label} · Commit staged changes to {branch}");
+                            crate::views::compact_control_label(commit, "commit-staged", label)
+                                .label("Commit")
+                                .tooltip(tooltip)
+                        } else {
+                            commit.label(label).tooltip(format!("Commit staged changes to {branch}"))
+                        }
+                        .disabled(commit_disabled)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let message = this.current_commit_draft(cx).message();
+                            this.write(WriteCommand::Commit { message }, "Creating commit…", window, cx);
+                        }))
+                    }))
+                    // Painted after both fields, it fits their placeholders.
+                    .child(self.fit_composer_placeholders()),
             )))
             .into_any_element()
     }

@@ -533,10 +533,10 @@ impl GitTurtle {
             )
         });
         let commit_title =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Summarize the change"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(workspace::TITLE_PLACEHOLDER));
         let commit_message = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder("Explain why this change is needed…")
+                .placeholder(workspace::DESCRIPTION_PLACEHOLDER)
                 .rows(5)
         });
         let identity_name = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
