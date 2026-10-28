@@ -42,6 +42,7 @@ pub(crate) fn shown(id: &str) -> Option<SharedString> {
 pub(crate) struct EmptyState {
     id: &'static str,
     line: SharedString,
+    name: Option<SharedString>,
     tooltip: Option<SharedString>,
     action: Option<AnyElement>,
     truncate: bool,
@@ -54,10 +55,24 @@ impl EmptyState {
         Self {
             id,
             line: line.into(),
+            name: None,
             tooltip: None,
             action: None,
             truncate: false,
         }
+    }
+
+    /// The whole line, where the drawn one says less, as the Git action
+    /// bar's does once its caption goes: the line's accessible name, and
+    /// what its tooltip leads with.
+    pub(crate) fn named(mut self, name: impl Into<SharedString>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// What an assistive technology reads the line as: its whole line.
+    fn name(&self) -> SharedString {
+        self.name.clone().unwrap_or_else(|| self.line.clone())
     }
 
     /// The next action, usually [`action`].
@@ -66,7 +81,8 @@ impl EmptyState {
         self
     }
 
-    /// A longer explanation on the line's tooltip.
+    /// A longer explanation on the line's tooltip, after the whole line
+    /// where the drawn one says less, and the line's accessible description.
     pub(crate) fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
         self.tooltip = Some(tooltip.into());
         self
@@ -81,17 +97,27 @@ impl EmptyState {
         self
     }
 
+    /// The line as drawn, for its host to place; [`Self::read`] makes it
+    /// the static text an assistive technology reads.
     fn line(&self, cx: &App) -> Stateful<Div> {
         let id = self.id;
         let line = self.line.clone();
         #[cfg(test)]
         SHOWN.with(|shown| shown.borrow_mut().insert(id, line.clone()));
-        let tooltip = self.tooltip.clone();
+        let name = self.name();
+        let tooltip = self.tooltip.clone().map(|explanation| -> SharedString {
+            if name == line {
+                explanation
+            } else {
+                format!("{name} · {explanation}").into()
+            }
+        });
         div()
             .id(SharedString::from(format!("{id}-line")))
             .debug_selector(move || format!("{id}-line"))
-            .role(Role::Label)
-            .aria_label(line.clone())
+            .when_some(self.tooltip.clone(), |line, explanation| {
+                line.aria_description(explanation)
+            })
             .text_size(appearance::ui_text(LINE_TEXT))
             .text_color(rgb(palette(cx).muted))
             .when(self.truncate, |line| line.min_w_0().truncate())
@@ -101,15 +127,22 @@ impl EmptyState {
             .child(line)
     }
 
+    /// `line`, placed, as the static text an assistive technology reads by
+    /// the whole line, where it is drawn among the state's controls.
+    fn read(&self, line: Stateful<Div>) -> impl IntoElement + use<> {
+        native_accessibility::static_text(line, self.name())
+    }
+
     /// Centered in the pane it fills, the line wrapping inside the pane's
     /// inset and the action below it.
     pub(crate) fn pane(self, cx: &App) -> AnyElement {
         let id = self.id;
-        let line = self
-            .line(cx)
-            .w_full()
-            .max_w(appearance::ui_size(LINE_MAX))
-            .text_center();
+        let line = self.read(
+            self.line(cx)
+                .w_full()
+                .max_w(appearance::ui_size(LINE_MAX))
+                .text_center(),
+        );
         div()
             .id(id)
             .debug_selector(move || id.into())
@@ -133,7 +166,7 @@ impl EmptyState {
     /// after the line; the row's prediction gives it the room it takes.
     pub(crate) fn inline(self, cx: &App) -> AnyElement {
         let id = self.id;
-        let line = self.line(cx).min_w_0();
+        let line = self.read(self.line(cx).min_w_0());
         div()
             .id(id)
             .debug_selector(move || id.into())
@@ -154,7 +187,7 @@ impl EmptyState {
     /// gives the inset its rows take.
     pub(crate) fn block(self, cx: &App) -> AnyElement {
         let id = self.id;
-        let line = self.line(cx).w_full();
+        let line = self.read(self.line(cx).w_full());
         div()
             .id(id)
             .debug_selector(move || id.into())

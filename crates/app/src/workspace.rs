@@ -3064,11 +3064,8 @@ impl GitTurtle {
                                 edge.short_line()
                             },
                         )
-                        .tooltip(if caption {
-                            edge.explanation()
-                        } else {
-                            format!("{} · {}", edge.line(), edge.explanation())
-                        })
+                        .named(edge.line())
+                        .tooltip(edge.explanation())
                         .truncating(compact)
                         .inline(cx),
                     )

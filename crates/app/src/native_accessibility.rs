@@ -285,15 +285,10 @@ impl<E: Element> Element for ClipsChildren<E> {
     ) -> Self::PrepaintState {
         // The content mask is what the ancestors let through; GPUI scales
         // layout bounds to the node's bounds the same way.
-        let visible = bounds.intersect(&window.content_mask().bounds);
-        let scale = window.scale_factor();
-        let physical = |edge: Pixels| f64::from(f32::from(edge) * scale);
-        let visible = gpui::accesskit::Rect {
-            x0: physical(visible.left()),
-            y0: physical(visible.top()),
-            x1: physical(visible.right()),
-            y1: physical(visible.bottom()),
-        };
+        let visible = physical(
+            bounds.intersect(&window.content_mask().bounds),
+            window.scale_factor(),
+        );
         self.visible = Some(visible);
         #[cfg(test)]
         let written = written::open(self, Some(visible));
@@ -452,6 +447,127 @@ impl<E: Element> Element for BeneathModal<E> {
     }
 }
 
+/// `element`, which draws text or stands for it, as static text that an
+/// assistive technology reads as `text`: a label whose text is its value.
+///
+/// AccessKit names a label (`Role::Label`) by its value and never by its
+/// label property: the AT-SPI and Windows adapters announce the value as the
+/// node's name, and macOS reports it as the static text's `AXValue`. Each
+/// empty and edge state's line was a `div` with the label role and an
+/// `aria_label`, which reached AT-SPI as a label with no name, so a screen
+/// reader found none of them. GPUI's own text element writes its text as the
+/// value too. The element's other properties, such as an `aria_description`
+/// for what its tooltip adds, stay as it writes them. Focus and the Tab
+/// order do not change: the wrapper adds no dispatch node, focus handle or
+/// listener, and the element needs an ID for GPUI to write a node at all.
+pub(crate) fn static_text<E: IntoElement>(
+    element: E,
+    text: impl Into<SharedString>,
+) -> StaticText<E::Element> {
+    StaticText {
+        inner: element.into_element(),
+        text: text.into(),
+    }
+}
+
+/// The element [`static_text`] returns.
+pub(crate) struct StaticText<E> {
+    inner: E,
+    text: SharedString,
+}
+
+impl<E: Element> IntoElement for StaticText<E> {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl<E: Element> Element for StaticText<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    type PrepaintState = E::PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        self.inner.id()
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.inner.source_location()
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.inner.request_layout(id, inspector, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        // GPUI gives the node its layout bounds, scaled to physical pixels.
+        #[cfg(test)]
+        let written = written::open(self, Some(physical(bounds, window.scale_factor())));
+        let state = self
+            .inner
+            .prepaint(id, inspector, bounds, layout, window, cx);
+        #[cfg(test)]
+        written::close(written);
+        state
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.inner
+            .paint(id, inspector, bounds, layout, prepaint, window, cx);
+    }
+
+    fn a11y_role(&self) -> Option<Role> {
+        Some(Role::Label)
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.inner.write_a11y_info(node);
+        node.set_value(self.text.to_string());
+    }
+
+    fn a11y_synthetic_children(
+        &mut self,
+        prepaint: &mut Self::PrepaintState,
+        builder: &mut A11ySubtreeBuilder,
+    ) {
+        self.inner.a11y_synthetic_children(prepaint, builder);
+    }
+}
+
+/// `bounds` in the physical window pixels of AccessKit's bounds, at `scale`.
+fn physical(bounds: Bounds<Pixels>, scale: f32) -> gpui::accesskit::Rect {
+    let physical = |edge: Pixels| f64::from(f32::from(edge) * scale);
+    gpui::accesskit::Rect {
+        x0: physical(bounds.left()),
+        y0: physical(bounds.top()),
+        x1: physical(bounds.right()),
+        y1: physical(bounds.bottom()),
+    }
+}
+
 /// The nodes this module's wrappers write, read back for tests: the test
 /// platform never builds a window's accessibility tree.
 #[cfg(test)]
@@ -466,12 +582,17 @@ pub(crate) mod written {
     pub(crate) struct Written {
         pub node: gpui::accesskit::Node,
         pub parent: Option<String>,
+        /// When it was written, counting every node a wrapper writes:
+        /// GPUI writes a frame's nodes in the order the tree holds them.
+        pub order: u64,
     }
 
     thread_local! {
         static NODES: RefCell<HashMap<String, Written>> = Default::default();
         /// The wrappers prepainting, innermost last.
         static OPEN: RefCell<Vec<String>> = Default::default();
+        /// The next node's [`Written::order`].
+        static NEXT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     }
 
     /// Records the node `element` writes, at `bounds` if given, as the
@@ -489,10 +610,16 @@ pub(crate) mod written {
             node.set_bounds(bounds);
         }
         let parent = OPEN.with(|open| open.borrow().last().cloned());
+        let order = NEXT.with(|next| next.replace(next.get() + 1));
         NODES.with(|nodes| {
-            nodes
-                .borrow_mut()
-                .insert(id.clone(), Written { node, parent })
+            nodes.borrow_mut().insert(
+                id.clone(),
+                Written {
+                    node,
+                    parent,
+                    order,
+                },
+            )
         });
         OPEN.with(|open| open.borrow_mut().push(id.clone()));
         Some(id)
@@ -544,7 +671,7 @@ pub(crate) mod written {
         /// on out; the outermost goes under `outside` (the root if `None`).
         /// A wrapper that was not drawn adds nothing.
         pub(crate) fn written(mut self, id: &str, outside: Option<&str>) -> Self {
-            let Some(Written { node, parent }) = get(id) else {
+            let Some(Written { node, parent, .. }) = get(id) else {
                 return self;
             };
             if self.has(id) {
@@ -647,6 +774,9 @@ pub(crate) fn forget_clipping_nodes() {
 pub(crate) struct Reachable {
     pub role: Role,
     pub label: Option<String>,
+    /// The name the adapters announce: a label's value, otherwise its label
+    /// (`accesskit_consumer::Node::label_comes_from_value`).
+    pub name: Option<String>,
     pub bounds: Option<gpui::accesskit::Rect>,
     /// The bounds of the nearest node around it that clips its children.
     pub clip: Option<gpui::accesskit::Rect>,
@@ -662,6 +792,11 @@ pub(crate) fn reachable(update: gpui::accesskit::TreeUpdate) -> Vec<Reachable> {
         found.push(Reachable {
             role: node.role(),
             label: node.label(),
+            name: if node.label_comes_from_value() {
+                node.value()
+            } else {
+                node.label()
+            },
             bounds: node.bounding_box(),
             clip,
         });
@@ -890,6 +1025,8 @@ mod dialog_tests;
 mod input_tests;
 #[cfg(test)]
 pub(crate) mod menu_tests;
+#[cfg(test)]
+mod state_tests;
 
 #[cfg(test)]
 mod tests {

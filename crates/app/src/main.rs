@@ -2000,12 +2000,13 @@ fn control_icon(symbol: &str) -> Icon {
         .path(format!("icons/{symbol}.svg"))
         .size(appearance::ui_size(16.))
 }
+/// A pane's title and explanation, as loading and failures keep them, read
+/// as one static text.
 fn empty(title: &str, detail: &str) -> AnyElement {
-    div()
+    let read = format!("{title}. {detail}");
+    let pane = div()
         .id(SharedString::from(format!("empty-state:{title}")))
         .debug_selector(|| "empty-state".into())
-        .role(Role::Label)
-        .aria_label(format!("{title}. {detail}"))
         .size_full()
         .flex()
         .flex_col()
@@ -2025,8 +2026,8 @@ fn empty(title: &str, detail: &str) -> AnyElement {
                 .text_size(crate::appearance::ui_text(12.))
                 .opacity(0.75)
                 .child(detail.to_owned()),
-        )
-        .into_any_element()
+        );
+    native_accessibility::static_text(pane, read).into_any_element()
 }
 
 fn checkerboard(colors: appearance::Palette) -> AnyElement {
