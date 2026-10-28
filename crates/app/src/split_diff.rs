@@ -2,6 +2,7 @@
 use crate::{
     appearance::palette,
     diff_view::{self, LineNumbers},
+    focus_ring::FocusRing,
     text::PatchPresentation,
 };
 use gpui_kit::{
@@ -282,6 +283,9 @@ pub struct SplitView {
     scroll: LinkedScroll,
     initial_row: Option<usize>,
     change_index: Option<usize>,
+    /// The window's keyboard focus ring, which a side's text rings its edge
+    /// with while its editor holds focus.
+    focus_ring: FocusRing,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -318,6 +322,7 @@ impl LinkedScroll {
 pub fn new(
     presentation: Arc<SplitPresentation>,
     language: &str,
+    focus_ring: FocusRing,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<SplitView> {
@@ -422,12 +427,19 @@ pub fn new(
             decorations,
             search_heights: [px(0.); 2],
             scroll: LinkedScroll::default(),
+            focus_ring,
             _subscriptions: subscriptions,
         }
     })
 }
 
 impl SplitView {
+    /// The Before and After sides' editors.
+    #[cfg(test)]
+    pub(crate) fn editors(&self) -> &[Entity<EditorState>; 2] {
+        &self.editors
+    }
+
     pub fn rescale_code(&mut self, ratio: f32, cx: &mut Context<Self>) {
         // An editor that has never painted still owns its initial logical
         // change row; the first measured layout will resolve that request.
@@ -513,6 +525,12 @@ impl Render for SplitView {
         let search_heights = self.search_heights;
         let reserved_height = search_heights[0].max(search_heights[1]);
         let trace_editors = diff_view::scroll_trace_enabled().then(|| self.editors.clone());
+        // A side whose editor holds keyboard focus rings its text's edge,
+        // over its lines, so none of them moves.
+        let mut edges: [_; 2] = std::array::from_fn(|side| {
+            self.focus_ring
+                .edge(&self.editors[side].read(cx).focus_handle(cx), rgb(p.accent))
+        });
         div().size_full().relative().flex().children((0..2).map(|side| {
             let editor = self.editors[side].clone();
             let padding = reserved_height - search_heights[side];
@@ -550,13 +568,15 @@ impl Render for SplitView {
                 )
                 .child(
                     div()
+                        .debug_selector(move || format!("split-text-{side}"))
                         .flex_1()
                         .min_h_0()
                         .relative()
                         .flex()
                         .flex_col()
                         .pt(padding)
-                        .child(div().flex_1().min_h_0().child(self.views[side].clone())),
+                        .child(div().flex_1().min_h_0().child(self.views[side].clone()))
+                        .children(edges[side].take()),
                 )
         })).children(trace_editors.map(|editors| {
             // Painted after both panes, so one record contains their actual
@@ -645,7 +665,13 @@ mod tests {
     fn fractional_split_layout_preserves_both_measured_viewports(cx: &mut gpui::TestAppContext) {
         cx.update(gpui::init);
         let (probe, cx) = cx.add_window_view(|window, cx| FontProbe {
-            split: new(long_presentation(), "text", window, cx),
+            split: new(
+                long_presentation(),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            ),
             font_size: px(12.),
         });
         let split = cx.read(|cx| probe.read(cx).split.clone());
@@ -694,7 +720,13 @@ mod tests {
     fn scale_change_before_first_paint_keeps_the_split_change_row(cx: &mut gpui::TestAppContext) {
         cx.update(gpui::init);
         let (probe, cx) = cx.add_window_view(move |window, cx| {
-            let split = new(long_presentation(), "text", window, cx);
+            let split = new(
+                long_presentation(),
+                "text",
+                FocusRing::default(),
+                window,
+                cx,
+            );
             split.update(cx, |split, cx| {
                 assert_eq!(split.initial_row, Some(546));
                 assert!(

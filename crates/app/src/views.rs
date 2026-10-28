@@ -2579,6 +2579,9 @@ impl GitTurtle {
             .border_b_1()
             .border_color(rgb(colors.border))
             .child(path_controls);
+        // The editor the text pane shows, which draws no edge of its own, so
+        // the pane rings its edge for it.
+        let mut text_focus = None;
         let content = if let Some(error) = &self.error {
             empty("Preview unavailable", error)
         } else if file.is_none()
@@ -2749,8 +2752,13 @@ impl GitTurtle {
                     } else if self.text_mode == TextMode::Unified
                         && let Some(view) = &self.patch_view
                     {
+                        text_focus = self
+                            .patch_editor
+                            .as_ref()
+                            .map(|editor| editor.read(cx).focus_handle(cx));
                         div().size_full().child(view.clone()).into_any_element()
                     } else if let Some(editor) = editor {
+                        text_focus = Some(editor.read(cx).focus_handle(cx));
                         crate::editor_find::Editor::new(editor)
                             .h(relative(1.))
                             .readonly(true)
@@ -2797,10 +2805,17 @@ impl GitTurtle {
             .child(
                 div()
                     .debug_selector(|| "preview-content".into())
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
-                    .child(content),
+                    .child(content)
+                    // The text holding keyboard focus rings the pane's own
+                    // edge, over its lines, so none of them moves.
+                    .children(
+                        text_focus
+                            .and_then(|focus| self.focus_ring.edge(&focus, rgb(colors.accent))),
+                    ),
             )
             .children(
                 self.content
@@ -6838,6 +6853,102 @@ pub(crate) mod tests {
                     control.bottom() - control.top() > row.size.height / 2.,
                     "{selector} {row:?}"
                 );
+            }
+        }
+    }
+
+    /// Compare's text, its editor focused from the keyboard, rings its own
+    /// edge with the window's 1 px accent ring, whole on every side, in each
+    /// text mode: the patch, each of Split's sides, Before and After. The
+    /// ring lies over the text, which moves by nothing for it, and goes when
+    /// focus leaves the text.
+    #[gpui::test]
+    async fn compare_text_rings_its_edge_while_focused(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        for (mode, name) in [
+            (TextMode::Unified, "Diff"),
+            (TextMode::Split, "Split"),
+            (TextMode::Before, "Before"),
+            (TextMode::After, "After"),
+        ] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.text_mode = mode;
+                    app.ensure_editor(window, cx);
+                    cx.notify();
+                })
+            });
+            settle(&app, cx).await;
+            let panes: Vec<(&str, Entity<EditorState>)> = app.read_with(cx, |app, cx| {
+                let shown = |editor: &Option<Entity<EditorState>>| editor.clone().unwrap();
+                match mode {
+                    TextMode::Unified => vec![("preview-content", shown(&app.patch_editor))],
+                    TextMode::Before => vec![("preview-content", shown(&app.before_editor))],
+                    TextMode::After => vec![("preview-content", shown(&app.after_editor))],
+                    _ => {
+                        let split = app.split_view.as_ref().unwrap().read(cx);
+                        let [before, after] = split.editors().clone();
+                        vec![("split-text-0", before), ("split-text-1", after)]
+                    }
+                }
+            });
+            for (selector, editor) in &panes {
+                let at = format!("{selector} in {name}");
+                let focus = editor.read_with(cx, |editor, cx| editor.focus_handle(cx));
+                // Focus held by the file list leaves the text unringed.
+                cx.update(|window, cx| window.focus(&list, cx));
+                cx.simulate_keystrokes("down");
+                draw(cx);
+                let pane = cx.debug_bounds(selector).unwrap();
+                let text = editor.read_with(cx, |editor, _| editor.text_bounds());
+                let ring = |cx: &mut VisualTestContext, pane: Bounds<Pixels>| {
+                    crate::focus_ring::painted_outlines(cx, accent)
+                        .into_iter()
+                        .filter(|outline| {
+                            [
+                                (outline.bounds.left(), pane.left()),
+                                (outline.bounds.top(), pane.top()),
+                                (outline.bounds.right(), pane.right()),
+                                (outline.bounds.bottom(), pane.bottom()),
+                            ]
+                            .into_iter()
+                            .all(|(drawn, edge)| (drawn - edge).abs() <= px(0.5))
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert!(ring(cx, pane).is_empty(), "{at}: ringed while unfocused");
+                // A key with the text focused shows its ring.
+                cx.update(|window, cx| window.focus(&focus, cx));
+                cx.simulate_keystrokes("right");
+                draw(cx);
+                let [edge] = ring(cx, pane)[..] else {
+                    panic!("{at}: one ring on the pane's edge, {pane:?}");
+                };
+                assert_eq!(edge.width, px(1.), "{at}: {edge:?}");
+                assert!(edge.whole, "{at}: a clip cuts the ring: {edge:?}");
+                assert_eq!(
+                    cx.debug_bounds(selector),
+                    Some(pane),
+                    "{at}: the pane moved"
+                );
+                assert_eq!(
+                    editor.read_with(cx, |editor, _| editor.text_bounds()),
+                    text,
+                    "{at}: the text moved"
+                );
+                // Only the focused side of Split rings its edge.
+                for (other, _) in panes.iter().filter(|(other, _)| other != selector) {
+                    let other_pane = cx.debug_bounds(other).unwrap();
+                    assert!(
+                        ring(cx, other_pane).is_empty(),
+                        "{other} ringed while {selector} holds focus"
+                    );
+                }
             }
         }
     }

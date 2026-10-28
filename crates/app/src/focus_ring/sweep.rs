@@ -312,18 +312,7 @@ async fn history_and_compare_draw_a_whole_ring_at_every_stop(cx: &mut TestAppCon
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
         views::tests::settle(&app, cx).await;
     }
-    // Follow-up (focus sweep, 2026-10-28): Compare's text, a read-only kit
-    // Input, shows its focus only by its caret; its pane should draw the
-    // window's keyboard ring on its edge, as the file lists do.
-    assert_whole_except(
-        failures,
-        &[
-            // The fixture has no remote, so the action bar offers Add
-            // remote… as a stop before these (`empty_state`).
-            ("Compare at 13 pt, stop 27", "paints no ring"),
-            ("Compare at 18 pt, stop 26", "paints no ring"),
-        ],
-    );
+    assert_whole(failures);
 }
 
 /// Working Changes with a modified and an untracked file.

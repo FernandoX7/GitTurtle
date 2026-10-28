@@ -45,6 +45,22 @@ impl FocusRing {
         self.ringed.borrow().as_ref() == Some(focus)
     }
 
+    /// The ring a pane draws on its own edge while `focus`, inside it, shows
+    /// its ring: a 1 px outline in `color`, laid over the pane's content as
+    /// the pane's last child, so nothing in the pane moves for it and the
+    /// pane's own clip, if it has one, keeps it whole. The pane is
+    /// `relative`. A text pane whose editor draws no edge of its own, such as
+    /// Compare's, shows its focus this way.
+    pub(crate) fn edge(&self, focus: &FocusHandle, color: impl Into<Hsla>) -> Option<Div> {
+        self.shows(focus).then(|| {
+            div()
+                .absolute()
+                .inset_0()
+                .border_1()
+                .border_color(color.into())
+        })
+    }
+
     /// An empty element whose paint ends the ring at any pointer press in the
     /// window, over a dialog's backdrop included: GPUI calls a window's mouse
     /// listeners for every press, whatever lies under the pointer.

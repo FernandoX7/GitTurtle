@@ -1383,7 +1383,13 @@ impl GitTurtle {
         }
         if self.text_mode == TextMode::Split {
             if self.split_view.is_none() {
-                self.split_view = Some(split_diff::new(Arc::clone(split), language, window, cx));
+                self.split_view = Some(split_diff::new(
+                    Arc::clone(split),
+                    language,
+                    self.focus_ring.clone(),
+                    window,
+                    cx,
+                ));
             }
             return;
         }
