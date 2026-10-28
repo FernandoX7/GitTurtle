@@ -253,12 +253,17 @@ pub(super) struct WorkingForms {
     section_action_label: bool,
     section_icon: bool,
     section_label: bool,
-    /// A file row's status word and then its Stage or Unstage control leave,
-    /// on every row together, where its name would keep less than a short
-    /// name such as "notes.txt" whole beside them. The status glyph stays;
-    /// the word joins the path's tooltip, and the action the row's menu.
+    /// A file row's status word, its 26 px status tile or, in its place,
+    /// the tile's bare 16 px glyph, and its Stage or Unstage control, in the
+    /// first of `FILE_FORMS` that keeps a short name such as "README.md"
+    /// whole beside them, on every row together: the word leaves first, the
+    /// tile gives way to its glyph before the control leaves, and the glyph
+    /// leaves last. The word joins the path's tooltip, the action the row's
+    /// menu; the status stays in the tooltip and the row's accessible name.
     file_status: bool,
+    file_tile: bool,
     file_action: bool,
+    file_glyph: bool,
     /// The short composer heading's icon, then its staged badge, leave where
     /// the heading beside them could not keep "Commit to" and the branch's
     /// first character and ellipsis, so it truncates only the branch.
@@ -379,8 +384,24 @@ type PlaceholderFit = RefCell<Option<(crate::views::LineKey, Pixels, SharedStrin
 /// The status words a file row shows (`render_working_row`).
 const FILE_STATUS_WORDS: [&str; 6] = ["Conflict", "New", "Modified", "Deleted", "Renamed", "Type"];
 
-/// The name a file row keeps whole at least, whatever leaves beside it.
-const FILE_NAME_FLOOR: &str = "notes.txt";
+/// The name a file row keeps whole at least, whatever leaves beside it: a
+/// short name that nearly every repository's root holds, its capitals wider
+/// than a lowercase name such as "notes.txt".
+const FILE_NAME_FLOOR: &str = "README.md";
+
+/// A file row's forms, widest first, as (status word, status tile, Stage or
+/// Unstage control, bare status glyph): see `WorkingForms::file_status`.
+/// The word leaves first; then the tile gives way to its glyph, so the
+/// control stays; then the control leaves, and the tile returns where it
+/// fits without it; last the glyph leaves.
+const FILE_FORMS: [(bool, bool, bool, bool); 6] = [
+    (true, true, true, false),
+    (false, true, true, false),
+    (false, false, true, true),
+    (false, true, false, false),
+    (false, false, false, true),
+    (false, false, false, false),
+];
 
 /// The Staged and Unstaged headings' forms, widest first, as
 /// (labelled action, glyph, name): see `WorkingForms::section_action_label`.
@@ -532,9 +553,11 @@ impl GitTurtle {
         }
 
         // A file row, inside the list's border and its 1 px margin: `pl` 10
-        // px with the 2 px selection edge, the 26 px status glyph, the name,
+        // px with the 2 px selection edge, the 26 px status tile, the name,
         // then the status word and the Stage or Unstage control, and `pr_3`.
-        // The word leaves first, then the control, so the name keeps its floor.
+        // So the name keeps its floor, the row takes the first of
+        // `FILE_FORMS` that fits: decoration gives way before an action,
+        // and the name, the content, last.
         let [name_floor, status_word] = cached_width(&FILE_ROW_TEXTS, &key, || {
             let widest = FILE_STATUS_WORDS
                 .iter()
@@ -546,9 +569,22 @@ impl GitTurtle {
             ]
         });
         let file_room = width - px(3.) - px(12.) - rem * 0.75;
-        let leading = px(26.) + gap + name_floor;
-        let file_action = leading + gap + control <= file_room;
-        let file_status = file_action && leading + gap + status_word + gap + control <= file_room;
+        let fits = |(word, tile, action, glyph): (bool, bool, bool, bool)| {
+            let lead = if tile {
+                px(26.) + gap
+            } else if glyph {
+                px(16.) + gap
+            } else {
+                px(0.)
+            };
+            let word = if word { gap + status_word } else { px(0.) };
+            let action = if action { gap + control } else { px(0.) };
+            lead + name_floor + word + action <= file_room
+        };
+        let (file_status, file_tile, file_action, file_glyph) = FILE_FORMS
+            .into_iter()
+            .find(|&form| fits(form))
+            .unwrap_or((false, false, false, false));
 
         // The composer heading: "Commit to" and at least the branch's first
         // character and ellipsis, a truncated line keeping the characters
@@ -617,7 +653,9 @@ impl GitTurtle {
             section_icon,
             section_label,
             file_status,
+            file_tile,
             file_action,
+            file_glyph,
             heading_icon,
             heading_badge,
             counter_word,
@@ -2513,17 +2551,30 @@ impl GitTurtle {
                     .hover(move |s| s.bg(rgb(p.row_hover(active))))
                     .active(move |s| s.bg(rgb(p.selected)))
                     .cursor_pointer()
-                    .child(
-                        div()
-                            .size(px(26.))
-                            .flex_shrink_0()
-                            .rounded(px(7.))
-                            .bg(rgb(background))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon(symbol, 16., color)),
-                    )
+                    // Where the name needs its room, the tile gives way to
+                    // its bare glyph, and then the glyph leaves.
+                    .when(forms.file_tile, |row| {
+                        row.child(
+                            div()
+                                .debug_selector(move || format!("working-tile-{position}"))
+                                .size(px(26.))
+                                .flex_shrink_0()
+                                .rounded(px(7.))
+                                .bg(rgb(background))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon(symbol, 16., color)),
+                        )
+                    })
+                    .when(forms.file_glyph, |row| {
+                        row.child(
+                            div()
+                                .debug_selector(move || format!("working-glyph-{position}"))
+                                .flex_shrink_0()
+                                .child(icon(symbol, 16., color)),
+                        )
+                    })
                     .child(
                         div()
                             .id(("working-path", position))

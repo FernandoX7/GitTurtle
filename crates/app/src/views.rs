@@ -7279,8 +7279,98 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// With "README.md" staged first, as the native review's fixture has,
+    /// each file row keeps its name whole in every window from 430 to 480
+    /// px wide at 18 pt, around the 156 px inspector of a 461 px window:
+    /// where the name does not fit beside the 26 px status tile, the tile
+    /// gives way to its bare glyph, left of the name, before the name is
+    /// cut. At the default size in a 461 × 490 window, and at 18 pt in a
+    /// 1480 × 980 one, the rows keep their tiles.
+    #[gpui::test]
+    async fn narrow_file_rows_give_the_status_tile_up_before_the_name(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, &history_script(40, 3)).await;
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--hard", "--quiet"]);
+        std::fs::write(root.join("README.md"), "readme\n").unwrap();
+        std::fs::write(root.join("alpha.txt"), "alpha\n").unwrap();
+        fixture_git(&root, &["add", "README.md", "alpha.txt"]);
+        std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        let files = app.read_with(cx, |app, _| {
+            let entries = &app.work_status.as_ref().unwrap().entries;
+            app.working_rows
+                .iter()
+                .enumerate()
+                .filter_map(|(position, row)| match row {
+                    crate::workspace::WorkingRow::File(index, _) => Some((
+                        position,
+                        entries[*index].path.to_string_lossy().into_owned(),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            files.first().map(|(_, name)| name.as_str()),
+            Some("README.md")
+        );
+        let mut sizes = vec![(13, 461., 490.), (18, 1480., 980.)];
+        sizes.extend((430..=480).step_by(2).map(|width| (18, width as f32, 490.)));
+        let mut forms = std::collections::BTreeSet::new();
+        for (text, width, height) in sizes {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt at {width} × {height}");
+            let inset = cx.update(|window, _| window.pixel_snap(window.rem_size() * 0.75));
+            for (position, name) in &files {
+                app.update(cx, |app, _| {
+                    app.working_scroll
+                        .scroll_to_item(*position, ScrollStrategy::Top)
+                });
+                draw(cx);
+                let pane = cx.debug_bounds("working-pane").unwrap();
+                let end = pane.right() - px(1.) - inset + px(0.5);
+                let selector =
+                    |part: &str| -> &'static str { format!("working-{part}-{position}").leak() };
+                let shown = cx
+                    .debug_bounds(selector("name"))
+                    .unwrap_or_else(|| panic!("{at}: {name}"));
+                let whole = cx.update(|window, _| {
+                    shaped_width(name, appearance::ui_text(12.), FontWeight::MEDIUM, window)
+                });
+                assert!(
+                    shown.size.width >= whole && shown.right() <= end,
+                    "{at}: {name:?} ({whole:?}) in {shown:?}, the list ending at {end:?}"
+                );
+                let tile = cx.debug_bounds(selector("tile"));
+                let glyph = cx.debug_bounds(selector("glyph"));
+                assert!(
+                    tile.is_none() || glyph.is_none(),
+                    "{at}: {name:?} draws its tile or its glyph"
+                );
+                if text == 13 || width > 1000. {
+                    assert!(tile.is_some(), "{at}: {name:?}'s tile");
+                }
+                if let Some(status) = tile.or(glyph) {
+                    assert!(
+                        status.right() <= shown.left() && status.left() >= pane.left(),
+                        "{at}: {name:?}'s status {status:?} before {shown:?}"
+                    );
+                }
+                forms.insert((tile.is_some(), glyph.is_some()));
+            }
+        }
+        // The walk reaches both forms: the tile, and its glyph in its place.
+        assert!(forms.contains(&(true, false)), "{forms:?}");
+        assert!(forms.contains(&(false, true)), "{forms:?}");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A file row keeps its name whole, at least a short one such as
-    /// "notes.txt": at 18 pt in the 156 px inspector of a 461 × 490 window
+    /// "README.md": at 18 pt in the 156 px inspector of a 461 × 490 window
     /// every row gives up its status word and then its Stage or Unstage
     /// control, which its menu then leads with, and the fixture's names
     /// ("alpha.txt", "beta.txt", "notes.txt") are whole inside the list. At
