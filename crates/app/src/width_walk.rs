@@ -2,11 +2,15 @@
 //! the GitHub panel on the offline fixture, laid out at every width from 461
 //! to 1,480 px at 13 and 18 pt in a short and a tall window, fail on cut or
 //! orphaned text, on a repository tab's name cut while the tab strip's
-//! Menu or Workspaces keeps its label, and on the Git action bar's
-//! repository edge left out, its line short of its text or a control
-//! running into the next (DESIGN.md, "One responsive order"). The
+//! Menu or Workspaces keeps its label, on the Git action bar's repository
+//! edge left out, its line short of its text or a control running into the
+//! next (DESIGN.md, "One responsive order"), and on the selected commit's
+//! Actions wrapped off the row of the message toolbar's copy controls. The
 //! fixture has no remote, so every page's bar shows that edge; History is
-//! walked again on a detached HEAD and on a branch with no upstream.
+//! walked again on a detached HEAD and on a branch with no upstream. The
+//! window is resized from width to width as a person or a tiling window
+//! manager resizes it, so the inspector is drawn at the size its panel
+//! group rescales it to, not only its saved width.
 //!
 //! The test text system paints no glyphs, so the walk marks what it checks
 //! with fills a test can find among the painted quads, each with the content
@@ -64,6 +68,11 @@ enum Rule {
     /// A control in the Git action bar runs into the one after it on its
     /// row, as a detached HEAD's "Detached HEAD" picker ran under Fetch.
     Overlap,
+    /// The selected commit's Actions is drawn below Hash's row, the last
+    /// row of the message toolbar's copy controls, where the toolbar lays
+    /// it out (`commit_message::Toolbar`): the toolbar was fitted to another
+    /// width than the inspector is drawn at.
+    Wrapped,
 }
 
 /// The pages the walk lays out.
@@ -332,6 +341,20 @@ impl Walk<'_> {
                 let detail = format!("{caption} without {controls:?}");
                 self.found(Rule::Orphan, caption, (width, height), detail);
             }
+        }
+        if let (Some(hash), Some(actions)) = (
+            cx.debug_bounds("copy-commit"),
+            cx.debug_bounds("commit-recovery-menu"),
+        ) && (actions.top() - hash.top()).abs() > px(0.5)
+        {
+            let inspector = cx.debug_bounds("commit-inspector");
+            let detail = format!("{actions:?} below Hash {hash:?} in {inspector:?}");
+            self.found(
+                Rule::Wrapped,
+                "commit-message-toolbar",
+                (width, height),
+                detail,
+            );
         }
         self.inspect_tabs(width, height, cx);
         self.inspect_edge(width, height, cx);

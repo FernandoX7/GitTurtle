@@ -4849,21 +4849,59 @@ impl GitTurtle {
         }
     }
 
-    /// The width the repository page receives beside the project pane.
-    /// The inspector's width in a repository `width` wide before it is laid
-    /// out: exactly its minimum where the window pins it, otherwise its saved
-    /// width within what the content column leaves it.
-    fn expected_inspector_width(&self, width: Pixels, columns: &ColumnMinimums) -> Pixels {
-        if columns.pinned {
+    /// The inspector panel's widths in a repository page `width` wide: from
+    /// its minimum to 480 px, never past what the content column's minimum
+    /// leaves it, so the page holds it whole, and exactly its minimum where
+    /// the window pins it. A scaled minimum can pass the 480 px maximum, as
+    /// at 18 pt with a desktop text scale of 1.25.
+    fn inspector_range(width: Pixels, columns: &ColumnMinimums) -> std::ops::Range<Pixels> {
+        let end = if columns.pinned {
             columns.inspector
         } else {
-            px(self.settings.inspector_width)
-                .min(px(480.).max(columns.inspector))
+            px(480.)
+                .max(columns.inspector)
                 .min(width - columns.content)
                 .max(columns.inspector)
-        }
+        };
+        columns.inspector..end
     }
 
+    /// The inspector's width in a repository page `width` wide from its
+    /// saved width alone, before the panel group lays it out: a choice the
+    /// window's size makes before layout, as the chrome's form is
+    /// (`compare_minimum`), takes this, so it never changes in the frame
+    /// after a resize.
+    fn expected_inspector_width(&self, width: Pixels, columns: &ColumnMinimums) -> Pixels {
+        let range = Self::inspector_range(width, columns);
+        px(self.settings.inspector_width)
+            .min(range.end)
+            .max(range.start)
+    }
+
+    /// The width the inspector is drawn at in a repository page `width`
+    /// wide, which its contents are laid out for. The panel group lays the
+    /// inspector out at its panel's size within `inspector_range`: the saved
+    /// width until the group first measures it, then the size the group
+    /// keeps, which it rescales with the window and which a drag sets. That
+    /// size can differ from the saved width, which only a drag changes: where
+    /// a tiling window manager narrows the window after it opens, the group
+    /// draws the inspector narrower than it was saved.
+    fn drawn_inspector_width(&self, width: Pixels, columns: &ColumnMinimums, cx: &App) -> Pixels {
+        let range = Self::inspector_range(width, columns);
+        // The group's placeholder before it measures the panel, as its own
+        // first layout tells them apart.
+        let size = self
+            .content_panels
+            .read(cx)
+            .sizes()
+            .get(1)
+            .copied()
+            .filter(|size| *size != gpui_kit::base::PANEL_MIN_SIZE)
+            .unwrap_or(px(self.settings.inspector_width));
+        size.min(range.end).max(range.start)
+    }
+
+    /// The width the repository page receives beside the project pane.
     fn repository_width(&self, window: &Window) -> Pixels {
         let width = window.viewport_size().width;
         if self.settings.project_pane && self.page != AppPage::Projects {
@@ -4888,13 +4926,15 @@ impl GitTurtle {
         let narrow = width < appearance::ui_size(SIDEBAR_FIT_WIDTH);
         let rail = appearance::ui_size(44.);
         let columns = ColumnMinimums::new(width, rail, narrow);
-        let (content_min, inspector_min) = (columns.content, columns.inspector);
+        let content_min = columns.content;
         // The inspector's message toolbar fits the commit's Actions beside
-        // its copy controls at the width the inspector takes, and where the
-        // inspector is pinned it reserves the rows they take there.
+        // its copy controls at the width the inspector is drawn at, which can
+        // be narrower than its saved width, and where the inspector is pinned
+        // it reserves the rows they take there.
+        let inspector_width = self.drawn_inspector_width(width, &columns, cx);
         self.inspector_message
             .lay_out_toolbar(Some(commit_message::Toolbar::within(
-                self.expected_inspector_width(width, &columns),
+                inspector_width,
                 columns.pinned,
                 window,
             )));
@@ -5026,23 +5066,10 @@ impl GitTurtle {
             .child(
                 resizable_panel()
                     .size(px(self.settings.inspector_width))
-                    // A scaled minimum can pass the 480 px maximum, as at
-                    // 18 pt with a desktop text scale of 1.25.
-                    .size_range(
-                        inspector_min..if columns.pinned {
-                            inspector_min
-                        } else {
-                            px(480.).max(inspector_min)
-                        },
-                    )
+                    .size_range(Self::inspector_range(width, &columns))
                     .flex_none()
                     .child(if self.mode == WorkspaceMode::Working {
-                        self.render_working_inspector(
-                            self.expected_inspector_width(width, &columns),
-                            columns.pinned,
-                            window,
-                            cx,
-                        )
+                        self.render_working_inspector(inspector_width, columns.pinned, window, cx)
                     } else {
                         self.render_inspector(files_header, cx)
                     }),
@@ -9373,6 +9400,114 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The message toolbar is laid out for the width the inspector is drawn
+    /// at, which can be narrower than its saved width: the panel group keeps
+    /// the size a drag gave the inspector and rescales it with the window,
+    /// as when a tiling window manager narrows a window after it opens,
+    /// while the saved width stays what the drag left. Dragged 440 px wide
+    /// in a 1,480 px window, the inspector is drawn about 297 px wide in a
+    /// 1,000 px one at the default size; dragged 470 px wide at 18 pt, about
+    /// 394 px at 1,240 px and its 388 px minimum at 1,000 px. Dragged 480 px
+    /// wide in a 1,000 px window, it is drawn within the 380 px the content
+    /// column's minimum leaves it at 900 px, ending at the window's edge. In
+    /// each, Copy message, Hash and Actions share the toolbar's one row,
+    /// Actions at its trailing edge, inside the inspector and the window.
+    /// Laid out for the saved width, Actions kept its label and caret, which
+    /// the drawn inspector has no room for beside the copy controls, and
+    /// wrapped onto a row of its own below them; at 900 px the inspector ran
+    /// 52 px past the window, Actions with it.
+    #[gpui::test]
+    async fn the_message_toolbar_fits_the_inspector_as_drawn(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        // Drags the divider before the inspector so that it is `wide` px
+        // wide, as the user does.
+        let drag = |cx: &mut VisualTestContext, wide: f32| {
+            let inspector = cx.debug_bounds("commit-inspector").unwrap();
+            let target = point(inspector.right() - px(wide), inspector.center().y);
+            let from = point(inspector.left() - px(2.), inspector.center().y);
+            cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_move(
+                from - point(px(10.), px(0.)),
+                Some(MouseButton::Left),
+                Modifiers::default(),
+            );
+            cx.simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::default());
+            cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            draw(cx);
+        };
+        let saved =
+            |cx: &mut VisualTestContext| cx.read(|cx| px(app.read(cx).settings.inspector_width));
+        // The inspector as drawn, its toolbar's controls on one row.
+        let one_row = |cx: &mut VisualTestContext, at: &str| {
+            let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{at}: {selector}"))
+            };
+            let inspector = bounds(cx, "commit-inspector");
+            let toolbar = bounds(cx, "commit-message-toolbar");
+            let copy = bounds(cx, "copy-message");
+            let hash = bounds(cx, "copy-commit");
+            let actions = bounds(cx, "commit-recovery-menu");
+            let (window, rem) = cx.update(|window, _| {
+                (
+                    Bounds::new(point(px(0.), px(0.)), window.viewport_size()),
+                    window.rem_size(),
+                )
+            });
+            assert!(
+                copy.top() == hash.top() && hash.top() == actions.top(),
+                "{at}: one row: {copy:?} {hash:?} {actions:?} in {inspector:?}"
+            );
+            assert!(
+                copy.right() < hash.left() && hash.right() < actions.left(),
+                "{at}: in order: {copy:?} {hash:?} {actions:?}"
+            );
+            // Its `py_1` either side, to within the half pixel layout snaps.
+            assert!(
+                (toolbar.size.height - (actions.size.height + rem * 0.5)).abs() < px(1.),
+                "{at}: the toolbar is that row: {toolbar:?}"
+            );
+            assert!(
+                (actions.right() - (toolbar.right() - rem * 0.75)).abs() < px(0.5),
+                "{at}: Actions at the trailing edge: {actions:?} in {toolbar:?}"
+            );
+            assert!(
+                within(actions, toolbar) && within(toolbar, inspector) && within(inspector, window),
+                "{at}: {actions:?} in {toolbar:?} in {inspector:?} in {window:?}"
+            );
+            inspector.size.width
+        };
+        for (text, dragged, from, to) in [
+            (13, 440., 1480., &[1000.][..]),
+            (18, 470., 1480., &[1240., 1000.][..]),
+            (13, 480., 1000., &[900.][..]),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(from), px(680.)));
+            draw(cx);
+            drag(cx, dragged);
+            let at = format!("{text} pt dragged {dragged} px wide in {from} px");
+            assert!((saved(cx) - px(dragged)).abs() < px(0.5), "{at}: saved");
+            let wide = one_row(cx, &at);
+            assert!((wide - px(dragged)).abs() < px(0.5), "{at}: drawn {wide:?}");
+            for &width in to {
+                cx.simulate_resize(size(px(width), px(680.)));
+                draw(cx);
+                let at = format!("{at}, then in {width} px");
+                let drawn = one_row(cx, &at);
+                assert!(
+                    drawn < px(dragged) - px(40.),
+                    "{at}: drawn {drawn:?} narrower than the saved width"
+                );
+                assert!(
+                    (saved(cx) - px(dragged)).abs() < px(0.5),
+                    "{at}: the saved width stays"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The selected commit's Actions stands in the message toolbar, outside
     /// the scrolling message and metadata, so it stays in view at every size:
     /// at the trailing edge of the copy controls' last row, on Hash's row, as
@@ -9402,15 +9537,21 @@ pub(crate) mod tests {
             (18, 1480., 980., Some(480.), true, false),
             (18, 461., 490., None, false, true),
         ] {
-            cx.update(|window, cx| {
-                appearance::apply_text_sizes(text, 12, window, cx);
+            // The panel group first measures the inspector in this window, as
+            // in a window opened at its size: measured in the last one, it
+            // rescales the inspector with the window, so at 18 pt in
+            // 1,480 × 800 it was drawn 480 px wide rather than at its 388 px
+            // minimum (`the_message_toolbar_fits_the_inspector_as_drawn`).
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            cx.update(|_, cx| {
                 app.update(cx, |app, cx| {
                     app.settings.inspector_width = inspector.unwrap_or(saved);
                     app.content_panels = cx.new(|_| ResizableState::default());
+                    cx.notify();
                 });
             });
             COMPACT_NAMES.with(|names| names.borrow_mut().clear());
-            cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
             let at = format!("{text} pt in {width} × {height}");
             let bounds = |cx: &mut VisualTestContext, selector: &'static str| {

@@ -105,9 +105,15 @@ its label and as wide as the wider of its content and its copied content (check
 and "Copied"), which for Hash is the copied content; both contents start at the
 button's leading inset, so the check replaces the icon in place. Where Copy
 message does not fit a row of its own, both are compact 28 px icon squares on
-one row. `Toolbar::within` measures them so where the window fixes the
-inspector's width the reserved rows match what they draw. Native platform
-quality remains a separate validation requirement.
+one row. `Toolbar::within` measures them, with History's and Compare's
+Actions, at the width the inspector is drawn at (`drawn_inspector_width`): the
+panel group's size within the inspector's range, which a window resize
+rescales and only a drag saves, rather than the saved width, so no control
+wraps below the row it was fitted to, and where the window fixes the
+inspector's width the reserved rows match what they draw. The range ends where
+the content column's minimum leaves no more room, so the inspector never runs
+past the window. Working Changes lays its inspector out at the same width.
+Native platform quality remains a separate validation requirement.
 
 The pieces and the selectable metadata lines (author, date and short hash, or a
 revision's lines) form one text document (`commit_message::selection`). The
