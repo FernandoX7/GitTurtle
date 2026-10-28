@@ -4946,7 +4946,7 @@ pub(crate) mod tests {
     use super::*;
     use core::prelude::v1::test;
 
-    fn draw(cx: &mut VisualTestContext) {
+    pub(crate) fn draw(cx: &mut VisualTestContext) {
         for _ in 0..3 {
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);
@@ -5226,6 +5226,21 @@ pub(crate) mod tests {
         Entity<GitTurtle>,
         &'a mut VisualTestContext,
     ) {
+        styled_history_window(cx, input.as_bytes(), |root| root).await
+    }
+
+    /// [`history_window_from`] on the repository the `input` bytes import,
+    /// with the window's root styled by `style`, as the width walk marks
+    /// every text run (`width_walk`).
+    pub(crate) async fn styled_history_window<'a>(
+        cx: &'a mut TestAppContext,
+        input: &[u8],
+        style: impl FnOnce(gpui_kit::component::Root) -> gpui_kit::component::Root + 'static,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &'a mut VisualTestContext,
+    ) {
         use gpui_kit::component::Root;
         use std::{
             cell::RefCell,
@@ -5264,12 +5279,7 @@ pub(crate) mod tests {
             command.env_remove(name);
         }
         let mut import = command.spawn().unwrap();
-        import
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.as_bytes())
-            .unwrap();
+        import.stdin.take().unwrap().write_all(input).unwrap();
         let imported = import.wait_with_output().unwrap();
         assert!(
             imported.status.success(),
@@ -5293,7 +5303,7 @@ pub(crate) mod tests {
                 )
             });
             *captured.borrow_mut() = Some(app.clone());
-            Root::new(app, window, cx)
+            style(Root::new(app, window, cx))
         });
         let app = observed.borrow_mut().take().unwrap();
         cx.simulate_resize(size(px(1000.), px(680.)));
@@ -11694,7 +11704,7 @@ pub(crate) mod tests {
     }
 
     /// Run `git` in a fixture repository without the developer's config.
-    fn fixture_git(repository: &std::path::Path, args: &[&str]) {
+    pub(crate) fn fixture_git(repository: &std::path::Path, args: &[&str]) {
         let mut command = std::process::Command::new("git");
         command
             .arg("-C")

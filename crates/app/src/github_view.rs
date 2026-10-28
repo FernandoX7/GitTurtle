@@ -1198,6 +1198,27 @@ impl Render for Panel {
     }
 }
 
+/// Opens the panel over `app`'s repository on the offline review fixture,
+/// listing its two PRs with the first one open, as the native review shows
+/// it (`width_walk`). The caller settles the window.
+#[cfg(test)]
+pub(crate) fn open_offline_fixture(app: &Entity<GitTurtle>, window: &mut Window, cx: &mut App) {
+    let repo = app.read(cx).repository.clone().unwrap();
+    let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+    let pull = github::review::fixture_pull(false);
+    let mut other = pull.clone();
+    other.number = 43;
+    panel.update(cx, |panel, cx| {
+        panel.rows = vec![pull.clone(), other];
+        panel.review.fixture = true;
+        panel.account = Some("offline-reviewer".into());
+        panel.pull = Some(pull);
+        panel.notice = Some("Fixture PRs refreshed.".into());
+        panel.close(window, cx);
+    });
+    app.update(cx, |app, cx| app.open_github(window, cx));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

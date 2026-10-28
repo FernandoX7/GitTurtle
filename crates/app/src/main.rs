@@ -67,6 +67,8 @@ mod text;
 mod text_review;
 mod theme_editor;
 mod views;
+#[cfg(test)]
+mod width_walk;
 #[cfg(target_os = "linux")]
 mod window_chrome;
 mod worker;

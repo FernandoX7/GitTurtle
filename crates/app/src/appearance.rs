@@ -496,6 +496,18 @@ pub fn control_button_variant(selected: bool) -> ButtonVariant {
     }
 }
 
+/// Fills every shared control at rest with `fill` until a palette is applied
+/// again, so a test finds each one among the painted quads with the content
+/// mask that clips it (`width_walk`); a control transparent at rest paints
+/// nothing to find.
+#[cfg(test)]
+pub(crate) fn mark_controls(fill: gpui_kit::Hsla) {
+    if let Some(mut control) = CONTROL_BUTTON.get() {
+        control.idle = control.idle.color(fill);
+        CONTROL_BUTTON.set(Some(control));
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemeChoice {

@@ -362,7 +362,15 @@ impl RenderOnce for Editor {
                 }
             })
             .children(existing.filter(|bar| bar.read(cx).open))
-            .child(div().flex_1().min_h_0().child(native.h(relative(1.))))
+            .child(
+                div()
+                    // Code scrolls sideways in here: the width walk
+                    // (`width_walk`) checks the chrome around it.
+                    .debug_selector(|| "code-editor".into())
+                    .flex_1()
+                    .min_h_0()
+                    .child(native.h(relative(1.))),
+            )
     }
 }
 
