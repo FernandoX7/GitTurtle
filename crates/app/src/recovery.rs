@@ -285,10 +285,15 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let repository = self.path.clone();
         let commit = commit_target(commit);
-        Button::new("commit-recovery-menu")
-            .small()
-            .ghost()
-            .label("Actions")
+        // The shared 28 px compact control with its caret, as the parent
+        // Buttons above it and Working's labelled Actions are, with their
+        // palette hover and pressed fills: the kit's small Button is 1.5 rem.
+        // As wide as its label and caret from the parents' left edge, rather
+        // than stretched across the metadata's column.
+        button("commit-recovery-menu", "Actions", "", false)
+            .debug_selector(|| "commit-recovery-menu".into())
+            .self_start()
+            .max_w_full()
             .dropdown_caret(true)
             .accessibility_label("Selected commit actions")
             .disabled(self.operation_busy.is_some())

@@ -1991,6 +1991,7 @@ impl GitTurtle {
                     "",
                     self.parent == i,
                 )
+                .debug_selector(move || format!("commit-parent-{i}"))
                 .accessibility_label(format!("Compare against parent {} · {}", i + 1, parent))
                 .tooltip(format!("Compare against parent {} · {}", i + 1, parent))
                 .on_click(
@@ -7432,6 +7433,112 @@ pub(crate) mod tests {
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The History inspector's "Actions" for the selected commit is the
+    /// shared 28 px compact control with its caret, as the Changes header's
+    /// labelled Actions is: as tall as the parent Button above it, starting
+    /// at its left edge, as wide as its label and caret in the helper's frame,
+    /// and centred one control and the column's gap below the parent's
+    /// centre, in a 1000 × 680 and a 1480 × 980 window at the default size
+    /// and at 18 pt. It was the kit's small Button, 1.5 rem tall (19.5 px at
+    /// the default size), stretched across the column. At rest it paints no
+    /// fill; hovered and pressed it takes the palette's hover and pressed
+    /// layers, in a dark and a light palette.
+    #[gpui::test]
+    async fn commit_actions_matches_the_parent_above_it(cx: &mut TestAppContext) {
+        let (_fixture, _app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        for (text, width, height) in [
+            (13, 1000., 680.),
+            (13, 1480., 980.),
+            (18, 1000., 680.),
+            (18, 1480., 980.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{at}: {selector}"))
+            };
+            let parent = bounds(cx, "commit-parent-0");
+            let actions = bounds(cx, "commit-recovery-menu");
+            let (control, gap, whole) = cx.update(|window, _| {
+                let rem = window.rem_size();
+                let label = shaped_width(
+                    "Actions",
+                    appearance::ui_text(12.),
+                    window.text_style().font_weight,
+                    window,
+                );
+                (
+                    window.pixel_snap(appearance::ui_size(28.)),
+                    // The metadata column's `gap_2`.
+                    window.pixel_snap(rem * 0.5),
+                    // The helper's padding either side, its label, its 6 px
+                    // gap and the caret, 0.875 rem square.
+                    label + appearance::ui_size(10.) * 2. + appearance::ui_size(6.) + rem * 0.875,
+                )
+            });
+            let slack = px(0.5);
+            assert_eq!(parent.size.height, control, "{at}: the parent {parent:?}");
+            assert_eq!(actions.size.height, control, "{at}: {actions:?}");
+            assert!(
+                (actions.left() - parent.left()).abs() <= slack,
+                "{at}: {actions:?} starts where {parent:?} does"
+            );
+            assert!(
+                (actions.size.width - whole).abs() <= px(1.),
+                "{at}: {actions:?} is as wide as its label and caret, {whole:?}"
+            );
+            assert!(
+                (actions.center().y - parent.center().y - control - gap).abs() <= slack,
+                "{at}: {actions:?} centred a control and {gap:?} below {parent:?}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        for theme in [
+            crate::appearance::ThemeChoice::Midnight,
+            crate::appearance::ThemeChoice::Daylight,
+        ] {
+            cx.update(|_, cx| theme.apply(None, cx));
+            let (hover, pressed) = cx.update(|_, cx| {
+                let p = palette(cx);
+                let fill =
+                    |color| gpui_kit::Background::from(gpui_kit::Hsla::from(p.control_fill(color)));
+                (fill(p.hover), fill(p.selected))
+            });
+            cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                painted_fills(cx, "commit-recovery-menu"),
+                vec![],
+                "{theme:?} at rest"
+            );
+            let center = cx.debug_bounds("commit-recovery-menu").unwrap().center();
+            cx.simulate_mouse_move(center, None, Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                painted_fills(cx, "commit-recovery-menu"),
+                vec![hover],
+                "{theme:?} hovered"
+            );
+            cx.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                painted_fills(cx, "commit-recovery-menu"),
+                vec![pressed],
+                "{theme:?} pressed"
+            );
+            cx.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
+            draw(cx);
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
     }
 
     /// In a 461 × 490 window, at the default size and at 18 pt, the compact
