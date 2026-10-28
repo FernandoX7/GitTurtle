@@ -2478,7 +2478,7 @@ impl GitTurtle {
         &self,
         column_min: Pixels,
         column: Pixels,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if self.blame.is_visible() {
@@ -5841,10 +5841,12 @@ pub(crate) mod tests {
     /// at 18 pt, each control
     /// and its ring lie in what the preview shows of its caption, and the two
     /// names share their top (Before once sat 8 px below After, centred
-    /// beside a wrapped control). When a click opens nothing, the line saying
-    /// why lies beneath that side's caption over the image, so neither
-    /// caption, neither name nor the image moves: a two-line refusal once
-    /// grew the captions by 42.5 px and dropped Before's caption 20.5 px.
+    /// beside a wrapped control). The notes keep their one line where the
+    /// column holds it and otherwise leave. When a click opens nothing, the
+    /// line saying why takes its own room beneath that side's caption, so
+    /// neither caption nor name moves (a two-line refusal once grew the
+    /// captions by 42.5 px and dropped Before's caption 20.5 px) and the image
+    /// gives way below it.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn image_captions_keep_their_controls_in_view_and_still(cx: &mut TestAppContext) {
@@ -5928,17 +5930,36 @@ pub(crate) mod tests {
                     "{at}: each menu is named by its group and current choice"
                 );
             }
-            // The notes keep the one line they take in a full window.
+            // The notes keep the one line they take in a full window where
+            // the column holds it, and otherwise leave rather than lie under
+            // the preview's clip.
             let lines = ["image-source-scale", "image-interaction-guidance"]
-                .map(|note| bounds(note, cx).size.height);
+                .map(|note| cx.debug_bounds(note));
+            for note in lines.iter().flatten() {
+                assert!(
+                    note.bottom() <= content.bottom() + px(0.5),
+                    "{at}: {note:?} lies in the column {content:?}"
+                );
+            }
+            let lines = lines.map(|note| note.map(|note| note.size.height));
             if narrow {
-                assert_eq!(lines, one_line.pop().unwrap(), "{at}: one line each");
+                let full = one_line.pop().unwrap();
+                for (line, full) in lines.into_iter().zip(full) {
+                    assert!(
+                        line.is_none_or(|line| Some(line) == full),
+                        "{at}: one line each"
+                    );
+                }
             } else {
+                assert!(
+                    lines.iter().all(Option::is_some),
+                    "{at}: both notes are drawn"
+                );
                 one_line.push(lines);
             }
         }
 
-        // A click that opens nothing moves nothing.
+        // A click that opens nothing moves neither caption.
         let refusal = "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened.";
         for (width, height) in [(1480., 980.), (461., 490.)] {
             cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
@@ -5950,7 +5971,6 @@ pub(crate) mod tests {
                     "image-side-caption-1",
                     "image-side-name-0",
                     "image-side-name-1",
-                    "image-canvas-area",
                 ]
                 .map(|selector| bounds(selector, cx))
             };
@@ -5969,7 +5989,7 @@ pub(crate) mod tests {
                 draw(cx);
                 let at = format!("{width} × {height}, {:?}", expected.0);
                 assert_eq!(cx.read(latest_note), Some(expected.clone()), "{at}");
-                assert_eq!(still(cx), rest, "{at}: the captions and the image stay put");
+                assert_eq!(still(cx), rest, "{at}: the captions and names stay put");
                 let caption = bounds("image-side-caption-1", cx);
                 let note = bounds("image-side-note-1", cx);
                 assert!(
@@ -5979,40 +5999,132 @@ pub(crate) mod tests {
                     "{at}: the line {note:?} lies beneath After's caption {caption:?}"
                 );
                 assert!(cx.debug_bounds("image-system-preview-1/note").is_some());
-                // Drawn over the image, not beneath it, where the window
-                // leaves the image room: in 461 × 490 the comparison's chrome
-                // still fills the column and the image has none.
-                if bounds("image-canvas-area", cx).size.height < note.size.height {
-                    continue;
-                }
-                let (scale, quads, colors) = cx.update(|window, cx| {
-                    (window.scale_factor(), window.painted_quads(), palette(cx))
-                });
-                let scaled = |bounds: Bounds<Pixels>| bounds.scale(scale);
-                let line = quads
-                    .iter()
-                    .find(|quad| {
-                        quad.background == rgb(colors.panel).into()
-                            && (quad.bounds.origin.x - scaled(note).origin.x).0.abs() <= 1.
-                            && (quad.bounds.origin.y - scaled(note).origin.y).0.abs() <= 1.
-                    })
-                    .unwrap_or_else(|| panic!("{at}: the line's surface is painted"));
-                let area = scaled(bounds("image-canvas-area", cx));
-                let beneath = quads
-                    .iter()
-                    .filter(|quad| {
-                        [colors.canvas, colors.subtle]
-                            .into_iter()
-                            .any(|tile| quad.background == rgb(tile).into())
-                            && area.contains(&quad.bounds.origin)
-                            && quad.bounds.intersects(&line.bounds)
-                    })
-                    .map(|quad| quad.order)
-                    .collect::<Vec<_>>();
+                // In its own room: the image gives way rather than lying
+                // beneath it.
+                let image = bounds("image-canvas-area", cx);
                 assert!(
-                    !beneath.is_empty() && beneath.iter().all(|order| *order < line.order),
-                    "{at}: the line paints over the image's tiles: {beneath:?} before {}",
-                    line.order
+                    image.top() >= note.bottom() - px(0.5),
+                    "{at}: the image {image:?} starts below the line {note:?}"
+                );
+            }
+        }
+    }
+
+    /// The line saying why a click on an image side's Open in default app
+    /// opened nothing takes its own room beneath its side's caption, in the
+    /// column's flow: laid over the image, a refusal in a 461 × 490 window,
+    /// where the image had 27 px at 13 pt and none at 18 pt, painted over both
+    /// of the comparison's notes and ran past the column. In that window and
+    /// in a taller and a wider one, at 13 and 18 pt, the line lies beneath
+    /// After's caption and inside the room the captions leave, neither side's
+    /// name moves, the image starts below the line, and each note lies below
+    /// it inside the column or, where that room holds no line for it, has
+    /// left, its words kept in the image's accessible description. Where the
+    /// room holds them, the line shows at least two of its lines.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_refused_open_takes_its_own_room_and_covers_no_note(cx: &mut TestAppContext) {
+        use crate::system_preview::{
+            NotOpened,
+            tests::{latest_note, png, queue},
+        };
+        let input = file_commits(&[("add", &[("polyglot.png", &png(Some(b"after")))])]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let refusal = "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened.";
+        let slack = px(0.5);
+        for (text, width, height) in [
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 461., 980.),
+            (18, 461., 980.),
+            (13, 640., 680.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let names = ["image-side-name-0", "image-side-name-1"].map(|name| bounds(name, cx));
+            queue(Err(NotOpened::Failed(refusal.into())));
+            let control = bounds("image-system-preview-1", cx);
+            cx.simulate_click(control.center(), Modifiers::default());
+            cx.run_until_parked();
+            draw(cx);
+            draw(cx);
+            assert_eq!(
+                cx.read(latest_note),
+                Some((format!("Could not open After. {refusal}"), true)),
+                "{at}"
+            );
+            assert_eq!(
+                ["image-side-name-0", "image-side-name-1"].map(|name| bounds(name, cx)),
+                names,
+                "{at}: neither side's name moves"
+            );
+            let column = bounds("preview-content", cx);
+            let caption = bounds("image-side-caption-1", cx);
+            let room = bounds("image-stage-room", cx);
+            let band = bounds("image-side-note-1", cx);
+            let line = bounds("image-system-preview-1/note", cx);
+            assert!(
+                band.top() >= caption.bottom() - slack
+                    && band.left() >= caption.left() - slack
+                    && band.right() <= caption.right() + slack,
+                "{at}: the line's band {band:?} lies beneath After's caption {caption:?}"
+            );
+            assert!(
+                band.bottom() <= room.bottom() + slack && line.bottom() <= room.bottom() + slack,
+                "{at}: the line {line:?} keeps to the room {room:?} beneath the captions"
+            );
+            let image = bounds("image-canvas-area", cx);
+            assert!(
+                image.top() >= band.bottom() - slack,
+                "{at}: the image {image:?} starts below the line's band {band:?}"
+            );
+            let mut drawn = 0;
+            for note in ["image-source-scale", "image-interaction-guidance"] {
+                let Some(note) = cx.debug_bounds(note) else {
+                    continue;
+                };
+                drawn += 1;
+                assert!(
+                    note.top() >= band.bottom() - slack,
+                    "{at}: the note {note:?} lies below the line's band {band:?}"
+                );
+                assert!(
+                    note.top() >= column.top() - slack
+                        && note.bottom() <= column.bottom() + slack
+                        && note.left() >= column.left() - slack
+                        && note.right() <= column.right() + slack,
+                    "{at}: the note {note:?} lies inside the column {column:?}"
+                );
+            }
+            if drawn == 0 {
+                let description = COMPACT_LABELS
+                    .with(|labels| labels.borrow().get("image-canvas-area").cloned())
+                    .unwrap_or_default();
+                assert!(
+                    description.contains("100% =")
+                        && description.contains("An absent or unavailable side"),
+                    "{at}: the notes' words stay in the image's description: {description:?}"
+                );
+            }
+            let line_height = cx.update(|window, _| {
+                window
+                    .text_style()
+                    .line_height
+                    .to_pixels(appearance::ui_text(11.).into(), window.rem_size())
+            });
+            if room.size.height >= line_height * 6. {
+                assert!(
+                    line.size.height >= line_height * 2. - slack,
+                    "{at}: the line {line:?} shows at least two of its lines"
                 );
             }
         }

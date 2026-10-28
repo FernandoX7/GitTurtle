@@ -326,8 +326,10 @@ impl Target {
     /// showing opened nothing, as wide as the row so it starts a line of its
     /// own in a wrapping row: a failure in the warning color fitted to the
     /// page's surfaces, announced at once, or a closed chooser in muted
-    /// text, announced politely. Tests find it as `<control id>/note`.
-    pub(crate) fn note(&self, cx: &App) -> Option<AnyElement> {
+    /// text, announced politely. A long reason scrolls inside the line's
+    /// scaled 100 px, which a caller may lower to the room it has. Tests find
+    /// it as `<control id>/note`.
+    pub(crate) fn note(&self, cx: &App) -> Option<Stateful<Div>> {
         let note = cx
             .try_global::<Notes>()?
             .notes
@@ -362,8 +364,7 @@ impl Target {
                 .text_size(appearance::ui_text(11.))
                 .text_color(rgb(color))
                 .child(note.text.clone())
-                .children(appearance::text_probe(move || probe))
-                .into_any_element(),
+                .children(appearance::text_probe(move || probe)),
         )
     }
 
