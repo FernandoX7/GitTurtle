@@ -1412,36 +1412,50 @@ fn read_snapshot(
         Some(oid) => gitturtle_core::HistoryScope::FromCommit(oid.to_owned()),
         None => gitturtle_core::HistoryScope::AllRefs,
     };
-    let (commits, graph, graph_notice, history_scope, history_next_offset) = if limit == 0 {
-        (Vec::new(), Vec::new(), None, scope, None)
-    } else {
-        // An explicit or quiet refresh captures new tips and starts a new
-        // traversal. Ordinary subsequent pages use the immutable returned scope.
-        session.history = None;
-        let result = session.history_page(&repository, &scope, 0, limit, cancellation)?;
-        let pinned = session
-            .history
-            .as_ref()
-            .expect("Live history traversal")
-            .traversal
-            .scope()
-            .clone();
-        (
-            result.page.commits,
-            result.graph,
-            result.graph_notice,
-            pinned,
-            result.page.next_offset,
-        )
-    };
-    cancellation.check()?;
-    // Each commit's references in Git's order, HEAD's branch first, then its
-    // tags: History shows the first one in its badge and in narrow History's
-    // pill. A tag list Git cannot give leaves History without tags rather
-    // than without history; the Tags page reports why.
-    let tags = repository.tags().map(|list| list.tags).unwrap_or_default();
-    cancellation.check()?;
-    let refs = HistoryReferences::new(&branches, &tags);
+    // The tag read needs nothing from the history page, so one scoped thread
+    // reads the tags and prepares every commit's references while this one
+    // reads the page: a snapshot runs at most one Git read beside its page,
+    // and the scope joins it, whatever the page's outcome, before returning.
+    let ((commits, graph, graph_notice, history_scope, history_next_offset), refs) =
+        std::thread::scope(|threads| -> Result<_> {
+            let references = || history_references(&repository, &branches, cancellation);
+            let beside = std::thread::Builder::new()
+                .name("gitturtle-tags".into())
+                .spawn_scoped(threads, references)
+                .ok();
+            let page = if limit == 0 {
+                (Vec::new(), Vec::new(), None, scope, None)
+            } else {
+                // An explicit or quiet refresh captures new tips and starts a
+                // new traversal. Ordinary subsequent pages use the immutable
+                // returned scope.
+                session.history = None;
+                let result = session.history_page(&repository, &scope, 0, limit, cancellation)?;
+                let pinned = session
+                    .history
+                    .as_ref()
+                    .expect("Live history traversal")
+                    .traversal
+                    .scope()
+                    .clone();
+                (
+                    result.page.commits,
+                    result.graph,
+                    result.graph_notice,
+                    pinned,
+                    result.page.next_offset,
+                )
+            };
+            cancellation.check()?;
+            let refs = match beside {
+                Some(read) => read
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                // A thread the system cannot start reads them after the page.
+                None => references(),
+            };
+            Ok((page, refs?))
+        })?;
     cancellation.check()?;
     Ok(Snapshot {
         repository,
@@ -1457,6 +1471,26 @@ fn read_snapshot(
         elapsed: start.elapsed(),
         vanished_scope,
     })
+}
+
+/// Each commit's references in Git's order, HEAD's branch first, then its
+/// tags: History shows the first one in its badge and in narrow History's
+/// pill. A tag list Git cannot give leaves History without tags rather than
+/// without history; the Tags page reports why. The read is the Tags page's
+/// own passive one, within its deadline, and a newer request stops and reaps
+/// its Git process.
+fn history_references(
+    repository: &GitRepository,
+    branches: &[Branch],
+    cancellation: &Cancellation,
+) -> Result<HistoryReferences> {
+    let tags = gitturtle_core::run_cancellable_inspection(cancellation.history.clone(), || {
+        repository.tags()
+    })
+    .map(|list| list.tags)
+    .unwrap_or_default();
+    cancellation.check()?;
+    Ok(HistoryReferences::new(branches, &tags))
 }
 
 fn layout_graph(
@@ -4370,6 +4404,49 @@ mod image_tests {
         assert!(first.leads_with_tag());
         assert_eq!(first.listed.as_ref(), "tag a-first, tag v0.1");
         assert_eq!(snapshot.refs.widest(), 2);
+    }
+
+    /// The tag read runs beside the history page; a tag list Git cannot give,
+    /// here because of a symbolic tag reference, leaves the snapshot with its
+    /// history and branches and without any tags.
+    #[test]
+    fn a_tag_list_git_cannot_give_leaves_history_without_tags() {
+        let fixture = Fixture::new();
+        fixture.git(&["symbolic-ref", "HEAD", "refs/heads/main"], &[]);
+        let tree = fixture.git(&["mktree"], &[]);
+        let first = fixture.git(&["commit-tree", &tree, "-m", "first"], &[]);
+        let second = fixture.git(&["commit-tree", &tree, "-p", &first, "-m", "second"], &[]);
+        fixture.git(&["update-ref", "refs/heads/main", &second], &[]);
+        fixture.git(&["tag", "v1.0", &second], &[]);
+        fixture.git(&["tag", "v0.1", &first], &[]);
+        fixture.git(
+            &["symbolic-ref", "refs/tags/latest", "refs/heads/main"],
+            &[],
+        );
+        let repository = GitRepository::open(&fixture.0).unwrap();
+        assert!(repository.tags().is_err(), "Git cannot give this tag list");
+        let snapshot = read_snapshot(
+            fixture.0.clone(),
+            None,
+            MissingScope::Fail,
+            10,
+            &active(),
+            &mut RepositorySession::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot
+                .commits
+                .iter()
+                .map(|commit| commit.oid.as_str())
+                .collect::<Vec<_>>(),
+            [second.as_str(), first.as_str()]
+        );
+        let names = snapshot.refs.get(&second).unwrap();
+        assert_eq!(names.names, ["main"]);
+        assert_eq!(names.listed.as_ref(), "main");
+        assert_eq!(snapshot.refs.get(&first), None);
+        assert_eq!(snapshot.refs.widest(), 1);
     }
 
     #[test]
