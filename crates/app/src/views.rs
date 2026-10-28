@@ -1035,7 +1035,16 @@ impl GitTurtle {
         .into();
         // The width `history_width` last recorded, exactly.
         let column = px(self.history_width);
-        let compact = column < labelled_scope_toolbar_width(&count, &scope, window);
+        // New history a quiet read observed: its words where they fit, and
+        // Latest, its action, marked.
+        let cue = self.history_update_cue();
+        let compact = column
+            < labelled_scope_toolbar_width(
+                &count,
+                &scope,
+                cue.as_ref().map(|cue| cue.label.as_ref()),
+                window,
+            );
         // A control's name, what it does, and the tooltip the compact toolbar
         // gives it, which leads with that name: static text, so a render
         // formats none of them.
@@ -1099,6 +1108,46 @@ impl GitTurtle {
             self.repository.is_none() || self.loading.is_some() || self.operation_busy.is_some(),
         )
         .on_click(cx.listener(|this, _, window, cx| this.show_latest_history(window, cx)));
+        // While there is new history, Latest, which shows it and ends the
+        // cue, leads its name and tooltip with the cue's words, and an accent
+        // dot in its top right corner marks it, so the cue is seen where its
+        // words do not fit. The dot is laid over the button from a box of the
+        // button's own size, so it sits 2 px in from the button's edge, clear
+        // of the label and of the icon's glyph, rather than from the content
+        // inside the button's padding, where it touched both.
+        let latest = match &cue {
+            Some(cue) => {
+                let name = SharedString::from(format!("Latest · {}", cue.label));
+                let latest = if compact {
+                    compact_control_label(latest, "history-newest", name.clone())
+                } else {
+                    latest.accessibility_label(name.clone())
+                };
+                div()
+                    .relative()
+                    .flex_shrink_0()
+                    .child(latest.tooltip(format!(
+                        "{name}{} · Read current local history and show its newest rows; keeps the selected inspector",
+                        if cue.following {
+                            ", shown at the top"
+                        } else {
+                            ""
+                        }
+                    )))
+                    .child(
+                        div()
+                            .debug_selector(|| "history-newest-dot".into())
+                            .absolute()
+                            .top(appearance::ui_size(2.))
+                            .right(appearance::ui_size(2.))
+                            .size(appearance::ui_size(6.))
+                            .rounded_full()
+                            .bg(rgb(colors.accent)),
+                    )
+                    .into_any_element()
+            }
+            None => latest.into_any_element(),
+        };
         let previous = paging(
             "history-previous",
             named!(
@@ -1159,8 +1208,29 @@ impl GitTurtle {
                 .text_color(rgb(colors.muted))
                 .child(count)
         };
+        // The cue's polite status, announced once as it appears: its words,
+        // whole, beside the count where `drawn`, and otherwise a node out of
+        // flow that draws nothing.
+        let notice = |cue: &history_updates::UpdateCue, drawn: bool| {
+            let node = div()
+                .id("history-update-status")
+                .debug_selector(|| "history-update-status".into())
+                .role(Role::Status)
+                .a11y_synthetic_children(native_accessibility::polite)
+                .aria_label(cue.label.clone());
+            if drawn {
+                node.flex_shrink_0()
+                    .whitespace_nowrap()
+                    .text_size(crate::appearance::ui_text(10.))
+                    .text_color(rgb(colors.text))
+                    .child(cue.label.clone())
+            } else {
+                node.absolute().size(px(1.)).overflow_hidden()
+            }
+        };
         let toolbar = div()
             .debug_selector(|| "history-scope-toolbar".into())
+            .relative()
             .h(crate::appearance::ui_size(40.))
             .flex_shrink_0()
             .flex()
@@ -1170,16 +1240,24 @@ impl GitTurtle {
             .border_b_1()
             .border_color(rgb(colors.border));
         if compact {
-            // The count first, drawn whole or not at all, then the name beside
-            // it only where at least its first character and ellipsis fit, so
-            // the row shows nothing, the count, or both, as it widens, and
-            // never a clipped or lone ellipsis.
-            let room = compact_scope_room(column, window);
+            // A new-history cue's words first, whole or not at all, since
+            // Latest's dot and name carry them too; then the count, drawn
+            // whole or not at all, then the name beside it only where at
+            // least its first character and ellipsis fit, so the row shows
+            // nothing, the count, or both, as it widens, and never a clipped
+            // or lone ellipsis.
+            let gap = window.rem_size() * 0.5;
+            let mut room = compact_scope_room(column, window);
+            let shows_notice = cue
+                .as_ref()
+                .is_some_and(|cue| scope_notice_width(&cue.label, window) <= room);
+            if let Some(cue) = cue.as_ref().filter(|_| shows_notice) {
+                room -= scope_notice_width(&cue.label, window) + gap;
+            }
             let count_width = scope_count_width(&count, window);
             let shows_count = count_width <= room;
-            let shows_name = shows_count
-                && room - count_width - window.rem_size() * 0.5
-                    >= scope_name_min_width(&scope, window);
+            let shows_name =
+                shows_count && room - count_width - gap >= scope_name_min_width(&scope, window);
             // The branch icon names what the row may have cut, formatted only
             // when its tooltip is shown.
             let summary = (scope.clone(), count.clone());
@@ -1218,7 +1296,17 @@ impl GitTurtle {
                                     .debug_selector(|| "history-scope-count".into())
                                     .flex_shrink_0(),
                             )
-                        }),
+                        })
+                        .children(
+                            cue.as_ref()
+                                .filter(|_| shows_notice)
+                                .map(|cue| notice(cue, true)),
+                        ),
+                )
+                .children(
+                    cue.as_ref()
+                        .filter(|_| !shows_notice)
+                        .map(|cue| notice(cue, false)),
                 )
                 .child(columns)
                 .child(
@@ -1236,6 +1324,7 @@ impl GitTurtle {
                 .child(icon("branch", 15., colors.accent))
                 .child(name(scope).debug_selector(|| "history-scope-name".into()))
                 .child(count_label(count).debug_selector(|| "history-scope-count".into()))
+                .children(cue.as_ref().map(|cue| notice(cue, true)))
                 .child(div().flex_1())
                 .child(columns)
                 .child(latest)
@@ -4193,8 +4282,14 @@ fn modes_share_the_path_row(
 /// scope name at the narrowest it is drawn in, and the Columns, Latest,
 /// Previous and Older buttons, each the shared `button` helper's 10 px of
 /// padding on either side of its label, and Columns and Older a 16 px icon
-/// 6 px before it. In a narrower column the toolbar keeps only icons.
-fn labelled_scope_toolbar_width(count: &str, scope: &str, window: &Window) -> Pixels {
+/// 6 px before it; with a new-history cue, its `notice` words whole and one
+/// more gap. In a narrower column the toolbar keeps only icons.
+fn labelled_scope_toolbar_width(
+    count: &str,
+    scope: &str,
+    notice: Option<&str>,
+    window: &Window,
+) -> Pixels {
     let key = LineKey::current(window);
     let label = appearance::ui_text(12.);
     let labels = cached_width(&SCOPE_LABELS, &key, || {
@@ -4214,6 +4309,17 @@ fn labelled_scope_toolbar_width(count: &str, scope: &str, window: &Window) -> Pi
         + labels
         + scope_count_width(count, window)
         + scope_name_min_width(scope, window)
+        + notice.map_or(Pixels::ZERO, |notice| {
+            window.rem_size() * 0.5 + scope_notice_width(notice, window)
+        })
+}
+
+/// The width the scope toolbar's new-history cue takes whole: "1 new
+/// commit", "History updated".
+fn scope_notice_width(notice: &str, window: &Window) -> Pixels {
+    cached_text_width(&SCOPE_NOTICE, notice, window, || {
+        line_widths(&[(notice, appearance::ui_text(10.))], window)
+    })
 }
 
 /// The width the scope toolbar's `count` takes whole. The count changes with
@@ -4444,6 +4550,7 @@ pub(crate) type TextWidth = RefCell<Option<(LineKey, String, Pixels)>>;
 thread_local! {
     static SCOPE_LABELS: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static SCOPE_COUNT: TextWidth = const { RefCell::new(None) };
+    static SCOPE_NOTICE: TextWidth = const { RefCell::new(None) };
     static SCOPE_NAME: TextWidth = const { RefCell::new(None) };
     static FILES_COUNT: TextWidth = const { RefCell::new(None) };
     static FILES_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
@@ -5228,7 +5335,6 @@ impl Render for GitTurtle {
                     }))
                 },
             )
-            .when(self.page == AppPage::Repository, |el| el.children(self.render_history_update_notice(cx)))
             .child(div().flex_1().min_h_0().child(body))
             .child(
                 div()

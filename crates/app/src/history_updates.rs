@@ -1,7 +1,6 @@
 //! Local history discovery, independent of the selected inspector and paging cursor.
 use crate::*;
 use gitturtle_core::HistoryScope;
-use gpui_kit::prelude::FluentBuilder;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Update {
@@ -459,13 +458,16 @@ impl GitTurtle {
         cx.notify();
     }
 
-    pub(super) fn render_history_update_notice(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    /// The cue History's scope toolbar shows while a quiet read has
+    /// observed history the list does not show yet, or shows only since it
+    /// followed the newest rows (`views::render_history_scope_toolbar`). It
+    /// lives in the toolbar, where the bar it replaced, a full-width row
+    /// above History in every mode, pushed the page down 35 px after a
+    /// Fetch; Latest, beside it, is its action, which reads current local
+    /// tips and ends it, as the bar's Show latest and Dismiss did.
+    pub(super) fn history_update_cue(&self) -> Option<UpdateCue> {
         let update = self.history_updates.pending?;
-        let colors = palette(cx);
-        let label = update.label();
+        let label = SharedString::from(update.label());
         let following = self.history_updates.followed
             && follows_latest(
                 self.mode,
@@ -473,14 +475,19 @@ impl GitTurtle {
                 self.history_paging.is_deep(self.visible.len()),
                 f32::from(self.history_scroll.0.borrow().base_handle.offset().y),
             );
-        Some(div().px_4().py_1().flex().items_center().gap_2().border_b_1().border_color(rgb(colors.border)).text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted))
-            .child(div().id("history-update-status").role(Role::Status).a11y_synthetic_children(native_accessibility::polite).aria_label(label.clone()).child(label))
-            .when(following, |row| row.child("· Latest rows visible"))
-            .when(!following, |row| row.child("·").child(button("show-latest-history", "Show latest", "", false).disabled(self.loading.is_some() || self.operation_busy.is_some()).tooltip("Read current local tips and show the newest rows; leaves the captured search and keeps the selected inspector").on_click(cx.listener(|this, _, window, cx| this.show_latest_history(window, cx)))))
-            .child(div().flex_1())
-            .when(following, |row| row.child(button("dismiss-history-update", "Dismiss", "", false).on_click(cx.listener(|this, _, _, cx| { this.history_updates.pending = None; cx.notify(); }))))
-            .into_any_element())
+        Some(UpdateCue { label, following })
     }
+}
+
+/// [`GitTurtle::history_update_cue`].
+pub(super) struct UpdateCue {
+    /// The words the toolbar draws where they fit and announces once,
+    /// politely: "1 new commit", "History updated". They stay the same as
+    /// History scrolls, so the status is not announced again.
+    pub label: SharedString,
+    /// Whether History shows the new rows at its top, which Latest's
+    /// tooltip says.
+    pub following: bool,
 }
 
 #[cfg(test)]
@@ -830,5 +837,138 @@ mod tests {
             Update::New(2).merge(Update::Changed).merge(Update::New(3)),
             Update::Changed
         );
+    }
+
+    /// The new-history cue lives in History's scope toolbar, so nothing
+    /// below it moves: the full-width bar it replaced pushed the list down
+    /// 35 px after a Fetch. Once a quiet read finds a new commit, as the
+    /// refresh after a Fetch does, the list's first row keeps its place at
+    /// 13 and 18 pt in 1,480 × 980, 1,000 × 680 and 461 × 490 windows; the
+    /// cue's status lies inside the toolbar, its words whole and clear of
+    /// Columns where they fit (not in a half tile, where the toolbar keeps
+    /// only its controls); and Latest, its action, is drawn there marked by
+    /// its dot, and compact, is named for the cue. Pressing Latest ends it.
+    #[gpui::test]
+    async fn new_history_is_cued_inside_the_scope_toolbar_and_moves_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, fixture_git, history_script, history_window_from, settle};
+        let (fixture, app, cx) = history_window_from(cx, &history_script(3, 1)).await;
+        settle(&app, cx).await;
+        let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let within = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            inner.left() >= outer.left()
+                && inner.right() <= outer.right()
+                && inner.top() >= outer.top()
+                && inner.bottom() <= outer.bottom()
+        };
+        let first_row = bounds(cx, "history-row-0").top();
+
+        // A commit made elsewhere, read by a quiet refresh as a Fetch's is.
+        fixture_git(
+            &fixture.path().join("narrow"),
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--allow-empty",
+                "--quiet",
+                "-m",
+                "fetched",
+            ],
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    local_refresh::LocalChange {
+                        git: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        for _ in 0..2000 {
+            cx.run_until_parked();
+            if app.read_with(cx, |app, _| app.history_updates.pending.is_some()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.history_updates.pending),
+            Some(Update::New(1))
+        );
+        assert_eq!(
+            bounds(cx, "history-row-0").top(),
+            first_row,
+            "nothing moved"
+        );
+
+        for (text, width, height, words) in [
+            (13, 1480., 980., true),
+            (18, 1480., 980., true),
+            (13, 1000., 680., true),
+            (18, 1000., 680., true),
+            (13, 461., 490., false),
+            (18, 461., 490., false),
+        ] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            crate::views::COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+            draw(cx);
+            let toolbar = bounds(cx, "history-scope-toolbar");
+            let status = bounds(cx, "history-update-status");
+            assert!(within(status, toolbar), "{at}: {status:?} in {toolbar:?}");
+            assert_eq!(status.size.width > px(1.), words, "{at}: the words");
+            if words {
+                let columns = bounds(cx, "columns");
+                assert!(status.right() <= columns.left(), "{at}: {status:?}");
+            }
+            let latest = bounds(cx, "history-newest");
+            assert!(within(latest, toolbar), "{at}: Latest {latest:?}");
+            let dot = bounds(cx, "history-newest-dot");
+            assert!(within(dot, latest), "{at}: its dot {dot:?}");
+            if cx.debug_bounds("history-scope-label").is_some() {
+                let name = crate::views::COMPACT_LABELS
+                    .with(|names| names.borrow().get("history-newest").cloned());
+                assert_eq!(
+                    name.as_deref(),
+                    Some("Latest · 1 new commit"),
+                    "{at}: compact Latest's name"
+                );
+            }
+            let with_cue = bounds(cx, "history-row-0").top();
+            let pending = app.update(cx, |app, _| app.history_updates.pending.take());
+            draw(cx);
+            assert_eq!(
+                bounds(cx, "history-row-0").top(),
+                with_cue,
+                "{at}: the cue moved the list"
+            );
+            assert!(cx.debug_bounds("history-update-status").is_none());
+            assert!(cx.debug_bounds("history-newest-dot").is_none());
+            app.update(cx, |app, _| app.history_updates.pending = pending);
+        }
+
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        let latest = bounds(cx, "history-newest");
+        cx.simulate_click(latest.center(), Modifiers::default());
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.history_updates.pending),
+            None
+        );
+        assert!(cx.debug_bounds("history-update-status").is_none());
     }
 }
