@@ -3654,18 +3654,28 @@ type PillProbe = (Option<String>, Option<String>, u32);
 #[cfg(test)]
 type RowNameProbe = (String, Option<SharedString>);
 
+/// The width, at the default interface size, of the ring of the header's
+/// surface around the compact Changes count, which cuts the badge out of the
+/// glyph it overlaps.
+const CHANGES_BADGE_RING: f32 = 1.;
+
 /// The compact Changes toggle's working-file count, a small accent pill on
 /// the icon's top-right corner inside the toggle, so the toggle keeps its
-/// width and its focus ring. Above 99 it reads "99+".
+/// width and its focus ring. A [`CHANGES_BADGE_RING`] of the header's
+/// surface surrounds the pill, outside its 14 px, so the glyph's strokes
+/// stop short of the count rather than run into it. Above 99 it reads "99+".
 fn changes_badge(count: usize, p: appearance::Palette) -> impl IntoElement {
+    let ring = appearance::ui_size(CHANGES_BADGE_RING);
     div()
         .debug_selector(|| "changes-count-badge".into())
         .absolute()
-        .top(appearance::ui_size(1.))
-        .right(appearance::ui_size(1.))
-        .min_w(appearance::ui_size(14.))
-        .h(appearance::ui_size(14.))
+        .top(appearance::ui_size(1.) - ring)
+        .right(appearance::ui_size(1.) - ring)
+        .min_w(appearance::ui_size(14.) + ring * 2.)
+        .h(appearance::ui_size(14.) + ring * 2.)
         .px(appearance::ui_size(3.))
+        .border(ring)
+        .border_color(rgb(p.panel))
         .flex()
         .items_center()
         .justify_center()
@@ -6054,6 +6064,134 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The compact Changes count is cut out of the glyph it overlaps: in
+    /// every palette its accent pill keeps its 14 px inside a ring of the
+    /// header's surface, and the ring stays inside the toggle.
+    #[gpui::test]
+    async fn compact_changes_badge_is_ringed_in_the_header_surface(cx: &mut TestAppContext) {
+        let (_fixture, _app, cx) = working_window(cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        for (name, palette) in appearance::test_palettes() {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            draw(cx);
+            let badge = cx.debug_bounds("changes-count-badge").expect("the count");
+            let toggle = cx.debug_bounds("changes-tab").unwrap();
+            assert!(
+                badge.left() >= toggle.left()
+                    && badge.right() <= toggle.right()
+                    && badge.top() >= toggle.top()
+                    && badge.bottom() <= toggle.bottom(),
+                "{name}: badge {badge:?} inside {toggle:?}"
+            );
+            // GPUI paints the fill and the border as two quads at the bounds.
+            let ring = appearance::ui_size(CHANGES_BADGE_RING);
+            let (fills, rings) = cx.update(|window, _| {
+                let scale = window.scale_factor();
+                let near = |device: gpui_kit::ScaledPixels, logical: Pixels| {
+                    (device.as_f32() - logical.as_f32() * scale).abs() < 0.5
+                };
+                let quads = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        near(quad.bounds.left(), badge.left())
+                            && near(quad.bounds.top(), badge.top())
+                            && near(quad.bounds.right(), badge.right())
+                            && near(quad.bounds.bottom(), badge.bottom())
+                    })
+                    .collect::<Vec<_>>();
+                let fills = quads
+                    .iter()
+                    .filter(|quad| !quad.background.is_transparent())
+                    .map(|quad| quad.background)
+                    .collect::<Vec<_>>();
+                let rings = quads
+                    .iter()
+                    .filter(|quad| {
+                        let widths = quad.border_widths;
+                        quad.border_color.a > 0.
+                            && [widths.left, widths.top, widths.right, widths.bottom]
+                                .into_iter()
+                                .any(|width| width.as_f32() > 0.)
+                    })
+                    .map(|quad| {
+                        let widths = quad.border_widths;
+                        (
+                            appearance::packed(quad.border_color),
+                            [widths.left, widths.top, widths.right, widths.bottom]
+                                .map(|width| width.as_f32() / scale),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                (fills, rings)
+            });
+            assert_eq!(
+                fills,
+                [gpui_kit::Background::from(rgb(palette.accent))],
+                "{name}: the accent pill"
+            );
+            let [(color, widths)] = rings.as_slice() else {
+                panic!("{name}: one ring, not {rings:?}");
+            };
+            assert_eq!(
+                *color, palette.panel,
+                "{name}: the ring is the header's surface"
+            );
+            assert!(
+                widths.iter().all(|width| (1. ..=2.).contains(width)),
+                "{name}: a 1–2 px ring all round: {widths:?}"
+            );
+            assert!(
+                badge.size.height - ring * 2. >= appearance::ui_size(14.) - px(0.5),
+                "{name}: the pill keeps its 14 px, to layout's half-pixel snapping, inside the ring: {badge:?}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The Working Changes header's count leaves with its "Changes" label:
+    /// alone it would repeat the count the Changes tab reads above it. At
+    /// 18 pt in a 461 × 1000 window the inspector has room for neither, and
+    /// the header holds only Actions and Refresh, where it showed a lone
+    /// "3"; at 560 × 1000 and at the default size the count follows its
+    /// label.
+    #[gpui::test]
+    async fn working_header_count_leaves_with_its_label(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        for (text, width, height) in [(18, 461., 1000.), (18, 560., 1000.), (13, 1000., 680.)] {
+            let at = format!("{text} pt at {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            assert!(cx.debug_bounds("working-header").is_some(), "{at}");
+            let label = cx.debug_bounds("working-header-label");
+            let count = cx.debug_bounds("working-header-count");
+            assert_eq!(
+                label.is_some(),
+                count.is_some(),
+                "{at}: {label:?}, {count:?}"
+            );
+            if let (Some(label), Some(count)) = (label, count) {
+                assert!(
+                    count.left() >= label.right(),
+                    "{at}: the count follows its label"
+                );
+            }
+            if width == 461. {
+                assert!(count.is_none(), "{at}: no lone count");
+                assert!(cx.debug_bounds("changes-tab").is_some());
+                assert_eq!(
+                    app.read_with(cx, |app, _| app.changes_label()),
+                    "Changes · 3"
+                );
+            } else {
+                assert!(count.is_some(), "{at}: the count beside its label");
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The compact chrome's breakpoint counts Compare's need as well as
     /// History's: wherever the full chrome is drawn, Compare shows three
     /// whole diff lines, at the default and 18 pt interface sizes and code
@@ -6377,14 +6515,17 @@ pub(crate) mod tests {
                         "{at}: {selector} {control:?} in {header:?}"
                     );
                 }
-                let first_in_header = cx
+                // The header starts at the shared inset, or, its icon and
+                // label with their count gone, holds only Actions and Refresh.
+                if let Some(first_in_header) = cx
                     .debug_bounds("working-header-icon")
-                    .or_else(|| cx.debug_bounds("working-header-count"))
-                    .unwrap();
-                assert!(
-                    (first_in_header.left() - selection.left() - inset).abs() < px(0.5),
-                    "{at}: the header starts at {first_in_header:?}"
-                );
+                    .or_else(|| cx.debug_bounds("working-header-label"))
+                {
+                    assert!(
+                        (first_in_header.left() - selection.left() - inset).abs() < px(0.5),
+                        "{at}: the header starts at {first_in_header:?}"
+                    );
+                }
                 (selection, bounds(cx, "working-filter"))
             };
             // The composer below the list: its heading whole or absent, then

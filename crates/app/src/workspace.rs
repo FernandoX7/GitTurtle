@@ -128,11 +128,12 @@ pub(super) struct WorkingForms {
     /// The Changes header's Actions keeps only its caret, beside the icon-only
     /// Refresh, and "Refreshing…" leaves.
     compact_actions: bool,
-    /// The Changes header's icon, "Changes" and count, each whole or absent:
-    /// the icon leaves first, then the label, then the count.
+    /// The Changes header's icon, then "Changes" with its count, each whole
+    /// or absent: the icon leaves first, then the label and the count
+    /// together, since the Changes tab or toggle in the header above already
+    /// reads the count.
     header_icon: bool,
     header_label: bool,
-    header_count: bool,
     /// The Staged and Unstaged headings, fitted together so both keep one
     /// form: Unstage all and Stage all keep only their icons first, then the
     /// leading glyph leaves, then the group's name, the glyph returning beside
@@ -341,17 +342,13 @@ impl GitTurtle {
         };
         let full = sum(&[icon, label, chip], gap) + gap + refreshing + actions + gap + control;
         let compact_actions = full > room;
-        let (mut header_icon, mut header_label, mut header_count) = (true, true, true);
+        let (mut header_icon, mut header_label) = (true, true);
         if compact_actions {
             let trailing = control * 2. + tight;
-            let fits =
-                |items: &[Pixels]| items.is_empty() || sum(items, gap) + gap + trailing <= room;
+            let fits = |items: &[Pixels]| sum(items, gap) + gap + trailing <= room;
             if !fits(&[icon, label, chip]) {
                 header_icon = false;
-                if !fits(&[label, chip]) {
-                    header_label = false;
-                    header_count = fits(&[chip]);
-                }
+                header_label = fits(&[label, chip]);
             }
         }
 
@@ -483,7 +480,6 @@ impl GitTurtle {
             compact_actions,
             header_icon,
             header_label,
-            header_count,
             section_action_label,
             section_icon,
             section_label,
@@ -1831,10 +1827,11 @@ impl GitTurtle {
                                 .child("Changes"),
                         )
                     })
-                    .when(forms.header_count, |el| {
+                    // The count leaves with its label: alone it would repeat
+                    // the Changes tab or toggle's count above it.
+                    .when(forms.header_label, |el| {
                         el.child(
                             div()
-                                .id("working-header-count")
                                 .debug_selector(|| "working-header-count".into())
                                 .px_2()
                                 .py_0p5()
@@ -1843,12 +1840,6 @@ impl GitTurtle {
                                 .text_size(crate::appearance::ui_text(11.))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(rgb(crate::appearance::labels(cx).count))
-                                // Without its label the count says what it counts.
-                                .when(!forms.header_label, |el| {
-                                    el.tooltip(move |window, cx| {
-                                        Tooltip::new(format!("Changes · {total}")).build(window, cx)
-                                    })
-                                })
                                 .child(total.to_string()),
                         )
                     })
