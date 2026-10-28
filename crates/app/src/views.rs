@@ -7687,20 +7687,25 @@ pub(crate) mod tests {
             (18, 1480., 980., Some((true, true))),
         ];
         for identity in [false, true] {
-            if identity {
-                // The repository's own identity, which the app reads back.
-                let root = fixture.path().join("narrow");
-                fixture_git(&root, &["config", "user.name", "Ada"]);
-                fixture_git(&root, &["config", "user.email", "ada@example.com"]);
-                cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
-                settle(&app, cx).await;
-            }
+            // The repository's own identity, which the app reads back. The app
+            // reads global configuration too, so without one the repository
+            // sets empty values, which win over a developer's own identity.
+            let (name, email) = if identity {
+                ("Ada", "ada@example.com")
+            } else {
+                ("", "")
+            };
+            let root = fixture.path().join("narrow");
+            fixture_git(&root, &["config", "user.name", name]);
+            fixture_git(&root, &["config", "user.email", email]);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            settle(&app, cx).await;
             assert_eq!(
                 app.read_with(cx, |app, _| app
                     .profile
                     .as_ref()
-                    .is_some_and(|p| p.name == "Ada" && p.email == "ada@example.com")),
-                identity,
+                    .map(|p| (p.name.clone(), p.email.clone()))),
+                Some((name.to_owned(), email.to_owned())),
                 "the fixture's identity"
             );
             for (text, width, height, expected) in sizes {
