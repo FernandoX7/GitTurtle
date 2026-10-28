@@ -1179,9 +1179,10 @@ impl GitTurtle {
             .map(|s| s.0.clone())
             .unwrap_or("All history".into());
         // Before anything in this frame lays the columns out, rows included.
-        self.history_subject_floor
-            .set(f32::from(subject_floor(window)));
+        let metrics = HistoryMetrics::current(window);
+        self.history_metrics.set(metrics);
         let columns = self.history_column_layout();
+        let table_width = columns.content_width + metrics.insets();
         let history = if self.commits.is_empty() && self.error.is_some() {
             empty(
                 "Could not open repository",
@@ -1230,7 +1231,7 @@ impl GitTurtle {
         // A narrow window scrolls the columns sideways; an empty state stays
         // centered in the part of the list that is visible, not in all columns.
         let history = if self.visible.is_empty() {
-            let visible = self.history_width.min(columns.content_width + 26.) - 2.;
+            let visible = self.history_width.min(table_width) - 2.;
             div()
                 .debug_selector(|| "history-empty-state".into())
                 .absolute()
@@ -1256,7 +1257,10 @@ impl GitTurtle {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .px_3()
+            // Its columns start and end where the rows' do, inside the list's
+            // 1 px border (`HistoryMetrics`).
+            .pl(px(metrics.leading - 2.))
+            .pr(px(metrics.trailing))
             .border_l_2()
             .border_color(rgb(colors.canvas))
             .border_b_1()
@@ -1398,7 +1402,7 @@ impl GitTurtle {
             .child(history_scroll_viewport(
                 &self.history_horizontal,
                 div()
-                    .w(px(columns.content_width + 26.))
+                    .w(px(table_width))
                     .h_full()
                     .flex_shrink_0()
                     .flex()
@@ -1453,13 +1457,15 @@ impl GitTurtle {
     fn history_column_layout(&self) -> columns::ColumnLayout {
         let spacing = self.lane_spacing();
         let compact = graph::compact_spacing(spacing);
+        let metrics = self.history_metrics.get();
         self.settings.columns.history_layout(
-            self.history_width - 26.,
+            self.history_width - metrics.insets(),
             graph::required_width(self.graph_lanes, spacing),
             columns::NarrowHistory {
-                subject_floor: self.history_subject_floor.get(),
+                subject_floor: metrics.subject_floor,
                 graph: graph::required_width(self.graph_lanes, compact),
                 graph_min: graph::required_width(1, compact),
+                trailing_inset: metrics.trailing,
             },
         )
     }
@@ -1698,7 +1704,9 @@ impl GitTurtle {
                 .active(|s| s.bg(rgb(colors.selected)))
                 .cursor_pointer()
                 .children(columns.columns.iter().map(|column| {
+                    let id = column.id as usize;
                     let cell = div()
+                        .debug_selector(move || format!("history-cell-{index}-{id}"))
                         .w(px(column.width))
                         .flex_shrink_0()
                         .min_w_0()
@@ -3340,6 +3348,38 @@ fn scope_name_min_width(scope: &str, window: &Window) -> Pixels {
                 (shaped_width(&cut, size, FontWeight::MEDIUM, window).floor() + px(1.)).min(whole)
             })
     })
+}
+
+/// What History's table is laid out with besides its columns, from the
+/// window's font and sizes. `render_history` records it before anything in
+/// its frame lays the columns out (`GitTurtle::history_metrics`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct HistoryMetrics {
+    /// Narrow History's subject floor (`subject_floor`).
+    subject_floor: f32,
+    /// Where the first column starts in the table: inside the list's 1 px
+    /// border, a row's 2 px selection edge and its `px_3` inset. The header,
+    /// above the list, starts its columns there too.
+    leading: f32,
+    /// What the table keeps after its last column: a row's `px_3` inset and
+    /// the list's border.
+    trailing: f32,
+}
+
+impl HistoryMetrics {
+    fn current(window: &Window) -> Self {
+        let inset = f32::from(window.rem_size()) * 0.75;
+        Self {
+            subject_floor: f32::from(subject_floor(window)),
+            leading: 3. + inset,
+            trailing: inset + 1.,
+        }
+    }
+
+    /// The table's width besides its columns.
+    fn insets(self) -> f32 {
+        self.leading + self.trailing
+    }
 }
 
 /// What every History row of a frame shares (`GitTurtle::history_rows`).
@@ -7719,9 +7759,11 @@ pub(crate) mod tests {
                 draw(cx);
                 let at = format!("{width} × {height} at {text} pt");
                 let (floor, available, spacing) = app.read_with(cx, |app, _| {
+                    let metrics = app.history_metrics.get();
                     (
-                        app.history_subject_floor.get(),
-                        app.history_width - 26.,
+                        metrics.subject_floor,
+                        // The viewport from where the columns start.
+                        app.history_width - metrics.leading,
                         app.lane_spacing(),
                     )
                 });
@@ -7844,6 +7886,69 @@ pub(crate) mod tests {
                     (y - f32::from(side_cell.center().y)).abs() < 0.5,
                     "the selected node at y {y} beside its subject {side_cell:?} {at}"
                 );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// In narrow History the subject ends at the table's viewport, in the
+    /// header and in every row, at 461 × 490 and 640 × 680 and at 13 and
+    /// 18 pt: the layout's width counts the inset before the columns, so no
+    /// sliver of Author, Date or SHA shows at the viewport's edge, and the
+    /// header's columns start where the rows' do.
+    #[gpui::test]
+    async fn narrow_history_ends_the_subject_at_the_viewport(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
+        let rows = [
+            commit_index(&app, cx, MERGE_SUBJECT),
+            commit_index(&app, cx, SIDE_SUBJECT),
+        ];
+        let header = |id: ColumnId| format!("history-column-{}", id as usize);
+        let cell = |row: usize, id: ColumnId| {
+            if id == ColumnId::Subject {
+                format!("history-subject-{row}")
+            } else {
+                format!("history-cell-{row}-{}", id as usize)
+            }
+        };
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for (width, height) in [(461., 490.), (640., 680.)] {
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let at = format!("{width} × {height} at {text} pt");
+                assert!(
+                    app.read_with(cx, |app, _| app.history_column_layout().narrow),
+                    "narrow {at}"
+                );
+                let view = cx.debug_bounds("history-scope-toolbar").unwrap();
+                let rows = rows.map(|row| (format!("row {row}"), Some(row)));
+                for (name, row) in [("the header".to_owned(), None)].into_iter().chain(rows) {
+                    let bounds = |cx: &mut VisualTestContext, id| {
+                        bounds_of(cx, row.map_or_else(|| header(id), |row| cell(row, id)))
+                    };
+                    let graph = bounds(cx, ColumnId::Graph).unwrap();
+                    let subject = bounds(cx, ColumnId::Subject).unwrap();
+                    assert!(
+                        (graph.left()
+                            - view.left()
+                            - px(app.read_with(cx, |app, _| app.history_metrics.get().leading)))
+                        .abs()
+                            <= px(0.5),
+                        "{name}'s graph starts after the leading inset {at}: {graph:?} in {view:?}"
+                    );
+                    assert!(
+                        (subject.right() - view.right()).abs() <= px(0.5),
+                        "{name}'s subject ends at the viewport's edge {at}: {subject:?} in {view:?}"
+                    );
+                    for id in [ColumnId::Author, ColumnId::Date, ColumnId::Sha] {
+                        let column = bounds(cx, id).unwrap();
+                        assert!(
+                            column.left() >= view.right() - px(0.5),
+                            "{name}'s {id:?} is beyond the viewport {at}: {column:?} in {view:?}"
+                        );
+                    }
+                }
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
@@ -8557,7 +8662,10 @@ pub(crate) mod tests {
                 .is_some_and(|(title, _)| title == "No matching commits")
         });
         app.read_with(cx, |app, _| {
-            assert!(app.history_column_layout().content_width + 26. > app.history_width);
+            assert!(
+                app.history_column_layout().content_width + app.history_metrics.get().insets()
+                    > app.history_width
+            );
         });
         let list = cx.debug_bounds("history-scope-toolbar").unwrap();
         let state = cx.debug_bounds("history-empty-state").unwrap();

@@ -129,6 +129,10 @@ pub struct NarrowHistory {
     /// The graph at its compact lane pitch: every loaded lane, and one lane.
     pub graph: f32,
     pub graph_min: f32,
+    /// What the table keeps after its last column, inside the viewport.
+    /// Narrow History's subject ends at the viewport's edge, with the
+    /// columns after it beyond, so it takes this room too.
+    pub trailing_inset: f32,
 }
 
 impl ColumnSettings {
@@ -233,13 +237,15 @@ impl ColumnSettings {
         }
     }
 
-    /// History's layout in `available` px. Where the chosen columns would
-    /// leave the subject less than `narrow.subject_floor` at the table's
-    /// start, References fold into the subject cell, the graph takes its
-    /// compact width within what the floor leaves it, and the subject takes
-    /// the rest of the viewport, never less than the floor. Author, Date and
-    /// SHA keep their widths after it and scroll sideways. The settings are
-    /// not changed, so a wider viewport gives the chosen layout back.
+    /// History's layout in `available` px, the viewport less the table's
+    /// insets. Where the chosen columns would leave the subject less than
+    /// `narrow.subject_floor` inside the viewport at the table's start,
+    /// References fold into the subject cell, the graph takes its compact
+    /// width within what the floor leaves it, and the subject takes the rest
+    /// of the viewport, never less than the floor, so it ends at the
+    /// viewport's edge. Author, Date and SHA keep their widths after it and
+    /// scroll sideways. The settings are not changed, so a wider viewport
+    /// gives the chosen layout back.
     pub fn history_layout(
         &self,
         available_width: f32,
@@ -262,13 +268,12 @@ impl ColumnSettings {
             .find(|column| column.id == ColumnId::Subject)
             .map_or(0., |column| column.width);
         let floor = narrow.subject_floor;
-        if subject.min(available_width - before) >= floor {
+        // The viewport after the table's leading inset.
+        let viewport = available_width + narrow.trailing_inset;
+        if subject.min(viewport - before) >= floor {
             return chosen;
         }
-        let graph = narrow
-            .graph
-            .min(available_width - floor)
-            .max(narrow.graph_min);
+        let graph = narrow.graph.min(viewport - floor).max(narrow.graph_min);
         let mut columns: Vec<_> = chosen
             .columns
             .into_iter()
@@ -290,7 +295,7 @@ impl ColumnSettings {
             .iter_mut()
             .find(|column| column.id == ColumnId::Subject)
         {
-            subject.width = (available_width - essentials).max(floor);
+            subject.width = (viewport - essentials).max(floor);
         }
         ColumnLayout {
             content_width: columns.iter().map(|column| column.width).sum(),
@@ -377,12 +382,16 @@ mod tests {
     }
 
     /// Narrow History's inputs at about the default interface size, where
-    /// the table is 151 px in a 461 px window and 290 px in a 640 px one.
+    /// the table's viewport is 177 px in a 461 px window and 316 px in a
+    /// 640 px one, and its insets 12.75 px before the columns and 10.75 px
+    /// after them.
     const NARROW: NarrowHistory = NarrowHistory {
         subject_floor: 120.,
         graph: 30.,
         graph_min: 20.,
+        trailing_inset: 10.75,
     };
+    const INSETS: f32 = 12.75 + 10.75;
 
     fn width(layout: &ColumnLayout, id: ColumnId) -> Option<f32> {
         layout
@@ -396,17 +405,18 @@ mod tests {
     fn narrow_history_folds_references_and_keeps_the_subject_floor() {
         let settings = ColumnSettings::default();
         let saved = settings.clone();
-        for available in [151., 290.] {
-            let layout = settings.history_layout(available, 40., NARROW);
-            assert!(layout.narrow, "{available}");
-            assert_eq!(width(&layout, ColumnId::Refs), None, "{available}");
-            assert_eq!(width(&layout, ColumnId::Graph), Some(30.), "{available}");
-            // The subject fills the viewport after the graph and is never
-            // narrower than its floor; Author, Date and SHA follow it.
+        for viewport in [177., 316.] {
+            let layout = settings.history_layout(viewport - INSETS, 40., NARROW);
+            assert!(layout.narrow, "{viewport}");
+            assert_eq!(width(&layout, ColumnId::Refs), None, "{viewport}");
+            assert_eq!(width(&layout, ColumnId::Graph), Some(30.), "{viewport}");
+            // The subject fills the viewport after the leading inset and the
+            // graph, so it ends at the viewport's edge and no sliver of the
+            // next column shows; Author, Date and SHA follow it.
             assert_eq!(
                 width(&layout, ColumnId::Subject),
-                Some(available - 30.),
-                "{available}"
+                Some(viewport - 12.75 - 30.),
+                "{viewport}"
             );
             for id in [ColumnId::Author, ColumnId::Date, ColumnId::Sha] {
                 assert_eq!(width(&layout, id), Some(id.default_width()), "{id:?}");
@@ -425,17 +435,18 @@ mod tests {
         }
         // Where the floor leaves the compact graph less than it needs, the
         // graph yields, down to one lane; then the table scrolls.
-        let tight = settings.history_layout(140., 40., NARROW);
+        let tight = settings.history_layout(140. - 10.75, 40., NARROW);
         assert_eq!(width(&tight, ColumnId::Graph), Some(20.));
         assert_eq!(width(&tight, ColumnId::Subject), Some(120.));
         let tighter = settings.history_layout(100., 40., NARROW);
         assert_eq!(width(&tighter, ColumnId::Graph), Some(20.));
         assert_eq!(width(&tighter, ColumnId::Subject), Some(120.));
-        // Where the chosen columns leave the subject its floor, they stand.
+        // Where the chosen columns leave the subject its floor inside the
+        // viewport, they stand.
         let wide = settings.history_layout(800., 40., NARROW);
         assert_eq!(wide, settings.layout_for_graph(800., 40.));
         assert!(!wide.narrow);
-        let edge = 140. + 112. + 120.;
+        let edge = 140. + 112. + 120. - 10.75;
         assert!(!settings.history_layout(edge, 40., NARROW).narrow);
         assert!(settings.history_layout(edge - 0.5, 40., NARROW).narrow);
         assert_eq!(settings, saved, "the saved columns are untouched");
@@ -446,14 +457,15 @@ mod tests {
         // Without References, the graph alone decides the fold.
         let mut settings = ColumnSettings::default();
         settings.set_visible(ColumnId::Refs, false);
-        assert!(!settings.history_layout(240., 40., NARROW).narrow);
-        assert!(settings.history_layout(230., 40., NARROW).narrow);
+        let edge = 112. + 120. - 10.75;
+        assert!(!settings.history_layout(edge, 40., NARROW).narrow);
+        assert!(settings.history_layout(edge - 0.5, 40., NARROW).narrow);
         // Without the graph, the subject takes the whole viewport.
         settings.set_visible(ColumnId::Graph, false);
         settings.set_visible(ColumnId::Refs, true);
         let layout = settings.history_layout(200., 40., NARROW);
         assert!(layout.narrow);
-        assert_eq!(width(&layout, ColumnId::Subject), Some(200.));
+        assert_eq!(width(&layout, ColumnId::Subject), Some(200. + 10.75));
         assert_eq!(width(&layout, ColumnId::Graph), None);
         assert_eq!(width(&layout, ColumnId::Refs), None);
         assert!(settings.refs.visible && !settings.graph.visible);
