@@ -1876,7 +1876,7 @@ impl GitTurtle {
     }
     pub(super) fn render_repository_tabs(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
@@ -1885,9 +1885,9 @@ impl GitTurtle {
             {
                 let busy = self.operation_busy.is_some();
                 (
-                    window_chrome::controls(window_chrome::Side::Left, busy, _window, cx),
-                    window_chrome::controls(window_chrome::Side::Right, busy, _window, cx),
-                    window_chrome::drag_region(_window, cx),
+                    window_chrome::controls(window_chrome::Side::Left, busy, window, cx),
+                    window_chrome::controls(window_chrome::Side::Right, busy, window, cx),
+                    window_chrome::drag_region(window, cx),
                 )
             }
             #[cfg(not(target_os = "linux"))]
@@ -1941,9 +1941,10 @@ impl GitTurtle {
                                 let busy = self.operation_busy.is_some()
                                     && self.operation_repository.as_ref() == Some(&tab.path);
                                 let name = self.project_name(&tab.path);
+                                let pin = if pinned { "★ " } else { "" };
                                 let label = format!(
                                     "{}{}{}",
-                                    if pinned { "★ " } else { "" },
+                                    pin,
                                     name,
                                     if busy {
                                         " · working"
@@ -1953,14 +1954,25 @@ impl GitTurtle {
                                         ""
                                     }
                                 );
+                                // Content before decoration: where the list is
+                                // too narrow for every tab whole, each tab's name
+                                // gives way, down to its first character and an
+                                // ellipsis, before its close button (which keeps
+                                // the kit's `flex_shrink_0`) is cut at the edge.
+                                // Only past that floor does the list scroll.
+                                let name_floor = appearance::ui_size(crate::LABEL_INSET * 2.)
+                                    + tab_label_floor(&label, pin.len(), window);
                                 div()
                                     .flex()
                                     .items_center()
                                     .gap_0()
+                                    .min_w(name_floor + appearance::ui_size(28.))
                                     .rounded(px(7.))
                                     .when(selected, |el| el.bg(rgb(colors.selected)))
                                     .child(
                                         button(("repository-tab", index), label, "", selected)
+                                            .flex_shrink(1.)
+                                            .min_w(name_floor)
                                             .debug_selector(move || {
                                                 format!("repository-tab-{index}")
                                             })
@@ -2033,6 +2045,55 @@ impl GitTurtle {
 
 /// The rule under the repository tab strip, inside its height.
 const TAB_STRIP_BORDER: Pixels = px(1.);
+
+/// Tab labels' floors by label, with the font and sizes they were laid out
+/// with.
+type LabelFloors = std::cell::RefCell<Option<(crate::views::LineKey, Vec<(String, Pixels)>)>>;
+
+thread_local! {
+    /// Each tab label's floor (`tab_label_floor`), so a steady render lays
+    /// none out.
+    static TAB_LABEL_FLOORS: LabelFloors = const { std::cell::RefCell::new(None) };
+}
+
+/// The narrowest a repository tab's label is drawn in without a lone
+/// ellipsis, in the interface font at the tab's text size: the whole label,
+/// or, where that is narrower, its pin (the first `pin` bytes) and the
+/// name's first character before the ellipsis. The toolkit's truncation keeps
+/// the characters that fit strictly before its ellipsis and drops trailing
+/// whitespace and ASCII punctuation, so the cut runs to the first character
+/// it keeps, and takes the next whole pixel past its width.
+fn tab_label_floor(label: &str, pin: usize, window: &Window) -> Pixels {
+    let key = crate::views::LineKey::current(window);
+    TAB_LABEL_FLOORS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {
+            *cache = Some((key, Vec::new()));
+        }
+        let floors = &mut cache.as_mut().expect("the cache for this key").1;
+        if let Some((_, floor)) = floors.iter().find(|(cached, _)| cached == label) {
+            return *floor;
+        }
+        let size = appearance::ui_text(12.);
+        let weight = window.text_style().font_weight;
+        let width = |text: &str| crate::views::shaped_width(text, size, weight, window);
+        let whole = width(label).ceil();
+        let floor = label[pin..]
+            .char_indices()
+            .find(|(_, c)| !(c.is_whitespace() || c.is_ascii_punctuation()))
+            .map_or(whole, |(start, c)| {
+                let cut = format!("{}…", &label[..pin + start + c.len_utf8()]);
+                (width(&cut).floor() + px(1.)).min(whole)
+            });
+        // Labels change as tabs open, close, pin or report work; the tabs a
+        // window holds bound what stays.
+        if floors.len() >= MAX_TABS * 4 {
+            floors.clear();
+        }
+        floors.push((label.to_owned(), floor));
+        floor
+    })
+}
 
 /// The repository tab strip's minimum height: the larger of its 36 px at the
 /// interface size and a tab or close button (the shared `button` helper's
@@ -3501,6 +3562,227 @@ mod tests {
         assert_strip_fits_ring(cx, at);
         install_ring(cx, &app, installed);
         settle_tab_test(&app, cx).await;
+    }
+
+    /// Content before decoration: a tab too wide for the strip's list cuts
+    /// its name, never its close button. At 13 and 18 pt in 461 and 640 px
+    /// windows the close button and the ring a focused one draws,
+    /// `button_ring_room` outside its edge, lie whole inside the list's clip
+    /// and the window, right of the tab, which is no wider than its whole
+    /// label and no narrower than its first character and ellipsis, so it
+    /// never shows a lone one. The native fixture's "compact" is cut only at
+    /// 18 pt in the 461 × 490 half tile, where the list's clip is about 116
+    /// px and the button was cut instead; a long name is cut in every narrow
+    /// window. In a 1480 × 980 window the tab keeps the width it had, the
+    /// long name its scaled 220 px. With two tabs, the list scrolls only once
+    /// both names are down to their floors, and no tab overlaps the next.
+    #[gpui::test]
+    async fn a_narrow_tab_strip_cuts_the_name_before_the_close_button(cx: &mut TestAppContext) {
+        use crate::tags::tests::{content_mask, draw, holds, rendered};
+        use gpui_kit::component::Root;
+        use std::{cell::RefCell, rc::Rc};
+
+        const SIZES: [(u8, f32, f32); 6] = [
+            (13, 1480., 980.),
+            (13, 640., 680.),
+            (13, 461., 490.),
+            (18, 1480., 980.),
+            (18, 640., 680.),
+            (18, 461., 490.),
+        ];
+        /// Lays the window out at `interface` pt in `width` × `height`.
+        async fn resize(
+            cx: &mut VisualTestContext,
+            app: &Entity<GitTurtle>,
+            (interface, width, height): (u8, f32, f32),
+        ) {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    let code = app.settings.code_text_size;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+            cx.simulate_resize(size(px(width), px(height)));
+            settle_tab_test(app, cx).await;
+            draw(cx);
+        }
+        /// A tab's width with `name` whole, and at its floor, the name's
+        /// first character and ellipsis, both with the tab's insets.
+        fn widths(cx: &mut VisualTestContext, name: &str) -> (Pixels, Pixels) {
+            cx.update(|window, _| {
+                let weight = window.text_style().font_weight;
+                let size = appearance::ui_text(12.);
+                let insets = appearance::ui_size(crate::LABEL_INSET * 2.);
+                let width = |text: &str| crate::views::shaped_width(text, size, weight, window);
+                let cut = format!("{}…", &name[..1]);
+                (
+                    insets + width(name).ceil(),
+                    insets + width(&cut).floor() + px(1.),
+                )
+            })
+        }
+        /// The list's clip, read from the first tab, which the pointer can
+        /// always reach, and the window's bounds.
+        fn clips(cx: &mut VisualTestContext) -> (Bounds<Pixels>, Bounds<Pixels>) {
+            let mask = content_mask(cx, "repository-tab-0");
+            cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+            draw(cx);
+            let viewport = cx.update(|window, _| {
+                Bounds::new(point(Pixels::ZERO, Pixels::ZERO), window.viewport_size())
+            });
+            (mask, viewport)
+        }
+
+        cx.executor().allow_parking();
+        let fixture = tempfile::tempdir().unwrap();
+        let paths = ["compact", "second"].map(|name| {
+            GitRepository::init(fixture.path().join(name), "main")
+                .unwrap()
+                .path()
+                .to_owned()
+        });
+        let initial = paths[0].clone();
+        let destination = fixture.path().join("isolated-session.json");
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                let mut app = GitTurtle::new(
+                    Some(initial),
+                    Preferences::default(),
+                    Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                );
+                app.repository_tabs.save_path = Some(destination);
+                app
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            Root::new(app, window, cx)
+        });
+        let app = observed.borrow_mut().take().unwrap();
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        settle_tab_test(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.apply_appearance(window, cx)));
+        settle_tab_test(&app, cx).await;
+        let (ring_room, device) = cx.update(|window, cx| {
+            (
+                appearance::button_ring_room(cx),
+                px(1. / window.scale_factor()),
+            )
+        });
+
+        for name in ["compact", "a much longer repository name"] {
+            app.update(cx, |app, cx| {
+                app.project_names.insert(paths[0].clone(), name.to_owned());
+                cx.notify();
+            });
+            for sizes in SIZES {
+                let (interface, width, height) = sizes;
+                let at = format!("{name:?} at {interface} pt in {width} × {height}");
+                resize(cx, &app, sizes).await;
+                let (whole, floor) = widths(cx, name);
+                let tab = rendered(cx, "repository-tab-0");
+                let close = rendered(cx, "repository-tab-close-0");
+                let (mask, viewport) = clips(cx);
+                let ring = close.dilate(ring_room);
+                assert!(
+                    holds(mask, ring) && holds(viewport, ring),
+                    "{at}: the close button {close:?} and its ring {ring:?} are cut by the \
+                     list's clip {mask:?} or the window {viewport:?}"
+                );
+                assert!(
+                    (close.size.width - appearance::ui_size(28.)).abs() < device
+                        && tab.right() <= close.left() + device,
+                    "{at}: the close button {close:?} keeps its size right of the tab {tab:?}"
+                );
+                // A tab was never wider than its scaled 220 px.
+                let widest = whole.min(appearance::ui_size(220.));
+                assert!(
+                    tab.size.width >= floor - device && tab.size.width <= widest + device,
+                    "{at}: the tab {tab:?} lies between its first character and ellipsis \
+                     {floor:?} and its whole label {whole:?}"
+                );
+                let cut = tab.size.width < whole - device;
+                if width > 1000. {
+                    assert!(
+                        (tab.size.width - widest).abs() < device,
+                        "{at}: the tab {tab:?} keeps its width {widest:?}"
+                    );
+                } else if name == "compact" {
+                    assert_eq!(cut, interface == 18 && width < 500., "{at}: {tab:?}");
+                } else {
+                    assert!(cut, "{at}: the long name is cut in {tab:?}");
+                }
+            }
+        }
+
+        // Two tabs: each keeps its floor and its close button beside it, and
+        // where both close buttons cannot be whole, both names are at their
+        // floors and the list scrolls.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(paths[1].clone(), window, cx)
+            })
+        });
+        settle_tab_test(&app, cx).await;
+        for sizes in SIZES {
+            let (interface, width, height) = sizes;
+            let at = format!("two tabs at {interface} pt in {width} × {height}");
+            resize(cx, &app, sizes).await;
+            let (mask, viewport) = clips(cx);
+            let tabs = [
+                (
+                    "a much longer repository name",
+                    "repository-tab-0",
+                    "repository-tab-close-0",
+                ),
+                ("second", "repository-tab-1", "repository-tab-close-1"),
+            ]
+            .map(|(name, tab, close)| {
+                let (_, floor) = widths(cx, name);
+                let (tab, close) = (rendered(cx, tab), rendered(cx, close));
+                assert!(
+                    tab.size.width >= floor - device && tab.right() <= close.left() + device,
+                    "{at}: {name:?}, {tab:?}, keeps its floor {floor:?} left of {close:?}"
+                );
+                (tab, close, floor)
+            });
+            assert!(
+                tabs[0].1.right() <= tabs[1].0.left() + device,
+                "{at}: the first close button {:?} overlaps the second tab {:?}",
+                tabs[0].1,
+                tabs[1].0
+            );
+            let whole = tabs.iter().all(|(_, close, _)| {
+                let ring = close.dilate(ring_room);
+                holds(mask, ring) && holds(viewport, ring)
+            });
+            let floored = tabs
+                .iter()
+                .all(|(tab, _, floor)| tab.size.width < *floor + device);
+            assert!(
+                whole || floored,
+                "{at}: a close button is cut in {mask:?} before both names reach their \
+                 floors: {tabs:?}"
+            );
+        }
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let size = appearance::DEFAULT_INTERFACE_TEXT_SIZE;
+                app.settings.interface_text_size = size;
+                let code = app.settings.code_text_size;
+                appearance::apply_text_sizes(size, code, window, cx);
+            })
+        });
     }
 
     /// Every clip that keeps room for the ring a focused Button draws outside
