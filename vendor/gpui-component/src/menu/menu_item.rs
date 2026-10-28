@@ -1,8 +1,9 @@
 use crate::{ActiveTheme, Disableable, StyledExt, h_flex};
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled, Window, prelude::FluentBuilder as _,
+    A11ySubtreeBuilder, AnyElement, App, Bounds, ClickEvent, Div, Element, ElementId,
+    GlobalElementId, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton,
+    ParentElement, Pixels, RenderOnce, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, prelude::FluentBuilder as _,
 };
 use smallvec::SmallVec;
 
@@ -114,21 +115,11 @@ impl RenderOnce for MenuItemElement {
                 gpui::accesskit::Toggled::False
             }
         });
-        // GitTurtle patch: tests cannot read a menu's AccessKit nodes, so a
-        // test build names each item's role and state as it hands them over.
-        let selector = self.aria_label.as_ref().map(|label| {
-            format!(
-                "menu-item: {label} · {role:?}{}",
-                toggled.map_or(String::new(), |toggled| format!(" {toggled:?}"))
-            )
-        });
-        h_flex()
+        let disabled = self.disabled;
+        let content = h_flex()
             .id(self.id)
             .role(role)
             .when_some(toggled, |this, toggled| this.aria_toggled(toggled))
-            .when_some(selector, |this, selector| {
-                this.debug_selector(move || selector.clone())
-            })
             .when_some(self.aria_label, |this, label| this.aria_label(label))
             .aria_selected(self.selected)
             .group(&self.group_name)
@@ -163,7 +154,114 @@ impl RenderOnce for MenuItemElement {
             .when(self.disabled, |this| {
                 this.text_color(cx.theme().disabled_foreground())
             })
-            .children(self.children)
+            .children(self.children);
+        AccessibleMenuItem { content, disabled }.described()
+    }
+}
+
+/// GitTurtle patch: GPUI's Div has no aria-disabled setter, so a disabled
+/// item drew dim but was announced as available. As gpui-base's Button does,
+/// this keeps the rendered item and adds only the disabled flag when the
+/// toolkit writes its node; AT-SPI reads it as neither enabled nor sensitive.
+struct AccessibleMenuItem {
+    content: Stateful<Div>,
+    disabled: bool,
+}
+
+impl AccessibleMenuItem {
+    /// GPUI's test platform never activates accessibility, so a test cannot
+    /// read a menu's AccessKit nodes. A debug build names the node this item
+    /// writes in a debug selector, `menu-item: <label> · <role>[ <toggled>][
+    /// disabled]`, which a test build registers with the item's bounds.
+    fn described(self) -> Self {
+        #[cfg(debug_assertions)]
+        {
+            let mut node = gpui::accesskit::Node::new(self.a11y_role().unwrap_or(Role::Unknown));
+            self.write_a11y_info(&mut node);
+            if let Some(label) = node.label() {
+                let selector = format!(
+                    "menu-item: {label} · {:?}{}{}",
+                    node.role(),
+                    node.toggled()
+                        .map_or(String::new(), |toggled| format!(" {toggled:?}")),
+                    if node.is_disabled() { " disabled" } else { "" },
+                );
+                let Self { content, disabled } = self;
+                return Self {
+                    content: content.debug_selector(move || selector),
+                    disabled,
+                };
+            }
+        }
+        self
+    }
+}
+
+impl IntoElement for AccessibleMenuItem {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for AccessibleMenuItem {
+    type RequestLayoutState = <Stateful<Div> as Element>::RequestLayoutState;
+    type PrepaintState = <Stateful<Div> as Element>::PrepaintState;
+    fn id(&self) -> Option<ElementId> {
+        Element::id(&self.content)
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.content.source_location()
+    }
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.content.request_layout(id, inspector, window, cx)
+    }
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.content
+            .prepaint(id, inspector, bounds, layout, window, cx)
+    }
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.content
+            .paint(id, inspector, bounds, layout, prepaint, window, cx);
+    }
+    fn a11y_role(&self) -> Option<Role> {
+        self.content.a11y_role()
+    }
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.content.write_a11y_info(node);
+        if self.disabled {
+            node.set_disabled();
+        }
+    }
+    fn a11y_synthetic_children(
+        &mut self,
+        prepaint: &mut Self::PrepaintState,
+        builder: &mut A11ySubtreeBuilder,
+    ) {
+        Element::a11y_synthetic_children(&mut self.content, prepaint, builder);
     }
 }
 

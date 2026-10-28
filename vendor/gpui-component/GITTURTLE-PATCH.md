@@ -522,3 +522,29 @@ item, unticked and then ticked, and Context and Reset review as plain items;
 `text_review::tests::collapsed_options_menu_keeps_each_buttons_state` pins which
 items are checkable. Remove this part of the patch when upstream exposes a
 checkable item's state to accessibility and those tests pass without it.
+
+The disabled-menu-item patch modifies `src/menu/menu_item.rs`. Upstream draws
+a disabled menu item dim and gives it no click action, but GPUI's Div has no
+aria-disabled setter, so the item's AccessKit node carried no disabled flag,
+and Orca on Linux, which reads AT-SPI's enabled and sensitive states from that
+flag, announced it as available. Each item now renders through
+`AccessibleMenuItem`, which wraps the item's element as gpui-base's
+`AccessibleButton` wraps a Button's: layout, paint, events and synthetic
+children delegate to it, and writing the node adds only the disabled flag when
+the item is disabled. The debug selector the checked-menu-item patch added is
+now built, in debug builds only, from the node the wrapper writes, so it names
+what the item announces: `menu-item: <label> · <role>[ <toggled>][ disabled]`.
+
+The consumers are every menu with an unavailable action: the review Options
+menu's Reset review, and More context at its last step
+(`crates/app/src/text_review.rs`), the project pane's disabled actions and Move
+to destinations (`project_pane.rs`), the profile menu's profiles where none can
+apply (`profiles.rs`), the Linux Menu's unavailable actions
+(`with_menu_items`) and the context menus.
+`cargo test --locked -p gitturtle review_options_menu_announces_its_toggle_checked`
+opens the narrow review Options menu and reads Reset review announced disabled
+while nothing differs from the original diff, and available once whitespace is
+hidden. How AT-SPI reports the flag is the `accesskit_atspi_common` backport's,
+covered by `native_accessibility::atspi_state_tests`. Remove this part of the
+patch when upstream menu items expose their disabled state to accessibility and
+that test passes without it.

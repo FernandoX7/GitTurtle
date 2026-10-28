@@ -6316,7 +6316,10 @@ mod tests {
     }
 
     /// The Options menu's toggle is a check menu item in its state, and its
-    /// commands stay plain menu items.
+    /// commands stay plain menu items. Reset review is announced disabled
+    /// while there is nothing to reset, as its button is, and available once
+    /// an option changes: the AccessKit node each item writes, which the kit
+    /// names in its debug selector.
     #[gpui::test]
     async fn review_options_menu_announces_its_toggle_checked(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
@@ -6332,16 +6335,31 @@ mod tests {
             draw(cx);
         };
         let items = |cx: &mut VisualTestContext, checked: bool| {
+            let (shown, other) = if checked {
+                ("True", "False")
+            } else {
+                ("False", "True")
+            };
+            let reset = |disabled: bool| {
+                format!(
+                    "menu-item: Reset review · MenuItem{}",
+                    if disabled { " disabled" } else { "" }
+                )
+            };
             for item in [
-                if checked {
-                    "menu-item: Hide whitespace · MenuItemCheckBox True"
-                } else {
-                    "menu-item: Hide whitespace · MenuItemCheckBox False"
-                },
-                "menu-item: More context (3 lines) · MenuItem",
-                "menu-item: Reset review · MenuItem",
+                format!("menu-item: Hide whitespace · MenuItemCheckBox {shown}"),
+                "menu-item: More context (3 lines) · MenuItem".into(),
+                // Nothing to reset until an option changes.
+                reset(!checked),
             ] {
-                assert!(cx.debug_bounds(item).is_some(), "{item}");
+                assert!(cx.debug_bounds(item.clone().leak()).is_some(), "{item}");
+            }
+            for item in [
+                format!("menu-item: Hide whitespace · MenuItemCheckBox {other}"),
+                "menu-item: More context (3 lines) · MenuItem disabled".into(),
+                reset(checked),
+            ] {
+                assert!(cx.debug_bounds(item.clone().leak()).is_none(), "not {item}");
             }
         };
         open(cx);
@@ -6499,7 +6517,7 @@ mod tests {
     async fn narrow_review_caption_shows_whole_or_leaves_the_row(cx: &mut TestAppContext) {
         use crate::text_review::collapsed_caption_width;
         const CAPTION: &str = "Original Git diff";
-        const IN_MENU: &str = "menu-item: Original Git diff · MenuItem";
+        const IN_MENU: &str = "menu-item: Original Git diff · MenuItem disabled";
         let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         settle(&app, cx).await;
@@ -6511,7 +6529,7 @@ mod tests {
             cx.simulate_click(menu.center(), Modifiers::default());
             draw(cx);
             let reset = cx
-                .debug_bounds("menu-item: Reset review · MenuItem")
+                .debug_bounds("menu-item: Reset review · MenuItem disabled")
                 .expect("the menu opened");
             let caption = cx.debug_bounds(IN_MENU);
             if let Some(caption) = caption {
@@ -6520,7 +6538,7 @@ mod tests {
             cx.simulate_keystrokes("escape");
             draw(cx);
             assert!(
-                cx.debug_bounds("menu-item: Reset review · MenuItem")
+                cx.debug_bounds("menu-item: Reset review · MenuItem disabled")
                     .is_none(),
                 "the menu closed"
             );
