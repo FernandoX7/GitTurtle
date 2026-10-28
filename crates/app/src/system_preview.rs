@@ -101,6 +101,13 @@ impl Offer {
         }
     }
 
+    /// The icon form's tooltip, which leads with the label it does not show
+    /// and names what the application receives: "Open in default app: a
+    /// read-only copy as a PDF document".
+    fn icon_tooltip(self) -> String {
+        self.accessible_name(self.label(), None)
+    }
+
     /// The sentence that tells a reader where the complete animation is.
     pub(crate) fn complete_animation(self) -> &'static str {
         "Open captured bytes in the default app for the complete animation."
@@ -111,6 +118,10 @@ impl Offer {
 impl Offer {
     pub(crate) fn tooltip(self) -> String {
         "Open an isolated read-only copy of these captured bytes in system Quick Look".into()
+    }
+
+    fn icon_tooltip(self) -> String {
+        format!("{} · {}", self.label(), self.tooltip())
     }
 
     pub(crate) fn complete_animation(self) -> &'static str {
@@ -212,6 +223,35 @@ impl Opener {
     }
 }
 
+/// How an open control is drawn on its line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Form {
+    /// Its icon and its label, where the line has room for both.
+    Labelled,
+    /// Its icon alone in the compact frame's 28 px square, scaled, where the
+    /// label does not fit: the content beside it keeps its place and the
+    /// action becomes an icon rather than being cut at its column's edge.
+    /// Its tooltip and accessible name lead with the label.
+    Icon,
+}
+
+thread_local! {
+    /// The labelled control's label, laid out.
+    static LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+impl Offer {
+    /// The form of a control on a line that leaves it `room`: labelled where
+    /// its frame, icon and label fit, and otherwise its icon.
+    pub(crate) fn form(self, room: Pixels, window: &Window) -> Form {
+        if room >= labelled_button_width(self.label(), &LABEL, window) {
+            Form::Labelled
+        } else {
+            Form::Icon
+        }
+    }
+}
+
 /// One open control, with what its click opens: the type the copy is handed
 /// over as on Linux, and elsewhere the stored name Quick Look's copy is
 /// suffixed from.
@@ -248,28 +288,32 @@ struct Note {
 }
 
 impl Target {
-    /// The control, labelled with the action alone ("Open in default app")
-    /// under the heading or caption that names its side, with the shared
-    /// button frame and the action's icon, reading Opened in its own bounds
-    /// while a click's confirmation lasts. On Linux its tooltip and
-    /// accessible name ([`Offer::accessible_name`]) name the type the
-    /// application receives, one form for every control; macOS callers name
-    /// it and give its tooltip.
-    pub(crate) fn button(&self, cx: &App) -> Button {
-        let visible: SharedString = self.offer.label().into();
+    /// The control in `form`, with the shared button frame and the action's
+    /// icon, reading Opened in its own bounds while a click's confirmation
+    /// lasts (in its tooltip as an icon). Labelled, it shows the action alone
+    /// ("Open in default app"), under the heading or caption that names its
+    /// side. In either form its name leads with that label: on Linux
+    /// [`Offer::accessible_name`], which adds the side and the type the
+    /// application receives, as the tooltip names the type; macOS callers
+    /// may name it more fully.
+    pub(crate) fn button(&self, form: Form, cx: &App) -> Button {
+        let label = self.offer.label();
+        let (shown, tooltip) = match form {
+            Form::Labelled => (label, self.offer.tooltip()),
+            Form::Icon => ("", self.offer.icon_tooltip()),
+        };
         let target = self.clone();
-        let button =
-            copy_feedback::feedback_button(self.mark.clone(), OPEN, visible.clone(), "", cx)
-                .on_click(move |_, window, cx| {
-                    let opener = target.opener.owner.clone();
-                    let _ = opener.update(cx, |this, cx| {
-                        this.open_captured_bytes(target.clone(), window, cx)
-                    });
+        let button = copy_feedback::feedback_button(self.mark.clone(), OPEN, shown, tooltip, cx)
+            .on_click(move |_, window, cx| {
+                let opener = target.opener.owner.clone();
+                let _ = opener.update(cx, |this, cx| {
+                    this.open_captured_bytes(target.clone(), window, cx)
                 });
+            });
         #[cfg(target_os = "linux")]
-        let button = button
-            .tooltip(self.offer.tooltip())
-            .accessibility_label(self.offer.accessible_name(&visible, Some(self.side)));
+        let button = button.accessibility_label(self.offer.accessible_name(label, Some(self.side)));
+        #[cfg(not(target_os = "linux"))]
+        let button = button.accessibility_label(label);
         button
     }
 
@@ -540,7 +584,8 @@ pub(crate) mod tests {
     /// shows (WCAG 2.5.3, label in name) and then names the side its label
     /// leaves to the heading beside it and what the application receives:
     /// an image side's control, which once read "Open Before in default app"
-    /// in a row of its own, as much as a document's.
+    /// in a row of its own, as much as a document's, and the icon a narrow
+    /// column draws in its place, whose label is in its name and tooltip.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     fn every_open_control_is_named_by_its_label_then_what_it_hands_over(
@@ -555,22 +600,33 @@ pub(crate) mod tests {
                 ("image-system-preview", 0usize),
                 &png,
                 "Before",
+                Form::Labelled,
                 "Open in default app: Before, a read-only copy as a PNG image",
             ),
             (
                 ("system-preview", 1usize),
                 &pdf,
                 "After",
+                Form::Labelled,
+                "Open in default app: After, a read-only copy as a PDF document",
+            ),
+            (
+                ("model-external", 1usize),
+                &pdf,
+                "After",
+                Form::Icon,
                 "Open in default app: After, a read-only copy as a PDF document",
             ),
         ];
         let buttons = cx.update(|_, cx| {
             cases
                 .iter()
-                .map(|(control, bytes, side, _)| {
+                .map(|(control, bytes, side, form, _)| {
                     let offer = offer(bytes, &|| Ok(())).unwrap().expect("offered");
                     let name = std::path::Path::new("captured");
-                    opener.target(*control, side, bytes, name, offer).button(cx)
+                    opener
+                        .target(*control, side, bytes, name, offer)
+                        .button(*form, cx)
                 })
                 .collect::<Vec<_>>()
         });

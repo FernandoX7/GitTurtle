@@ -1963,6 +1963,23 @@ fn button_frame(id: impl Into<ElementId>, label: &str, symbol: &str, active: boo
     button
 }
 
+/// The width [`button`] gives a labelled control with an icon, and
+/// `copy_feedback::copy_button` one whose label is the longer of its two
+/// contents: its 10 px insets, the 16 px icon and its 6 px gap at the
+/// interface size, and `label` at 12 pt, laid out once per font and size in
+/// `cache`. A layout that would rather show such a control as its icon than
+/// cut it compares this with the room it has.
+fn labelled_button_width(
+    label: &str,
+    cache: &'static std::thread::LocalKey<views::TextWidth>,
+    window: &Window,
+) -> Pixels {
+    appearance::ui_size(LABEL_INSET * 2. + 16. + 6.)
+        + views::cached_text_width(cache, label, window, || {
+            views::line_widths(&[(label, appearance::ui_text(12.))], window)
+        })
+}
+
 /// A control's 16 px icon, `icons/<symbol>.svg`, tinted with its text.
 fn control_icon(symbol: &str) -> Icon {
     Icon::default()

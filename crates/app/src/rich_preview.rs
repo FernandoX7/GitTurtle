@@ -1,6 +1,7 @@
 //! Captured-byte document and media information, with static native PDF pages.
 use crate::{appearance::CodeFont, *};
 use gitturtle_preview::{MAX_INPUT_BYTES, metadata};
+use gpui_kit::base::ElementExt;
 use std::{
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
@@ -319,34 +320,91 @@ pub(super) fn prepare_mermaid(
     }))
 }
 
+/// A box for a comparison that a dialog lays out, filling the space the
+/// dialog gives it, and the width it was last laid out at, which
+/// [`render_comparison`] fits its open controls to. The width lives in
+/// `window` under `key` while the box is drawn, so a comparison shown in it
+/// later starts at that width; before the box's first layout it is zero, where
+/// every open control takes its icon form.
+pub(crate) fn measured_box(key: &'static str, window: &mut Window, cx: &mut App) -> (Div, Pixels) {
+    let measured = window.use_keyed_state(key, cx, |_, _| None::<Pixels>);
+    let width = measured.read(cx).unwrap_or_default();
+    let frame = div().size_full().on_prepaint(move |bounds, _, cx| {
+        measured.update(cx, |width, cx| {
+            if *width != Some(bounds.size.width) {
+                *width = Some(bounds.size.width);
+                cx.notify();
+            }
+        })
+    });
+    (frame, width)
+}
+
+thread_local! {
+    /// Each side header's heading and format, laid out.
+    static BEFORE_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static AFTER_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// The room the first line of side `index`'s header leaves its open control
+/// in a side `side` wide: the side less its right edge, the header's `px_3`
+/// either side, and its 12 pt semibold `heading` and 11 pt `format`, each
+/// followed by `gap_2`.
+fn header_room(index: usize, side: Pixels, heading: &str, format: &str, window: &Window) -> Pixels {
+    let cache = if index == 0 {
+        &BEFORE_HEADING
+    } else {
+        &AFTER_HEADING
+    };
+    let texts =
+        crate::views::cached_text_width(cache, &format!("{heading}\n{format}"), window, || {
+            crate::views::shaped_width(
+                heading,
+                appearance::ui_text(12.),
+                FontWeight::SEMIBOLD,
+                window,
+            )
+            .ceil()
+                + crate::views::line_widths(&[(format, appearance::ui_text(11.))], window)
+        });
+    side - px(1.) - window.rem_size() * (0.75 * 2. + 0.5 * 2.) - texts
+}
+
 /// Render only supplied content. A dialog child must not borrow its parent
 /// entity while that parent is already rendering the dialog layer; `opener`
-/// opens captured bytes for the comparison's open controls.
+/// opens captured bytes for the comparison's open controls, which take the
+/// form the comparison's `width`, as its container was last laid out, leaves
+/// them room for ([`crate::system_preview::Offer::form`]).
 pub(super) fn render_comparison<T: 'static>(
     preview: &Comparison,
     quick: bool,
     opener: crate::system_preview::Opener,
+    width: Pixels,
+    window: &Window,
     cx: &mut Context<T>,
 ) -> AnyElement {
     if preview.old.pdf.is_some() || preview.new.pdf.is_some() {
-        return crate::pdf_view::render_comparison(preview, quick, opener, cx);
+        return crate::pdf_view::render_comparison(preview, quick, opener, width, window, cx);
     }
     if [&preview.old, &preview.new]
         .into_iter()
         .any(|side| side.model.is_some() || gitturtle_preview::model3d::is_model_path(&side.name))
     {
-        return crate::model_view::render_comparison(preview, quick, opener, cx);
+        return crate::model_view::render_comparison(preview, quick, opener, width, window, cx);
     }
     let colors = palette(cx);
+    // Each side takes an equal share.
+    let side_width = width / if quick { 1. } else { 2. };
     div().size_full().min_w_0().flex().children([("Before",&preview.old),(if quick {"Source"}else{"After"},&preview.new)].into_iter().enumerate().filter(|(index,_)|!quick||*index==1).map(|(index,(label,side))| {
             let selected=side.selected_page.load(Ordering::Relaxed).min(side.pages.len().saturating_sub(1));
-            let mut header=div().flex().items_center().flex_wrap().gap_2().px_3().py_2().border_b_1().border_color(rgb(colors.border)).child(div().text_size(appearance::ui_text(12.)).font_weight(FontWeight::SEMIBOLD).child(label)).child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(side.metadata.format.clone()));
+            let mut header=div().debug_selector(move || format!("rich-side-header-{index}")).flex().items_center().flex_wrap().gap_2().px_3().py_2().border_b_1().border_color(rgb(colors.border)).child(div().text_size(appearance::ui_text(12.)).font_weight(FontWeight::SEMIBOLD).child(label)).child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(side.metadata.format.clone()));
             let mut note=None;
             if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
                 let target=opener.target(("system-preview",index),label,bytes,&side.name,offer);
-                let control=target.button(cx);
-                let control = if cfg!(target_os = "macos") { control.tooltip("Inspect an isolated copy of these captured revision bytes") } else { control };
-                header=header.child(control);
+                // Labelled where it fits beside the side's name and format,
+                // otherwise its icon.
+                let room = header_room(index, side_width, label, &side.metadata.format, window);
+                header=header.child(target.button(offer.form(room, window), cx));
                 note=target.note(cx);
             }
             if !side.pages.is_empty() {
@@ -405,14 +463,18 @@ fn decoded_source(excerpt: &str, cx: &App) -> Div {
 }
 
 impl GitTurtle {
+    /// The comparison in Compare's preview column, `width` wide as last laid
+    /// out.
     pub(super) fn render_rich_preview(
         &self,
         preview: &Comparison,
+        width: Pixels,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let opener =
             crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing);
-        render_comparison(preview, self.is_quick_source(), opener, cx)
+        render_comparison(preview, self.is_quick_source(), opener, width, window, cx)
     }
 
     /// Quick Look's copy of captured `bytes`, suffixed from what they are
@@ -734,12 +796,12 @@ mod tests {
     fn open_in_default_app_shows_for_a_passive_type_and_not_a_launcher(cx: &mut TestAppContext) {
         struct Probe(Comparison);
         impl Render for Probe {
-            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
                 let opener = crate::system_preview::Opener::new(
                     WeakEntity::new_invalid(),
                     crate::system_preview::Showing::next(),
                 );
-                render_comparison(&self.0, false, opener, cx)
+                render_comparison(&self.0, false, opener, px(1000.), window, cx)
             }
         }
         cx.update(gpui_kit::init);

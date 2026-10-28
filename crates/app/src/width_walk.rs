@@ -139,22 +139,6 @@ const KNOWN: &[Known] = &[
         region: "preview-file-path",
         follow_up: "Compare keeps its path whole",
     },
-    // Linux's Open in default app runs past its image column in a narrow
-    // window; the System preview layout task owns that control's row.
-    Known {
-        page: Page::CompareImage,
-        sizes: &[13, 18],
-        rule: Rule::CutText,
-        region: "image-system-preview-0",
-        follow_up: "System preview layout: Open in default app fits its column",
-    },
-    Known {
-        page: Page::CompareImage,
-        sizes: &[13, 18],
-        rule: Rule::CutText,
-        region: "image-system-preview-1",
-        follow_up: "System preview layout: Open in default app fits its column",
-    },
     // An image side's caption lines run past a narrow image column.
     Known {
         page: Page::CompareImage,

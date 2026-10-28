@@ -2621,7 +2621,7 @@ impl GitTurtle {
                                     "Use the source tabs to inspect this file.",
                                 )
                             },
-                            |preview| self.render_rich_preview(preview, cx),
+                            |preview| self.render_rich_preview(preview, column, window, cx),
                         )
                     } else if self.text_mode == TextMode::Split {
                         self.split_view.as_ref().map_or_else(
@@ -2657,8 +2657,10 @@ impl GitTurtle {
                         empty("Loading text…", "")
                     }
                 }
-                Content::Images { old, new } => self.render_image_comparison(old, new, cx),
-                Content::Rich(preview) => self.render_rich_preview(preview, cx),
+                Content::Images { old, new } => {
+                    self.render_image_comparison(old, new, column, window, cx)
+                }
+                Content::Rich(preview) => self.render_rich_preview(preview, column, window, cx),
                 Content::Conflict(_) => self.conflict_view.as_ref().map_or_else(
                     || empty("Loading conflict…", ""),
                     |view| div().size_full().child(view.clone()).into_any_element(),
@@ -5025,43 +5027,134 @@ pub(crate) mod tests {
 
     /// On Linux, Compare offers Open in default app for what the captured
     /// bytes are, never for what the file is called: a PDF named like a
-    /// launcher offers it in its After header and an ELF stub offers nothing.
-    /// The control stays whole in a full window and in the narrowest one.
+    /// launcher offers it in its After header, a PNG in its After caption and
+    /// a text model in its After header, and an ELF stub offers nothing.
+    ///
+    /// The control lies whole inside its side's header or caption, its focus
+    /// ring included, in a full window and in the narrowest one, at the
+    /// default size and at 18 pt. Where its label fits beside the side's
+    /// name it is labelled; below that width it is its icon alone, the
+    /// scaled 28 px square, so the content beside it keeps its place: in a
+    /// 461 × 490 window the PDF header's control read "Open in d" at 13 pt,
+    /// cut at its column's edge, and the image's ran into the inspector at
+    /// 18 pt, though the test checked only the window's edge.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn open_in_default_app_follows_content_in_compare(cx: &mut TestAppContext) {
-        // Every byte is below 0x80, so the import stream stays a string:
-        // an all-ASCII PDF, and the start of a 64-bit ELF header.
-        let pdf = "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n";
-        let elf = "\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0\x02\0\x3e\0";
-        let input = format!(
-            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 5\nmedia\nM 100644 inline launcher.desktop\ndata {}\n{pdf}\nM 100644 inline tool\ndata {}\n{elf}\ndone\n",
-            pdf.len(),
-            elf.len()
-        );
+        let pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n";
+        let elf = b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0\x02\0\x3e\0";
+        let obj = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        let png = crate::system_preview::tests::png(None);
+        let input = file_commits(&[(
+            "media",
+            &[
+                ("launcher.desktop", pdf),
+                ("tool", elf),
+                ("picture.png", &png),
+                ("shape.obj", obj),
+            ],
+        )]);
         let (_fixture, app, cx) = history_window_from(cx, &input).await;
-        let open = |file: usize, cx: &mut VisualTestContext| {
-            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(file, window, cx)));
+        let open = |path: &str, cx: &mut VisualTestContext| {
+            let index = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == std::path::Path::new(path))
+                    .expect("the commit changes it")
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
         };
-        for (width, height) in [(1480., 980.), (461., 490.)] {
+        // Each offer: its file, its control, the header or caption it sits
+        // in, and whether a full window labels it (the model's row also
+        // holds Copy source, so it may not).
+        let offers = [
+            (
+                "launcher.desktop",
+                "system-preview-1",
+                "rich-side-header-1",
+                true,
+            ),
+            (
+                "picture.png",
+                "image-system-preview-1",
+                "image-side-caption-1",
+                true,
+            ),
+            (
+                "shape.obj",
+                "model-external-1",
+                "model-side-header-1",
+                false,
+            ),
+        ];
+        for (text, width, height) in [
+            (13, 1480., 980.),
+            (13, 461., 490.),
+            (18, 1480., 980.),
+            (18, 461., 490.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
-            open(0, cx);
-            settle(&app, cx).await;
-            assert!(
-                cx.debug_bounds("system-preview-0").is_none(),
-                "Before is absent"
-            );
-            let control = cx
-                .debug_bounds("system-preview-1")
-                .expect("captured PDF offers the action");
-            assert!(
-                control.origin.x >= px(0.)
-                    && control.origin.y >= px(0.)
-                    && control.right() <= px(width)
-                    && control.bottom() <= px(height),
-                "{control:?} lies inside {width} × {height}"
-            );
-            open(1, cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let (square, labelled) = cx.update(|window, _| {
+                (
+                    appearance::ui_size(28.),
+                    appearance::ui_size(42.)
+                        + line_widths(&[("Open in default app", appearance::ui_text(12.))], window),
+                )
+            });
+            for (path, control, area, wide) in offers {
+                open(path, cx);
+                settle(&app, cx).await;
+                assert!(
+                    cx.debug_bounds("system-preview-0").is_none()
+                        && cx.debug_bounds("image-system-preview-0").is_none()
+                        && cx.debug_bounds("model-external-0").is_none(),
+                    "{at}: {path}: Before is absent"
+                );
+                let bounds = cx
+                    .debug_bounds(control)
+                    .unwrap_or_else(|| panic!("{at}: {path} offers the action"));
+                let side = cx
+                    .debug_bounds(area)
+                    .unwrap_or_else(|| panic!("{at}: {path}: {area}"));
+                assert!(
+                    holds_with_ring(side, bounds),
+                    "{at}: {path}: {bounds:?} and its ring lie in {area} {side:?}"
+                );
+                let content = cx.debug_bounds("preview-content").unwrap();
+                assert!(
+                    side.left() >= content.left() && side.right() <= content.right() + px(0.5),
+                    "{at}: {path}: {side:?} lies in the preview {content:?}"
+                );
+                let shows_label = cx
+                    .debug_bounds(match control {
+                        "system-preview-1" => "system-preview-1/rest/text",
+                        "image-system-preview-1" => "image-system-preview-1/rest/text",
+                        _ => "model-external-1/rest/text",
+                    })
+                    .is_some();
+                if shows_label {
+                    assert!(
+                        (bounds.size.width - labelled).abs() <= px(1.),
+                        "{at}: {path}: labelled, {bounds:?} is {labelled:?} wide"
+                    );
+                } else {
+                    assert!(
+                        (bounds.size.width - square).abs() <= px(0.5)
+                            && (bounds.size.height - square).abs() <= px(0.5),
+                        "{at}: {path}: its icon alone, {bounds:?} is the {square:?} square"
+                    );
+                }
+                let narrow = width < 1000.;
+                if narrow || wide {
+                    assert_eq!(
+                        shows_label, !narrow,
+                        "{at}: {path}: labelled only where the label fits"
+                    );
+                }
+            }
+            open("tool", cx);
             settle(&app, cx).await;
             let refused = app.read_with(cx, |app, _| match app.content.as_deref() {
                 Some(Content::Rich(preview)) => {
@@ -5069,28 +5162,37 @@ pub(crate) mod tests {
                 }
                 _ => false,
             });
-            assert!(refused, "the ELF stub is captured and offers nothing");
+            assert!(refused, "{at}: the ELF stub is captured and offers nothing");
             assert!(cx.debug_bounds("system-preview-1").is_none());
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// A `git fast-import` stream of one commit per `(message, path, bytes)`
-    /// on `main`, oldest first, each writing its file.
+    /// The `(path, bytes)` files a fixture commit writes.
     #[cfg(target_os = "linux")]
-    fn file_commits(commits: &[(&str, &str, &[u8])]) -> Vec<u8> {
+    type Files<'a> = &'a [(&'a str, &'a [u8])];
+
+    /// A `git fast-import` stream of one commit per `(message, files)` on
+    /// `main`, oldest first, each writing its files.
+    #[cfg(target_os = "linux")]
+    fn file_commits(commits: &[(&str, Files<'_>)]) -> Vec<u8> {
         let mut input = Vec::new();
-        for (index, (message, path, bytes)) in commits.iter().enumerate() {
+        for (index, (message, files)) in commits.iter().enumerate() {
             input.extend_from_slice(
                 format!(
-                    "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\nM 100644 inline {path}\ndata {}\n",
+                    "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\n",
                     1_700_000_000 + index,
                     message.len(),
-                    bytes.len(),
                 )
                 .as_bytes(),
             );
-            input.extend_from_slice(bytes);
-            input.push(b'\n');
+            for (path, bytes) in *files {
+                input.extend_from_slice(
+                    format!("M 100644 inline {path}\ndata {}\n", bytes.len()).as_bytes(),
+                );
+                input.extend_from_slice(bytes);
+                input.push(b'\n');
+            }
         }
         input.extend_from_slice(b"done\n");
         input
@@ -5120,8 +5222,8 @@ pub(crate) mod tests {
         use crate::system_preview::tests::png;
         let (before, after) = (png(Some(b"before")), png(Some(b"after")));
         let input = file_commits(&[
-            ("add", "image.png", &before),
-            ("change", "image.png", &after),
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
         ]);
         let (_fixture, app, cx) = history_window_from(cx, &input).await;
         cx.simulate_resize(size(px(1480.), px(980.)));

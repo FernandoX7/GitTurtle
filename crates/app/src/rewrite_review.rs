@@ -463,7 +463,8 @@ impl SeriesBrowser {
             }
         });
     }
-    fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The inspected file, `width` wide as its box was last laid out.
+    fn render_content(&self, width: Pixels, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if let Some(messages) = &self.messages {
             return div()
                 .size_full()
@@ -512,7 +513,16 @@ impl SeriesBrowser {
                             .child("No Mermaid diagrams on this file; use Source.")
                             .into_any_element()
                     },
-                    |preview| rich_preview::render_comparison(preview, false, self.opener(), cx),
+                    |preview| {
+                        rich_preview::render_comparison(
+                            preview,
+                            false,
+                            self.opener(),
+                            width,
+                            window,
+                            cx,
+                        )
+                    },
                 )
             }
             Some(Content::Text { .. }) if self.text_mode == 0 => self.patch.as_ref().map_or_else(
@@ -530,7 +540,7 @@ impl SeriesBrowser {
                 },
             ),
             Some(Content::Rich(preview)) => {
-                rich_preview::render_comparison(preview, false, self.opener(), cx)
+                rich_preview::render_comparison(preview, false, self.opener(), width, window, cx)
             }
             Some(Content::Images { old, new }) => div()
                 .size_full()
@@ -673,6 +683,7 @@ impl SeriesBrowser {
 impl Render for SeriesBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
+        let (frame, width) = rich_preview::measured_box("rewrite-file-width", window, cx);
         let height = (f32::from(window.viewport_size().height) - 250.).clamp(240., 690.);
         // The body scrolls, so it clips its controls on both axes. It keeps
         // the focus ring's room beside and below them, giving the sides back
@@ -731,7 +742,7 @@ impl Render for SeriesBrowser {
                     let file = &this.files[index]; button(("series-file", index), file.path().to_string_lossy().into_owned(), "", this.selected_file == Some(index)).w_full().h(appearance::ui_size(30.)).on_click(cx.listener(move |this, _, window, cx| this.file(index, window, cx))).into_any_element()
                 }).collect::<Vec<_>>())).size_full().track_scroll(&self.files_scroll))))
                 .when(matches!(self.content.as_deref(), Some(Content::Text { .. })), |element| element.child(div().flex().gap_2().children(["Patch", "Before source", "After source", "Diagrams"].into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, label)| button(("series-text-mode", mode), label, "", self.text_mode == mode).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); }))))))
-                .child(div().flex_1().min_h(px(100.)).border_1().border_color(rgb(p.border)).overflow_hidden().child(self.render_content(cx))))
+                .child(div().flex_1().min_h(px(100.)).border_1().border_color(rgb(p.border)).overflow_hidden().child(frame.child(self.render_content(width, window, cx)))))
             .when(self.pending, |element| element.child(div().text_color(rgb(p.muted)).child("Reading captured local history…")))
             .when_some(self.error.as_ref(), |element, error| element.child(div().max_h(px(100.)).id("series-review-error").overflow_y_scroll().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone()))))
     }

@@ -351,10 +351,14 @@ impl GitTurtle {
             requested[1].clamp(-max[1], 0.),
         ];
     }
+    /// The comparison in Compare's preview column, `width` wide as last laid
+    /// out, which each side's caption shares and fits its open control to.
     pub(super) fn render_image_comparison(
         &self,
         old: &worker::ImageSide,
         new: &worker::ImageSide,
+        width: Pixels,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = palette(cx);
@@ -487,6 +491,14 @@ impl GitTurtle {
             "Linked zoom and pan · Drag or scroll to move · Equal source coordinates stay aligned"
         };
         let mut copies = Vec::new();
+        let names = if source {
+            ["Source"; 2]
+        } else {
+            ["Before", "After"]
+        };
+        let details = [old, new].map(side_details);
+        // The captions share the column equally.
+        let caption_width = width / if source { 1. } else { 2. };
         let opener =
             crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing);
         // Each side's open control and the line saying why its last click
@@ -513,19 +525,19 @@ impl GitTurtle {
             if let (Some(bytes), Some(offer), false) =
                 (&side.captured, side.system_preview, source && index == 0)
             {
-                let label = if source { "Source" } else { label };
+                let label = names[index];
                 let path = side_path.unwrap_or(std::path::Path::new("image.bin"));
                 let target =
                     opener.target(("image-system-preview", index), label, bytes, path, offer);
-                // On Linux the control names itself; Quick Look's takes the
-                // tooltip it always had, and a name with its side.
-                let control = target.button(cx);
+                // Labelled where it fits beside the caption's text, otherwise
+                // its icon. On Linux the control names itself; Quick Look's
+                // takes a name with its side.
+                let room = caption_room(index, caption_width, label, &details[index], window);
+                let control = target.button(offer.form(room, window), cx);
                 let control = if cfg!(target_os = "macos") {
-                    control
-                        .tooltip(offer.tooltip())
-                        .accessibility_label(format!(
-                            "{label}: open captured image in System preview"
-                        ))
+                    control.accessibility_label(format!(
+                        "{label}: open captured image in System preview"
+                    ))
                 } else {
                     control
                 };
@@ -588,47 +600,8 @@ impl GitTurtle {
                             .into_iter()
                             .enumerate()
                             .filter(|(index, _)| !source || *index == 1)
-                            .map(|(i, side)| {
-                                let name = if source {
-                                    "Source"
-                                } else if i == 0 {
-                                    "Before"
-                                } else {
-                                    "After"
-                                };
-                                let details = side
-                                    .image
-                                    .as_ref()
-                                    .map(|image| {
-                                        format!(
-                                            "{} × {} · {}{}",
-                                            image.original_width,
-                                            image.original_height,
-                                            image.format,
-                                            if image.width != image.original_width
-                                                || image.height != image.original_height
-                                            {
-                                                format!(
-                                                    " · preview {} × {}",
-                                                    image.width, image.height
-                                                )
-                                            } else {
-                                                String::new()
-                                            }
-                                        )
-                                    })
-                                    .unwrap_or_else(|| {
-                                        side.message
-                                            .clone()
-                                            .unwrap_or_else(|| "No image on this side".into())
-                                    });
-                                let details = if side.image.is_some() {
-                                    side.message.as_ref().map_or(details.clone(), |notice| {
-                                        format!("{details} · {notice}")
-                                    })
-                                } else {
-                                    details
-                                };
+                            .map(|(i, _)| {
+                                let (name, details) = (names[i], details[i].clone());
                                 // The side's caption: its name and details,
                                 // then the control that opens it, as a
                                 // document's header has them, and the line
@@ -858,6 +831,71 @@ impl GitTurtle {
         }
         view.into_any_element()
     }
+}
+
+/// What an image side's caption says below its name: its dimensions and
+/// format, with the preview's own where it was scaled and any notice, or why
+/// it shows no image.
+fn side_details(side: &worker::ImageSide) -> String {
+    let details = side
+        .image
+        .as_ref()
+        .map(|image| {
+            format!(
+                "{} × {} · {}{}",
+                image.original_width,
+                image.original_height,
+                image.format,
+                if image.width != image.original_width || image.height != image.original_height {
+                    format!(" · preview {} × {}", image.width, image.height)
+                } else {
+                    String::new()
+                }
+            )
+        })
+        .unwrap_or_else(|| {
+            side.message
+                .clone()
+                .unwrap_or_else(|| "No image on this side".into())
+        });
+    if side.image.is_some() {
+        side.message
+            .as_ref()
+            .map_or(details.clone(), |notice| format!("{details} · {notice}"))
+    } else {
+        details
+    }
+}
+
+thread_local! {
+    /// Each side caption's name and details, laid out.
+    static BEFORE_CAPTION: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static AFTER_CAPTION: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// The room side `index`'s caption leaves its open control beside its text in
+/// a caption `caption` wide: the caption less its `px_3` either side and
+/// `gap_2`, and the wider of its 11 pt medium `name` and its `details`.
+fn caption_room(
+    index: usize,
+    caption: Pixels,
+    name: &str,
+    details: &str,
+    window: &Window,
+) -> Pixels {
+    let cache = if index == 0 {
+        &BEFORE_CAPTION
+    } else {
+        &AFTER_CAPTION
+    };
+    let text =
+        crate::views::cached_text_width(cache, &format!("{name}\n{details}"), window, || {
+            let size = crate::appearance::ui_text(11.);
+            crate::views::shaped_width(name, size, FontWeight::MEDIUM, window)
+                .ceil()
+                .max(crate::views::line_widths(&[(details, size)], window))
+        });
+    caption - window.rem_size() * (0.75 * 2. + 0.5) - text
 }
 
 #[cfg(test)]

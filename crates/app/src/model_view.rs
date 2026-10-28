@@ -512,12 +512,17 @@ pub(super) fn pause(content: Option<&Content>) {
     }
 }
 
+/// The comparison's sides; `width` is the comparison's as last laid out,
+/// which its open controls' form fits.
 pub(super) fn render_comparison<T: 'static>(
     preview: &rich_preview::Comparison,
     quick: bool,
     opener: crate::system_preview::Opener,
+    width: Pixels,
+    window: &Window,
     cx: &mut Context<T>,
 ) -> AnyElement {
+    let side_width = width / if quick { 1. } else { 2. };
     let colors = palette(cx);
     let documents: Vec<_> = [&preview.old, &preview.new]
         .into_iter()
@@ -572,6 +577,8 @@ pub(super) fn render_comparison<T: 'static>(
                         side,
                         if quick { None } else { other.model.clone() },
                         opener.clone(),
+                        side_width,
+                        window,
                         cx,
                     )
                 }),
@@ -610,16 +617,51 @@ fn selected_standard_view(camera: ModelCamera) -> Option<ModelStandardView> {
     })
 }
 
+thread_local! {
+    /// Each side's source label, laid out.
+    static BEFORE_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static AFTER_LABEL: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The Copy source control's label, laid out.
+    static COPY_SOURCE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// The room side `index`'s source row leaves its open control in a side
+/// `side` wide: the side less its right edge, the header's `px_2` either
+/// side, and the row's semibold `label` and, where the side has source to
+/// copy, Copy source, each followed by `gap_2`.
+fn source_room(index: usize, side: Pixels, label: &str, copy: bool, window: &Window) -> Pixels {
+    let cache = if index == 0 {
+        &BEFORE_LABEL
+    } else {
+        &AFTER_LABEL
+    };
+    let rem = window.rem_size();
+    let text = crate::views::cached_text_width(cache, label, window, || {
+        let size = window.text_style().font_size.to_pixels(rem);
+        crate::views::shaped_width(label, size, FontWeight::SEMIBOLD, window).ceil()
+    });
+    let copy = if copy {
+        labelled_button_width("Copy source", &COPY_SOURCE, window) + rem * 0.5
+    } else {
+        px(0.)
+    };
+    side - px(1.) - rem * (0.5 * 2. + 0.5) - text - copy
+}
+
+#[allow(clippy::too_many_arguments)]
 fn render_side<T: 'static>(
     index: usize,
     label: &'static str,
     side: &Arc<rich_preview::Side>,
     partner: Option<Arc<Document>>,
     opener: crate::system_preview::Opener,
+    side_width: Pixels,
+    window: &Window,
     cx: &mut Context<T>,
 ) -> AnyElement {
     let colors = palette(cx);
     let mut header = div()
+        .debug_selector(move || format!("model-side-header-{index}"))
         .flex()
         .flex_col()
         .gap_1()
@@ -651,6 +693,13 @@ fn render_side<T: 'static>(
     } else {
         label.into()
     };
+    let room = source_room(
+        index,
+        side_width,
+        &source_label,
+        side.metadata.source.is_some(),
+        window,
+    );
     let mut source_actions = div().flex().flex_wrap().items_center().gap_2().child(
         div()
             .id(("model-source-label", index))
@@ -693,7 +742,7 @@ fn render_side<T: 'static>(
     }
     if let (Some(offer), Some(bytes), false) = (side.system_preview, &side.captured, lfs_pointer) {
         let target = opener.target(("model-external", index), label, bytes, &side.name, offer);
-        let mut control = target.button(cx);
+        let mut control = target.button(offer.form(room, window), cx);
         if cfg!(target_os = "macos") {
             control = control
                 .accessibility_label(format!("Open captured {label} model in system preview"));

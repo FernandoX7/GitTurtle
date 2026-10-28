@@ -1346,7 +1346,8 @@ impl StashBrowser {
             .into_any_element()
     }
 
-    fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The selected file, `width` wide as its box was last laid out.
+    fn render_content(&self, width: Pixels, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         if let Some(error) = &self.preview_error {
             return div()
@@ -1373,13 +1374,25 @@ impl StashBrowser {
                             .into_any_element()
                     },
                     |preview| {
-                        crate::rich_preview::render_comparison(preview, false, self.opener(), cx)
+                        crate::rich_preview::render_comparison(
+                            preview,
+                            false,
+                            self.opener(),
+                            width,
+                            window,
+                            cx,
+                        )
                     },
                 )
             }
-            Some(Content::Rich(preview)) => {
-                crate::rich_preview::render_comparison(preview, false, self.opener(), cx)
-            }
+            Some(Content::Rich(preview)) => crate::rich_preview::render_comparison(
+                preview,
+                false,
+                self.opener(),
+                width,
+                window,
+                cx,
+            ),
             Some(Content::Text { .. }) if self.text_mode == 0 => {
                 self.patch_view.as_ref().map_or_else(
                     || div().into_any_element(),
@@ -1467,6 +1480,7 @@ impl StashBrowser {
 impl Render for StashBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
+        let (frame, width) = crate::rich_preview::measured_box("stash-file-width", window, cx);
         let narrow = window.viewport_size().width < px(800.);
         let height = (f32::from(window.viewport_size().height) - 230.).clamp(300., 620.);
         let busy = self.metadata_task.is_some();
@@ -1535,7 +1549,7 @@ impl Render for StashBrowser {
                     .child(div().flex().items_center().gap_1().children(["Diff", "Before", "After", "Diagrams"].into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, label)| {
                         button(("stash-text-mode", mode), label, "", self.text_mode == mode).disabled(!matches!(self.content.as_deref(), Some(Content::Text { .. }))).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.ensure_editor(window, cx); cx.notify(); }))
                     })))
-                    .child(div().flex_1().min_h_0().border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden().child(self.render_content(cx)))
+                    .child(div().flex_1().min_h_0().border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden().child(frame.child(self.render_content(width, window, cx))))
                     .child(div().flex().flex_wrap().items_center().gap_2().pt_1()
                         .child(Checkbox::new("stash-restore-index").label("Restore staged state").checked(self.restore_index).on_click(cx.listener(|this, checked, _, cx| { this.restore_index = *checked; cx.notify(); })))
                         .child(div().flex_1())

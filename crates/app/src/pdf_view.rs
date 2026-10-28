@@ -440,19 +440,49 @@ fn page_picker(
     window.on_next_frame(move |window, cx| focus.focus(window, cx));
 }
 
+thread_local! {
+    /// Each side header's heading, laid out.
+    static BEFORE_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static AFTER_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+}
+
+/// The room the first line of side `index`'s header leaves its open control
+/// in a side `side` wide: the side less its right edge, the header's `p_2`
+/// either side, and its semibold `heading` followed by `gap_2`.
+fn header_room(index: usize, side: Pixels, heading: &str, window: &Window) -> Pixels {
+    let cache = if index == 0 {
+        &BEFORE_HEADING
+    } else {
+        &AFTER_HEADING
+    };
+    let rem = window.rem_size();
+    let text = crate::views::cached_text_width(cache, heading, window, || {
+        let size = window.text_style().font_size.to_pixels(rem);
+        crate::views::shaped_width(heading, size, FontWeight::SEMIBOLD, window).ceil()
+    });
+    side - px(1.) - rem * (0.5 * 2. + 0.5) - text
+}
+
+/// The comparison's sides, each with its header of page controls; `width`
+/// is the comparison's as last laid out, which its open controls' form fits.
 pub(super) fn render_comparison<T: 'static>(
     preview: &rich_preview::Comparison,
     quick: bool,
     opener: crate::system_preview::Opener,
+    width: Pixels,
+    window: &Window,
     cx: &mut Context<T>,
 ) -> AnyElement {
     let colors = palette(cx);
+    let side_width = width / if quick { 1. } else { 2. };
     div().size_full().flex().min_w_0().children([("Before", &preview.old, &preview.new), (if quick {"Source"} else {"After"}, &preview.new, &preview.old)].into_iter().enumerate().filter(|(i,_)| !quick || *i == 1).map(|(index,(label, side, other))| {
-        let mut header = div().flex().flex_wrap().items_center().gap_2().p_2().border_b_1().border_color(rgb(colors.border)).child(div().font_weight(FontWeight::SEMIBOLD).child(format!("{label} · PDF")));
+        let heading = format!("{label} · PDF");
+        let room = header_room(index, side_width, &heading, window);
+        let mut header = div().flex().flex_wrap().items_center().gap_2().p_2().border_b_1().border_color(rgb(colors.border)).child(div().font_weight(FontWeight::SEMIBOLD).child(heading));
         let mut note = None;
         if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
             let target = opener.target(("pdf-system",index), label, bytes, &side.name, offer);
-            let control = target.button(cx);
+            let control = target.button(offer.form(room, window), cx);
             let control = if cfg!(target_os = "macos") { control.accessibility_label(format!("{label}: open captured PDF in System preview")) } else { control };
             header = header.child(control);
             note = target.note(cx);
