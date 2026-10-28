@@ -2410,13 +2410,17 @@ mod tests {
             });
             app.update(cx, |app, cx| app.open_github(window, cx));
         });
-        cx.run_until_parked();
+        settle_open(&app, cx);
         let canvas = midnight_canvas(cx);
-        // Frames without running the file's preparation.
-        let frames = |cx: &mut gpui_kit::VisualTestContext| {
-            for _ in 0..3 {
-                cx.update(|window, cx| window.draw(cx).clear(cx));
-            }
+        // What Source lays its lines out from: the height its box measured in the last frame
+        // and the editor's line height.
+        let measured = |cx: &App| {
+            let review = &panel.read(cx).review;
+            let line = review
+                .source
+                .as_ref()
+                .and_then(|editor| editor.read(cx).line_height());
+            (review.source_height.get(), line)
         };
         for (interface, code) in [(13, 12), (18, 15)] {
             cx.update(|window, cx| appearance::apply_text_sizes(interface, code, window, cx));
@@ -2428,10 +2432,11 @@ mod tests {
                     })
                 });
                 for decorated in [false, true] {
+                    // Undecorated, the frames run nothing the file's preparation needs.
                     if decorated {
                         cx.run_until_parked();
                     }
-                    frames(cx);
+                    draw_settled(cx, measured);
                     let at = format!("{interface} pt, file {file}, decorated {decorated}");
                     assert_eq!(
                         cx.read(|cx| panel.read(cx).review.source_view.is_some()),
@@ -2487,6 +2492,34 @@ mod tests {
             .unwrap();
         cx.run_until_parked();
     }
+    /// After the panel opens: its read of local settings and drafts, on the operations thread
+    /// `run_until_parked` cannot wait for, has landed, so the panel's content is final.
+    fn settle_open(app: &Entity<GitTurtle>, cx: &mut gpui_kit::VisualTestContext) {
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.run_until_parked();
+    }
+
+    /// Draws until a frame leaves `measured` as it found it. A review box lays its rows or
+    /// lines out from what its content measured in the last frame, and a frame whose layout
+    /// differs corrects the measure and draws again; the frame that corrects nothing showed
+    /// the box laid out from its own height. The dialog opens at rest (`review_panel`), so
+    /// nothing else moves the box between frames.
+    fn draw_settled<T: PartialEq + std::fmt::Debug>(
+        cx: &mut gpui_kit::VisualTestContext,
+        measured: impl Fn(&App) -> T,
+    ) {
+        let mut before = cx.read(&measured);
+        for _ in 0..8 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let after = cx.read(&measured);
+            if after == before {
+                return;
+            }
+            before = after;
+        }
+        panic!("the review box is still measuring {before:?}");
+    }
+
     /// Applies Midnight, whose kit input background (#181f2c over Midnight's surfaces) is
     /// lighter than the canvas its editors' text areas paint (#10151f), and returns that canvas.
     fn midnight_canvas(cx: &mut gpui_kit::VisualTestContext) -> gpui_kit::Background {
@@ -2504,8 +2537,15 @@ mod tests {
         canvas.into()
     }
 
-    /// What the last frame painted in `frame`: the fills of the quads at its bounds, its own,
-    /// and the lowest bottom, as clipped, of every other quad drawn inside it.
+    /// What the last frame painted in `frame`, a box that clips its content: the fills of the
+    /// quads at its bounds, its own, and the lowest bottom, as clipped, of every other quad it
+    /// clips. A quad the box does not clip is not the box's, though it may lie inside it:
+    /// History's empty state draws its Open Changes button beneath the dialog, inside the
+    /// Changes and Source boxes at 13 pt once the dialog is at rest, its bottom 13.5 px below
+    /// Changes' last whole row and 1.5 px below Source's last whole line. Counted, it failed
+    /// both tests whenever the dialog's entrance had nearly finished before they read the
+    /// frame, which a loaded machine made likely; while the dialog was still sliding in, the
+    /// boxes lay above the button.
     fn painted_in(
         cx: &mut gpui_kit::VisualTestContext,
         frame: Bounds<Pixels>,
@@ -2533,13 +2573,14 @@ mod tests {
                     }
                     continue;
                 }
-                let shown = drawn.intersect(&logical(quad.content_mask.bounds));
+                let clip = logical(quad.content_mask.bounds);
+                let shown = drawn.intersect(&clip);
                 if shown.size.height > px(0.)
                     && shown.size.width > px(0.)
-                    && shown.left() >= frame.left() - px(0.5)
-                    && shown.right() <= frame.right() + px(0.5)
-                    && shown.top() >= frame.top() - px(0.5)
-                    && shown.bottom() <= frame.bottom() + px(0.5)
+                    && clip.left() >= frame.left() - px(0.5)
+                    && clip.right() <= frame.right() + px(0.5)
+                    && clip.top() >= frame.top() - px(0.5)
+                    && clip.bottom() <= frame.bottom() + px(0.5)
                     && !quad.background.is_transparent()
                 {
                     lowest = lowest.max(shown.bottom());
@@ -2577,8 +2618,10 @@ mod tests {
             });
             app.update(cx, |app, cx| app.open_github(window, cx));
         });
-        cx.run_until_parked();
+        settle_open(&app, cx);
         let canvas = midnight_canvas(cx);
+        // What Changes counts its rows over: the height its box measured in the last frame.
+        let measured = |cx: &App| panel.read(cx).review.patch_height.get();
         for (interface, code) in [(13, 12), (18, 15)] {
             cx.update(|window, cx| appearance::apply_text_sizes(interface, code, window, cx));
             for file in [0, 1] {
@@ -2589,9 +2632,7 @@ mod tests {
                     })
                 });
                 cx.run_until_parked();
-                for _ in 0..3 {
-                    cx.update(|window, cx| window.draw(cx).clear(cx));
-                }
+                draw_settled(cx, measured);
                 let at = format!("{interface} pt, file {file}");
                 let list = cx.debug_bounds("github-file-focus").expect("file list");
                 let patch = cx.debug_bounds("github-patch").expect("Changes");
@@ -2871,7 +2912,9 @@ mod tests {
     }
 
     /// A repository page and a review panel for it, built as the views above build them, with
-    /// the panel's local read settled.
+    /// the panel's local read settled. Dialogs open at rest, as with reduced motion: the
+    /// kit's entrance slides a dialog down over 250 ms of real time, so where a frame placed
+    /// the panel depended on how long the machine took to draw it.
     fn review_panel(
         cx: &mut TestAppContext,
     ) -> (
@@ -2900,6 +2943,7 @@ mod tests {
         cx.update(|cx| {
             gpui_kit::init(cx);
             image_lifetime::init(cx);
+            cx.set_reduce_motion(true);
         });
         let (_, cx) = cx.add_window_view(move |window, cx| {
             let app = cx.new(|cx| {
