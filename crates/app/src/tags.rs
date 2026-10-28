@@ -72,7 +72,9 @@ impl ScrollCue {
         }
     }
 
-    /// `list`, with the gutter and the scrollbar `id` while it overflows.
+    /// `list`, with the gutter and the scrollbar `id` while it overflows. The
+    /// list is a node that clips its rows (`native_accessibility::clips_children`),
+    /// so a row scrolled out of view is out of reach as well as out of sight.
     pub(crate) fn list(&self, list: Stateful<Div>, id: &'static str) -> Div {
         let ring = appearance::BUTTON_FOCUS_RING;
         let gutter = Scrollbar::width() + ring.gap + ring.width;
@@ -80,7 +82,9 @@ impl ScrollCue {
         div()
             .flex()
             .flex_col()
-            .child(list.when(self.cued, |list| list.pr(room + gutter)))
+            .child(crate::native_accessibility::clips_children(
+                list.when(self.cued, |list| list.pr(room + gutter)),
+            ))
             .when(self.cued, |cue| {
                 cue.child(
                     Scrollbar::vertical(&self.rows)

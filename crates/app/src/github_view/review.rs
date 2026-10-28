@@ -932,7 +932,7 @@ impl Panel {
             .flex()
             .flex_col()
             .gap_2()
-            .child(
+            .child(crate::native_accessibility::clips_children(
                 div()
                     .id("github-file-focus")
                     .debug_selector(|| "github-file-focus".into())
@@ -1059,7 +1059,7 @@ impl Panel {
                         .size_full()
                         .track_scroll(&self.review.file_scroll),
                     ),
-            )
+            ))
             .child(
                 div()
                     .min_h(appearance::ui_size(PAGER_ROW))
@@ -1275,7 +1275,7 @@ impl Panel {
             crate::diff_view::line_number_column_width(u64::from(widest))
                 * appearance::code_scale(),
         );
-        div().id("github-patch-focus").key_context("GitTurtleGithubPatch").on_action(cx.listener(|this,_:&ReviewUp,window,cx|{this.review_key("up",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewDown,window,cx|{this.review_key("down",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewHome,window,cx|{this.review_key("home",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewEnd,window,cx|{this.review_key("end",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageUp,window,cx|{this.review_key("pageup",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageDown,window,cx|{this.review_key("pagedown",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendUp,window,cx|{this.review_key("up",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendDown,window,cx|{this.review_key("down",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewAccept,window,cx|{this.review_key("enter",false,window,cx);cx.stop_propagation();})).debug_selector(||"github-patch".into()).flex_1().min_h_0().min_w_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden()
+        crate::native_accessibility::clips_children(div().id("github-patch-focus").key_context("GitTurtleGithubPatch").on_action(cx.listener(|this,_:&ReviewUp,window,cx|{this.review_key("up",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewDown,window,cx|{this.review_key("down",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewHome,window,cx|{this.review_key("home",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewEnd,window,cx|{this.review_key("end",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageUp,window,cx|{this.review_key("pageup",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewPageDown,window,cx|{this.review_key("pagedown",false,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendUp,window,cx|{this.review_key("up",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewExtendDown,window,cx|{this.review_key("down",true,window,cx);cx.stop_propagation();})).on_action(cx.listener(|this,_:&ReviewAccept,window,cx|{this.review_key("enter",false,window,cx);cx.stop_propagation();})).debug_selector(||"github-patch".into()).flex_1().min_h_0().min_w_0().border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden()
             // A context row's surface, so the strip below the rows reads as part of the patch.
             .bg(rgb(p.canvas))
             .tab_stop(true).track_focus(&self.review.line_focus).focus_visible(|style|style.border_color(rgb(p.accent))).role(Role::ListBox).aria_label("Captured pull request patch lines").aria_description("Up and Down move through lines. Shift extends a same-side range. Return starts an inline comment. Source offers exact text selection and Find.")
@@ -1293,18 +1293,18 @@ impl Panel {
                 // The selection's edge overlays the row, so its text keeps Source's place.
                 patch_row(index,row,column,row_height,cx).bg(rgb(background)).when(selected,|row|row.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(rgb(p.accent)))).role(Role::ListBoxOption).aria_label(row_label).aria_selected(selected).cursor_pointer()
                     .on_click(cx.listener(move|this,event:&ClickEvent,window,cx|this.select_review_line(index,event.modifiers().shift,window,cx))).into_any_element()
-            }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll))))).into_any_element()
+            }).collect::<Vec<_>>())).size_full().track_scroll(&self.review.line_scroll)))))).into_any_element()
     }
     pub(super) fn render_collected(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         div().flex().flex_col().gap_2()
             .child(label("github-review-heading",format!("{} inline comments in this review",self.review.comments.len())).ml(super::text_inset()).font_weight(FontWeight::SEMIBOLD))
             .when(self.review.comments.is_empty(),|element|element.child(label("github-review-empty","Select changed lines in Files to add inline feedback, or send a review summary below.").ml(super::text_inset()).text_color(rgb(p.muted))))
-            .child(div().id("github-collected-comments").debug_selector(||"github-collected-comments".into()).flex_shrink_0().max_h(px(230.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.review.comments.iter().enumerate().map(|(index,comment)|div().flex_shrink_0().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
+            .child(crate::native_accessibility::clips_children(div().id("github-collected-comments").debug_selector(||"github-collected-comments".into()).flex_shrink_0().max_h(px(230.)).overflow_y_scroll().flex().flex_col().gap_2().children(self.review.comments.iter().enumerate().map(|(index,comment)|div().flex_shrink_0().p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                 .child(label(("github-draft-position",index),model::position_label(comment)).font_weight(FontWeight::SEMIBOLD))
                 .child(label(("github-draft-body",index),comment.body.clone()))
                 .child(div().flex().gap_2().child(button(("github-edit-inline",index),"Edit","",false).disabled(self.pending||self.review.composing.is_some()).on_click(cx.listener(move|this,_,window,cx|this.edit_comment(index,window,cx))))
-                    .child(button(("github-remove-inline",index),"Remove","",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|{if index<this.review.comments.len(){this.review.comments.remove(index);this.confirm=None;this.save_draft(window,cx);this.focus_visible_section(window,cx);}})))))))
+                    .child(button(("github-remove-inline",index),"Remove","",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|{if index<this.review.comments.len(){this.review.comments.remove(index);this.confirm=None;this.save_draft(window,cx);this.focus_visible_section(window,cx);}}))))))))
             .child(self.render_comment_composer(cx)).into_any_element()
     }
 }

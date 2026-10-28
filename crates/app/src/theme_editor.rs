@@ -2713,7 +2713,7 @@ impl Render for ThemeForm {
                         .min_h_0()
                         .flex()
                         .flex_col()
-                        .child(
+                        .child(crate::native_accessibility::clips_children(
                             div()
                                 .id("theme-editor-body")
                                 .debug_selector(|| "theme-editor-body".into())
@@ -2728,13 +2728,13 @@ impl Render for ThemeForm {
                                 .flex()
                                 .flex_col()
                                 .children(entries),
-                        )
+                        ))
                         .child(Self::render_scrollbar(
                             &self.scroll,
                             "theme-editor-scrollbar",
                         )),
                 )
-                .child(
+                .child(crate::native_accessibility::clips_children(
                     div()
                         .on_children_prepainted(move |_, window, _| {
                             if (side_scroll.max_offset().y > Pixels::ZERO) != side_overflows {
@@ -2757,7 +2757,7 @@ impl Render for ThemeForm {
                         .gap_4()
                         .child(preview)
                         .child(warnings),
-                )
+                ))
                 .when(side_overflows, |body| {
                     body.child(Self::render_scrollbar(
                         &self.side_scroll,
@@ -2774,7 +2774,7 @@ impl Render for ThemeForm {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .child(
+                .child(crate::native_accessibility::clips_children(
                     div()
                         .id("theme-editor-body")
                         .debug_selector(|| "theme-editor-body".into())
@@ -2786,7 +2786,7 @@ impl Render for ThemeForm {
                         .flex()
                         .flex_col()
                         .children(entries),
-                )
+                ))
                 .child(Self::render_scrollbar(
                     &self.scroll,
                     "theme-editor-scrollbar",

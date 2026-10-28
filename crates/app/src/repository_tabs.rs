@@ -1917,7 +1917,7 @@ impl GitTurtle {
                 let strip = strip.child(self.primary_menu.clone());
                 strip
             })
-            .child(
+            .child(crate::native_accessibility::clips_children(
                 div()
                     .id("repository-tabs")
                     .role(Role::TabList)
@@ -2025,7 +2025,7 @@ impl GitTurtle {
                             }),
                     )
                     .children(drag_region),
-            )
+            ))
             .child(
                 button("new-repository-tab", "", "plus", false)
                     .accessibility_label("Open repository tab")
@@ -2181,7 +2181,7 @@ impl Render for LibraryView {
                 this.name.update(cx,|input,cx|input.set_value("",window,cx));this.error=None;cx.notify();
             }))))
             .children(self.error.as_ref().map(|error|workspace_text("local-workspaces-error", error.clone()).role(Role::Alert).text_color(rgb(colors.removed))))
-            .child(div().id("local-workspace-library").max_h(px(360.)).overflow_y_scroll().flex().flex_col().gap_2()
+            .child(crate::native_accessibility::clips_children(div().id("local-workspace-library").max_h(px(360.)).overflow_y_scroll().flex().flex_col().gap_2()
                 .children(self.session.groups.clone().into_iter().enumerate().map(|(index,group)|{
                     let count=self.session.library.iter().filter(|entry|entry.group.as_ref()==Some(&group)).count();let assign=group.clone();let open=group.clone();let remove=group.clone();
                     let description=format!("{group} · {count} {}", if count == 1 { "repository" } else { "repositories" });
@@ -2199,7 +2199,7 @@ impl Render for LibraryView {
                     div().flex().items_center().gap_2().child(workspace_text(("local-workspace-repository", index),label).aria_label(accessible.clone()).flex_1().min_w_0().truncate().tooltip(move|window,cx|Tooltip::new(accessible.clone()).build(window,cx)))
                         .child(button(("open-library-repo",index),"Open","",false).accessibility_label(format!("Open repository {identity}")).on_click(cx.listener(move|this,_,window,cx|{window.close_dialog(cx);let _=this.owner.update(cx,|owner,cx|owner.open_repository_tab(path.clone(),window,cx));})))
                         .child(button(("remove-library-repo",index),"Remove","",false).accessibility_label(format!("Remove repository {identity} from local library; keep its folder and drafts")).tooltip("Remove from the local library; keep its folder and drafts").on_click(cx.listener(move|this,_,window,cx|{this.session.library.retain(|entry|entry.path.path()!=remove);let _=this.owner.update(cx,|owner,cx|{owner.repository_tabs.library.retain(|entry|entry.path.path()!=remove);owner.save_repository_session(window,cx);});cx.notify();})))
-                })))
+                }))))
     }
 }
 

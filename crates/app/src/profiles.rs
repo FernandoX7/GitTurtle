@@ -269,7 +269,7 @@ impl GitTurtle {
         let can_apply = self.repository.is_some() && self.page != AppPage::Projects;
         window.open_alert_dialog(cx, move |dialog, _, cx| {
             let p = palette(cx); let create_owner = owner.clone();
-            let content = div().id("profile-manager-content").max_h(px(430.)).overflow_y_scroll().flex().flex_col().gap_3()
+            let content = crate::native_accessibility::clips_children(div().id("profile-manager-content").max_h(px(430.)).overflow_y_scroll().flex().flex_col().gap_3()
                 .child(label("profiles-context", target.clone()).text_size(crate::appearance::ui_text(12.)))
                 .child(label("profiles-purpose", "Profiles choose Git author identity. Provider sign-in, credential helpers and private keys stay separate. Editing or deleting a definition does not change Git configuration.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
                 .children(error.as_ref().map(|error| label("profiles-error", error.clone()).text_color(rgb(p.warning))))
@@ -284,7 +284,7 @@ impl GitTurtle {
                             .child(button(("apply-profile", index), "Apply…", "", false).disabled(!can_apply).on_click(move |_, window, cx| { let _ = apply_owner.update(cx, |this, cx| { if this.path == path { window.close_dialog(cx); this.prepare_profile(apply_profile.clone(), window, cx); } }); }))
                             .child(button(("edit-profile", index), "Edit…", "", false).on_click(move |_, window, cx| { let _ = edit_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(Some(edit_profile.clone()), window, cx); }); }))
                             .child(button(("delete-profile", index), "Delete…", "", false).on_click(move |_, window, cx| { let _ = delete_owner.update(cx, |this, cx| { window.close_dialog(cx); this.delete_profile(delete_profile.clone(), window, cx); }); })))
-                }));
+                })));
             dialog.title("Git profiles").width(px(600.)).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
         });
         window.refresh();
@@ -620,7 +620,7 @@ impl ProfileForm {
 impl Render for ProfileForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        div().id("profile-form").max_h(px(420.)).overflow_y_scroll().flex().flex_col().gap_3()
+        crate::native_accessibility::clips_children(div().id("profile-form").max_h(px(420.)).overflow_y_scroll().flex().flex_col().gap_3()
             .child(label("profile-label", "Profile name").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.label).aria_label("Profile name").disabled(self.pending))
             .child(label("profile-author-label", "Git author name").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.name).aria_label("Profile Git author name").disabled(self.pending))
             .child(label("profile-email-label", "Git author email").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.email).aria_label("Profile Git author email").disabled(self.pending))
@@ -629,6 +629,6 @@ impl Render for ProfileForm {
             .when(self.capture_signing, |element| element.child(label("profile-signing-reference", format!("Key reference: {}\nFormat: {} · Commit signing: {} · Tag signing: {} · Annotated signing: {}", self.signing.key.as_deref().unwrap_or("Keep repository key"), self.signing.format.as_deref().unwrap_or("Keep repository format"), self.signing.commits, self.signing.tags, self.signing.annotated_tags)).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .child(label("profile-save-explanation", "Save creates or edits this reusable profile. Apply it separately to a reviewed repository. Existing signing requirements remain enabled; unavailable keys produce Git errors without an unsigned fallback.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .when(self.pending, |element| element.child(label("profile-save-pending", "Saving profile…").text_color(rgb(p.accent))))
-            .children(self.error.as_ref().map(|error| label("profile-form-error", error.clone()).text_color(rgb(p.warning))))
+            .children(self.error.as_ref().map(|error| label("profile-form-error", error.clone()).text_color(rgb(p.warning)))))
     }
 }

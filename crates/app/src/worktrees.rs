@@ -550,7 +550,7 @@ impl Render for WorktreeManager {
         // the ring's room and `ROW_RING_CLEARANCE` more, so a focused row's
         // ring keeps some of the list's surface before the next row's border.
         let room = appearance::button_ring_room(cx);
-        div().id("worktree-manager-content").debug_selector(|| "worktree-manager-content".into()).flex().flex_col().gap_3().max_h(px(570.).min(body_height) + room * 2.).p(room).mx(-room).overflow_y_scroll()
+        crate::native_accessibility::clips_children(div().id("worktree-manager-content").debug_selector(|| "worktree-manager-content".into()).flex().flex_col().gap_3().max_h(px(570.).min(body_height) + room * 2.).p(room).mx(-room).overflow_y_scroll()
             .child(div().flex().gap_2()
                 .child(button("worktree-browse-tab", "Manage", "", !self.creating).debug_selector(|| "worktree-browse-tab".to_string()).toggled(!self.creating).on_click(cx.listener(|this, _, _, cx| this.set_creating(false, cx))))
                 .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).debug_selector(|| "worktree-create-tab".to_string()).toggled(self.creating).on_click(cx.listener(|this, _, _, cx| this.set_creating(true, cx))))
@@ -559,10 +559,10 @@ impl Render for WorktreeManager {
             .children(self.error.as_ref().map(|error| label("worktree-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .when(!self.creating, |element| element
                 .child(Input::new(&self.filter).aria_label("Filter worktrees by branch or path").cleanable(true))
-                .child(div().debug_selector(|| "managed-worktree-entries".into()).flex().flex_col().min_h_0().child(div().id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap(room + ROW_RING_CLEARANCE).children(trees.iter().take(100).enumerate().map(|(index, tree)| {
+                .child(div().debug_selector(|| "managed-worktree-entries".into()).flex().flex_col().min_h_0().child(crate::native_accessibility::clips_children(div().id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap(room + ROW_RING_CLEARANCE).children(trees.iter().take(100).enumerate().map(|(index, tree)| {
                     let tree = tree.clone(); let selected = self.selected.as_ref() == Some(&tree.path); let text = format!("{} · {}{}{}", tree.branch.as_deref().unwrap_or("Detached HEAD"), tree.path.display(), if tree.locked { " · Locked" } else { "" }, if tree.prunable { " · Missing or stale" } else { "" });
                     worktree_row(index, text, selected, p).on_click(cx.listener(move |this, _, window, cx| this.select(tree.clone(), window, cx)))
-                })).when(trees.is_empty() && !self.pending, |element| element.child(label("worktrees-empty", "No worktrees match this filter.").text_size(crate::appearance::ui_text(12.))))))
+                })).when(trees.is_empty() && !self.pending, |element| element.child(label("worktrees-empty", "No worktrees match this filter.").text_size(crate::appearance::ui_text(12.)))))))
                 .when(trees.len() > 100, |element| element.child(label("worktrees-match-limit", "Showing 100 matches. Narrow the filter to find another worktree.").text_size(crate::appearance::ui_text(12.))))
                 .when_some(self.details.as_ref(), |element, details| {
                     let details = details.clone(); let path = details.tree.path.clone(); let finder = path.clone(); let editor = path.clone();
@@ -582,16 +582,16 @@ impl Render for WorktreeManager {
                 .child(div().flex().gap_2().children([(false, "Existing branch"), (true, "New branch")].map(|(new, name)| button(name, name, "", self.new_branch == new).toggled(self.new_branch == new).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| { this.new_branch = new; this.error = None; cx.notify(); })))))
                 .child(label("worktree-branch-label", if self.new_branch { "New branch name" } else { "Choose a local branch" }).text_size(crate::appearance::ui_text(12.)))
                 .child(Input::new(&self.branch).aria_label("Worktree branch name"))
-                .when(!self.new_branch, |element| element.child(div().debug_selector(|| "worktree-branch-entries".into()).flex().flex_col().min_h_0().child(div().id("worktree-branch-choices").debug_selector(|| "worktree-branch-choices".into()).max_h(px(140.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(choices.iter().enumerate().map(|(index, branch)| {
+                .when(!self.new_branch, |element| element.child(div().debug_selector(|| "worktree-branch-entries".into()).flex().flex_col().min_h_0().child(crate::native_accessibility::clips_children(div().id("worktree-branch-choices").debug_selector(|| "worktree-branch-choices".into()).max_h(px(140.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(choices.iter().enumerate().map(|(index, branch)| {
                     let name = branch.name.clone(); let occupied = self.trees.iter().any(|tree| tree.branch.as_deref() == Some(&name));
                     button(("worktree-branch-choice", index), format!("{}{}", name, if occupied { " · In use" } else { "" }), "", false).debug_selector(move || format!("worktree-branch-choice-{index}")).disabled(occupied || self.pending).on_click(cx.listener(move |this, _, window, cx| { this.branch.update(cx, |input, cx| input.set_value(name.clone(), window, cx)); cx.notify(); }))
-                })).when(choices.is_empty(), |element| element.child(label("worktree-branches-empty", "No local branch matches. Create a new branch or change the name.").text_size(crate::appearance::ui_text(12.)))))))
+                })).when(choices.is_empty(), |element| element.child(label("worktree-branches-empty", "No local branch matches. Create a new branch or change the name.").text_size(crate::appearance::ui_text(12.))))))))
                 .when(self.new_branch, |element| element.child(label("worktree-start-label", "Start from local branch, tag, or commit").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.start).aria_label("New worktree starting revision")))
                 .child(label("worktree-parent", format!("Parent folder: {}", self.parent.display())).text_size(crate::appearance::ui_text(12.)))
                 .child(button("choose-worktree-parent", "Choose parent folder…", "folder", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.choose_parent(window, cx))))
                 .child(Input::new(&self.folder).aria_label("New worktree folder name"))
                 .child(label("worktree-destination-rule", "Choose a new folder inside the parent. Existing folders and branches checked out elsewhere are protected. Review the resolved branch and destination before creating.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
-                .child(button("review-create-worktree", "Review worktree…", "", false).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.prepare_create(window, cx)))))
+                .child(button("review-create-worktree", "Review worktree…", "", false).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.prepare_create(window, cx))))))
     }
 }
 

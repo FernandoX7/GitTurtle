@@ -281,7 +281,7 @@ impl Render for LfsDownloadForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let pointer = gitturtle_preview::detect_lfs_pointer(&self.target.pointer);
-        div().id("lfs-download-review-content").flex().flex_col().gap_3().max_h(px(450.)).overflow_y_scroll()
+        crate::native_accessibility::clips_children(div().id("lfs-download-review-content").flex().flex_col().gap_3().max_h(px(450.)).overflow_y_scroll()
             .child(label("lfs-download-file", format!("File: {}", self.target.path.display())).text_size(appearance::ui_text(13.)))
             .when_some(pointer.as_ref(), |element, pointer| element.child(label("lfs-download-object", format!("sha256:{}\n{} bytes", pointer.oid, pointer.size)).text_size(appearance::ui_text(12.))))
             .child(label("lfs-download-source-label", "Choose the configured source").text_size(appearance::ui_text(12.)))
@@ -291,6 +291,6 @@ impl Render for LfsDownloadForm {
             .when(self.pending, |element| element.child(label("lfs-source-loading", "Resolving the selected pointer, Git LFS tooling, and configured source…").text_size(appearance::ui_text(12.))))
             .when_some(self.plan.as_ref(), |element, plan| element.child(label("lfs-source-resolved", plan.source.clone()).text_size(appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| label("lfs-download-error", error.clone()).text_size(appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .child(label("lfs-download-limit", "Normal browsing stays passive. This action is limited to one object up to 32 MiB; decoder and memory limits still apply. No credentials are stored in this form.").text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)))
+            .child(label("lfs-download-limit", "Normal browsing stays passive. This action is limited to one object up to 32 MiB; decoder and memory limits still apply. No credentials are stored in this form.").text_size(appearance::ui_text(12.)).text_color(rgb(p.muted))))
     }
 }

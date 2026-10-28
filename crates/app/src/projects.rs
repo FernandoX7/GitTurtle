@@ -1038,7 +1038,7 @@ impl Render for ProjectHub {
                     )
                     .child(div().flex_1()),
             )
-            .child(
+            .child(crate::native_accessibility::clips_children(
                 div()
                     // Record even focus outside the form, so returning to the
                     // same field reveals it again. Scrolling alone leaves the
@@ -1108,7 +1108,7 @@ impl Render for ProjectHub {
                                     }),
                             ),
                     ),
-            )
+            ))
     }
 }
 

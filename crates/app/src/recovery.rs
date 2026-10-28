@@ -326,7 +326,7 @@ impl GitTurtle {
             window.open_alert_dialog(cx, move |dialog, _, _| {
                 dialog.title("Choose the mainline parent").width(px(560.))
                     .child(div().text_size(crate::appearance::ui_text(12.)).child(format!("{} is a merge commit. Choose the parent against which its change should be calculated.", short_oid(&commit.oid))))
-                    .child(div().id("recovery-mainline-parents").max_h(px(320.)).overflow_y_scroll().flex().flex_col().gap_2()
+                    .child(crate::native_accessibility::clips_children(div().id("recovery-mainline-parents").max_h(px(320.)).overflow_y_scroll().flex().flex_col().gap_2()
                         .children(commit.parents.iter().enumerate().take(128).map(|(index, parent)| {
                             let owner = owner.clone(); let repository = repository.clone(); let oid = commit.oid.clone();
                             button(("recovery-mainline", index), format!("Parent {} · {}", index + 1, short_oid(parent)), "", false)
@@ -338,7 +338,7 @@ impl GitTurtle {
                                         }
                                     });
                                 })
-                        })))
+                        }))))
                     .button_props(DialogButtonProps::default().ok_text("Cancel"))
             });
         } else {
@@ -1499,7 +1499,7 @@ impl Render for StashBrowser {
                 .child(div().h(crate::appearance::ui_size(38.)).flex().items_center().px_2().gap_1().border_b_1().border_color(rgb(p.border))
                     .child(div().flex_1().text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::SEMIBOLD).child("Saved work"))
                     .child(button("refresh-stashes", "", "refresh", false).accessibility_label("Refresh saved stashes").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.load_page(0, window, cx)))))
-                .child(div().id("stash-list-focus").role(Role::ListBox).aria_label("Saved stashes").tab_stop(true).track_focus(&self.stash_focus).flex_1().min_h_0()
+                .child(crate::native_accessibility::clips_children(div().id("stash-list-focus").role(Role::ListBox).aria_label("Saved stashes").tab_stop(true).track_focus(&self.stash_focus).flex_1().min_h_0()
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         if let Some(index) = list_key_selection(event.keystroke.key.as_str(), this.selected, this.page.as_ref().map_or(0, |page| page.entries.len())) {
                             cx.stop_propagation();
@@ -1508,7 +1508,7 @@ impl Render for StashBrowser {
                         }
                     }))
                     .when(self.page.as_ref().is_some_and(|page| !page.entries.is_empty()), |element| element.child(list))
-                    .when(self.page.as_ref().is_some_and(|page| page.entries.is_empty()), |element| element.child(div().p_4().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("No saved stashes. Save current changes from the Actions menu in Changes."))))
+                    .when(self.page.as_ref().is_some_and(|page| page.entries.is_empty()), |element| element.child(div().p_4().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("No saved stashes. Save current changes from the Actions menu in Changes.")))))
                 .child(div().h(crate::appearance::ui_size(36.)).flex().items_center().justify_between().px_2().border_t_1().border_color(rgb(p.border))
                     .child(button("previous-stashes", "Previous", "", false).disabled(busy || self.offset == 0).on_click(cx.listener(|this, _, window, cx| this.load_page(this.offset.saturating_sub(STASH_PAGE_SIZE), window, cx))))
                     .child(button("next-stashes", "More", "", false).disabled(busy || self.page.as_ref().and_then(|page| page.next_offset).is_none()).on_click(cx.listener(|this, _, window, cx| { if let Some(offset) = this.page.as_ref().and_then(|page| page.next_offset) { this.load_page(offset, window, cx); } })))))
@@ -1522,7 +1522,7 @@ impl Render for StashBrowser {
                     .child(div().flex().flex_wrap().items_center().gap_1().children([StashArea::Staged, StashArea::Unstaged, StashArea::Untracked].into_iter().map(|area| {
                         button(("stash-area", area as usize), format!("{} ({})", area.label(), area.files(&snapshot).len()), "", self.area == area).on_click(cx.listener(move |this, _, _, cx| this.choose_area(area, cx)))
                     })))
-                    .child(div().id("stash-files-focus").role(Role::ListBox).aria_label("Saved files").tab_stop(true).track_focus(&self.file_focus).h(px(if narrow { 85. } else { 130. })).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden()
+                    .child(crate::native_accessibility::clips_children(div().id("stash-files-focus").role(Role::ListBox).aria_label("Saved files").tab_stop(true).track_focus(&self.file_focus).h(px(if narrow { 85. } else { 130. })).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden()
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                             if let Some(index) = list_key_selection(event.keystroke.key.as_str(), this.selected_file, this.files().len()) {
                                 cx.stop_propagation();
@@ -1531,7 +1531,7 @@ impl Render for StashBrowser {
                             }
                         }))
                         .when(!self.files().is_empty(), |element| element.child(files))
-                        .when(self.files().is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("No saved files in this group."))))
+                        .when(self.files().is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("No saved files in this group.")))))
                     .child(div().flex().items_center().gap_1().children(["Diff", "Before", "After", "Diagrams"].into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, label)| {
                         button(("stash-text-mode", mode), label, "", self.text_mode == mode).disabled(!matches!(self.content.as_deref(), Some(Content::Text { .. }))).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.ensure_editor(window, cx); cx.notify(); }))
                     })))

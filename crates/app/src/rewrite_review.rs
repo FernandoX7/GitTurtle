@@ -688,15 +688,15 @@ impl Render for SeriesBrowser {
                 && plan.remote_ref
                     == format!("refs/heads/{}", self.remote_branch.read(cx).value().trim())
         });
-        div().id("rewrite-review-body").w_full().min_w_0().max_h(px(height)).when(self.inspecting, |element| element.h(px(height))).overflow_y_scroll().flex().flex_col().gap_2()
+        crate::native_accessibility::clips_children(div().id("rewrite-review-body").w_full().min_w_0().max_h(px(height)).when(self.inspecting, |element| element.h(px(height))).overflow_y_scroll().flex().flex_col().gap_2()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .when(!self.inspecting, |element| element
                 .child(div().text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Original → rewritten · unique patch fingerprints identify likely correspondence. Changed patches may match by unique subject only. Ambiguous, combined and empty commits remain explicit; inspect both sides before publishing."))
                 .when_some(self.review.as_ref(), |element, review| element.child(div().text_size(appearance::ui_text(11.)).child(format!("{} · original {} → rewritten {} · base {}", review.branch, short_oid(&review.original_head), short_oid(&review.rewritten_head), short_oid(&review.base)))))
-                .child(div().id("series-focus-list").w_full().min_w_0().h(list_height).flex_shrink_0().border_1().border_color(rgb(p.border)).focus_visible(|style| style.border_color(rgb(p.accent))).rounded(px(6.)).overflow_hidden().tab_stop(true).track_focus(&self.focus).role(Role::ListBox).aria_label("Original and rewritten commits").aria_description("Up and Down select a commit pair. Return inspects rewritten files.")
+                .child(crate::native_accessibility::clips_children(div().id("series-focus-list").w_full().min_w_0().h(list_height).flex_shrink_0().border_1().border_color(rgb(p.border)).focus_visible(|style| style.border_color(rgb(p.accent))).rounded(px(6.)).overflow_hidden().tab_stop(true).track_focus(&self.focus).role(Role::ListBox).aria_label("Original and rewritten commits").aria_description("Up and Down select a commit pair. Return inspects rewritten files.")
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| { match event.keystroke.key.as_str() { "up" => this.select(this.selected.saturating_sub(1), window, cx), "down" => this.select(this.selected + 1, window, cx), "enter" => this.inspect(false, window, cx), _ => return } cx.stop_propagation(); }))
-                    .child(uniform_list("rewrite-series-list", row_count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.rows_scroll)))
+                    .child(uniform_list("rewrite-series-list", row_count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.rows_scroll))))
                 .child(div().flex().flex_wrap().gap_2()
                     .child(button("inspect-series-messages", "Review messages", "", false).disabled(selected.is_none()).on_click(cx.listener(|this, _, window, cx| this.inspect_messages(window, cx))))
                     .child(button("inspect-original-commit", "Inspect original files", "", false).disabled(selected.as_ref().is_none_or(|row| row.original.is_none())).on_click(cx.listener(|this, _, window, cx| this.inspect(true, window, cx))))
@@ -722,7 +722,7 @@ impl Render for SeriesBrowser {
                 .when(matches!(self.content.as_deref(), Some(Content::Text { .. })), |element| element.child(div().flex().gap_2().children(["Patch", "Before source", "After source", "Diagrams"].into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, label)| button(("series-text-mode", mode), label, "", self.text_mode == mode).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); }))))))
                 .child(div().flex_1().min_h(px(100.)).border_1().border_color(rgb(p.border)).overflow_hidden().child(self.render_content(cx))))
             .when(self.pending, |element| element.child(div().text_color(rgb(p.muted)).child("Reading captured local history…")))
-            .when_some(self.error.as_ref(), |element, error| element.child(div().max_h(px(100.)).id("series-review-error").overflow_y_scroll().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone())))
+            .when_some(self.error.as_ref(), |element, error| element.child(div().max_h(px(100.)).id("series-review-error").overflow_y_scroll().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone()))))
     }
 }
 

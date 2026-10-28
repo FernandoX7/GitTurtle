@@ -443,7 +443,7 @@ impl AboutDetails {
 impl Render for AboutDetails {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let revision = &build_info::REVISION[..build_info::REVISION.len().min(12)];
-        div()
+        crate::native_accessibility::clips_children(div()
             .id("about-gitturtle-details")
             .max_h((window.viewport_size().height - appearance::ui_size(230.)).max(px(100.)))
             .overflow_y_scroll()
@@ -474,7 +474,7 @@ impl Render for AboutDetails {
                         let report = this.report.clone();
                         copy_feedback::copy(window, cx, Some(this.diagnostics_mark()), "bug diagnostics", report);
                     })),
-            )
+            ))
     }
 }
 

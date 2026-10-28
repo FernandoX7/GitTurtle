@@ -722,7 +722,7 @@ impl GitTurtle {
             .border_l_1()
             .border_color(rgb(p.border))
             .child(
-                div()
+                crate::native_accessibility::clips_children(div()
                     .id("file-history-header")
                     .max_h(relative(0.30))
                     .overflow_y_scroll()
@@ -836,12 +836,12 @@ impl GitTurtle {
                                         format!("Revision {}", lineage.offset + index + 1)
                                     })),
                             ),
-                    ),
+                    )),
             )
             .child(div().flex_1().min_h_0().flex().flex_col()
                 .children(entry.map(|entry| self.render_commit_message(&entry.commit, true, cx)))
             .children(lineage.error.as_ref().map(|error| {
-                div()
+                crate::native_accessibility::clips_children(div()
                     .id("file-history-failure")
                     .max_h(relative(0.35))
                     .overflow_y_scroll()
@@ -874,10 +874,10 @@ impl GitTurtle {
                                     );
                                 }
                             })),
-                    )
+                    ))
             }))
             .child(
-                div()
+                crate::native_accessibility::clips_children(div()
                     .id("file-revision-list").debug_selector(|| "file-revision-list".into())
                     .role(Role::ListBox)
                     .aria_label("File revisions, newest first")
@@ -913,11 +913,11 @@ impl GitTurtle {
                         .size_full()
                         .track_scroll(&self.file_history.scroll)
                         .into_any_element()
-                    }),
+                    })),
             )
             )
             .child(
-                div()
+                crate::native_accessibility::clips_children(div()
                     .id("file-history-footer")
                     .max_h(relative(0.25))
                     .overflow_y_scroll()
@@ -983,7 +983,7 @@ impl GitTurtle {
                                         }
                                     })),
                             ),
-                    ),
+                    )),
             )
             .into_any_element()
     }

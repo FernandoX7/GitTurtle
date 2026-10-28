@@ -567,13 +567,13 @@ impl GitTurtle {
             // Quick source omits the changed-file list. Keep its destination
             // focus attached to this visible inspector so app shortcuts work.
             .when(self.is_quick_source(), |element| element.role(Role::Group).aria_label("Tracked source information").track_focus(&self.file_focus).tab_stop(true))
-            .child(div().id("revision-metadata").min_h_0().overflow_y_scroll().flex_shrink_0()
+            .child(crate::native_accessibility::clips_children(div().id("revision-metadata").min_h_0().overflow_y_scroll().flex_shrink_0()
                 .when(!self.is_quick_source(), |element| element.max_h(px(260.)))
                 .p_3().flex().flex_col().gap_2()
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
                 .child(div().id("revision-identities").role(Role::Label).aria_label(details.clone()).text_size(crate::appearance::ui_text(11.)).child(details))
                 .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Targets stay pinned while you inspect files. Refresh reviews current refs. No checkout or download."))
-                .child(button("change-revisions","Choose targets…","",false).on_click(cx.listener(|this,_,window,cx|this.open_revision_comparison(window,cx)))))
+                .child(button("change-revisions","Choose targets…","",false).on_click(cx.listener(|this,_,window,cx|this.open_revision_comparison(window,cx))))))
             .when(!self.is_quick_source(), |element| element.child(self.render_files(cx))).into_any_element()
     }
 }
@@ -766,7 +766,7 @@ impl Render for CompareForm {
             .take(8)
             .cloned()
             .collect();
-        div().id("comparison-form").track_focus(&self.focus)
+        crate::native_accessibility::clips_children(div().id("comparison-form").track_focus(&self.focus)
             .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
             .overflow_y_scroll().text_size(crate::appearance::ui_text(12.))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
@@ -780,7 +780,7 @@ impl Render for CompareForm {
             .child(div().text_color(rgb(p.muted)).child("Type a local revision, or choose a matching branch/tag for the most recently edited field. Names resolve when you press Compare. A merge-base comparison shows the changes leading to After."))
             .children(choices.into_iter().enumerate().map(|(i,name)|button(("revision-choice",i),name.clone(),"",false).disabled(self.busy).on_click(cx.listener(move |this,_,window,cx|{let input=if this.selected_side==0{&this.before}else{&this.after};input.update(cx,|input,cx|input.set_value(name.clone(),window,cx));}))))
             .when(self.busy,|el|el.child(div().child("Resolving local revisions and changed files… Cancel closes this read.")))
-            .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone()))))
+            .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone())))))
     }
 }
 
@@ -1005,7 +1005,7 @@ impl Render for QuickForm {
         )
         .track_scroll(&self.scroll)
         .size_full();
-        div().id("quick-file-form-scroll").debug_selector(|| "quick-file-form".into())
+        crate::native_accessibility::clips_children(div().id("quick-file-form-scroll").debug_selector(|| "quick-file-form".into())
             .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
             .overflow_y_scroll().text_size(crate::appearance::ui_text(12.))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.cancel(window, cx); cx.stop_propagation(); }))
@@ -1023,8 +1023,8 @@ impl Render for QuickForm {
                 div().debug_selector(move || format!("quick-open-help: {shown}")).child(shortcuts::dialog_help(help).text_color(rgb(p.muted)))
             })
             .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone())))
-            .child(div().id("quick-open-results").debug_selector(|| "quick-open-results".into()).role(Role::ListBox).aria_label("Matching tracked files").h(desired_height.min(available_height)).border_1().border_color(rgb(p.raised_edge())).overflow_hidden().when(count>0,|el|el.child(list)).when(count==0&&!self.busy,|el|el.child(div().p_3().child("No matching tracked files. Untracked files are available in Working Changes."))))
-            .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("File History and Blame are available after opening. Worktree reads show raw current bytes; a chosen revision is pinned to its resolved commit.")))
+            .child(crate::native_accessibility::clips_children(div().id("quick-open-results").debug_selector(|| "quick-open-results".into()).role(Role::ListBox).aria_label("Matching tracked files").h(desired_height.min(available_height)).border_1().border_color(rgb(p.raised_edge())).overflow_hidden().when(count>0,|el|el.child(list)).when(count==0&&!self.busy,|el|el.child(div().p_3().child("No matching tracked files. Untracked files are available in Working Changes.")))))
+            .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("File History and Blame are available after opening. Worktree reads show raw current bytes; a chosen revision is pinned to its resolved commit."))))
     }
 }
 

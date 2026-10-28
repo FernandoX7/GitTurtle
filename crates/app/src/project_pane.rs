@@ -867,7 +867,7 @@ impl GitTurtle {
                     ),
             )
             .child(
-                div()
+                crate::native_accessibility::clips_children(div()
                     .id("project-pane-tree")
                     .role(Role::Tree)
                     .aria_label("Projects. Arrow keys browse; Left and Right collapse or expand a group; Enter opens a project; Shift F10 opens project or group actions")
@@ -930,7 +930,7 @@ impl GitTurtle {
                         .track_scroll(&self.project_pane.scroll)
                         .into_any_element()
                     })
-                    .children(self.render_keyboard_menu(window, cx)),
+                    .children(self.render_keyboard_menu(window, cx))),
             )
             .children(self.project_pane.error.as_ref().map(|error| {
                 div()

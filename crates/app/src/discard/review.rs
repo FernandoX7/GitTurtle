@@ -137,7 +137,7 @@ impl GitTurtle {
                                 .flex_1()
                                 .min_h_0()
                                 .child(
-                                    div()
+                                    crate::native_accessibility::clips_children(div()
                                         .id("discard-details")
                                         .debug_selector(|| "discard-details".into())
                                         .role(Role::Document)
@@ -171,7 +171,7 @@ impl GitTurtle {
                                         .size_full()
                                         .overflow_y_scroll()
                                         .track_scroll(&scroll)
-                                        .child(details),
+                                        .child(details)),
                                 )
                                 .child(Scrollbar::vertical(&scroll).id("discard-scrollbar").mode(ScrollbarMode::Always)),
                         ),

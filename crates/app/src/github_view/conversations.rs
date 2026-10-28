@@ -488,13 +488,13 @@ impl Panel {
             .checked_sub(2)
             .map(|index| self.conversations.cursors[index].clone());
         let next = self.conversations.next_cursor.clone();
-        div().id("github-thread-section").min_w_0().role(Role::Group).aria_label("GitHub review conversations with authoritative resolution status")
+        crate::native_accessibility::clips_children(div().id("github-thread-section").min_w_0().role(Role::Group).aria_label("GitHub review conversations with authoritative resolution status")
             .tab_stop(true).track_focus(&self.review.section_focus).border_1().border_color(rgb(p.border)).rounded(px(7.)).focus_visible(|style|style.border_color(rgb(p.accent))).flex().flex_col().gap_2().p_3()
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(label("github-conversations-heading",format!("Conversations · {} unresolved on this page",unresolved)).font_weight(FontWeight::SEMIBOLD))
                 .child(div().flex_1())
                 .child(button("github-threads-refresh","Refresh conversations","refresh",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|this.thread_page(None,window,cx)))))
-            .child(div().id("github-threads").debug_selector(||"github-threads".into()).flex_shrink_0().min_w_0().max_h(appearance::ui_size(360.)).overflow_y_scroll().flex().flex_col().gap_3()
+            .child(crate::native_accessibility::clips_children(div().id("github-threads").debug_selector(||"github-threads".into()).flex_shrink_0().min_w_0().max_h(appearance::ui_size(360.)).overflow_y_scroll().flex().flex_col().gap_3()
                 .when(visible.is_empty(),|element|element.child(label("github-no-threads",if self.conversations.loaded{"No conversations for this file on the loaded page."}else{"Conversations are unavailable. Refresh conversations to load their current status."}).text_color(rgb(p.muted))))
                 .children(visible.into_iter().enumerate().map(|(index,thread)|{
                     let target=thread.target.clone(); let reply=target.clone(); let resolve=target.clone(); let refresh=target.clone(); let more=target.clone();
@@ -526,13 +526,12 @@ impl Panel {
                             .when(cursor.is_some(),|element|element.child(button(("github-thread-more",index),"Next comment page","",false).disabled(self.pending).on_click(cx.listener(move|this,_,window,cx|this.thread_comments(more.clone(),cursor.clone(),window,cx)))))
                             .child(label(("github-thread-count",index),format!("{} of {} comments",thread.comments.len(),thread.comments_total)).text_color(rgb(p.muted))))
                         .when(!stale && (!can_reply || !can_resolve),|element|element.child(label(("github-thread-permissions",index),"Unavailable actions need complete context and GitHub permission; refresh to check again.").text_color(rgb(p.muted))))
-                })))
+                }))))
             .when_some(self.conversations.pagination_notice.as_ref(),|element,notice|element.child(label("github-thread-pagination-limit",notice.clone()).text_color(rgb(p.warning))))
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(button("github-threads-previous","Previous conversations","",false).disabled(self.pending||previous.is_none()).on_click(cx.listener(move|this,_,window,cx|{if let Some(cursor)=previous.clone(){this.thread_page(cursor,window,cx);}})))
                 .child(label("github-threads-page",format!("Page {} · {} total conversations",self.conversations.cursors.len(),self.conversations.total)).text_color(rgb(p.muted)))
-                .child(button("github-threads-next","Next conversations","",false).disabled(self.pending||next.is_none()).on_click(cx.listener(move|this,_,window,cx|this.thread_page(next.clone(),window,cx)))))
-            .into_any_element()
+                .child(button("github-threads-next","Next conversations","",false).disabled(self.pending||next.is_none()).on_click(cx.listener(move|this,_,window,cx|this.thread_page(next.clone(),window,cx)))))).into_any_element()
     }
 }
 

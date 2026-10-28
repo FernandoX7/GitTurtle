@@ -38,17 +38,19 @@ fn history_scroll_viewport(
     horizontal: &ScrollHandle,
     content: impl IntoElement,
 ) -> impl IntoElement {
-    div()
-        .id("history-horizontal")
-        .flex_1()
-        .min_h_0()
-        .min_w_0()
-        // Base Scrollbar paints an absolute overlay. Reserve its track inside
-        // the tracked viewport so Nearest reveals an entire row above it.
-        .pb(Scrollbar::width())
-        .overflow_x_scroll()
-        .track_scroll(horizontal)
-        .child(content)
+    crate::native_accessibility::clips_children(
+        div()
+            .id("history-horizontal")
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            // Base Scrollbar paints an absolute overlay. Reserve its track inside
+            // the tracked viewport so Nearest reveals an entire row above it.
+            .pb(Scrollbar::width())
+            .overflow_x_scroll()
+            .track_scroll(horizontal)
+            .child(content),
+    )
 }
 
 impl GitTurtle {
@@ -722,7 +724,7 @@ impl GitTurtle {
                     .child(Input::new(&self.nav_search).aria_label("Filter branches and worktrees").text_size(crate::appearance::ui_text(11.))),
             )
             .child(
-                div()
+                crate::native_accessibility::clips_children(div()
                     .id("repository-navigation")
                     .role(Role::Tree)
                     .aria_label("Branches and worktrees. Arrow keys browse; Left and Right collapse or expand; Enter activates; Shift F10 opens branch or worktree actions")
@@ -740,7 +742,7 @@ impl GitTurtle {
                     .on_action(cx.listener(|this, _: &native_accessibility::ManageNavigation, window, cx| this.manage_navigation(window, cx)))
                     .child(uniform_list("navigation", self.nav_rows.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                         range.map(|i| this.render_nav_row(i, cx)).collect::<Vec<_>>()
-                    })).size_full().track_scroll(&self.nav_scroll)),
+                    })).size_full().track_scroll(&self.nav_scroll))),
             )
             .child(
                 div()

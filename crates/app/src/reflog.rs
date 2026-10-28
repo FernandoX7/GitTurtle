@@ -1570,15 +1570,15 @@ mod tests {
         // it is hidden only while the dialog is open.
         let page = written::get("gitturtle-page").expect("the page writes a node");
         assert!(page.parent.is_none() && page.node.is_hidden(), "{page:?}");
-        assert_eq!(
-            written::get("history-pane")
-                .and_then(|list| list.parent)
-                .as_deref(),
-            Some("gitturtle-page"),
+        assert!(
+            written::lies_in("history-pane", "gitturtle-page"),
             "History's list lies in the page"
         );
-        let content = written::get("reflog-browser-content").expect("the Reflog is drawn");
-        assert_eq!(content.parent, None, "the Reflog is drawn beside the page");
+        assert!(
+            written::get("reflog-browser-content").is_some()
+                && !written::lies_in("reflog-browser-content", "gitturtle-page"),
+            "the Reflog is drawn beside the page"
+        );
 
         cx.simulate_keystrokes("escape");
         cx.executor()

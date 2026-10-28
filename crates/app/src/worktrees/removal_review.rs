@@ -230,7 +230,7 @@ impl GitTurtle {
                                 .flex_1()
                                 .min_h_0()
                                 .relative()
-                                .child(div()
+                                .child(crate::native_accessibility::clips_children(div()
                                     .id("worktree-force-effects")
                                     .debug_selector(|| "worktree-force-effects".into())
                                     .role(Role::Document)
@@ -264,7 +264,7 @@ impl GitTurtle {
                                     .size_full()
                                     .overflow_y_scroll()
                                     .track_scroll(&scroll)
-                                    .child(effects(&details, colors)))
+                                    .child(effects(&details, colors))))
                                 .child(Scrollbar::vertical(&scroll).id("worktree-force-scrollbar").mode(ScrollbarMode::Always)),
                         ),
                 )

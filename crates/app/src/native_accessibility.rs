@@ -361,6 +361,18 @@ pub(crate) mod written {
         NODES.with(|nodes| nodes.borrow().get(id).cloned())
     }
 
+    /// Whether the wrapper `id` was last drawn inside the wrapper `outer`.
+    pub(crate) fn lies_in(id: &str, outer: &str) -> bool {
+        let mut parent = get(id).and_then(|written| written.parent);
+        while let Some(id) = parent {
+            if id == outer {
+                return true;
+            }
+            parent = get(&id).and_then(|written| written.parent);
+        }
+        false
+    }
+
     /// Forgets every node [`get`] would return, so that what a test reads
     /// after its next draw comes from that draw.
     pub(crate) fn forget() {
@@ -379,14 +391,30 @@ pub(crate) mod written {
 
     impl Assembly {
         /// Adds the node the wrapper `id` last wrote, under the wrapper it
-        /// was drawn in or, drawn in none, under `outside` (the root if
-        /// `None`). A wrapper that was not drawn adds nothing.
+        /// was drawn in, which it adds first if it is not yet added, and so
+        /// on out; the outermost goes under `outside` (the root if `None`).
+        /// A wrapper that was not drawn adds nothing.
         pub(crate) fn written(mut self, id: &str, outside: Option<&str>) -> Self {
-            if let Some(Written { node, parent }) = get(id) {
-                let parent = parent.or_else(|| outside.map(str::to_owned));
-                self.nodes.push((id.to_owned(), node, parent));
+            let Some(Written { node, parent }) = get(id) else {
+                return self;
+            };
+            if self.has(id) {
+                return self;
             }
+            let parent = match parent {
+                Some(parent) => {
+                    self = self.written(&parent, outside);
+                    Some(parent)
+                }
+                None => outside.map(str::to_owned),
+            };
+            self.nodes.push((id.to_owned(), node, parent));
             self
+        }
+
+        /// Whether a node `key` was added.
+        pub(crate) fn has(&self, key: &str) -> bool {
+            self.nodes.iter().any(|(added, ..)| added == key)
         }
 
         /// Adds `node` under `parent`, the root if `None`, as `key`.
@@ -470,6 +498,9 @@ pub(crate) fn forget_clipping_nodes() {
 pub(crate) struct Reachable {
     pub role: Role,
     pub label: Option<String>,
+    pub bounds: Option<gpui::accesskit::Rect>,
+    /// The bounds of the nearest node around it that clips its children.
+    pub clip: Option<gpui::accesskit::Rect>,
 }
 
 /// Every node an assistive technology reaches walking `update`'s tree from
@@ -478,18 +509,25 @@ pub(crate) struct Reachable {
 #[cfg(test)]
 pub(crate) fn reachable(update: gpui::accesskit::TreeUpdate) -> Vec<Reachable> {
     use accesskit_consumer::{Node, Tree, common_filter};
-    fn walk(node: Node<'_>, found: &mut Vec<Reachable>) {
+    fn walk(node: Node<'_>, clip: Option<gpui::accesskit::Rect>, found: &mut Vec<Reachable>) {
         found.push(Reachable {
             role: node.role(),
             label: node.label(),
+            bounds: node.bounding_box(),
+            clip,
         });
+        let clip = if node.clips_children() {
+            node.bounding_box()
+        } else {
+            clip
+        };
         for child in node.filtered_children(common_filter) {
-            walk(child, found);
+            walk(child, clip, found);
         }
     }
     let tree = Tree::new(update, true);
     let mut found = Vec::new();
-    walk(tree.state().root(), &mut found);
+    walk(tree.state().root(), None, &mut found);
     found
 }
 

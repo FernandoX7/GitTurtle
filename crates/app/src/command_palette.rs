@@ -1095,7 +1095,7 @@ impl Render for Palette {
                     .truncate()
                     .child(scope),
             )
-            .child(
+            .child(crate::native_accessibility::clips_children(
                 div()
                     .id("command-palette-results")
                     .debug_selector(|| "command-palette-results".into())
@@ -1118,7 +1118,7 @@ impl Render for Palette {
                             },
                         ))
                     }),
-            )
+            ))
             .child(
                 shortcuts::dialog_help(reason.map(str::to_owned).unwrap_or_else(|| {
                     format!(

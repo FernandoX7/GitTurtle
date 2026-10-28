@@ -592,7 +592,7 @@ impl Render for RebaseForm {
             .owner
             .upgrade()
             .is_some_and(|owner| owner.read(cx).focus_ring.shows(&self.focus));
-        div().id("rebase-plan-scroll")
+        crate::native_accessibility::clips_children(div().id("rebase-plan-scroll")
             .max_h((window.viewport_size().height - px(240.)).max(px(160.)) + room)
             .px(room)
             .mx(-room)
@@ -612,7 +612,7 @@ impl Render for RebaseForm {
                     button(action.label(), action.label(), "", active).toggled(active).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| this.choose(action, cx)))
                 })).child(button("rebase-move-up", "Move up", "", false).disabled(self.pending || self.selected == 0).on_click(cx.listener(|this, _, _, cx| this.move_selected(true, cx))))
                     .child(button("rebase-move-down", "Move down", "", false).disabled(self.pending || self.selected + 1 >= self.steps.len()).on_click(cx.listener(|this, _, _, cx| this.move_selected(false, cx)))))
-                .child(div().id("rebase-list-focus").debug_selector(|| "rebase-list-focus".into()).role(Role::ListBox).aria_label("Planned commits, oldest first").tab_stop(true).key_context("RebaseSequence").track_focus(&self.focus).h(px(220.)).border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(5.)).overflow_hidden()
+                .child(crate::native_accessibility::clips_children(div().id("rebase-list-focus").debug_selector(|| "rebase-list-focus".into()).role(Role::ListBox).aria_label("Planned commits, oldest first").tab_stop(true).key_context("RebaseSequence").track_focus(&self.focus).h(px(220.)).border_1().border_color(rgb(if ringed { p.accent } else { p.border })).rounded(px(5.)).overflow_hidden()
                     .on_action(cx.listener(|this, _: &MoveCommitUp, _, cx| this.move_selected(true, cx)))
                     .on_action(cx.listener(|this, _: &MoveCommitDown, _, cx| this.move_selected(false, cx)))
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
@@ -621,7 +621,7 @@ impl Render for RebaseForm {
                             this.selected = match key { "up" => this.selected.saturating_sub(1), "down" => (this.selected + 1).min(this.steps.len() - 1), "home" => 0, _ => this.steps.len() - 1 };
                             this.scroll.scroll_to_item(this.selected, ScrollStrategy::Center); cx.stop_propagation(); cx.notify();
                         } else if let Some(action) = match key { "p" => Some(RebaseAction::Pick), "r" => Some(RebaseAction::Reword), "s" => Some(RebaseAction::Squash), "f" => Some(RebaseAction::Fixup), "d" => Some(RebaseAction::Drop), _ => None } { this.choose(action, cx); cx.stop_propagation(); }
-                    })).child(list))
+                    })).child(list)))
                 .child(label("rebase-keyboard-help", format!("↑/↓ select · {} / {} reorder · P/R/S/F/D choose an action. Squash combines messages; Fixup keeps the preceding message. Drop removes the commit's changes.", shortcuts::key_label("alt-up"), shortcuts::key_label("alt-down"))).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
                 .when(!plan.known_published_refs.is_empty(), |element| element
                     .child(label("rebase-published-warning", format!("History rewrite warning: these commits are known to {}. Other people may depend on their IDs.", plan.known_published_refs.join(", "))).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))
@@ -629,7 +629,7 @@ impl Render for RebaseForm {
                 .child(button("review-interactive-rebase", "Review rebase…", "", true).disabled(self.pending || issue.is_some() || changed_base || (!plan.known_published_refs.is_empty() && !self.acknowledged)).on_click(cx.listener(|this, _, window, cx| this.review(window, cx)))))
             .when(changed_base, |element| element.child(label("rebase-base-changed", "Base edited: load commits again to update the sequence.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .children(issue.map(|issue| label("rebase-invalid-plan", issue).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .children(self.error.as_ref().map(|error| label("rebase-form-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
+            .children(self.error.as_ref().map(|error| label("rebase-form-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))))
     }
 }
 
@@ -755,7 +755,7 @@ impl Render for MessageForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let durable_status = self.durable_status.clone();
-        div().id("rebase-message-scroll")
+        crate::native_accessibility::clips_children(div().id("rebase-message-scroll")
             .max_h((window.viewport_size().height - px(240.)).max(px(160.)))
             .overflow_y_scroll()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.close(window, cx); cx.stop_propagation(); }))
@@ -777,7 +777,7 @@ impl Render for MessageForm {
             .child(label("rebase-draft-save-status", durable_status).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .when(self.editor.is_none(), |element| element.child(label("rebase-no-message", "No message is pending. Continue will replay the next planned step and pause if a message or conflict needs attention.").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| label("rebase-message-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .child(button("review-rebase-continue", "Review Continue…", "", true).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))))
+            .child(button("review-rebase-continue", "Review Continue…", "", true).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))))))
     }
 }
 

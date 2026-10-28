@@ -901,13 +901,13 @@ impl Render for ShortcutHelpView {
                 .aria_label(format!("{count} matching shortcuts"))
                 .text_color(rgb(p.muted)).child(format!("{count} shortcuts · {}",
                     if cfg!(target_os = "macos") { "⌘ Command  ⌥ Option  ⌃ Control  ⇧ Shift" } else { "Ctrl, Alt and Shift" })))
-            .child(div().id("shortcut-help-results").debug_selector(|| "shortcut-help-results".into()).role(Role::ListBox)
+            .child(crate::native_accessibility::clips_children(div().id("shortcut-help-results").debug_selector(|| "shortcut-help-results".into()).role(Role::ListBox)
                 .aria_label("Keyboard shortcuts by group").h(height).overflow_hidden()
                 .rounded(px(7.)).border_1().border_color(rgb(p.raised_edge()))
                 .when(count > 0, |view| view.child(list))
                 .when(count == 0, |view| view.child(div().p_4().text_color(rgb(p.muted)).child(
                     if self.query.read(cx).value().len() > 4096 { "Search is limited to 4,096 bytes." }
-                    else { "No shortcuts match. Try tabs, compare, editing or Ctrl." }))))
+                    else { "No shortcuts match. Try tabs, compare, editing or Ctrl." })))))
             .child(div().id("shortcut-help-selected").role(Role::Status)
                 .a11y_synthetic_children(native_accessibility::polite)
                 .aria_label(match self.rows.get(self.selected) {

@@ -2591,7 +2591,7 @@ impl GitTurtle {
             .bg(rgb(p.canvas))
             .text_color(rgb(p.text))
             .child(
-                div()
+                crate::native_accessibility::clips_children(div()
                     // Record even focus outside the page, so returning to the
                     // same control reveals it again.
                     .on_children_prepainted(self.theme_editor.page().observe())
@@ -2695,7 +2695,7 @@ impl GitTurtle {
                                             )),
                                     ),
                             ),
-                    ),
+                    )),
             )
             .into_any_element()
     }
@@ -4759,6 +4759,163 @@ mod picker_tests {
         for _ in 0..2 {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.run_until_parked();
+        }
+    }
+
+    /// In a short window an assistive technology reaches only the Settings
+    /// controls the window draws: no reachable control lies wholly outside
+    /// its nearest clipping ancestor, beyond the one neighbour AccessKit
+    /// keeps past each edge for it to move into, and that ancestor is the
+    /// part of the page the window draws. Settings' page did not clip, so
+    /// every theme card, switch and button below the window was reached.
+    ///
+    /// The test platform builds no accessibility tree, so the test builds
+    /// the part GPUI would: the wrappers' nodes as they were drawn, and the
+    /// controls, as the page's children, at their bounds, in the order the
+    /// page draws them. It walks the tree through AccessKit's own filter.
+    #[gpui::test]
+    async fn assistive_technology_reaches_only_the_settings_drawn(cx: &mut TestAppContext) {
+        use crate::native_accessibility::{reachable, written};
+        use gpui::accesskit::{Node, Rect};
+
+        let (_app, cx) = open_app(cx);
+        let mut selectors: Vec<String> = ThemeChoice::ALL
+            .iter()
+            .map(|choice| format!("settings-theme-{}", *choice as usize))
+            .collect();
+        selectors.extend((0..4).map(|index| format!("settings-density-{index}")));
+        selectors.extend(
+            [
+                "settings-theme-omarchy",
+                "follow-system-switch",
+                "code-font-switch",
+                "custom-themes-new",
+                "custom-themes-import",
+                "save-external-editor",
+                "save-default-branch",
+            ]
+            .map(str::to_owned),
+        );
+        let physical = |cx: &mut VisualTestContext, bounds: Bounds<Pixels>| {
+            let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+            Rect {
+                x0: f64::from(f32::from(bounds.left())) * scale,
+                y0: f64::from(f32::from(bounds.top())) * scale,
+                x1: f64::from(f32::from(bounds.right())) * scale,
+                y1: f64::from(f32::from(bounds.bottom())) * scale,
+            }
+        };
+        let meets = |a: Rect, b: Rect| !a.intersect(b).is_empty();
+        let close = |a: Rect, b: Rect| {
+            [(a.x0, b.x0), (a.y0, b.y0), (a.x1, b.x1), (a.y1, b.y1)]
+                .iter()
+                .all(|(a, b)| (a - b).abs() < 0.01)
+        };
+
+        for (width, height) in [(640., 490.), (461., 490.)] {
+            let at = format!("{width} × {height}");
+            cx.simulate_resize(size(px(width), px(height)));
+            settle(cx);
+            // Without an assistive technology the page is a cached view,
+            // which a frame that changes nothing reuses unseen; it is not
+            // cached while one is active, so draw it again whole.
+            written::forget();
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            let window = physical(
+                cx,
+                Bounds::new(point(px(0.), px(0.)), size(px(width), px(height))),
+            );
+            // The part of the page the window draws, from layout alone.
+            let page = cx
+                .debug_bounds("settings-scroll")
+                .expect("Settings is drawn");
+            let drawn = physical(
+                cx,
+                page.intersect(&Bounds::new(
+                    point(px(0.), px(0.)),
+                    size(px(width), px(height)),
+                )),
+            );
+            // The controls, in the order the page draws them.
+            let mut controls: Vec<(String, Rect)> = selectors
+                .iter()
+                .filter_map(|selector| {
+                    cx.debug_bounds(selector.clone().leak())
+                        .map(|bounds| (selector.clone(), physical(cx, bounds)))
+                })
+                .collect();
+            controls.sort_by(|a, b| (a.1.y0, a.1.x0).partial_cmp(&(b.1.y0, b.1.x0)).unwrap());
+            assert!(
+                controls.len() > 20 && controls.iter().any(|(_, bounds)| !meets(*bounds, drawn)),
+                "at {at} the page runs past the window: {controls:?}"
+            );
+
+            let mut tree = written::Assembly::default().written("settings-scroll", None);
+            // Without a node of its own the page's controls are children of
+            // the node around it, as they were.
+            let parent = if tree.has("settings-scroll") {
+                "settings-scroll"
+            } else {
+                tree = tree.written("gitturtle-page", None);
+                "gitturtle-page"
+            };
+            for (selector, bounds) in &controls {
+                let mut control = Node::new(Role::Button);
+                control.set_label(selector.clone());
+                control.set_bounds(*bounds);
+                tree = tree.node(selector, control, Some(parent));
+            }
+            let found = reachable(tree.tree(window, None));
+            let reached: Vec<_> = found
+                .iter()
+                .filter(|node| {
+                    node.label
+                        .as_ref()
+                        .is_some_and(|label| selectors.contains(label))
+                })
+                .collect();
+            for node in &reached {
+                let bounds = node.bounds.expect("bounds");
+                let clip = node.clip.unwrap_or(window);
+                let index = controls
+                    .iter()
+                    .position(|(selector, _)| Some(selector) == node.label.as_ref())
+                    .unwrap();
+                // AccessKit keeps the first control past each edge.
+                let neighbour = [index.checked_sub(1), Some(index + 1)]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|other| controls.get(other))
+                    .any(|(_, other)| meets(*other, clip));
+                assert!(
+                    meets(bounds, clip) || neighbour,
+                    "at {at} {:?} at {bounds:?} is reached, wholly outside its clipping ancestor {clip:?}",
+                    node.label
+                );
+            }
+            // The clipping ancestor is the part of the page the window draws.
+            for node in &reached {
+                assert!(
+                    node.clip.is_some_and(|clip| close(clip, drawn)),
+                    "at {at} {:?} is clipped to {:?}; the window draws {drawn:?} of the page",
+                    node.label,
+                    node.clip
+                );
+            }
+            // Every control the window draws is in reach.
+            for (selector, bounds) in &controls {
+                if meets(*bounds, drawn) {
+                    assert!(
+                        reached
+                            .iter()
+                            .any(|node| node.label.as_ref() == Some(selector)),
+                        "at {at} the drawn {selector} is in reach"
+                    );
+                }
+            }
         }
     }
 
