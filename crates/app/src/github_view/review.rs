@@ -1112,7 +1112,8 @@ impl Panel {
             .into_any_element()
     }
     /// The exact patch, filling its column down to the file list's bottom edge in whole lines:
-    /// what a line does not fill lies below the text, in the editor's own background.
+    /// what a line does not fill, less than a line, lies below the text, in the editor's own
+    /// background.
     fn render_source(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(source) = &self.review.source else {
             return label("github-no-source","No text patch was supplied. Open the captured local comparison to inspect available source or binary content.").into_any_element();
@@ -1123,8 +1124,10 @@ impl Panel {
             .read(cx)
             .line_height()
             .unwrap_or(appearance::code_text() * EDITOR_LINE_HEIGHT);
+        // The lines fill the box below the editor's top padding and its Find bar; its bottom
+        // padding lies past the clip at the last whole line.
         let text =
-            (laid_out.get() - SOURCE_CHROME - editor_find::panel_height(source, cx)).max(px(0.));
+            (laid_out.get() - EDITOR_PADDING - editor_find::panel_height(source, cx)).max(px(0.));
         let slack = text - line * (text / line).floor();
         let content = match &self.review.source_view {
             Some(view) => view.clone().into_any_element(),
@@ -1157,10 +1160,10 @@ impl Panel {
                 }
             })
             .child(
-                div().size_full().pb(slack + EDITOR_PADDING).child(
+                div().size_full().pb(slack).child(
                     // Ends at the last whole line's bottom and cuts what the editor paints
                     // below it, its bottom padding and the top of the next line, which it
-                    // overruns this by; the padding joins the strip.
+                    // overruns this by.
                     div()
                         .debug_selector(|| "github-source-text".into())
                         .relative()
@@ -1274,11 +1277,9 @@ const MIN_LINE_NUMBER_WIDTH: f32 = 36.;
 const FILE_LIST_HEIGHT: Pixels = px(324.);
 /// The kit editor's line height, a multiple of its text size.
 const EDITOR_LINE_HEIGHT: f32 = 1.5;
-/// The kit editor's padding above and below its text.
+/// The kit editor's padding above and below its text. In Source only the top padding lies
+/// between the inside of the box's border and the text; the bottom one runs past the clip.
 const EDITOR_PADDING: Pixels = px(8.);
-/// What lies between the inside of the Source box's border and its text: the kit editor's
-/// padding above and below.
-const SOURCE_CHROME: Pixels = px(16.);
 /// A Changes row's height: the code text's line at 1.65.
 fn patch_row_height() -> Pixels {
     px(f32::from(appearance::code_text()) * 1.65)
@@ -2276,7 +2277,9 @@ mod tests {
     /// In a 1480 × 980 window at 13 and 18 pt, Source fills its column down to the changed-file
     /// list's bottom edge, as plain text while its file prepares and decorated once it has, and
     /// shows whole lines: its text is a whole number of lines tall, and what a line does not
-    /// fill, less than a line, lies below the text inside the box.
+    /// fill, less than a line, lies below the text inside the box. It counted its lines over the
+    /// box less the editor's padding above and below, though the bottom padding lies past its
+    /// clip, so 39 px at 2x lay below 13 lines of 36 px, room for a 14th.
     #[gpui::test]
     async fn source_reaches_the_file_lists_bottom_in_whole_lines(cx: &mut TestAppContext) {
         let (_fixture, app, panel, cx) = review_panel(cx);
@@ -2346,8 +2349,8 @@ mod tests {
                         lines >= 5. && (lines - lines.round()).abs() < 0.01,
                         "{at}: {text:?} is {lines} lines of {line:?}"
                     );
-                    // Inside the 1 px border and the editor's 8 px padding.
-                    let below = source.bottom() - px(9.) - text.bottom();
+                    // Inside the 1 px border: the editor's bottom padding lies past the clip.
+                    let below = source.bottom() - px(1.) - text.bottom();
                     assert!(
                         below > px(-0.01) && below < line,
                         "{at}: {below:?} below the text {text:?} in {source:?}"
