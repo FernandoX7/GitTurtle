@@ -145,6 +145,88 @@ fn visible(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// The container a captured file's leading bytes establish, without its name.
+/// [`inspect`] reports its format from this, so a caller that needs a type
+/// rather than a label, such as the suffix of a copy handed to another
+/// application, agrees with what the preview shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Container {
+    Pdf,
+    Wav,
+    Mp3,
+    /// ISO base media or QuickTime (`ftyp` or `moov` at offset 4), which also
+    /// frames HEIF/AVIF images; [`iso_image_format`] tells those apart.
+    IsoMedia,
+    Matroska,
+    Flac,
+    Ogg,
+    Zip,
+    Ole,
+    Sfnt,
+    Woff,
+    Gzip,
+    SevenZip,
+    Rar,
+    Bzip2,
+    Xz,
+    Tar,
+    Utf16,
+    Utf8Text,
+}
+
+/// The first container signature the bytes carry, in [`inspect`]'s order.
+pub fn container(bytes: &[u8]) -> Option<Container> {
+    Some(if bytes.starts_with(b"%PDF-") {
+        Container::Pdf
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+        Container::Wav
+    } else if bytes.starts_with(b"ID3")
+        || (bytes.len() >= 2
+            && bytes[0] == 0xff
+            && bytes[1] & 0xe0 == 0xe0
+            && !bytes.starts_with(&[0xff, 0xfe]))
+    {
+        Container::Mp3
+    } else if bytes.get(4..8) == Some(b"ftyp") || bytes.get(4..8) == Some(b"moov") {
+        Container::IsoMedia
+    } else if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        Container::Matroska
+    } else if bytes.starts_with(b"fLaC") {
+        Container::Flac
+    } else if bytes.starts_with(b"OggS") {
+        Container::Ogg
+    } else if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+        Container::Zip
+    } else if bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]) {
+        Container::Ole
+    } else if bytes.starts_with(b"\x00\x01\x00\x00")
+        || bytes.starts_with(b"OTTO")
+        || bytes.starts_with(b"true")
+    {
+        Container::Sfnt
+    } else if bytes.starts_with(b"wOFF") || bytes.starts_with(b"wOF2") {
+        Container::Woff
+    } else if bytes.starts_with(b"\x1f\x8b") {
+        Container::Gzip
+    } else if bytes.starts_with(b"7z\xbc\xaf\x27\x1c") {
+        Container::SevenZip
+    } else if bytes.starts_with(b"Rar!\x1a\x07") {
+        Container::Rar
+    } else if bytes.starts_with(b"BZh") {
+        Container::Bzip2
+    } else if bytes.starts_with(b"\xfd7zXZ\0") {
+        Container::Xz
+    } else if bytes.get(257..262) == Some(b"ustar") {
+        Container::Tar
+    } else if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
+        Container::Utf16
+    } else if is_literal_text(bytes) {
+        Container::Utf8Text
+    } else {
+        return None;
+    })
+}
+
 /// Useful bounded metadata with explicit container/codec uncertainty. Filename
 /// hints never count as content detection. Exact original bytes stay in the app.
 pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
@@ -154,7 +236,8 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
         source: None,
     };
     let ext = extension(name);
-    if bytes.starts_with(b"%PDF-") {
+    let container = container(bytes);
+    if container == Some(Container::Pdf) {
         result.format = "PDF".into();
         result.details.push(format!(
             "PDF version {}",
@@ -163,15 +246,10 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
         result.details.push(
             "Visual page comparison; document pages cannot be used for partial staging.".into(),
         );
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
+    } else if container == Some(Container::Wav) {
         result.format = "WAV audio".into();
         wav(bytes, &mut result.details);
-    } else if bytes.starts_with(b"ID3")
-        || (bytes.len() >= 2
-            && bytes[0] == 0xff
-            && bytes[1] & 0xe0 == 0xe0
-            && !bytes.starts_with(&[0xff, 0xfe]))
-    {
+    } else if container == Some(Container::Mp3) {
         result.format = "MPEG audio / MP3".into();
         result
             .details
@@ -196,7 +274,7 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
                 }
             }
         }
-    } else if bytes.get(4..8) == Some(b"ftyp") || bytes.get(4..8) == Some(b"moov") {
+    } else if container == Some(Container::IsoMedia) {
         result.format = iso_image_format(bytes)
             .unwrap_or("ISO media / QuickTime container")
             .into();
@@ -206,23 +284,20 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
                 .push(format!("Container brand: {}", visible(brand)));
         }
         result.details.push("The container does not establish its audio/video codecs. Use external inspection for playback.".into());
-    } else if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+    } else if container == Some(Container::Matroska) {
         result.format = "WebM / Matroska container".into();
         result.details.push("EBML container detected; codec and playback support depend on the external application.".into());
-    } else if bytes.starts_with(b"fLaC") {
+    } else if container == Some(Container::Flac) {
         result.format = "FLAC audio".into();
-    } else if bytes.starts_with(b"OggS") {
+    } else if container == Some(Container::Ogg) {
         result.format = "Ogg media container".into();
-    } else if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+    } else if container == Some(Container::Zip) {
         result.format = "ZIP archive / packaged document".into();
         zip(bytes, &mut result);
-    } else if bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]) {
+    } else if container == Some(Container::Ole) {
         result.format = "OLE compound document".into();
         result.details.push("Legacy Office or another OLE container. Macros and document content are not executed or extracted.".into());
-    } else if bytes.starts_with(b"\x00\x01\x00\x00")
-        || bytes.starts_with(b"OTTO")
-        || bytes.starts_with(b"true")
-    {
+    } else if container == Some(Container::Sfnt) {
         result.format = if bytes.starts_with(b"OTTO") {
             "OpenType font"
         } else {
@@ -230,7 +305,7 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
         }
         .into();
         font(bytes, &mut result.details);
-    } else if bytes.starts_with(b"wOFF") || bytes.starts_with(b"wOF2") {
+    } else if container == Some(Container::Woff) {
         result.format = if bytes.starts_with(b"wOF2") {
             "WOFF2 web font"
         } else {
@@ -242,19 +317,19 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
                 "{tables} declared font tables; font is not installed"
             ));
         }
-    } else if bytes.starts_with(b"\x1f\x8b") {
+    } else if container == Some(Container::Gzip) {
         result.format = "Gzip archive".into();
-    } else if bytes.starts_with(b"7z\xbc\xaf\x27\x1c") {
+    } else if container == Some(Container::SevenZip) {
         result.format = "7-Zip archive".into();
-    } else if bytes.starts_with(b"Rar!\x1a\x07") {
+    } else if container == Some(Container::Rar) {
         result.format = "RAR archive".into();
-    } else if bytes.starts_with(b"BZh") {
+    } else if container == Some(Container::Bzip2) {
         result.format = "Bzip2 archive".into();
-    } else if bytes.starts_with(b"\xfd7zXZ\0") {
+    } else if container == Some(Container::Xz) {
         result.format = "XZ archive".into();
-    } else if bytes.get(257..262) == Some(b"ustar") {
+    } else if container == Some(Container::Tar) {
         result.format = "Tar archive".into();
-    } else if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
+    } else if container == Some(Container::Utf16) {
         let little = bytes.starts_with(&[0xff, 0xfe]);
         result.format = if little {
             "UTF-16 little-endian source"
@@ -290,7 +365,7 @@ pub fn inspect(bytes: &[u8], name: &Path) -> Metadata {
                 "Decoded source exceeds the 2 MiB limit or has an incomplete code unit.".into(),
             );
         }
-    } else if is_literal_text(bytes) {
+    } else if container == Some(Container::Utf8Text) {
         result.format = "UTF-8 source".into();
         if bytes.len() <= 2 * 1024 * 1024 {
             result.source = std::str::from_utf8(bytes).ok().map(Arc::from);
