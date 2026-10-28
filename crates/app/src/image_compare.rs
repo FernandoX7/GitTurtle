@@ -514,11 +514,14 @@ impl GitTurtle {
                 let path = side_path.unwrap_or(std::path::Path::new("image.bin"));
                 let target =
                     opener.target(("image-system-preview", index), label, bytes, path, offer);
-                captured_actions = captured_actions.child(
-                    target
-                        .button(offer.side_label(label), cx)
-                        .tooltip(offer.tooltip()),
-                );
+                // On Linux the control names itself; Quick Look's takes the
+                // tooltip it always had.
+                let control = target.button(crate::system_preview::Label::Side, cx);
+                captured_actions = captured_actions.child(if cfg!(target_os = "macos") {
+                    control.tooltip(offer.tooltip())
+                } else {
+                    control
+                });
                 notes.extend(target.note(cx));
             }
         }

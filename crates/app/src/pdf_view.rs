@@ -452,8 +452,8 @@ pub(super) fn render_comparison<T: 'static>(
         let mut note = None;
         if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
             let target = opener.target(("pdf-system",index), label, bytes, &side.name, offer);
-            let control = target.button(offer.label(), cx);
-            let control = if cfg!(target_os = "macos") { control.accessibility_label(format!("{label}: open captured PDF in System preview")) } else { control.accessibility_label(offer.accessible_name(label)).tooltip(offer.tooltip()) };
+            let control = target.button(crate::system_preview::Label::Action, cx);
+            let control = if cfg!(target_os = "macos") { control.accessibility_label(format!("{label}: open captured PDF in System preview")) } else { control };
             header = header.child(control);
             note = target.note(cx);
         }
