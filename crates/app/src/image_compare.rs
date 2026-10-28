@@ -1,6 +1,16 @@
 //! GPU composition over bounded worker-decoded images. No pixels are copied on drag.
 use crate::*;
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
+
+/// The comparison modes, in their group's order.
+const MODES: [(Mode, &str); 3] = [
+    (Mode::SideBySide, "Side by side"),
+    (Mode::Overlay, "Overlay"),
+    (Mode::Wipe, "Wipe"),
+];
+/// The zoom choices, in their group's order; 0 fits the image.
+const ZOOMS: [(f32, &str); 4] = [(0., "Fit"), (0.5, "50%"), (1., "100%"), (2., "200%")];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum Mode {
@@ -338,6 +348,17 @@ impl GitTurtle {
     pub(super) fn end_image_drag(&mut self) {
         self.image_comparison.drag = None;
     }
+    /// Shows the comparison in `mode`, from the start of its pan.
+    fn set_image_mode(&mut self, mode: Mode) {
+        self.image_comparison.mode = mode;
+        self.image_comparison.pan = [0.; 2];
+        self.end_image_drag();
+    }
+    /// Shows the comparison at `zoom` (0 fits it), from the start of its pan.
+    fn set_image_zoom(&mut self, zoom: f32) {
+        self.zoom = zoom;
+        self.image_comparison.pan = [0.; 2];
+    }
     fn pan_image(&mut self, requested: [f32; 2]) {
         let bounds = self.image_comparison.bounds;
         let (_, _, max) = layout(
@@ -365,41 +386,110 @@ impl GitTurtle {
         let source = self.is_quick_source();
         let state = &self.image_comparison;
         let both = self.images.iter().all(Option::is_some);
-        let mut modes = div().flex().gap_1();
-        for (mode, label) in [
-            (Mode::SideBySide, "Side by side"),
-            (Mode::Overlay, "Overlay"),
-            (Mode::Wipe, "Wipe"),
-        ] {
-            modes = modes.child(
-                button(label, label, "", state.mode == mode)
-                    .toggled(state.mode == mode)
-                    .tooltip(if mode == Mode::SideBySide {
-                        "Compare both versions with linked zoom and pan"
-                    } else {
-                        "Align both versions at their top-left corner on one canvas"
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.image_comparison.mode = mode;
-                        this.image_comparison.pan = [0.; 2];
-                        this.end_image_drag();
-                        cx.notify();
-                    })),
-            );
-        }
-        let mut zooms = div().flex().gap_1();
-        for (label, zoom) in [("Fit", 0.), ("50%", 0.5), ("100%", 1.), ("200%", 2.)] {
-            zooms = zooms.child(
-                button(label, label, "", self.zoom == zoom)
-                    .toggled(self.zoom == zoom)
-                    .tooltip(format!("100% comparison scale equals {:.1}% of source pixels. Source and decoded dimensions are shown below.", self.image_geometry().source_scale * 100.))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.zoom = zoom;
-                        this.image_comparison.pan = [0.; 2];
-                        cx.notify();
-                    })),
-            );
-        }
+        // Narrower than its labelled group, the toolbar's padding aside, each
+        // group keeps one row as a menu that reads the current choice, as
+        // the text modes do.
+        let room = width - window.rem_size() * 1.5;
+        let scale = format!(
+            "100% comparison scale equals {:.1}% of source pixels. Source and decoded dimensions are shown below.",
+            self.image_geometry().source_scale * 100.
+        );
+        let modes = if group_width(&MODES.map(|(_, name)| name), &MODE_GROUP, window) <= room {
+            let mut modes = div().debug_selector(|| "image-modes".into()).flex().gap_1();
+            for (mode, label) in MODES {
+                modes = modes.child(
+                    button(label, label, "", state.mode == mode)
+                        .toggled(state.mode == mode)
+                        .tooltip(mode_tooltip(mode))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_image_mode(mode);
+                            cx.notify();
+                        })),
+                );
+            }
+            modes.into_any_element()
+        } else {
+            let current = state.mode;
+            let label = MODES
+                .iter()
+                .find(|(mode, _)| *mode == current)
+                .map_or("Side by side", |(_, name)| *name);
+            let owner = cx.entity().downgrade();
+            crate::views::compact_control_label(
+                button("image-mode-menu", label, "", false),
+                "image-mode-menu",
+                format!("Comparison mode: {label}"),
+            )
+            .debug_selector(|| "image-mode-menu".into())
+            // Transparent, like the text modes' menu, it gives its inset
+            // back to the toolbar's padding, so its label starts where the
+            // captions' names do and its focus ring stays in the column.
+            .px(crate::appearance::ui_size(crate::ICON_INSET))
+            .ml(-crate::appearance::ui_size(crate::ICON_INSET))
+            .dropdown_caret(true)
+            .tooltip(format!("Comparison mode · {}", mode_tooltip(current)))
+            .dropdown_menu(move |menu, _, _| {
+                // Built when opened; a choice acts on the comparison as it
+                // is then, as a mode button does.
+                MODES.iter().fold(menu, |menu, &(mode, name)| {
+                    let owner = owner.clone();
+                    menu.item(PopupMenuItem::new(name).checked(mode == current).on_click(
+                        move |_, _, cx| {
+                            let _ = owner.update(cx, |this, cx| {
+                                this.set_image_mode(mode);
+                                cx.notify();
+                            });
+                        },
+                    ))
+                })
+            })
+            .into_any_element()
+        };
+        let zooms = if group_width(&ZOOMS.map(|(_, name)| name), &ZOOM_GROUP, window) <= room {
+            let mut zooms = div().debug_selector(|| "image-zooms".into()).flex().gap_1();
+            for (zoom, label) in ZOOMS {
+                zooms = zooms.child(
+                    button(label, label, "", self.zoom == zoom)
+                        .toggled(self.zoom == zoom)
+                        .tooltip(scale.clone())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_image_zoom(zoom);
+                            cx.notify();
+                        })),
+                );
+            }
+            zooms.into_any_element()
+        } else {
+            let current = self.zoom;
+            let label = ZOOMS
+                .iter()
+                .find(|(zoom, _)| *zoom == current)
+                .map_or("Fit", |(_, name)| *name);
+            let owner = cx.entity().downgrade();
+            crate::views::compact_control_label(
+                button("image-zoom-menu", label, "", false),
+                "image-zoom-menu",
+                format!("Zoom: {label}"),
+            )
+            .debug_selector(|| "image-zoom-menu".into())
+            .px(crate::appearance::ui_size(crate::ICON_INSET))
+            .dropdown_caret(true)
+            .tooltip(format!("Zoom · {scale}"))
+            .dropdown_menu(move |menu, _, _| {
+                ZOOMS.iter().fold(menu, |menu, &(zoom, name)| {
+                    let owner = owner.clone();
+                    menu.item(PopupMenuItem::new(name).checked(zoom == current).on_click(
+                        move |_, _, cx| {
+                            let _ = owner.update(cx, |this, cx| {
+                                this.set_image_zoom(zoom);
+                                cx.notify();
+                            });
+                        },
+                    ))
+                })
+            })
+            .into_any_element()
+        };
         let mut adjust = div().flex().items_center().gap_1();
         if state.mode != Mode::SideBySide {
             let label = if state.mode == Mode::Wipe {
@@ -501,9 +591,10 @@ impl GitTurtle {
         let caption_width = width / if source { 1. } else { 2. };
         let opener =
             crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing);
-        // Each side's open control and the line saying why its last click
-        // opened nothing, which its caption draws.
-        let mut opens: [Option<(Button, Option<AnyElement>)>; 2] = [None, None];
+        // Each side's open control, which its caption draws, and the line
+        // saying why its last click opened nothing, drawn beneath it.
+        let mut controls: [Option<Button>; 2] = [None, None];
+        let mut notes: [Option<AnyElement>; 2] = [None, None];
         for (index, side) in [old, new].into_iter().enumerate() {
             let label = if index == 0 { "Before" } else { "After" };
             let side_path = self
@@ -529,10 +620,10 @@ impl GitTurtle {
                 let path = side_path.unwrap_or(std::path::Path::new("image.bin"));
                 let target =
                     opener.target(("image-system-preview", index), label, bytes, path, offer);
-                // Labelled where it fits beside the caption's text, otherwise
-                // its icon. On Linux the control names itself; Quick Look's
-                // takes a name with its side.
-                let room = caption_room(index, caption_width, label, &details[index], window);
+                // Labelled where it fits beside the side's name, otherwise its
+                // icon. On Linux the control names itself; Quick Look's takes
+                // a name with its side.
+                let room = caption_room(index, caption_width, label, window);
                 let control = target.button(offer.form(room, window), cx);
                 let control = if cfg!(target_os = "macos") {
                     control.accessibility_label(format!(
@@ -541,7 +632,8 @@ impl GitTurtle {
                 } else {
                     control
                 };
-                opens[index] = Some((control, target.note(cx)));
+                controls[index] = Some(control);
+                notes[index] = target.note(cx);
             }
         }
         div()
@@ -581,17 +673,6 @@ impl GitTurtle {
             )
             .child(
                 div()
-                    .id("image-source-scale")
-                    .role(Role::Label)
-                    .aria_label(scale_notice.clone())
-                    .px_3()
-                    .py_1()
-                    .text_size(crate::appearance::ui_text(10.))
-                    .text_color(rgb(p.muted))
-                    .child(scale_notice),
-            )
-            .child(
-                div()
                     .flex()
                     .border_b_1()
                     .border_color(rgb(p.border))
@@ -602,70 +683,122 @@ impl GitTurtle {
                             .filter(|(index, _)| !source || *index == 1)
                             .map(|(i, _)| {
                                 let (name, details) = (names[i], details[i].clone());
-                                // The side's caption: its name and details,
-                                // then the control that opens it, as a
-                                // document's header has them, and the line
-                                // saying why its last click opened nothing.
-                                let (control, note) = opens[i].take().unzip();
+                                // The side's caption: its name, then the
+                                // control that opens it, as a document's
+                                // header has them, and its details beneath.
+                                // The name's line is as tall as the scaled
+                                // 28 px control and the caption keeps to its
+                                // top, so both sides' names and details line
+                                // up whether or not a side offers the
+                                // control, and the control stays on the first
+                                // line wherever the name leaves it room.
+                                let control = controls[i].take();
                                 div()
                                     .debug_selector(move || format!("image-side-caption-{i}"))
                                     .flex_1()
                                     .min_w_0()
                                     .flex()
-                                    .flex_wrap()
-                                    .items_center()
-                                    .gap_2()
+                                    .flex_col()
                                     .px_3()
                                     .py_2()
+                                    .text_size(crate::appearance::ui_text(11.))
                                     .child(
                                         div()
-                                            .id(("image-side-description", i))
-                                            .role(Role::Label)
-                                            .aria_label(format!("{name}: {details}"))
-                                            .min_w_0()
-                                            .text_size(crate::appearance::ui_text(11.))
+                                            .flex()
+                                            .flex_wrap()
+                                            .items_center()
+                                            .content_start()
+                                            .gap_2()
                                             .child(
-                                                div().font_weight(FontWeight::MEDIUM).child(name),
+                                                div()
+                                                    .id(("image-side-description", i))
+                                                    .debug_selector(move || {
+                                                        format!("image-side-name-{i}")
+                                                    })
+                                                    .role(Role::Label)
+                                                    .aria_label(format!("{name}: {details}"))
+                                                    .min_h(crate::appearance::ui_size(28.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(name),
                                             )
-                                            .child(div().text_color(rgb(p.muted)).child(details)),
+                                            .children(control),
                                     )
-                                    .children(control)
-                                    .children(note.flatten())
+                                    .child(
+                                        div()
+                                            .debug_selector(move || {
+                                                format!("image-side-details-{i}")
+                                            })
+                                            .min_w_0()
+                                            .text_color(rgb(p.muted))
+                                            .child(details),
+                                    )
                             }),
                     ),
             )
-            .child(if source {
+            .child(
                 div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.image_canvas(Some(1), cx))
-                    .into_any_element()
-            } else if state.mode == Mode::SideBySide {
-                div()
+                    .debug_selector(|| "image-canvas-area".into())
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(self.image_canvas(Some(0), cx))
-                    .child(self.image_canvas(Some(1), cx))
-                    .into_any_element()
-            } else {
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.image_canvas(None, cx))
-                    .into_any_element()
-            })
-            .child(
-                div()
-                    .id("image-interaction-guidance")
-                    .role(Role::Label)
-                    .aria_label(guidance)
-                    .px_3()
-                    .py_1()
-                    .text_size(crate::appearance::ui_text(10.))
-                    .text_color(rgb(p.muted))
-                    .child(guidance),
+                    .map(|area| {
+                        if source {
+                            area.child(self.image_canvas(Some(1), cx))
+                        } else if state.mode == Mode::SideBySide {
+                            area.child(self.image_canvas(Some(0), cx))
+                                .child(self.image_canvas(Some(1), cx))
+                        } else {
+                            area.child(self.image_canvas(None, cx))
+                        }
+                    })
+                    // The line saying why a side's last click opened
+                    // nothing lies beneath that side's caption, over the top
+                    // of the image, so neither caption nor the image moves
+                    // when the control answers.
+                    .children(notes.into_iter().enumerate().filter_map(|(i, note)| {
+                        let note = note?;
+                        let (left, share) = if source {
+                            (0., 1.)
+                        } else {
+                            (0.5 * i as f32, 0.5)
+                        };
+                        Some(
+                            div()
+                                .debug_selector(move || format!("image-side-note-{i}"))
+                                .absolute()
+                                .top_0()
+                                .left(relative(left))
+                                .w(relative(share))
+                                .px_3()
+                                .py_1()
+                                .bg(rgb(p.panel))
+                                .border_b_1()
+                                .border_color(rgb(p.border))
+                                .child(note),
+                        )
+                    })),
             )
+            // The comparison's notes follow the image, one line each, so a
+            // short window keeps its height for the captions and the image.
+            .child(one_line_note(
+                "image-source-scale",
+                scale_notice,
+                &SCALE_LINE,
+                width,
+                window,
+                &p,
+            ))
+            .child(one_line_note(
+                "image-interaction-guidance",
+                guidance.into(),
+                &GUIDANCE_LINE,
+                width,
+                window,
+                &p,
+            ))
             .into_any_element()
     }
     fn image_canvas(&self, side: Option<usize>, cx: &mut Context<Self>) -> AnyElement {
@@ -868,34 +1001,96 @@ fn side_details(side: &worker::ImageSide) -> String {
 }
 
 thread_local! {
-    /// Each side caption's name and details, laid out.
+    /// Each side caption's name, laid out.
     static BEFORE_CAPTION: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static AFTER_CAPTION: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The labelled mode and zoom groups' labels, laid out.
+    static MODE_GROUP: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static ZOOM_GROUP: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    /// The scale notice and the guidance, each laid out as one line.
+    static SCALE_LINE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static GUIDANCE_LINE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
 }
 
-/// The room side `index`'s caption leaves its open control beside its text in
-/// a caption `caption` wide: the caption less its `px_3` either side and
-/// `gap_2`, and the wider of its 11 pt medium `name` and its `details`.
-fn caption_room(
-    index: usize,
-    caption: Pixels,
-    name: &str,
-    details: &str,
-    window: &Window,
-) -> Pixels {
+/// The room side `index`'s caption leaves its open control on its first line
+/// in a caption `caption` wide: the caption less its `px_3` either side and
+/// `gap_2`, and its 11 pt medium `name`.
+fn caption_room(index: usize, caption: Pixels, name: &str, window: &Window) -> Pixels {
     let cache = if index == 0 {
         &BEFORE_CAPTION
     } else {
         &AFTER_CAPTION
     };
-    let text =
-        crate::views::cached_text_width(cache, &format!("{name}\n{details}"), window, || {
-            let size = crate::appearance::ui_text(11.);
-            crate::views::shaped_width(name, size, FontWeight::MEDIUM, window)
-                .ceil()
-                .max(crate::views::line_widths(&[(details, size)], window))
-        });
+    let text = crate::views::cached_text_width(cache, name, window, || {
+        let size = crate::appearance::ui_text(11.);
+        crate::views::shaped_width(name, size, FontWeight::MEDIUM, window).ceil()
+    });
     caption - window.rem_size() * (0.75 * 2. + 0.5) - text
+}
+
+/// The labelled group of `names` as the toolbar draws it: each the shared
+/// `button` helper's 10 px of padding either side of its 12 pt label, at
+/// least its 28 px square, `gap_1` apart. Laid out again only when the
+/// names, the font or the sizes change.
+fn group_width(
+    names: &[&str],
+    cache: &'static std::thread::LocalKey<crate::views::TextWidth>,
+    window: &Window,
+) -> Pixels {
+    crate::views::cached_text_width(cache, &names.join("\n"), window, || {
+        names
+            .iter()
+            .map(|name| {
+                (crate::views::line_widths(&[(name, crate::appearance::ui_text(12.))], window)
+                    + crate::appearance::ui_size(20.))
+                .max(crate::appearance::ui_size(28.))
+            })
+            .sum::<Pixels>()
+    }) + window.rem_size() * 0.25 * names.len().saturating_sub(1) as f32
+}
+
+/// What `mode` shows, for its button's tooltip and the menu's.
+fn mode_tooltip(mode: Mode) -> &'static str {
+    if mode == Mode::SideBySide {
+        "Compare both versions with linked zoom and pan"
+    } else {
+        "Align both versions at their top-left corner on one canvas"
+    }
+}
+
+/// A muted note of the comparison, `id`, on one line in a column `width`
+/// wide: whole where it fits, and otherwise cut with an ellipsis at a
+/// character boundary, its whole text in its tooltip as in its name, so it
+/// takes one line of the comparison's height at any width.
+fn one_line_note(
+    id: &'static str,
+    text: String,
+    cache: &'static std::thread::LocalKey<crate::views::TextWidth>,
+    width: Pixels,
+    window: &Window,
+    p: &crate::appearance::Palette,
+) -> Stateful<Div> {
+    let size = crate::appearance::ui_text(10.);
+    let fits = crate::views::cached_text_width(cache, &text, window, || {
+        crate::views::line_widths(&[(&text, size)], window)
+    }) <= width - window.rem_size() * 1.5;
+    let whole = text.clone();
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .role(Role::Label)
+        .aria_label(text.clone())
+        .flex_shrink_0()
+        .px_3()
+        .py_1()
+        .text_size(size)
+        .text_color(rgb(p.muted))
+        .when(!fits, |note| {
+            note.tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(whole.clone()).build(window, cx)
+            })
+        })
+        .child(div().min_w_0().truncate().child(text))
 }
 
 #[cfg(test)]

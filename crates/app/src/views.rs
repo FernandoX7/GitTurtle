@@ -5256,9 +5256,13 @@ pub(crate) mod tests {
     /// launcher offers it in its After header, a PNG in its After caption and
     /// a text model in its After header, and an ELF stub offers nothing.
     ///
-    /// The control lies whole inside its side's header or caption, its focus
-    /// ring included, in a full window and in the narrowest one, at the
-    /// default size and at 18 pt. Where its label fits beside the side's
+    /// The control lies whole inside the part of its side's header or
+    /// caption that the preview's clip leaves visible, its focus ring
+    /// included, in a full window and in the narrowest one, at the default
+    /// size and at 18 pt: in a 461 × 490 window the image's caption once
+    /// wrapped the control to a third line below that clip, so it was
+    /// offered to assistive technology but never drawn, while the caption's
+    /// own bounds held it. Where its label fits beside the side's
     /// name it is labelled; below that width it is its icon alone, the
     /// scaled 28 px square, so the content beside it keeps its place: in a
     /// 461 × 490 window the PDF header's control read "Open in d" at 13 pt,
@@ -5344,11 +5348,15 @@ pub(crate) mod tests {
                 let side = cx
                     .debug_bounds(area)
                     .unwrap_or_else(|| panic!("{at}: {path}: {area}"));
-                assert!(
-                    holds_with_ring(side, bounds),
-                    "{at}: {path}: {bounds:?} and its ring lie in {area} {side:?}"
-                );
+                // The part of the header or caption the preview's clip
+                // leaves visible: a caption pushed below it once held its
+                // control, which was offered but never drawn.
                 let content = cx.debug_bounds("preview-content").unwrap();
+                let visible = side.intersect(&content);
+                assert!(
+                    holds_with_ring(visible, bounds),
+                    "{at}: {path}: {bounds:?} and its ring lie in the visible part {visible:?} of {area} {side:?}"
+                );
                 assert!(
                     side.left() >= content.left() && side.right() <= content.right() + px(0.5),
                     "{at}: {path}: {side:?} lies in the preview {content:?}"
@@ -5479,11 +5487,203 @@ pub(crate) mod tests {
         );
     }
 
+    /// A changed image's captions keep each side's open control where it can
+    /// be seen and leave both sides still. In a 461 × 490 window the modes
+    /// (233 px) and zooms (191 px) ran past the 177 px column on two rows, the
+    /// scale notice took four lines, and each caption wrapped its control to a
+    /// third line below the preview's clip: offered, never drawn. Now the
+    /// groups become one-control menus where they do not fit, the scale
+    /// notice follows the image with the guidance, one line each, and the
+    /// control follows the side's name, so in the narrow window, at 13 and
+    /// at 18 pt, each control
+    /// and its ring lie in what the preview shows of its caption, and the two
+    /// names share their top (Before once sat 8 px below After, centred
+    /// beside a wrapped control). When a click opens nothing, the line saying
+    /// why lies beneath that side's caption over the image, so neither
+    /// caption, neither name nor the image moves: a two-line refusal once
+    /// grew the captions by 42.5 px and dropped Before's caption 20.5 px.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn image_captions_keep_their_controls_in_view_and_still(cx: &mut TestAppContext) {
+        use crate::system_preview::{
+            DISMISSED, NotOpened,
+            tests::{latest_note, png, queue},
+        };
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let sides = [
+            ("image-system-preview-0", "image-side-caption-0"),
+            ("image-system-preview-1", "image-side-caption-1"),
+        ];
+        let mut one_line = Vec::new();
+        for (text, width, height) in [
+            (13, 1480., 980.),
+            (13, 461., 490.),
+            (18, 1480., 980.),
+            (18, 461., 490.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let content = bounds("preview-content", cx);
+            for (control, caption) in sides {
+                let (control, caption) = (bounds(control, cx), bounds(caption, cx));
+                let visible = caption.intersect(&content);
+                assert!(
+                    holds_with_ring(visible, control),
+                    "{at}: {control:?} and its ring lie in the visible part {visible:?} of its side's caption {caption:?}"
+                );
+            }
+            let names = ["image-side-name-0", "image-side-name-1"].map(|name| bounds(name, cx));
+            assert!(
+                (names[0].top() - names[1].top()).abs() <= px(0.5),
+                "{at}: the side names share their top: {names:?}"
+            );
+            // The modes and zooms, labelled or as their menus, lie in the
+            // column with their focus rings.
+            let narrow = width < 1000.;
+            let (shown, hidden) = (
+                ["image-modes", "image-zooms"],
+                ["image-mode-menu", "image-zoom-menu"],
+            );
+            let (shown, hidden) = if narrow {
+                (hidden, shown)
+            } else {
+                (shown, hidden)
+            };
+            for selector in shown {
+                let group = bounds(selector, cx);
+                assert!(
+                    holds_with_ring(content, group),
+                    "{at}: {selector} {group:?} lies in the column {content:?}"
+                );
+            }
+            for selector in hidden {
+                assert!(cx.debug_bounds(selector).is_none(), "{at}: no {selector}");
+            }
+            if narrow {
+                assert_eq!(
+                    ["image-mode-menu", "image-zoom-menu"].map(|selector| {
+                        COMPACT_LABELS.with(|names| names.borrow().get(selector).cloned())
+                    }),
+                    [
+                        Some("Comparison mode: Side by side".into()),
+                        Some("Zoom: Fit".into())
+                    ],
+                    "{at}: each menu is named by its group and current choice"
+                );
+            }
+            // The notes keep the one line they take in a full window.
+            let lines = ["image-source-scale", "image-interaction-guidance"]
+                .map(|note| bounds(note, cx).size.height);
+            if narrow {
+                assert_eq!(lines, one_line.pop().unwrap(), "{at}: one line each");
+            } else {
+                one_line.push(lines);
+            }
+        }
+
+        // A click that opens nothing moves nothing.
+        let refusal = "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened.";
+        for (width, height) in [(1480., 980.), (461., 490.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let still = |cx: &mut VisualTestContext| {
+                [
+                    "image-side-caption-0",
+                    "image-side-caption-1",
+                    "image-side-name-0",
+                    "image-side-name-1",
+                    "image-canvas-area",
+                ]
+                .map(|selector| bounds(selector, cx))
+            };
+            let rest = still(cx);
+            for (outcome, expected) in [
+                (
+                    Err(NotOpened::Failed(refusal.into())),
+                    (format!("Could not open After. {refusal}"), true),
+                ),
+                (Err(NotOpened::Dismissed), (DISMISSED.to_owned(), false)),
+            ] {
+                queue(outcome);
+                let control = bounds("image-system-preview-1", cx);
+                cx.simulate_click(control.center(), Modifiers::default());
+                cx.run_until_parked();
+                draw(cx);
+                let at = format!("{width} × {height}, {:?}", expected.0);
+                assert_eq!(cx.read(latest_note), Some(expected.clone()), "{at}");
+                assert_eq!(still(cx), rest, "{at}: the captions and the image stay put");
+                let caption = bounds("image-side-caption-1", cx);
+                let note = bounds("image-side-note-1", cx);
+                assert!(
+                    note.top() >= caption.bottom() - px(0.5)
+                        && note.left() >= caption.left() - px(0.5)
+                        && note.right() <= caption.right() + px(0.5),
+                    "{at}: the line {note:?} lies beneath After's caption {caption:?}"
+                );
+                assert!(cx.debug_bounds("image-system-preview-1/note").is_some());
+                // Drawn over the image, not beneath it, where the window
+                // leaves the image room: in 461 × 490 the comparison's chrome
+                // still fills the column and the image has none.
+                if bounds("image-canvas-area", cx).size.height < note.size.height {
+                    continue;
+                }
+                let (scale, quads, colors) = cx.update(|window, cx| {
+                    (window.scale_factor(), window.painted_quads(), palette(cx))
+                });
+                let scaled = |bounds: Bounds<Pixels>| bounds.scale(scale);
+                let line = quads
+                    .iter()
+                    .find(|quad| {
+                        quad.background == rgb(colors.panel).into()
+                            && (quad.bounds.origin.x - scaled(note).origin.x).0.abs() <= 1.
+                            && (quad.bounds.origin.y - scaled(note).origin.y).0.abs() <= 1.
+                    })
+                    .unwrap_or_else(|| panic!("{at}: the line's surface is painted"));
+                let area = scaled(bounds("image-canvas-area", cx));
+                let beneath = quads
+                    .iter()
+                    .filter(|quad| {
+                        [colors.canvas, colors.subtle]
+                            .into_iter()
+                            .any(|tile| quad.background == rgb(tile).into())
+                            && area.contains(&quad.bounds.origin)
+                            && quad.bounds.intersects(&line.bounds)
+                    })
+                    .map(|quad| quad.order)
+                    .collect::<Vec<_>>();
+                assert!(
+                    !beneath.is_empty() && beneath.iter().all(|order| *order < line.order),
+                    "{at}: the line paints over the image's tiles: {beneath:?} before {}",
+                    line.order
+                );
+            }
+        }
+    }
+
     /// A document's two side headers keep one height, their first line as
     /// tall as the scaled 28 px open control, so Before and After align with
     /// or without it: an added PDF's After header, which offers the control,
-    /// stood 8.5 px taller than Before's. An added and a changed PDF, at the
-    /// default size and at 18 pt.
+    /// stood 8.5 px taller than Before's. In a 461 × 490 window After's
+    /// control wraps beneath "After PDF" while Before's "Absent" wraps
+    /// beneath its name, a line of text shorter than the control's, and
+    /// Before's header ended 10 px above After's at 13 pt (14.5 at 18 pt).
+    /// An added and a changed PDF, at the default size and at 18 pt, in a
+    /// full and a half-tile window.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn side_headers_align_with_or_without_the_open_control(cx: &mut TestAppContext) {
@@ -5500,9 +5700,14 @@ pub(crate) mod tests {
             ),
         ]);
         let (_fixture, app, cx) = history_window_from(cx, &input).await;
-        cx.simulate_resize(size(px(1480.), px(980.)));
-        for text in [13, 18] {
+        for (text, width, height) in [
+            (13, 1480., 980.),
+            (13, 461., 490.),
+            (18, 1480., 980.),
+            (18, 461., 490.),
+        ] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
             for (path, offers) in [("added.pdf", [false, true]), ("changed.pdf", [true, true])] {
                 let index = app.read_with(cx, |app, _| {
                     app.files
@@ -5514,7 +5719,7 @@ pub(crate) mod tests {
                     app.update(cx, |app, cx| app.select_file(index, window, cx))
                 });
                 settle(&app, cx).await;
-                let at = format!("{path} at {text} pt");
+                let at = format!("{path} at {text} pt in {width} × {height}");
                 assert_eq!(
                     [
                         cx.debug_bounds("system-preview-0").is_some(),
@@ -5529,6 +5734,13 @@ pub(crate) mod tests {
                     (before.top() - after.top()).abs() <= px(0.5)
                         && (before.size.height - after.size.height).abs() <= px(0.5),
                     "{at}: Before's header {before:?} aligns with After's {after:?}"
+                );
+                // The shorter header's lines keep to its top.
+                let headings = ["rich-side-heading-0", "rich-side-heading-1"]
+                    .map(|heading| cx.debug_bounds(heading).unwrap());
+                assert!(
+                    (headings[0].top() - headings[1].top()).abs() <= px(0.5),
+                    "{at}: the side names share their top: {headings:?}"
                 );
             }
         }

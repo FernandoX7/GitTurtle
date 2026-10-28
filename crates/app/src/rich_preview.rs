@@ -395,66 +395,254 @@ pub(super) fn render_comparison<T: 'static>(
     let colors = palette(cx);
     // Each side takes an equal share.
     let side_width = width / if quick { 1. } else { 2. };
-    div().size_full().min_w_0().flex().children([("Before",&preview.old),(if quick {"Source"}else{"After"},&preview.new)].into_iter().enumerate().filter(|(index,_)|!quick||*index==1).map(|(index,(label,side))| {
-            let selected=side.selected_page.load(Ordering::Relaxed).min(side.pages.len().saturating_sub(1));
-            // The heading's line is as tall as the scaled 28 px controls, so
-            // both sides' headers align whether or not one offers a control.
-            let mut header=div().debug_selector(move || format!("rich-side-header-{index}")).flex().items_center().flex_wrap().gap_2().px_3().py_2().border_b_1().border_color(rgb(colors.border)).child(div().min_h(appearance::ui_size(28.)).flex().items_center().text_size(appearance::ui_text(12.)).font_weight(FontWeight::SEMIBOLD).child(label)).child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(side.metadata.format.clone()));
-            let mut note=None;
-            if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
-                let target=opener.target(("system-preview",index),label,bytes,&side.name,offer);
-                // Labelled where it fits beside the side's name and format,
-                // otherwise its icon.
-                let room = header_room(index, side_width, label, &side.metadata.format, window);
-                header=header.child(target.button(offer.form(room, window), cx));
-                note=target.note(cx);
+    let (headers, bodies): (Vec<_>, Vec<_>) = [
+        ("Before", &preview.old),
+        (if quick { "Source" } else { "After" }, &preview.new),
+    ]
+    .into_iter()
+    .enumerate()
+    .filter(|(index, _)| !quick || *index == 1)
+    .map(|(index, (label, side))| {
+        let selected = side
+            .selected_page
+            .load(Ordering::Relaxed)
+            .min(side.pages.len().saturating_sub(1));
+        // The heading's line is as tall as the scaled 28 px controls, and
+        // the headers share one row, which gives both the taller one's
+        // height: Before and After align whether or not a side offers a
+        // control or wraps it, its lines kept at the top.
+        let mut header = div()
+            .debug_selector(move || format!("rich-side-header-{index}"))
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .content_start()
+            .flex_wrap()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .border_b_1()
+            .border_r_1()
+            .border_color(rgb(colors.border))
+            .child(
+                div()
+                    .debug_selector(move || format!("rich-side-heading-{index}"))
+                    .min_h(appearance::ui_size(28.))
+                    .flex()
+                    .items_center()
+                    .text_size(appearance::ui_text(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(label),
+            )
+            .child(
+                div()
+                    .text_size(appearance::ui_text(11.))
+                    .text_color(rgb(colors.muted))
+                    .child(side.metadata.format.clone()),
+            );
+        let mut note = None;
+        if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
+            let target = opener.target(("system-preview", index), label, bytes, &side.name, offer);
+            // Labelled where it fits beside the side's name and format,
+            // otherwise its icon.
+            let room = header_room(index, side_width, label, &side.metadata.format, window);
+            header = header.child(target.button(offer.form(room, window), cx));
+            note = target.note(cx);
+        }
+        if !side.pages.is_empty() {
+            for (name, delta, disabled) in [
+                (
+                    format!("Previous {}", side.page_kind.to_ascii_lowercase()),
+                    -1isize,
+                    selected == 0,
+                ),
+                (
+                    format!("Next {}", side.page_kind.to_ascii_lowercase()),
+                    1isize,
+                    selected + 1 >= side.pages.len(),
+                ),
+            ] {
+                let side = Arc::clone(side);
+                header = header.child(
+                    button(
+                        (
+                            if delta < 0 {
+                                "pdf-previous"
+                            } else {
+                                "pdf-next"
+                            },
+                            index,
+                        ),
+                        "",
+                        if delta < 0 {
+                            "chevron-left"
+                        } else {
+                            "chevron-right"
+                        },
+                        false,
+                    )
+                    .accessibility_label(format!("{label}: {name}"))
+                    .tooltip(name)
+                    .disabled(disabled)
+                    .on_click(cx.listener(move |_, _, window, cx| {
+                        let next = side
+                            .selected_page
+                            .load(Ordering::Relaxed)
+                            .saturating_add_signed(delta)
+                            .min(side.pages.len().saturating_sub(1));
+                        side.selected_page.store(next, Ordering::Relaxed);
+                        window.refresh();
+                        cx.notify();
+                    })),
+                );
             }
-            if !side.pages.is_empty() {
-                for (name,delta,disabled) in [(format!("Previous {}",side.page_kind.to_ascii_lowercase()),-1isize,selected==0),(format!("Next {}",side.page_kind.to_ascii_lowercase()),1isize,selected+1>=side.pages.len())] {
-                    let side=Arc::clone(side);
-                    header=header.child(button((if delta<0 {"pdf-previous"}else{"pdf-next"},index),"",if delta<0 {"chevron-left"}else{"chevron-right"},false).accessibility_label(format!("{label}: {name}")).tooltip(name).disabled(disabled).on_click(cx.listener(move|_,_,window,cx| { let next=side.selected_page.load(Ordering::Relaxed).saturating_add_signed(delta).min(side.pages.len().saturating_sub(1)); side.selected_page.store(next,Ordering::Relaxed); window.refresh(); cx.notify(); })));
+            header = header.child(div().text_size(appearance::ui_text(11.)).child(format!(
+                "{} {} / {}{}",
+                side.page_kind,
+                selected + 1,
+                side.page_count,
+                if side.pages.len() < side.page_count {
+                    format!(" · first {} available", side.pages.len())
+                } else {
+                    String::new()
                 }
-                header=header.child(div().text_size(appearance::ui_text(11.)).child(format!("{} {} / {}{}",side.page_kind,selected+1,side.page_count,if side.pages.len()<side.page_count {format!(" · first {} available",side.pages.len())}else{String::new()})));
+            )));
+        }
+        // Why the last click opened nothing, on a line of its own under
+        // the header's controls.
+        header = header.children(note);
+        let mut body = div()
+            .id(("rich-side-scroll", index))
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_3();
+        if !side.present {
+            body = body.child(
+                div()
+                    .text_color(rgb(colors.muted))
+                    .child("No file on this side"),
+            );
+        }
+        if let Some(page) = side.pages.get(selected) {
+            if let Some(caption) = &page.caption {
+                body = body.child(
+                    div()
+                        .text_size(appearance::ui_text(12.))
+                        .child(caption.clone()),
+                );
             }
-            // Why the last click opened nothing, on a line of its own under
-            // the header's controls.
-            header=header.children(note);
-            let mut body=div().id(("rich-side-scroll",index)).flex_1().min_h_0().overflow_y_scroll().p_3().flex().flex_col().gap_3();
-            if !side.present { body=body.child(div().text_color(rgb(colors.muted)).child("No file on this side")); }
-            if let Some(page)=side.pages.get(selected) {
-                if let Some(caption)=&page.caption { body=body.child(div().text_size(appearance::ui_text(12.)).child(caption.clone())); }
-                if let Some(render)=&page.render {
-                    if matches!(side.page_kind,"Diagram"|"View") {
-                        // Explicit natural height avoids aspect-ratio layout
-                        // retaining a pre-clamp height. Canvas containment uses
-                        // the final frame bounds, so metadata stays below it.
-                        body=body.child(div().w_full().max_w(px(page.width as f32))
-                            .h(px(page.height as f32)).max_h(relative(0.7))
-                            .flex_shrink_0().self_center().overflow_hidden()
-                            .child(crate::gif_playback::static_image(render.clone())));
-                    } else {
-                        // PDF pages remain width-readable with natural scrolling.
-                        body=body.child(div().w_full().aspect_ratio(page.width as f32/page.height as f32).bg(rgb(0xffffff))
-                            .child(crate::gif_playback::static_image(render.clone())));
-                    }
+            if let Some(render) = &page.render {
+                if matches!(side.page_kind, "Diagram" | "View") {
+                    // Explicit natural height avoids aspect-ratio layout
+                    // retaining a pre-clamp height. Canvas containment uses
+                    // the final frame bounds, so metadata stays below it.
+                    body = body.child(
+                        div()
+                            .w_full()
+                            .max_w(px(page.width as f32))
+                            .h(px(page.height as f32))
+                            .max_h(relative(0.7))
+                            .flex_shrink_0()
+                            .self_center()
+                            .overflow_hidden()
+                            .child(crate::gif_playback::static_image(render.clone())),
+                    );
+                } else {
+                    // PDF pages remain width-readable with natural scrolling.
+                    body = body.child(
+                        div()
+                            .w_full()
+                            .aspect_ratio(page.width as f32 / page.height as f32)
+                            .bg(rgb(0xffffff))
+                            .child(crate::gif_playback::static_image(render.clone())),
+                    );
                 }
-                if let Some(error)=&page.error { body=body.child(div().text_color(rgb(colors.modified)).text_size(appearance::ui_text(12.)).child(error.clone())); }
             }
-            if let Some(error)=&side.error { body=body.child(div().text_color(rgb(colors.modified)).text_size(appearance::ui_text(12.)).child(error.clone())); }
-            for detail in &side.metadata.details { body=body.child(div().text_size(appearance::ui_text(11.)).text_color(rgb(colors.muted)).child(detail.clone())); }
-            if let Some(source)=&side.metadata.source {
-                let copied=source.clone();
-                let what=if quick {"source".to_owned()} else {format!("{label} source")};
-                // The control's id names the side; the mark adds its path.
-                let mark=copy_feedback::Mark::new(("copy-decoded-source",index),&side.name);
-                let copy_mark=mark.clone();
-                body=body.child(copy_feedback::copy_button(mark,"Copy source", "",cx).on_click(move|_,window,cx|copy_feedback::copy(window,cx,Some(copy_mark.clone()),&what,copied.to_string())));
-                let mut end=source.len().min(16*1024); while !source.is_char_boundary(end) { end-=1; }
-                body=body.child(decoded_source(&source[..end],cx));
-                if end<source.len() { body=body.child(div().text_color(rgb(colors.muted)).child("Excerpt limited to 16 KiB; Copy source includes the complete available text.")); }
+            if let Some(error) = &page.error {
+                body = body.child(
+                    div()
+                        .text_color(rgb(colors.modified))
+                        .text_size(appearance::ui_text(12.))
+                        .child(error.clone()),
+                );
             }
-            div().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(header).child(body)
-        })).into_any_element()
+        }
+        if let Some(error) = &side.error {
+            body = body.child(
+                div()
+                    .text_color(rgb(colors.modified))
+                    .text_size(appearance::ui_text(12.))
+                    .child(error.clone()),
+            );
+        }
+        for detail in &side.metadata.details {
+            body = body.child(
+                div()
+                    .text_size(appearance::ui_text(11.))
+                    .text_color(rgb(colors.muted))
+                    .child(detail.clone()),
+            );
+        }
+        if let Some(source) = &side.metadata.source {
+            let copied = source.clone();
+            let what = if quick {
+                "source".to_owned()
+            } else {
+                format!("{label} source")
+            };
+            // The control's id names the side; the mark adds its path.
+            let mark = copy_feedback::Mark::new(("copy-decoded-source", index), &side.name);
+            let copy_mark = mark.clone();
+            body = body.child(
+                copy_feedback::copy_button(mark, "Copy source", "", cx).on_click(
+                    move |_, window, cx| {
+                        copy_feedback::copy(
+                            window,
+                            cx,
+                            Some(copy_mark.clone()),
+                            &what,
+                            copied.to_string(),
+                        )
+                    },
+                ),
+            );
+            let mut end = source.len().min(16 * 1024);
+            while !source.is_char_boundary(end) {
+                end -= 1;
+            }
+            body = body.child(decoded_source(&source[..end], cx));
+            if end < source.len() {
+                body = body.child(div().text_color(rgb(colors.muted)).child(
+                    "Excerpt limited to 16 KiB; Copy source includes the complete available text.",
+                ));
+            }
+        }
+        (
+            header,
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .border_r_1()
+                .border_color(rgb(colors.border))
+                .child(body),
+        )
+    })
+    .unzip();
+    div()
+        .size_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .child(div().flex().min_w_0().children(headers))
+        .child(div().flex_1().min_h_0().min_w_0().flex().children(bodies))
+        .into_any_element()
 }
 
 fn decoded_source(excerpt: &str, cx: &App) -> Div {
