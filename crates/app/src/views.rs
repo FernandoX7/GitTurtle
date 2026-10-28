@@ -4443,7 +4443,7 @@ pub(crate) mod tests {
             cx.executor().run_until_parked();
         }
     }
-    async fn settle(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    pub(crate) async fn settle(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
         for _ in 0..8 {
             cx.executor().run_until_parked();
             let tasks = cx.update(|_, cx| {
@@ -4466,7 +4466,7 @@ pub(crate) mod tests {
 
     /// A 1000 × 680 window on a one-commit fixture, in History with the
     /// commit selected. Keep the returned directory until the test ends.
-    async fn history_window(
+    pub(crate) async fn history_window(
         cx: &mut TestAppContext,
     ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
         history_window_from(

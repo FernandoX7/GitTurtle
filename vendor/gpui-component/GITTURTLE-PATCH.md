@@ -607,8 +607,8 @@ weight in a debug selector (`menu-label-style: <label> · <size> px · weight
 
 The consumers are every menu with a label: the review Options menu's caption
 (`crates/app/src/text_review.rs`), the project pane's row name and Move to
-heading (`project_pane.rs`), the profile menu's heading, current identity and
-notes (`profiles.rs`), the branch chooser's heading and notes
+heading (`project_pane.rs`), the profile menu's current identity, Saved Git
+profiles heading and notes (`profiles.rs`), the branch chooser's heading and notes
 (`branch_actions.rs`), the model view and animation clip menus' headings
 (`model_view.rs`, `model_view/playback.rs`), the repository tab list's heading
 (`repository_tabs.rs`) and the navigator's branch and worktree context menus'
@@ -622,7 +622,8 @@ palette, both labels' text in `muted_foreground`.
 palette and at a larger interface size, both labels at the section-label size
 and medium weight, apart from the items' size.
 `review_options_menu_announces_its_toggle_checked` reads the Options menu's
-caption the same way. Remove this part of the patch when upstream gives menu labels a
+caption the same way, and `the_profile_menu_names_its_rows` the profile menu's
+labels by name. Remove this part of the patch when upstream gives menu labels a
 non-item role, a colour distinct from a disabled item's and a style distinct
 from an item's, and those tests pass without it.
 

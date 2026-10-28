@@ -11,6 +11,8 @@ use gpui_kit::{
     },
     prelude::FluentBuilder,
 };
+#[cfg(test)]
+mod menu_tests;
 mod store;
 use store::{Definition, Mutation, Signing, Store};
 
@@ -35,6 +37,20 @@ fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
         .role(Role::Label)
         .aria_label(value.clone())
         .child(value)
+}
+
+/// The profile menu's first line: the identity Git authors with now, after
+/// "Current:", so it is not read as one of the saved profiles below it. A
+/// missing name or email is left out rather than drawn as empty brackets.
+fn current_identity(profile: &gitturtle_core::GitProfile) -> String {
+    let name = profile.name.trim();
+    let email = profile.email.trim();
+    match (name.is_empty(), email.is_empty()) {
+        (false, false) => format!("Current: {name} <{email}>"),
+        (false, true) => format!("Current: {name}"),
+        (true, false) => format!("Current: <{email}>"),
+        (true, true) => "Current: no Git identity".into(),
+    }
 }
 impl GitTurtle {
     pub(super) fn profile_save_pending(&self) -> bool {
@@ -157,14 +173,18 @@ impl GitTurtle {
                 };
                 let this = view.read(cx);
                 let path = this.path.clone();
-                menu = menu
-                    .max_h(px(440.))
-                    .scrollable(true)
-                    .label("Apply a saved Git profile…");
+                menu = menu.max_h(px(440.)).scrollable(true);
                 if let Some(profile) = &this.profile {
-                    menu = menu.label(format!("{} <{}>", profile.name, profile.email));
+                    menu = menu.label(current_identity(profile)).separator();
                 }
                 if let Some(store) = &this.profiles.store {
+                    // A heading titles the saved profiles; with none saved,
+                    // one line says so instead of titling an empty group.
+                    menu = menu.label(if store.definitions.is_empty() {
+                        "No saved profiles"
+                    } else {
+                        "Saved Git profiles"
+                    });
                     let assigned = path.as_ref().and_then(|path| store.assigned(path));
                     for profile in &store.definitions {
                         let profile = profile.clone();
@@ -186,9 +206,6 @@ impl GitTurtle {
                                 }),
                         );
                     }
-                    if store.definitions.is_empty() {
-                        menu = menu.label("Create Personal, Work, or another identity");
-                    }
                 } else {
                     menu = menu.label("Profiles are unavailable or still loading");
                 }
@@ -198,9 +215,20 @@ impl GitTurtle {
                         error.lines().next().unwrap_or(error)
                     ));
                 }
+                let create_owner = owner.clone();
                 let manage_owner = owner.clone();
                 menu = menu
                     .separator()
+                    .item(
+                        // Creating a profile needs the saved profiles it joins,
+                        // as the manager's New profile… does.
+                        PopupMenuItem::new("New profile…")
+                            .disabled(this.profiles.store.is_none())
+                            .on_click(move |_, window, cx| {
+                                let _ = create_owner
+                                    .update(cx, |this, cx| this.edit_profile(None, window, cx));
+                            }),
+                    )
                     .item(
                         PopupMenuItem::new("Manage profiles…").on_click(move |_, window, cx| {
                             let _ =
