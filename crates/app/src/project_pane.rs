@@ -8,7 +8,6 @@ use crate::{
     preferences::Preferences,
     project_library::{LibraryRow, MAX_DEPTH, ProjectLibrary},
 };
-use gpui_kit::base::POPUP_PRIORITY;
 use gpui_kit::component::{
     Disableable, Icon, WindowExt,
     button::{Button, ButtonVariants},
@@ -184,14 +183,6 @@ pub fn move_destinations(library: &ProjectLibrary, target: &RowKey) -> Vec<Desti
     destinations
 }
 
-/// A popup opened from the keyboard. Right-click menus belong to their rows;
-/// this one is positioned from the cursor row's geometry.
-struct KeyboardMenu {
-    menu: Entity<PopupMenu>,
-    position: Point<Pixels>,
-    _dismiss: Subscription,
-}
-
 /// A recent-project save awaiting its reply. The preference writer adds the
 /// opened project to the stored list; the reply merges that addition into the
 /// pane instead of replacing the pane's list.
@@ -226,7 +217,7 @@ pub struct State {
     /// unsaved until Retry, which the user starts.
     pane_save_failed: bool,
     menu_open: Option<usize>,
-    keyboard_menu: Option<KeyboardMenu>,
+    keyboard_menu: Option<native_accessibility::KeyboardMenu>,
 }
 
 impl State {
@@ -598,39 +589,33 @@ impl GitTurtle {
         let indent = px(24. + row.depth() as f32 * 12.);
         // Rows are uniform, so the cursor row's bottom edge follows from the
         // list's origin, its scroll offset and the row height.
-        let position = {
-            let state = self.project_pane.scroll.0.borrow();
-            let bounds = state.base_handle.bounds();
-            let height = crate::appearance::ui_size(30.);
-            point(
-                bounds.left() + indent,
-                bounds.top() + state.base_handle.offset().y + height * (index as f32 + 1.),
-            )
-        };
+        let position = native_accessibility::KeyboardMenu::below_row(
+            &self.project_pane.scroll,
+            index,
+            crate::appearance::ui_size(30.),
+            indent,
+        );
         let owner = cx.entity().downgrade();
-        let focus = self.project_pane.focus.clone();
         let snapshot = self.menu_snapshot(&key);
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            row_menu(menu, &owner, &key, Some(snapshot)).action_context(focus)
-        });
-        let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
-            this.dismiss_project_menu(window, cx);
-        });
-        // The menu takes the keys until it closes; dismissal hands focus
-        // back to the tree through the action context and the subscription.
-        let handle = menu.focus_handle(cx);
-        window.focus(&handle, cx);
-        self.project_pane.keyboard_menu = Some(KeyboardMenu {
-            menu,
+        self.project_pane.keyboard_menu = Some(native_accessibility::KeyboardMenu::open(
             position,
-            _dismiss: dismiss,
-        });
+            self.project_pane.focus.clone(),
+            move |menu| row_menu(menu, &owner, &key, Some(snapshot)),
+            Self::dismiss_project_menu,
+            window,
+            cx,
+        ));
         cx.notify();
     }
 
+    /// Closes the keyboard's menu. A press outside it leaves focus in the
+    /// menu, so focus returns to the tree; an item or Escape has moved it
+    /// already, to the tree or to the form the item opened.
     fn dismiss_project_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.project_pane.keyboard_menu.take().is_some() {
-            window.focus(&self.project_pane.focus, cx);
+        if let Some(menu) = self.project_pane.keyboard_menu.take() {
+            if menu.has_focus(window, cx) || window.focused(cx).is_none() {
+                window.focus(&self.project_pane.focus, cx);
+            }
             cx.notify();
         }
     }
@@ -803,11 +788,7 @@ impl GitTurtle {
         cx.notify();
     }
 
-    pub(super) fn render_project_pane(
-        &self,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    pub(super) fn render_project_pane(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = crate::appearance::palette(cx);
         let rows = &self.project_pane.rows;
         let projects = self.project_library.project_count();
@@ -930,7 +911,7 @@ impl GitTurtle {
                         .track_scroll(&self.project_pane.scroll)
                         .into_any_element()
                     })
-                    .children(self.render_keyboard_menu(window, cx))),
+                    .children(self.render_keyboard_menu(cx))),
             )
             .children(self.project_pane.error.as_ref().map(|error| {
                 div()
@@ -1179,40 +1160,9 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    fn render_keyboard_menu(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_keyboard_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let keyboard = self.project_pane.keyboard_menu.as_ref()?;
-        let menu = keyboard.menu.clone();
-        let position = keyboard.position;
-        let viewport = window.bounds().size;
-        Some(
-            deferred(
-                anchored().child(
-                    div()
-                        .id("project-pane-menu-overlay")
-                        .debug_selector(|| "project-pane-menu-overlay".into())
-                        .occlude()
-                        .w(viewport.width)
-                        .h(viewport.height)
-                        .on_any_mouse_down(cx.listener(|this, _, window, cx| {
-                            this.dismiss_project_menu(window, cx);
-                        }))
-                        .child(
-                            anchored()
-                                .position(position)
-                                .snap_to_window_with_margin(px(8.))
-                                .child(
-                                    // A press inside the menu must reach its
-                                    // item, not the overlay behind it.
-                                    div()
-                                        .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-                                        .child(menu),
-                                ),
-                        ),
-                ),
-            )
-            .with_priority(POPUP_PRIORITY)
-            .into_any_element(),
-        )
+        Some(keyboard.render("project-pane-menu-overlay", Self::dismiss_project_menu, cx))
     }
 }
 

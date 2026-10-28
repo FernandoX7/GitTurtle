@@ -477,6 +477,9 @@ struct GitTurtle {
     app_focus: FocusHandle,
     focus: FocusHandle,
     file_focus: FocusHandle,
+    /// The cursor row's menu in the changed-file or Working Changes list,
+    /// opened from the keyboard (`native_accessibility::RowActions`).
+    file_menu: Option<native_accessibility::KeyboardMenu>,
     /// The header's Pull requests button, full or compact: the GitHub panel it
     /// opens returns focus to it on close.
     pull_requests_focus: FocusHandle,
@@ -809,6 +812,7 @@ impl GitTurtle {
             app_focus: cx.focus_handle(),
             focus: cx.focus_handle(),
             file_focus: cx.focus_handle(),
+            file_menu: None,
             pull_requests_focus: cx.focus_handle(),
             focus_ring: focus_ring::FocusRing::default(),
             dialog_hints: shortcuts::DialogHints::default(),

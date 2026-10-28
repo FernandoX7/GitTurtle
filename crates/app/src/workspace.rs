@@ -1,6 +1,6 @@
 use crate::*;
-use gitturtle_core::{ChangeArea, ChangeStatus, WriteCommand};
-use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+use gitturtle_core::{ChangeArea, ChangeStatus, StatusEntry, WriteCommand};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 use preferences::CommitDraft;
 use std::cell::RefCell;
@@ -2333,6 +2333,9 @@ impl GitTurtle {
                     .on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, window, cx| {
                         this.copy_list_item(crate::views::ListCopy::WorkingPaths, window, cx)
                     }))
+                    .on_action(cx.listener(move |this, _: &native_accessibility::RowActions, window, cx| {
+                        this.open_working_row_menu(forms.file_action, window, cx)
+                    }))
                     .border_1().border_color(rgb(p.border)).when(self.focus_ring.shows(&self.file_focus), |pane| pane.border_color(rgb(p.accent)))
                     // One pixel in from the inspector's divider, which the kit
                     // paints over the inspector's first pixel: the list's own
@@ -2348,6 +2351,9 @@ impl GitTurtle {
                     .when(total > 0, |el| el.child(list))
                     .children(travelling.filter(|_| total > 0))
                     .children(clean)
+                    .children(self.file_menu.as_ref().map(|menu| {
+                        menu.render("working-row-menu-overlay", Self::dismiss_file_menu, cx)
+                    }))
                     .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
                         list_layout.update(cx, |layout, cx| {
                             if layout.list_size != Some(bounds.size) {
@@ -2654,7 +2660,6 @@ impl GitTurtle {
                 let entry = &self.work_status.as_ref().unwrap().entries[index];
                 let paths = entry.paths();
                 let row_path = entry.path.clone();
-                let menu_path = row_path.clone();
                 let ignore_entry = entry.clone();
                 let ignore_owner = cx.entity().downgrade();
                 let ignore_repository = self.path.clone();
@@ -2705,7 +2710,6 @@ impl GitTurtle {
                 } else {
                     format!("{path_detail} · {status_label}")
                 };
-                let menu_paths = paths.clone();
                 div()
                     .id((
                         if staged {
@@ -2873,76 +2877,96 @@ impl GitTurtle {
                         )
                     }))
                     .context_menu(move |menu, _, _| {
-                        let owner = ignore_owner.clone();
-                        let repository = ignore_repository.clone();
-                        let entry = ignore_entry.clone();
-                        let discard_owner = owner.clone();
-                        let discard_repository = repository.clone();
-                        let discard_entry = entry.clone();
-                        // Without its Stage or Unstage control the row's menu
-                        // leads with that action.
-                        let menu = if forms.file_action {
-                            menu
-                        } else {
-                            let (owner, repository) = (owner.clone(), repository.clone());
-                            let paths = menu_paths.clone();
-                            let path = menu_path.clone();
-                            menu.item(
-                                PopupMenuItem::new(if staged { "Unstage" } else { "Stage" })
-                                    .disabled(busy)
-                                    .on_click(move |_, window, cx| {
-                                        let _ = owner.update(cx, |this, cx| {
-                                            if this.path == repository {
-                                                this.depart_working_row(position, window, cx);
-                                                this.stage_working_paths(
-                                                    paths.clone(),
-                                                    &path,
-                                                    staged,
-                                                    window,
-                                                    cx,
-                                                );
-                                            }
-                                        });
-                                    }),
-                            )
-                        };
-                        menu.item(
-                            PopupMenuItem::new(if entry.untracked {
-                                "Ignore…"
-                            } else {
-                                "Ignore applies to untracked files"
-                            })
-                            .disabled(busy || staged || !entry.untracked)
-                            .on_click(move |_, window, cx| {
-                                let _ = owner.update(cx, |this, cx| {
-                                    if this.path == repository {
-                                        this.open_ignore(entry.clone(), window, cx);
-                                    }
-                                });
-                            }),
-                        )
-                        // Discard reverts the whole file to HEAD, so both the
-                        // staged and unstaged rows offer the same action.
-                        .item(
-                            PopupMenuItem::new(if discard_entry.conflicted {
-                                "Discard applies after conflict resolution"
-                            } else if discard_entry.untracked {
-                                "Delete untracked file…"
-                            } else {
-                                "Discard changes…"
-                            })
-                            .disabled(busy || discard_entry.conflicted)
-                            .on_click(move |_, window, cx| {
-                                let _ = discard_owner.update(cx, |this, cx| {
-                                    if this.path == discard_repository {
-                                        this.open_discard(discard_entry.clone(), window, cx);
-                                    }
-                                });
-                            }),
+                        working_row_menu(
+                            menu,
+                            ignore_owner.clone(),
+                            ignore_repository.clone(),
+                            MenuRow {
+                                entry: ignore_entry.clone(),
+                                row: position,
+                                staged,
+                            },
+                            forms.file_action,
+                            busy,
                         )
                     })
                     .into_any_element()
             }
+        }
+    }
+
+    /// Opens the Working Changes cursor row's menu beside the row, from
+    /// Shift-F10 or the Menu key: the menu a right-click on the row opens,
+    /// which leads with Stage or Unstage where the row has no room for that
+    /// control (`stage_control`, the rows' form when the list was drawn).
+    fn open_working_row_menu(
+        &mut self,
+        stage_control: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.file_menu.is_some() || window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return;
+        }
+        let Some((index, area)) = self.working_selected else {
+            return;
+        };
+        let Some(row) = self
+            .working_rows
+            .iter()
+            .position(|row| matches!(row, WorkingRow::File(i, a) if (*i, *a) == (index, area)))
+        else {
+            return;
+        };
+        let Some(entry) = self
+            .work_status
+            .as_ref()
+            .and_then(|status| status.entries.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        let position = native_accessibility::KeyboardMenu::below_row(
+            &self.working_scroll,
+            row,
+            window.pixel_snap(px(self.settings.density.file_row_height())),
+            appearance::ui_size(appearance::PANE_INSET),
+        );
+        let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
+        let busy = self.operation_busy.is_some();
+        self.file_menu = Some(native_accessibility::KeyboardMenu::open(
+            position,
+            self.file_focus.clone(),
+            move |menu| {
+                working_row_menu(
+                    menu,
+                    owner,
+                    repository,
+                    MenuRow {
+                        entry,
+                        row,
+                        staged: area == ChangeArea::Staged,
+                    },
+                    stage_control,
+                    busy,
+                )
+            },
+            Self::dismiss_file_menu,
+            window,
+            cx,
+        ));
+        cx.notify();
+    }
+
+    /// Closes the file list's keyboard menu. A press outside it leaves focus
+    /// in the menu, so focus returns to the list; an item or Escape has moved
+    /// it already, to the list or to the dialog the item opened.
+    pub(super) fn dismiss_file_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = self.file_menu.take() {
+            if menu.has_focus(window, cx) || window.focused(cx).is_none() {
+                window.focus(&self.file_focus, cx);
+            }
+            cx.notify();
         }
     }
 
@@ -3362,6 +3386,86 @@ fn sync_summary(status: &gitturtle_core::RepositoryStatus) -> String {
 
 /// The space beside a labelled toolbar action's content: the 0.75 rem it took
 /// as `px_3` at the root rem the app sets, the interface text's 13 px.
+/// The file row a Working Changes menu acts on: its status entry, its place
+/// among the list's rows, where a Stage or Unstage departs from, and whether it
+/// is the staged row.
+struct MenuRow {
+    entry: StatusEntry,
+    row: usize,
+    staged: bool,
+}
+
+/// A Working Changes file row's menu, which a right-click on the row and
+/// Shift-F10 or the Menu key on the list's cursor row open alike. Without its
+/// Stage or Unstage control (`stage_control`) the row's menu leads with that
+/// action. Each item acts only on the repository the menu was built for.
+fn working_row_menu(
+    menu: PopupMenu,
+    owner: WeakEntity<GitTurtle>,
+    repository: Option<PathBuf>,
+    target: MenuRow,
+    stage_control: bool,
+    busy: bool,
+) -> PopupMenu {
+    let MenuRow { entry, row, staged } = target;
+    let discard_owner = owner.clone();
+    let discard_repository = repository.clone();
+    let discard_entry = entry.clone();
+    let menu = if stage_control {
+        menu
+    } else {
+        let (owner, repository) = (owner.clone(), repository.clone());
+        let paths = entry.paths();
+        let path = entry.path.clone();
+        menu.item(
+            PopupMenuItem::new(if staged { "Unstage" } else { "Stage" })
+                .disabled(busy)
+                .on_click(move |_, window, cx| {
+                    let _ = owner.update(cx, |this, cx| {
+                        if this.path == repository {
+                            this.depart_working_row(row, window, cx);
+                            this.stage_working_paths(paths.clone(), &path, staged, window, cx);
+                        }
+                    });
+                }),
+        )
+    };
+    menu.item(
+        PopupMenuItem::new(if entry.untracked {
+            "Ignore…"
+        } else {
+            "Ignore applies to untracked files"
+        })
+        .disabled(busy || staged || !entry.untracked)
+        .on_click(move |_, window, cx| {
+            let _ = owner.update(cx, |this, cx| {
+                if this.path == repository {
+                    this.open_ignore(entry.clone(), window, cx);
+                }
+            });
+        }),
+    )
+    // Discard reverts the whole file to HEAD, so both the staged and
+    // unstaged rows offer the same action.
+    .item(
+        PopupMenuItem::new(if discard_entry.conflicted {
+            "Discard applies after conflict resolution"
+        } else if discard_entry.untracked {
+            "Delete untracked file…"
+        } else {
+            "Discard changes…"
+        })
+        .disabled(busy || discard_entry.conflicted)
+        .on_click(move |_, window, cx| {
+            let _ = discard_owner.update(cx, |this, cx| {
+                if this.path == discard_repository {
+                    this.open_discard(discard_entry.clone(), window, cx);
+                }
+            });
+        }),
+    )
+}
+
 fn action_inset() -> Pixels {
     appearance::ui_text(13.) * 0.75
 }

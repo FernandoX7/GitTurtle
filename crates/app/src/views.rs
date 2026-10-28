@@ -2,7 +2,7 @@ use crate::*;
 use columns::ColumnId;
 use gpui_kit::base::ElementExt;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
-use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 use std::cell::RefCell;
 
@@ -2176,6 +2176,11 @@ impl GitTurtle {
                             this.copy_list_item(ListCopy::FilePath, window, cx)
                         },
                     ))
+                    .on_action(cx.listener(
+                        |this, _: &native_accessibility::RowActions, window, cx| {
+                            this.open_changed_file_menu(window, cx)
+                        },
+                    ))
                     .border_1()
                     .border_color(rgb(colors.border))
                     .when(self.focus_ring.shows(&self.file_focus), |pane| {
@@ -2226,10 +2231,55 @@ impl GitTurtle {
                         .track_scroll(&self.file_scroll)
                         .into_any_element()
                     })
-                    .child(self.list_viewport_probe(false, cx)),
+                    .child(self.list_viewport_probe(false, cx))
+                    .children(self.file_menu.as_ref().map(|menu| {
+                        menu.render("changed-file-menu-overlay", Self::dismiss_file_menu, cx)
+                    })),
             ))
             .into_any_element()
     }
+
+    /// Opens the highlighted changed file's menu beside its row, from
+    /// Shift-F10 or the Menu key: the menu a right-click on the row opens.
+    fn open_changed_file_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.file_menu.is_some() || window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return;
+        }
+        let Some(index) = self.selected_file else {
+            return;
+        };
+        let Some(row) = self
+            .filtered_file_indices(cx)
+            .iter()
+            .position(|visible| *visible == index)
+        else {
+            return;
+        };
+        let Some(file) = self.files.get(index).cloned() else {
+            return;
+        };
+        let commit = self
+            .selected_commit
+            .and_then(|index| self.commits.get(index))
+            .map(|commit| commit.oid.clone());
+        let position = native_accessibility::KeyboardMenu::below_row(
+            &self.file_scroll,
+            row,
+            window.pixel_snap(px(self.settings.density.file_row_height())),
+            appearance::ui_size(appearance::PANE_INSET),
+        );
+        let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
+        self.file_menu = Some(native_accessibility::KeyboardMenu::open(
+            position,
+            self.file_focus.clone(),
+            move |menu| changed_file_menu(menu, owner, repository, file, commit),
+            Self::dismiss_file_menu,
+            window,
+            cx,
+        ));
+        cx.notify();
+    }
+
     /// A changed file's row. `status` shows its status word beside the name;
     /// without it, in an inspector too narrow for both (`FilesHeader`), the
     /// status tile's icon and colour carry the status and the name takes the
@@ -2342,26 +2392,12 @@ impl GitTurtle {
             })
             .on_click(cx.listener(move |this, _, window, cx| this.select_file(index, window, cx)))
             .context_menu(move |menu, _, _| {
-                let owner = history_owner.clone();
-                let repository = history_repository.clone();
-                let file = history_file.clone();
-                let commit = history_commit.clone();
-                menu.item(
-                    PopupMenuItem::new("File history…").on_click(move |_, window, cx| {
-                        let _ = owner.update(cx, |this, cx| {
-                            if this.path == repository
-                                && this
-                                    .selected_commit
-                                    .and_then(|i| this.commits.get(i))
-                                    .map(|c| &c.oid)
-                                    == commit.as_ref()
-                                && let Some(index) =
-                                    this.files.iter().position(|candidate| candidate == &file)
-                            {
-                                this.open_file_history(index, window, cx);
-                            }
-                        });
-                    }),
+                changed_file_menu(
+                    menu,
+                    history_owner.clone(),
+                    history_repository.clone(),
+                    history_file.clone(),
+                    history_commit.clone(),
                 )
             })
             .into_any_element()
@@ -2993,6 +3029,35 @@ impl FilesHeader {
             status: name - gap - word >= word,
         }
     }
+}
+
+/// A History changed file's menu, which a right-click on its row and
+/// Shift-F10 or the Menu key on the highlighted row open alike. File history
+/// opens only while the repository and commit the menu was built for are
+/// still those shown and the file is still among their changed files.
+fn changed_file_menu(
+    menu: PopupMenu,
+    owner: WeakEntity<GitTurtle>,
+    repository: Option<PathBuf>,
+    file: FileChange,
+    commit: Option<String>,
+) -> PopupMenu {
+    menu.item(
+        PopupMenuItem::new("File history…").on_click(move |_, window, cx| {
+            let _ = owner.update(cx, |this, cx| {
+                if this.path == repository
+                    && this
+                        .selected_commit
+                        .and_then(|i| this.commits.get(i))
+                        .map(|c| &c.oid)
+                        == commit.as_ref()
+                    && let Some(index) = this.files.iter().position(|candidate| candidate == &file)
+                {
+                    this.open_file_history(index, window, cx);
+                }
+            });
+        }),
+    )
 }
 
 /// The narrowest "Changed files" is drawn in without a lone ellipsis: cut to
@@ -4585,7 +4650,7 @@ impl Render for GitTurtle {
                         .size(pane_width)
                         .size_range(px(180.)..px(360.))
                         .flex_none()
-                        .child(self.render_project_pane(window, cx)),
+                        .child(self.render_project_pane(cx)),
                 )
                 .child(
                     resizable_panel()
@@ -8897,6 +8962,170 @@ pub(crate) mod tests {
             "{name:?} staged from its menu"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The Menu key where the platform reports one (Linux), else Shift-F10.
+    const MENU_KEY: &str = if cfg!(target_os = "macos") {
+        "shift-f10"
+    } else {
+        "menu"
+    };
+
+    /// Shift-F10 and the Menu key open the Working Changes cursor row's
+    /// menu, the one a right-click opens, below the row: Ignore and Discard
+    /// beside the row's Stage control, and at 18 pt in a 461 × 490 window,
+    /// where the row has no room for the control, led by Stage. Escape
+    /// closes it and returns focus to the list; the first Down reaches the
+    /// first action, so Enter stages the file. The menu, and with it a
+    /// narrow row's Stage, once opened only on a right-click.
+    #[gpui::test]
+    async fn working_row_menu_opens_from_the_keyboard(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+        });
+        let notes = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .unwrap()
+                .entries
+                .iter()
+                .position(|entry| entry.path == std::path::Path::new("notes.txt"))
+                .unwrap()
+        });
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).file_focus.is_focused(window))
+        };
+        const STAGE: &str = "menu-item: Stage · MenuItem";
+        const IGNORE: &str = "menu-item: Ignore applies to untracked files · MenuItem disabled";
+        const DISCARD: &str = "menu-item: Discard changes… · MenuItem";
+        for (text, width, height, narrow) in [(13, 1480., 980., false), (18, 461., 490., true)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.choose_working_selection(
+                        notes,
+                        gitturtle_core::ChangeArea::Unstaged,
+                        false,
+                        false,
+                        window,
+                        cx,
+                    );
+                    window.focus(&app.file_focus, cx);
+                })
+            });
+            draw(cx);
+            let position = app.read_with(cx, |app, _| {
+                app.working_rows
+                    .iter()
+                    .position(|row| {
+                        matches!(row, crate::workspace::WorkingRow::File(index, area)
+                            if *index == notes && *area == gitturtle_core::ChangeArea::Unstaged)
+                    })
+                    .unwrap()
+            });
+            let row = cx
+                .debug_bounds(format!("working-row-{position}").leak())
+                .unwrap_or_else(|| panic!("{at}: the cursor row"));
+            assert!(cx.debug_bounds(DISCARD).is_none(), "{at}: no menu yet");
+            cx.simulate_keystrokes("shift-f10");
+            draw(cx);
+            for (item, shown) in [(STAGE, narrow), (IGNORE, true), (DISCARD, true)] {
+                assert_eq!(cx.debug_bounds(item).is_some(), shown, "{at}: {item}");
+            }
+            assert!(!focused(cx), "{at}: the menu takes the keys");
+            // Below the cursor row, from its leading edge where the menu
+            // fits there, and kept inside the window where it does not, as
+            // beside the 156 px inspector at 18 pt.
+            let first = cx
+                .debug_bounds(if narrow { STAGE } else { IGNORE })
+                .unwrap();
+            assert!(
+                first.top() >= row.bottom()
+                    && first.top() < row.bottom() + row.size.height
+                    && first.left() >= px(0.)
+                    && first.right() <= px(width)
+                    && (narrow || first.left() >= row.left()),
+                "{at}: the menu's first item {first:?} below the row {row:?}"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(cx.debug_bounds(DISCARD).is_none(), "{at}: Escape closed it");
+            assert!(focused(cx), "{at}: Escape returned focus to the list");
+        }
+        // The first Down reaches Stage, the narrow row's first action.
+        cx.simulate_keystrokes(MENU_KEY);
+        draw(cx);
+        assert!(
+            cx.debug_bounds(STAGE).is_some(),
+            "{MENU_KEY} opened the menu"
+        );
+        cx.simulate_keystrokes("down enter");
+        wait_until(cx, &app, "the menu's Stage", |app| {
+            app.operation_busy.is_none() && app.working_paths.staged_count == 3
+        });
+        draw(cx);
+        assert!(cx.debug_bounds(STAGE).is_none(), "the menu closed");
+        assert!(focused(cx), "focus is back on the list");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Shift-F10 and the Menu key open the highlighted changed file's menu
+    /// in History's inspector, the one a right-click opens, below its row.
+    /// Escape closes it and returns focus to the list; the first Down
+    /// reaches File history…, so Enter opens it.
+    #[gpui::test]
+    async fn changed_file_menu_opens_from_the_keyboard(cx: &mut TestAppContext) {
+        const HISTORY: &str = "menu-item: File history… · MenuItem";
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+        });
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).file_focus.is_focused(window))
+        };
+        // A highlighted file, as Back from Compare leaves it.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(!app.files.is_empty(), "the commit's changed files");
+                app.selected_file = Some(0);
+                app.pane = Pane::Files;
+                window.focus(&app.file_focus, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+        let row = cx
+            .debug_bounds("selected-changed-file")
+            .expect("the highlighted row");
+        cx.simulate_keystrokes("shift-f10");
+        draw(cx);
+        let item = cx.debug_bounds(HISTORY).expect("the row's menu");
+        assert!(
+            item.top() >= row.bottom()
+                && item.top() < row.bottom() + row.size.height
+                && item.left() >= row.left(),
+            "the menu's item {item:?} below the row {row:?}"
+        );
+        assert!(!focused(cx), "the menu takes the keys");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds(HISTORY).is_none(), "Escape closed it");
+        assert!(focused(cx), "Escape returned focus to the list");
+        cx.simulate_keystrokes(MENU_KEY);
+        draw(cx);
+        assert!(cx.debug_bounds(HISTORY).is_some(), "{MENU_KEY} opened it");
+        cx.simulate_keystrokes("down enter");
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.file_history.is_active()),
+            "File history… opened"
+        );
     }
 
     /// With two staged files in a 461 × 490 window, the composer's heading

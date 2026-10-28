@@ -3,6 +3,7 @@
 //! and on workspace display-change notifications, then applied to the toolkit's
 //! motion policy. Foreground activation remains a fallback read.
 use crate::*;
+use gpui_kit::component::menu::PopupMenu;
 
 #[cfg(any(target_os = "macos", test))]
 mod display_changes;
@@ -29,7 +30,8 @@ gpui_kit::actions!(
         ExpandNavigation,
         CollapseNavigation,
         ActivateNavigation,
-        ManageNavigation
+        ManageNavigation,
+        RowActions
     ]
 );
 
@@ -44,7 +46,128 @@ pub(super) fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", ActivateNavigation, Some("GitTurtleNavigation")),
         KeyBinding::new("space", ActivateNavigation, Some("GitTurtleNavigation")),
         KeyBinding::new("shift-f10", ManageNavigation, Some("GitTurtleNavigation")),
+        // A file list's cursor row opens its menu from the keyboard, as a
+        // right-click opens it: a row too narrow for its Stage or Unstage
+        // control moves that action into the menu. Linux reports the Menu
+        // key as `menu`; macOS keyboards have none.
+        KeyBinding::new("shift-f10", RowActions, Some("GitTurtleList")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("menu", RowActions, Some("GitTurtleList")),
     ]);
+}
+
+/// A row's menu opened from the keyboard beside the row it acts on: the
+/// project pane's cursor row with Shift-F10, and a file list's with
+/// Shift-F10 or the Menu key ([`RowActions`]). A right-click menu belongs to
+/// its row; this one is placed from the cursor row's geometry and takes the
+/// keys until it closes. Its first Down reaches its first action, the kit's
+/// menu keys passing over entries that cannot act, and Escape returns focus
+/// to the list or tree that opened it, its action context. Focus that leaves
+/// it otherwise, to a dialog one of its items opens or with the page that
+/// drew it, closes it as well, so it never reappears over another
+/// repository tab or mode.
+pub(super) struct KeyboardMenu {
+    menu: Entity<PopupMenu>,
+    position: Point<Pixels>,
+    /// The window's size when the menu opened, which its overlay covers. The
+    /// menu also closes on a press outside itself, past an overlay that a
+    /// larger window has outgrown.
+    viewport: Size<Pixels>,
+    _subscriptions: [Subscription; 2],
+}
+
+impl KeyboardMenu {
+    /// Builds the row's menu with `build`, the builder its right-click menu
+    /// uses, focuses it, and calls `dismissed` once it closes.
+    pub(super) fn open(
+        position: Point<Pixels>,
+        focus: FocusHandle,
+        build: impl FnOnce(PopupMenu) -> PopupMenu + 'static,
+        dismissed: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+        window: &mut Window,
+        cx: &mut Context<GitTurtle>,
+    ) -> Self {
+        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+            build(menu).action_context(focus)
+        });
+        let dismiss = cx.subscribe_in(
+            &menu,
+            window,
+            move |this, _, _: &DismissEvent, window, cx| dismissed(this, window, cx),
+        );
+        let handle = menu.focus_handle(cx);
+        let blur = cx.on_blur(&handle, window, move |this, window, cx| {
+            dismissed(this, window, cx)
+        });
+        window.focus(&handle, cx);
+        Self {
+            menu,
+            position,
+            viewport: window.viewport_size(),
+            _subscriptions: [dismiss, blur],
+        }
+    }
+
+    /// The bottom of the `row`th row of a uniform list of `height` tall rows,
+    /// `inset` from its leading edge: the list's origin, its scroll offset
+    /// and the row's index place it, within the list's visible part.
+    pub(super) fn below_row(
+        scroll: &UniformListScrollHandle,
+        row: usize,
+        height: Pixels,
+        inset: Pixels,
+    ) -> Point<Pixels> {
+        let state = scroll.0.borrow();
+        let bounds = state.base_handle.bounds();
+        let bottom = bounds.top() + state.base_handle.offset().y + height * (row as f32 + 1.);
+        point(
+            bounds.left() + inset,
+            bottom.clamp(bounds.top(), bounds.bottom()),
+        )
+    }
+
+    /// Whether focus is in the menu, as it is until an item, Escape or a
+    /// press outside it moves focus.
+    pub(super) fn has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.menu.focus_handle(cx).contains_focused(window, cx)
+    }
+
+    /// The menu over a window-wide overlay, `id`, that a press outside the
+    /// menu dismisses through `dismiss`.
+    pub(super) fn render(
+        &self,
+        id: &'static str,
+        dismiss: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+        cx: &mut Context<GitTurtle>,
+    ) -> AnyElement {
+        deferred(
+            anchored().position(Point::default()).child(
+                div()
+                    .id(id)
+                    .debug_selector(move || id.into())
+                    .occlude()
+                    .w(self.viewport.width)
+                    .h(self.viewport.height)
+                    .on_any_mouse_down(cx.listener(move |this, _, window, cx| {
+                        dismiss(this, window, cx);
+                    }))
+                    .child(
+                        anchored()
+                            .position(self.position)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(
+                                // A press inside the menu must reach its
+                                // item, not the overlay behind it.
+                                div()
+                                    .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                                    .child(self.menu.clone()),
+                            ),
+                    ),
+            ),
+        )
+        .with_priority(gpui_kit::base::POPUP_PRIORITY)
+        .into_any_element()
+    }
 }
 
 pub(super) fn polite(builder: &mut A11ySubtreeBuilder<'_>) {
