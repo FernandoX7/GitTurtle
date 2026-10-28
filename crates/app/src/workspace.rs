@@ -162,8 +162,9 @@ pub(super) struct WorkingForms {
     compact_commit: bool,
 }
 
-/// The title's and the description's placeholders, of which each field shows
-/// as much as fits its width (`fit_composer_placeholders`).
+/// The filter's, the title's and the description's placeholders, of which
+/// each field shows as much as fits its width (`placeholder_fit`).
+pub(super) const FILTER_PLACEHOLDER: &str = "Filter working paths…";
 pub(super) const TITLE_PLACEHOLDER: &str = "Summarize the change";
 pub(super) const DESCRIPTION_PLACEHOLDER: &str = "Explain why this change is needed…";
 
@@ -198,6 +199,7 @@ thread_local! {
     /// Each placeholder as it fits the width its field last painted at.
     static TITLE_FIT: PlaceholderFit = const { RefCell::new(None) };
     static DESCRIPTION_FIT: PlaceholderFit = const { RefCell::new(None) };
+    static FILTER_FIT: PlaceholderFit = const { RefCell::new(None) };
 }
 
 /// A text's wrapped line count, with what it was laid out with: the font and
@@ -494,44 +496,12 @@ impl GitTurtle {
         }
     }
 
-    /// A canvas that, painted after the title and the description, fits each
-    /// field's placeholder to the width the field just painted its text at,
-    /// so a narrow field ends its placeholder with an ellipsis rather than
-    /// clipping a glyph. It sets a placeholder only when that changes, and
-    /// then draws again, since refresh is ignored during paint.
-    fn fit_composer_placeholders(&self) -> impl IntoElement {
-        let (title, description) = (self.commit_title.clone(), self.commit_message.clone());
-        canvas(
-            |_, _, _| (),
-            move |_, _, window, cx| {
-                let mut changed = false;
-                if let Some(field) = title.read(cx).text_bounds() {
-                    let fit =
-                        fitted_placeholder(&TITLE_FIT, TITLE_PLACEHOLDER, field.size.width, window);
-                    if *title.read(cx).presentation().placeholder() != fit {
-                        title.update(cx, |state, cx| state.set_placeholder(fit, window, cx));
-                        changed = true;
-                    }
-                }
-                if let Some(field) = description.read(cx).text_bounds() {
-                    let fit = fitted_placeholder(
-                        &DESCRIPTION_FIT,
-                        DESCRIPTION_PLACEHOLDER,
-                        field.size.width,
-                        window,
-                    );
-                    if *description.read(cx).presentation().placeholder() != fit {
-                        description.update(cx, |state, cx| state.set_placeholder(fit, window, cx));
-                        changed = true;
-                    }
-                }
-                if changed {
-                    window.defer(cx, |window, _| window.refresh());
-                }
-            },
-        )
-        .absolute()
-        .size_0()
+    /// The Changes filter's placeholder fitted to its field, for the field's
+    /// positioned wrapper in either form: the one row of the tight form,
+    /// where the field can be 86 px at 18 pt, or its own row above the
+    /// selection controls.
+    pub(super) fn fit_filter_placeholder(&self) -> impl IntoElement {
+        placeholder_fit(self.working_filter.clone(), &FILTER_FIT, FILTER_PLACEHOLDER)
     }
 
     /// The commit action's label: what it commits, or why it cannot.
@@ -709,6 +679,33 @@ fn ellipsized(full: &str, room: Pixels, size: Pixels, window: &Window) -> Shared
         }
     }
     fitting
+}
+
+/// A canvas that, painted after `field`, fits its placeholder, `full`, to the
+/// width the field just painted its text at, so a narrow field ends the
+/// placeholder with an ellipsis rather than clipping a glyph. It sets the
+/// placeholder only when that changes, and then draws again, since refresh is
+/// ignored during paint. Its parent is positioned; it takes no room.
+fn placeholder_fit<M: gpui_kit::base::input::InputModeKind + 'static>(
+    field: Entity<gpui_kit::base::input::InputBaseState<M>>,
+    cache: &'static std::thread::LocalKey<PlaceholderFit>,
+    full: &'static str,
+) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, _, window, cx| {
+            let Some(text) = field.read(cx).text_bounds() else {
+                return;
+            };
+            let fit = fitted_placeholder(cache, full, text.size.width, window);
+            if *field.read(cx).presentation().placeholder() != fit {
+                field.update(cx, |state, cx| state.set_placeholder(fit, window, cx));
+                window.defer(cx, |window, _| window.refresh());
+            }
+        },
+    )
+    .absolute()
+    .size_0()
 }
 
 /// `full` as it fits `room`, laid out again only when the room, the font or
@@ -1779,12 +1776,15 @@ impl GitTurtle {
                     .child(
                         div()
                             .debug_selector(|| "working-filter".into())
+                            .relative()
                             .flex_1()
                             .min_w_0()
                             .child(
                                 Input::new(&self.working_filter)
                                     .text_size(crate::appearance::ui_text(12.)),
-                            ),
+                            )
+                            // Painted after the field, it fits its placeholder.
+                            .child(self.fit_filter_placeholder()),
                     )
                     .child(self.render_working_recovery_menu(
                         true,
@@ -2056,7 +2056,12 @@ impl GitTurtle {
                         }))
                     }))
                     // Painted after both fields, it fits their placeholders.
-                    .child(self.fit_composer_placeholders()),
+                    .child(placeholder_fit(self.commit_title.clone(), &TITLE_FIT, TITLE_PLACEHOLDER))
+                    .child(placeholder_fit(
+                        self.commit_message.clone(),
+                        &DESCRIPTION_FIT,
+                        DESCRIPTION_PLACEHOLDER,
+                    )),
             )))
             .into_any_element()
     }

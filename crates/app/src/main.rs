@@ -607,7 +607,7 @@ impl GitTurtle {
         let file_filter =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter changed paths…"));
         let working_filter =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter working paths…"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(workspace::FILTER_PLACEHOLDER));
         // The Settings page's own view; `render` embeds it cached and the app
         // notifies it at every site that alters the page
         // (`settings::SettingsPage`).

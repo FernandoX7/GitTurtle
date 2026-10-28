@@ -6754,6 +6754,60 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The Changes filter's placeholder fits its field as the composer's do.
+    /// In the tight form's one row at 18 pt in a 461 × 490 window, where the
+    /// field is about 86 px, it ends with an ellipsis at a character boundary
+    /// inside the field, where it was cut mid-glyph; in its own row at 13 pt
+    /// in a 1480 × 980 window it is whole.
+    #[gpui::test]
+    async fn working_filter_placeholder_fits_its_field(cx: &mut TestAppContext) {
+        use crate::workspace::FILTER_PLACEHOLDER;
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        for (text, width, height, tight) in [(18, 461., 490., true), (13, 1480., 980., false)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            assert_eq!(
+                cx.debug_bounds("working-toolbar").is_some(),
+                tight,
+                "{at}: the one-row form"
+            );
+            let (field, shown) = app.read_with(cx, |app, cx| {
+                let filter = app.working_filter.read(cx);
+                (
+                    filter.text_bounds(),
+                    filter.presentation().placeholder().clone(),
+                )
+            });
+            let field = field.unwrap_or_else(|| panic!("{at}: the filter unpainted"));
+            let drawn = cx.update(|window, _| {
+                shaped_width(
+                    &shown,
+                    appearance::ui_text(12.),
+                    window.text_style().font_weight,
+                    window,
+                )
+            });
+            assert!(drawn <= field.size.width, "{at}: {shown:?} in {field:?}");
+            let stem = shown.trim_end_matches('…');
+            if tight {
+                assert!(
+                    shown != FILTER_PLACEHOLDER
+                        && shown.ends_with('…')
+                        && !stem.is_empty()
+                        && FILTER_PLACEHOLDER.starts_with(stem),
+                    "{at}: {shown:?} in {field:?}"
+                );
+            } else {
+                assert_eq!(shown.as_ref(), FILTER_PLACEHOLDER, "{at}");
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A file row keeps its name whole, at least a short one such as
     /// "notes.txt": at 18 pt in the 156 px inspector of a 461 × 490 window
     /// every row gives up its status word and then its Stage or Unstage
