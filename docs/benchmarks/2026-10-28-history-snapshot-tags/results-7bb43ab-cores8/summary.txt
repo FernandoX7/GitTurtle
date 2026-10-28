@@ -1,0 +1,18 @@
+history-tags load_ms
+  base      n=120 p50=40.89 p95=42.48 max=44.66 rounds p50 40.91 40.50 40.87 commits=500 branches=121
+  candidate n=120 p50=38.88 p95=41.75 max=44.38 rounds p50 39.42 38.76 38.65 commits=500 branches=121
+history-tags refresh_ms
+  base      n=120 p50=38.15 p95=39.74 max=40.55 rounds p50 38.11 38.23 38.02 commits=500 branches=121
+  candidate n=120 p50=39.38 p95=42.90 max=45.22 rounds p50 39.96 39.44 38.88 commits=500 branches=121
+history-tags-packed load_ms
+  base      n=120 p50=35.90 p95=37.78 max=42.54 rounds p50 35.95 35.88 35.85 commits=500 branches=121
+  candidate n=120 p50=36.44 p95=39.56 max=42.37 rounds p50 36.42 36.45 36.15 commits=500 branches=121
+history-tags-packed refresh_ms
+  base      n=120 p50=33.38 p95=35.99 max=39.07 rounds p50 33.26 33.21 33.45 commits=500 branches=121
+  candidate n=120 p50=39.30 p95=42.98 max=45.55 rounds p50 39.59 38.83 39.58 commits=500 branches=121
+history load_ms
+  base      n=120 p50=24.96 p95=26.20 max=27.78 rounds p50 25.00 25.03 24.81 commits=500 branches=121
+  candidate n=120 p50=24.39 p95=25.93 max=26.93 rounds p50 24.49 24.39 24.34 commits=500 branches=121
+history refresh_ms
+  base      n=120 p50=22.26 p95=23.49 max=25.25 rounds p50 21.80 22.00 22.48 commits=500 branches=121
+  candidate n=120 p50=19.89 p95=21.82 max=22.95 rounds p50 19.86 19.88 19.90 commits=500 branches=121
