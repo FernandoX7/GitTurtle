@@ -1296,9 +1296,15 @@ const EDITOR_LINE_HEIGHT: f32 = 1.5;
 /// between the inside of the box's border and the text; the bottom one runs past the clip.
 /// Changes keeps the same inset above its rows, so both modes start their text at one height.
 const EDITOR_PADDING: Pixels = px(8.);
-/// The kit editor's padding beside its text, a medium Input's at every text size: Source's
-/// text starts this far after Compare's gutter, and so does each Changes row's.
-const EDITOR_TEXT_INSET: Pixels = px(10.);
+/// Where Source's editor starts a line's text after Compare's gutter, read from the kit: the
+/// padding beside the text of the Input the editor draws in, which keeps the default size,
+/// and the margin the kit's code editor keeps before its text where its own line numbers
+/// would end; Compare's gutter takes their place. Each Changes row starts its text this far
+/// after its gutter. Counting only the padding, Changes' text began 10 px before Source's.
+fn source_text_inset() -> Pixels {
+    gpui_kit::component::Size::default().input_px()
+        + gpui_kit::base::input::LINE_NUMBER_RIGHT_MARGIN
+}
 /// A Changes row's height: the code text's line at 1.65, on whole device pixels at `scale`.
 /// Layout rounds an authored height to device pixels, so a row of 19.8 px at 12 pt is drawn
 /// 20 px tall at 2x: counted at 19.8 px, the box's rows ran 2.6 px past its clip and cut the
@@ -1310,7 +1316,7 @@ fn patch_row_height(scale: f32) -> Pixels {
 /// One patch row's layout, `height` tall, in Source's geometry: the old and new line numbers
 /// right-aligned in `column`-wide columns, [`crate::diff_view::CELL_PADDING`] inside each
 /// column's right edge, where Compare's gutter paints them, then the line's text
-/// [`EDITOR_TEXT_INSET`] after the gutter, where Source's editor starts it. The gutter is one
+/// [`source_text_inset`] after the gutter, where Source's editor starts it. The gutter is one
 /// box as wide as both columns, as Source's is, so both round its width alike.
 fn patch_row(
     index: usize,
@@ -1352,7 +1358,7 @@ fn patch_row(
         .child(
             div()
                 .debug_selector(move || format!("github-patch-text-{index}"))
-                .ml(EDITOR_TEXT_INSET)
+                .ml(source_text_inset())
                 .min_w_0()
                 .flex_1()
                 .truncate()
@@ -1382,7 +1388,7 @@ mod tests {
     /// the file's widest number, scaled with the code size, and fit it in the code font: each
     /// number ends [`crate::diff_view::CELL_PADDING`] inside its column's right edge, as
     /// Compare's gutter paints it, without crossing the column's left edge, and the patch text
-    /// starts [`EDITOR_TEXT_INSET`] after both columns, where Source's editor starts its text.
+    /// starts [`source_text_inset`] after both columns.
     #[gpui::test]
     fn line_numbers_fit_the_widest_number_at_every_code_size(cx: &mut TestAppContext) {
         struct Rows(model::PatchRow);
@@ -1471,7 +1477,7 @@ mod tests {
                 "{code} pt: {new:?}"
             );
             assert!(
-                near(text.left(), at(column * 2.) + EDITOR_TEXT_INSET),
+                near(text.left(), at(column * 2.) + source_text_inset()),
                 "{code} pt: {text:?} after {new:?}"
             );
         };
@@ -2688,9 +2694,10 @@ mod tests {
     /// In a 1480 × 980 window at 13 and 18 pt, Changes and decorated Source start their text at
     /// one place in the box they share: the first row and the first line one inset below the
     /// box's top, the editor's top padding, the old and new line numbers right-aligned where
-    /// Compare's gutter paints Source's, and the code text one x after the gutter. Changes
-    /// started flush with the box, its numbers left-aligned in columns that kept 36 px, so at
-    /// 15 pt code its text began 12.5 px before Source's.
+    /// Compare's gutter paints Source's, and the code text where the editor draws its first
+    /// character. Changes started flush with the box, its numbers left-aligned in columns that
+    /// kept 36 px, so at 15 pt code its text began 12.5 px before Source's; then, measured
+    /// against the editor's text area rather than its drawn text, 10 px before it.
     #[gpui::test]
     async fn changes_and_source_start_their_text_at_one_place(cx: &mut TestAppContext) {
         let (_fixture, app, panel, cx) = review_panel(cx);
@@ -2762,11 +2769,13 @@ mod tests {
                 );
                 let source = cx.debug_bounds("github-source-patch").expect("Source");
                 let editor = cx.read(|cx| panel.read(cx).review.source.clone().unwrap());
-                let (input, lines) = cx.read(|cx| {
+                // Where the editor draws the first line's first character: past the margin
+                // its code editor keeps inside the text area, not at the text area's edge.
+                let (input, drawn) = cx.read(|cx| {
                     let editor = editor.read(cx);
                     (
                         editor.input_bounds(),
-                        editor.text_bounds().expect("laid out"),
+                        editor.range_to_bounds(&(0..0)).expect("laid out"),
                     )
                 });
                 // Compare's gutter paints each number this far inside its column's right edge,
@@ -2785,7 +2794,7 @@ mod tests {
                 let painted = |columns: f32| px(1. + column * columns - padding);
                 let shown = (
                     input.top() - source.top(),
-                    lines.left() - source.left(),
+                    drawn.left() - source.left(),
                     painted(1.),
                     painted(2.),
                 );
