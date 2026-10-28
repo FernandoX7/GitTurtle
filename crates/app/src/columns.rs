@@ -129,6 +129,10 @@ pub struct NarrowHistory {
     /// The graph at its compact lane pitch: every loaded lane, and one lane.
     pub graph: f32,
     pub graph_min: f32,
+    /// The room the folded references' compact pill and its gap take at the
+    /// subject's start, zero where no row has references. Narrow History's
+    /// subject cell keeps its floor beside it.
+    pub pill: f32,
     /// What the table keeps after its last column, inside the viewport.
     /// Narrow History's subject ends at the viewport's edge, with the
     /// columns after it beyond, so it takes this room too.
@@ -241,11 +245,11 @@ impl ColumnSettings {
     /// insets. Where the chosen columns would leave the subject less than
     /// `narrow.subject_floor` inside the viewport at the table's start,
     /// References fold into the subject cell, the graph takes its compact
-    /// width within what the floor leaves it, and the subject takes the rest
-    /// of the viewport, never less than the floor, so it ends at the
-    /// viewport's edge. Author, Date and SHA keep their widths after it and
-    /// scroll sideways. The settings are not changed, so a wider viewport
-    /// gives the chosen layout back.
+    /// width within what the floor and the folded pill leave it, and the
+    /// subject takes the rest of the viewport, never less than the floor
+    /// beside the pill, so it ends at the viewport's edge. Author, Date and
+    /// SHA keep their widths after it and scroll sideways. The settings are
+    /// not changed, so a wider viewport gives the chosen layout back.
     pub fn history_layout(
         &self,
         available_width: f32,
@@ -273,6 +277,8 @@ impl ColumnSettings {
         if subject.min(viewport - before) >= floor {
             return chosen;
         }
+        // Folded, the subject cell keeps its floor beside the compact pill.
+        let floor = floor + narrow.pill;
         let graph = narrow.graph.min(viewport - floor).max(narrow.graph_min);
         let mut columns: Vec<_> = chosen
             .columns
@@ -389,6 +395,7 @@ mod tests {
         subject_floor: 120.,
         graph: 30.,
         graph_min: 20.,
+        pill: 0.,
         trailing_inset: 10.75,
     };
     const INSETS: f32 = 12.75 + 10.75;
@@ -449,6 +456,18 @@ mod tests {
         let edge = 140. + 112. + 120. - 10.75;
         assert!(!settings.history_layout(edge, 40., NARROW).narrow);
         assert!(settings.history_layout(edge - 0.5, 40., NARROW).narrow);
+        // Folded, the subject cell keeps its floor beside the compact pill,
+        // and the graph yields that room first. The fold itself depends on
+        // the floor alone, since the chosen columns' subject has no pill.
+        let pill = NarrowHistory {
+            pill: 24.,
+            ..NARROW
+        };
+        let folded = settings.history_layout(170. - 10.75, 40., pill);
+        assert_eq!(width(&folded, ColumnId::Graph), Some(26.));
+        assert_eq!(width(&folded, ColumnId::Subject), Some(144.));
+        assert!(!settings.history_layout(edge, 40., pill).narrow);
+        assert!(settings.history_layout(edge - 0.5, 40., pill).narrow);
         assert_eq!(settings, saved, "the saved columns are untouched");
     }
 

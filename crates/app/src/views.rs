@@ -1179,7 +1179,7 @@ impl GitTurtle {
             .map(|s| s.0.clone())
             .unwrap_or("All history".into());
         // Before anything in this frame lays the columns out, rows included.
-        let metrics = HistoryMetrics::current(window);
+        let metrics = HistoryMetrics::current(window, self.widest_references());
         self.history_metrics.set(metrics);
         let columns = self.history_column_layout();
         let table_width = columns.content_width + metrics.insets();
@@ -1465,6 +1465,7 @@ impl GitTurtle {
                 subject_floor: metrics.subject_floor,
                 graph: graph::required_width(self.graph_lanes, compact),
                 graph_min: graph::required_width(1, compact),
+                pill: metrics.pill_room(),
                 trailing_inset: metrics.trailing,
             },
         )
@@ -1516,8 +1517,24 @@ impl GitTurtle {
             filtered,
             lane_colors: graph::colors(cx),
             labels: appearance::labels(cx),
+            pill: self.history_metrics.get().pill(
+                columns
+                    .columns
+                    .iter()
+                    .find(|column| column.id == ColumnId::Subject)
+                    .map_or(0., |column| column.width),
+            ),
             columns,
         }
+    }
+
+    /// The most references any loaded commit has where References show,
+    /// which narrow History's compact pill is sized for.
+    fn widest_references(&self) -> usize {
+        if !self.settings.columns.refs.visible {
+            return 0;
+        }
+        self.refs.values().map(Vec::len).max().unwrap_or(0)
     }
 
     fn graph_lane_offset(&self) -> usize {
@@ -1582,82 +1599,82 @@ impl GitTurtle {
         #[cfg(test)]
         let mut pill_tooltip = None;
         if let Some(names) = names {
-            // HEAD's branch comes first (`worker::Snapshot::refs`).
-            let name = names[0].clone();
-            let more = (names.len() > 1).then(|| format!("+{}", names.len() - 1));
-            if columns.narrow {
+            // The chip's own tooltip lists every reference, so reading the
+            // subject beside it brings up no tooltip. The text is copied only
+            // when the tooltip shows.
+            let title = names.join("\n");
+            #[cfg(test)]
+            {
+                pill_tooltip = columns.narrow.then(|| SharedString::from(title.clone()));
+            }
+            let chip = div()
+                .id(("refs", index))
+                .debug_selector(move || format!("history-ref-pill-{index}"))
+                .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
+                .min_w_0()
+                .flex()
+                .items_center()
+                .overflow_hidden()
+                .px_1()
+                .py_0p5()
+                .rounded(px(3.))
+                .text_size(crate::appearance::ui_text(10.))
+                .text_color(rgb(label))
+                .bg(tint);
+            let chip = if columns.narrow && rows.pill.compact {
+                // A branch glyph and how many references there are; the
+                // names are the tooltip's and the row's accessible name's.
+                let count = reference_count(names.len());
                 #[cfg(test)]
                 HISTORY_PILLS.with(|pills| {
                     pills
                         .borrow_mut()
-                        .insert(index, (name.clone(), more.clone(), label))
+                        .insert(index, (None, Some(count.to_string()), label))
                 });
-                folded = Some(names);
-                // On the pill alone, so reading the subject brings up no
-                // tooltip over it.
-                let title = SharedString::from(names.join("\n"));
-                #[cfg(test)]
-                {
-                    pill_tooltip = Some(title.clone());
-                }
-                pill = Some(
-                    div()
-                        .id(("refs", index))
-                        .debug_selector(move || format!("history-ref-pill-{index}"))
-                        .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
-                        .flex_shrink_0()
-                        .min_w_0()
-                        .max_w(relative(0.5))
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .overflow_hidden()
-                        .px_1()
-                        .py_0p5()
-                        .rounded(px(3.))
-                        .text_size(crate::appearance::ui_text(10.))
-                        .text_color(rgb(label))
-                        .bg(tint)
-                        .child(div().min_w_0().truncate().child(name))
-                        .children(more.map(|more| div().flex_shrink_0().child(more))),
-                );
+                chip.gap_0p5()
+                    .child(
+                        svg()
+                            .path(SharedString::new_static("icons/branch.svg"))
+                            .size(crate::appearance::ui_size(10.))
+                            .flex_shrink_0()
+                            .text_color(rgb(label)),
+                    )
+                    .child(div().flex_shrink_0().child(count))
             } else {
-                let refs_width = self.settings.columns.refs.width;
-                let title = names.join("\n");
+                // HEAD's branch comes first (`worker::Snapshot::refs`), and
+                // "+N" counts the others inside the chip, whole while the
+                // name truncates.
+                let name = names[0].clone();
+                let more = (names.len() > 1).then(|| format!("+{}", names.len() - 1));
+                #[cfg(test)]
+                HISTORY_PILLS.with(|pills| {
+                    pills
+                        .borrow_mut()
+                        .insert(index, (Some(name.clone()), more.clone(), label))
+                });
+                chip.gap_1()
+                    .child(div().min_w_0().truncate().child(name))
+                    .children(more.map(|more| {
+                        div()
+                            .debug_selector(move || format!("history-ref-more-{index}"))
+                            .flex_shrink_0()
+                            .child(more)
+                    }))
+            };
+            if columns.narrow {
+                folded = Some(names);
+                pill = Some(chip.flex_shrink_0().max_w(px(rows.pill.max)));
+            } else {
                 references = Some(
                     div()
-                        .w(px(refs_width))
+                        .w(px(self.settings.columns.refs.width))
                         .flex_shrink_0()
                         .pl(px(10.))
                         .pr_2()
                         .flex()
                         .items_center()
-                        .gap_1()
                         .overflow_hidden()
-                        .child(
-                            div()
-                                .id(("refs", index))
-                                .min_w_0()
-                                .max_w(px(refs_width - 22.))
-                                .truncate()
-                                .px_1()
-                                .py_0p5()
-                                .rounded(px(3.))
-                                .text_size(crate::appearance::ui_text(10.))
-                                .text_color(rgb(label))
-                                .bg(tint)
-                                .tooltip(move |window, cx| {
-                                    Tooltip::new(title.clone()).build(window, cx)
-                                })
-                                .child(name),
-                        )
-                        .children(more.map(|more| {
-                            div()
-                                .flex_shrink_0()
-                                .text_size(crate::appearance::ui_text(10.))
-                                .text_color(rgb(colors.muted))
-                                .child(more)
-                        }))
+                        .child(chip)
                         .into_any_element(),
                 );
             }
@@ -1685,98 +1702,102 @@ impl GitTurtle {
                 .borrow_mut()
                 .insert(index, (name.clone(), pill_tooltip))
         });
-        let row =
-            div()
-                .id(("commit", index))
-                .role(Role::ListBoxOption)
-                .aria_label(name)
-                .aria_selected(active)
-                .when(active, |row| row.aria_active_descendant())
-                .aria_position_in_set(position + 1)
-                .aria_size_of_set(self.visible.len())
-                .w_full()
-                .h(px(self.settings.density.history_row_height()))
-                .flex()
-                .items_center()
-                .px_3()
-                .gap_0()
-                .bg(rgb(if active {
-                    colors.selected
-                } else {
-                    colors.canvas
-                }))
-                .border_l_2()
-                .border_color(rgb(if active { colors.accent } else { colors.canvas }))
-                .hover(|s| s.bg(rgb(colors.row_hover(active))))
-                .active(|s| s.bg(rgb(colors.selected)))
-                .cursor_pointer()
-                .children(columns.columns.iter().map(|column| {
-                    let id = column.id as usize;
-                    let cell = div()
-                        .debug_selector(move || format!("history-cell-{index}-{id}"))
-                        .w(px(column.width))
-                        .flex_shrink_0()
-                        .min_w_0()
-                        .overflow_hidden();
-                    match column.id {
-                        ColumnId::Refs => cell.children(references.take()).into_any_element(),
-                        ColumnId::Graph => cell
-                            .child(graph::render(
-                                self.graph[index].clone(),
-                                column.width,
-                                rows.lane_offset,
-                                rows.spacing,
-                                self.settings.density.history_row_height(),
-                                graph::RowStyle {
-                                    active,
-                                    merge: commit.parents.len() > 1,
-                                    filtered: rows.filtered,
-                                },
-                            ))
-                            .into_any_element(),
-                        ColumnId::Subject => {
-                            let cell = cell
-                                .debug_selector(move || format!("history-subject-{index}"))
-                                .pl(px(10.))
-                                .pr_3()
-                                .text_size(crate::appearance::ui_text(13.));
-                            // Narrow History folds References into the cell's
-                            // start, and the subject truncates beside the pill.
-                            match pill.take() {
-                                Some(pill) => cell.flex().items_center().gap_1().child(pill).child(
-                                    div().flex_1().min_w_0().truncate().child(subject.clone()),
-                                ),
-                                None => cell.truncate().child(subject.clone()),
-                            }
-                            .into_any_element()
+        let row = div()
+            .id(("commit", index))
+            .role(Role::ListBoxOption)
+            .aria_label(name)
+            .aria_selected(active)
+            .when(active, |row| row.aria_active_descendant())
+            .aria_position_in_set(position + 1)
+            .aria_size_of_set(self.visible.len())
+            .w_full()
+            .h(px(self.settings.density.history_row_height()))
+            .flex()
+            .items_center()
+            .px_3()
+            .gap_0()
+            .bg(rgb(if active {
+                colors.selected
+            } else {
+                colors.canvas
+            }))
+            .border_l_2()
+            .border_color(rgb(if active { colors.accent } else { colors.canvas }))
+            .hover(|s| s.bg(rgb(colors.row_hover(active))))
+            .active(|s| s.bg(rgb(colors.selected)))
+            .cursor_pointer()
+            .children(columns.columns.iter().map(|column| {
+                let id = column.id as usize;
+                let cell = div()
+                    .debug_selector(move || format!("history-cell-{index}-{id}"))
+                    .w(px(column.width))
+                    .flex_shrink_0()
+                    .min_w_0()
+                    .overflow_hidden();
+                match column.id {
+                    ColumnId::Refs => cell.children(references.take()).into_any_element(),
+                    ColumnId::Graph => cell
+                        .child(graph::render(
+                            self.graph[index].clone(),
+                            column.width,
+                            rows.lane_offset,
+                            rows.spacing,
+                            self.settings.density.history_row_height(),
+                            graph::RowStyle {
+                                active,
+                                merge: commit.parents.len() > 1,
+                                filtered: rows.filtered,
+                            },
+                        ))
+                        .into_any_element(),
+                    ColumnId::Subject => {
+                        let cell = cell
+                            .debug_selector(move || format!("history-subject-{index}"))
+                            .pl(px(10.))
+                            .pr_3()
+                            .text_size(crate::appearance::ui_text(13.));
+                        // Narrow History folds References into the cell's
+                        // start, and the subject truncates beside the pill.
+                        match pill.take() {
+                            Some(pill) => cell.flex().items_center().gap_1().child(pill).child(
+                                div()
+                                    .debug_selector(move || format!("history-subject-text-{index}"))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(subject.clone()),
+                            ),
+                            None => cell.truncate().child(subject.clone()),
                         }
-                        ColumnId::Author => cell
-                            .pl(px(10.))
-                            .pr_3()
-                            .truncate()
-                            .text_size(crate::appearance::ui_text(11.))
-                            .text_color(rgb(colors.muted))
-                            .child(author.clone())
-                            .into_any_element(),
-                        ColumnId::Date => cell
-                            .pl(px(10.))
-                            .pr_3()
-                            .truncate()
-                            .text_size(crate::appearance::ui_text(11.))
-                            .text_color(rgb(colors.muted))
-                            .child(short_date(commit.timestamp))
-                            .into_any_element(),
-                        ColumnId::Sha => cell
-                            .pl(px(10.))
-                            .pr_3()
-                            .truncate()
-                            .font_family(mono())
-                            .text_size(crate::appearance::ui_text(11.))
-                            .text_color(rgb(colors.muted))
-                            .child(short_oid(&commit.oid))
-                            .into_any_element(),
+                        .into_any_element()
                     }
-                }));
+                    ColumnId::Author => cell
+                        .pl(px(10.))
+                        .pr_3()
+                        .truncate()
+                        .text_size(crate::appearance::ui_text(11.))
+                        .text_color(rgb(colors.muted))
+                        .child(author.clone())
+                        .into_any_element(),
+                    ColumnId::Date => cell
+                        .pl(px(10.))
+                        .pr_3()
+                        .truncate()
+                        .text_size(crate::appearance::ui_text(11.))
+                        .text_color(rgb(colors.muted))
+                        .child(short_date(commit.timestamp))
+                        .into_any_element(),
+                    ColumnId::Sha => cell
+                        .pl(px(10.))
+                        .pr_3()
+                        .truncate()
+                        .font_family(mono())
+                        .text_size(crate::appearance::ui_text(11.))
+                        .text_color(rgb(colors.muted))
+                        .child(short_oid(&commit.oid))
+                        .into_any_element(),
+                }
+            }));
         let recovery_owner = cx.entity().downgrade();
         let recovery_repository = self.path.clone();
         let recovery_commit = recovery::commit_target(commit);
@@ -3362,8 +3383,16 @@ fn scope_name_min_width(scope: &str, window: &Window) -> Pixels {
 /// its frame lays the columns out (`GitTurtle::history_metrics`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct HistoryMetrics {
-    /// Narrow History's subject floor (`subject_floor`).
+    /// Narrow History's subject floor (`subject_floor`): the subject cell's
+    /// insets and the floor of its text.
     subject_floor: f32,
+    /// The subject cell's 10 px and `px_3` insets.
+    subject_insets: f32,
+    /// The `gap_1` between narrow History's pill and the subject's text.
+    pill_gap: f32,
+    /// Narrow History's compact pill at its widest for the loaded
+    /// references (`compact_pill_width`), zero where no row has a pill.
+    compact_pill: f32,
     /// Where the first column starts in the table: inside the list's 1 px
     /// border, a row's 2 px selection edge and its `px_3` inset. The header,
     /// above the list, starts its columns there too.
@@ -3374,10 +3403,16 @@ pub(super) struct HistoryMetrics {
 }
 
 impl HistoryMetrics {
-    fn current(window: &Window) -> Self {
-        let inset = f32::from(window.rem_size()) * 0.75;
+    /// The metrics for `window`'s font and sizes, with `references` the
+    /// most any loaded commit shows.
+    fn current(window: &Window, references: usize) -> Self {
+        let rem = f32::from(window.rem_size());
+        let inset = rem * 0.75;
         Self {
             subject_floor: f32::from(subject_floor(window)),
+            subject_insets: 10. + inset,
+            pill_gap: rem * 0.25,
+            compact_pill: compact_pill_width(references, window),
             leading: 3. + inset,
             trailing: inset + 1.,
         }
@@ -3387,6 +3422,74 @@ impl HistoryMetrics {
     fn insets(self) -> f32 {
         self.leading + self.trailing
     }
+
+    /// The least of the subject's own text: its header's whole title.
+    fn text_floor(self) -> f32 {
+        self.subject_floor - self.subject_insets
+    }
+
+    /// What narrow History keeps at the subject's start for the compact
+    /// pill and its gap, beside the text's floor.
+    fn pill_room(self) -> f32 {
+        if self.compact_pill > 0. {
+            self.compact_pill + self.pill_gap
+        } else {
+            0.
+        }
+    }
+
+    /// Narrow History's pill in a `subject`-wide cell: the whole badge, at
+    /// most half the cell's text room, where that half holds the text's
+    /// floor, and otherwise the compact pill, so the subject's text keeps
+    /// at least its floor beside either.
+    fn pill(self, subject: f32) -> Pill {
+        let half = (subject - self.subject_insets - self.pill_gap) / 2.;
+        if half >= self.text_floor() {
+            Pill {
+                compact: false,
+                max: half,
+            }
+        } else {
+            Pill {
+                compact: true,
+                max: self.compact_pill,
+            }
+        }
+    }
+}
+
+/// The form narrow History draws every row's reference pill in for a frame,
+/// and its widest.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pill {
+    /// A branch glyph and the count, rather than the first name and "+N".
+    compact: bool,
+    max: f32,
+}
+
+/// Narrow History's compact pill at its widest for `references` on one
+/// commit: its `px_1` insets, the branch glyph, its `gap_0p5` and the count
+/// at the badge's 10 pt, measured as eights, among the widest figures, once
+/// per font, size and number of digits. Zero without references.
+fn compact_pill_width(references: usize, window: &Window) -> f32 {
+    if references == 0 {
+        return 0.;
+    }
+    let digits = ["8", "88", "888"][(references.ilog10() as usize).min(2)];
+    let count = cached_text_width(&COMPACT_COUNT, digits, window, || {
+        line_widths(&[(digits, appearance::ui_text(10.))], window)
+    });
+    let rem = f32::from(window.rem_size());
+    rem * 0.5 + f32::from(appearance::ui_size(10.)) + rem * 0.125 + f32::from(count)
+}
+
+/// A compact pill's count of `references`, without allocating below ten.
+fn reference_count(references: usize) -> SharedString {
+    const DIGITS: [&str; 10] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+    DIGITS.get(references).map_or_else(
+        || references.to_string().into(),
+        |digit| SharedString::new_static(digit),
+    )
 }
 
 /// What every History row of a frame shares (`GitTurtle::history_rows`).
@@ -3398,6 +3501,8 @@ pub(super) struct HistoryRows {
     filtered: bool,
     lane_colors: [u32; 6],
     labels: appearance::Labels,
+    /// Narrow History's reference pill for this frame's subject width.
+    pill: Pill,
 }
 
 /// What a History column header cell needs for its whole `title` at the
@@ -3419,7 +3524,8 @@ fn header_cell_width(
 /// Narrow History's subject floor: the cell the subject's column header
 /// needs for its whole title, "Commit message", so neither the title nor a
 /// row's subject is cut to nothing. About 113 px at the default size and
-/// 152 px at 18 pt with the embedded font.
+/// 152 px at 18 pt with the embedded font; a row's text keeps the title's
+/// own width (`HistoryMetrics::text_floor`), about 93 and 128 px.
 pub(super) fn subject_floor(window: &Window) -> Pixels {
     header_cell_width(&SUBJECT_TITLE, ColumnId::Subject.label(), window)
 }
@@ -3467,6 +3573,7 @@ thread_local! {
     static TEXT_MODE_WIDEST: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static SUBJECT_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static GRAPH_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+    static COMPACT_COUNT: TextWidth = const { RefCell::new(None) };
 }
 #[cfg(test)]
 thread_local! {
@@ -3484,8 +3591,8 @@ thread_local! {
     /// it shows, such as the Changes count (`compact_control_label`).
     pub(crate) static COMPACT_LABELS: RefCell<std::collections::BTreeMap<&'static str, SharedString>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
-    /// Narrow History's reference pill as each row last drew it, by commit
-    /// index.
+    /// Each History row's reference chip as it last drew it, the References
+    /// column's badge or narrow History's pill, by commit index.
     static HISTORY_PILLS: RefCell<std::collections::BTreeMap<usize, PillProbe>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
     /// Each History row's accessible name and its pill's tooltip as it last
@@ -3493,9 +3600,10 @@ thread_local! {
     static HISTORY_ROW_NAMES: RefCell<std::collections::BTreeMap<usize, RowNameProbe>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
 }
-/// A drawn pill's name, its "+N" and its label colour.
+/// A drawn reference chip's name, none in the compact pill; its "+N", or the
+/// compact pill's count; and its label colour.
 #[cfg(test)]
-type PillProbe = (String, Option<String>, u32);
+type PillProbe = (Option<String>, Option<String>, u32);
 /// A drawn History row's accessible name and its pill's tooltip.
 #[cfg(test)]
 type RowNameProbe = (String, Option<SharedString>);
@@ -7734,12 +7842,13 @@ pub(crate) mod tests {
 
     /// In a 461 × 490 half tile and a 640 × 680 window, at 13 and 18 pt,
     /// History is too narrow for the chosen References and Graph to leave
-    /// the subject anything readable. The subject keeps at least its floor,
-    /// about 120 px scaled with the interface size, inside the viewport;
-    /// References fold into one pill at its start, HEAD's branch and "+3",
-    /// in the badge's colours, with the whole list in the row's tooltip and
-    /// accessible name; and the graph takes its compact pitch, its selected
-    /// node on its lane and centred in its row.
+    /// the subject anything readable. The subject's cell keeps at least its
+    /// floor, about 120 px scaled with the interface size, inside the
+    /// viewport; References fold into one pill at its start, HEAD's branch
+    /// and "+3" or a branch glyph and the count, in the badge's colours, with
+    /// the whole list in the pill's tooltip and the row's accessible name;
+    /// and the graph takes its compact pitch, its selected node on its lane
+    /// and centred in its row.
     #[gpui::test]
     async fn narrow_history_keeps_the_subject_and_folds_references(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
@@ -7769,8 +7878,9 @@ pub(crate) mod tests {
                     let metrics = app.history_metrics.get();
                     (
                         metrics.subject_floor,
-                        // The viewport from where the columns start.
-                        app.history_width - metrics.leading,
+                        // The viewport from where the columns start, less
+                        // the compact pill's room at the subject's start.
+                        app.history_width - metrics.leading - metrics.pill_room(),
                         app.lane_spacing(),
                     )
                 });
@@ -7796,7 +7906,11 @@ pub(crate) mod tests {
                     );
                 }
 
-                // One pill at the subject's start, at most half its text.
+                // One pill at the subject's start, at most half its text: the
+                // badge where half the cell's text room holds the text's
+                // floor, as at 640 px and 13 pt, and otherwise the compact
+                // pill, a branch glyph and the number of references.
+                let compact = (width, text) != (640., 13);
                 let cell = bounds_of(cx, format!("history-subject-{merge}")).unwrap();
                 let pill = bounds_of(cx, format!("history-ref-pill-{merge}")).unwrap();
                 assert!(
@@ -7807,16 +7921,24 @@ pub(crate) mod tests {
                     "the pill {pill:?} at the start of {cell:?} {at}"
                 );
                 let label = cx.update(|_, cx| appearance::labels(cx).refs[merge_color % 6]);
+                let (shown, count) = if compact {
+                    ((None, Some("4".to_owned()), label), Some("1".to_owned()))
+                } else {
+                    (
+                        (Some("main".to_owned()), Some("+3".to_owned()), label),
+                        None,
+                    )
+                };
                 assert_eq!(
                     HISTORY_PILLS.with(|pills| pills.borrow().get(&merge).cloned()),
-                    Some(("main".to_owned(), Some("+3".to_owned()), label)),
-                    "HEAD's branch and the others' count {at}"
+                    Some(shown),
+                    "HEAD's branch and the others' count, or the count {at}"
                 );
                 assert_eq!(
                     HISTORY_PILLS
                         .with(|pills| pills.borrow().get(&side).map(|pill| pill.1.clone())),
-                    Some(None),
-                    "a lone reference has no count {at}"
+                    Some(count),
+                    "a lone reference has no \"+N\" {at}"
                 );
                 let lane = cx.update(|_, cx| graph::colors(cx)[merge_color % 6]);
                 assert_eq!(
@@ -7837,7 +7959,8 @@ pub(crate) mod tests {
                 );
                 assert_eq!(tooltip.as_deref(), Some(list), "{at}");
 
-                // The graph at half the pitch, within what the floor leaves.
+                // The graph at half the pitch, within what the floor and the
+                // pill leave.
                 let compact = graph::compact_spacing(spacing);
                 assert!(compact < spacing, "{at}");
                 let expected = graph::required_width(lanes, compact)
@@ -7896,6 +8019,79 @@ pub(crate) mod tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The floor is on the subject's own text. At 461 × 490 and 640 × 680, at
+    /// 13 and 18 pt, every row's subject text beside its pill is at least as
+    /// wide as its header's whole title, inside the viewport. Where the badge
+    /// would leave it less, the pill is compact: a branch glyph and the
+    /// count, about 24 px at 13 pt, no wider than the room the layout keeps
+    /// for it. The badge, in narrow History and in the References column
+    /// alike, counts the others "+N" inside its chip.
+    #[gpui::test]
+    async fn narrow_history_folds_references_and_keeps_the_subject_floor(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &references_script(2)).await;
+        let merge = commit_index(&app, cx, MERGE_SUBJECT);
+        let side = commit_index(&app, cx, SIDE_SUBJECT);
+        let inside = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            inner.left() >= outer.left() - px(0.5) && inner.right() <= outer.right() + px(0.5)
+        };
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let scale = appearance::ui_scale();
+            for (width, height) in [(461., 490.), (640., 680.)] {
+                HISTORY_PILLS.with(|pills| pills.borrow_mut().clear());
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let at = format!("{width} × {height} at {text} pt");
+                let metrics = app.read_with(cx, |app, _| app.history_metrics.get());
+                let floor = metrics.text_floor();
+                assert!(
+                    (85. * scale..=100. * scale).contains(&floor),
+                    "the title's width, about 93 px scaled {at}: {floor}"
+                );
+                let view = cx.debug_bounds("history-scope-toolbar").unwrap();
+                let compact = (width, text) != (640., 13);
+                for (row, count) in [(merge, "4"), (side, "1")] {
+                    let subject = bounds_of(cx, format!("history-subject-text-{row}")).unwrap();
+                    let pill = bounds_of(cx, format!("history-ref-pill-{row}")).unwrap();
+                    assert!(
+                        subject.size.width >= px(floor) - px(0.5) && inside(subject, view),
+                        "row {row}'s subject text {subject:?} keeps {floor} in {view:?} {at}"
+                    );
+                    let shown = HISTORY_PILLS.with(|pills| pills.borrow().get(&row).cloned());
+                    if compact {
+                        assert_eq!(
+                            shown.map(|pill| (pill.0, pill.1)),
+                            Some((None, Some(count.to_owned()))),
+                            "the glyph and the count, without the name {at}"
+                        );
+                        assert!(
+                            pill.size.width <= px(metrics.compact_pill) + px(0.5)
+                                && (20. * scale..=28. * scale)
+                                    .contains(&f32::from(pill.size.width)),
+                            "a compact pill of about 24 px scaled {at}: {pill:?}"
+                        );
+                    } else {
+                        assert!(shown.is_some_and(|pill| pill.0.is_some()), "the badge {at}");
+                    }
+                }
+                if !compact {
+                    let pill = bounds_of(cx, format!("history-ref-pill-{merge}")).unwrap();
+                    let more = bounds_of(cx, format!("history-ref-more-{merge}")).unwrap();
+                    assert!(inside(more, pill), "\"+3\" inside {pill:?}: {more:?} {at}");
+                }
+            }
+        }
+        // The References column's badge counts the others inside its chip too.
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1000.), px(680.)));
+        draw(cx);
+        assert!(!app.read_with(cx, |app, _| app.history_column_layout().narrow));
+        let badge = bounds_of(cx, format!("history-ref-pill-{merge}")).unwrap();
+        let more = bounds_of(cx, format!("history-ref-more-{merge}")).unwrap();
+        assert!(inside(more, badge), "\"+3\" inside {badge:?}: {more:?}");
+        assert!(inside(badge, cx.debug_bounds("history-column-0").unwrap()));
     }
 
     /// Narrow History's tooltip listing a row's references belongs to its
