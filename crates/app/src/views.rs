@@ -2096,9 +2096,11 @@ impl GitTurtle {
             .border_r_1()
             .border_color(rgb(colors.border))
             .child(
-                // The count never shrinks: the label truncates first, and in
-                // an inspector the window pins too narrow for its first
-                // character and ellipsis it leaves, then the count.
+                // The count never shrinks: in an inspector the window pins
+                // too narrow for the whole label beside it, the label leaves,
+                // its words staying in the count's tooltip and accessible
+                // name, then the count. The label's truncation only guards a
+                // measurement a fraction of a pixel short.
                 div()
                     .debug_selector(|| "changed-files-header".into())
                     .h(crate::appearance::ui_size(36.))
@@ -2118,13 +2120,30 @@ impl GitTurtle {
                                 .debug_selector(|| "changed-files-label".into())
                                 .min_w_0()
                                 .truncate()
-                                .child("Changed files"),
+                                .child(FILES_LABEL_TEXT),
                         )
                     })
                     .when(header.count, |row| {
+                        let count = self.files.len();
                         row.child(
                             div()
+                                .id("changed-files-count")
                                 .debug_selector(|| "changed-files-count".into())
+                                // Without its label the count says what it
+                                // counts.
+                                .when(!header.label, |chip| {
+                                    let name: SharedString =
+                                        format!("{FILES_LABEL_TEXT} · {count}").into();
+                                    note_compact_label("changed-files-count", &name);
+                                    // AccessKit adapters read a label's text
+                                    // from its value.
+                                    chip.role(Role::Label)
+                                        .aria_label(name.clone())
+                                        .aria_value(name.clone())
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(name.clone()).build(window, cx)
+                                        })
+                                })
                                 .flex_shrink_0()
                                 .px_1p5()
                                 .py_0p5()
@@ -2974,10 +2993,10 @@ impl GitTurtle {
 }
 
 /// How the inspector's "Changed files" header shares its row. The count comes
-/// first, drawn whole or not at all, and the label truncates beside it only
-/// where at least its first character and ellipsis fit, so as the inspector
-/// narrows the label leaves, then the count, and neither shows a clipped
-/// count or a lone ellipsis.
+/// first, drawn whole or not at all, and the label is drawn whole beside it or
+/// not at all, its words then in the count's tooltip and accessible name
+/// (DESIGN.md, "One responsive order": labels go, the count stays), so as the
+/// inspector narrows the label leaves, then the count, and neither is cut.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct FilesHeader {
     label: bool,
@@ -3025,7 +3044,7 @@ impl FilesHeader {
             });
         let name = width - px(2.) - rem * 1.5 - px(26.) - gap;
         Self {
-            label: shows_count && room - count - gap >= files_label_min_width(window),
+            label: shows_count && room - count - gap >= files_label_width(window),
             count: shows_count,
             status: name - gap - word >= word,
         }
@@ -3061,14 +3080,21 @@ fn changed_file_menu(
     )
 }
 
-/// The narrowest "Changed files" is drawn in without a lone ellipsis: cut to
-/// its first character and the ellipsis, measured as `scope_name_min_width`
-/// measures a cut scope name.
-fn files_label_min_width(window: &Window) -> Pixels {
+/// "Changed files" whole, at the header's 11 pt medium.
+fn files_label_width(window: &Window) -> Pixels {
     cached_width(&FILES_LABEL, &LineKey::current(window), || {
-        shaped_width("C…", appearance::ui_text(11.), FontWeight::MEDIUM, window).floor() + px(1.)
+        shaped_width(
+            FILES_LABEL_TEXT,
+            appearance::ui_text(11.),
+            FontWeight::MEDIUM,
+            window,
+        )
+        .ceil()
     })
 }
+
+/// The inspector's file list heading.
+const FILES_LABEL_TEXT: &str = "Changed files";
 
 /// Below this window width, at the interface text size, the header drops the
 /// Projects and profile labels so it stays on one row.
@@ -6032,18 +6058,22 @@ pub(crate) mod tests {
     }
 
     /// The "Changed files" header keeps its count whole inside the inspector
-    /// the window pins at 18 pt: in a 461 × 490 half tile the label truncates
-    /// beside a count of 12 or of 3, in History and Compare, and as the window
-    /// narrows the label leaves, then the count, never clipping either.
+    /// the window pins at 18 pt, and its label whole or not at all: in a
+    /// 461 × 490 half tile, beside a count of 12 or of 3, in History and
+    /// Compare, the label leaves rather than reading "Change…", the icon and
+    /// count staying with "Changed files · N" as the count's accessible name,
+    /// and as the window narrows the label leaves, then the count, never
+    /// clipping either; wider, the label returns whole.
     #[gpui::test]
     async fn narrow_large_text_keeps_the_changed_files_count_whole(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = history_window_from(cx, &files_script(3, 12)).await;
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
-        let (gap, inset, label_min) = cx.update(|window, _| {
+        let (gap, inset, whole) = cx.update(|window, _| {
             let rem = window.rem_size();
-            (rem * 0.5, rem * 0.75, files_label_min_width(window))
+            (rem * 0.5, rem * 0.75, files_label_width(window))
         });
         let check = |cx: &mut VisualTestContext, width: f32, state: &str| {
+            COMPACT_LABELS.with(|labels| labels.borrow_mut().clear());
             cx.simulate_resize(size(px(width), px(490.)));
             draw(cx);
             let header = cx.debug_bounds("changed-files-header").unwrap();
@@ -6068,10 +6098,19 @@ pub(crate) mod tests {
             if let Some(label) = label {
                 let count = count.expect("the label shows only beside the count");
                 assert!(
-                    label.size.width >= label_min && label.right() + gap <= count.left(),
-                    "{state} at {width}: label {label:?} beside {count:?}"
+                    label.size.width >= whole && label.right() + gap <= count.left(),
+                    "{state} at {width}: label {label:?} whole ({whole:?}) beside {count:?}"
                 );
             }
+            // Without its label the count carries the label's words.
+            let named =
+                COMPACT_LABELS.with(|labels| labels.borrow().get("changed-files-count").cloned());
+            let files = cx.read(|cx| app.read(cx).files.len());
+            assert_eq!(
+                named.map(|name| name.to_string()),
+                (count.is_some() && label.is_none()).then(|| format!("Changed files · {files}")),
+                "{state} at {width}"
+            );
             (label.is_some(), count.is_some())
         };
         for (commit, count) in [(0, "12"), (1, "3")] {
@@ -6087,18 +6126,18 @@ pub(crate) mod tests {
             settle(&app, cx).await;
             assert_eq!(
                 check(cx, 461., "Compare"),
-                (true, true),
+                (false, true),
                 "Compare, {count} files"
             );
             cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
             settle(&app, cx).await;
             assert_eq!(
                 check(cx, 461., "History"),
-                (true, true),
+                (false, true),
                 "History, {count} files"
             );
             let mut shown = Vec::new();
-            for width in (341..=461).rev().step_by(4) {
+            for width in (341..=721).rev().step_by(4) {
                 shown.push(check(cx, width as f32, "History"));
             }
             assert!(
@@ -6108,7 +6147,9 @@ pub(crate) mod tests {
                 "{count} files: the label and count only leave as the window narrows: {shown:?}"
             );
             assert!(
-                shown.contains(&(false, true)) && shown.contains(&(false, false)),
+                shown.contains(&(true, true))
+                    && shown.contains(&(false, true))
+                    && shown.contains(&(false, false)),
                 "{count} files: the label leaves before the count: {shown:?}"
             );
         }

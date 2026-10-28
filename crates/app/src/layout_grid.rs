@@ -56,8 +56,11 @@ enum Area {
     /// The bounds of every element with one of these selectors together.
     Union(&'static [&'static str]),
     /// A table column: the x range of the column titled by the element with
-    /// the first selector, over the height of the second.
-    Column(&'static str, &'static str),
+    /// the first selector, over the height of the second, within the x range
+    /// of the third, the part of the table its viewport shows: a narrow
+    /// window's table runs on under the inspector, whose lines are not the
+    /// columns' there.
+    Column(&'static str, &'static str, &'static str),
     /// The open dialog: the first fill painted above its overlay.
     Dialog,
 }
@@ -81,13 +84,28 @@ fn panels(surface: Surface) -> &'static [Panel] {
         panel("navigation", Selector("history-sidebar")),
         panel(
             "References column",
-            Column("history-column-0", "history-pane"),
+            Column("history-column-0", "history-pane", "history-list-edge"),
         ),
-        panel("Graph column", Column("history-column-1", "history-pane")),
-        panel("Subject column", Column("history-column-2", "history-pane")),
-        panel("Author column", Column("history-column-3", "history-pane")),
-        panel("Date column", Column("history-column-4", "history-pane")),
-        panel("SHA column", Column("history-column-5", "history-pane")),
+        panel(
+            "Graph column",
+            Column("history-column-1", "history-pane", "history-list-edge"),
+        ),
+        panel(
+            "Subject column",
+            Column("history-column-2", "history-pane", "history-list-edge"),
+        ),
+        panel(
+            "Author column",
+            Column("history-column-3", "history-pane", "history-list-edge"),
+        ),
+        panel(
+            "Date column",
+            Column("history-column-4", "history-pane", "history-list-edge"),
+        ),
+        panel(
+            "SHA column",
+            Column("history-column-5", "history-pane", "history-list-edge"),
+        ),
         panel("inspector", Selector("commit-inspector")),
     ];
     const COMPARE: &[Panel] = &[panel("inspector", Selector("commit-inspector"))];
@@ -187,14 +205,6 @@ const KNOWN: &[Known] = &[
         panel: "Subject column",
         sizes: &[18],
         follow_up: "narrow History's subject cell starts at the column's 10 px inset",
-    },
-    // At 13 pt in a 461 px window, the Author column's band holds lines at
-    // 11, 21, 22 and 46.5 px in.
-    Known {
-        surface: Surface::History,
-        panel: "Author column",
-        sizes: &[13],
-        follow_up: "narrow History's Author column starts its title and cells at one inset",
     },
     // Text at its 10 px label inset (14 px at 18 pt), fields' text at 11, a
     // card's Button label at 20.5, a nested card's text 32 and 42.5 (44.5).
@@ -366,16 +376,20 @@ fn area_bounds(
             .iter()
             .filter_map(|selector| cx.debug_bounds(selector))
             .reduce(|a, b| a.union(&b)),
-        Area::Column(title, within) => {
-            let (title, within) = (cx.debug_bounds(title)?, cx.debug_bounds(within)?);
+        Area::Column(title, within, viewport) => {
+            let (title, within, viewport) = (
+                cx.debug_bounds(title)?,
+                cx.debug_bounds(within)?,
+                cx.debug_bounds(viewport)?,
+            );
             let column = Bounds::from_corners(
                 point(title.left(), within.top().min(title.top())),
                 point(title.right(), within.bottom()),
             );
-            // A column past the table's edge shows nothing.
+            // A column past the table's visible edge shows nothing.
             let shown = column.intersect(&Bounds::from_corners(
-                point(within.left(), column.top()),
-                point(within.right(), column.bottom()),
+                point(within.left().max(viewport.left()), column.top()),
+                point(within.right().min(viewport.right()), column.bottom()),
             ));
             (shown.size.width > px(0.)).then_some(shown)
         }
