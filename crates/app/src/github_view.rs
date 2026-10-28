@@ -1696,7 +1696,11 @@ mod tests {
     /// title at the edge, the banner 6.5 px in, the Buttons' labels 10 px and
     /// the PR rows' text 20.75 px, inside their cards. In a PR's Files, the
     /// file-page bound below the files' pager starts there too, a phrase to a
-    /// line inside the file list's column; it started at the edge.
+    /// line inside the file list's column; it started at the edge. The column
+    /// beside the file list starts its own text one inset in from its edge,
+    /// where the Changes button starts its label: the prompt before a file is
+    /// chosen, then the file's path and the range hint, with the patch box at
+    /// the edge. The path and hint started at the edge, the prompt 16 px in.
     #[gpui::test]
     async fn the_panel_starts_its_text_at_one_edge(cx: &mut TestAppContext) {
         use crate::tags::tests::draw;
@@ -1751,30 +1755,60 @@ mod tests {
                 );
             }
         }
-        // The first PR's Files section, its first file in Changes.
+        // The first PR's Files section, before a file is chosen and then with its first file in
+        // Changes.
         let pull = github::review::fixture_pull(false);
         let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
         let files = Client(UiTransport::Fixture { moved: false })
             .files(&captured, 1, &OperationControl::default())
             .unwrap()
             .items;
-        cx.update(|window, cx| {
+        cx.update(|_, cx| {
             panel.update(cx, |panel, cx| {
                 panel.pull = Some(pull);
                 panel.review.files = files;
                 panel.review.section = Section::Files;
                 panel.review.show_list = false;
-                panel.select_review_file(0, window, cx);
+                cx.notify();
             })
         });
         settle_panel(&app, cx).await;
-        for interface in [13, 18] {
+        for (chosen, interface) in [(false, 13), (false, 18), (true, 13), (true, 18)] {
+            if chosen && interface == 13 {
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| panel.select_review_file(0, window, cx))
+                });
+                settle_panel(&app, cx).await;
+            }
             cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
             draw(cx);
             let at = |cx: &mut VisualTestContext, selector: &'static str| {
                 cx.debug_bounds(selector)
                     .unwrap_or_else(|| panic!("{selector} at {interface} pt in Files"))
             };
+            // The column beside the file list starts its text where the mode buttons at its
+            // edge start their labels, and its boxes at that edge.
+            let column = at(cx, "github-file-column").left();
+            let starts = if chosen {
+                vec![
+                    ("path", at(cx, "github-file-title").left()),
+                    (
+                        "Changes",
+                        at(cx, "github-file-mode-0").left() + text_inset(),
+                    ),
+                    ("range hint", at(cx, "github-range-hint").left()),
+                    ("patch box", at(cx, "github-patch").left() + text_inset()),
+                ]
+            } else {
+                vec![("choose a file", at(cx, "github-choose-file").left())]
+            };
+            for (name, start) in &starts {
+                assert!(
+                    (*start - (column + text_inset())).abs() < px(0.5),
+                    "{interface} pt, Files' column at {column:?}: {name} starts at {start:?}: \
+                     {starts:?}"
+                );
+            }
             let text = at(cx, "github-panel").left() + text_inset();
             let list = at(cx, "github-file-focus");
             let bound = at(cx, "github-file-bound");

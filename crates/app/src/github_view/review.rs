@@ -1109,16 +1109,18 @@ impl Panel {
             // modes keeps the box's edge; Changes' range hint lies below it, beside the list's
             // pager, where it took the box's last 26 px only in Changes. Its first line centres
             // on the pager's row, where the page buttons centre their labels, wrapped or not.
-            div().flex_1().min_w_0().flex().flex_col().gap_2()
+            // The column's text starts at one left edge, where the mode buttons at its edge
+            // start their labels, as the panel's does; the boxes keep the column's edge.
+            div().debug_selector(||"github-file-column".into()).flex_1().min_w_0().flex().flex_col().gap_2()
                 .child(div().flex().flex_col().gap_2().when(self.review.mode<2,|content|content.h(FILE_LIST_HEIGHT))
-                    .child(label("github-file-title",title).flex_shrink_0().font_weight(FontWeight::SEMIBOLD))
-                    .child(div().flex_shrink_0().flex().flex_wrap().items_center().gap_1().children(["Changes","Source","Threads"].into_iter().enumerate().map(|(mode,name)|button(("github-file-mode",mode),name,"",self.review.mode==mode).toggled(self.review.mode==mode).on_click(cx.listener(move|this,_,window,cx|this.review_source(mode,window,cx)))))
+                    .child(label("github-file-title",title).debug_selector(||"github-file-title".into()).ml(super::text_inset()).flex_shrink_0().font_weight(FontWeight::SEMIBOLD))
+                    .child(div().flex_shrink_0().flex().flex_wrap().items_center().gap_1().children(["Changes","Source","Threads"].into_iter().enumerate().map(|(mode,name)|button(("github-file-mode",mode),name,"",self.review.mode==mode).debug_selector(move||format!("github-file-mode-{mode}")).toggled(self.review.mode==mode).on_click(cx.listener(move|this,_,window,cx|this.review_source(mode,window,cx)))))
                         .child(div().flex_1()).child(button("github-inline-start",if self.review.composing.is_some(){"Continue comment"}else{"Comment on selection"},"plus",false).disabled(self.pending||self.review.preparing||file.unavailable.is_some()).on_click(cx.listener(|this,_,window,cx|this.begin_comment(window,cx)))))
                     .child(match self.review.mode {1=>self.render_source(cx),2=>self.render_threads(Some(&file.filename),cx),_=>self.render_patch(window,cx)}))
-                .when(self.review.mode==0,|element|element.child(div().flex_shrink_0().pt(appearance::ui_size((PAGER_ROW-HINT_LINE)/2.)).child(label("github-range-hint",format!("Click a changed line · {} or {} / {} selects a same-side range · {} comments",shortcuts::SHIFT_CLICK,shortcuts::key_label("shift-up"),shortcuts::key_label("shift-down"),shortcuts::ENTER)).debug_selector(||"github-range-hint".into()).line_height(appearance::ui_size(HINT_LINE)).text_color(rgb(p.muted)))))
+                .when(self.review.mode==0,|element|element.child(div().flex_shrink_0().pt(appearance::ui_size((PAGER_ROW-HINT_LINE)/2.)).child(label("github-range-hint",format!("Click a changed line · {} or {} / {} selects a same-side range · {} comments",shortcuts::SHIFT_CLICK,shortcuts::key_label("shift-up"),shortcuts::key_label("shift-down"),shortcuts::ENTER)).debug_selector(||"github-range-hint".into()).ml(super::text_inset()).line_height(appearance::ui_size(HINT_LINE)).text_color(rgb(p.muted)))))
                 .into_any_element()
         } else {
-            div().flex_1().min_w_0().p_5().flex().flex_col().gap_2().child(label("github-choose-file","Choose a file to begin reviewing").font_weight(FontWeight::SEMIBOLD)).child(label("github-file-help","Changes keep their captured PR identity. Inline drafts remain local as you move between files.").text_color(rgb(p.muted))).into_any_element()
+            div().debug_selector(||"github-file-column".into()).flex_1().min_w_0().p_5().pl(super::text_inset()).flex().flex_col().gap_2().child(label("github-choose-file","Choose a file to begin reviewing").debug_selector(||"github-choose-file".into()).font_weight(FontWeight::SEMIBOLD)).child(label("github-file-help","Changes keep their captured PR identity. Inline drafts remain local as you move between files.").text_color(rgb(p.muted))).into_any_element()
         };
         div()
             .flex()
@@ -1140,7 +1142,7 @@ impl Panel {
     /// background.
     fn render_source(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(source) = &self.review.source else {
-            return label("github-no-source","No text patch was supplied. Open the captured local comparison to inspect available source or binary content.").into_any_element();
+            return label("github-no-source","No text patch was supplied. Open the captured local comparison to inspect available source or binary content.").ml(super::text_inset()).into_any_element();
         };
         let p = palette(cx);
         let laid_out = self.review.source_height.clone();
@@ -1222,6 +1224,7 @@ impl Panel {
                 .min_h_0()
                 .child(
                     label("github-preparing-file", "Preparing the selected file…")
+                        .ml(super::text_inset())
                         .role(Role::Status),
                 )
                 .into_any_element();
