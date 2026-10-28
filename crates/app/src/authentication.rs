@@ -166,7 +166,7 @@ impl GitTurtle {
         let submitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let prompt_id = prompt.id;
         let confirmation = prompt.confirmation;
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             let submit_control = submit_control.clone();
             let input = input.clone();
             let submit_input = input.clone();
@@ -217,7 +217,7 @@ impl GitTurtle {
                 } else {
                     "Git authentication"
                 })
-                .width(px(540.))
+                .width(appearance::dialog_width(px(540.), window))
                 .child(body)
                 .button_props(
                     DialogButtonProps::default()

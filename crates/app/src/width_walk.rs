@@ -724,3 +724,346 @@ async fn a_working_row_ends_a_name_it_cannot_hold_inside_its_room(cx: &mut TestA
     );
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
 }
+
+/// The dialogs the narrow walk opens: every one with a width of its own.
+#[derive(Clone, Copy, Debug)]
+enum Dialog {
+    Reflog,
+    Rebase,
+    RewriteReview,
+    CommandPalette,
+    QuickOpen,
+    KeyboardShortcuts,
+    Tags,
+    Stashes,
+    ThemeEditor,
+    Worktrees,
+    /// The worktree manager while a read runs.
+    WorktreesReading,
+    RevisionComparison,
+    Activity,
+    RecoveryDrafts,
+    Profiles,
+    RepositoryLibrary,
+}
+
+impl Dialog {
+    const ALL: [Dialog; 16] = [
+        Dialog::Reflog,
+        Dialog::Rebase,
+        Dialog::RewriteReview,
+        Dialog::CommandPalette,
+        Dialog::QuickOpen,
+        Dialog::KeyboardShortcuts,
+        Dialog::Tags,
+        Dialog::Stashes,
+        Dialog::ThemeEditor,
+        Dialog::Worktrees,
+        Dialog::WorktreesReading,
+        Dialog::RevisionComparison,
+        Dialog::Activity,
+        Dialog::RecoveryDrafts,
+        Dialog::Profiles,
+        Dialog::RepositoryLibrary,
+    ];
+
+    /// The room it keeps from either side of a window narrower than it:
+    /// `appearance::DIALOG_MARGIN`, or for the theme editor the 16 px its
+    /// own width rule leaves (DESIGN.md, "Custom theme editor").
+    fn margin(self) -> Pixels {
+        match self {
+            Dialog::ThemeEditor => px(16.),
+            _ => appearance::DIALOG_MARGIN,
+        }
+    }
+
+    /// A list it shows on the fixture, and that list's first row, which the
+    /// list shows whole however the content around it wraps: repository
+    /// content keeps its room first.
+    fn first_row(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Dialog::Reflog => Some(("reflog-list", "reflog-entry-0")),
+            Dialog::KeyboardShortcuts => Some(("shortcut-help-results", "shortcut-help-row-1")),
+            Dialog::Worktrees => Some(("managed-worktree-list", "managed-worktree-row-0")),
+            _ => None,
+        }
+    }
+
+    /// Opens it from History once its reads land, as the focus sweep does.
+    async fn open(self, app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        use crate::focus_ring::sweep::open_dialog;
+        let name = format!("{self:?}");
+        match self {
+            Dialog::Reflog => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_reflog_browser(window, cx)
+                })
+                .await
+            }
+            Dialog::Rebase => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_interactive_rebase(None, window, cx)
+                })
+                .await
+            }
+            Dialog::RewriteReview => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_rewrite_review(window, cx)
+                })
+                .await
+            }
+            Dialog::CommandPalette => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_command_palette(window, cx)
+                })
+                .await
+            }
+            Dialog::QuickOpen => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_quick_file(window, cx)
+                })
+                .await
+            }
+            Dialog::KeyboardShortcuts => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.shortcut_help(window, cx)
+                })
+                .await
+            }
+            Dialog::Tags => {
+                open_dialog(app, cx, &name, |app, window, cx| app.open_tags(window, cx)).await
+            }
+            Dialog::Stashes => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_stashes(window, cx)
+                })
+                .await
+            }
+            Dialog::ThemeEditor => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_theme_editor(None, window, cx)
+                })
+                .await
+            }
+            Dialog::Worktrees => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_worktree_manager(window, cx)
+                })
+                .await;
+                crate::worktrees::settle_manager(app, cx).await;
+            }
+            Dialog::WorktreesReading => {
+                Box::pin(Dialog::Worktrees.open(app, cx)).await;
+                crate::worktrees::show_reading(app, cx);
+            }
+            Dialog::RevisionComparison => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_revision_comparison(window, cx)
+                })
+                .await
+            }
+            Dialog::Activity => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_activity(window, cx)
+                })
+                .await
+            }
+            Dialog::RecoveryDrafts => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_recovery_drafts(window, cx)
+                })
+                .await
+            }
+            Dialog::Profiles => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_profiles(window, cx)
+                })
+                .await
+            }
+            Dialog::RepositoryLibrary => {
+                open_dialog(app, cx, &name, |app, window, cx| {
+                    app.open_repository_library(window, cx)
+                })
+                .await
+            }
+        }
+    }
+}
+
+/// The kit's dialog padding, inside which a dialog's text lies.
+const DIALOG_PADDING: Pixels = px(16.);
+
+/// What the last frame drew wrong in the open dialog of a `width`-wide
+/// window: the dialog closer to a side than `margin`, and every text run
+/// or shared control above the window's overlay that crosses a side of its
+/// clip, as [`Walk::inspect`] finds them on a page.
+fn dialog_findings(cx: &mut VisualTestContext, width: f32, margin: Pixels) -> Vec<String> {
+    let (text, control) = (
+        gpui_kit::Background::from(text_mark()),
+        gpui_kit::Background::from(control_mark()),
+    );
+    let (scale, viewport, mut quads) = cx.update(|window, _| {
+        (
+            window.scale_factor(),
+            window.viewport_size(),
+            window.painted_quads(),
+        )
+    });
+    quads.sort_by_key(|quad| quad.order);
+    let logical = |value: ScaledPixels| px(value.0 / scale);
+    // The dialog draws above the last fill that spans the window, its
+    // overlay, and its own fill is the first above it.
+    let Some(overlay) = quads
+        .iter()
+        .filter(|quad| {
+            logical(quad.bounds.size.width) >= viewport.width - px(1.)
+                && logical(quad.bounds.size.height) >= viewport.height - px(1.)
+        })
+        .map(|quad| quad.order)
+        .max()
+    else {
+        return vec!["no overlay drawn".into()];
+    };
+    quads.retain(|quad| quad.order > overlay);
+    let mut findings = Vec::new();
+    match quads
+        .iter()
+        .find(|quad| quad.background != text && quad.background != control)
+    {
+        Some(dialog) => {
+            let (left, right, bottom) = (
+                logical(dialog.bounds.left()),
+                logical(dialog.bounds.right()),
+                logical(dialog.bounds.bottom()),
+            );
+            let slack = px(0.5);
+            if left < margin - slack || right > px(width) - margin + slack {
+                findings.push(format!(
+                    "the dialog spans {:.1}..{:.1} px, closer than {:.0} px to a side",
+                    f32::from(left),
+                    f32::from(right),
+                    f32::from(margin)
+                ));
+            }
+            if bottom > viewport.height + slack {
+                findings.push(format!(
+                    "the dialog ends {:.1} px down, past the window's foot",
+                    f32::from(bottom)
+                ));
+            }
+        }
+        None => findings.push("no dialog drawn".into()),
+    }
+    // Text inside the panel's padding, where a row that cannot hold its
+    // controls, such as a footer, pushes them.
+    if let Some(dialog) = quads
+        .iter()
+        .find(|quad| quad.background != text && quad.background != control)
+        .map(|quad| quad.bounds)
+    {
+        let inset = ScaledPixels(f32::from(DIALOG_PADDING) * scale);
+        let slack = ScaledPixels(scale);
+        for quad in quads.iter().filter(|quad| quad.background == text) {
+            if quad.bounds.left() < dialog.left() + inset - slack
+                || quad.bounds.right() > dialog.right() - inset + slack
+            {
+                findings.push(format!(
+                    "text at {:.1}..{:.1} runs into the padding of the dialog at {:.1}..{:.1}, {:.1} px down",
+                    f32::from(logical(quad.bounds.left())),
+                    f32::from(logical(quad.bounds.right())),
+                    f32::from(logical(dialog.left())),
+                    f32::from(logical(dialog.right())),
+                    f32::from(logical(quad.bounds.top())),
+                ));
+            }
+        }
+    }
+    let slack = ScaledPixels(0.5);
+    for quad in &quads {
+        let kind = if quad.background == text {
+            "text"
+        } else if quad.background == control {
+            "a control"
+        } else {
+            continue;
+        };
+        let (drawn, clip) = (quad.bounds, quad.content_mask.bounds);
+        if drawn.left() >= clip.left() - slack && drawn.right() <= clip.right() + slack {
+            continue;
+        }
+        findings.push(format!(
+            "{kind} at {:.1}..{:.1} crosses a clip of {:.1}..{:.1}, {:.1} px down",
+            f32::from(logical(drawn.left())),
+            f32::from(logical(drawn.right())),
+            f32::from(logical(clip.left())),
+            f32::from(logical(clip.right())),
+            f32::from(logical(drawn.top())),
+        ));
+    }
+    findings
+}
+
+/// Opens every dialog with a width of its own in a 461 × 490 half tile at
+/// `text` pt: each lies inside the window with its margin on either side,
+/// rather than centred at its width with its left side past the window's,
+/// and its content gives way in the responsive order with nothing cut by
+/// its clip (DESIGN.md, "One responsive order").
+async fn narrow_dialogs(text: u8, cx: &mut TestAppContext) {
+    let (_fixture, app, cx, _) = open(Page::History, cx).await;
+    cx.update(|_, cx| {
+        theme_editor::init(cx);
+        native_accessibility::bind_keys(cx);
+        shortcuts::bind_keys(cx);
+        // Dialogs open at rest, so the frame read is where they stay.
+        cx.set_reduce_motion(true);
+    });
+    let (width, height) = (461., 490.);
+    cx.simulate_resize(size(px(width), px(height)));
+    let mut report = String::new();
+    for dialog in Dialog::ALL {
+        // Closing the theme editor applies the saved settings again, the
+        // interface size among them.
+        cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+        frame(cx);
+        dialog.open(&app, cx).await;
+        frame(cx);
+        app.update(cx, |_, cx| cx.notify());
+        frame(cx);
+        let mut findings = dialog_findings(cx, width, dialog.margin());
+        if let Some((list, row)) = dialog.first_row() {
+            let slack = px(0.5);
+            match (cx.debug_bounds(list), cx.debug_bounds(row)) {
+                (Some(shown), Some(drawn))
+                    if drawn.top() >= shown.top() - slack
+                        && drawn.bottom() <= shown.bottom() + slack => {}
+                (shown, drawn) => findings.push(format!(
+                    "{list} at {shown:?} does not show {row} at {drawn:?} whole"
+                )),
+            }
+        }
+        let mut seen = BTreeSet::new();
+        for finding in findings {
+            if seen.insert(finding.clone()) {
+                report.push_str(&format!("\n  {dialog:?}: {finding}"));
+            }
+        }
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        frame(cx);
+        settle(&app, cx).await;
+    }
+    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    assert!(
+        report.is_empty(),
+        "at {text} pt in {width} × {height}:{report}"
+    );
+}
+
+#[gpui::test]
+async fn dialogs_keep_inside_a_narrow_window_at_13_pt(cx: &mut TestAppContext) {
+    narrow_dialogs(13, cx).await;
+}
+
+#[gpui::test]
+async fn dialogs_keep_inside_a_narrow_window_at_18_pt(cx: &mut TestAppContext) {
+    narrow_dialogs(18, cx).await;
+}

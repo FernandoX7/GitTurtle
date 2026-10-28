@@ -267,7 +267,7 @@ impl GitTurtle {
         let store = self.profiles.store.clone();
         let error = self.profiles.error.clone();
         let can_apply = self.repository.is_some() && self.page != AppPage::Projects;
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let p = palette(cx); let create_owner = owner.clone();
             let content = crate::native_accessibility::clips_children(div().id("profile-manager-content").max_h(px(430.)).overflow_y_scroll().flex().flex_col().gap_3()
                 .child(label("profiles-context", target.clone()).text_size(crate::appearance::ui_text(12.)))
@@ -285,7 +285,7 @@ impl GitTurtle {
                             .child(button(("edit-profile", index), "Edit…", "", false).on_click(move |_, window, cx| { let _ = edit_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(Some(edit_profile.clone()), window, cx); }); }))
                             .child(button(("delete-profile", index), "Delete…", "", false).on_click(move |_, window, cx| { let _ = delete_owner.update(cx, |this, cx| { window.close_dialog(cx); this.delete_profile(delete_profile.clone(), window, cx); }); })))
                 })));
-            dialog.title("Git profiles").width(px(600.)).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
+            dialog.title("Git profiles").width(appearance::dialog_width(px(600.), window)).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
         });
         window.refresh();
     }
@@ -442,7 +442,7 @@ impl GitTurtle {
         self.profiles.draft = Some(form.clone());
         let focus = form.read(cx).label.read(cx).focus_handle(cx);
         let focus_form = form.downgrade();
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             let submit = form.clone();
             let cancel = form.clone();
             dialog
@@ -451,7 +451,7 @@ impl GitTurtle {
                 } else {
                     "Create Git profile"
                 })
-                .width(px(550.))
+                .width(appearance::dialog_width(px(550.), window))
                 .child(form.clone())
                 .button_props(
                     DialogButtonProps::default()

@@ -494,12 +494,12 @@ impl GitTurtle {
             scroll: UniformListScrollHandle::new(),
         });
         self.recovery_drafts.browser = Some(form.downgrade());
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             let close = form.clone();
             let cancel = form.clone();
             dialog
                 .title("Saved recovery drafts")
-                .width(px(720.))
+                .width(appearance::dialog_width(px(720.), window))
                 .child(form.clone())
                 .footer(DialogFooter::new().child(
                     button("close-saved-recovery", "Close", "", false).on_click(
@@ -645,11 +645,15 @@ impl Render for RecoveryList {
         let height = (appearance::ui_size(110.) * count.min(5) as f32 + px(2.))
             .max(px(120.))
             .min(available);
-        div().flex().flex_col().gap_3().child("Draft text is retained until you discard it, including completed, aborted, moved or removed worktrees. Copying never stages or continues an operation. Open the matching conflict or rebase message to check whether restoration is safe.")
+        // The body scrolls inside the window, as Activity's does: in a
+        // narrow window the explanation wraps to more lines than a short
+        // one has room for.
+        let body_height = (window.viewport_size().height - px(240.)).max(px(120.));
+        crate::native_accessibility::clips_children(div().id("recovery-drafts-content").max_h(body_height).overflow_y_scroll().flex().flex_col().gap_3().child("Draft text is retained until you discard it, including completed, aborted, moved or removed worktrees. Copying never stages or continues an operation. Open the matching conflict or rebase message to check whether restoration is safe.")
             .child(div().text_color(rgb(p.muted)).child(status))
             .child(div().h(height).border_1().border_color(rgb(p.border)).rounded(px(6.)).overflow_hidden()
                 .when(count == 0, |list| list.child(empty("No saved recovery drafts", "Conflict results and rebase messages appear here after you edit them.")))
-                .when(count > 0, |list| list.child(uniform_list("saved-recovery-list", count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>() )).size_full().track_scroll(&self.scroll))))
+                .when(count > 0, |list| list.child(uniform_list("saved-recovery-list", count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.row(index, cx)).collect::<Vec<_>>() )).size_full().track_scroll(&self.scroll)))))
     }
 }
 

@@ -181,13 +181,9 @@ impl ReflogBrowser {
             // The dialog clips its body to the body's bounds, and the browser
             // keeps the focus ring's room inside them below its last control.
             // The footer's gap gives the room back, so the footer stays put.
-            //
-            // The kit centres a dialog at its width whatever the window's,
-            // so in a narrower window it would start left of the window;
-            // it keeps 24 px from either side instead.
             dialog
                 .title(label("reflog-title", "Local reflog and recovery"))
-                .width(px(740.).min(window.viewport_size().width - px(48.)))
+                .width(appearance::dialog_width(px(740.), window))
                 .gap(DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                 .child(browser.clone())
                 .button_props(DialogButtonProps::default().ok_text("Done"))

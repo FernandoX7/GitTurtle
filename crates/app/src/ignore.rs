@@ -51,7 +51,7 @@ impl GitTurtle {
             pending: false,
             error: None,
         });
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             let submit = form.clone();
             let cancel = form.clone();
             dialog
@@ -59,7 +59,7 @@ impl GitTurtle {
                     "ignore-dialog-title",
                     "Ignore untracked content",
                 ))
-                .width(px(560.))
+                .width(appearance::dialog_width(px(560.), window))
                 .child(form.clone())
                 .button_props(
                     DialogButtonProps::default()

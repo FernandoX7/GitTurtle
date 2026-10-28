@@ -128,12 +128,12 @@ impl GitTurtle {
         let form =
             cx.new(|cx| LfsDownloadForm::new(owner, repo, target, remote, remotes, window, cx));
         form.update(cx, |this, cx| this.prepare(window, cx));
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             let submit = form.clone();
             let cancel = form.clone();
             dialog
                 .title(label("lfs-download-title", "Download an LFS preview"))
-                .width(px(650.))
+                .width(appearance::dialog_width(px(650.), window))
                 .child(form.clone())
                 .button_props(
                     DialogButtonProps::default()

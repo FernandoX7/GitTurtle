@@ -198,7 +198,7 @@ impl GitTurtle {
                         .child("GitHub pull requests"),
                 )
                 .on_ok(|_, _, _| false)
-                .width((window.viewport_size().width - px(48.)).clamp(px(320.), px(1100.)))
+                .width(appearance::dialog_width(px(1100.), window))
                 .child(form.clone())
                 .footer(DialogFooter::new().child(
                     button("github-close", "Back to repository", "", false).on_click(

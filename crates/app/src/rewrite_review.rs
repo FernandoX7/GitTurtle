@@ -18,12 +18,12 @@ impl GitTurtle {
         let remote = self.remote_name.read(cx).value().trim().to_owned();
         let branch = self.remote_branch.read(cx).value().trim().to_owned();
         let form = cx.new(|cx| SeriesBrowser::new(owner, repo, remote, branch, window, cx));
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             let close = form.clone();
             let cancel = form.clone();
             dialog
                 .title("Review rewritten series")
-                .width(px(980.))
+                .width(appearance::dialog_width(px(980.), window))
                 .child(form.clone())
                 .footer(DialogFooter::new().child(
                     button("close-series-review", "Back to repository", "", false).on_click(

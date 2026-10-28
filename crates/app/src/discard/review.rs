@@ -110,7 +110,7 @@ impl GitTurtle {
                 .child(label("discard-revalidation", "If this file or Git state changes, the action stops so you can review it again.").text_color(rgb(colors.muted)));
             dialog
                 .title(label("discard-title", title))
-                .width(px(620.).min(window.viewport_size().width - px(48.)))
+                .width(appearance::dialog_width(px(620.), window))
                 .child(
                     div()
                         .id("operation-consequences")

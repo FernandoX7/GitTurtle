@@ -179,8 +179,7 @@ impl GitTurtle {
                         let room = appearance::button_ring_room(cx);
                         dialog
                             .title(static_text("tags-dialog-title", "Tags").mb(-room))
-                            // Within a 461 px window, as the stash browser is.
-                            .width(px(600.).min(window.viewport_size().width - px(48.)))
+                            .width(appearance::dialog_width(px(600.), window))
                             .gap(DIALOG_FOOTER_GAP - room)
                             .child(browser.clone())
                             .button_props(DialogButtonProps::default().ok_text("Done"))
@@ -313,7 +312,7 @@ impl GitTurtle {
                         });
                     })
                 })).when(remotes.is_empty(), |element| element.child(static_text("tag-remotes-empty", "No remotes configured. Add a remote from the branch menu to push a tag.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "tag-remote-scrollbar"));
-            dialog.title(static_text("tag-inspector-title", details.tag.name.clone())).width(px(640.)).gap(DIALOG_FOOTER_GAP - room).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
+            dialog.title(static_text("tag-inspector-title", details.tag.name.clone())).width(appearance::dialog_width(px(640.), window)).gap(DIALOG_FOOTER_GAP - room).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
         });
     }
     pub(super) fn finish_tag_write(
@@ -357,12 +356,12 @@ impl GitTurtle {
             .cloned()
             .unwrap_or_else(|| cx.new(|cx| TagForm::new(owner, path, target, window, cx)));
         self.tag_actions.draft = Some(form.clone());
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             let submit = form.clone();
             let cancel = form.clone();
             dialog
                 .title(static_text("create-tag-dialog-title", "Create a local tag"))
-                .width(px(560.))
+                .width(appearance::dialog_width(px(560.), window))
                 .child(form.clone())
                 .button_props(
                     DialogButtonProps::default()

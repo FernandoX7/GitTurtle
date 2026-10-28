@@ -318,8 +318,8 @@ impl GitTurtle {
         {
             let owner = cx.entity().downgrade();
             let repository = self.path.clone();
-            window.open_alert_dialog(cx, move |dialog, _, _| {
-                dialog.title("Choose the mainline parent").width(px(560.))
+            window.open_alert_dialog(cx, move |dialog, window, _| {
+                dialog.title("Choose the mainline parent").width(appearance::dialog_width(px(560.), window))
                     .child(div().text_size(crate::appearance::ui_text(12.)).child(format!("{} is a merge commit. Choose the parent against which its change should be calculated.", short_oid(&commit.oid))))
                     .child(crate::native_accessibility::clips_children(div().id("recovery-mainline-parents").max_h(px(320.)).overflow_y_scroll().flex().flex_col().gap_2()
                         .children(commit.parents.iter().enumerate().take(128).map(|(index, parent)| {
@@ -432,12 +432,9 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let browser = cx.new(|cx| StashBrowser::new(owner, repo, window, cx));
         window.open_alert_dialog(cx, move |dialog, window, _| {
-            // Measured each frame, so a window narrowed while it is open,
-            // as to a 461 px half tile, keeps the dialog inside it.
-            let width = (f32::from(window.viewport_size().width) - 48.).clamp(400., 1060.);
             dialog
                 .title("Stashes")
-                .width(px(width))
+                .width(appearance::dialog_width(px(1060.), window))
                 .child(browser.clone())
                 .button_props(DialogButtonProps::default().ok_text("Close"))
         });
@@ -807,11 +804,11 @@ impl Render for AmendForm {
     }
 }
 fn show_amend(form: Entity<AmendForm>, window: &mut Window, cx: &mut App) {
-    window.open_alert_dialog(cx, move |dialog, _, _| {
+    window.open_alert_dialog(cx, move |dialog, window, _| {
         let submit = form.clone();
         dialog
             .title("Amend last commit")
-            .width(px(580.))
+            .width(appearance::dialog_width(px(580.), window))
             .child(form.clone())
             .button_props(
                 DialogButtonProps::default()
@@ -887,11 +884,11 @@ impl Render for StashForm {
     }
 }
 fn show_stash_form(form: Entity<StashForm>, window: &mut Window, cx: &mut App) {
-    window.open_alert_dialog(cx, move |dialog, _, _| {
+    window.open_alert_dialog(cx, move |dialog, window, _| {
         let submit = form.clone();
         dialog
             .title("Save changes to stash")
-            .width(px(520.))
+            .width(appearance::dialog_width(px(520.), window))
             .child(form.clone())
             .button_props(
                 DialogButtonProps::default()
@@ -1584,7 +1581,7 @@ impl Render for StashBrowser {
                         .child(button("drop-saved-stash", "Drop…", "", false).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))))
                         .child(Button::new("restore-saved-stash").primary().small().label("Review restore…").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.restore(window, cx)))))
                     .child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("Restoring keeps this stash saved. Drop it separately after checking the restored work.")))
-                .when(self.snapshot.is_none() && self.loading.is_none() && self.error.is_none(), |element| element.child(div().flex_1().flex().items_center().justify_center().p_5().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Choose a stash to inspect its staged, unstaged and untracked files."))))
+                .when(self.snapshot.is_none() && self.loading.is_none() && self.error.is_none(), |element| element.child(div().flex_1().flex().items_center().justify_center().p_5().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(div().min_w_0().text_center().child("Choose a stash to inspect its staged, unstaged and untracked files.")))))
     }
 }
 

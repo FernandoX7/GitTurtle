@@ -538,7 +538,7 @@ impl GitTurtle {
                 {
                     self.branch_actions.list = Some(chooser.read(cx).list.clone());
                 }
-                window.open_alert_dialog(cx, move |dialog, _, cx| {
+                window.open_alert_dialog(cx, move |dialog, window, cx| {
                     let chooser_ok = chooser.clone();
                     // The dialog clips its body to the body's bounds, and the
                     // chooser keeps the focus ring's room inside them below
@@ -546,7 +546,7 @@ impl GitTurtle {
                     // so the footer stays put.
                     dialog
                         .title(title.clone())
-                        .width(px(540.))
+                        .width(appearance::dialog_width(px(540.), window))
                         .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                         .child(chooser.clone())
                         .button_props(
@@ -569,10 +569,10 @@ impl GitTurtle {
                 {
                     self.branch_actions.list = Some(manager.read(cx).list.clone());
                 }
-                window.open_alert_dialog(cx, move |dialog, _, _| {
+                window.open_alert_dialog(cx, move |dialog, window, _| {
                     dialog
                         .title("Remotes")
-                        .width(px(580.))
+                        .width(appearance::dialog_width(px(580.), window))
                         .child(manager.clone())
                         .button_props(DialogButtonProps::default().ok_text("Done"))
                 });
@@ -595,7 +595,7 @@ impl GitTurtle {
             .checked_out_in
             .iter()
             .any(|tree| Some(tree.as_path()) != own_path);
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let p = palette(cx);
             let rename = Arc::clone(&plan);
             let upstream = Arc::clone(&plan);
@@ -622,7 +622,7 @@ impl GitTurtle {
                 .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(metadata))
                 .child(div().text_size(crate::appearance::ui_text(12.)).child(deletion_note))
                 .child(actions);
-            dialog.title(plan.name.clone()).width(px(560.)).child(content)
+            dialog.title(plan.name.clone()).width(appearance::dialog_width(px(560.), window)).child(content)
                 .button_props(DialogButtonProps::default().ok_text("Done"))
         });
     }
@@ -640,7 +640,7 @@ impl GitTurtle {
             .work_status
             .as_ref()
             .and_then(|status| status.branch.clone());
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let p = palette(cx);
             let tracking_ref = reference.clone();
             let merge_ref = reference.clone();
@@ -699,7 +699,7 @@ impl GitTurtle {
                 .child(actions);
             dialog
                 .title(short_reference(&reference).to_owned())
-                .width(px(540.))
+                .width(appearance::dialog_width(px(540.), window))
                 .child(content)
                 .button_props(DialogButtonProps::default().ok_text("Done"))
         });
@@ -897,11 +897,11 @@ fn show_branch_form(form: Entity<BranchForm>, window: &mut Window, cx: &mut App)
         BranchFormMode::Rename(_) => "Rename branch",
         BranchFormMode::Track(_) => "Create tracking branch",
     };
-    window.open_alert_dialog(cx, move |dialog, _, _| {
+    window.open_alert_dialog(cx, move |dialog, window, _| {
         let submit = form.clone();
         dialog
             .title(title)
-            .width(px(520.))
+            .width(appearance::dialog_width(px(520.), window))
             .child(form.clone())
             .button_props(
                 DialogButtonProps::default()
@@ -921,11 +921,11 @@ fn show_remote_form(form: Entity<RemoteForm>, window: &mut Window, cx: &mut App)
         .map_or("Add remote".into(), |remote| {
             format!("Edit {}", remote.name)
         });
-    window.open_alert_dialog(cx, move |dialog, _, _| {
+    window.open_alert_dialog(cx, move |dialog, window, _| {
         let submit = form.clone();
         dialog
             .title(title.clone())
-            .width(px(580.))
+            .width(appearance::dialog_width(px(580.), window))
             .child(form.clone())
             .button_props(
                 DialogButtonProps::default()

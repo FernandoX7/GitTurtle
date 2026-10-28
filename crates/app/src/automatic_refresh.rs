@@ -183,11 +183,11 @@ impl GitTurtle {
         let editor = text::editor(&details, "text", None, window, cx);
         // Keyed by the details, read once: the dialog shows them unchanged.
         let mark = copy_feedback::Mark::new("copy-refresh-details", &details);
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let details = details.clone();
             let copy_mark = mark.clone();
             dialog.title("Automatic refresh")
-                .width(px(620.))
+                .width(appearance::dialog_width(px(620.), window))
                 .child(div().child("Some local changes may need Refresh. Existing watches continue where available. Refresh reads local changes and retries coverage."))
                 .child(crate::editor_find::Editor::new(&editor).readonly(true).h(px(240.)).aria_label("Automatic refresh details"))
                 .child(copy_feedback::copy_button(mark.clone(), "Copy details", "", cx).on_click(move |_, window, cx| {

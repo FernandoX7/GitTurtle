@@ -150,14 +150,14 @@ impl GitTurtle {
             CompareForm::new(owner, repo, (before, after, mode), return_focus, window, cx)
         });
         let focus_form = form.downgrade();
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let submit = form.clone();
             let cancel = form.clone();
             let confirm = form.clone();
             let cancel_action = form.clone();
             dialog
                 .title("Compare local revisions")
-                .width(px(660.))
+                .width(appearance::dialog_width(px(660.), window))
                 .child(form.clone())
                 .footer(
                     DialogFooter::new()
@@ -220,7 +220,7 @@ impl GitTurtle {
         let query_focus = form.read(cx).query.read(cx).focus_handle(cx);
         self.dialog_hints
             .register(&query_focus, shortcuts::DialogKeys::QuickOpen);
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let submit = form.clone();
             let cancel = form.clone();
             let activate = form.clone();
@@ -243,7 +243,7 @@ impl GitTurtle {
                         .mb(-room)
                         .child("Quick Open File"),
                 )
-                .width(px(700.))
+                .width(appearance::dialog_width(px(700.), window))
                 .gap(crate::tags::DIALOG_FOOTER_GAP - room)
                 .bg(rgb(surface.raised()))
                 .border_color(rgb(surface.raised_edge()))

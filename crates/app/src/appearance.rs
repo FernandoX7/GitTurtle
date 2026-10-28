@@ -149,6 +149,22 @@ pub const FIELD_TEXT_PADDING: Pixels = px(10.);
 /// a field beside it starts here, as the Reflog's does.
 pub const FIELD_TEXT_INSET: Pixels = px(11.);
 
+/// The room a dialog keeps from either side of a window too narrow for its
+/// width, as in a 461 px half tile.
+pub const DIALOG_MARGIN: Pixels = px(24.);
+
+/// A dialog's width: `width`, or, in a window too narrow for it, the window
+/// less [`DIALOG_MARGIN`] on either side. The kit centres a dialog at its
+/// width whatever the window's, so a wider one would start left of the
+/// window. The window is what the kit centres the dialog in: inside a
+/// client-decorated frame's shadow padding. A dialog reads it on every frame,
+/// so one open while the window narrows stays inside it.
+pub fn dialog_width(width: Pixels, window: &Window) -> Pixels {
+    let paddings = gpui_kit::component::window_paddings(window);
+    let room = window.viewport_size().width - paddings.left - paddings.right;
+    width.min(room - DIALOG_MARGIN * 2.).max(Pixels::ZERO)
+}
+
 pub fn ui_text(base: f32) -> Pixels {
     ui_size(base)
 }

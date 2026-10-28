@@ -1722,10 +1722,10 @@ impl GitTurtle {
         let active = self.path.clone();
         let names = self.project_names.clone();
         let view = cx.new(|cx| LibraryView::new(owner, session, active, names, window, cx));
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             dialog
                 .title("Local workspaces")
-                .width(px(680.))
+                .width(appearance::dialog_width(px(680.), window))
                 .child(view.clone())
                 .button_props(
                     gpui_kit::component::dialog::DialogButtonProps::default().ok_text("Done"),

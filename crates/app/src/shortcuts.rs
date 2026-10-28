@@ -728,7 +728,7 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
     let help = cx.new(|cx| ShortcutHelpView::new(return_focus, window, cx));
     let focus = help.read(cx).query.read(cx).focus_handle(cx);
     hints.register(&focus, DialogKeys::Shortcuts);
-    window.open_alert_dialog(cx, move |dialog, _, cx| {
+    window.open_alert_dialog(cx, move |dialog, window, cx| {
         let done = help.clone();
         let cancel = help.clone();
         let confirm = help.clone();
@@ -749,7 +749,7 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
                     .mb(-room)
                     .child("Keyboard Shortcuts"),
             )
-            .width(appearance::ui_size(650.))
+            .width(appearance::dialog_width(appearance::ui_size(650.), window))
             .bg(rgb(surface.raised()))
             .border_color(rgb(surface.raised_edge()))
             .child(help.clone())

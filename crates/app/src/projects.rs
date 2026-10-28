@@ -1246,13 +1246,13 @@ impl GitTurtle {
         let form = cx.new(|cx| RenameProjectForm::new(owner, path, current, window, cx));
         let focus_form = form.downgrade();
         self.rename_project = Some(form.clone());
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let submit = form.clone();
             let cancel = form.clone();
             let pending = form.read(cx).pending;
             dialog
                 .title("Rename project")
-                .width(px(520.))
+                .width(crate::appearance::dialog_width(px(520.), window))
                 .child(form.clone())
                 .keyboard(!pending)
                 .footer(

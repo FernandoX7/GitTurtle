@@ -304,7 +304,7 @@ fn read_page_text(
         .as_ref()
         .map(|editor| editor.read(cx).focus_handle(cx));
     let height = (window.viewport_size().height * 0.6).min(px(640.));
-    window.open_alert_dialog(cx, move |dialog, _, _| {
+    window.open_alert_dialog(cx, move |dialog, window, _| {
         let return_focus = return_focus.clone();
         let mut body = div().flex().flex_col().gap_2().child(
             div()
@@ -325,7 +325,7 @@ fn read_page_text(
         }
         dialog
             .title(format!("{label} · Page {number} text"))
-            .width(px(800.))
+            .width(appearance::dialog_width(px(800.), window))
             .child(body)
             .footer(DialogFooter::new().child(
                 button("close-pdf-text", "Back to PDF", "", false).on_click(
@@ -390,7 +390,7 @@ fn page_picker(
             }
         },
     );
-    window.open_alert_dialog(cx, move |dialog, _, cx| {
+    window.open_alert_dialog(cx, move |dialog, window, cx| {
         let field = input.clone();
         let enter = accept.clone();
         let click = accept.clone();
@@ -398,7 +398,7 @@ fn page_picker(
         let return_focus = return_focus.clone();
         dialog
             .title(format!("{label}: go to page"))
-            .width(px(360.))
+            .width(appearance::dialog_width(px(360.), window))
             .child(
                 div()
                     .flex()

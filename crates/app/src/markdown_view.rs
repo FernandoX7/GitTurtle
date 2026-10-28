@@ -1245,10 +1245,10 @@ fn open_local_document(
         show_rendered: true,
     });
     let document = view.clone();
-    window.open_alert_dialog(cx, move |dialog, _, _| {
+    window.open_alert_dialog(cx, move |dialog, window, _| {
         dialog
             .title(format!("Captured local document · {}", path.display()))
-            .width(px(900.))
+            .width(appearance::dialog_width(px(900.), window))
             .child(document.clone())
             .footer(gpui_kit::component::dialog::DialogFooter::new().child(
                 button("close-local-markdown", "Back to document", "", false).on_click(

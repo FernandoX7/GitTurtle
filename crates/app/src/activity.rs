@@ -319,10 +319,10 @@ impl GitTurtle {
             owner: owner.downgrade(),
             _observer: cx.observe(&owner, |_, _, cx| cx.notify()),
         });
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             dialog
                 .title("GitTurtle activity")
-                .width(px(760.))
+                .width(appearance::dialog_width(px(760.), window))
                 .child(browser.clone())
                 .button_props(DialogButtonProps::default().ok_text("Done"))
         });
@@ -346,7 +346,7 @@ impl Render for ActivityBrowser {
         let error = app.activity.error.clone();
         crate::native_accessibility::clips_children(div().id("activity-browser-content").max_h(body_height).overflow_y_scroll().flex().flex_col().gap_2().text_size(appearance::ui_text(12.))
             .child(div().text_color(rgb(p.muted)).child("The latest 200 operations submitted by GitTurtle, across repositories. This is not a complete record of work performed by Git or other tools. Reflog recovery is available separately."))
-            .child(div().flex().gap_2()
+            .child(div().flex().flex_wrap().gap_2()
                 .child(button("activity-refresh","Refresh current repository","",false).disabled(app.operation_busy.is_some()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{window.close_dialog(cx);app.refresh_worktree(window,cx);});}}))
                 .child(button("activity-reflog","Browse reflog…","",false).disabled(app.operation_busy.is_some()||app.repository.is_none()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{window.close_dialog(cx);app.open_reflog_browser(window,cx);});}})))
             .children(error.map(|error|div().text_color(rgb(p.warning)).child(error)))

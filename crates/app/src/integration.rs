@@ -20,12 +20,12 @@ impl GitTurtle {
         let editor = text::editor(&display, "text", None, window, cx);
         // Keyed by the details, read once: the dialog shows them unchanged.
         let mark = copy_feedback::Mark::new("copy-operation-details", &*full);
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let full = Arc::clone(&full);
             let copy_mark = mark.clone();
             dialog
                 .title("Git operation details")
-                .width(px(680.))
+                .width(appearance::dialog_width(px(680.), window))
                 .child(
                     crate::editor_find::Editor::new(&editor)
                         .readonly(true)
@@ -63,13 +63,13 @@ impl GitTurtle {
         let path = self.path.clone();
         let view = cx.entity().downgrade();
         let command = Arc::new(command);
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             let path = path.clone();
             let view = view.clone();
             let command = Arc::clone(&command);
             dialog
                 .title(title.clone())
-                .width(px(520.))
+                .width(appearance::dialog_width(px(520.), window))
                 .child(
                     div()
                         .id("operation-consequences")

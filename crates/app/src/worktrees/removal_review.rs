@@ -183,7 +183,7 @@ impl GitTurtle {
             let body_height = (window.viewport_size().height * 0.8 - appearance::ui_size(118.)).max(px(160.));
             dialog
                 .title(label("worktree-force-title", "Force remove worktree?"))
-                .width(px(720.).min(window.viewport_size().width - px(48.)))
+                .width(appearance::dialog_width(px(720.), window))
                 .child(
                     div()
                         .id("operation-consequences")

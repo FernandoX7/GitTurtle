@@ -124,7 +124,7 @@ impl GitTurtle {
         self.dialog_hints
             .register(&sequence, shortcuts::DialogKeys::RebaseSequence);
         let review_owner = cx.entity().downgrade();
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let close = draft.clone();
             let cancel = draft.clone();
             let button_close = draft.clone();
@@ -136,11 +136,14 @@ impl GitTurtle {
                     label("interactive-rebase-title", "Edit local commits")
                         .debug_selector(|| "interactive-rebase-title".into()),
                 )
-                .width(px(720.))
+                .width(appearance::dialog_width(px(720.), window))
                 .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                 .child(draft.clone())
                 .footer(
+                    // In a narrow window at a large size the two actions
+                    // are wider than the footer: they wrap below whole.
                     DialogFooter::new()
+                        .flex_wrap()
                         .child(
                             shortcuts::DialogKeys::RebaseSequence
                                 .dismiss_button("close-rebase-plan", false)
@@ -262,13 +265,13 @@ impl GitTurtle {
                         form.durable_status = status;
                     });
                     this.interactive_rebase.message = Some(form.clone());
-                    window.open_alert_dialog(cx, move |dialog, _, _| {
+                    window.open_alert_dialog(cx, move |dialog, window, _| {
                         let close = form.clone();
                         let cancel = form.clone();
                         let button_close = form.clone();
                         dialog
                             .title(label("rebase-message-title", "Continue rebase"))
-                            .width(px(640.))
+                            .width(appearance::dialog_width(px(640.), window))
                             .child(form.clone())
                             .footer(DialogFooter::new().child(
                                 button("close-rebase-message", "Close", "", false).on_click(

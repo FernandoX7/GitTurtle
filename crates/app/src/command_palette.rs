@@ -593,7 +593,7 @@ impl GitTurtle {
         let query_focus = form.read(cx).query.read(cx).focus_handle(cx);
         self.dialog_hints
             .register(&query_focus, shortcuts::DialogKeys::Palette);
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let cancel = form.clone();
             let cancel_action = form.clone();
             let activate = form.clone();
@@ -605,7 +605,7 @@ impl GitTurtle {
             let surface = palette(cx);
             dialog
                 .title("Command palette")
-                .width(px(660.))
+                .width(appearance::dialog_width(px(660.), window))
                 .bg(rgb(surface.raised()))
                 .border_color(rgb(surface.raised_edge()))
                 .child(form.clone())
