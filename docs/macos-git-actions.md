@@ -45,8 +45,8 @@ keeps its previous branch-only behavior. Remote tag deletion is not exposed.
 ## Ignore from Working Changes
 
 Select an untracked item and choose **Actions → Ignore selected untracked file…**,
-or right-click its row and choose **Ignore…**. Tracked rows explain that Ignore
-applies to untracked files. The form distinguishes **Shared .gitignore** from
+or right-click its row and choose **Ignore…**. On a tracked row Ignore… is
+unavailable, with its condition, Untracked files only, beside it. The form distinguishes **Shared .gitignore** from
 **Local excludes** and optionally offers the selected file's containing directory.
 The repository root cannot be selected as a directory rule.
 

@@ -3,7 +3,7 @@
 //! and on workspace display-change notifications, then applied to the toolkit's
 //! motion policy. Foreground activation remains a fallback read.
 use crate::*;
-use gpui_kit::component::menu::PopupMenu;
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 
 #[cfg(any(target_os = "macos", test))]
 mod display_changes;
@@ -232,6 +232,45 @@ pub(crate) fn open_menu(
         menu = menu.max_h(cap).scrollable(true);
     }
     menu
+}
+
+/// A menu item that reads as its command, `label`, with the condition it
+/// depends on, `detail`, apart from it: in quieter secondary text at the
+/// row's trailing edge, where a shortcut stands. An item unavailable for
+/// that condition, disabled, states its reason this way, the command dim and
+/// the reason legible, as the command palette states an unavailable
+/// command's. Assistive technology hears both, the command first. A test
+/// build names the command's text and the detail's text and colour in debug
+/// selectors (`menu-command: <label>`, `menu-detail: <detail> · <colour>`),
+/// as the scene does not expose glyphs.
+pub(crate) fn detailed_item(label: &'static str, detail: &'static str) -> PopupMenuItem {
+    PopupMenuItem::element(move |_, cx| {
+        let color = gpui_kit::component::Theme::global(cx).muted_foreground;
+        div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .debug_selector(move || format!("menu-command: {label}"))
+                    .child(label),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(color)
+                    .debug_selector(move || {
+                        format!("menu-detail: {detail} · {:?}", gpui::Rgba::from(color))
+                    })
+                    .child(detail),
+            )
+    })
+    .accessibility_label(format!("{label}, {}", detail.to_lowercase()))
 }
 
 /// A menu's builder, run each time its menu opens.

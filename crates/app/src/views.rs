@@ -10749,7 +10749,7 @@ pub(crate) mod tests {
             cx.update(|window, cx| app.read(cx).file_focus.is_focused(window))
         };
         const STAGE: &str = "menu-item: Stage · MenuItem";
-        const IGNORE: &str = "menu-item: Ignore applies to untracked files · MenuItem disabled";
+        const IGNORE: &str = "menu-item: Ignore…, untracked files only · MenuItem disabled";
         const DISCARD: &str = "menu-item: Discard changes… · MenuItem";
         for (text, width, height, narrow) in [(13, 1480., 980., false), (18, 461., 490., true)] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
@@ -10788,6 +10788,25 @@ pub(crate) mod tests {
             for (item, shown) in [(STAGE, narrow), (IGNORE, true), (DISCARD, true)] {
                 assert_eq!(cx.debug_bounds(item).is_some(), shown, "{at}: {item}");
             }
+            // A tracked file's Ignore reads as the command, its condition
+            // apart from it at the row's end in secondary text: it read as
+            // one phrase, "Ignore applies to untracked files".
+            let muted = cx.update(|_, cx| {
+                gpui::Rgba::from(gpui_kit::component::Theme::global(cx).muted_foreground)
+            });
+            let (command, detail, ignore) = (
+                cx.debug_bounds("menu-command: Ignore…"),
+                cx.debug_bounds(format!("menu-detail: Untracked files only · {muted:?}").leak()),
+                cx.debug_bounds(IGNORE).unwrap(),
+            );
+            let (Some(command), Some(detail)) = (command, detail) else {
+                panic!("{at}: Ignore… {command:?} and its condition {detail:?}");
+            };
+            assert!(
+                command.right() < detail.left()
+                    && (detail.right() - ignore.right()).abs() <= px(12.),
+                "{at}: the condition {detail:?} after the command {command:?} at the end of {ignore:?}"
+            );
             assert!(!focused(cx), "{at}: the menu takes the keys");
             // Below the cursor row, from its leading edge where the menu
             // fits there, and kept inside the window where it does not, as

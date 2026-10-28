@@ -3656,39 +3656,43 @@ fn working_row_menu(
                 }),
         )
     };
+    // An action the row cannot take reads as its command with the condition
+    // it waits for apart from it, not as one phrase.
+    let ignore = if entry.untracked {
+        PopupMenuItem::new("Ignore…")
+    } else {
+        native_accessibility::detailed_item("Ignore…", "Untracked files only")
+    };
+    let discard = if discard_entry.conflicted {
+        native_accessibility::detailed_item("Discard changes…", "After conflict resolution")
+    } else if discard_entry.untracked {
+        PopupMenuItem::new("Delete untracked file…")
+    } else {
+        PopupMenuItem::new("Discard changes…")
+    };
     menu.item(
-        PopupMenuItem::new(if entry.untracked {
-            "Ignore…"
-        } else {
-            "Ignore applies to untracked files"
-        })
-        .disabled(busy || staged || !entry.untracked)
-        .on_click(move |_, window, cx| {
-            let _ = owner.update(cx, |this, cx| {
-                if this.path == repository {
-                    this.open_ignore(entry.clone(), window, cx);
-                }
-            });
-        }),
+        ignore
+            .disabled(busy || staged || !entry.untracked)
+            .on_click(move |_, window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if this.path == repository {
+                        this.open_ignore(entry.clone(), window, cx);
+                    }
+                });
+            }),
     )
     // Discard reverts the whole file to HEAD, so both the staged and
     // unstaged rows offer the same action.
     .item(
-        PopupMenuItem::new(if discard_entry.conflicted {
-            "Discard applies after conflict resolution"
-        } else if discard_entry.untracked {
-            "Delete untracked file…"
-        } else {
-            "Discard changes…"
-        })
-        .disabled(busy || discard_entry.conflicted)
-        .on_click(move |_, window, cx| {
-            let _ = discard_owner.update(cx, |this, cx| {
-                if this.path == discard_repository {
-                    this.open_discard(discard_entry.clone(), window, cx);
-                }
-            });
-        }),
+        discard
+            .disabled(busy || discard_entry.conflicted)
+            .on_click(move |_, window, cx| {
+                let _ = discard_owner.update(cx, |this, cx| {
+                    if this.path == discard_repository {
+                        this.open_discard(discard_entry.clone(), window, cx);
+                    }
+                });
+            }),
     )
 }
 
