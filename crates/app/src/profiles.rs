@@ -23,6 +23,11 @@ pub(super) struct State {
     draft: Option<Entity<ProfileForm>>,
     pub prepared: Option<Definition>,
 }
+
+/// The height, at the default interface size, of the compact header's
+/// controls, among which the profile picker takes their form.
+pub(super) const COMPACT_ROW_CONTROL: f32 = 28.;
+
 fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
     let value = value.into();
     div()
@@ -84,7 +89,9 @@ impl GitTurtle {
     }
 
     /// `compact` draws only the icon, in a square `size` px control at the
-    /// default interface size: 36 in the full header, 28 in its compact row.
+    /// default interface size: 36 in the full header, [`COMPACT_ROW_CONTROL`]
+    /// in its compact row, where it takes its neighbours' transparent frame
+    /// and scaled icon.
     pub(super) fn render_profile_button(
         &self,
         compact: bool,
@@ -93,9 +100,21 @@ impl GitTurtle {
     ) -> AnyElement {
         let title = self.profile_title();
         let owner = cx.entity().downgrade();
+        // In the compact header's row of 28 px controls the profile is one of
+        // them: the shared helper's transparent frame and its scaled icon.
+        let row = size == COMPACT_ROW_CONTROL;
         Button::new("profile")
             .debug_selector(|| "profile-button".into())
-            .secondary()
+            .map(|button| {
+                if row {
+                    button
+                        .with_variant(crate::appearance::control_button_variant(false))
+                        .px(crate::appearance::ui_size(6.))
+                        .rounded(crate::appearance::ui_size(7.))
+                } else {
+                    button.secondary()
+                }
+            })
             .h(crate::appearance::ui_size(size))
             .max_w(px(230.))
             // The kit sizes a label-less button as a square icon button; the
@@ -107,7 +126,11 @@ impl GitTurtle {
                     button.px_3().label(title.clone())
                 }
             })
-            .icon(Icon::default().path("icons/user.svg").size(px(16.)))
+            .icon(Icon::default().path("icons/user.svg").size(if row {
+                crate::appearance::ui_size(16.)
+            } else {
+                px(16.)
+            }))
             .dropdown_caret(!compact)
             .disabled(self.operation_busy.is_some() || self.profiles.saving)
             .accessibility_label(format!("Git profile: {title}. Choose or manage profiles"))

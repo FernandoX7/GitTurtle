@@ -2,7 +2,7 @@ use crate::*;
 use columns::ColumnId;
 use gpui_kit::base::ElementExt;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
-use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder;
 use std::cell::RefCell;
 
@@ -232,20 +232,33 @@ impl GitTurtle {
 
     /// The header's compact row (`Chrome::Compact`): the return action, the
     /// turtle where it fits, the repository's name alone (its path stays in
-    /// the tooltip and accessible name), History and Changes as icon
-    /// toggles, Pull requests as "PRs", then Projects, the profile and
-    /// Settings, every control 28 px. The same controls in the same order as
-    /// the full header, each with its action, its accessible name and a
-    /// tooltip that leads with that name. The row keeps the room a focused
-    /// control's ring takes above and below it and draws no bottom rule:
-    /// the action bar's compact row follows it on the same surface.
-    fn render_compact_header(&self, turtle: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// the tooltip and accessible name) at its own width up to `name`,
+    /// History and Changes as icon toggles, the Changes count as a badge on
+    /// its icon, Pull requests as "PRs", then, at the trailing edge,
+    /// Projects, the profile and Settings, every control 28 px. `name` is
+    /// what the row leaves the name with the Projects slot counted in every
+    /// mode, so the toggles keep their place when Projects joins the
+    /// trailing controls outside History. The same controls in the same
+    /// order as the full header, each with its action, its accessible name
+    /// and a tooltip that leads with that name. The row keeps the room a
+    /// focused control's ring takes above and below it and draws no bottom
+    /// rule: the action bar's compact row follows it on the same surface.
+    fn render_compact_header(
+        &self,
+        turtle: bool,
+        name: Pixels,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
         let back_to_projects = self.back_label() == "Back to Projects";
         let ring = appearance::button_ring_room(cx);
         let history = self.mode != WorkspaceMode::Working;
         let changes = self.changes_label();
+        let count = self
+            .work_status
+            .as_ref()
+            .map_or(0, |status| status.entries.len());
         div()
             .debug_selector(|| "repository-header".into())
             .flex_shrink_0()
@@ -263,8 +276,8 @@ impl GitTurtle {
             })
             .child(
                 self.repository_heading()
-                    .flex_1()
                     .min_w_0()
+                    .max_w(name)
                     .truncate()
                     .text_size(appearance::ui_text(14.))
                     .font_weight(FontWeight::SEMIBOLD)
@@ -296,19 +309,29 @@ impl GitTurtle {
                                 ),
                             )
                             .child(
-                                compact_control_label(
-                                    button("changes-tab", "", "changes", !history),
-                                    "changes-tab",
-                                    changes.clone(),
-                                )
-                                .debug_selector(|| "changes-tab".into())
-                                .toggled(!history)
-                                .tooltip(format!("{changes} · {}2", primary_label()))
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.show_working(window, cx)
+                                div()
+                                    .relative()
+                                    .child(
+                                        compact_control_label(
+                                            button("changes-tab", "", "changes", !history),
+                                            "changes-tab",
+                                            changes.clone(),
+                                        )
+                                        .debug_selector(|| "changes-tab".into())
+                                        .toggled(!history)
+                                        .tooltip(format!("{changes} · {}2", primary_label()))
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.show_working(window, cx)
+                                            }),
+                                        ),
+                                    )
+                                    // The count the full tab reads, as a badge
+                                    // on the icon's corner; the toggle's name
+                                    // already says it.
+                                    .when(count > 0, |toggle| {
+                                        toggle.child(changes_badge(count, p))
                                     }),
-                                ),
                             ),
                     )
                     .child(
@@ -328,18 +351,29 @@ impl GitTurtle {
                         })),
                     )
             })
-            .children(
-                self.operation_busy
-                    .map(|label| self.render_operation_progress(label, cx)),
+            .child(
+                div()
+                    .ml_auto()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .children(
+                        self.operation_busy
+                            .map(|label| self.render_operation_progress(label, cx)),
+                    )
+                    .when(busy, |trailing| {
+                        trailing.child(self.render_operation_cancel(cx))
+                    })
+                    .when(!back_to_projects, |trailing| {
+                        trailing.child(self.render_projects_button(cx))
+                    })
+                    .child(self.render_profile_button(
+                        true,
+                        crate::profiles::COMPACT_ROW_CONTROL,
+                        cx,
+                    ))
+                    .child(self.render_settings_button(cx)),
             )
-            .when(busy, |header| {
-                header.child(self.render_operation_cancel(cx))
-            })
-            .when(!back_to_projects, |header| {
-                header.child(self.render_projects_button(cx))
-            })
-            .child(self.render_profile_button(true, 28., cx))
-            .child(self.render_settings_button(cx))
             .into_any_element()
     }
 
@@ -348,8 +382,11 @@ impl GitTurtle {
     /// and accessible names.
     pub(super) fn render_header(&self, chrome: Chrome, cx: &mut Context<Self>) -> AnyElement {
         let compact = match chrome {
-            Chrome::Compact { app_icon: turtle } if self.page == AppPage::Repository => {
-                return self.render_compact_header(turtle, cx);
+            Chrome::Compact {
+                app_icon: turtle,
+                name,
+            } if self.page == AppPage::Repository => {
+                return self.render_compact_header(turtle, name, cx);
             }
             Chrome::Compact { .. } => false,
             Chrome::Full { narrow } => narrow,
@@ -2083,6 +2120,7 @@ impl GitTurtle {
         // Keep the path and its actions together. At narrow widths or larger
         // interface sizes, modes form another row instead of crushing the path.
         let mut toolbar = div()
+            .debug_selector(|| "compare-toolbar".into())
             .min_h(appearance::ui_size(42.))
             .flex_shrink_0()
             .flex()
@@ -2121,6 +2159,34 @@ impl GitTurtle {
                     markdown,
                     ..
                 } => {
+                    let available = [
+                        (TextMode::Unified, "Diff"),
+                        (TextMode::Split, "Split"),
+                        (TextMode::Before, "Before"),
+                        (
+                            TextMode::After,
+                            if quick_source { "Source" } else { "After" },
+                        ),
+                        (TextMode::Diagrams, "Diagrams"),
+                        (TextMode::Markdown, "Rendered"),
+                    ]
+                    .into_iter()
+                    .filter(|&(mode, _)| {
+                        !((quick_source
+                            && !matches!(
+                                mode,
+                                TextMode::After | TextMode::Diagrams | TextMode::Markdown
+                            ))
+                            || (mode == TextMode::Diagrams && diagrams.is_none())
+                            || (mode == TextMode::Markdown && markdown.is_none()))
+                    })
+                    .collect::<Vec<_>>();
+                    let names = available.iter().map(|(_, name)| *name).collect::<Vec<_>>();
+                    // Narrower than the labelled group, the modes keep one
+                    // row as a menu named by the current mode, as the review
+                    // options keep theirs.
+                    let collapsed =
+                        column - window.rem_size() * 1.5 < text_modes_width(&names, window);
                     let mut modes = div()
                         .flex()
                         .flex_wrap()
@@ -2131,29 +2197,10 @@ impl GitTurtle {
                         .p_0p5()
                         .rounded(appearance::ui_size(9.))
                         .bg(rgb(colors.subtle));
-                    for (mode, name) in [
-                        (TextMode::Unified, "Diff"),
-                        (TextMode::Split, "Split"),
-                        (TextMode::Before, "Before"),
-                        (
-                            TextMode::After,
-                            if quick_source { "Source" } else { "After" },
-                        ),
-                        (TextMode::Diagrams, "Diagrams"),
-                        (TextMode::Markdown, "Rendered"),
-                    ] {
-                        if (quick_source
-                            && !matches!(
-                                mode,
-                                TextMode::After | TextMode::Diagrams | TextMode::Markdown
-                            ))
-                            || (mode == TextMode::Diagrams && diagrams.is_none())
-                            || (mode == TextMode::Markdown && markdown.is_none())
-                        {
-                            continue;
-                        }
+                    for &(mode, name) in available.iter().filter(|_| !collapsed) {
                         modes = modes.child(
                             button(name, name, "", self.text_mode == mode)
+                                .debug_selector(move || name.into())
                                 .toggled(self.text_mode == mode)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.text_mode = mode;
@@ -2162,7 +2209,46 @@ impl GitTurtle {
                                 })),
                         );
                     }
-                    toolbar = toolbar.child(modes);
+                    toolbar = if collapsed {
+                        let current = self.text_mode;
+                        let label = available
+                            .iter()
+                            .find(|(mode, _)| *mode == current)
+                            .map_or("Diff", |(_, name)| *name);
+                        let owner = cx.entity().downgrade();
+                        toolbar.child(
+                            compact_control_label(
+                                button("text-mode-menu", label, "", false),
+                                "text-mode-menu",
+                                format!("Comparison mode: {label}"),
+                            )
+                            .debug_selector(|| "text-mode-menu".into())
+                            .dropdown_caret(true)
+                            .tooltip(format!("Comparison mode · {}", names.join(", ")))
+                            .dropdown_menu(move |menu, _, _| {
+                                // Built when opened; a choice acts on the page
+                                // as it is then, as a mode button does.
+                                available.iter().fold(menu, |menu, &(mode, name)| {
+                                    let owner = owner.clone();
+                                    menu.item(
+                                        PopupMenuItem::new(name).checked(mode == current).on_click(
+                                            move |_, window, cx| {
+                                                let _ = owner.update(cx, |this, cx| {
+                                                    if this.page == AppPage::Repository {
+                                                        this.text_mode = mode;
+                                                        this.ensure_editor(window, cx);
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            },
+                                        ),
+                                    )
+                                })
+                            }),
+                        )
+                    } else {
+                        toolbar.child(modes)
+                    };
                     let editor = match self.text_mode {
                         TextMode::Split | TextMode::Diagrams | TextMode::Markdown => &None,
                         TextMode::Unified => &self.patch_editor,
@@ -2273,6 +2359,7 @@ impl GitTurtle {
             )
             .children(file.map(|file| {
                 div()
+                    .debug_selector(|| "compare-footer".into())
                     .h(crate::appearance::ui_size(24.))
                     .flex_shrink_0()
                     .px_3()
@@ -2493,9 +2580,11 @@ pub(super) enum Chrome {
     /// header's Projects and profile labels.
     Full { narrow: bool },
     /// One row each of 28 px controls, where the full forms would leave
-    /// History less than its toolbars and three rows (`GitTurtle::chrome`).
-    /// `app_icon` is whether the turtle fits beside the repository name.
-    Compact { app_icon: bool },
+    /// History less than its toolbars and three rows, or Compare less than
+    /// its toolbars and three diff lines (`GitTurtle::chrome`). `app_icon` is
+    /// whether the turtle fits beside the repository name, and `name` the
+    /// most the name takes, the same in every mode.
+    Compact { app_icon: bool, name: Pixels },
 }
 
 impl Chrome {
@@ -2640,29 +2729,31 @@ impl GitTurtle {
             appearance::button_ring_room(cx),
         ));
         let status = window.pixel_snap(appearance::ui_size(26.));
-        if content.height - tabs - status - full >= self.history_minimum(window) {
+        let need = self
+            .history_minimum(window)
+            .max(self.compare_minimum(window));
+        if content.height - tabs - status - full >= need {
             return Chrome::Full { narrow };
         }
         // The turtle shows where the name keeps the full header's minimum
-        // beside it and the compact row's other controls.
+        // beside it and the compact row's other controls. Projects counts in
+        // every mode, though History's root leaves it out, so the turtle,
+        // the name and the toggles after it keep their places across modes.
         let rem = window.rem_size();
         let control = window.pixel_snap(appearance::ui_size(28.));
         let gap = window.pixel_snap(rem * 0.5);
-        let back_to_projects = self.back_label() == "Back to Projects";
-        let (mut fixed, mut items) = (control * 3., 4.);
+        let (mut fixed, mut items) = (control * 4., 5.);
         if self.repository.is_some() {
             fixed += control * 2.
                 + window.pixel_snap(rem * 0.125)
                 + self.labelled_width(widths.compact_pull_requests, false, window);
             items += 2.;
         }
-        if !back_to_projects {
-            fixed += control;
-            items += 1.;
-        }
         let name = content.width - window.pixel_snap(rem * 0.75) * 2. - fixed - gap * (items - 1.);
+        let app_icon = name - control - gap >= window.pixel_snap(appearance::ui_size(100.));
         Chrome::Compact {
-            app_icon: name - control - gap >= window.pixel_snap(appearance::ui_size(100.)),
+            app_icon,
+            name: (if app_icon { name - control - gap } else { name }).max(px(0.)),
         }
     }
 
@@ -2695,6 +2786,28 @@ impl GitTurtle {
             + scaled(34.)
             + window.pixel_snap(px(1.)) * 2.
             + window.pixel_snap(px(self.settings.density.history_row_height())) * 3.
+    }
+
+    /// What Compare needs below the chrome to show three whole diff lines of
+    /// a text comparison: its toolbar's rows in the column it would have
+    /// beside the rail and the inspector, the review options' row, the
+    /// editor's 8 px padding above and below its text, three lines at the
+    /// code size, and the footer. Its text widths are cached as the chrome's
+    /// are, so History's frames ask the text system nothing for it either.
+    pub(super) fn compare_minimum(&self, window: &Window) -> Pixels {
+        let width = self.repository_width(window);
+        let narrow = width < appearance::ui_size(SIDEBAR_FIT_WIDTH);
+        let rail = appearance::ui_size(44.);
+        let columns = ColumnMinimums::new(width, rail, narrow);
+        let column = width - rail - self.expected_inspector_width(width, &columns);
+        let rem = window.rem_size();
+        let options = rem * 0.25 * 2. + rem * 1.5 + px(1.);
+        let line = window.pixel_snap(appearance::code_text() * 1.5);
+        compare_toolbar_height(column, columns.content - rail, window)
+            + options
+            + px(8.) * 2.
+            + line * 3.
+            + window.pixel_snap(appearance::ui_size(24.))
     }
 
     /// `ChromeWidths` for the chrome's current text, measured again only when
@@ -2851,6 +2964,60 @@ impl GitTurtle {
         (rows + snap(rem * 0.25) * 2.).max(scaled(46.)) + snap(px(1.))
     }
 }
+/// The labelled text-mode group's width for `names`: its `p_0p5` either
+/// side, each the shared `button` helper's 10 px of padding either side of
+/// its label, `gap_0p5` apart. Laid out again only when the names, the font
+/// or the sizes change.
+fn text_modes_width(names: &[&str], window: &Window) -> Pixels {
+    let rem = window.rem_size();
+    let labels = cached_text_width(&TEXT_MODES, &names.join("\n"), window, || {
+        line_widths(
+            &names
+                .iter()
+                .map(|name| (*name, appearance::ui_text(12.)))
+                .collect::<Vec<_>>(),
+            window,
+        )
+    });
+    rem * 0.125 * 2.
+        + labels
+        + appearance::ui_size(20.) * names.len() as f32
+        + rem * 0.125 * names.len().saturating_sub(1) as f32
+}
+
+/// Compare's toolbar height in a preview `column` wide whose narrowest is
+/// `column_min`: the path's row, held at its 220 px allotment or the whole
+/// narrowest column, then the text modes, labelled where they fit a row and
+/// otherwise their one-control menu, on that row or the next, between
+/// `py_1` and the bottom rule, at least its 42 px.
+fn compare_toolbar_height(column: Pixels, column_min: Pixels, window: &Window) -> Pixels {
+    const MODES: [&str; 4] = ["Diff", "Split", "Before", "After"];
+    let rem = window.rem_size();
+    let room = column - rem * 1.5;
+    let control = appearance::ui_size(28.);
+    let path = appearance::ui_size(220.).min((column_min - appearance::ui_size(19.5)).max(px(0.)));
+    let labelled = text_modes_width(&MODES, window);
+    let (modes, height) = if labelled <= room {
+        (labelled, control + rem * 0.25)
+    } else {
+        // The menu reads the widest mode, then its caret.
+        let widest = cached_width(&TEXT_MODE_WIDEST, &LineKey::current(window), || {
+            line_widths(&[("Before", appearance::ui_text(12.))], window)
+        });
+        (
+            appearance::ui_size(10. * 2. + 6.) + widest + rem * 0.875,
+            control,
+        )
+    };
+    let gap = rem * 0.375;
+    let rows = if path + gap + modes <= room {
+        control.max(height)
+    } else {
+        control + gap + height
+    };
+    (rem * 0.25 * 2. + rows + px(1.)).max(appearance::ui_size(42.))
+}
+
 /// The width History's scope toolbar needs to keep its labels: `px_3` on
 /// either side, seven `gap_2` gaps, the fixed-size branch icon, the count, the
 /// scope name at the narrowest it is drawn in, and the Columns, Latest,
@@ -2947,6 +3114,8 @@ thread_local! {
     static SCOPE_NAME: TextWidth = const { RefCell::new(None) };
     static FILES_COUNT: TextWidth = const { RefCell::new(None) };
     static FILES_LABEL: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+    static TEXT_MODES: TextWidth = const { RefCell::new(None) };
+    static TEXT_MODE_WIDEST: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
 }
 #[cfg(test)]
 thread_local! {
@@ -2964,6 +3133,33 @@ thread_local! {
     /// it shows, such as the Changes count (`compact_control_label`).
     pub(crate) static COMPACT_LABELS: RefCell<std::collections::BTreeMap<&'static str, SharedString>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// The compact Changes toggle's working-file count, a small accent pill on
+/// the icon's top-right corner inside the toggle, so the toggle keeps its
+/// width and its focus ring. Above 99 it reads "99+".
+fn changes_badge(count: usize, p: appearance::Palette) -> impl IntoElement {
+    div()
+        .debug_selector(|| "changes-count-badge".into())
+        .absolute()
+        .top(appearance::ui_size(1.))
+        .right(appearance::ui_size(1.))
+        .min_w(appearance::ui_size(14.))
+        .h(appearance::ui_size(14.))
+        .px(appearance::ui_size(3.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(rgb(p.accent))
+        .text_color(rgb(p.accent_foreground))
+        .text_size(appearance::ui_text(10.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(if count > 99 {
+            "99+".to_owned()
+        } else {
+            count.to_string()
+        })
 }
 
 /// [`compact_control_name`] for a `name` that changes with what the control
@@ -3099,6 +3295,20 @@ impl GitTurtle {
     }
 
     /// The width the repository page receives beside the project pane.
+    /// The inspector's width in a repository `width` wide before it is laid
+    /// out: exactly its minimum where the window pins it, otherwise its saved
+    /// width within what the content column leaves it.
+    fn expected_inspector_width(&self, width: Pixels, columns: &ColumnMinimums) -> Pixels {
+        if columns.pinned {
+            columns.inspector
+        } else {
+            px(self.settings.inspector_width)
+                .min(px(480.).max(columns.inspector))
+                .min(width - columns.content)
+                .max(columns.inspector)
+        }
+    }
+
     fn repository_width(&self, window: &Window) -> Pixels {
         let width = window.viewport_size().width;
         if self.settings.project_pane && self.page != AppPage::Projects {
@@ -3247,18 +3457,12 @@ impl GitTurtle {
                     )
                     .flex_none()
                     .child(if self.mode == WorkspaceMode::Working {
-                        // Pinned, the inspector is exactly its minimum wide;
-                        // otherwise its saved width within what the column
-                        // leaves it, until it is laid out.
-                        let expected = if columns.pinned {
-                            inspector_min
-                        } else {
-                            px(self.settings.inspector_width)
-                                .min(px(480.))
-                                .min(width - content_min)
-                                .max(inspector_min)
-                        };
-                        self.render_working_inspector(expected, columns.pinned, window, cx)
+                        self.render_working_inspector(
+                            self.expected_inspector_width(width, &columns),
+                            columns.pinned,
+                            window,
+                            cx,
+                        )
                     } else {
                         self.render_inspector(files_header, cx)
                     }),
@@ -5028,10 +5232,13 @@ mod tests {
         COMPACT_LABELS.with(|names| names.borrow_mut().clear());
         cx.simulate_resize(size(px(461.), px(490.)));
         draw(cx);
-        assert_eq!(
+        assert!(matches!(
             predicted_chrome(&app, cx).1,
-            Chrome::Compact { app_icon: false }
-        );
+            Chrome::Compact {
+                app_icon: false,
+                ..
+            }
+        ));
         assert!(cx.debug_bounds("repository-heading").is_some());
         // One row each: the header's controls, the action bar's, 28 px.
         let (control, room) = cx.update(|window, cx| {
@@ -5151,10 +5358,138 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         cx.simulate_resize(size(px(700.), px(330.)));
         draw(cx);
-        assert_eq!(
+        assert!(matches!(
             predicted_chrome(&app, cx).1,
-            Chrome::Compact { app_icon: true }
+            Chrome::Compact { app_icon: true, .. }
+        ));
+    }
+
+    /// In the compact header the History and Changes toggles keep one place
+    /// in Changes, History and Compare, though Projects joins the trailing
+    /// controls outside History; the Changes toggle shows its count as a
+    /// badge inside its bounds; and the profile is one of its 28 px
+    /// neighbours, unfilled at rest like Settings.
+    #[gpui::test]
+    async fn compact_header_keeps_its_toggles_in_place_with_the_count(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        COMPACT_LABELS.with(|names| names.borrow_mut().clear());
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert!(predicted_chrome(&app, cx).1.is_compact());
+        let toggles = |cx: &mut VisualTestContext| {
+            (
+                cx.debug_bounds("history-tab").unwrap(),
+                cx.debug_bounds("changes-tab").unwrap(),
+            )
+        };
+        let changes = toggles(cx);
+        assert!(cx.debug_bounds("projects").is_some(), "Projects in Changes");
+        let badge = cx.debug_bounds("changes-count-badge").expect("the count");
+        assert!(
+            badge.left() >= changes.1.left()
+                && badge.right() <= changes.1.right()
+                && badge.top() >= changes.1.top()
+                && badge.bottom() <= changes.1.bottom(),
+            "badge {badge:?} inside {:?}",
+            changes.1
         );
+        assert_eq!(
+            COMPACT_LABELS.with(|names| names.borrow().get("changes-tab").cloned()),
+            Some("Changes · 3".into())
+        );
+        // The profile rests unfilled, as Settings does, at their height.
+        let (profile, settings) = (
+            cx.debug_bounds("profile-button").unwrap(),
+            cx.debug_bounds("settings").unwrap(),
+        );
+        assert_eq!(profile.size, settings.size);
+        assert_eq!(
+            painted_fills(cx, "profile-button"),
+            painted_fills(cx, "settings"),
+            "the profile's resting fill"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        settle(&app, cx).await;
+        assert!(
+            cx.debug_bounds("projects").is_none(),
+            "no Projects in History"
+        );
+        assert_eq!(toggles(cx), changes, "History");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        assert_eq!(toggles(cx), changes, "Compare");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The compact chrome's breakpoint counts Compare's need as well as
+    /// History's: wherever the full chrome is drawn, Compare shows three
+    /// whole diff lines, at the default and 18 pt interface sizes and code
+    /// at 12 and 24 pt, and at 13 pt with 24 pt code a 461 × 470 window,
+    /// where History alone would keep the full chrome, takes the compact
+    /// one. In a narrow column the text modes keep one row as a menu named
+    /// by the current mode, which chooses another.
+    #[gpui::test]
+    async fn the_chrome_breakpoint_keeps_compare_diff_lines(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(40, 60)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        for (text, code) in [(13, 12), (13, 24), (18, 12), (18, 24)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, code, window, cx));
+            let mut height = 700.;
+            while height >= 380. {
+                cx.simulate_resize(size(px(461.), px(height)));
+                draw(cx);
+                let (_, chrome) = predicted_chrome(&app, cx);
+                if !chrome.is_compact() {
+                    let lines = visible_diff_lines(&app, cx, height);
+                    assert!(
+                        lines >= 3.,
+                        "{lines} diff lines under the full chrome, {text}/{code} pt at 461 × {height}"
+                    );
+                }
+                height -= 3.;
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 24, window, cx));
+        cx.simulate_resize(size(px(461.), px(470.)));
+        draw(cx);
+        let ((header, actions), chrome) = predicted_chrome(&app, cx);
+        let (room, history) = cx.update(|window, cx| {
+            let tabs = window.pixel_snap(repository_tabs::tab_strip_min_height(
+                appearance::button_ring_room(cx),
+            ));
+            let status = window.pixel_snap(appearance::ui_size(26.));
+            (
+                content_size(window).height - tabs - status - header - actions,
+                app.read(cx).history_minimum(window),
+            )
+        });
+        assert!(
+            chrome.is_compact() && room >= history,
+            "{chrome:?} with {room:?} left beside History's {history:?}"
+        );
+        assert!(visible_diff_lines(&app, cx, 470.) >= 3.);
+
+        // At 18 pt the modes are one menu; choosing Split from it.
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        assert!(cx.debug_bounds("Split").is_none());
+        let menu = cx.debug_bounds("text-mode-menu").expect("the modes' menu");
+        let toolbar = cx.debug_bounds("compare-toolbar").unwrap();
+        let control = cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.)));
+        assert!(
+            toolbar.size.height <= control * 2. + px(20.),
+            "the toolbar takes two rows: {toolbar:?}"
+        );
+        cx.simulate_click(menu.center(), Modifiers::default());
+        draw(cx);
+        cx.simulate_keystrokes("down down enter");
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.text_mode == TextMode::Split));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// A 40-commit History in Working Changes with two staged new files and
