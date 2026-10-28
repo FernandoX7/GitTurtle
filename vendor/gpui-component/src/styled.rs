@@ -77,6 +77,14 @@ pub fn menu_separator(cx: &App) -> Hsla {
     cx.theme().popover_edge.unwrap_or(cx.theme().border)
 }
 
+/// GitTurtle patch: the colour of a menu label, the text that titles or
+/// explains the items around it: secondary text. Upstream drew a label as a
+/// disabled item, in the colour that says a command is unavailable, although
+/// a label acts on nothing.
+pub fn menu_label_color(cx: &App) -> Hsla {
+    cx.theme().muted_foreground
+}
+
 /// shadcn/ui's popup surface shadow — a hairline `ring` plus `shadow-md` — at
 /// `strength` of its full ink.
 ///

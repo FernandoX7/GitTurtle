@@ -1,7 +1,7 @@
 use crate::ThemeStyled as _;
 use crate::actions::{Cancel, Confirm, SelectDown, SelectUp};
 use crate::actions::{SelectLeft, SelectRight};
-use crate::menu::menu_item::MenuItemElement;
+use crate::menu::menu_item::{Entry, MenuItemElement};
 use crate::scroll::ScrollableElement;
 use crate::{ActiveTheme, ElementExt, Icon, IconName, Sizable as _, h_flex, v_flex};
 use crate::{Side, Size, kbd::Kbd};
@@ -1251,21 +1251,37 @@ impl PopupMenu {
 
         match item {
             PopupMenuItem::Separator => this
+                .entry(Entry::Separator)
                 .h_auto()
                 .p_0()
                 .my_0p5()
                 .mx_neg_1()
                 .border_b(px(2.))
-                .border_color(crate::menu_separator(cx))
-                .disabled(true),
-            PopupMenuItem::Label(label) => this.disabled(true).cursor_default().child(
-                h_flex()
-                    .cursor_default()
-                    .items_center()
-                    .gap_x_1()
-                    .children(Self::render_icon(has_left_icon, false, None, window, cx))
-                    .child(div().flex_1().child(label.clone())),
-            ),
+                .border_color(crate::menu_separator(cx)),
+            PopupMenuItem::Label(label) => {
+                // GitTurtle patch: a label is text in secondary text, not an
+                // unavailable item. Its text sets the colour it draws in, and a
+                // test build names it, because GPUI's test scene does not
+                // expose glyph colours.
+                let color = crate::menu_label_color(cx);
+                let text = label.clone();
+                this.entry(Entry::Label).cursor_default().child(
+                    h_flex()
+                        .cursor_default()
+                        .items_center()
+                        .gap_x_1()
+                        .children(Self::render_icon(has_left_icon, false, None, window, cx))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_color(color)
+                                .debug_selector(move || {
+                                    format!("menu-label: {text} · {:?}", gpui::Rgba::from(color))
+                                })
+                                .child(label.clone()),
+                        ),
+                )
+            }
             PopupMenuItem::ElementItem {
                 render,
                 icon,

@@ -548,3 +548,36 @@ hidden. How AT-SPI reports the flag is the `accesskit_atspi_common` backport's,
 covered by `native_accessibility::atspi_state_tests`. Remove this part of the
 patch when upstream menu items expose their disabled state to accessibility and
 that test passes without it.
+
+The menu-label patch modifies `src/menu/menu_item.rs`,
+`src/menu/popup_menu.rs` and `src/styled.rs`. Upstream renders a
+`PopupMenuItem::Label` and a separator as disabled menu items: a label was
+announced as one more command, which Orca counted as a fourth, dead item in
+the review Options menu, and drew in the disabled colour, so the Options
+menu's caption read 2.97:1 in Midnight and 2.19:1 in Braden, the colour of
+the disabled Reset review above it, where in the row it was secondary text at
+7.70:1 and 6.21:1. `MenuItemElement` now knows what an entry is (`Entry`): an
+item keeps upstream's roles, highlight, click and disabled look; a label is
+`Role::Label`, a separator `Role::Splitter`, which AT-SPI reports as a label and
+a separator; neither takes the highlight, the selected state or the disabled
+flag. A label draws in `menu_label_color`, the theme's `muted_foreground`, and
+its text sets that colour and names it in a debug selector (`menu-label:
+<label> · <rgba>`), because GPUI's test scene does not expose glyph colours.
+
+The consumers are every menu with a label: the review Options menu's caption
+(`crates/app/src/text_review.rs`), the project pane's row name and Move to
+heading (`project_pane.rs`), the profile menu's heading, current identity and
+notes (`profiles.rs`), the branch chooser's notes (`branch_actions.rs`), the
+model view and animation clip menus' headings (`model_view.rs`,
+`model_view/playback.rs`), the repository tab list's heading
+(`repository_tabs.rs`) and the navigator's branch and worktree context menus'
+headings (`views.rs`).
+`cargo test --locked -p gitturtle menu_labels_read_as_secondary_text_and_disabled_items_as_disabled`
+opens a menu that starts with a label and ends with a caption below a
+separator, reads both labels announced as labels and neither disabled, the
+disabled item announced disabled, and, in every built-in and embedded Omarchy
+palette, both labels' text in `muted_foreground`.
+`review_options_menu_announces_its_toggle_checked` reads the Options menu's
+caption the same way. Remove this part of the patch when upstream gives menu
+labels a non-item role and a colour distinct from a disabled item's, and those
+tests pass without it.

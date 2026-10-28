@@ -7,6 +7,19 @@ use gpui::{
 };
 use smallvec::SmallVec;
 
+/// GitTurtle patch: what a menu entry is. Upstream rendered every entry as a
+/// menu item and dimmed a label as a disabled one, so a screen reader counted
+/// a caption as one more command and the caption drew as unavailable.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Entry {
+    /// A command or choice, which acts when it is enabled.
+    Item,
+    /// Text that titles or explains the items around it and acts on nothing.
+    Label,
+    /// The rule between groups of items.
+    Separator,
+}
+
 #[derive(IntoElement)]
 pub(crate) struct MenuItemElement {
     id: ElementId,
@@ -18,6 +31,8 @@ pub(crate) struct MenuItemElement {
     /// GitTurtle patch: `Some(checked)` for a checkable item, announced as a
     /// check menu item with its state; `None` for a plain item.
     checked: Option<bool>,
+    /// GitTurtle patch: an item unless the menu says otherwise.
+    entry: Entry,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
     on_hover: Option<Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
     children: SmallVec<[AnyElement; 2]>,
@@ -35,6 +50,7 @@ impl MenuItemElement {
             disabled: false,
             selected: false,
             checked: None,
+            entry: Entry::Item,
             on_click: None,
             on_hover: None,
             children: SmallVec::new(),
@@ -50,6 +66,13 @@ impl MenuItemElement {
     /// Make the item a check menu item in the given state, or a plain one.
     pub(crate) fn checked(mut self, checked: Option<bool>) -> Self {
         self.checked = checked;
+        self
+    }
+
+    /// Render the entry as `entry`: only an item acts, takes the highlight and
+    /// is announced as a menu item.
+    pub(crate) fn entry(mut self, entry: Entry) -> Self {
+        self.entry = entry;
         self
     }
 
@@ -103,25 +126,32 @@ impl ParentElement for MenuItemElement {
 
 impl RenderOnce for MenuItemElement {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let role = if self.checked.is_some() {
-            Role::MenuItemCheckBox
-        } else {
-            Role::MenuItem
+        let item = self.entry == Entry::Item;
+        let role = match self.entry {
+            Entry::Item if self.checked.is_some() => Role::MenuItemCheckBox,
+            Entry::Item => Role::MenuItem,
+            // A label is text, and a separator AT-SPI's separator, so neither
+            // is counted or announced as one more command.
+            Entry::Label => Role::Label,
+            Entry::Separator => Role::Splitter,
         };
-        let toggled = self.checked.map(|checked| {
+        let toggled = self.checked.filter(|_| item).map(|checked| {
             if checked {
                 gpui::accesskit::Toggled::True
             } else {
                 gpui::accesskit::Toggled::False
             }
         });
-        let disabled = self.disabled;
+        // Only an item can be disabled; a label or separator acts on nothing
+        // and is not announced as unavailable.
+        let disabled = item && self.disabled;
+        let interactive = item && !self.disabled;
         let content = h_flex()
             .id(self.id)
             .role(role)
             .when_some(toggled, |this, toggled| this.aria_toggled(toggled))
             .when_some(self.aria_label, |this, label| this.aria_label(label))
-            .aria_selected(self.selected)
+            .when(item, |this| this.aria_selected(self.selected))
             .group(&self.group_name)
             .gap_x_1()
             .py_1()
@@ -135,7 +165,7 @@ impl RenderOnce for MenuItemElement {
             .when_some(self.on_hover, |this, on_hover| {
                 this.on_hover(move |hovered, window, cx| (on_hover)(hovered, window, cx))
             })
-            .when(!self.disabled, |this| {
+            .when(interactive, |this| {
                 this.group_hover(self.group_name, |this| {
                     this.bg(cx.theme().tokens.accent)
                         .text_color(cx.theme().accent_foreground)
@@ -151,8 +181,11 @@ impl RenderOnce for MenuItemElement {
                     .on_click(on_click)
                 })
             })
-            .when(self.disabled, |this| {
+            .when(disabled, |this| {
                 this.text_color(cx.theme().disabled_foreground())
+            })
+            .when(self.entry == Entry::Label, |this| {
+                this.text_color(crate::menu_label_color(cx))
             })
             .children(self.children);
         AccessibleMenuItem { content, disabled }.described()

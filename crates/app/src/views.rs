@@ -6361,6 +6361,22 @@ mod tests {
             ] {
                 assert!(cx.debug_bounds(item.clone().leak()).is_none(), "not {item}");
             }
+            // The caption the 461 px row has no room for closes the menu as
+            // text in secondary text, not as a fourth, unavailable item.
+            let caption = if checked {
+                "Review filter active · exact source retained"
+            } else {
+                "Original Git diff"
+            };
+            let muted = cx.update(|_, cx| gpui_kit::component::Theme::global(cx).muted_foreground);
+            for entry in [
+                format!("menu-item: {caption} · Label"),
+                format!("menu-label: {caption} · {:?}", gpui::Rgba::from(muted)),
+            ] {
+                assert!(cx.debug_bounds(entry.clone().leak()).is_some(), "{entry}");
+            }
+            let item = format!("menu-item: {caption} · MenuItem disabled");
+            assert!(cx.debug_bounds(item.clone().leak()).is_none(), "not {item}");
         };
         open(cx);
         items(cx, false);
@@ -6517,7 +6533,7 @@ mod tests {
     async fn narrow_review_caption_shows_whole_or_leaves_the_row(cx: &mut TestAppContext) {
         use crate::text_review::collapsed_caption_width;
         const CAPTION: &str = "Original Git diff";
-        const IN_MENU: &str = "menu-item: Original Git diff · MenuItem disabled";
+        const IN_MENU: &str = "menu-item: Original Git diff · Label";
         let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         settle(&app, cx).await;
