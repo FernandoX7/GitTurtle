@@ -65,6 +65,16 @@ Current semantics and focused fixture commands are documented in [authentication
 
 The [CI workflow](../.github/workflows/quality.yml) configures locked workspace tests and strict all-target Clippy on macOS 15 and Ubuntu 24.04, formatting, and release compilation/package checks on macOS 26 and Ubuntu 24.04. Python guidance/controller checks run on macOS 15 and Ubuntu 24.04. Disposable package checks cover identity, notices and applicable installation, ELF or Mach-O verification; diagnostics are uploaded, while [binary artifacts](ci-artifacts.md) require complete notices. [Actual hosted results](benchmarks/2026-09-15-ci.md) remain distinct from configured coverage and from physical-desktop, screen-reader, native-package or distribution acceptance.
 
+## October 27 the owed light-palette frames: hover lifts in both light palettes, presses unchanged
+
+The frames [the light-palette entry](#october-27-light-palettes-hover-stands-off-subtle-and-pressed-ghost-buttons-take-selected) left open, captured with the window forced opaque.
+
+- **Host and capture:** Asahi Omarchy on an Apple M2 Pro, Hyprland 0.56, native Wayland at scale 2; release builds; notifications silenced; windows forced opaque; empty XDG homes; floating 1,480 × 980 at 13 pt; `wording-remote` fixture (a local origin, so Fetch is enabled); pressed controls held with the pointer and released 200 px below. Steps `.local/item8-2026-10-27/tools/steps/owed-*.sh` (local).
+- **Builds:** `f57a514` (sha256 `d4c79c9c…`), `63414e3` (`builtin-light-hover-lift`, sha256 `e34544cf…`) and `0dd91c0` (the product code of `c7ad38f`, pressed ghost fill; sha256 `d8415e14…`).
+- **Results:** the History row hovered beside the selected row lifts in both light palettes from `f57a514` to `63414e3`: Braden #e7ecf3 → #e3e8ef (1.097 → 1.138:1 against the page #f4f6fa) and One Light #f1f1f3 → #e7e7e9 (1.081 → 1.183:1 against #fafafa); nothing else in the row moves. From `63414e3` to `0dd91c0`, pressed Fetch (Braden, Rosé Pine Dawn, Midnight), the repository tab's close button pressed and hovered, and the Reflog are pixel-identical apart from the status bar's timing, so `c7ad38f` changes none of them; the Reflog's current entry carries no fill. The later deeper press in Braden and Rosé Pine Dawn (`f68069c`) is recorded in [its own entry](#october-27-one-disabled-dim-at-31-neutral-disabled-primaries-141-popup-edges-and-a-deeper-press).
+- **Review:** measured by the coordinator from the frames (pixel differences and fills); fixture data only. Not covered: the toolkit's own ghost controls outside these screens.
+- **Evidence:** [`docs/evidence/light-hover-pressed-owed/`](evidence/light-hover-pressed-owed/), the hovered row before (top) and after (bottom) in Braden and One Light.
+
 ## October 27 narrow History folds its references and keeps a subject column
 
 Item 9, owner decision of 2026-10-27 late night: `f5e70d3` folds References into one pill at the subject's start below a measured width (HEAD's branch first, then "+N"; the list in the row's tooltip and accessible name), gives the graph a compact lane pitch and keeps a subject floor (112.75 px at 13 pt, 151.5 px at 18 pt), leaving the saved columns untouched.
