@@ -129,6 +129,9 @@ pub struct NarrowHistory {
     /// The graph at its compact lane pitch: every loaded lane, and one lane.
     pub graph: f32,
     pub graph_min: f32,
+    /// The compact lane pitch. The graph takes whole lanes, so none is cut
+    /// at its edge, and the room short of the next lane is the subject's.
+    pub pitch: f32,
     /// The room the folded references' compact pill and its gap take at the
     /// subject's start, zero where no row has references. Narrow History's
     /// subject cell keeps its floor beside it.
@@ -280,6 +283,8 @@ impl ColumnSettings {
         // Folded, the subject cell keeps its floor beside the compact pill.
         let floor = floor + narrow.pill;
         let graph = narrow.graph.min(viewport - floor).max(narrow.graph_min);
+        let lanes = ((graph - narrow.graph_min) / narrow.pitch.max(1.) + 1e-4).floor();
+        let graph = narrow.graph_min + lanes * narrow.pitch;
         let mut columns: Vec<_> = chosen
             .columns
             .into_iter()
@@ -395,6 +400,7 @@ mod tests {
         subject_floor: 120.,
         graph: 30.,
         graph_min: 20.,
+        pitch: 10.,
         pill: 0.,
         trailing_inset: 10.75,
     };
@@ -457,15 +463,21 @@ mod tests {
         assert!(!settings.history_layout(edge, 40., NARROW).narrow);
         assert!(settings.history_layout(edge - 0.5, 40., NARROW).narrow);
         // Folded, the subject cell keeps its floor beside the compact pill,
-        // and the graph yields that room first. The fold itself depends on
-        // the floor alone, since the chosen columns' subject has no pill.
+        // and the graph yields that room first, in whole lanes: 26 px holds
+        // one 10 px lane and not a second, so the graph takes one and the
+        // subject the rest. The fold itself depends on the floor alone,
+        // since the chosen columns' subject has no pill.
         let pill = NarrowHistory {
             pill: 24.,
             ..NARROW
         };
         let folded = settings.history_layout(170. - 10.75, 40., pill);
-        assert_eq!(width(&folded, ColumnId::Graph), Some(26.));
-        assert_eq!(width(&folded, ColumnId::Subject), Some(144.));
+        assert_eq!(width(&folded, ColumnId::Graph), Some(20.));
+        assert_eq!(width(&folded, ColumnId::Subject), Some(150.));
+        // Room for the second lane takes it.
+        let two = settings.history_layout(174. - 10.75, 40., pill);
+        assert_eq!(width(&two, ColumnId::Graph), Some(30.));
+        assert_eq!(width(&two, ColumnId::Subject), Some(144.));
         assert!(!settings.history_layout(edge, 40., pill).narrow);
         assert!(settings.history_layout(edge - 0.5, 40., pill).narrow);
         assert_eq!(settings, saved, "the saved columns are untouched");

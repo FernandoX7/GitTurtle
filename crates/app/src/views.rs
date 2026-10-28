@@ -1530,6 +1530,7 @@ impl GitTurtle {
                 subject_floor: metrics.subject_floor,
                 graph: graph::required_width(self.graph_lanes, compact),
                 graph_min: graph::required_width(1, compact),
+                pitch: compact,
                 pill: metrics.pill_room(),
                 trailing_inset: metrics.trailing,
             },
@@ -8785,6 +8786,141 @@ pub(crate) mod tests {
     /// commit and a main commit from the last of them and a merge of both on
     /// `main`, so the graph has two lanes. The merge carries four
     /// references, HEAD's branch second in Git's order; the side commit one.
+    /// Three branches from one root, `alpha`, `beta` and `main` a commit
+    /// ahead of it each, and an octopus merge of the three on `main`: History
+    /// draws three lanes side by side.
+    fn lanes_script() -> String {
+        let mut input = String::new();
+        for (mark, reference, message, parents) in [
+            (1, "main", "Root", &[][..]),
+            (2, "alpha", "Alpha work", &[1][..]),
+            (3, "beta", "Beta work", &[1][..]),
+            (4, "main", "Main work", &[][..]),
+            (5, "main", "Merge alpha and beta", &[2, 3][..]),
+        ] {
+            input.push_str(&format!(
+                "commit refs/heads/{reference}\nmark :{mark}\ncommitter Fixture <fixture@example.invalid> {} +0000\ndata {}\n{message}\n",
+                1_700_000_000 + mark,
+                message.len(),
+            ));
+            for (position, parent) in parents.iter().enumerate() {
+                if mark == 5 || position > 0 {
+                    input.push_str(&format!("merge :{parent}\n"));
+                } else {
+                    input.push_str(&format!("from :{parent}\n"));
+                }
+            }
+            input.push_str(&format!("M 100644 inline notes.txt\ndata 2\n{mark}\n\n"));
+        }
+        input + "done\n"
+    }
+
+    /// Narrow History's graph holds whole lanes only: at 461 × 490 and
+    /// 640 × 680, at 13 and 18 pt, the graph column is a whole number of
+    /// compact lanes wide, every node drawn lies whole inside its row's graph
+    /// cell, unclipped, and a node is drawn for every row whose lane the
+    /// column holds and for no other. The graph was given whatever the floor
+    /// left, about 29 px at 461 × 490, where one lane fits, and drew the next
+    /// lanes' nodes cut at its edge.
+    #[gpui::test]
+    async fn narrow_history_draws_whole_lanes_only(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &lanes_script()).await;
+        assert_eq!(app.read_with(cx, |app, _| app.graph_lanes), 3);
+        let rows = app.read_with(cx, |app, _| {
+            app.visible
+                .iter()
+                .map(|&index| (index, app.graph[index].lane))
+                .collect::<Vec<_>>()
+        });
+        assert!(rows.iter().any(|(_, lane)| *lane == 2), "{rows:?}");
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for (width, height) in [(461., 490.), (640., 680.)] {
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let at = format!("{width} × {height} at {text} pt");
+                let (layout, offset) = cx.update(|_, cx| {
+                    let app = app.read(cx);
+                    let rows = app.history_rows(cx);
+                    (app.history_column_layout(), rows.lane_offset)
+                });
+                assert!(layout.narrow, "{at}");
+                let pitch = graph::compact_spacing(app.read_with(cx, |app, _| app.lane_spacing()));
+                let column = cx.debug_bounds("history-column-1").unwrap();
+                let lanes =
+                    (f32::from(column.size.width) - graph::required_width(1, pitch)) / pitch;
+                assert!(
+                    // Layout rounds the column to half a device pixel.
+                    ((lanes - lanes.round()) * pitch).abs() <= 0.5,
+                    "whole lanes of {pitch} px {at}: {column:?}"
+                );
+                let held = lanes.round() as usize + 1;
+                let list = cx.debug_bounds("history-pane").unwrap();
+                let mut beyond = 0;
+                for &(row, lane) in &rows {
+                    // The rows the list shows whole.
+                    let Some(cell) = bounds_of(
+                        cx,
+                        format!("history-cell-{row}-{}", ColumnId::Graph as usize),
+                    )
+                    .filter(|cell| cell.top() >= list.top() && cell.bottom() <= list.bottom()) else {
+                        continue;
+                    };
+                    beyond += usize::from(lane >= offset + held);
+                    let nodes: Vec<_> = cx.update(|window, _| {
+                        let scale = window.scale_factor();
+                        let logical = |device: gpui_kit::ScaledPixels| device.as_f32() / scale;
+                        window
+                            .painted_quads()
+                            .into_iter()
+                            .filter(|quad| {
+                                let (w, h) = (
+                                    logical(quad.bounds.size.width),
+                                    logical(quad.bounds.size.height),
+                                );
+                                let y = logical(quad.bounds.top()) + h / 2.;
+                                let x = logical(quad.bounds.left()) + w / 2.;
+                                (w - h).abs() < 0.6
+                                    && (7.5..=10.1).contains(&w)
+                                    && (logical(quad.corner_radii.top_left) - w / 2.).abs() < 0.6
+                                    && f32::from(cell.top()) <= y
+                                    && y < f32::from(cell.bottom())
+                                    && f32::from(cell.left()) - 10. <= x
+                                    && x <= f32::from(cell.right()) + 10.
+                            })
+                            .map(|quad| (quad.bounds, quad.content_mask.bounds, scale))
+                            .collect()
+                    });
+                    let shown = (offset..offset + held).contains(&lane);
+                    assert_eq!(
+                        nodes.len(),
+                        usize::from(shown),
+                        "row {row} on lane {lane}, lanes {offset}..{} held {at}: {nodes:?}",
+                        offset + held
+                    );
+                    for (node, mask, scale) in nodes {
+                        let left = node.left().as_f32() / scale;
+                        let right = node.right().as_f32() / scale;
+                        assert!(
+                            left >= f32::from(cell.left()) - 0.01
+                                && right <= f32::from(cell.right()) + 0.01
+                                && node.left() >= mask.left()
+                                && node.right() <= mask.right(),
+                            "row {row}'s node {left}–{right} whole in {cell:?} {at}"
+                        );
+                    }
+                }
+                if held < 3 {
+                    assert!(
+                        beyond > 0,
+                        "a shown row on a lane the column cannot hold {at}"
+                    );
+                }
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     fn references_script(linear: usize) -> String {
         let mut input = String::new();
         let mut commit = |reference: &str,
@@ -8987,9 +9123,14 @@ pub(crate) mod tests {
                 // pill leave.
                 let compact = graph::compact_spacing(spacing);
                 assert!(compact < spacing, "{at}");
-                let expected = graph::required_width(lanes, compact)
+                // In whole lanes: the room short of the next is the subject's.
+                let room = graph::required_width(lanes, compact)
                     .min(available - floor)
                     .max(graph::required_width(1, compact));
+                let expected = graph::required_width(
+                    graph::visible_lane_capacity(room + 1e-3, compact),
+                    compact,
+                );
                 let column = cx.debug_bounds("history-column-1").unwrap();
                 assert!(
                     (f32::from(column.size.width) - expected).abs() < 0.5

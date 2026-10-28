@@ -1,8 +1,8 @@
 use crate::appearance::{Palette, palette};
 use gitturtle_core::Commit;
 use gpui_kit::{
-    AnyElement, App, Bounds, IntoElement, ParentElement, PathBuilder, Styled, canvas, div, point,
-    px, quad, rgb, size,
+    AnyElement, App, Bounds, ContentMask, IntoElement, ParentElement, PathBuilder, Styled, canvas,
+    div, point, px, quad, rgb, size,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -276,9 +276,11 @@ fn layout_page<E>(
 
 /// A shared horizontal lane viewport keeps true spacing and continuous edges
 /// across every visible row. Clipping is explicit; lanes are never compressed
-/// into indistinguishable pixels to accommodate offscreen ancestry.
+/// into indistinguishable pixels to accommodate offscreen ancestry. A width
+/// of whole lanes, as narrow History's, holds every one of them, rounding
+/// aside.
 pub fn visible_lane_capacity(width: f32, lane_spacing: f32) -> usize {
-    (((width - NODE_MARGIN * 2.).max(0.) / lane_spacing.max(1.)).floor() as usize + 1).max(1)
+    (((width - NODE_MARGIN * 2.).max(0.) / lane_spacing.max(1.) + 1e-3).floor() as usize + 1).max(1)
 }
 
 fn lane_x(width: f32, lane_offset: usize, lane: usize, lane_spacing: f32) -> f32 {
@@ -304,6 +306,8 @@ pub fn render(
         merge,
         filtered,
     } = style;
+    // The lanes the cell holds whole, from `lane_offset`.
+    let last = lane_offset + visible_lane_capacity(width, lane_spacing) - 1;
     div()
         .w(px(width))
         .h(px(row_height))
@@ -320,37 +324,53 @@ pub fn render(
                     let top = bounds.origin.y;
                     let middle = top + bounds.size.height / 2.;
                     let bottom = top + bounds.size.height;
-                    if !filtered {
-                        // Curves meet adjacent rows at exact lane coordinates with
-                        // vertical tangents, including collapsing lanes.
-                        for edge in row.edges.iter() {
-                            let start =
-                                point(x(edge.from), if edge.from_node { middle } else { top });
-                            let end = point(x(edge.to), bottom);
-                            let distance = end.y - start.y;
-                            let mut path = PathBuilder::stroke(px(1.6));
-                            path.move_to(start);
-                            path.cubic_bezier_to(
-                                end,
-                                point(start.x, start.y + distance * 0.5),
-                                point(end.x, end.y - distance * 0.5),
-                            );
-                            if let Ok(path) = path.build() {
-                                window.paint_path(path, rgb(colors[edge.color % colors.len()]));
+                    // Strokes end half a pitch past the lanes the cell holds,
+                    // short of the next lane's node and line, so a lane the
+                    // cell has no room for shows no cut node or line at its
+                    // edge; an edge to it leaves toward it.
+                    let half = px(lane_spacing / 2.);
+                    let band = Bounds::from_corners(
+                        point(x(lane_offset) - half, top),
+                        point(x(last) + half, bottom),
+                    );
+                    window.with_content_mask(Some(ContentMask { bounds: band }), |window| {
+                        if !filtered {
+                            // Curves meet adjacent rows at exact lane coordinates with
+                            // vertical tangents, including collapsing lanes.
+                            for edge in row.edges.iter() {
+                                let start =
+                                    point(x(edge.from), if edge.from_node { middle } else { top });
+                                let end = point(x(edge.to), bottom);
+                                let distance = end.y - start.y;
+                                let mut path = PathBuilder::stroke(px(1.6));
+                                path.move_to(start);
+                                path.cubic_bezier_to(
+                                    end,
+                                    point(start.x, start.y + distance * 0.5),
+                                    point(end.x, end.y - distance * 0.5),
+                                );
+                                if let Ok(path) = path.build() {
+                                    window.paint_path(path, rgb(colors[edge.color % colors.len()]));
+                                }
+                            }
+                            if row.incoming {
+                                let mut path = PathBuilder::stroke(px(1.6));
+                                path.move_to(point(x(row.lane), top));
+                                path.line_to(point(x(row.lane), middle));
+                                if let Ok(path) = path.build() {
+                                    window.paint_path(path, rgb(colors[row.color % colors.len()]));
+                                }
                             }
                         }
-                        if row.incoming {
-                            let mut path = PathBuilder::stroke(px(1.6));
-                            path.move_to(point(x(row.lane), top));
-                            path.line_to(point(x(row.lane), middle));
-                            if let Ok(path) = path.build() {
-                                window.paint_path(path, rgb(colors[row.color % colors.len()]));
-                            }
-                        }
-                    }
+                    });
                     // Search results are discontinuous history: isolated nodes do
                     // not imply parent relationships across hidden rows.
-                    let center = point(x(if filtered { 0 } else { row.lane }), middle);
+                    let lane = if filtered { 0 } else { row.lane };
+                    // A node only on a lane the cell holds whole.
+                    if !(lane_offset..=last).contains(&lane) {
+                        return;
+                    }
+                    let center = point(x(lane), middle);
                     let color = rgb(colors[row.color % colors.len()]);
                     let radius = if active {
                         5.
