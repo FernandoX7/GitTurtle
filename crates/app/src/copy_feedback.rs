@@ -155,7 +155,7 @@ pub(crate) fn copy_button(
     cx: &App,
 ) -> Button {
     let copied = copied(&mark, cx);
-    let id = mark.control;
+    let id = mark.control.clone();
     let label = label.into();
     let tooltip = tooltip.into();
     let labelled = !label.is_empty();
@@ -210,17 +210,40 @@ pub(crate) fn copy_button(
     if labelled {
         // The content is drawn text, which names nothing.
         button = button.accessibility_label(label);
+        return if tooltip.is_empty() {
+            button
+        } else {
+            button.tooltip(tooltip)
+        };
     }
-    let tooltip = if copied && !labelled {
-        COPIED.into()
-    } else {
-        tooltip
-    };
     if tooltip.is_empty() {
-        button
-    } else {
-        button.tooltip(tooltip)
+        return if copied {
+            button.tooltip(COPIED)
+        } else {
+            button
+        };
     }
+    // An icon-only button says Copied in its tooltip, built as the tooltip
+    // renders, so one already shown changes with the mark; and the press that
+    // copies leaves it shown, or still showing after its delay, while the
+    // pointer stays on the button.
+    button
+        .tooltip_through_press()
+        .tooltip_view(move |window, cx| {
+            let (text, state) = if self::copied(&mark, cx) {
+                (SharedString::from(COPIED), "copied")
+            } else {
+                (tooltip.clone(), "rest")
+            };
+            let probe = id.clone();
+            Tooltip::element(move |_, _| {
+                let probe = probe.clone();
+                div()
+                    .debug_selector(move || format!("{probe}/tooltip/{state}"))
+                    .child(text.clone())
+            })
+            .build(window, cx)
+        })
 }
 
 /// The polite status node announcing the latest copy in `window`, drawn once
@@ -561,6 +584,62 @@ pub(crate) mod tests {
             wait(cx, RESTORE_AFTER);
             assert_eq!(shows(cx, label), Shows::Rest);
         }
+    }
+
+    /// An icon-only copy button says Copied in its tooltip while the pointer
+    /// stays on it. The kit hid a tooltip on mouse down until the pointer
+    /// left and came back, so no tooltip followed a click on the compact
+    /// inspector's Hash (18 pt in 461 × 490), even after a small move, and a
+    /// shown tooltip kept the words it had when the pointer entered. A shown
+    /// tooltip now reads Copied from the click and its own words again after
+    /// the 1.5 s; a click before its delay is up shows Copied once it is.
+    #[gpui::test]
+    fn an_icon_only_copy_says_copied_in_its_tooltip_while_hovered(cx: &mut TestAppContext) {
+        let (_app, cx) = history(cx, vec![commit("a", "Selected title", "Body.")]);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let hash = cx.debug_bounds("copy-commit").unwrap();
+        assert_eq!(
+            hash.size.width,
+            appearance::ui_size(28.).ceil(),
+            "Hash is its icon"
+        );
+        let tooltip = |cx: &mut VisualTestContext| match (
+            cx.debug_bounds("copy-commit/tooltip/rest"),
+            cx.debug_bounds("copy-commit/tooltip/copied"),
+        ) {
+            (None, None) => None,
+            (Some(_), None) => Some(Shows::Rest),
+            (None, Some(_)) => Some(Shows::Copied),
+            both => panic!("two tooltips: {both:?}"),
+        };
+        cx.simulate_mouse_move(hash.center(), None, Modifiers::default());
+        wait(cx, Duration::from_millis(600));
+        assert_eq!(tooltip(cx), Some(Shows::Rest), "hovered");
+        cx.simulate_click(hash.center(), Modifiers::default());
+        draw(cx);
+        assert_eq!(shows(cx, "copy-commit"), Shows::Copied);
+        assert_eq!(tooltip(cx), Some(Shows::Copied), "clicked");
+        wait(cx, Duration::from_millis(1000));
+        assert_eq!(tooltip(cx), Some(Shows::Copied), "still on the button");
+        wait(cx, RESTORE_AFTER - Duration::from_millis(1000));
+        assert_eq!(shows(cx, "copy-commit"), Shows::Rest);
+        assert_eq!(tooltip(cx), Some(Shows::Rest), "reverted");
+
+        // Away, then back and clicked at once, within the tooltip's delay.
+        cx.simulate_mouse_move(point(px(4.), px(4.)), None, Modifiers::default());
+        wait(cx, Duration::from_millis(600));
+        assert_eq!(tooltip(cx), None, "left");
+        cx.simulate_mouse_move(hash.center(), None, Modifiers::default());
+        cx.simulate_click(hash.center(), Modifiers::default());
+        draw(cx);
+        assert_eq!(shows(cx, "copy-commit"), Shows::Copied);
+        assert_eq!(tooltip(cx), None, "within the delay");
+        wait(cx, Duration::from_millis(600));
+        assert_eq!(tooltip(cx), Some(Shows::Copied), "after the delay");
+        wait(cx, RESTORE_AFTER);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// A second click restarts the time, so Hash still reads Copied after the

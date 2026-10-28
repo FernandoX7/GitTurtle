@@ -223,6 +223,8 @@ pub struct Button {
         Option<(Rc<Box<dyn gpui::Action>>, Option<SharedString>)>,
     )>,
     tooltip_builder: Option<Rc<dyn Fn(&mut Window, &mut App) -> gpui::AnyView>>,
+    /// GitTurtle patch: whether a press leaves the tooltip shown.
+    tooltip_through_press: bool,
     on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     on_hover: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
     loading: bool,
@@ -268,6 +270,7 @@ impl Button {
             size: Size::Medium,
             tooltip: None,
             tooltip_builder: None,
+            tooltip_through_press: false,
             on_click: None,
             focus_ring_enabled: true,
             on_hover: None,
@@ -376,6 +379,33 @@ impl Button {
     /// Set the tooltip of the button.
     pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
         self.tooltip = Some((tooltip.into(), None));
+        self
+    }
+
+    /// Set the tooltip of the button as a view built each time the tooltip
+    /// renders, so it follows state that changes while it is shown; it
+    /// replaces a [`Self::tooltip`] text.
+    ///
+    /// GitTurtle patch: upstream keeps this builder without a setter, and a
+    /// text tooltip is captured when the pointer enters, so it kept its words
+    /// while shown.
+    pub fn tooltip_view(
+        mut self,
+        build: impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static,
+    ) -> Self {
+        self.tooltip_builder = Some(Rc::new(build));
+        self
+    }
+
+    /// Keep the tooltip through a press: one shown stays, and one waiting
+    /// out its delay still shows while the pointer stays on the button.
+    /// Default hides it on mouse down until the pointer leaves and enters
+    /// again.
+    ///
+    /// GitTurtle patch: a copy button answers its press in its tooltip
+    /// ("Copied"), which the press itself hid.
+    pub fn tooltip_through_press(mut self) -> Self {
+        self.tooltip_through_press = true;
         self
     }
 
@@ -841,10 +871,13 @@ impl RenderOnce for Button {
             })
         })
         .map(|this| {
+            let hide_on_press = !self.tooltip_through_press;
             if let Some(builder) = self.tooltip_builder {
-                this.managed_tooltip(move |window, cx| builder(window, cx))
+                this.managed_tooltip_with_placement(None, hide_on_press, move |window, cx| {
+                    builder(window, cx)
+                })
             } else if let Some((tooltip, action)) = self.tooltip {
-                this.managed_tooltip(move |window, cx| {
+                this.managed_tooltip_with_placement(None, hide_on_press, move |window, cx| {
                     Tooltip::new(tooltip.clone())
                         .when_some(action.clone(), |this, (action, context)| {
                             this.action(

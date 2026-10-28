@@ -207,6 +207,34 @@ inspection. Remove this part of the patch when upstream Tooltip keeps a popup
 wider than the window inside it, or its positioner constrains the popup's
 width.
 
+The tooltip-through-press patch modifies `src/tooltip.rs` and
+`src/button/button.rs`. Upstream's managed tooltip hides on mouse down, shown or
+still waiting out its delay, and asks for it again only when the hover changes,
+so after a click the tooltip stays hidden until the pointer leaves and enters
+again; a small move inside the trigger does not bring it back. A text tooltip
+is also built from the words the Button had when the pointer entered, so one
+already shown kept them. An icon-only copy button answers its press in its
+tooltip ("Copied", `DESIGN.md`'s copy feedback), which the press itself hid.
+`ManagedTooltipExt::managed_tooltip_with_placement` gains `hide_on_press`, true
+for every existing caller. `Button::tooltip_through_press` sets it false, so a
+press leaves the tooltip shown, or still showing once its delay is up, while
+the pointer stays on the Button. `Button::tooltip_view` sets the existing
+`tooltip_builder`, which upstream keeps without a setter: the overlay calls it
+each time the tooltip renders, so its content follows state that changes while
+it is shown. Buttons that set neither behave as before.
+
+The consumer is `copy_feedback::copy_button` (`crates/app/src/copy_feedback.rs`)
+for an icon-only copy button, such as the compact inspector's Hash and Copy
+message and the Compare header's copy-path icon.
+`cargo test --locked -p gitturtle an_icon_only_copy_says_copied_in_its_tooltip_while_hovered`
+hovers the compact Hash at 18 pt in a 461 × 490 window until its tooltip shows,
+clicks it, and requires the tooltip to read Copied through the 1.5 s and its own
+words after, then clicks it within the tooltip's delay and requires Copied once
+the delay is up. It fails with the press hiding the tooltip and with the text
+fixed when the pointer entered. Remove this part of the patch when upstream lets
+a trigger keep its tooltip through a press and builds a shown tooltip's content
+as it renders.
+
 The disabled-switch patch modifies `src/switch.rs`. Upstream Switch fades a
 disabled Switch's track to half opacity (`disabled_bg`) and paints its thumb in
 `switch_thumb` at full strength. Its comment reasoned that the thumb is
