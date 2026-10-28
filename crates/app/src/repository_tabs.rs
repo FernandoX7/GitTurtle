@@ -4290,8 +4290,12 @@ mod tests {
         draw(cx);
 
         // The Reflog list.
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_reflog_browser(window, cx)));
-        wait_for(cx, "reflog-entry-0");
+        // The Reflog reads on a thread of its own; its browser waits for that
+        // read to land rather than for wall-clock time.
+        let browser =
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_reflog_browser(window, cx)));
+        crate::focus_ring::sweep::Opened::finish(browser, cx);
+        draw(cx);
         let entry = rendered(cx, "reflog-entry-0");
         assert_room(
             "the Reflog list",

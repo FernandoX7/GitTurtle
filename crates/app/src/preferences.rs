@@ -1022,6 +1022,15 @@ pub(super) fn test_settings_directory() -> std::sync::Arc<tempfile::TempDir> {
     })
 }
 
+/// Gives this thread a new, empty settings directory. A `#[gpui::test]` runs
+/// every seed on one thread, so the next seed's window would otherwise read
+/// the stores the last one saved, its recent projects among them. Executors
+/// started before keep the directory they inherited until they finish.
+#[cfg(test)]
+pub(super) fn fresh_test_settings_directory() {
+    TEST_SETTINGS_DIRECTORY.with(|directory| directory.borrow_mut().take());
+}
+
 #[cfg(test)]
 pub(super) fn inherit_test_settings_directory(directory: std::sync::Arc<tempfile::TempDir>) {
     TEST_SETTINGS_DIRECTORY.with(|current| *current.borrow_mut() = Some(directory));

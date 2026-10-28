@@ -6279,6 +6279,10 @@ pub(crate) mod tests {
         };
 
         cx.executor().allow_parking();
+        // Every run starts from empty stores, each seed of a `#[gpui::test]`
+        // included: seeds share their thread, and with it the last seed's
+        // recent projects, which the project hub then listed.
+        preferences::fresh_test_settings_directory();
         cx.update(|cx| {
             gpui_kit::init(cx);
             image_lifetime::init(cx);
