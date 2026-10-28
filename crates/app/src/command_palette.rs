@@ -910,7 +910,12 @@ impl Render for Palette {
                             .aria_size_of_set(this.results.len())
                             .w_full()
                             .h(crate::appearance::ui_size(54.))
-                            .px_3()
+                            // The list's 1 px border and this padding start
+                            // the row's text where the query field above
+                            // starts its own, at every interface size; the
+                            // kit's 0.75 rem put it 3.5 px right of the
+                            // field's text at 18 pt.
+                            .px(crate::appearance::FIELD_TEXT_PADDING)
                             .py_2()
                             .flex()
                             .flex_col()

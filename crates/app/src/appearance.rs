@@ -128,6 +128,27 @@ pub fn ui_scale() -> f32 {
 pub fn ui_size(base: f32) -> Pixels {
     px(base * ui_scale())
 }
+/// The layout grid's insets (DESIGN.md, "One left edge"): where a panel's
+/// text starts in from its content edge, and what a box at that edge (a
+/// compact Button, a field) puts between its own edge and its text. A
+/// compact Button's label inset is `crate::LABEL_INSET` beside the `button`
+/// helper. `layout_grid` measures every panel against them.
+///
+/// A pane's content edge, in from its side, at the default interface size:
+/// the kit's 0.75 rem, so its section labels, rows' leading icons, fields'
+/// boxes and Buttons' frames stand at `ui_size(PANE_INSET)`.
+pub const PANE_INSET: f32 = 9.75;
+
+/// The kit's medium Input pads its text this far inside its 1 px border at
+/// every interface size; rows in a bordered list under a field pad their
+/// text as much, so they start where the field's text does.
+pub const FIELD_TEXT_PADDING: Pixels = px(10.);
+
+/// Where a medium Input's text and placeholder start, in from its outer
+/// edge: its 1 px border and [`FIELD_TEXT_PADDING`]. Text that lines up with
+/// a field beside it starts here, as the Reflog's does.
+pub const FIELD_TEXT_INSET: Pixels = px(11.);
+
 pub fn ui_text(base: f32) -> Pixels {
     ui_size(base)
 }

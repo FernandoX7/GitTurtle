@@ -31,6 +31,8 @@ mod image_compare;
 mod image_lifetime;
 mod integration;
 mod interactive_rebase;
+#[cfg(test)]
+mod layout_grid;
 mod lfs_download;
 mod local_refresh;
 mod markdown_view;

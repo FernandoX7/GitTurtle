@@ -703,6 +703,9 @@ impl GitTurtle {
             .border_r_1()
             .border_color(rgb(colors.border))
             .child(
+                // The mode Buttons' frames stand at the pane's edge, where
+                // the filter's box, the section labels and the rows' icons
+                // do; their labels start a label inset in.
                 div()
                     .min_h(crate::appearance::ui_size(40.))
                     .py_1()
@@ -711,7 +714,7 @@ impl GitTurtle {
                     .flex_wrap()
                     .items_center()
                     .gap_1()
-                    .px_2()
+                    .px(crate::appearance::ui_size(crate::appearance::PANE_INSET))
                     .children(
                         [
                             (NavMode::Local, "Local"),
@@ -732,7 +735,7 @@ impl GitTurtle {
             )
             .child(
                 div()
-                    .px_3()
+                    .px(crate::appearance::ui_size(crate::appearance::PANE_INSET))
                     .pb_3()
                     .child(Input::new(&self.nav_search).aria_label("Filter branches and worktrees").text_size(crate::appearance::ui_text(11.))),
             )
@@ -779,7 +782,7 @@ impl GitTurtle {
             return div()
                 .w_full()
                 .h(crate::appearance::ui_size(30.))
-                .px_3()
+                .px(crate::appearance::ui_size(crate::appearance::PANE_INSET))
                 .pt_2()
                 .flex()
                 .items_center()
@@ -820,7 +823,7 @@ impl GitTurtle {
                 ))
                 .w_full()
                 .h(crate::appearance::ui_size(30.))
-                .pl(px(12. + *depth as f32 * 12.))
+                .pl(nav_row_inset(*depth, self.nav_cursor == Some(index)))
                 .pr_3()
                 .flex()
                 .items_center()
@@ -916,7 +919,7 @@ impl GitTurtle {
             .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
             .w_full()
             .h(crate::appearance::ui_size(30.))
-            .pl(px(12. + depth as f32 * 12.))
+            .pl(nav_row_inset(depth, self.nav_cursor == Some(index)))
             .pr_3()
             .flex()
             .items_center()
@@ -1968,6 +1971,7 @@ impl GitTurtle {
                 .into_any_element();
         };
         div()
+            .debug_selector(|| "commit-inspector".into())
             .size_full()
             .min_w_0()
             .flex()
@@ -3559,6 +3563,17 @@ fn compare_toolbar_height(column: Pixels, column_min: Pixels, window: &Window) -
         control + gap + height
     };
     (rem * 0.25 * 2. + rows + px(1.)).max(appearance::ui_size(42.))
+}
+
+/// Where a navigation row starts its first glyph: at the pane's edge, where
+/// the section labels start, then 12 px further per tree level. The
+/// keyboard cursor's 2 px left border takes its width from the inset, so the
+/// row's content stays put as the cursor reaches it; it was a fixed 12 px,
+/// 2.25 px right of the section labels at 13 pt and 1.5 px left of them at
+/// 18 pt, and the cursor's row moved 2 px further right.
+fn nav_row_inset(depth: usize, cursor: bool) -> Pixels {
+    appearance::ui_size(appearance::PANE_INSET) + px(depth as f32 * 12.)
+        - if cursor { px(2.) } else { px(0.) }
 }
 
 /// The space beside the collapsed text modes' label, at the default

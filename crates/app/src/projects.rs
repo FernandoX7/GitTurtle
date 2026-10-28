@@ -498,6 +498,7 @@ impl ProjectHub {
         let query = self.search.read(cx).value();
         let searching = !query.trim().is_empty();
         div()
+            .debug_selector(|| "project-hub-recent".into())
             .flex_1()
             .min_w_0()
             .h_full()
@@ -628,6 +629,7 @@ impl ProjectHub {
             ),
         };
         div()
+            .debug_selector(|| "project-hub-action".into())
             .w(px(400.))
             .flex_shrink_0()
             .h_full()

@@ -28,7 +28,7 @@ use gpui_kit::{ScaledPixels, Styled as _};
 use std::collections::BTreeSet;
 
 /// Behind every text run: a hue nothing in the app paints, almost clear.
-fn text_mark() -> Hsla {
+pub(crate) fn text_mark() -> Hsla {
     hsla(0.123, 0.987, 0.456, 0.004)
 }
 
@@ -52,7 +52,7 @@ enum Rule {
 
 /// The pages the walk lays out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Page {
+pub(crate) enum Page {
     History,
     CompareText,
     CompareImage,
@@ -201,7 +201,7 @@ struct Finding {
 
 /// One frame, as `views::tests::draw` draws three: the walk lays each
 /// width out in two, the second after its measured widths settle.
-fn frame(cx: &mut VisualTestContext) {
+pub(crate) fn frame(cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
@@ -530,7 +530,37 @@ fn fixture_script() -> Vec<u8> {
 /// Walks `page` at `text` pt in a window on the fixture, its every text run
 /// and shared control marked.
 async fn walk(page: Page, text: u8, cx: &mut TestAppContext) {
-    let (_fixture, app, cx) =
+    let (_fixture, app, cx, path) = open(page, cx).await;
+    cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+    let mut walk = Walk {
+        page,
+        text,
+        app: &app,
+        path,
+        findings: Vec::new(),
+        layouts: 0,
+    };
+    for height in [490., 980.] {
+        walk.walk(height, cx);
+    }
+    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    walk.verdict();
+}
+
+/// A window on the fixture in Midnight, its every text run and shared
+/// control marked, showing `page` once its reads settle, and the path
+/// Compare shows there. The layout grid (`layout_grid`) lays its pages out
+/// from here too. Keep the returned directory until the test ends.
+pub(crate) async fn open(
+    page: Page,
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    Entity<GitTurtle>,
+    &mut VisualTestContext,
+    Option<&'static str>,
+) {
+    let (fixture, app, cx) =
         styled_history_window(cx, &fixture_script(), |root| root.text_bg(text_mark())).await;
     cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
     crate::appearance::mark_controls(control_mark());
@@ -582,20 +612,7 @@ async fn walk(page: Page, text: u8, cx: &mut TestAppContext) {
         }
     };
     settle(&app, cx).await;
-    cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
-    let mut walk = Walk {
-        page,
-        text,
-        app: &app,
-        path,
-        findings: Vec::new(),
-        layouts: 0,
-    };
-    for height in [490., 980.] {
-        walk.walk(height, cx);
-    }
-    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
-    walk.verdict();
+    (fixture, app, cx, path)
 }
 
 #[gpui::test]

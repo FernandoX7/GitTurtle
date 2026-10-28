@@ -251,6 +251,20 @@ async fn walk_dialog(
     failures: &mut Vec<String>,
     open: impl FnOnce(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
 ) {
+    open_dialog(app, cx, surface, open).await;
+    walk(app, cx, surface, interface, failures);
+    close_dialogs(cx, surface, interface, failures);
+}
+
+/// Opens a dialog with `open` from History's list, lets its reads finish and
+/// waits for the control it focused to draw; the layout grid
+/// (`layout_grid`) opens its dialogs here too.
+pub(crate) async fn open_dialog(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    surface: &str,
+    open: impl FnOnce(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+) {
     // Each dialog opens from History's list, as from the page a person is
     // on, rather than from wherever the last dialog's close left focus.
     let list = app.read_with(cx, |app, _| app.focus.clone());
@@ -270,8 +284,6 @@ async fn walk_dialog(
         cx.update(|window, cx| window.has_active_dialog(cx)),
         "{surface} opens"
     );
-    walk(app, cx, surface, interface, failures);
-    close_dialogs(cx, surface, interface, failures);
 }
 
 /// History and, with its file activated, Compare.

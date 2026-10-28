@@ -42,7 +42,7 @@ fn file_rows_shown() -> usize {
 /// size, so the title, the explanation and the other labels, the entries'
 /// text and the changed files start where the scope and filter fields'
 /// text and placeholders do, one inset for all.
-const TEXT_INSET: Pixels = px(11.);
+const TEXT_INSET: Pixels = appearance::FIELD_TEXT_INSET;
 
 /// The entries whose text the last layout cut, which alone carry a tooltip.
 #[derive(Clone, Default)]
