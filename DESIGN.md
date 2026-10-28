@@ -214,7 +214,7 @@ The keyboard menu says what each of its rows is: the identity Git authors with n
 
 The left column contains All history, Local branches, Remote branches grouped by remote, and Worktrees. Sections collapse and show subdued item counts. Branch prefixes can form folder groups to make thousands of references browsable. A compact filter narrows this hierarchy without losing the active selection. Mark the checked-out branch with a small HEAD indicator; selecting a different branch only browses it. Worktree rows show folder name and branch, with full path and detached/locked/prunable state available in details or a tooltip.
 
-The center begins with a 40 px scope toolbar, a separate compact search row, and a 34 px column header. Below it, the virtualized table fills the remaining height. Use these columns in this order:
+The center begins with a 40 px scope toolbar, a separate compact search row, and a 34 px column header. The search field is named “Search repository history” for assistive technology whatever its placeholder shows, and the placeholder fits the field in whole phrases: “Search repository history, author, hash…”, else “Search history, author, hash…”, else “Search history…”, else “Search”, which alone is cut before an ellipsis in a field too narrow for it, so at 18 pt in a 640 px window it reads “Search history…” where it once ended “…history, a” at the field's edge. Below it, the virtualized table fills the remaining height. Use these columns in this order:
 
 | Column | Starting width | Treatment |
 | --- | --- | --- |

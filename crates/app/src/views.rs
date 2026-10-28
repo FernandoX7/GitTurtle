@@ -1459,12 +1459,23 @@ impl GitTurtle {
             .child(self.render_history_scope_toolbar(scope.into(), window, cx))
             .child(
                 div()
+                    .relative()
                     .h(crate::appearance::ui_size(38.))
                     .flex_shrink_0()
                     .px_3()
                     .pb_2()
                     .pt_1()
-                    .child(Input::new(&self.search).text_size(crate::appearance::ui_text(12.))),
+                    .child(
+                        Input::new(&self.search)
+                            .aria_label(SEARCH_NAME)
+                            .text_size(crate::appearance::ui_text(12.)),
+                    )
+                    // Painted after the field, it fits its placeholder.
+                    .child(crate::workspace::placeholder_fit(
+                        self.search.clone(),
+                        &SEARCH_FIT,
+                        SEARCH_PLACEHOLDERS,
+                    )),
             )
             .child(self.render_history_search_controls(cx))
             .children(self.graph_notice.as_ref().map(|notice| {
@@ -4115,7 +4126,26 @@ thread_local! {
     /// The changed-file filter's placeholder as it fits the width its field
     /// last painted at (`workspace::placeholder_fit`).
     static CHANGED_FILTER_FIT: crate::workspace::PlaceholderFit = const { RefCell::new(None) };
+    /// History's search placeholder as it fits the width its field last
+    /// painted at.
+    static SEARCH_FIT: crate::workspace::PlaceholderFit = const { RefCell::new(None) };
 }
+
+/// History's search field's placeholders, each a shorter wording of the one
+/// before it in whole phrases: the first that fits the field shows, so a
+/// narrow field reads "Search history…" rather than "…history, a" cut at its
+/// edge or a dangling comma, and only "Search", the last, is ever cut before
+/// an ellipsis (`workspace::placeholder_fit`).
+pub(crate) const SEARCH_PLACEHOLDERS: &[&str] = &[
+    "Search repository history, author, hash…",
+    "Search history, author, hash…",
+    "Search history…",
+    "Search",
+];
+/// History's search field's accessible name, whole whatever form the
+/// placeholder takes: the kit names an unlabelled field after the
+/// placeholder it shows.
+pub(crate) const SEARCH_NAME: &str = "Search repository history";
 
 /// The History inspector's changed-file filter's placeholder, which reads
 /// the short "Filter" where it does not fit whole, as the Working filter's
@@ -9385,6 +9415,77 @@ pub(crate) mod tests {
             assert_eq!(
                 field_name(cx, &filter).as_deref(),
                 Some(CHANGED_FILTER_NAME),
+                "{at}: the name"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// History's search field fits its placeholder in whole phrases and keeps
+    /// its name. At 13 and 18 pt in 461 × 490 and 640 × 680 windows, and in
+    /// a 1480 × 980 one, the placeholder is the first of its forms that fits
+    /// the width the field draws its text in, and lies whole inside it: at
+    /// 18 pt it once showed "…history, a" cut at the field's edge in the 640
+    /// px window and a dangling comma in the 461 px one, where it now reads
+    /// a shorter form; in the 1480 px window it is the whole "Search
+    /// repository history, author, hash…". Whichever form shows, the field
+    /// is named "Search repository history", where it was once announced as
+    /// the placeholder it showed.
+    #[gpui::test]
+    async fn history_search_fits_its_placeholder_and_keeps_its_name(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        for (text, width, height) in [
+            (13, 461., 490.),
+            (13, 640., 680.),
+            (18, 461., 490.),
+            (18, 640., 680.),
+            (13, 1480., 980.),
+            (18, 1480., 980.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let search = app.read_with(cx, |app, _| app.search.clone());
+            let (field, shown) = search.read_with(cx, |search, _| {
+                (
+                    search.text_bounds(),
+                    search.presentation().placeholder().clone(),
+                )
+            });
+            let field = field.unwrap_or_else(|| panic!("{at}: the search field unpainted"));
+            let measure = |cx: &mut VisualTestContext, text: &str| {
+                cx.update(|window, _| {
+                    shaped_width(
+                        text,
+                        appearance::ui_text(12.),
+                        window.text_style().font_weight,
+                        window,
+                    )
+                })
+            };
+            let drawn = measure(cx, &shown);
+            assert!(drawn <= field.size.width, "{at}: {shown:?} in {field:?}");
+            let form = SEARCH_PLACEHOLDERS
+                .iter()
+                .position(|form| *form == shown.as_ref())
+                .unwrap_or_else(|| panic!("{at}: {shown:?} is one of the whole forms"));
+            for longer in &SEARCH_PLACEHOLDERS[..form] {
+                assert!(
+                    measure(cx, longer) > field.size.width,
+                    "{at}: {longer:?} fits {field:?}, yet {shown:?} shows"
+                );
+            }
+            if width > 1000. {
+                assert_eq!(form, 0, "{at}: the whole placeholder in {field:?}");
+            } else if text == 18 {
+                assert!(form > 0, "{at}: a shorter form in {field:?}");
+            }
+            assert_eq!(
+                field_name(cx, &search).as_deref(),
+                Some(SEARCH_NAME),
                 "{at}: the name"
             );
         }

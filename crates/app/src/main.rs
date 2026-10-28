@@ -528,9 +528,8 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Search repository history, author, hash…")
-        });
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder(views::SEARCH_PLACEHOLDERS[0]));
         let nav_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter branches & worktrees"));
         let settings = preferences.settings.clone();
