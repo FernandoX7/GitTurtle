@@ -1212,6 +1212,7 @@ impl Panel {
                                         "plus",
                                         false,
                                     )
+                                    .debug_selector(|| "github-inline-start".into())
                                     .disabled(
                                         self.pending
                                             || self.review.preparing
@@ -3519,15 +3520,12 @@ mod tests {
         }
         // Follow-ups (focus sweep, 2026-10-28). The body keeps the rings' room
         // and Tab scrolls the part it moves into into view (`Panel::part`);
-        // still failing: the PR list clips its full-width rows' rings at its
-        // own edges; at 18 pt in Overview two buttons outside any part (Open
-        // captured local comparison and a conversation's) stay below the
-        // fold, and a conversation pane's ring is cut at its sides and by the
-        // fold; and Review's first stop follows a focus the frame before had
-        // not drawn, so no part names it.
+        // still failing: at 18 pt in Overview two buttons outside any part
+        // (Open captured local comparison and a conversation's) stay below
+        // the fold, and a conversation pane's ring is cut at its sides and by
+        // the fold; and Review's first stop follows a focus the frame before
+        // had not drawn, so no part names it.
         let known = [
-            ("the GitHub panel's list at 13 pt, stop 2", "a clip cuts"),
-            ("the GitHub panel's list at 18 pt, stop 2", "a clip cuts"),
             (
                 "the GitHub panel's Overview at 18 pt, stop 0",
                 "paints no ring",

@@ -1149,6 +1149,8 @@ impl Render for Panel {
         let observed = self.review.revealed_focus.clone();
         let show_editor =
             self.create || (self.pull.is_some() && self.review.section == Section::Review);
+        // The room a focused control's ring takes outside its edge.
+        let room = appearance::button_ring_room(cx);
         // The panel's content, its text one inset in from this edge.
         let content = div().debug_selector(||"github-panel-content".into()).min_w_0().flex().flex_col().gap_2()
             .when(self.review.fixture,|element|element.child(self.part("banner",div(),cx).flex().flex_wrap().items_center().gap_2().py_2().px(text_inset()).rounded(px(6.)).bg(rgb(p.subtle))
@@ -1174,7 +1176,12 @@ impl Render for Panel {
                 .child(button("github-cancel","Cancel","",false).track_focus(self.cancel_request.handle()).debug_selector(||"github-cancel".into()).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
                     if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(if this.writing{"Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."}else{"Cancellation requested. Your review draft is retained."}.into());cx.notify();})))))
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
-                .child(crate::native_accessibility::clips_children(self.part("pr-list",div(),cx).id("github-pr-list").debug_selector(||"github-pr-list".into()).flex_shrink_0().max_h(px(200.)).overflow_y_scroll().flex().flex_col().gap_1()
+                // The list scrolls, so it clips its rows on both axes. Its full-width rows keep
+                // their rings' room inside that clip: its sides give the room back through their
+                // margin, so the rows' text keeps the panel's edge, and above the first row and
+                // below the last the room is the list's own (a negative margin there collapsed
+                // the panel's scrolling body to its padding).
+                .child(crate::native_accessibility::clips_children(self.part("pr-list",div(),cx).id("github-pr-list").debug_selector(||"github-pr-list".into()).flex_shrink_0().max_h(px(200.)+room*2.).px(room).mx(-room).py(room).overflow_y_scroll().flex().flex_col().gap_1()
                     .children(self.rows.iter().map(|pull|{let pull=pull.clone();let selected=self.pull.as_ref().is_some_and(|p|p.number==pull.number);let number=pull.number;let name=format!("#{} · {}",pull.number,pull.title);let context=format!("{} · {} → {} · {}",if pull.draft{"Draft"}else{"Open"},pull.head.branch,pull.base.branch,pull.user.login);
                         // A list row: the title Button spans it, its label at the panel's text inset,
                         // and the context line below, outside the Button, takes the same inset. The
@@ -1246,7 +1253,6 @@ impl Render for Panel {
         // give back through their margin; above and below, the dialog's clip of its body
         // allows no margin, so the room is the body's own. While the body overflows, its
         // scrollbar shows the rest is there.
-        let room = appearance::button_ring_room(cx);
         let cue = crate::tags::ScrollCue::new(&scroll, room);
         cue.list(
             div()
@@ -1870,6 +1876,102 @@ mod tests {
             }
         }
         cx.update(|window, cx| window.close_dialog(cx));
+    }
+
+    /// In a 1480 × 980 window, as the native review shows the panel, at 13
+    /// and 18 pt, Tab reaches the controls along the panel's sides and each
+    /// draws its focus ring whole inside every clip around it (the focus
+    /// sweep, `focus_ring::sweep`): the PR list's full-width rows, whose rings
+    /// the list cut at its own edges, Recover drafts at the left and Comment
+    /// on selection at the right, with the body's scrollbar gutter and
+    /// without it.
+    #[gpui::test]
+    async fn the_panel_keeps_its_edge_controls_rings_inside_its_clips(cx: &mut TestAppContext) {
+        use crate::focus_ring::sweep;
+        let (_fixture, app, cx) = repository_window(cx);
+        sweep::prepare(&app, cx);
+        let repo = cx.read(|cx| app.read(cx).repository.clone().unwrap());
+        let panel = cx.update(|window, cx| {
+            cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx))
+        });
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.run_until_parked();
+        let pull = github::review::fixture_pull(false);
+        let mut other = pull.clone();
+        other.number = 43;
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.rows = vec![pull.clone(), other];
+                panel.review.fixture = true;
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        settle_panel(&app, cx).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        let scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        let mut failures = Vec::new();
+        let mut gutters = Vec::new();
+        for interface in sweep::SIZES {
+            sweep::interface_size(cx, interface);
+            for (view, controls) in [
+                (
+                    "list",
+                    &["github-pr-42", "github-pr-43", "github-recovery-toggle"][..],
+                ),
+                (
+                    "Files",
+                    &["github-inline-start", "github-recovery-toggle"][..],
+                ),
+            ] {
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        if view == "Files" {
+                            panel.pull = Some(pull.clone());
+                            panel.review.files = files.clone();
+                            panel.review.section = Section::Files;
+                            panel.review.show_list = false;
+                            panel.select_review_file(0, window, cx);
+                        } else {
+                            panel.pull = None;
+                            panel.review.show_list = true;
+                        }
+                        panel.focus_visible_section(window, cx);
+                        cx.notify();
+                    })
+                });
+                settle_panel(&app, cx).await;
+                let surface = format!("the GitHub panel's {view}");
+                let rings = sweep::walk(&app, cx, &surface, interface, &mut failures);
+                gutters.push(scroll.max_offset().y > px(0.));
+                // Each control's ring, as the walk saw it, lies outside its edge.
+                for &control in controls {
+                    let bounds = cx
+                        .debug_bounds(control)
+                        .unwrap_or_else(|| panic!("{control} in {surface} at {interface} pt"));
+                    let ringed = rings.iter().any(|ring| {
+                        ring.size.width - bounds.size.width >= px(5.99)
+                            && ring.size.height - bounds.size.height >= px(5.99)
+                            && (ring.center().x - bounds.center().x).abs() < px(0.5)
+                    });
+                    assert!(
+                        ringed,
+                        "Tab rings {control} in {surface} at {interface} pt: {bounds:?} among \
+                         {rings:?}"
+                    );
+                }
+            }
+        }
+        sweep::assert_whole(failures);
+        assert!(
+            gutters.contains(&true) && gutters.contains(&false),
+            "the body overflows in some views and fits in others: {gutters:?}"
+        );
     }
 
     /// The panel's text starts at one edge in a 1480 × 980 window at 13 and
