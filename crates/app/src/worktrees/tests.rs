@@ -122,10 +122,10 @@ fn app_window(
         *captured.borrow_mut() = Some(app.clone());
         Root::new(app, window, cx)
     });
-    // A dialog slides in on a wall-clock animation, and the test context draws
-    // the window again between a click's press and release. Under load the
-    // control moves away before its release, so the click never lands. Open
-    // dialogs at rest; no worktree test covers motion.
+    // A dialog slides in on a wall-clock animation, so under load a control
+    // can move between the frame a click takes its bounds from and the press,
+    // and the click never lands. Open dialogs at rest; no worktree test covers
+    // motion, and `click` refuses a control that is still moving.
     cx.update(|_, cx| cx.set_reduce_motion(true));
     cx.simulate_resize(size(px(1480.), px(981.)));
     draw(cx);
@@ -160,9 +160,21 @@ fn draw(cx: &mut VisualTestContext) {
     cx.executor().run_until_parked();
 }
 
+/// Clicks `selector`'s control, which must be at rest. A control that moves
+/// between frames, as one in a dialog still sliding in does, can move away
+/// before a delayed press, which then misses it and leaves the state from
+/// before the click: the symptom of the one loaded failure of
+/// `manager_removal_rechecks_changes_since_selection`. Compared across two
+/// frames, motion fails every run rather than only the loaded ones.
 fn click(cx: &mut VisualTestContext, selector: &'static str) {
     draw(cx);
     let bounds = cx.debug_bounds(selector).expect(selector);
+    draw(cx);
+    assert_eq!(
+        cx.debug_bounds(selector),
+        Some(bounds),
+        "{selector} moved between frames"
+    );
     cx.simulate_click(bounds.center(), Modifiers::default());
     cx.executor().run_until_parked();
 }
