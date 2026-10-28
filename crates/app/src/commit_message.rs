@@ -41,8 +41,9 @@ pub(super) struct State(RefCell<Option<Presentation>>, Cell<Option<Toolbar>>);
 
 /// How the message toolbar lays out Copy message and Hash in an inspector
 /// whose width the window fixes: where the labelled Copy message does not fit
-/// the row, only its icon, and the height of the rows the two then take, which
-/// the message panel reserves so the toolbar never runs into the files below.
+/// the row, only its icon and only Hash's, which then share one row, and the
+/// height of the rows the two take, which the message panel reserves so the
+/// toolbar never runs into the files below.
 /// An inspector at least its tight minimum wide keeps both labelled on one
 /// row and reserves nothing, as before.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,11 +65,11 @@ impl Toolbar {
     /// each with 10 px of padding on either side of the wider of its content
     /// and the copied content, a 16 px check icon 6 px before "Copied", which
     /// `copy_feedback::copy_button` reserves. Copy message's content is a
-    /// 16 px icon 6 px before its label, or it is a 28 px square of only the
-    /// icon; Hash's is the same icon before its label, narrower than the
-    /// copied content. Wrapped rows are a quarter rem apart inside the
-    /// toolbar's `py_1`, and the panel's 1 px bottom border is reserved with
-    /// them.
+    /// 16 px icon 6 px before its label, and Hash's the same icon before its
+    /// label, narrower than the copied content; compact, each is a 28 px
+    /// square of only the icon. Wrapped rows are a quarter rem apart inside
+    /// the toolbar's `py_1`, and the panel's 1 px bottom border is reserved
+    /// with them.
     pub(super) fn within(width: Pixels, window: &Window) -> Self {
         let key = LineKey::current(window);
         let label = |cache, text| {
@@ -91,7 +92,11 @@ impl Toolbar {
         } else {
             labelled
         };
-        let hash = padding + (icon + hash_label).max(copied);
+        let hash = if compact {
+            appearance::ui_size(28.)
+        } else {
+            padding + (icon + hash_label).max(copied)
+        };
         let rows = if copy + gap + hash <= room { 1. } else { 2. };
         Self {
             compact,
@@ -412,8 +417,14 @@ impl GitTurtle {
                             copy_feedback::copy(window, cx, Some(message_copy.clone()), "commit message", message);
                         }
                     })))
-                .child(copy_feedback::copy_button(hash_mark, "Hash", "copy", format!("Copy full commit hash · {}", commit.oid), cx)
-                    .accessibility_label("Copy full commit hash")
+                // Compact beside the compact Copy message, so the two keep
+                // one row.
+                .child(if compact {
+                    compact_control_name(copy_feedback::copy_button(hash_mark, "", "copy", format!("Hash · Copy full commit hash · {}", commit.oid), cx), "copy-commit", "Copy full commit hash")
+                } else {
+                    copy_feedback::copy_button(hash_mark, "Hash", "copy", format!("Copy full commit hash · {}", commit.oid), cx)
+                        .accessibility_label("Copy full commit hash")
+                }
                     .on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(hash_copy.clone()), "commit hash", hash.clone())))
             )
             .child(div()
@@ -1400,5 +1411,69 @@ pub(crate) mod tests {
             assert!(text >= 4.5, "{choice:?}: text {text:.2}:1");
             assert!(muted >= 4.5, "{choice:?}: metadata {muted:.2}:1");
         }
+    }
+
+    /// In an 18 pt 461 × 490 half tile, where Copy message keeps only its
+    /// icon, Hash does too: two 28 px squares on one toolbar row, which is
+    /// the row the panel reserves, so the commit title starts one row below
+    /// the toolbar's top. Hash keeps its name, and copied it shows only the
+    /// check in its own bounds and is announced.
+    #[gpui::test]
+    fn compact_hash_keeps_the_copy_toolbar_one_row(cx: &mut TestAppContext) {
+        use crate::copy_feedback::{
+            RESTORE_AFTER,
+            tests::{Shows, announced, click, clipboard, history, shows, wait},
+        };
+        let (app, cx) = history(cx, vec![commit("a", "Selected title", "Body.")]);
+        crate::views::COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let square = appearance::ui_size(28.).ceil();
+        let message = cx.debug_bounds("copy-message").unwrap();
+        let hash = cx.debug_bounds("copy-commit").unwrap();
+        let toolbar = cx.debug_bounds("commit-message-toolbar").unwrap();
+        let viewport = cx.debug_bounds("commit-message-viewport").unwrap();
+        let rem = cx.update(|window, _| window.rem_size());
+        assert_eq!(message.size.width, square, "{message:?}");
+        assert_eq!(hash.size, message.size, "{hash:?}");
+        assert_eq!(hash.top(), message.top(), "one row: {message:?} {hash:?}");
+        assert!(message.right() < hash.left() && hash.right() <= toolbar.right());
+        assert_eq!(
+            toolbar.size.height,
+            message.size.height + rem * 0.5,
+            "{toolbar:?}"
+        );
+        assert_eq!(viewport.top(), toolbar.bottom());
+        // The reservation is that row and the panel's 1 px bottom border.
+        let reserved = cx
+            .read(|cx| app.read(cx).inspector_message.1.get())
+            .expect("the window pins the inspector");
+        assert!(reserved.compact);
+        assert!(
+            (reserved.height - (toolbar.size.height + px(1.))).abs() < px(0.5),
+            "{reserved:?} for {toolbar:?}"
+        );
+        assert_eq!(
+            crate::views::COMPACT_NAMES.with(|names| names.borrow().get("copy-commit").copied()),
+            Some("Copy full commit hash")
+        );
+
+        click(cx, "copy-commit");
+        assert_eq!(clipboard(cx), "a".repeat(40));
+        assert_eq!(shows(cx, "copy-commit"), Shows::Copied);
+        // The 16 px icon, as layout rounds it, and no "Copied".
+        let check = cx.debug_bounds("copy-commit/copied").unwrap();
+        let icon = appearance::ui_size(16.);
+        assert!(
+            (check.size.width - icon).abs() < px(1.),
+            "only the check: {check:?}"
+        );
+        assert_eq!(cx.debug_bounds("copy-commit"), Some(hash));
+        assert_eq!(cx.debug_bounds("commit-message-toolbar"), Some(toolbar));
+        assert_eq!(announced(cx).unwrap().1, "Copied commit hash");
+        wait(cx, RESTORE_AFTER);
+        assert_eq!(shows(cx, "copy-commit"), Shows::Rest);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 }

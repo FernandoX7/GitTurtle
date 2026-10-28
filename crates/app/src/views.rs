@@ -4181,8 +4181,8 @@ mod tests {
             history_window_from(cx, &history_script(history_paging::PAGE_SIZE + 20, 1)).await;
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         // At 560 px the inspector is wide enough for the labelled Copy
-        // message; at 461 only its icon fits. Either way Hash, as wide as its
-        // copied state, wraps below it.
+        // message, and Hash, as wide as its copied state, wraps below it; at
+        // 461 only their icons fit, side by side on one row.
         for (width, height, compact) in [(461., 490., true), (560., 600., false)] {
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
@@ -4204,12 +4204,22 @@ mod tests {
                 compact,
                 "Copy message at {width}: {copy:?}"
             );
-            assert!(hash.top() > copy.top(), "Hash at {width}: {hash:?}");
+            assert_eq!(hash.size == copy.size, compact, "Hash at {width}: {hash:?}");
+            if compact {
+                assert_eq!(hash.top(), copy.top(), "Hash at {width}: {hash:?}");
+            } else {
+                assert!(hash.top() > copy.top(), "Hash at {width}: {hash:?}");
+            }
         }
-        assert_eq!(
-            COMPACT_NAMES.with(|names| names.borrow().get("copy-message").copied()),
-            Some("Copy full commit message")
-        );
+        for (selector, name) in [
+            ("copy-message", "Copy full commit message"),
+            ("copy-commit", "Copy full commit hash"),
+        ] {
+            assert_eq!(
+                COMPACT_NAMES.with(|names| names.borrow().get(selector).copied()),
+                Some(name)
+            );
+        }
 
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         settle(&app, cx).await;

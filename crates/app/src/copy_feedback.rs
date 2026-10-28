@@ -312,7 +312,7 @@ pub(crate) mod tests {
 
     /// A 1000 × 680 GitTurtle window, drawn by its own render with its dialog
     /// layer, in History on `commits` with the first selected.
-    fn history(
+    pub(crate) fn history(
         cx: &mut TestAppContext,
         commits: Vec<Commit>,
     ) -> (Entity<GitTurtle>, &mut VisualTestContext) {

@@ -99,14 +99,15 @@ megabyte title. The inspector never creates an editor or starts a Git read.
 The variable list owns measured row geometry and remeasures proportionally when
 interface scale changes. Text and list reservations count toward retained-tab
 admission, including nested return contexts. Keyboard arrows, Page Up/Down and
-Home/End scroll the focused message; labelled native buttons provide message and
-hash copy. They are `copy_feedback` copy buttons, each a copy icon before its
-label and as wide as the wider of its content and its copied content (check
-and "Copied"), which for Hash is the copied content; both contents start at
-the button's leading inset, so the check replaces the icon in place.
-`Toolbar::within` measures them so where the window fixes the inspector's
-width the reserved rows match what they draw. Native platform quality remains
-a separate validation requirement.
+Home/End scroll the focused message; labelled native buttons provide message
+and hash copy. They are `copy_feedback` copy buttons, each a copy icon before
+its label and as wide as the wider of its content and its copied content (check
+and "Copied"), which for Hash is the copied content; both contents start at the
+button's leading inset, so the check replaces the icon in place. Where Copy
+message does not fit a row of its own, both are compact 28 px icon squares on
+one row. `Toolbar::within` measures them so where the window fixes the
+inspector's width the reserved rows match what they draw. Native platform
+quality remains a separate validation requirement.
 
 The pieces and the selectable metadata lines (author, date and short hash, or a
 revision's lines) form one text document (`commit_message::selection`). The
