@@ -1062,10 +1062,10 @@ impl Panel {
                                 this.file_page(this.review.file_page - 1, window, cx)
                             })),
                     )
-                    .child(label(
-                        "github-files-page",
-                        format!("{}", self.review.file_page),
-                    ))
+                    .child(
+                        label("github-files-page", format!("{}", self.review.file_page))
+                            .debug_selector(|| "github-files-page".into()),
+                    )
                     .child(
                         button("github-files-next", "Next", "", false)
                             .disabled(self.pending || !self.review.files_next)
@@ -1075,11 +1075,29 @@ impl Panel {
                     ),
             )
             .child(
-                label(
-                    "github-file-bound",
-                    "100 files per page · GitHub limit 3,000",
-                )
-                .text_color(rgb(p.muted)),
+                // At the panel's text edge, where Previous starts its label, and one phrase to
+                // a line: past the inset the list's column is a few pixels narrower than the
+                // whole line, which then broke inside its last phrase.
+                div()
+                    .id("github-file-bound")
+                    .debug_selector(|| "github-file-bound".into())
+                    .role(Role::Label)
+                    .aria_label("100 files per page · GitHub limit 3,000")
+                    .ml(super::text_inset())
+                    .flex()
+                    .flex_col()
+                    .text_size(appearance::ui_text(12.))
+                    .text_color(rgb(p.muted))
+                    .children(
+                        ["100 files per page", "GitHub limit 3,000"]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(line, text)| {
+                                div()
+                                    .debug_selector(move || format!("github-file-bound-{line}"))
+                                    .child(text)
+                            }),
+                    ),
             );
         let content = if let Some(file) = selected {
             let title = file

@@ -1694,7 +1694,9 @@ mod tests {
     /// row's two lines start where the pager's and Recover drafts' Buttons,
     /// at the panel's edge, start their labels. They started at four: the
     /// title at the edge, the banner 6.5 px in, the Buttons' labels 10 px and
-    /// the PR rows' text 20.75 px, inside their cards.
+    /// the PR rows' text 20.75 px, inside their cards. In a PR's Files, the
+    /// file-page bound below the files' pager starts there too, a phrase to a
+    /// line inside the file list's column; it started at the edge.
     #[gpui::test]
     async fn the_panel_starts_its_text_at_one_edge(cx: &mut TestAppContext) {
         use crate::tags::tests::draw;
@@ -1746,6 +1748,62 @@ mod tests {
                 assert!(
                     (start - text).abs() < px(0.5),
                     "{interface} pt: {name} starts at {start:?}, not {text:?}: {starts:?}"
+                );
+            }
+        }
+        // The first PR's Files section, its first file in Changes.
+        let pull = github::review::fixture_pull(false);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let files = Client(UiTransport::Fixture { moved: false })
+            .files(&captured, 1, &OperationControl::default())
+            .unwrap()
+            .items;
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull);
+                panel.review.files = files;
+                panel.review.section = Section::Files;
+                panel.review.show_list = false;
+                panel.select_review_file(0, window, cx);
+            })
+        });
+        settle_panel(&app, cx).await;
+        for interface in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            draw(cx);
+            let at = |cx: &mut VisualTestContext, selector: &'static str| {
+                cx.debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{selector} at {interface} pt in Files"))
+            };
+            let text = at(cx, "github-panel").left() + text_inset();
+            let list = at(cx, "github-file-focus");
+            let bound = at(cx, "github-file-bound");
+            let starts = [
+                ("title", at(cx, "github-title").left()),
+                (
+                    "pager",
+                    at(cx, "github-files-previous").left() + text_inset(),
+                ),
+                ("file bound", bound.left()),
+            ];
+            for (name, start) in starts {
+                assert!(
+                    (start - text).abs() < px(0.5),
+                    "{interface} pt, Files: {name} starts at {start:?}, not {text:?}: {starts:?}"
+                );
+            }
+            // The bound stays inside the file list's column, each phrase whole on its line,
+            // as tall as the page number's.
+            assert!(
+                bound.right() <= list.right() + px(0.01),
+                "{interface} pt: the file bound {bound:?} runs past the file list {list:?}"
+            );
+            let line = at(cx, "github-files-page").size.height;
+            for selector in ["github-file-bound-0", "github-file-bound-1"] {
+                let phrase = at(cx, selector);
+                assert!(
+                    (phrase.size.height - line).abs() < px(0.01) && phrase.left() == bound.left(),
+                    "{interface} pt: {selector} {phrase:?} in {bound:?}, one line {line:?}"
                 );
             }
         }
