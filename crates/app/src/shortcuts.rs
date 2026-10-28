@@ -473,6 +473,13 @@ pub(super) const ENTER: &str = if cfg!(target_os = "macos") {
     "Enter"
 };
 
+/// A Shift-modified click as prose names it, in the platform's modifier style.
+pub(super) const SHIFT_CLICK: &str = if cfg!(target_os = "macos") {
+    "Shift-click"
+} else {
+    "Shift+click"
+};
+
 pub(super) fn key_label(key: &str) -> String {
     // Use the same platform renderer as native GPUI popup-menu accelerators.
     Kbd::format(

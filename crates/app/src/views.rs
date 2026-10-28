@@ -648,7 +648,10 @@ impl GitTurtle {
                     .text_color(rgb(colors.muted))
                     .border_t_1()
                     .border_color(rgb(colors.border))
-                    .child("Arrows browse · Enter filters or opens.\nLeft/Right folders · Shift F10 actions."),
+                    .child(format!(
+                        "Arrows browse · Enter filters or opens.\nLeft/Right folders · {} actions.",
+                        shortcuts::key_label("shift-f10")
+                    )),
             )
             .into_any_element()
     }

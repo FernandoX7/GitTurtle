@@ -495,9 +495,10 @@ impl DiffView {
                                         if *added { "added" } else { "removed" },
                                         action.to_lowercase()
                                     ))
-                                    .tooltip(
-                                        "Select this changed line. Shift-click selects a range.",
-                                    )
+                                    .tooltip(format!(
+                                        "Select this changed line. {} selects a range.",
+                                        crate::shortcuts::SHIFT_CLICK
+                                    ))
                                     .on_click(cx.listener(move |this, checked, window, cx| {
                                         if this.partial_busy {
                                             return;

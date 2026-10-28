@@ -63,9 +63,7 @@ pub fn decode_pdf_page(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        bail!(
-            "Native PDF page rendering requires macOS. Export the captured bytes for external inspection."
-        )
+        bail!("PDF pages are not rendered on this platform.")
     }
 }
 
@@ -86,9 +84,7 @@ pub fn decode_pdf_page_text(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        bail!(
-            "PDF text extraction requires macOS PDFKit; no text extractor is available on this platform"
-        )
+        bail!("PDF text extraction is not available on this platform")
     }
 }
 
@@ -251,9 +247,7 @@ pub fn decode_image(bytes: &[u8], file_name: &str, max_edge: u32) -> Result<Imag
             }
             #[cfg(not(target_os = "macos"))]
             {
-                bail!(
-                    "{format} rendering requires a compatible macOS ImageIO codec; export the captured bytes for external inspection"
-                )
+                bail!("{format} rendering is not available on this platform")
             }
         }
         _ if metadata::is_svg(bytes)
@@ -586,7 +580,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("macOS ImageIO codec"),
+                .contains("rendering is not available on this platform"),
             "{kind}"
         );
     }
