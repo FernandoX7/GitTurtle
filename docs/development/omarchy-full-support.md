@@ -619,6 +619,67 @@ cover current upstream x86-64 Omarchy.
         - Worktree manager: the Create form's branch choices list overflows with no always-visible
           scrollbar (as before at 1480×980 18 pt); the worktree list's floor applies only with rows,
           so its "No worktrees match this filter." line may be squeezed (from the code, untested).
+        From the native and design review of `gitturtle-9483bbd` against `-62d10ae` (2026-10-29 late
+        night; frames `.local/item8-2026-10-27/tools/qa/u*-{62d10ae,9483bbd}/`, write-ups
+        `findings-q9-2026-10-29.md` and `design-q9-2026-10-29.md`, sheets 76–85 in `before-after/`,
+        specs `before-after/specs-q9/`; record in [validation](../validation.md)):
+        - N1 (bug, a regression from `b9dc438` with `2f7f5e0`; being fixed in brief S): with no file
+          watcher, after a paused merge has ended outside the app, Stashes' Review restore… is
+          refused from the cached pause; the refusal is announced but its line is gone within 0.3 s,
+          and Stashes closes with its selection lost (the base opened Restore stash, rightly). Fix:
+          refuse from a cached pause only after the core has read it; if refused, keep Stashes and
+          its selection and show the refusal, then the ended line, in the footer note beside Review
+          restore….
+        - N2 (bug, pre-existing; being fixed in brief R): while a write runs, Ctrl+2 and "Changes ·
+          N" stay on History, yet the toggle looks and is announced available (`show_working` in
+          `workspace.rs` closes inspections and then returns silently while `operation_busy`). Fix:
+          allow the switch, since Changes is a read, or refuse it like the busy controls, with the
+          guard placed before `close_inspections`.
+        - N3 (bug, pre-existing; being fixed in brief S): at 461 × 490 the Stashes list is never a
+          Tab stop, and its second stash is wholly clipped with no scroll cue while Previous and More
+          are disabled. The one-row stacked list is DESIGN.md's choice, so "two whole rows" is not
+          the fix: give the list a scrollbar, its count in the heading ("Saved work · 2"), and one
+          Tab stop with arrows.
+        - N4 (polish, pre-existing; being fixed in brief R): the Reflog takes 41 Tabs from a selected
+          entry to Copy commit ID. Fix: make the entry list one Tab stop with arrows inside, and
+          change DESIGN.md, which makes each entry a Tab stop.
+        - N5 (polish): after the last row is removed under its open menu, focus returns to the list
+          but the cursor restarts at the top rather than on the removed row's neighbour.
+        - N6 (polish): at 18 pt in 461 × 490 both of a changed image's open controls drop beneath the
+          names and the image keeps 94 of its 133 px minimum; about 47.5 px (not 55) remain beside
+          "Before" for a 39 px icon and its gap. Fix: change the layout (the icons at the halves' top
+          corners over the image, or in the toolbar row), which gives back the 29 px row.
+        - N7 (bug, pre-existing; being fixed in System preview brief J): narrow model sides stack
+          Fit, Reset, the zooms, triangle edges, Standard views and Cameras linked down to y 497 in a
+          490 px window, leaving the model 2 px, and the text STL's "Copy source" is cut at the
+          side's edge.
+        - N8 (polish, was taste): after a one-match Shortcuts search at 18 pt in 461 × 490 the
+          General heading's 58 px row (as tall as an entry) has its top cut by the list's edge.
+          Fix: make the heading row its text plus the group gap (about 30 px at 18 pt) so heading
+          and entry (about 88 px) fit the 99 px list, or else snap the scroll to the entry; do not
+          hide the heading.
+        - N9 (bug, raised from pre-existing, since Stage or Unstage without review could act on
+          another file; being fixed in brief M, working-row menus keyed by path): a right-click
+          menu open on a deleted non-last working row stays open over the next row.
+        - N10 (polish, was taste; pre-existing): the paused-integration refusal always says "resolve
+          conflicts", even for a merge with no unresolved files. Fix: word it by state with the
+          banner's verbs ("Complete or abort the merge in progress before starting another recovery
+          action"; "Resolve conflicts, then…" only with conflicted entries) in git-core's
+          `crates/git-core/src/work/recovery.rs` and the app's `PAUSED_REFUSAL` in
+          `crates/app/src/recovery.rs` together.
+        - Design review's own findings: the worktree manager's "No worktrees match this filter." is
+          drawn in primary text rather than muted and ends with a period unlike "No tags match this
+          filter" (use `empty_state::EmptyState` or the muted colour, drop the period; polish,
+          pre-existing); DESIGN.md's feedback section says "Added image" and "Deleted image" while its
+          image comparison section and the build say "No image on this side", and with the footer's
+          "Added" given way nothing says the file was added (pick one wording and update DESIGN.md;
+          taste); a dropdown clears its button by 4.5 px and a right-click menu its row by 1.0 px (use
+          one gap; taste); the ended line's placement is right, but its wording should name the
+          operation and the form's own button: "The merge has ended. Choose Review stash to
+          continue." (Review amend in the amend form).
+        - Measurement: the slow write's first busy frame came about 250–270 ms after the press, at
+          load 17 with frames 30–120 ms apart, which cannot be judged against the 200 ms delay;
+          re-measure it on an idle host.
         Owner decision, 2026-10-28: Linux reaches feature parity with macOS where possible; macOS is
         checked later on a Mac. The gaps (README "Linux gaps", `docs/file-previews.md`,
         `docs/linux.md`), each a separate change with a dated research note on the dependency
