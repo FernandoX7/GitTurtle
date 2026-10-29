@@ -1151,7 +1151,12 @@ mod portal {
     }
 
     /// One read of everything the pipe holds: `None` while the child may
-    /// write more, otherwise the query's result.
+    /// write more, otherwise the query's result. A child that had exited
+    /// before the read has its whole answer in the pipe, so the query ends
+    /// once the read drains it, whether or not the pipe has closed: a
+    /// process another thread spawns while this child starts holds a copy
+    /// of the pipe's write end until that process execs, which a loaded host
+    /// can delay well past this child's exit.
     fn read_available(
         child: &mut Child,
         stdout: &mut ChildStdout,
@@ -1159,32 +1164,44 @@ mod portal {
         buffer: &mut [u8],
         limit: usize,
     ) -> Option<Option<String>> {
+        let exited = match child.try_wait() {
+            Ok(exited) => exited,
+            Err(_) => return Some(None),
+        };
         loop {
             match stdout.read(buffer) {
+                Ok(0) => break,
                 Ok(count) => {
                     if output.len() + count > limit {
                         return Some(None);
                     }
                     output.extend_from_slice(&buffer[..count]);
-                    if count > 0 {
-                        continue;
-                    }
-                    return match child.try_wait() {
-                        Ok(Some(status)) => Some(
-                            status
-                                .success()
-                                .then(|| String::from_utf8(std::mem::take(output)).ok())
-                                .flatten(),
-                        ),
-                        Ok(None) => None,
-                        Err(_) => Some(None),
-                    };
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return None,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => match exited {
+                    Some(_) => break,
+                    // A running child may write more.
+                    None => return None,
+                },
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(_) => return Some(None),
             }
         }
+        // Drained: the child had exited, or it closed the pipe and may still
+        // be exiting.
+        let status = match exited {
+            Some(status) => status,
+            None => match child.try_wait() {
+                Ok(Some(status)) => status,
+                Ok(None) => return None,
+                Err(_) => return Some(None),
+            },
+        };
+        Some(
+            status
+                .success()
+                .then(|| String::from_utf8(std::mem::take(output)).ok())
+                .flatten(),
+        )
     }
 
     #[cfg(test)]
@@ -1312,6 +1329,7 @@ mod portal {
 
         /// Waits while real time and the test clock pass together, for a
         /// real child's output to reach a query that reads it on that clock.
+        #[track_caller]
         fn until(cx: &gpui_kit::TestAppContext, mut done: impl FnMut() -> bool) {
             let started = std::time::Instant::now();
             while !done() {
@@ -1323,6 +1341,7 @@ mod portal {
         /// [`until`] with the test clock held, for a stand-in to start or to
         /// answer: however slowly a loaded host runs it, the wait spends
         /// none of its query's bound, which the test then passes exactly.
+        #[track_caller]
         fn until_clock_held(cx: &gpui_kit::TestAppContext, mut done: impl FnMut() -> bool) {
             let started = std::time::Instant::now();
             while !done() {
@@ -1383,6 +1402,55 @@ mod portal {
                 std::io::Error::last_os_error().raw_os_error(),
                 Some(libc::ESRCH)
             );
+        }
+
+        /// A process another thread spawns while a query's child starts holds
+        /// a copy of the pipe's write end until it execs, so the pipe can stay
+        /// open after the child exits. The query still ends at its first read
+        /// poll after the exit, with the child's whole answer. Here the child
+        /// leaves a background sleeper holding the pipe, and the clock is held
+        /// until the child has exited, then passes one read poll.
+        #[gpui_kit::test]
+        fn a_query_ends_with_its_child_while_another_process_holds_its_pipe(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            let ids = tempfile::tempdir().unwrap();
+            let pid = |name: &str| -> Option<libc::pid_t> {
+                let recorded = std::fs::read_to_string(ids.path().join(name)).ok()?;
+                recorded.strip_suffix('\n')?.parse().ok()
+            };
+            let mut command =
+                sh("sleep 30 & echo $! > \"$1/holder\"; echo $$ > \"$1/child\"; printf 'True|1'");
+            command.arg(ids.path());
+            let result = Arc::new(Mutex::new(None));
+            let slot = result.clone();
+            let executor = cx.executor();
+            cx.executor()
+                .spawn(async move {
+                    let output = command_output(
+                        &executor,
+                        &mut command,
+                        Duration::from_secs(1),
+                        FONTCONFIG_BYTES,
+                        || true,
+                    )
+                    .await;
+                    *slot.lock().unwrap() = Some(output);
+                })
+                .detach();
+            // The query's first read reaps a child that has already exited.
+            until_clock_held(cx, || {
+                result.lock().unwrap().is_some()
+                    || pid("child").is_some_and(super::super::exited_unreaped)
+            });
+            super::super::pass_real_time(&cx.executor());
+            let answered = result.lock().unwrap().take();
+            if let Some(holder) = pid("holder") {
+                // SAFETY: the sleeper holds the pipe for 30 s, so the id is
+                // still its own.
+                unsafe { libc::kill(holder, libc::SIGKILL) };
+            }
+            assert_eq!(answered, Some(Some("True|1".into())));
         }
 
         fn stand_in(generation: &Arc<AtomicU64>, fake: &super::super::StandIn) -> Fontconfig {
