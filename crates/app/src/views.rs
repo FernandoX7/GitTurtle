@@ -10609,15 +10609,32 @@ pub(crate) mod tests {
     /// from its editing element, which the kit names after the field's
     /// `aria_label`, or without one after the placeholder it shows.
     fn field_name(cx: &mut VisualTestContext, field: &Entity<InputState>) -> Option<String> {
+        input_node(cx, field).label().map(str::to_owned)
+    }
+
+    /// The accessibility node `field`'s editing element writes, built inside
+    /// a draw. Outside one, GPUI allocates the elements a render makes in a
+    /// thread-wide arena that nothing clears, so they held the field after
+    /// the test's app was gone, which GPUI's leak check reports when the
+    /// app drops; a draw allocates them in the app's own arena and clears
+    /// it. The draw paints nothing.
+    pub(crate) fn input_node<S: Render>(
+        cx: &mut VisualTestContext,
+        field: &Entity<S>,
+    ) -> gpui::accesskit::Node {
         use gpui::Element as _;
-        cx.update(|window, cx| {
+        let mut written = None;
+        let viewport = cx.update(|window, _| window.viewport_size());
+        cx.draw(point(px(0.), px(0.)), viewport, |window, cx| {
             field.update(cx, |state, cx| {
                 let element = Render::render(state, window, cx).into_element();
                 let mut node = gpui::accesskit::Node::new(element.a11y_role().unwrap());
                 element.write_a11y_info(&mut node);
-                node.label().map(str::to_owned)
-            })
-        })
+                written = Some(node);
+            });
+            div()
+        });
+        written.expect("the field's element was built")
     }
 
     /// The Changes filter's placeholder fits its field in whole words. In

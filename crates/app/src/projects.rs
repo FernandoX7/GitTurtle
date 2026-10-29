@@ -1746,31 +1746,33 @@ mod tests {
                     });
                 });
                 window.draw(cx).clear(cx);
-                hub.update(cx, |hub, cx| {
-                    let mut inputs = vec![(&hub.search, "Find a recent project by name or folder")];
-                    if mode != ProjectMode::Open {
-                        inputs.extend([
-                            (&hub.parent, "Parent folder"),
-                            (&hub.name, "Project folder name"),
-                        ]);
-                        inputs.push(if mode == ProjectMode::Clone {
-                            (&hub.source, "Repository URL or local path")
-                        } else {
-                            (&hub.branch, "Initial branch")
-                        });
-                    }
-                    for (input, label) in inputs {
-                        input.update(cx, |state, cx| {
-                            let element = Render::render(state, window, cx).into_element();
-                            let mut node = gpui::accesskit::Node::new(element.a11y_role().unwrap());
-                            element.write_a11y_info(&mut node);
-                            assert_eq!(node.role(), Role::TextInput);
-                            assert_eq!(node.label(), Some(label));
-                            assert!(node.supports_action(gpui::AccessibleAction::SetValue));
-                        });
-                    }
-                });
             });
+            let inputs = hub.read_with(cx, |hub, _| {
+                let mut inputs = vec![(
+                    hub.search.clone(),
+                    "Find a recent project by name or folder",
+                )];
+                if mode != ProjectMode::Open {
+                    inputs.extend([
+                        (hub.parent.clone(), "Parent folder"),
+                        (hub.name.clone(), "Project folder name"),
+                    ]);
+                    inputs.push(if mode == ProjectMode::Clone {
+                        (hub.source.clone(), "Repository URL or local path")
+                    } else {
+                        (hub.branch.clone(), "Initial branch")
+                    });
+                }
+                inputs
+            });
+            for (input, label) in inputs {
+                // Built inside a draw, so the field's elements go with the
+                // test's app (`views::tests::input_node`).
+                let node = crate::views::tests::input_node(cx, &input);
+                assert_eq!(node.role(), Role::TextInput);
+                assert_eq!(node.label(), Some(label));
+                assert!(node.supports_action(gpui::AccessibleAction::SetValue));
+            }
         }
     }
 
