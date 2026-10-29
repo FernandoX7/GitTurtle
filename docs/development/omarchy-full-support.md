@@ -602,6 +602,10 @@ cover current upstream x86-64 Omarchy.
           write rather than looking unavailable; `vendor/gpui-component/GITTURTLE-PATCH.md` still
           names the app's right-click menus as consumers of the popup-inset and context-menu-lifetime
           patches, which they no longer use (update the notes or retire the patches, vendor-scoped).
+        - Layout, a frame late: Compare's toolbar (path actions, modes and zoom groups) and the
+          footer's long-or-short line still choose from the width a frame before (at 18 pt the
+          toolbar flips between 701 and 661 px a frame late); a jump from 461×560 to 980 px moves
+          the image comparison 6.5 px between its first and settled frame.
         - Accessibility: at 18 pt in 461×490 the GitHub panel's offline status is reported on the
           bus with 0 height at the panel body's bottom edge (y 557 physical) rather than left out
           while it is scrolled out of view.
