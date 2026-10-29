@@ -577,14 +577,25 @@ cover current upstream x86-64 Omarchy.
           for one frame (~135 ms after the press); under a still pointer the pressed control's
           tooltip ("Stage gamma.txt") stays over the row that moved beneath it until the pointer
           moves; Settings opened by Ctrl+, with an Omarchy theme at 18 pt in 461×490 focuses the
-          Omarchy card below the fold (the button reveals it); after a one-match Shortcuts search a
-          thumb stays drawn and the status reads "1 shortcuts"; in a 640×430 window at 13 pt the
-          refusal band keeps a 40.5 px image; at 18 pt in 461×490 the image gets 61 px and Before's
-          Open control wraps onto its own line.
-        - Native against test fonts: the commit menu's fill ends 14.5 px inside the list's edge at
-          18 pt (13.5 expected); a 480 px inspector in a 1,404 px window draws 454.5 px with Actions
+          Omarchy card below the fold (the button reveals it); after a one-match Shortcuts search the
+          status reads "1 shortcuts"; at 18 pt in 461×490 the image gets 61 px and Before's Open
+          control wraps onto its own line.
+        - Native against test fonts: a 480 px inspector in a 1,404 px window draws 454.5 px with Actions
           as text (455.5 and an icon expected); long Compare paths read "…n/RepositoryNav.tsx" and
           "…omponents/views.rs" with File actions beside them, not below (as in the base).
+        - Design review of the same frames (sheets 67–75 in `before-after/`, specs
+          `before-after/specs-q8/`): the busy frame also turns the commit button's label to
+          "Working…"; the absent side's "No image on this side" is gone from Before's caption at
+          461 px (`5755f3d` gave it way as a dimensions line); only Before's open control wraps at
+          18 pt, costing the image ~48 px; the one Shortcuts match is cut at the list's foot (the
+          group heading is not counted in its one-row minimum; both builds; the thumb is correct);
+          reopening the GitHub panel scrolls the offline notice and Move fixture head out of view
+          where offset 0 would show the focused field whole (prefer offset 0 when the stop is whole
+          there); at 18 pt in 461 px Settings' "Follow system appearance" heading wraps to three
+          lines beside a switch with the same words (labels go). Corrected QA calls: the commit
+          menu's visible edge is 13.5 px inside the list (the 1 px border was measured); the
+          640×430 image under the band is drawn whole, as intended; Details… as text at rest is
+          DESIGN.md's rule.
         - Tools: `scripts/native_qa/qa.py` cannot drive this host (needs python-xlib and XWayland
           with Mutter or XTest); a Hyprland backend (grim, hyprctl, the wlr virtual pointer, wtype)
           would let scenarios run here.
