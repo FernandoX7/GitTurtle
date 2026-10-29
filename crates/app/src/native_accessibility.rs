@@ -1538,6 +1538,28 @@ pub(crate) mod written {
         false
     }
 
+    /// The wrappers the wrapper `id` was last drawn inside, by element ID
+    /// with what each wrote, innermost first.
+    pub(crate) fn ancestors(id: &str) -> Vec<(String, Written)> {
+        let mut found = Vec::new();
+        let mut parent = get(id).and_then(|written| written.parent);
+        while let Some(id) = parent {
+            let Some(written) = get(&id) else {
+                break;
+            };
+            parent = written.parent.clone();
+            found.push((id, written));
+        }
+        found
+    }
+
+    /// The wrappers drawn inside the wrapper `outer` as they last
+    /// prepainted, by element ID.
+    pub(crate) fn inside(outer: &str) -> Vec<String> {
+        let ids: Vec<String> = NODES.with(|nodes| nodes.borrow().keys().cloned().collect());
+        ids.into_iter().filter(|id| lies_in(id, outer)).collect()
+    }
+
     /// Records what the live region `element` asks its node to announce, as
     /// it is built: GPUI writes it only while an assistive technology is
     /// active.

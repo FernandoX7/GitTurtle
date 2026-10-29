@@ -8247,44 +8247,25 @@ pub(crate) mod tests {
 
     /// What an assistive technology reaches of an image side's caption and
     /// of its reason in the image's room, through AccessKit's filter and, on
-    /// Linux, the AT-SPI adapter: each name with its role. The image's area,
-    /// which GPUI writes itself, is added as it was named where it carries
-    /// the words that gave way, holding the lines drawn in it.
+    /// Linux, the AT-SPI adapter: each name with its role. Each node stands
+    /// where it was drawn, among them the image's node where it carries the
+    /// words that gave way.
     fn image_sides_read(
         cx: &mut VisualTestContext,
         at: &str,
         sides: &[usize],
     ) -> Vec<(gpui::accesskit::Role, String)> {
         use crate::native_accessibility::{reachable, written};
-        use gpui::accesskit::{Node, Role};
+        use gpui::accesskit::Role;
         written::forget();
-        COMPACT_LABELS.with(|labels| labels.borrow_mut().remove("image-canvas-area-name"));
         draw(cx);
-        let area =
-            COMPACT_LABELS.with(|labels| labels.borrow().get("image-canvas-area-name").cloned());
         let mut tree = written::Assembly::default();
         for &side in sides {
             tree = tree.written(&format!("image-side-description-{side}"), None);
         }
-        if let Some(area) = &area {
-            let role = if area.ends_with("image") || area.ends_with("images") {
-                Role::Image
-            } else {
-                Role::Group
-            };
-            let mut node = Node::new(role);
-            node.set_label(area.to_string());
-            tree = tree.node("image-canvas-area", node, None);
-        }
+        tree = tree.written("image-canvases", None);
         for &side in sides {
-            let line = format!("image-side-empty-{side}");
-            if let Some(written) = written::get(&line) {
-                tree = tree.node(
-                    &line,
-                    written.node,
-                    area.as_ref().map(|_| "image-canvas-area"),
-                );
-            }
+            tree = tree.written(&format!("image-side-empty-{side}"), None);
         }
         let viewport = cx.update(|window, _| window.viewport_size());
         let scale = f64::from(cx.update(|window, _| window.scale_factor()));
@@ -8338,7 +8319,10 @@ pub(crate) mod tests {
     /// draws it nor repeats it in the name's accessible name, and where the
     /// notes have given way the area is named for the images it draws ("After
     /// image", or, a source image without one, "Source details"), never for a
-    /// side without one.
+    /// side without one. That node holds only the images it draws, the line
+    /// lying over it as its sibling: drawn inside the "After image" node, the
+    /// line was reached by no screen reader, which presents an image by its
+    /// name alone.
     ///
     /// Overlaid, where Before has no room of its own, it stays beneath
     /// Before's name, inside the preview: whole where After's dimensions
@@ -8472,6 +8456,39 @@ pub(crate) mod tests {
             );
             cut
         };
+        // Side `side`'s line, as the window last drew it, is static text no
+        // image holds, and the image's node, where it is one, holds only the
+        // images it draws: a screen reader presents an image by its name
+        // without reading what it holds, and the vendored AT-SPI mapper
+        // exposes it as a plain image, so the line inside it was reached by
+        // no one, while the side's name left its words out.
+        let no_image_holds = |side: usize, at: &str| {
+            use crate::native_accessibility::written;
+            let line = format!("image-side-empty-{side}");
+            let Some(said) = written::get(&line) else {
+                return;
+            };
+            assert_eq!(
+                said.node.role(),
+                Role::Label,
+                "{at}: the line is static text"
+            );
+            let holders: Vec<_> = written::ancestors(&line)
+                .into_iter()
+                .map(|(id, holder)| (id, holder.node.role()))
+                .collect();
+            assert!(
+                holders.iter().all(|(_, role)| *role != Role::Image),
+                "{at}: no image holds the line: {holders:?}"
+            );
+            if written::get("image-canvases").is_some() {
+                assert_eq!(
+                    written::inside("image-canvases"),
+                    Vec::<String>::new(),
+                    "{at}: the image's node holds only the images it draws"
+                );
+            }
+        };
         let mut met = std::collections::BTreeSet::new();
 
         // Side by side and overlaid, with Before saying it has no image and
@@ -8538,7 +8555,9 @@ pub(crate) mod tests {
                                 read.contains(&(*role, "After image".to_owned())),
                                 "{at}: the area is named for the image it draws: {read:?}"
                             );
+                            assert_eq!(*role, Role::Image, "{at}: the area is an image");
                         }
+                        no_image_holds(0, &at);
                         continue;
                     }
                     let line = bounds("image-side-details-0", cx);
@@ -8646,6 +8665,7 @@ pub(crate) mod tests {
                 );
             }
             let read = image_sides_read(cx, &at, &[1]);
+            no_image_holds(1, &at);
             assert!(
                 read.contains(&(Role::Label, "Source".to_owned())),
                 "{at}: the caption reads its name alone: {read:?}"

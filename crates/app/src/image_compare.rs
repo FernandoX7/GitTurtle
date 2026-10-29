@@ -980,6 +980,11 @@ impl GitTurtle {
                         &SharedString::from(name),
                     );
                 }
+                // The image's node holds only the images it draws. A side's
+                // line saying why it has none lies over it, in its room, as
+                // the node's sibling: a screen reader presents an image by
+                // its name without reading what it holds, so inside it the
+                // line was reached by no one.
                 crate::in_frame::probed(
                     div()
                         .id("image-canvas-area")
@@ -988,16 +993,23 @@ impl GitTurtle {
                         .flex_1()
                         .min_h_0()
                         .flex()
-                        .when(described, |area| {
-                            area.role(if image_label.is_some() {
-                                Role::Image
-                            } else {
-                                Role::Group
-                            })
-                            .aria_label(name)
-                            .aria_description(description)
-                        })
-                        .children(canvases)
+                        .child(native_accessibility::recorded(
+                            div()
+                                .id("image-canvases")
+                                .size_full()
+                                .min_w_0()
+                                .flex()
+                                .when(described, |area| {
+                                    area.role(if image_label.is_some() {
+                                        Role::Image
+                                    } else {
+                                        Role::Group
+                                    })
+                                    .aria_label(name)
+                                    .aria_description(description.clone())
+                                })
+                                .children(canvases),
+                        ))
                         .children(empties),
                     "image-canvas-area",
                 )
