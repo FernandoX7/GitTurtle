@@ -142,7 +142,7 @@ pub(super) struct State {
     list: Option<FocusReveal>,
     /// The filter of the Tags dialog opened last, for tests.
     #[cfg(test)]
-    filter: Option<FocusHandle>,
+    filter: Option<Entity<InputState>>,
 }
 
 impl GitTurtle {
@@ -176,7 +176,7 @@ impl GitTurtle {
                     let filter = browser.read(cx).query.read(cx).focus_handle(cx);
                     #[cfg(test)]
                     {
-                        this.tag_actions.filter = Some(filter.clone());
+                        this.tag_actions.filter = Some(browser.read(cx).query.clone());
                     }
                     window.open_alert_dialog(cx, move |dialog, window, cx| {
                         // The dialog clips its body to the body's bounds, and
@@ -188,6 +188,7 @@ impl GitTurtle {
                         dialog
                             .title(
                                 native_accessibility::dialog_title("tags-dialog-title", "Tags")
+                                    .ml(TEXT_INSET)
                                     .mb(-room),
                             )
                             .width(appearance::dialog_width(px(600.), window))
@@ -487,8 +488,14 @@ impl Render for TagBrowser {
         // back. The list scrolls, so it clips its rows to its bounds on both
         // axes: it keeps the room around them and gives it back through its
         // margin, so no row moves. A row Tab moves onto scrolls into view
-        // with its ring. The empty list's line starts at the dialog's edge,
-        // with the summary above it.
+        // with its ring.
+        //
+        // The dialog's text starts at one inset, the filter's: the title,
+        // the summary, the notices, the empty list's line and each row's
+        // name, which the kit centred in its row while the summary started
+        // at the dialog's edge. With no tag at all the line alone says so;
+        // the summary above it offered to inspect, delete or push a tag
+        // that was not there.
         let room = appearance::button_ring_room(cx);
         let rows: Vec<_> = (0..matches.len().min(100))
             .map(|index| self.rows.focus(("tag-row", index), cx))
@@ -497,17 +504,64 @@ impl Render for TagBrowser {
         // Past its height the list cues the rest with its scrollbar.
         let cue = ScrollCue::new(self.rows.scroll(), room);
         div().flex().flex_col().gap_3().py(room)
-            .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true))).child(button("create-tag", "Create tag…", "plus", false).debug_selector(|| "create-tag".into()).when(!self.committed, |create| create.disabled(true).accessibility_label(NO_COMMIT_NAME).tooltip(NO_COMMIT_REASON)).on_click(cx.listener(|this, _, window, cx| {
+            // Painted after the field, the canvas fits its placeholder in
+            // whole words, where at 18 pt in a half tile it was cut mid-glyph.
+            .child(div().flex().gap_2().child(div().relative().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true)).child(crate::workspace::placeholder_fit(self.query.clone(), &FILTER_FIT, FILTER_PLACEHOLDERS, FIELD_TEXT))).child(button("create-tag", "Create tag…", "plus", false).debug_selector(|| "create-tag".into()).when(!self.committed, |create| create.disabled(true).accessibility_label(NO_COMMIT_NAME).tooltip(NO_COMMIT_REASON)).on_click(cx.listener(|this, _, window, cx| {
                 let _ = this.owner.update(cx, |owner, cx| { if owner.path == this.path && owner.operation_busy.is_none() { window.close_dialog(cx); owner.open_create_tag(window, cx); } });
             }))))
-            .child(static_text("tag-list-summary", format!("{} local tags · Select to inspect, delete locally, or push one named tag.", self.list.tags.len())).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
+            .when(!self.list.tags.is_empty(), |element| element.child(static_text("tag-list-summary", summary(self.list.tags.len())).ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("tags-list").debug_selector(|| "tags-list".into()).max_h(px(360.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap_1().children(matches.iter().zip(rows).enumerate().map(|(index, (tag, focus))| {
                 let tag = (*tag).clone(); let label = format!("{} · {} · {}", tag.name, if tag.annotated { "Annotated" } else { "Lightweight" }, short_oid(&tag.target_oid));
-                Button::new(("tag-row", index)).track_focus(&focus).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).label(label.clone()).accessibility_label(label).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
-            })).when(matches.is_empty(), |element| element.child(div().py_3().child(EmptyState::new("tag-list-empty", if !self.committed { NO_COMMIT_LINE } else if self.list.tags.is_empty() { "No local tags yet · Create tag… names a commit" } else { "No tags match this filter" }).block(cx)))), "tags-scrollbar"))
-            .when(matches.len() > 100, |element| element.child(static_text("tag-list-match-limit", "Showing 100 matches. Narrow the filter to find another tag.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
-            .when(self.list.truncated, |element| element.child(static_text("tag-list-load-limit", "Loaded the first 10,000 local tags by name. Additional tags are outside this bounded browser.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
+                Button::new(("tag-row", index)).track_focus(&focus).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).pl(TEXT_INSET).child(row_text(format!("tag-row-text-{index}"), label.clone())).accessibility_label(label).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
+            })).when(matches.is_empty(), |element| element.child(div().py_3().ml(TEXT_INSET).child(EmptyState::new("tag-list-empty", if !self.committed { NO_COMMIT_LINE } else if self.list.tags.is_empty() { "No local tags yet · Create tag… names a commit" } else { "No tags match this filter" }).block(cx)))), "tags-scrollbar"))
+            .when(matches.len() > 100, |element| element.child(static_text("tag-list-match-limit", "Showing 100 matches. Narrow the filter to find another tag.").ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
+            .when(self.list.truncated, |element| element.child(static_text("tag-list-load-limit", "Loaded the first 10,000 local tags by name. Additional tags are outside this bounded browser.").ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
     }
+}
+
+/// The summary above a list of `count` tags, the count agreeing with its
+/// noun: "1 local tag" read "1 local tags".
+fn summary(count: usize) -> String {
+    format!(
+        "{} · Select to inspect, delete locally, or push one named tag.",
+        crate::counted(count, "local tag", "local tags")
+    )
+}
+
+/// Where the Tags dialog's text starts, in from its content edge: the
+/// filter's text inset, where its placeholder starts at every size. The
+/// title, the summary, the notices, the empty list's line and each row's
+/// name start here, as the Reflog's text does.
+const TEXT_INSET: Pixels = appearance::FIELD_TEXT_INSET;
+
+/// The filter's placeholders, each a shorter wording of the one before it in
+/// whole words: the first that fits the field shows
+/// (`workspace::placeholder_fit`). The field keeps its accessible name,
+/// "Filter local tags", whichever shows.
+const FILTER_PLACEHOLDERS: &[&str] =
+    &["Filter tags by name or object ID", "Filter tags…", "Filter"];
+
+/// The size the kit's medium field draws its text at, at the default
+/// interface size: 0.875 rem of a 13 px rem.
+const FIELD_TEXT: f32 = 13. * 0.875;
+
+thread_local! {
+    /// The filter's placeholder as it fits the width the field last painted at.
+    static FILTER_FIT: crate::workspace::PlaceholderFit = const { std::cell::RefCell::new(None) };
+}
+
+/// A list row's name, as a list row starts it rather than a centred Button
+/// label: from the row's leading inset, on one line ending in an ellipsis
+/// where the row is too narrow. The row's accessible name keeps it whole.
+pub(crate) fn row_text(selector: String, text: String) -> Div {
+    div()
+        .debug_selector(move || selector.clone())
+        .flex_1()
+        .min_w_0()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .line_height(relative(1.))
+        .child(text)
 }
 
 struct TagForm {
@@ -591,8 +645,13 @@ impl Render for TagForm {
 /// The filter of the Tags dialog opened last, for the focus sweep.
 #[cfg(test)]
 pub(crate) fn filter(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> FocusHandle {
-    app.read_with(cx, |app, _| app.tag_actions.filter.clone())
-        .expect("Tags opened")
+    app.read_with(cx, |app, cx| {
+        app.tag_actions
+            .filter
+            .as_ref()
+            .map(|query| query.read(cx).focus_handle(cx))
+    })
+    .expect("Tags opened")
 }
 
 /// Opens Create tag, annotated as it opens, and returns its annotation
@@ -1008,7 +1067,10 @@ pub(crate) mod tests {
     /// The scrollbar thumb the last frame painted in `track`: the one filled
     /// quad inside it shorter than the track, which a track's own fill is
     /// not.
-    fn painted_thumb(cx: &mut VisualTestContext, track: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    pub(crate) fn painted_thumb(
+        cx: &mut VisualTestContext,
+        track: Bounds<Pixels>,
+    ) -> Option<Bounds<Pixels>> {
         let thumbs: Vec<_> = cx.update(|window, _| {
             let scale = window.scale_factor();
             window
@@ -1246,6 +1308,70 @@ pub(crate) mod tests {
         cx.simulate_resize(size(px(1000.), px(680.)));
         draw(cx);
         (repo, app, cx)
+    }
+
+    /// The summary's count agrees with its noun.
+    #[test]
+    fn the_summary_counts_one_tag_in_the_singular() {
+        assert!(summary(1).starts_with("1 local tag · "), "{}", summary(1));
+        assert!(summary(3).starts_with("3 local tags · "), "{}", summary(3));
+    }
+
+    /// Tags' text starts at one inset, where its filter's text and
+    /// placeholder start, at 13 and 18 pt in a 1480 × 980 window and a
+    /// 461 × 490 half tile: its title, its summary and each row's name. A
+    /// row's name was centred in its row while the summary started at the
+    /// dialog's edge. The placeholder fits its field in whole words: at 18
+    /// pt in the half tile "Filter tags by name or object ID" was cut
+    /// mid-glyph.
+    #[gpui::test]
+    async fn tags_text_starts_at_the_filters_inset(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let (_repo, app, cx) = small_window_with_tags(cx, fixture.path(), 0);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        read_lands(&app, cx).await;
+        draw(cx);
+        let query = app
+            .read_with(cx, |app, _| app.tag_actions.filter.clone())
+            .expect("Tags' filter");
+        for (width, height) in [(1480., 980.), (461., 490.)] {
+            for size in [13, 18] {
+                cx.simulate_resize(size_of(width, height));
+                set_interface_text_size(cx, &app, size);
+                let at = format!("{size} pt in {width} × {height}");
+                let filter = cx.read(|cx| query.read(cx).input_bounds().left());
+                for selector in ["tags-dialog-title", "tag-list-summary", "tag-row-text-0"] {
+                    let start = rendered(cx, selector).left();
+                    assert!(
+                        (start - filter).abs() < px(0.01),
+                        "{at}: {selector} starts at {start:?}, the filter's text at {filter:?}"
+                    );
+                }
+                let row = rendered(cx, "tag-row-text-0");
+                assert!(
+                    row.size.width > px(100.),
+                    "{at}: the row's name {row:?} fills its row from the inset"
+                );
+                let (shown, room) = cx.read(|cx| {
+                    let query = query.read(cx);
+                    (
+                        query.presentation().placeholder().clone(),
+                        query.text_bounds().map(|bounds| bounds.size.width),
+                    )
+                });
+                let expected = if width < 1000. && size == 18 {
+                    "Filter tags…"
+                } else {
+                    FILTER_PLACEHOLDERS[0]
+                };
+                assert_eq!(shown.as_ref(), expected, "{at}: in a field {room:?} wide");
+            }
+        }
+        set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+    }
+
+    fn size_of(width: f32, height: f32) -> Size<Pixels> {
+        size(px(width), px(height))
     }
 
     /// Tab moves through every row of Tags and Shift+Tab back, and the list

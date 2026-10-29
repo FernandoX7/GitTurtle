@@ -1322,9 +1322,11 @@ pub(crate) mod tests {
         );
     }
 
-    /// Tags' empty line starts at the dialog's one left edge, where the
-    /// summary above it starts, at 13 and 18 pt: it stood 10 px right of it,
-    /// a list padding's inset.
+    /// Tags' empty line starts at the dialog's one left edge, where its
+    /// title starts, at 13 and 18 pt: it stood 10 px right of the summary, a
+    /// list padding's inset. With no tag, the line alone says so: the
+    /// summary over it offered to inspect, delete or push a tag that was not
+    /// there.
     #[gpui::test]
     async fn the_tags_line_starts_at_the_dialogs_edge(cx: &mut TestAppContext) {
         let (_fixture, app, cx, _) = window(cx, &history_script(1, 1)).await;
@@ -1335,12 +1337,16 @@ pub(crate) mod tests {
                 cx.simulate_resize(size(px(width), px(height)));
                 draw(cx);
                 let line = cx.debug_bounds("tag-list-empty-line").expect("the line");
-                let summary = cx.debug_bounds("tag-list-summary").expect("the summary");
+                let title = cx.debug_bounds("tags-dialog-title").expect("the title");
                 assert!(
-                    (line.left() - summary.left()).abs() <= px(0.5),
-                    "at {interface} pt in {width} × {height} the line starts at {:?}, the summary at {:?}",
+                    (line.left() - title.left()).abs() <= px(0.5),
+                    "at {interface} pt in {width} × {height} the line starts at {:?}, the title at {:?}",
                     line.left(),
-                    summary.left()
+                    title.left()
+                );
+                assert!(
+                    cx.debug_bounds("tag-list-summary").is_none(),
+                    "at {interface} pt in {width} × {height} a summary stands over no tag"
                 );
             }
         }

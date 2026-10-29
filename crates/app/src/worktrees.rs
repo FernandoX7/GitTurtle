@@ -33,7 +33,20 @@ impl RemovalMode {
     }
 }
 
-use crate::native_accessibility::text as label;
+/// Where the worktree manager's text starts, in from its content edge: the
+/// filter's text inset, where its placeholder starts at every size. The
+/// title, the labels, the details and each worktree row's name start here,
+/// as the Reflog's text does; the rows centred their names, and the other
+/// lines started at the content's edge.
+const TEXT_INSET: Pixels = appearance::FIELD_TEXT_INSET;
+
+/// [`native_accessibility::text`] at the manager's [`TEXT_INSET`].
+fn label(
+    id: impl Into<ElementId>,
+    value: impl Into<SharedString>,
+) -> native_accessibility::StaticText<Stateful<Div>> {
+    native_accessibility::text(id, value).ml(TEXT_INSET)
+}
 
 impl GitTurtle {
     pub(super) fn open_worktree_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -97,6 +110,7 @@ impl GitTurtle {
             dialog
                 .title(
                     native_accessibility::dialog_title("worktree-manager-title", "Worktrees")
+                        .ml(TEXT_INSET)
                         .mb(-room),
                 )
                 .width(appearance::dialog_width(px(700.), window))
@@ -156,8 +170,8 @@ impl GitTurtle {
             let finder = plan.destination.clone(); let editor_owner = owner.clone(); let editor_path = plan.destination.clone();
             dialog.title(native_accessibility::dialog_title("worktree-created-title", "Worktree created"))
                 .width(appearance::dialog_width(px(600.), window)).max_h(appearance::dialog_max_height(window)).child(div().flex().flex_col().gap_3()
-                    .child(label("worktree-created-target", format!("{}\n{}", plan.branch, plan.destination.display())).text_size(crate::appearance::ui_text(13.)))
-                    .child(label("worktree-created-context", "Each worktree keeps its own working files, index, HEAD, and GitTurtle commit draft. Branches and objects are shared.").text_size(crate::appearance::ui_text(12.)))
+                    .child(native_accessibility::text("worktree-created-target", format!("{}\n{}", plan.branch, plan.destination.display())).text_size(crate::appearance::ui_text(13.)))
+                    .child(native_accessibility::text("worktree-created-context", "Each worktree keeps its own working files, index, HEAD, and GitTurtle commit draft. Branches and objects are shared.").text_size(crate::appearance::ui_text(12.)))
                     .child(div().flex().flex_wrap().gap_2()
                         .child(button("open-created-worktree", "Open in GitTurtle", "", false).on_click(move |_, window, cx| { let _ = open_owner.update(cx, |this, cx| { if this.operation_busy.is_none() { window.close_dialog(cx); this.open(open_path.clone(), None, window, cx); } }); }))
                         .child(button("reveal-created-worktree", if cfg!(target_os = "macos") { "Show in Finder" } else { "Show in files" }, "", false).on_click(move |_, _, cx| cx.reveal_path(&finder)))
@@ -221,6 +235,9 @@ struct WorktreeManager {
     reveal_field: bool,
     /// The content's scroll.
     content: ScrollHandle,
+    /// The worktree list's scroll, which its scroll cue follows and which
+    /// reveals the row the keyboard moves focus onto.
+    rows: crate::focus_reveal::FocusReveal,
     reviewing: bool,
     error: Option<String>,
     creating: bool,
@@ -267,6 +284,7 @@ impl WorktreeManager {
             cancel_read: focus_ring::LoadingCancel::new(cx),
             reveal_field: false,
             content: ScrollHandle::new(),
+            rows: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
             reviewing: false,
             error: None,
             creating: false,
@@ -537,7 +555,9 @@ const ROW_RING_CLEARANCE: Pixels = px(2.);
 /// One row of the managed worktree list. A selected row shows its selection
 /// through the selected surface and its selected and toggled state, and keeps
 /// the neutral border of every other row, so an accent outline around a row
-/// always means keyboard focus: the focused row's ring, drawn once.
+/// always means keyboard focus: the focused row's ring, drawn once. Its name
+/// starts inside its 1 px border at the field's padding, on the manager's
+/// [`TEXT_INSET`], rather than centred as the kit centres a Button's label.
 fn worktree_row(index: usize, text: String, selected: bool, p: appearance::Palette) -> Button {
     Button::new(("managed-worktree-row", index))
         .debug_selector(move || format!("managed-worktree-row-{index}"))
@@ -545,10 +565,13 @@ fn worktree_row(index: usize, text: String, selected: bool, p: appearance::Palet
         .w_full()
         .h_auto()
         .min_h(crate::appearance::ui_size(36.))
-        .justify_start()
-        .px_3()
+        .pl(appearance::FIELD_TEXT_PADDING)
+        .pr_3()
         .py_2()
-        .label(text.clone())
+        .child(crate::tags::row_text(
+            format!("managed-worktree-row-text-{index}"),
+            text.clone(),
+        ))
         .accessibility_label(text)
         .selected(selected)
         .toggled(selected)
@@ -597,10 +620,25 @@ impl Render for WorktreeManager {
         // the list did. No control moves. The worktree rows stand apart by
         // the ring's room and `ROW_RING_CLEARANCE` more, so a focused row's
         // ring keeps some of the list's surface before the next row's border.
-        // The list's wrapper shrinks no shorter than a row, so in a short
-        // window, or a narrow one where the details below wrap, the content
-        // scrolls rather than squeeze the list to nothing.
+        // The list's wrapper shrinks no shorter than two whole rows, or the
+        // one a single worktree takes, so in a short window, or a narrow one
+        // where the details below wrap, the content scrolls rather than
+        // squeeze the list: at 13 pt in a 461 × 490 half tile it kept one of
+        // two worktrees, too short a track for a scrollbar's thumb to move
+        // in. Past its height the list cues the rest with its scrollbar, and
+        // the content, beside it in the dialog's side padding, cues its own.
         let room = appearance::button_ring_room(cx);
+        let row = appearance::ui_size(36.);
+        let floor_rows = trees.len().clamp(1, 2) as f32;
+        let rows_floor = row * floor_rows + (room + ROW_RING_CLEARANCE) * (floor_rows - 1.);
+        // A row focus has moved onto scrolls into the list's view in this
+        // frame.
+        self.rows.reveal(window, cx);
+        let rows: Vec<_> = (0..trees.len().min(100))
+            .map(|index| self.rows.focus(("managed-worktree-row", index), cx))
+            .collect();
+        let reveal = self.rows.items(rows.clone(), room);
+        let cue = crate::tags::ScrollCue::new(self.rows.scroll(), room);
         // As the dialog opens, the content scrolls the shown form's first
         // field into view with its ring: it follows the tabs' row, the
         // loading row and the error, and in Create the branch choice and its
@@ -612,7 +650,7 @@ impl Render for WorktreeManager {
                 + if self.creating { 2 } else { 0 };
             self.content.scroll_to_item(field);
         }
-        crate::native_accessibility::clips_children(div().id("worktree-manager-content").debug_selector(|| "worktree-manager-content".into()).flex().flex_col().gap_3().max_h(px(570.).min(body_height) + room * 2.).p(room).mx(-room).overflow_y_scroll().track_scroll(&self.content)
+        let content = crate::native_accessibility::clips_children(div().id("worktree-manager-content").debug_selector(|| "worktree-manager-content".into()).flex().flex_col().gap_3().max_h(px(570.).min(body_height) + room * 2.).p(room).mx(-room).overflow_y_scroll().track_scroll(&self.content)
             .child(div().flex().flex_wrap().gap_2()
                 .child(button("worktree-browse-tab", "Manage", "", !self.creating).debug_selector(|| "worktree-browse-tab".to_string()).toggled(!self.creating).on_click(cx.listener(|this, _, window, cx| this.switch_form(false, window, cx))))
                 .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).debug_selector(|| "worktree-create-tab".to_string()).toggled(self.creating).on_click(cx.listener(|this, _, window, cx| this.switch_form(true, window, cx))))
@@ -623,10 +661,13 @@ impl Render for WorktreeManager {
                 // Each first field stands in the ring's room, given back
                 // through its margin, so revealing it shows its ring whole.
                 .child(div().py(room).my(-room).child(Input::new(&self.filter).aria_label("Filter worktrees by branch or path").cleanable(true)))
-                .child(div().debug_selector(|| "managed-worktree-entries".into()).flex().flex_col().min_h_0().when(!trees.is_empty(), |entries| entries.min_h(appearance::ui_size(36.))).child(crate::native_accessibility::clips_children(div().id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap(room + ROW_RING_CLEARANCE).children(trees.iter().take(100).enumerate().map(|(index, tree)| {
+                // Past its height, as where a half tile leaves it one row,
+                // the list cues the rest with its scrollbar, and a row Tab
+                // moves onto scrolls into view with its ring.
+                .child(div().debug_selector(|| "managed-worktree-entries".into()).flex().flex_col().min_h_0().when(!trees.is_empty(), |entries| entries.min_h(rows_floor)).child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap(room + ROW_RING_CLEARANCE).children(trees.iter().take(100).zip(rows).enumerate().map(|(index, (tree, focus))| {
                     let tree = tree.clone(); let selected = self.selected.as_ref() == Some(&tree.path); let text = format!("{} · {}{}{}", tree.branch.as_deref().unwrap_or("Detached HEAD"), tree.path.display(), if tree.locked { " · Locked" } else { "" }, if tree.prunable { " · Missing or stale" } else { "" });
-                    worktree_row(index, text, selected, p).on_click(cx.listener(move |this, _, window, cx| this.select(tree.clone(), window, cx)))
-                })).when(trees.is_empty() && !self.pending, |element| element.child(label("worktrees-empty", "No worktrees match this filter.").text_size(crate::appearance::ui_text(12.)))))))
+                    worktree_row(index, text, selected, p).track_focus(&focus).on_click(cx.listener(move |this, _, window, cx| this.select(tree.clone(), window, cx)))
+                })).when(trees.is_empty() && !self.pending, |element| element.child(label("worktrees-empty", "No worktrees match this filter.").text_size(crate::appearance::ui_text(12.)))), "managed-worktree-scrollbar").min_h_0()))
                 .when(trees.len() > 100, |element| element.child(label("worktrees-match-limit", "Showing 100 matches. Narrow the filter to find another worktree.").text_size(crate::appearance::ui_text(12.))))
                 .when_some(self.details.as_ref(), |element, details| {
                     let details = details.clone(); let path = details.tree.path.clone(); let finder = path.clone(); let editor = path.clone();
@@ -655,7 +696,31 @@ impl Render for WorktreeManager {
                 .child(button("choose-worktree-parent", "Choose parent folder…", "folder", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.choose_parent(window, cx))))
                 .child(Input::new(&self.folder).aria_label("New worktree folder name"))
                 .child(label("worktree-destination-rule", "Choose a new folder inside the parent. Existing folders and branches checked out elsewhere are protected. Review the resolved branch and destination before creating.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
-                .child(button("review-create-worktree", "Review worktree…", "", false).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.prepare_create(window, cx))))))
+                .child(button("review-create-worktree", "Review worktree…", "", false).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.prepare_create(window, cx))))));
+        // The content's scrollbar stands in the dialog's side padding, beside
+        // the content and its ring room, as the Reflog's does, and paints
+        // only while the content overflows.
+        div()
+            .relative()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(content)
+            .child(
+                div()
+                    .debug_selector(|| "worktree-manager-scrollbar".into())
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(-gpui_kit::component::scroll::Scrollbar::width() - room)
+                    .w(gpui_kit::component::scroll::Scrollbar::width())
+                    .child(
+                        gpui_kit::component::scroll::Scrollbar::vertical(&self.content)
+                            .id("worktree-manager-scrollbar")
+                            .mode(gpui_kit::component::scroll::ScrollbarMode::Always)
+                            .viewport_from_layout(),
+                    ),
+            )
     }
 }
 
@@ -1230,5 +1295,129 @@ pub(crate) mod ring_room_tests {
         });
         probe.update(|window, cx| window.draw(cx).clear(cx));
         nodes.take()
+    }
+
+    /// The manager's text starts at one inset, where its filter's text and
+    /// placeholder start, at 13 and 18 pt in a 1480 × 980 window and a
+    /// 461 × 490 half tile: its title, each worktree row's name and the
+    /// selected worktree's details. A row's name was centred in its row,
+    /// and the other lines started at the content's edge.
+    #[gpui::test]
+    async fn manager_text_starts_at_the_filters_inset(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = four_worktrees(fixture.path());
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
+        let filter = manager.read_with(cx, |manager, _| manager.filter.clone());
+        for (width, height) in [(1480., 980.), (461., 490.)] {
+            for size in [13, 18] {
+                cx.simulate_resize(gpui::size(px(width), px(height)));
+                set_interface_text_size(cx, &app, size);
+                park_pointer(cx);
+                let at = format!("{size} pt in {width} × {height}");
+                let text = cx.read(|cx| filter.read(cx).input_bounds().left());
+                for selector in [
+                    "worktree-manager-title",
+                    "managed-worktree-row-text-0",
+                    "managed-worktree-row-text-3",
+                ] {
+                    let start = rendered(cx, selector).left();
+                    assert!(
+                        (start - text).abs() < px(0.01),
+                        "{at}: {selector} starts at {start:?}, the filter's text at {text:?}"
+                    );
+                }
+            }
+        }
+        set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+    }
+
+    /// In a 461 × 490 half tile, with a worktree selected and its details
+    /// below the list, the manager's list shows both of two worktrees whole
+    /// at 13 and 18 pt: it kept one, with nothing to cue the other.
+    #[gpui::test]
+    async fn a_half_tile_keeps_two_worktree_rows_whole(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let folder = fixture.path().join("second");
+        git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "second",
+                folder.to_str().unwrap(),
+            ],
+        );
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
+        let tree = manager.read_with(cx, |manager, _| manager.trees[1].clone());
+        cx.update(|window, cx| manager.update(cx, |manager, cx| manager.select(tree, window, cx)));
+        for _ in 0..4 {
+            cx.executor().run_until_parked();
+            let Some(task) = manager.update(cx, |manager, _| manager.task.take()) else {
+                break;
+            };
+            task.await;
+        }
+        cx.simulate_resize(gpui::size(px(461.), px(490.)));
+        for size in [13, 18] {
+            set_interface_text_size(cx, &app, size);
+            park_pointer(cx);
+            assert!(
+                cx.debug_bounds("worktree-selected-identity").is_some(),
+                "at {size} pt a worktree's details are shown"
+            );
+            let list = rendered(cx, "managed-worktree-list");
+            for selector in ["managed-worktree-row-0", "managed-worktree-row-1"] {
+                let row = rendered(cx, selector);
+                assert!(
+                    row.top() >= list.top() - px(0.01) && row.bottom() <= list.bottom() + px(0.01),
+                    "at {size} pt {selector} {row:?} lies whole in the list {list:?}"
+                );
+            }
+            // The details run past the content's fold, which its scrollbar
+            // cues beside it, clear of the content and its rings' room.
+            let content = rendered(cx, "worktree-manager-content");
+            let track = rendered(cx, "worktree-manager-scrollbar");
+            assert!(
+                rendered(cx, "worktree-selected-identity").bottom() > content.bottom()
+                    || cx
+                        .debug_bounds("remove-managed-worktree")
+                        .is_none_or(|remove| remove.bottom() > content.bottom()),
+                "at {size} pt the details overflow the content {content:?}"
+            );
+            let thumb = crate::tags::tests::painted_thumb(cx, track).unwrap_or_else(|| {
+                panic!("at {size} pt the content's scrollbar {track:?} paints a thumb")
+            });
+            assert!(
+                thumb.left() >= content.right() && track.left() >= content.right() - px(0.01),
+                "at {size} pt the thumb {thumb:?} stands beside the content {content:?}"
+            );
+        }
+        set_interface_text_size(cx, &app, appearance::DEFAULT_INTERFACE_TEXT_SIZE);
+    }
+
+    /// In a 461 × 490 half tile four worktrees overflow the manager's list
+    /// at 13 and 18 pt, and its scrollbar's thumb follows the list's offset
+    /// in a gutter clear of every row's ring; the list cued nothing.
+    #[gpui::test]
+    async fn a_short_worktree_list_cues_rows_beyond_its_edge(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = four_worktrees(fixture.path());
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
+        cx.simulate_resize(gpui::size(px(461.), px(490.)));
+        draw(cx);
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let scroll = manager.read_with(cx, |manager, _| manager.rows.scroll().clone());
+        let rows = crate::tags::tests::selectors("managed-worktree-row", 4);
+        crate::tags::tests::assert_scroll_cue(
+            cx,
+            &app,
+            &scroll,
+            "managed-worktree-list",
+            room,
+            &rows,
+        );
     }
 }
