@@ -247,6 +247,37 @@ fn passive_event(event: &Event) -> bool {
     )
 }
 
+/// What a repository's local changes are subscribed through. The app uses
+/// the platform's own notifications; a test can ask for a subscription that
+/// cannot start, as a watcher cannot once the host's inotify instances run
+/// out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Backend {
+    /// inotify on Linux, FSEvents on macOS ([`watch`]).
+    #[default]
+    Native,
+    /// Fails as creating a native watcher does when the per-user inotify
+    /// instances (`fs.inotify.max_user_instances`) are exhausted.
+    #[cfg(test)]
+    Unavailable,
+}
+
+/// Subscribes to `roots` through `backend`. Like [`watch`], it must run off
+/// the UI thread.
+pub(crate) fn subscribe(
+    backend: Backend,
+    roots: WatchRoots,
+) -> Result<(LocalWatcher, LocalChanges)> {
+    match backend {
+        Backend::Native => watch(roots),
+        #[cfg(test)]
+        Backend::Unavailable => Err(notify::Error::io(std::io::Error::from_raw_os_error(
+            libc::EMFILE,
+        )))
+        .context("Create native local-change watcher"),
+    }
+}
+
 /// Setup performs local I/O and must run off UI. Git discovery supplies real
 /// private/common directory paths rather than guessing from `.git` layout.
 pub fn watch(roots: WatchRoots) -> Result<(LocalWatcher, LocalChanges)> {

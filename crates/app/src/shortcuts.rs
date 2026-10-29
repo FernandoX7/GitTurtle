@@ -660,8 +660,8 @@ impl KeyHints {
         self.join(|(key, action)| format!("{key} {action}"))
     }
 
-    /// The keys alone, `Key · Key`: the form the hints take where a fresh
-    /// outcome in the status line needs their room (`GitTurtle::status_hints`).
+    /// The keys alone, `Key · Key`: the form the hints take where the status
+    /// line or the refresh warning needs their room (`GitTurtle::fit_status_bar`).
     pub(super) fn keys(&self) -> String {
         self.join(|(key, _)| key.clone())
     }

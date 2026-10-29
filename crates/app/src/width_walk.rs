@@ -13,9 +13,13 @@
 //! upstream, with the navigation at its 180 px minimum, with a search that
 //! found nothing, whose line and Clear search must lie wholly inside the
 //! list, and with a write's outcome fresh in the status line, which must be
-//! drawn whole beside the keyboard hints. The window is resized from width to width as a person or a
-//! tiling window manager resizes it, so the inspector is drawn at the size
-//! its panel group rescales it to, not only its saved width.
+//! drawn whole beside the keyboard hints; History and Working Changes are
+//! walked again with the local watch unable to start, whose status bar
+//! warning, Refresh and Details… stay whole while the hints give way, and
+//! History with both, where the outcome yields only to the warning. The
+//! window is resized from width to width as a person or a tiling window
+//! manager resizes it, so the inspector is drawn at the size its panel
+//! group rescales it to, not only its saved width.
 //!
 //! The test text system paints no glyphs, so the walk marks what it checks
 //! with fills a test can find among the painted quads, each with the content
@@ -153,6 +157,7 @@ const REGIONS: &[&str] = &[
     "repository-header",
     "git-actions",
     "repository-rail",
+    "local-refresh-warning",
     "status-hints",
     "history-sidebar",
     "history-pane",
@@ -417,7 +422,11 @@ impl Walk<'_> {
             shaped_width(&outcome, appearance::ui_text(10.), weight, window).ceil()
         });
         let drawn = cx.debug_bounds("status-line").map(|line| line.size.width);
-        if drawn.is_none_or(|drawn| drawn < need - px(0.5)) {
+        let yielded = cx.debug_bounds("local-refresh-warning").is_some()
+            && cx.debug_bounds("status-hints").is_none()
+            && crate::views::COMPACT_NAMES
+                .with(|names| names.borrow().contains_key("local-refresh-details"));
+        if drawn.is_none_or(|drawn| drawn < need - px(0.5)) && !yielded {
             let detail = format!("{outcome:?} in {drawn:?} of its {need:?}");
             self.found(Rule::OutcomeCut, "status-line", (width, height), detail);
         }
@@ -792,30 +801,51 @@ async fn walk(page: Page, text: u8, cx: &mut TestAppContext) {
 
 /// [`walk`] on History with the navigation dragged to its 180 px minimum.
 async fn walk_narrowest_navigation(text: u8, cx: &mut TestAppContext) {
-    walk_with(Page::History, text, &[], true, None, cx).await;
+    walk_with(Page::History, text, &[], true, None, false, cx).await;
+}
+
+/// [`walk`] with the repository's local watch unable to start, as when the
+/// host's inotify instances are exhausted: the status bar's warning, its
+/// Refresh and Details… stay whole beside the hints, which give way whole.
+async fn walk_with_watch_warning(page: Page, text: u8, cx: &mut TestAppContext) {
+    walk_with(page, text, &[], false, None, true, cx).await;
 }
 
 /// [`walk`], once the Git commands `edge` have moved the fixture to another
 /// repository edge, as a detached HEAD or a branch with no upstream.
 async fn walk_at_edge(page: Page, text: u8, edge: &[&[&str]], cx: &mut TestAppContext) {
-    walk_with(page, text, edge, false, None, cx).await;
+    walk_with(page, text, edge, false, None, false, cx).await;
 }
 
+/// The Fetch outcome the outcome walks keep fresh in the status line.
+const FETCH_OUTCOME: &str = "Up to date with origin · nothing new";
+
 /// [`walk`] on History with a Fetch's outcome fresh in the status line
-/// for the whole walk: the test clock stands still, so it never ends.
-async fn walk_with_outcome(text: u8, cx: &mut TestAppContext) {
-    let outcome = "Up to date with origin · nothing new";
-    walk_with(Page::History, text, &[], false, Some(outcome), cx).await;
+/// for the whole walk, beside the local watch's warning where `unwatched`:
+/// the test clock stands still, so the outcome never ends.
+async fn walk_with_outcome(text: u8, unwatched: bool, cx: &mut TestAppContext) {
+    walk_with(
+        Page::History,
+        text,
+        &[],
+        false,
+        Some(FETCH_OUTCOME),
+        unwatched,
+        cx,
+    )
+    .await;
 }
 
 /// [`walk_at_edge`], with the navigation dragged to its 180 px minimum
-/// where `narrowest`, and `outcome` recorded as a write's fresh outcome.
+/// where `narrowest`, `outcome` recorded as a write's fresh outcome, and
+/// the status bar's local watch warning where `unwatched`.
 async fn walk_with(
     page: Page,
     text: u8,
     edge: &[&[&str]],
     narrowest: bool,
     outcome: Option<&str>,
+    unwatched: bool,
     cx: &mut TestAppContext,
 ) {
     let (_fixture, app, cx, path) = open(page, cx).await;
@@ -851,6 +881,9 @@ async fn walk_with(
         cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
         settle(&app, cx).await;
     }
+    if unwatched {
+        unwatch(&app, cx);
+    }
     cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
     let mut walk = Walk {
         page,
@@ -863,12 +896,79 @@ async fn walk_with(
     for height in [490., 980.] {
         walk.walk(height, cx);
     }
+    if unwatched && outcome.is_some() && text == 18 {
+        // In a 461 × 490 half tile the warning leaves the outcome less than
+        // its text: every hint and Details…'s label have given way to it.
+        cx.simulate_resize(size(px(461.), px(490.)));
+        frame(cx);
+        crate::views::COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+        app.update(cx, |_, cx| cx.notify());
+        frame(cx);
+        let details_icon = crate::views::COMPACT_NAMES
+            .with(|names| names.borrow().contains_key("local-refresh-details"));
+        let shown = (
+            cx.debug_bounds("retry-local-refresh").is_some(),
+            cx.debug_bounds("status-hints").is_some(),
+            details_icon,
+        );
+        assert_eq!(
+            shown,
+            (true, false, true),
+            "(Refresh, hints, Details… as its icon)"
+        );
+    }
+    if unwatched {
+        // Where the bar has the room, every hint is drawn beside the warning.
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        frame(cx);
+        let (hints, whole) = cx.update(|window, cx| {
+            let hints = app.update(cx, |app, cx| app.key_hints(window, cx));
+            let hints = hints.expect("the page names its keys").whole();
+            let whole = shaped_width(
+                &hints,
+                appearance::ui_text(10.),
+                window.text_style().font_weight,
+                window,
+            );
+            (hints, whole)
+        });
+        let drawn = cx
+            .debug_bounds("status-hints")
+            .map(|bounds| bounds.size.width);
+        assert!(
+            drawn.is_some_and(|drawn| drawn >= whole - px(0.5)),
+            "{hints:?}, {whole:?} wide, drawn {drawn:?} beside the warning at 1,480 px"
+        );
+    }
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     if let Some(outcome) = outcome {
         let fresh = app.read_with(cx, |app, _| app.fresh_outcome().map(str::to_owned));
         assert_eq!(fresh.as_deref(), Some(outcome), "fresh for the whole walk");
     }
     walk.verdict();
+}
+
+/// Subscribes `app`'s repository again through a watcher that cannot start,
+/// as one cannot once the host's inotify instances are exhausted, and waits
+/// for the status bar to say that some changes need Refresh.
+fn unwatch(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.watch_through(local_refresh::Backend::Unavailable, window, cx)
+        })
+    });
+    // The subscription is made on the operation thread.
+    for _ in 0..400 {
+        frame(cx);
+        if cx.debug_bounds("local-refresh-warning").is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        cx.debug_bounds("local-refresh-warning").is_some(),
+        "the status bar says that some changes need Refresh"
+    );
 }
 
 /// A window on the fixture in Midnight, its every text run and shared
@@ -1016,12 +1116,25 @@ async fn a_search_with_no_match_keeps_its_state_whole_at_18_pt(cx: &mut TestAppC
 /// hints beside it keep their keys alone, or leave, while it lasts.
 #[gpui::test]
 async fn a_fresh_outcome_keeps_the_status_line_whole_at_13_pt(cx: &mut TestAppContext) {
-    walk_with_outcome(13, cx).await;
+    walk_with_outcome(13, false, cx).await;
 }
 
 #[gpui::test]
 async fn a_fresh_outcome_keeps_the_status_line_whole_at_18_pt(cx: &mut TestAppContext) {
-    walk_with_outcome(18, cx).await;
+    walk_with_outcome(18, false, cx).await;
+}
+
+/// A fresh outcome beside the local watch's warning: the warning and its
+/// Refresh stay whole, then the outcome, for which the hints give way and
+/// Details… becomes its icon. In a 461 × 490 half tile at 18 pt the
+/// warning leaves the outcome less than its whole text, so there it ends in
+/// an ellipsis inside the status line, with every hint gone and Details…
+/// as its icon.
+#[gpui::test]
+async fn a_fresh_outcome_beside_a_watch_warning_yields_only_to_it_at_18_pt(
+    cx: &mut TestAppContext,
+) {
+    walk_with_outcome(18, true, cx).await;
 }
 
 #[gpui::test]
@@ -1087,6 +1200,35 @@ async fn no_upstream_keeps_the_bar_whole_at_13_pt(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn no_upstream_keeps_the_bar_whole_at_18_pt(cx: &mut TestAppContext) {
     walk_at_edge(Page::History, 18, NO_UPSTREAM, cx).await;
+}
+
+/// With the local watch unable to start, the status bar's warning, Refresh
+/// and Details… stay whole and its hints give way item by item: the warning
+/// pushed them past the window's edge, cut mid-glyph at every width up to
+/// 821 px at 18 pt, whenever concurrent test suites exhausted the host's
+/// inotify instances.
+#[gpui::test]
+async fn a_watch_warning_keeps_the_status_bar_whole_on_history_at_13_pt(cx: &mut TestAppContext) {
+    walk_with_watch_warning(Page::History, 13, cx).await;
+}
+
+#[gpui::test]
+async fn a_watch_warning_keeps_the_status_bar_whole_on_history_at_18_pt(cx: &mut TestAppContext) {
+    walk_with_watch_warning(Page::History, 18, cx).await;
+}
+
+#[gpui::test]
+async fn a_watch_warning_keeps_the_status_bar_whole_on_working_changes_at_13_pt(
+    cx: &mut TestAppContext,
+) {
+    walk_with_watch_warning(Page::Working, 13, cx).await;
+}
+
+#[gpui::test]
+async fn a_watch_warning_keeps_the_status_bar_whole_on_working_changes_at_18_pt(
+    cx: &mut TestAppContext,
+) {
+    walk_with_watch_warning(Page::Working, 18, cx).await;
 }
 
 #[gpui::test]

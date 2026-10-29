@@ -2054,7 +2054,7 @@ impl GitTurtle {
 
     /// The write's outcome the status line reads while it is fresh, if it
     /// reads one ([`Self::status_line`]): the keyboard hints beside it give
-    /// it their room ([`Self::status_hints`]).
+    /// it their room (`GitTurtle::fit_status_bar`).
     pub(super) fn fresh_outcome(&self) -> Option<&str> {
         let outcome = self.status_outcome.as_ref()?;
         (self.page == AppPage::Repository

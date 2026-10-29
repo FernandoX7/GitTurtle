@@ -6,6 +6,8 @@ use local_refresh::{LocalChange, LocalChanges, LocalWatcher, WatchRoots};
 
 #[derive(Default)]
 pub struct State {
+    /// What the watcher subscribes through, kept across [`Self::reset`].
+    backend: local_refresh::Backend,
     watcher: Option<LocalWatcher>,
     roots: Option<WatchRoots>,
     watch_task: Option<Task<()>>,
@@ -27,6 +29,7 @@ impl State {
         let epoch = self.epoch.wrapping_add(1);
         *self = Self {
             epoch,
+            backend: self.backend,
             ..Default::default()
         };
     }
@@ -76,6 +79,7 @@ impl GitTurtle {
         } else {
             self.automatic.roots.clone()
         };
+        let backend = self.automatic.backend;
         let response = self.operations.submit_read(move || {
             let (private_git, common_git) = repo.git_directories()?;
             let roots = WatchRoots {
@@ -86,7 +90,7 @@ impl GitTurtle {
             let subscription = if previous.as_ref() == Some(&roots) {
                 None
             } else {
-                Some(local_refresh::watch(roots.clone())?)
+                Some(local_refresh::subscribe(backend, roots.clone())?)
             };
             Ok((roots, subscription))
         });
@@ -156,6 +160,22 @@ impl GitTurtle {
         }
         self.automatic.pending.merge(change);
         self.try_automatic_refresh(window, cx);
+    }
+
+    /// Drops the repository's local watch and subscribes again through
+    /// `backend`, as opening the repository does: with
+    /// [`local_refresh::Backend::Unavailable`] the status bar shows that some
+    /// changes need Refresh, as when the host's inotify instances run out.
+    #[cfg(test)]
+    pub(crate) fn watch_through(
+        &mut self,
+        backend: local_refresh::Backend,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.automatic.reset();
+        self.automatic.backend = backend;
+        self.ensure_local_watcher(true, window, cx);
     }
 
     pub(super) fn retry_automatic_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {

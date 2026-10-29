@@ -4986,12 +4986,10 @@ thread_local! {
     static SUBJECT_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static GRAPH_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static COMPACT_COUNT: TextWidth = const { RefCell::new(None) };
-    /// A fresh outcome in the status bar and the keyboard hints beside it,
-    /// whole and as their keys (`GitTurtle::status_hints`).
+    /// A fresh outcome in the status line (`GitTurtle::fit_status_bar`).
     static STATUS_OUTCOME: TextWidth = const { RefCell::new(None) };
-    static STATUS_HINTS: TextWidth = const { RefCell::new(None) };
-    static STATUS_KEYS: TextWidth = const { RefCell::new(None) };
-    static STATUS_WARNING: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
+    /// [`StatusWidths`] for the status bar's current keyboard hints.
+    static STATUS_WIDTHS: RefCell<Option<(LineKey, shortcuts::KeyHints, StatusWidths)>> = const { RefCell::new(None) };
     /// The changed-file filter's placeholder as it fits the width its field
     /// last painted at (`workspace::placeholder_fit`).
     static CHANGED_FILTER_FIT: crate::workspace::PlaceholderFit = const { RefCell::new(None) };
@@ -5017,6 +5015,35 @@ const NAV_MODES: [(NavMode, &str, &str, &str); 3] = [
         "nav-mode-worktrees",
     ),
 ];
+
+/// The status bar's warning while a local watch needs Refresh, and its two
+/// actions. They stay whole: the hints give way beside them.
+const WATCH_WARNING: &str = "Some changes need Refresh";
+const WATCH_REFRESH: &str = "Refresh";
+const WATCH_DETAILS: &str = "Details…";
+/// The height of the warning's controls in the 26 px bar, and the side of
+/// Details… where it is drawn as its icon, at the default interface size.
+const WATCH_CONTROL: f32 = 20.;
+
+/// What the status bar's fitting measures, in the font and sizes of a
+/// [`LineKey`]: each form its keyboard hints can take, in the order they
+/// give way (whole, their keys alone, then fewer keys from the last); the
+/// warning's words, Refresh and Details…, labelled or as its icon, with the
+/// gaps between; and the ellipsis the status line keeps at least.
+struct StatusWidths {
+    forms: Vec<(String, Pixels)>,
+    warning: Pixels,
+    warning_compact: Pixels,
+    ellipsis: Pixels,
+}
+
+/// How the status bar lays out in a window (`GitTurtle::fit_status_bar`):
+/// the form of the keyboard hints it has room for, if any, and whether the
+/// watch warning's Details… is drawn as its icon.
+struct StatusFit {
+    hints: Option<String>,
+    details_icon: bool,
+}
 
 /// The navigation's keyboard hint, line by line.
 pub(crate) fn nav_hint_lines() -> [String; 2] {
@@ -5595,44 +5622,23 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    /// The keyboard hints at the status bar's right: the page's, or, under a
-    /// modal dialog or sheet, those of the dialog control holding focus,
-    /// which has keys of its own, or none. The page's keys do not reach the
-    /// page beneath a modal, so its hints never show there.
-    ///
-    /// While a write's outcome is fresh in the status line
-    /// ([`Self::fresh_outcome`]), the outcome comes first: the hints keep
-    /// their whole form where the outcome stays whole beside it, else their
-    /// keys alone ("↑↓ · Enter"), else they leave until the outcome ends. At
-    /// 18 pt in a 461 × 490 half tile the whole hints took 277.5 px and cut
-    /// "Up to date with origin · nothing new" to "Up to date with ori…".
+    /// The keyboard hints as the status bar draws them
+    /// ([`Self::fit_status_bar`]), or none where they gave way.
+    #[cfg(test)]
     pub(super) fn status_hints(&self, window: &mut Window, cx: &mut App) -> Option<String> {
-        let hints = self.key_hints(window, cx)?;
-        let Some(outcome) = self.fresh_outcome() else {
-            return Some(hints.whole());
-        };
-        let measure = |cache, text: &str| {
-            cached_text_width(cache, text, window, || {
-                line_widths(&[(text, appearance::ui_text(10.))], window)
-            })
-        };
-        let line = measure(&STATUS_OUTCOME, outcome);
-        let gap = window.pixel_snap(window.rem_size() * 0.5);
-        let room = self.status_line_room(window);
-        let (whole, keys) = (hints.whole(), hints.keys());
-        let fits = |hints: Pixels| line + gap + hints <= room;
-        if fits(measure(&STATUS_HINTS, &whole)) {
-            Some(whole)
-        } else if fits(measure(&STATUS_KEYS, &keys)) {
-            Some(keys)
-        } else {
-            None
-        }
+        self.fit_status_bar(window, cx).hints
     }
 
-    /// The hints [`Self::status_hints`] draws whole, each key with what it
-    /// does.
-    fn key_hints(&self, window: &mut Window, cx: &mut App) -> Option<shortcuts::KeyHints> {
+    /// The keyboard hints at the status bar's right, each key with what it
+    /// does: the page's, or, under a modal dialog or sheet, those of the
+    /// dialog control holding focus, which has keys of its own, or none. The
+    /// page's keys do not reach the page beneath a modal, so its hints never
+    /// show there.
+    pub(super) fn key_hints(
+        &self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<shortcuts::KeyHints> {
         if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return self
                 .dialog_hints
@@ -5660,27 +5666,96 @@ impl GitTurtle {
         }))
     }
 
-    /// The room the status bar leaves its line and its keyboard hints, a
-    /// `gap_2` apart: the strip spans the window inside its `px_3` and holds
-    /// the 5 px status dot and, where drawn, the local refresh warning with
-    /// its Refresh and Details… (`render`), each a `gap_2` from the next.
-    fn status_line_room(&self, window: &Window) -> Pixels {
+    /// How the status bar lays out in this window, in the one responsive
+    /// order (DESIGN.md), decided before layout from the interface font so
+    /// no frame shows a part of it cut. What keeps its room, first to last:
+    /// the local refresh warning and its Refresh, whole; a write's fresh
+    /// outcome ([`Self::fresh_outcome`]), whole in the status line, or else
+    /// the status line's ellipsis, so the line is never cut; the keyboard
+    /// hints, whole, else their keys alone ("↑↓ · Enter"), else the leading
+    /// keys that fit, else none; and Details… keeps its label unless the
+    /// labelled warning would leave the status line less than it keeps with
+    /// every hint gone, where it becomes its icon. At 18 pt in a 461 × 490
+    /// half tile the whole hints cut "Up to date with origin · nothing new"
+    /// to "Up to date with ori…", and with the watcher unable to start the
+    /// warning pushed them past the window's edge, cut mid-glyph at 18 pt in
+    /// windows up to 821 px wide.
+    fn fit_status_bar(&self, window: &mut Window, cx: &mut App) -> StatusFit {
+        let hints = self
+            .key_hints(window, cx)
+            .unwrap_or(shortcuts::KeyHints(Vec::new()));
+        let warning = self.page == AppPage::Repository && self.automatic.watch_warning().is_some();
         let rem = window.rem_size();
-        let gap = window.pixel_snap(rem * 0.5);
-        let mut room =
-            content_size(window).width - window.pixel_snap(rem * 0.75) * 2. - px(5.) - gap;
-        if self.automatic.watch_warning().is_some() {
-            room -= cached_width(&STATUS_WARNING, &LineKey::current(window), || {
-                let small = appearance::ui_text(10.);
-                let widths = |text| line_widths(&[(text, small)], window);
-                gap + widths("Some changes need Refresh")
-                    + gap
-                    + self.labelled_width(widths("Refresh"), false, window)
-                    + gap
-                    + self.labelled_width(widths("Details…"), false, window)
-            });
+        // The bar's `px_3` and `gap_2`, and its 5 px dot.
+        let (inset, gap) = (window.pixel_snap(rem * 0.75), window.pixel_snap(rem * 0.5));
+        let mut room = content_size(window).width - inset * 2. - px(5.) - gap;
+        STATUS_WIDTHS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let key = LineKey::current(window);
+            if !matches!(&*cache, Some((cached, measured, _)) if *cached == key && *measured == hints)
+            {
+                let widths = self.status_widths(&hints, window);
+                *cache = Some((key, hints, widths));
+            }
+            let Some((_, _, widths)) = &*cache else {
+                unreachable!("measured above");
+            };
+            let line = match self.fresh_outcome() {
+                Some(outcome) => cached_text_width(&STATUS_OUTCOME, outcome, window, || {
+                    line_widths(&[(outcome, appearance::ui_text(10.))], window)
+                }),
+                None => widths.ellipsis,
+            };
+            let mut details_icon = false;
+            if warning {
+                details_icon = room - gap - widths.warning < line;
+                room -= gap
+                    + if details_icon {
+                        widths.warning_compact
+                    } else {
+                        widths.warning
+                    };
+            }
+            StatusFit {
+                hints: widths
+                    .forms
+                    .iter()
+                    .find(|(_, width)| line + gap + *width <= room)
+                    .map(|(form, _)| form.clone()),
+                details_icon,
+            }
+        })
+    }
+
+    /// What [`Self::fit_status_bar`] measures for `hints`.
+    fn status_widths(&self, hints: &shortcuts::KeyHints, window: &Window) -> StatusWidths {
+        let text = |text: &str| line_widths(&[(text, appearance::ui_text(10.))], window);
+        let gap = window.pixel_snap(window.rem_size() * 0.5);
+        let lead = text(WATCH_WARNING)
+            + gap
+            + self.labelled_width(text(WATCH_REFRESH), false, window)
+            + gap;
+        let mut forms = Vec::new();
+        if !hints.0.is_empty() {
+            forms.push(hints.whole());
+            forms.extend(
+                (1..=hints.0.len())
+                    .rev()
+                    .map(|shown| shortcuts::KeyHints(hints.0[..shown].to_vec()).keys()),
+            );
         }
-        room
+        StatusWidths {
+            forms: forms
+                .into_iter()
+                .map(|form| {
+                    let width = text(&form);
+                    (form, width)
+                })
+                .collect(),
+            warning: lead + self.labelled_width(text(WATCH_DETAILS), false, window),
+            warning_compact: lead + window.pixel_snap(appearance::ui_size(WATCH_CONTROL)),
+            ellipsis: text("…"),
+        }
     }
 }
 
@@ -5797,6 +5872,9 @@ impl Render for GitTurtle {
         } else {
             page
         };
+        let watch_warning =
+            self.page == AppPage::Repository && self.automatic.watch_warning().is_some();
+        let status = self.fit_status_bar(window, cx);
         // Everything an open dialog covers. The dialogs and the copy
         // announcement are drawn beside it, inside the element whose actions
         // they dispatch through.
@@ -5961,8 +6039,10 @@ impl Render for GitTurtle {
                             colors.accent
                         },
                     )))
+                    // The status line ends in an ellipsis inside the room the
+                    // warning and the hints leave it; those two stay whole.
                     .child(
-                        div().debug_selector(|| "status-line".into()).flex_1().truncate().child(match self.page {
+                        div().debug_selector(|| "status-line".into()).flex_1().min_w_0().truncate().child(match self.page {
                             AppPage::Projects => {
                                 "Open a project or start a new repository".to_owned()
                             }
@@ -5970,18 +6050,35 @@ impl Render for GitTurtle {
                             AppPage::Repository => self.status_line().to_owned(),
                         }),
                     )
-                    .when(self.page == AppPage::Repository && self.automatic.watch_warning().is_some(), |footer| {
-                        footer.child(div().flex().items_center().gap_2()
+                    .when(watch_warning, |footer| {
+                        footer.child(div().flex().flex_shrink_0().items_center().gap_2()
+                            .debug_selector(|| "local-refresh-warning".into())
                             .child(div().id("local-refresh-status").role(Role::Status)
+                                .whitespace_nowrap()
                                 .aria_label("Some local changes need Refresh")
-                                .child("Some changes need Refresh"))
-                            .child(button("retry-local-refresh", "Refresh", "", false).h(crate::appearance::ui_size(20.)).text_size(crate::appearance::ui_text(10.)).disabled(self.operation_busy.is_some())
+                                .child(WATCH_WARNING))
+                            .child(button("retry-local-refresh", WATCH_REFRESH, "", false).h(crate::appearance::ui_size(WATCH_CONTROL)).text_size(crate::appearance::ui_text(10.)).disabled(self.operation_busy.is_some())
+                                .debug_selector(|| "retry-local-refresh".into())
                                 .on_click(cx.listener(|this, _, window, cx| this.retry_automatic_refresh(window, cx))))
-                            .child(button("local-refresh-details", "Details…", "", false).h(crate::appearance::ui_size(20.)).text_size(crate::appearance::ui_text(10.))
+                            .child(if status.details_icon {
+                                // Its whole label names it and is its tooltip.
+                                let side = crate::appearance::ui_size(WATCH_CONTROL);
+                                compact_control_name(button("local-refresh-details", "", "more", false), "local-refresh-details", WATCH_DETAILS)
+                                    .tooltip(WATCH_DETAILS)
+                                    .w(side).min_w(side).px(crate::appearance::ui_size(2.))
+                            } else {
+                                button("local-refresh-details", WATCH_DETAILS, "", false)
+                            }
+                                .h(crate::appearance::ui_size(WATCH_CONTROL)).text_size(crate::appearance::ui_text(10.))
+                                .debug_selector(|| "local-refresh-details".into())
                                 .on_click(cx.listener(|this, _, window, cx| this.show_automatic_refresh_details(window, cx)))))
                     })
-                    .children(self.status_hints(window, cx).map(|hints| {
-                        div().debug_selector(|| "status-hints".into()).child(hints)
+                    .children(status.hints.map(|hints| {
+                        div()
+                            .debug_selector(|| "status-hints".into())
+                            .flex_shrink_0()
+                            .whitespace_nowrap()
+                            .child(hints)
                     })),
             );
         div()
