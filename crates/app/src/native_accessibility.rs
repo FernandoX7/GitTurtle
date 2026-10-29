@@ -2266,13 +2266,17 @@ pub(crate) mod written {
     }
 
     /// Records the node an element GPUI writes itself, such as a dialog's
-    /// title, as it is built: without bounds or the wrapper around it.
-    pub(super) fn built<E: Element>(element: &E) {
+    /// title or the window's alert, as it is built: without bounds or the
+    /// wrapper around it, and live as the element asked to be.
+    pub(crate) fn built<E: Element>(element: &E) {
         let (Some(id), Some(role)) = (element.id(), element.a11y_role()) else {
             return;
         };
         let mut node = gpui::accesskit::Node::new(role);
         element.write_a11y_info(&mut node);
+        if let Some(announced) = announced(&id.to_string()) {
+            announced.write(&mut node);
+        }
         let order = NEXT.with(|next| next.replace(next.get() + 1));
         NODES.with(|nodes| {
             nodes.borrow_mut().insert(

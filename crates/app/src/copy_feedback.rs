@@ -6,10 +6,11 @@
 //! Fetch, Pull, Push, Create and Switch, and the branch picker's switch and
 //! tracking-branch creation).
 //!
-//! Its announcement node also says what no control confirms ([`announce`]):
-//! the GitHub panel's notice, as the panel opens with it and as it changes,
-//! from wherever its body has scrolled it. That leaves the control reading
-//! its confirmation, and the time it reads it, alone.
+//! Its announcement node also says what no control confirms ([`announce`]),
+//! and an alert node beside it says a failure at once ([`alert`]): the GitHub
+//! panel's notice, and its failures and refused input, as the panel opens
+//! with them and as they change, from wherever its body has scrolled them.
+//! Neither ends the confirmation a control reads, nor shortens its time.
 //!
 //! Every copy a person asks for goes through [`copy`]: it writes the
 //! clipboard, marks the copy button it came from, if any, and posts one polite
@@ -81,13 +82,32 @@ struct Feedback {
     latest: Option<Confirmed>,
     /// Restores `latest`; replacing it cancels the previous one's timer.
     restore: Option<Task<()>>,
-    /// The latest announcement without a confirmation ([`announce`]), which
-    /// leaves `latest`'s mark and its timer alone.
-    spoken: Option<Confirmed>,
-    /// Ends `spoken`; replacing it cancels the previous one's timer.
-    quiet: Option<Task<()>>,
+    /// The latest polite announcement without a confirmation ([`announce`]),
+    /// which leaves `latest`'s mark and its timer alone.
+    polite: Said,
+    /// The latest alert ([`alert`]), which leaves both alone too.
+    assertive: Said,
 }
 impl Global for Feedback {}
+
+/// An announcement without a confirmation and the timer that ends it;
+/// replacing it cancels the previous one's timer.
+#[derive(Default)]
+struct Said {
+    latest: Option<Confirmed>,
+    end: Option<Task<()>>,
+}
+
+impl Feedback {
+    /// The announcements said politely, or at once if `assertive`.
+    fn said(&mut self, assertive: bool) -> &mut Said {
+        if assertive {
+            &mut self.assertive
+        } else {
+            &mut self.polite
+        }
+    }
+}
 
 struct Confirmed {
     generation: usize,
@@ -207,37 +227,52 @@ fn restore(generation: usize, cx: &mut App) {
 /// confirmation without a mark would end it. The node goes after
 /// [`RESTORE_AFTER`], or when a newer announcement takes its place.
 pub(crate) fn announce(window: &mut Window, cx: &mut App, announcement: impl Into<SharedString>) {
+    say(window, cx, false, announcement.into());
+}
+
+/// Announces `alert` once, at once, from the window's alert node, which
+/// leaves both a confirmation and a polite [`announce`] alone: a failure or
+/// refused input that its own line, in a scrolling body, could not say from
+/// past the body's edge. The node goes after [`RESTORE_AFTER`], or when a
+/// newer alert takes its place.
+pub(crate) fn alert(window: &mut Window, cx: &mut App, alert: impl Into<SharedString>) {
+    say(window, cx, true, alert.into());
+}
+
+/// Says `announcement` from the window's alert node if `assertive`, and
+/// otherwise from its announcement node.
+fn say(window: &mut Window, cx: &mut App, assertive: bool, announcement: SharedString) {
     let feedback = cx.default_global::<Feedback>();
     feedback.generation = feedback.generation.wrapping_add(1);
     let generation = feedback.generation;
-    feedback.spoken = Some(Confirmed {
+    feedback.said(assertive).latest = Some(Confirmed {
         generation,
         window: window.window_handle(),
         mark: None,
-        announcement: announcement.into(),
+        announcement,
     });
     window.refresh();
-    let quiet = cx.spawn(async move |cx| {
+    let end = cx.spawn(async move |cx| {
         cx.background_executor().timer(RESTORE_AFTER).await;
-        cx.update(|cx| quiet(generation, cx));
+        cx.update(|cx| quiet(assertive, generation, cx));
     });
-    cx.global_mut::<Feedback>().quiet = Some(quiet);
+    cx.global_mut::<Feedback>().said(assertive).end = Some(end);
 }
 
-/// Ends announcement `generation` unless a newer one replaced it, redrawing
-/// the window it was made in.
-fn quiet(generation: usize, cx: &mut App) {
-    let feedback = cx.global_mut::<Feedback>();
-    if feedback
-        .spoken
+/// Ends announcement `generation`, said at once if `assertive`, unless a
+/// newer one replaced it, redrawing the window it was made in.
+fn quiet(assertive: bool, generation: usize, cx: &mut App) {
+    let said = cx.global_mut::<Feedback>().said(assertive);
+    if said
+        .latest
         .as_ref()
-        .is_none_or(|spoken| spoken.generation != generation)
+        .is_none_or(|said| said.generation != generation)
     {
         return;
     }
-    if let Some(spoken) = feedback.spoken.take() {
+    if let Some(said) = said.latest.take() {
         // The window may have closed since.
-        let _ = spoken.window.update(cx, |_, window, _| window.refresh());
+        let _ = said.window.update(cx, |_, window, _| window.refresh());
     }
 }
 
@@ -493,7 +528,7 @@ fn confirming_with(
 /// AccessKit's macOS adapter its value, so both carry the text.
 pub(crate) fn announcement(window: &Window, cx: &App) -> Option<Stateful<Div>> {
     let feedback = cx.try_global::<Feedback>()?;
-    let latest = [feedback.latest.as_ref(), feedback.spoken.as_ref()]
+    let latest = [feedback.latest.as_ref(), feedback.polite.latest.as_ref()]
         .into_iter()
         .flatten()
         .filter(|made| made.window == window.window_handle())
@@ -510,6 +545,33 @@ pub(crate) fn announcement(window: &Window, cx: &App) -> Option<Stateful<Div>> {
             .size(px(1.))
             .overflow_hidden(),
     )
+}
+
+/// The alert node announcing the latest [`alert`] in `window`, drawn once
+/// at the window root beside [`announcement`]'s until it ends: a new node
+/// for each, which screen readers announce at once when it appears, out of
+/// flow and drawing nothing, its text as both its name and its value.
+pub(crate) fn alert_announcement(window: &Window, cx: &App) -> Option<Stateful<Div>> {
+    let alerted = cx
+        .try_global::<Feedback>()?
+        .assertive
+        .latest
+        .as_ref()
+        .filter(|alerted| alerted.window == window.window_handle())?;
+    let node = div()
+        .id(("copy-alert", alerted.generation))
+        .debug_selector(|| "copy-alert".into())
+        .role(Role::Alert)
+        .assertive()
+        .aria_label(alerted.announcement.clone())
+        .aria_value(alerted.announcement.clone())
+        .absolute()
+        .size(px(1.))
+        .overflow_hidden();
+    // Tests assemble the window's tree from what they record.
+    #[cfg(test)]
+    crate::native_accessibility::written::built(&node);
+    Some(node)
 }
 
 #[cfg(test)]
@@ -551,6 +613,24 @@ pub(crate) mod tests {
             let mut a11y = gpui::accesskit::Node::new(node.a11y_role().unwrap());
             node.write_a11y_info(&mut a11y);
             assert_eq!(a11y.role(), Role::Status);
+            assert_eq!(
+                a11y.label(),
+                a11y.value(),
+                "AT-SPI reads the name, macOS the value"
+            );
+            Some((gpui::Element::id(&node).unwrap(), a11y.label()?.to_owned()))
+        })
+    }
+
+    /// The alert the last frame drew at the window root: its node's id and
+    /// its name, which is also its value.
+    pub(crate) fn alerted(cx: &mut VisualTestContext) -> Option<(ElementId, String)> {
+        cx.debug_bounds("copy-alert")?;
+        cx.update(|window, cx| {
+            let node = alert_announcement(window, cx).expect("the drawn alert is current");
+            let mut a11y = gpui::accesskit::Node::new(node.a11y_role().unwrap());
+            node.write_a11y_info(&mut a11y);
+            assert_eq!(a11y.role(), Role::Alert);
             assert_eq!(
                 a11y.label(),
                 a11y.value(),

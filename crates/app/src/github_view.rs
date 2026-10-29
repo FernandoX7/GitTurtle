@@ -224,6 +224,14 @@ struct Confirmation {
     action: Action,
     account: String,
 }
+/// The lines the panel says through the window's announcements ([`Panel::announce`]): its
+/// notice, its failure, drawn in its body or in the reply composer, and refused input.
+#[derive(Default, PartialEq)]
+struct Heard {
+    notice: Option<String>,
+    error: Option<String>,
+    issue: Option<DraftIssue>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DraftIssue {
     Destination,
@@ -405,9 +413,9 @@ struct Panel {
     discussion: bool,
     account: Option<String>,
     notice: Option<String>,
-    /// The notice last announced ([`Panel::announce_notice`]), `None` once the panel closes,
-    /// so that it announces the notice it reopens with.
-    heard_notice: Option<String>,
+    /// What the panel last said through the window's announcements ([`Panel::announce`]),
+    /// cleared as it closes, so that it says again what it reopens with.
+    heard: Heard,
     error: Option<String>,
     pending: bool,
     /// The busy row's Cancel, which hands focus to the shown section as the
@@ -452,7 +460,7 @@ impl Panel {
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
             rows:vec![],page:1,has_next:false,pull:None,status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
-            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard_notice:None,error:None,pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,writing:false,closed:false,
+            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),error:None,pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,writing:false,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
         if this.review.fixture {
@@ -1057,25 +1065,52 @@ impl Panel {
             },
         }, window, cx);
     }
-    /// Announces the notice the panel shows, once and politely, through the window's
-    /// announcement (`copy_feedback::announce`), as the panel opens with it and whenever it
-    /// changes, and leaves a control reading Copied as it is. The notice's own line is a
-    /// status but no live region: an adapter announces a live region only while AccessKit's
-    /// filter keeps its node, which it does not once another child lies between the node and
-    /// the body's edge, and again each time the body scrolls it back. At 18 pt in a 461 × 490
-    /// window the notice lies below the fold, under the banner whose Move fixture head changes
-    /// it.
-    fn announce_notice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.heard_notice == self.notice {
+    /// Says the lines the panel shows through the window's announcements, once each, as the
+    /// panel opens with them and whenever they change: its notice politely
+    /// (`copy_feedback::announce`), and its failure and refused input at once
+    /// (`copy_feedback::alert`), both leaving a control reading Copied as it is. The lines
+    /// are a status and alerts but no live regions: an adapter announces a live region only
+    /// while AccessKit's filter keeps its node, which it does not once another child lies
+    /// between the node and the body's edge, and again each time the body scrolls it back. At
+    /// 18 pt in a 461 × 490 window the notice lies below the fold, under the banner whose Move
+    /// fixture head changes it, and a failure lands wherever the body has scrolled.
+    fn announce(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shown = Heard {
+            notice: self.notice.clone(),
+            error: self.error.clone(),
+            issue: self.draft_issue,
+        };
+        if shown == self.heard {
             return;
         }
-        self.heard_notice.clone_from(&self.notice);
-        if let Some(notice) = self.notice.clone() {
-            // The frame being drawn has drawn the window's announcement already.
-            window.defer(cx, move |window, cx| {
-                copy_feedback::announce(window, cx, notice)
-            });
-        }
+        let heard = std::mem::replace(&mut self.heard, shown);
+        let shown = &self.heard;
+        let notice = shown
+            .notice
+            .clone()
+            .filter(|_| shown.notice != heard.notice);
+        // A failure and refused input that change together are one alert, as the alert node
+        // holds one.
+        let alert = [
+            shown.error.clone().filter(|_| shown.error != heard.error),
+            shown
+                .issue
+                .filter(|_| shown.issue != heard.issue)
+                .map(|issue| issue.message().to_owned()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+        // The frame being drawn has drawn the window's announcements already.
+        window.defer(cx, move |window, cx| {
+            if let Some(notice) = notice {
+                copy_feedback::announce(window, cx, notice);
+            }
+            if !alert.is_empty() {
+                copy_feedback::alert(window, cx, alert);
+            }
+        });
     }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending && self.writing {
@@ -1091,7 +1126,7 @@ impl Panel {
         }
         self.save_draft(window, cx);
         self.closed = true;
-        self.heard_notice = None;
+        self.heard = Heard::default();
         self.review.opened.set(false);
         self.request_generation = self.request_generation.wrapping_add(1);
         self.pending = false;
@@ -1177,7 +1212,7 @@ impl Panel {
 }
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.announce_notice(window, cx);
+        self.announce(window, cx);
         let p = palette(cx);
         let pending = self.pending;
         let scroll = self.review.body_scroll.clone();
@@ -1216,8 +1251,8 @@ impl Render for Panel {
                     .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
                     .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.run(false,|_|SecureStore.remove(),|result,this,_,_|match result{Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx)))))))
             .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).text_color(rgb(p.muted))))
-            .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Alert).assertive().text_color(rgb(p.warning))))
-            .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Alert).assertive().text_color(rgb(p.warning))))
+            .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Alert).text_color(rgb(p.warning))))
+            .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Alert).text_color(rgb(p.warning))))
             .when(pending,|element|element.child(self.part("busy",div(),cx).flex().items_center().gap_2().pl(text_inset())
                 .child(label("github-busy",if self.writing{"Sending the captured review…"}else{"Loading your requested PR context…"}).role(Role::Status).live_region(gpui::accesskit::Live::Polite, true))
                 .child(button("github-cancel","Cancel","",false).track_focus(self.cancel_request.handle()).debug_selector(||"github-cancel".into()).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
@@ -2029,7 +2064,7 @@ mod tests {
     /// reports where it lies; without it, where the pull request list is that child; and with
     /// a failure's alert, which is announced at once as it appears. Each undrawn one reported
     /// an empty rectangle on the body's edge (y 557 at 18 pt), as the pager's "Page 1 · up to
-    /// 50 PRs" did at 13 pt.
+    /// 50 PRs" did at 13 pt. The alert's own node is no live region: the window's alert says it.
     #[gpui::test]
     async fn no_panel_node_reports_an_empty_rectangle(cx: &mut TestAppContext) {
         use crate::native_accessibility::written;
@@ -2106,25 +2141,38 @@ mod tests {
                     cx.notify();
                 })
             });
+            // The frame that draws the failure's line, before the window's alert.
             let found = reach(cx, &format!("{at}, with a failure"));
             assert_eq!(
                 written::announced("github-error"),
-                Some(written::Announced::ASSERTIVE),
-                "{at}: the failure is an assertive alert"
+                None,
+                "{at}: the failure's line is no live region of its own"
             );
             assert!(
                 found
                     .iter()
                     .any(|node| node.role == Role::Alert && node.name.as_deref() == Some(FAILURE)),
-                "{at}: the alert is in reach"
+                "{at}: the failure's line is in reach"
+            );
+            crate::tags::tests::draw(cx);
+            assert_eq!(
+                crate::copy_feedback::tests::alerted(cx)
+                    .map(|(_, text)| text)
+                    .as_deref(),
+                Some(FAILURE),
+                "{at}: the window's alert says the failure"
             );
             #[cfg(target_os = "linux")]
             {
                 use crate::native_accessibility::atspi_state_tests::next_frame;
                 bus.update(next_frame(cx));
-                assert!(
-                    bus.announced().iter().any(|text| text == FAILURE),
-                    "{at}: AT-SPI announces the alert as it appears"
+                assert_eq!(
+                    bus.announced()
+                        .iter()
+                        .filter(|text| *text == FAILURE)
+                        .count(),
+                    1,
+                    "{at}: AT-SPI announces the failure once, from the window's alert"
                 );
             }
             cx.update(|_, cx| panel.update(cx, |panel, _| panel.error = None));
@@ -2237,6 +2285,167 @@ mod tests {
         assert_eq!(shows(cx, "github-sign-in-help"), Shows::Rest);
         assert_eq!(announced(cx), None);
         escape(cx);
+    }
+
+    /// The window's alert says the panel's failure and refused input at once, as they appear
+    /// or change, wherever the body has scrolled their lines, which are no live regions of
+    /// their own. A failure the body draws is announced once, from the window's alert alone,
+    /// and drawing the panel again says nothing more. A failure landing while the body has
+    /// scrolled far past its line, which AccessKit's filter leaves out, was never announced.
+    /// A copy button keeps reading Copied for its 1.5 s through an alert.
+    #[gpui::test]
+    async fn the_window_alerts_the_panels_failures(cx: &mut TestAppContext) {
+        use crate::copy_feedback::{
+            RESTORE_AFTER,
+            tests::{Shows, alerted, click, shows, wait},
+        };
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        const FAILURE: &str = "Could not read repository remotes and saved drafts.";
+        const LATER: &str = "Conversations could not be loaded.";
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        let fail = |cx: &mut VisualTestContext, error: Option<&str>| {
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.error = error.map(str::to_owned);
+                    cx.notify();
+                })
+            });
+        };
+
+        // At 13 pt in a 461 × 490 window the body draws the failure's line.
+        open_notice_panel(&app, &panel, (13, 461., 490.), cx).await;
+        #[cfg(target_os = "linux")]
+        let mut bus = {
+            use crate::native_accessibility::atspi_state_tests::{Bus, next_frame};
+            Bus::new(next_frame(cx))
+        };
+        fail(cx, Some(FAILURE));
+        draw(cx);
+        draw(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let line = cx.debug_bounds("github-error").expect("the failure's line");
+        assert!(
+            line.top() < body.bottom() && line.bottom() > body.top(),
+            "the body draws the failure's line"
+        );
+        let (heard, text) = alerted(cx).expect("an alert");
+        assert_eq!(text, FAILURE, "the window's alert says the failure");
+        assert_eq!(
+            written::announced("github-error"),
+            None,
+            "the failure's line is no live region of its own"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            use crate::native_accessibility::atspi_state_tests::next_frame;
+            bus.update(next_frame(cx));
+            assert_eq!(
+                bus.announced(),
+                vec![FAILURE.to_owned()],
+                "AT-SPI announces the failure once"
+            );
+        }
+        cx.update(|_, cx| panel.update(cx, |_, cx| cx.notify()));
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            alerted(cx).map(|(id, _)| id),
+            Some(heard),
+            "drawing the panel again alerts nothing new"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            use crate::native_accessibility::atspi_state_tests::next_frame;
+            bus.update(next_frame(cx));
+            assert_eq!(bus.announced(), Vec::<String>::new(), "nor on AT-SPI");
+        }
+
+        // Refused input is said at once too.
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.draft_issue = Some(DraftIssue::Destination);
+                cx.notify();
+            })
+        });
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            alerted(cx).map(|(_, text)| text).as_deref(),
+            Some(DraftIssue::Destination.message()),
+            "the window's alert says the refused input"
+        );
+        assert_eq!(written::announced("github-draft-validation"), None);
+        escape(cx);
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.error = None;
+                panel.draft_issue = None;
+            })
+        });
+
+        // A PR's Overview at 18 pt, the body scrolled to its end, far below the failure's line.
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(github::review::fixture_pull(false));
+                panel.review.section = Section::Overview;
+                panel.review.show_list = false;
+            })
+        });
+        open_notice_panel(&app, &panel, (18, 461., 490.), cx).await;
+        scroll.set_offset(point(px(0.), -scroll.max_offset().y));
+        draw(cx);
+        draw(cx);
+        fail(cx, Some(LATER));
+        let found = reachable_nodes(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let line = cx.debug_bounds("github-error").expect("the failure's line");
+        assert!(
+            line.bottom() < body.top(),
+            "the body has scrolled past the failure's line: {line:?} above {body:?}"
+        );
+        assert!(
+            !found
+                .iter()
+                .any(|node| node.bounds.is_some() && node.name.as_deref() == Some(LATER)),
+            "AccessKit's filter leaves out the failure's line"
+        );
+        draw(cx);
+        assert_eq!(
+            alerted(cx).map(|(_, text)| text).as_deref(),
+            Some(LATER),
+            "the window's alert says the failure the body has scrolled past"
+        );
+        escape(cx);
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.error = None;
+                panel.pull = None;
+            })
+        });
+
+        // A copy, then a failure.
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+        click(cx, "github-account-options");
+        cx.run_until_parked();
+        draw(cx);
+        click(cx, "github-sign-in-help");
+        assert_eq!(shows(cx, "github-sign-in-help"), Shows::Copied);
+        fail(cx, Some(FAILURE));
+        draw(cx);
+        draw(cx);
+        assert_eq!(alerted(cx).map(|(_, text)| text).as_deref(), Some(FAILURE));
+        assert_eq!(
+            shows(cx, "github-sign-in-help"),
+            Shows::Copied,
+            "the sign-in command still reads Copied"
+        );
+        wait(cx, RESTORE_AFTER);
+        assert_eq!(shows(cx, "github-sign-in-help"), Shows::Rest);
+        assert_eq!(alerted(cx), None);
+        escape(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// A request that answers while keyboard focus is on the busy row's

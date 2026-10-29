@@ -6835,8 +6835,10 @@ impl Render for GitTurtle {
                 page_frame,
                 window.has_active_dialog(cx),
             ))
-            // Copies from any page or dialog are announced from here.
+            // Copies from any page or dialog are announced from here, and
+            // what a scrolling body cannot announce from where it lies.
             .children(copy_feedback::announcement(window, cx))
+            .children(copy_feedback::alert_announcement(window, cx))
             .children(Root::render_dialog_layer(window, cx))
             // Deferred above the dialog layer: the last paint of the frame
             // that shows an edited draft ends `gitturtle.theme_edit_frame_ms`.
