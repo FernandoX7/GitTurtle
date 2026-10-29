@@ -844,6 +844,37 @@ beside its rows, and Up brings its last row whole into view;
 part of the patch when upstream keeps a capped menu's rows whole and those
 tests pass without it.
 
+The still-pointer patch modifies `src/menu/popup_menu.rs` and
+`src/menu/menu_item.rs`. Upstream lights a menu's rows twice over: the
+pointer's selection, which an item takes when GPUI reports the pointer over
+it, and the item's own group hover. When a wheel scrolls a capped menu under
+a pointer that stays put, GPUI moves the selection to the row that arrived
+under the pointer once the frame is drawn, but refreshes an element's own
+group hover only on a pointer move, so the row that left kept its fill: at
+13 pt in a 461 × 490 window one notch lit both Browse stashes…, which had left
+the pointer, and Amend last commit…, which had arrived under it. A wheel that moves a scrollable menu's rows (`rows_scrolled`, on
+the items column, after the column's own listener has added the notch to its
+offset) now records the pointer's place; a pointer selection gives the
+selection up and a keyboard one stays. Until the pointer moves from that
+place, no item takes the selection from GPUI's hover reports and no item draws
+the group hover, which stays registered with an empty style so that its flag
+follows the pointer (`MenuItemElement::still`). The first move elsewhere
+(`pointer_moved`, on the surface) gives the selection to the item GPUI last
+reported under the pointer (`hovered_index`); a frame's synthetic move at the
+same place does not count. A wheel that moves nothing, over a menu whose rows
+fit or at the end of its rows, changes nothing.
+
+The consumers are every capped menu the app opens through
+`native_accessibility::open_menu`, as the capped-menu patch lists, and the
+app's own rule for rows that move under a still pointer (`motion::StillPointer`,
+`DESIGN.md`).
+`cargo test --locked -p gitturtle a_wheel_over_a_capped_menu_lights_no_row_under_the_still_pointer`
+rests the pointer on the Working Actions menu's last whole row at 13 and 18
+pt in 461 × 490, scrolls one notch and reads no row with a fill of its own,
+then none after a move to the same place, and only the row under the pointer
+after a 1 px move. Remove this part of the patch when upstream lights at most
+the row under the pointer after a wheel and that test passes without it.
+
 The dialog-kind patch modifies `src/dialog/dialog.rs` and
 `src/dialog/alert_dialog.rs`, with the base patch's `DialogKind`. Upstream
 AlertDialog always hosts the base `AlertDialog`, so every modal opened through

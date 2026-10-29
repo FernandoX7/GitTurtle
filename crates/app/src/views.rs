@@ -12487,6 +12487,93 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A wheel notch over the capped Working Actions menu, at 13 and 18 pt in
+    /// 461 × 490, moves its rows under a pointer that stays where it was: no
+    /// row lights up until the pointer moves, as nothing the Changes rows
+    /// move under a still pointer does, and a 1 px move lights the one row
+    /// now under it. The row the pointer had lit kept its fill and the row
+    /// that arrived under the pointer took the hover's, two rows at once.
+    #[gpui::test]
+    async fn a_wheel_over_a_capped_menu_lights_no_row_under_the_still_pointer(
+        cx: &mut TestAppContext,
+    ) {
+        const ROWS: [&str; 9] = [
+            "Directories",
+            "Stage 0 selected",
+            "Unstage 0 selected",
+            "Refresh working changes",
+            "Ignore selected untracked file…",
+            "Save changes to stash…",
+            "Browse stashes…",
+            "Amend last commit…",
+            "Undo last local commit…",
+        ];
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|window, cx| {
+            appearance::ThemeChoice::Midnight.apply(Some(window), cx);
+            app.update(cx, |app, cx| app.show_working(window, cx));
+        });
+        settle(&app, cx).await;
+        // The rows that draw a fill of their own: the pointer's or the
+        // keyboard's highlight.
+        let lit = |cx: &mut VisualTestContext| -> Vec<String> {
+            menu_rows(cx, &ROWS)
+                .into_iter()
+                .filter(|(_, row)| !appearance::painted_row(cx, *row).0.is_empty())
+                .map(|(label, _)| label)
+                .collect()
+        };
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let at = format!("{text} pt in 461 × 490");
+            open_working_actions(cx, size(px(461.), px(490.)));
+            let rows = menu_rows(cx, &ROWS);
+            let (surface, folded) = assert_menu_keeps_its_rows(cx, &at, &rows, &rows);
+            assert!(folded, "{at}: rows lie past the menu's fold at {surface:?}");
+            // The pointer rests on the last row wholly inside the menu.
+            let (label, row) = rows
+                .iter()
+                .rfind(|(_, row)| row.bottom() <= surface.bottom())
+                .cloned()
+                .unwrap_or_else(|| panic!("{at}: a whole row in {surface:?}"));
+            let pointer = row.center();
+            cx.simulate_mouse_move(pointer, None, Modifiers::default());
+            draw(cx);
+            assert_eq!(lit(cx), [label], "{at}: the pointer lights its row");
+
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: pointer,
+                delta: gpui::ScrollDelta::Lines(point(0., -1.)),
+                ..Default::default()
+            });
+            draw(cx);
+            let moved = menu_rows(cx, &ROWS);
+            assert_ne!(moved, rows, "{at}: one notch scrolled the rows");
+            assert_eq!(
+                lit(cx),
+                Vec::<String>::new(),
+                "{at}: nothing lights under the still pointer"
+            );
+            // A frame drawn again with the pointer where it was lights none.
+            cx.simulate_mouse_move(pointer, None, Modifiers::default());
+            draw(cx);
+            assert_eq!(lit(cx), Vec::<String>::new(), "{at}: after a frame");
+
+            let pointer = pointer + point(px(1.), px(0.));
+            cx.simulate_mouse_move(pointer, None, Modifiers::default());
+            draw(cx);
+            let under = moved
+                .iter()
+                .find(|(_, row)| row.contains(&pointer))
+                .map(|(label, _)| label.clone())
+                .unwrap_or_else(|| panic!("{at}: a row under {pointer:?} in {moved:?}"));
+            assert_eq!(lit(cx), [under], "{at}: the moved pointer lights its row");
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// At 461 × 490 the Linux Main Menu fits above the status bar at 13 pt
     /// and is taller than the room there at 18 pt. Either way its rows keep
     /// the height and spacing they have in 1280 × 800, and at 18 pt it ends

@@ -11,7 +11,10 @@ use gpui::{
     ParentElement, Pixels, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement,
     Styled, WeakEntity, Window, anchored, deferred, div, prelude::FluentBuilder, px, rems,
 };
-use gpui::{ClickEvent, Half, MouseDownEvent, OwnedMenuItem, Point, Subscription};
+use gpui::{
+    ClickEvent, Half, MouseDownEvent, MouseMoveEvent, OwnedMenuItem, Point, ScrollWheelEvent,
+    Subscription,
+};
 
 use std::rc::Rc;
 
@@ -455,6 +458,14 @@ pub struct PopupMenu {
     /// into a submenu), so the item draws as the keyboard's cursor rather than
     /// the pointer's hover; the pointer entering an item clears it.
     keyboard_selection: bool,
+    /// GitTurtle patch: where the pointer rested when a wheel scrolled the
+    /// rows under it, until it moves from there. Meanwhile no row draws the
+    /// pointer's hover or takes its selection: the person never moved to
+    /// the row that arrived under it.
+    still_pointer: Option<Point<Pixels>>,
+    /// GitTurtle patch: the item GPUI last reported under the pointer, which
+    /// takes the selection once a still pointer moves.
+    hovered_index: Option<usize>,
     min_width: Option<Pixels>,
     max_width: Option<Pixels>,
     max_height: Option<Pixels>,
@@ -499,6 +510,8 @@ impl PopupMenu {
             menu_items: Vec::new(),
             selected_index: None,
             keyboard_selection: false,
+            still_pointer: None,
+            hovered_index: None,
             min_width: None,
             max_width: None,
             max_height: None,
@@ -1416,6 +1429,50 @@ impl PopupMenu {
         fold_rows(rows, padding, cap)
     }
 
+    /// GitTurtle patch: a wheel over the items column moved its rows under a
+    /// pointer that stays where it was. The column's own scroll listener has
+    /// already added the notch to its offset, which its next layout clamps;
+    /// where that moves the rows, the row the pointer had selected gives the
+    /// selection up and none lights until the pointer moves. A keyboard's
+    /// selection stays where it is. Upstream lit two rows at once: the row
+    /// that arrived took the selection, and the row that left kept its own
+    /// hover, which GPUI refreshes only on a pointer move.
+    fn rows_scrolled(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let max = self.scroll_handle.max_offset().y;
+        let now = self.scroll_handle.offset().y;
+        let before = now - event.delta.pixel_delta(window.line_height()).y;
+        let clamp = |y: Pixels| y.clamp(-max, Pixels::ZERO);
+        if clamp(now) == clamp(before) {
+            return;
+        }
+        self.still_pointer = Some(event.position);
+        if !self.keyboard_selection {
+            self.selected_index = None;
+        }
+        cx.notify();
+    }
+
+    /// GitTurtle patch: the pointer moved over the menu. Once it leaves the
+    /// place a wheel left it, the row under it takes the selection, as one
+    /// the pointer enters does; a frame's synthetic move at the same place
+    /// does not count.
+    fn pointer_moved(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.still_pointer.is_none_or(|at| at == event.position) {
+            return;
+        }
+        self.still_pointer = None;
+        if let Some(ix) = self.hovered_index {
+            self.selected_index = Some(ix);
+            self.keyboard_selection = false;
+        }
+        cx.notify();
+    }
+
     /// Calculate the anchor corner and left offset for child submenu
     fn update_submenu_menu_anchor(&mut self, window: &Window) {
         let bounds = self.bounds;
@@ -1476,13 +1533,26 @@ impl PopupMenu {
             .selected(selected)
             .keyboard(self.keyboard_selection)
             .checked(item.check_state())
+            .still(self.still_pointer.is_some())
             .on_hover(cx.listener(move |this, hovered, _, cx| {
+                // GitTurtle patch: a row a wheel moved under a still pointer,
+                // or out from under it, keeps the selection where it was
+                // until the pointer moves ([`PopupMenu::pointer_moved`]).
+                let still = this.still_pointer.is_some();
                 if *hovered {
-                    this.selected_index = Some(ix);
-                    this.keyboard_selection = false;
-                } else if !is_submenu && this.selected_index == Some(ix) {
-                    // TODO: Better handle the submenu unselection when hover out
-                    this.selected_index = None;
+                    this.hovered_index = Some(ix);
+                    if !still {
+                        this.selected_index = Some(ix);
+                        this.keyboard_selection = false;
+                    }
+                } else {
+                    if this.hovered_index == Some(ix) {
+                        this.hovered_index = None;
+                    }
+                    if !still && !is_submenu && this.selected_index == Some(ix) {
+                        // TODO: Better handle the submenu unselection when hover out
+                        this.selected_index = None;
+                    }
                 }
 
                 cx.notify();
@@ -1774,6 +1844,7 @@ impl Render for PopupMenu {
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::dismiss))
             .on_mouse_down_out(cx.listener(Self::on_mouse_down_out))
+            .on_mouse_move(cx.listener(Self::pointer_moved))
             .popover_style(cx)
             .text_color(cx.theme().popover_foreground)
             .relative()
@@ -1790,6 +1861,7 @@ impl Render for PopupMenu {
                         this.max_h(column.unwrap_or(max_height))
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll_handle)
+                            .on_scroll_wheel(cx.listener(Self::rows_scrolled))
                     })
                     // GitTurtle patch: while the rows overflow, they keep a
                     // gutter at their right where the scrollbar's track

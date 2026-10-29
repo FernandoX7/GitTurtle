@@ -32,6 +32,9 @@ pub(crate) struct MenuItemElement {
     /// GitTurtle patch: the selection is the keyboard's cursor rather than
     /// the pointer's hover, so it is marked as a list's selected row is.
     keyboard: bool,
+    /// GitTurtle patch: the menu's rows moved under a pointer that has not
+    /// moved since, so no item draws the pointer's hover.
+    still: bool,
     /// GitTurtle patch: `Some(checked)` for a checkable item, announced as a
     /// check menu item with its state; `None` for a plain item.
     checked: Option<bool>,
@@ -54,6 +57,7 @@ impl MenuItemElement {
             disabled: false,
             selected: false,
             keyboard: false,
+            still: false,
             checked: None,
             entry: Entry::Item,
             on_click: None,
@@ -72,6 +76,13 @@ impl MenuItemElement {
     /// submenu) rather than the pointer.
     pub(crate) fn keyboard(mut self, keyboard: bool) -> Self {
         self.keyboard = keyboard;
+        self
+    }
+
+    /// Whether the menu's rows moved under a still pointer, which lights no
+    /// item until it moves.
+    pub(crate) fn still(mut self, still: bool) -> Self {
+        self.still = still;
         self
     }
 
@@ -199,9 +210,19 @@ impl RenderOnce for MenuItemElement {
             })
             .when(interactive, |this| {
                 this.when(!cursor, |this| {
-                    this.group_hover(self.group_name, |this| {
-                        this.bg(cx.theme().tokens.accent)
-                            .text_color(cx.theme().accent_foreground)
+                    // GitTurtle patch: under a still pointer the hover draws
+                    // nothing, but stays registered: GPUI refreshes an
+                    // element's own group hover only on a pointer move, and
+                    // only through the listener this registers, so the row
+                    // the pointer had lit would light again once it moved.
+                    let still = self.still;
+                    let (fill, text) = (cx.theme().tokens.accent, cx.theme().accent_foreground);
+                    this.group_hover(self.group_name, move |this| {
+                        if still {
+                            this
+                        } else {
+                            this.bg(fill).text_color(text)
+                        }
                     })
                 })
                 .when(self.selected && !cursor, |this| {
