@@ -1059,7 +1059,7 @@ impl GitTurtle {
                 .app_context_menu(move |menu, _, cx| {
                     let disabled = branch_owner
                         .upgrade()
-                        .is_none_or(|owner| owner.read(cx).operation_busy.is_some());
+                        .is_none_or(|owner| owner.read(cx).write_unsettled());
                     branch_row_menu(
                         menu,
                         branch_owner.clone(),
@@ -1077,7 +1077,7 @@ impl GitTurtle {
                 .app_context_menu(move |menu, _, cx| {
                     let disabled = branch_owner.upgrade().is_none_or(|owner| {
                         let owner = owner.read(cx);
-                        owner.operation_busy.is_some()
+                        owner.write_unsettled()
                             || owner.path != branch_repository
                             || owner.page != AppPage::Repository
                     });
@@ -1127,7 +1127,7 @@ impl GitTurtle {
                             repository.clone(),
                             name.clone(),
                             remote,
-                            app.operation_busy.is_some(),
+                            app.write_unsettled(),
                         )
                     }),
                     Box::new(move |app: &GitTurtle| {
@@ -1145,7 +1145,7 @@ impl GitTurtle {
                 (
                     0,
                     Box::new(move |menu, app: &GitTurtle| {
-                        let disabled = app.operation_busy.is_some()
+                        let disabled = app.write_unsettled()
                             || app.path != repository
                             || app.page != AppPage::Repository;
                         worktree_row_menu(

@@ -4130,6 +4130,106 @@ mod tests {
         crate::path_filter::filters_land(&app, cx);
     }
 
+    /// Holds quiet reads from starting, or lets them start and land.
+    fn hold_quiet_reads(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, held: bool) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.automatic.hold_quiet_reads(held);
+                app.try_automatic_refresh(window, cx);
+            })
+        });
+        if !held {
+            for _ in 0..8 {
+                if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                    break;
+                }
+                app.read_with(cx, |app, _| app.worker.wait_idle());
+                cx.executor().run_until_parked();
+            }
+            crate::path_filter::filters_land(app, cx);
+        }
+        next_frame(cx);
+    }
+
+    /// A working row's menu, opened as `opening` opens it, stays refused
+    /// once a write that reloads the repository quietly ends, as Create
+    /// branch does, until that reload lands, held here: built again as the
+    /// write ended, its items acted on what the window showed before the
+    /// write, as a commit's Revert offered a commit an Undo had just taken
+    /// away. A quiet read the watcher asks for, as a file saved outside the
+    /// app brings, refuses nothing.
+    async fn a_row_menu_waits_for_its_writes_reload(cx: &mut TestAppContext, opening: Opening) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        open_row_menu(&app, cx, "gamma.txt", opening);
+        let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
+        assert_eq!(delete(cx), Some(true), "{opening:?}: at rest");
+        hold_quiet_reads(&app, cx, true);
+        let write = held(
+            &app,
+            cx,
+            gitturtle_core::WriteCommand::CreateBranch {
+                name: "side-q9".into(),
+                start_point: None,
+            },
+        );
+        assert_eq!(delete(cx), Some(false), "{opening:?}: while the write runs");
+        release(&app, write, cx).await;
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_none()),
+            "the write ended"
+        );
+        assert_eq!(
+            delete(cx),
+            Some(false),
+            "{opening:?}: refused until the write's reload lands"
+        );
+        hold_quiet_reads(&app, cx, false);
+        assert_eq!(
+            delete(cx),
+            Some(true),
+            "{opening:?}: available once it lands"
+        );
+        hold_quiet_reads(&app, cx, true);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+                // As any other change in the window would, which a
+                // keyboard's menu follows.
+                cx.notify();
+            })
+        });
+        next_frame(cx);
+        assert_eq!(
+            delete(cx),
+            Some(true),
+            "{opening:?}: a watcher's quiet read refuses nothing"
+        );
+        hold_quiet_reads(&app, cx, false);
+        assert_eq!(
+            delete(cx),
+            Some(true),
+            "{opening:?}: after the watcher's read"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menu_waits_for_its_writes_reload(cx: &mut TestAppContext) {
+        a_row_menu_waits_for_its_writes_reload(cx, Opening::RightClick).await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_menu_waits_for_its_writes_reload(cx: &mut TestAppContext) {
+        a_row_menu_waits_for_its_writes_reload(cx, Opening::Keyboard).await;
+    }
+
     /// Shift-F10 in an open right-click menu, on a History commit, a
     /// navigator branch or a working row, opens no keyboard's menu beside
     /// it: one menu is open at a time, and the right-click menu, the row's

@@ -326,7 +326,7 @@ impl GitTurtle {
             return;
         };
         let changed = (*entry != target.entry).then(|| entry.clone());
-        let rebuild = changed.is_some() || followed.busy != self.operation_busy.is_some();
+        let rebuild = changed.is_some() || followed.busy != self.write_unsettled();
         if let (Some(entry), Some(followed)) = (changed, self.file_menu_row.as_mut()) {
             followed.target.entry = entry;
         }

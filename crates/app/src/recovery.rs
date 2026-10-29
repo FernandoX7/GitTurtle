@@ -272,10 +272,7 @@ impl GitTurtle {
                 // one pauses or ends (`native_accessibility::MenuInputs`).
                 let (busy, paused) = owner.upgrade().map_or((true, true), |owner| {
                     let owner = owner.read(cx);
-                    (
-                        owner.operation_busy.is_some(),
-                        owner.integration_state.is_some(),
-                    )
+                    (owner.write_unsettled(), owner.integration_state.is_some())
                 });
                 if let Some(refresh) = tight {
                     menu = menu
@@ -458,7 +455,7 @@ impl GitTurtle {
     /// integration runs, and whether the commit is HEAD, which adds Amend
     /// and Undo.
     fn commit_menu_state(&self, commit: &CommitTarget) -> (bool, bool) {
-        let disabled = self.operation_busy.is_some() || self.integration_state.is_some();
+        let disabled = self.write_unsettled() || self.integration_state.is_some();
         let current = self
             .work_status
             .as_ref()

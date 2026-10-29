@@ -182,10 +182,11 @@ impl GitTurtle {
                 let this = view.read(cx);
                 let path = this.path.clone();
                 // Read as it opens: a write refuses choosing, creating and
-                // managing profiles until it ends, and the menu is built again
-                // when it does (`AppDropdown::follows_writes`). Retrying the
-                // profile store, which no write touches, stays available.
-                let busy = this.operation_busy.is_some();
+                // managing profiles until its reload lands, and the menu is
+                // built again when it does (`AppDropdown::follows_writes`).
+                // Retrying the profile store, which no write touches, stays
+                // available.
+                let busy = this.write_unsettled();
                 if let Some(profile) = &this.profile {
                     menu = menu.label(current_identity(profile)).separator();
                 }

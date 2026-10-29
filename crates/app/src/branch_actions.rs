@@ -199,8 +199,9 @@ impl GitTurtle {
                 };
                 let this = view.read(cx);
                 let path = this.path.clone();
-                // Read as it opens: a write refuses every item but Activity.
-                let busy = this.operation_busy.is_some();
+                // Read as it opens: a write refuses every item but Activity
+                // until its reload lands.
+                let busy = this.write_unsettled();
                 let current = this
                     .work_status
                     .as_ref()

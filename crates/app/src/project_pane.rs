@@ -1230,7 +1230,7 @@ impl GitTurtle {
         };
         MenuSnapshot {
             name,
-            busy: self.operation_busy.is_some(),
+            busy: self.write_unsettled(),
             destinations: move_destinations(&self.project_library, key),
         }
     }

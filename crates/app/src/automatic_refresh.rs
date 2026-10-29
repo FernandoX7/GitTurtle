@@ -19,9 +19,27 @@ pub struct State {
     inflight: Option<LocalChange>,
     epoch: u64,
     pub retained_commit: Option<usize>,
+    /// Test-only: quiet reads wait to start while set, as a busy reader
+    /// holds them ([`Self::hold_quiet_reads`]).
+    #[cfg(test)]
+    held: bool,
 }
 
 impl State {
+    /// Whether the quiet reload a write asked for as it ended
+    /// (`refresh_after_write`) waits to run or runs: until it lands the
+    /// window shows what the write found, and menus refuse writes
+    /// (`GitTurtle::write_unsettled`). A read the watcher asked for alone
+    /// refuses nothing, so saving a file never dims a menu.
+    pub(super) fn reloading_after_write(&self) -> bool {
+        self.pending.after_write || self.inflight.as_ref().is_some_and(|read| read.after_write)
+    }
+    /// Test-only: holds quiet reads from starting, or lets them start
+    /// again, so a test can act between a write's end and its reload.
+    #[cfg(test)]
+    pub(crate) fn hold_quiet_reads(&mut self, held: bool) {
+        self.held = held;
+    }
     pub(super) fn watch_warning(&self) -> Option<&str> {
         self.watch_warning.as_deref()
     }
@@ -52,6 +70,10 @@ impl State {
         reading: bool,
         status_reading: bool,
     ) -> bool {
+        #[cfg(test)]
+        if self.held {
+            return false;
+        }
         repository_page
             && !writing
             && !reading

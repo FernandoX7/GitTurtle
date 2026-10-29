@@ -2648,6 +2648,7 @@ impl GitTurtle {
             local_refresh::LocalChange {
                 git: true,
                 worktree: true,
+                after_write: true,
                 ..Default::default()
             },
             window,
@@ -2678,6 +2679,16 @@ impl GitTurtle {
                 inspector: (window.viewport_size().height - px(200.)).max(px(160.)),
             }
         })
+    }
+
+    /// Whether menus refuse writes: one runs, or one has ended and the quiet
+    /// reload it asked for (`refresh_after_write`) has not landed, so the
+    /// window still shows what the write found. Built in between, a menu
+    /// offered its items for that state: a commit's Revert of a commit an
+    /// Undo had just taken away, or a branch's actions on a name a delete
+    /// had just removed. A read the watcher asked for refuses nothing.
+    pub(super) fn write_unsettled(&self) -> bool {
+        self.operation_busy.is_some() || self.automatic.reloading_after_write()
     }
 
     /// `width` is the inspector's width where the window pins it, otherwise
@@ -4180,7 +4191,7 @@ impl GitTurtle {
                         // the open menu again.
                         let busy = ignore_owner
                             .upgrade()
-                            .is_none_or(|owner| owner.read(cx).operation_busy.is_some());
+                            .is_none_or(|owner| owner.read(cx).write_unsettled());
                         working_row_menu(
                             menu,
                             ignore_owner.clone(),
@@ -4194,8 +4205,10 @@ impl GitTurtle {
                         )
                     })
                     // A file whose status changes under its open menu, as
-                    // one added outside the app, builds the menu again.
-                    .built_from(menu_entry)
+                    // one added outside the app, builds the menu again, and
+                    // so does a write's reload landing, which its items
+                    // wait for (`write_unsettled`).
+                    .built_from((menu_entry, self.write_unsettled()))
                     .follows_writes(cx.entity().downgrade())
                     .into_any_element()
             }
@@ -4277,7 +4290,7 @@ impl GitTurtle {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<impl FnOnce(PopupMenu) -> PopupMenu + 'static> {
-        let busy = self.operation_busy.is_some();
+        let busy = self.write_unsettled();
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         let followed = self.file_menu_row.as_mut()?;
         followed.busy = busy;

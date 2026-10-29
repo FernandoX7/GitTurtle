@@ -960,8 +960,9 @@ pub(crate) struct AppDropdown {
 /// What a menu that follows writes reads as it is built
 /// ([`AppDropdown::follows_writes`], [`PointerMenu::follows_writes`],
 /// [`KeyboardMenu`]):
-/// whether a write runs, and whether a merge, rebase, cherry-pick or revert
-/// is paused, which disables a commit's Revert, Cherry-pick, Amend and Undo
+/// whether a write runs or its quiet reload has yet to land
+/// (`GitTurtle::write_unsettled`), and whether a merge, rebase, cherry-pick
+/// or revert is paused, which disables a commit's Revert, Cherry-pick, Amend and Undo
 /// (`GitTurtle::commit_menu_state`) and the Changes Actions menu's Save
 /// changes to stash…, Amend and Undo. The menu is built again when either
 /// changes; built again only for the write, a menu open as a cherry-pick
@@ -976,7 +977,7 @@ struct MenuInputs {
 impl MenuInputs {
     fn of(app: &crate::GitTurtle) -> Self {
         Self {
-            writing: app.operation_busy.is_some(),
+            writing: app.write_unsettled(),
             paused: app.integration_state.is_some(),
         }
     }

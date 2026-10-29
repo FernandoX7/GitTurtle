@@ -129,6 +129,10 @@ pub struct LocalChange {
     pub error: Option<String>,
     /// Coverage recovered; supersedes a prior warning in a coalesced burst.
     pub recovered: bool,
+    /// Asked for by a write as it ended (`refresh_after_write`), never by
+    /// the watcher: menus refuse writes until the read that carries it lands
+    /// (`automatic_refresh::State::reloading_after_write`).
+    pub after_write: bool,
 }
 
 impl LocalChange {
@@ -136,6 +140,7 @@ impl LocalChange {
         self.worktree |= next.worktree;
         self.git |= next.git;
         self.rescan |= next.rescan;
+        self.after_write |= next.after_write;
         if next.recovered {
             self.error = None;
             self.recovered = true;
