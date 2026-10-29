@@ -2594,4 +2594,181 @@ mod tests {
         );
         drop(fixture);
     }
+
+    /// The recovery forms a paused integration refuses.
+    #[derive(Clone, Copy, Debug)]
+    enum PausedForm {
+        /// Amend last commit…, its title edited.
+        Amend,
+        /// Save changes to stash…, named.
+        Stash,
+    }
+
+    /// What `form` holds: why its review was refused, if it was, and the
+    /// field it was given.
+    fn paused_form(
+        app: &Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+        form: PausedForm,
+    ) -> (Option<String>, String) {
+        app.read_with(cx, |app, cx| match form {
+            PausedForm::Amend => {
+                let form = app
+                    .recovery
+                    .amend
+                    .as_ref()
+                    .expect("the amend form")
+                    .read(cx);
+                (form.error.clone(), form.title.read(cx).value().to_string())
+            }
+            PausedForm::Stash => {
+                let form = app
+                    .recovery
+                    .stash
+                    .as_ref()
+                    .expect("the stash form")
+                    .read(cx);
+                (form.error.clone(), form.name.read(cx).value().to_string())
+            }
+        })
+    }
+
+    /// Opens `form` at rest and fills its field with `value`, then pauses a
+    /// merge outside the app and reads it, as the local watcher would, and
+    /// asks for the form's review, as its button does: the review is
+    /// refused in the core's words without reading a plan, and the form
+    /// opens again with that refusal beneath its fields and the value kept,
+    /// asking for a quiet read of the pause.
+    async fn reopened_refused_while_paused(cx: &mut gpui::TestAppContext, form: PausedForm) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let identity = [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+        ];
+        let git = |arguments: &[&str]| {
+            crate::views::tests::fixture_git(&repository, &[&identity[..], arguments].concat())
+        };
+        git(&["reset", "-q", "--hard"]);
+        git(&["checkout", "-q", "-b", "side"]);
+        std::fs::write(repository.join("side.txt"), "side\n").unwrap();
+        git(&["add", "side.txt"]);
+        git(&["commit", "-q", "-m", "side"]);
+        git(&["checkout", "-q", "main"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        let dialog_open =
+            |cx: &mut gpui::VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
+
+        // Opened at rest, its field filled.
+        let value = match form {
+            PausedForm::Amend => {
+                let head = app.read_with(cx, |app, _| {
+                    app.work_status
+                        .as_ref()
+                        .and_then(|status| status.head.clone())
+                        .expect("HEAD")
+                });
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.prepare_commit_recovery(RecoveryKind::Amend, head, None, window, cx)
+                    })
+                });
+                let read = app.update(cx, |app, _| app.recovery.task.take());
+                read.expect("the amend plan is read").await;
+                crate::views::tests::draw(cx);
+                let form =
+                    app.read_with(cx, |app, _| app.recovery.amend.clone().expect("the form"));
+                cx.update(|window, cx| {
+                    form.update(cx, |form, cx| {
+                        form.title.update(cx, |title, cx| {
+                            title.set_value("Reworded while paused", window, cx)
+                        })
+                    })
+                });
+                "Reworded while paused"
+            }
+            PausedForm::Stash => {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.open_stash_form(window, cx)));
+                crate::views::tests::draw(cx);
+                let form =
+                    app.read_with(cx, |app, _| app.recovery.stash.clone().expect("the form"));
+                cx.update(|window, cx| {
+                    form.update(cx, |form, cx| {
+                        form.name
+                            .update(cx, |name, cx| name.set_value("paused work", window, cx))
+                    })
+                });
+                "paused work"
+            }
+        };
+        crate::views::tests::draw(cx);
+        assert!(dialog_open(cx), "{form:?}: the form opened");
+        assert_eq!(
+            paused_form(&app, cx, form),
+            (None, value.into()),
+            "{form:?}: at rest"
+        );
+
+        // A merge pauses, and the window reads it.
+        git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        read_pause(&app, cx).await;
+        assert!(
+            dialog_open(cx),
+            "{form:?}: the form stays open as the pause is read"
+        );
+        // Review, as its button asks.
+        let nothing = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            window.dispatch_action(
+                Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
+                cx,
+            )
+        });
+        frame(cx);
+        assert_eq!(
+            paused_form(&app, cx, form),
+            (Some(PAUSED_REFUSAL.into()), value.into()),
+            "{form:?}: refused in the core's words, its field kept"
+        );
+        assert!(dialog_open(cx), "{form:?}: the form opens again");
+        assert!(
+            cx.debug_bounds("recovery-form-error").is_some(),
+            "{form:?}: the form draws its refusal"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| (
+                app.operation_busy,
+                app.recovery.task.is_some()
+            )),
+            (None, false),
+            "{form:?}: no plan is read"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.automatic.quiet_read_requested()),
+            "{form:?}: the refusal asks for a quiet read of the pause"
+        );
+        drop(nothing);
+        quiet_reads_land(&app, cx);
+        drop(fixture);
+    }
+
+    /// Amend last commit…, opened at rest, is refused while a merge is
+    /// paused and opens again with the refusal and the reworded title.
+    #[gpui::test]
+    async fn the_amend_form_reopens_refused_while_paused(cx: &mut gpui::TestAppContext) {
+        reopened_refused_while_paused(cx, PausedForm::Amend).await;
+    }
+
+    /// Save changes to stash…, opened at rest, is refused while a merge is
+    /// paused and opens again with the refusal and the stash's name.
+    #[gpui::test]
+    async fn the_stash_form_reopens_refused_while_paused(cx: &mut gpui::TestAppContext) {
+        reopened_refused_while_paused(cx, PausedForm::Stash).await;
+    }
 }
