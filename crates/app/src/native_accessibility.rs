@@ -62,13 +62,28 @@ pub(super) fn bind_keys(cx: &mut App) {
 
 /// The cursor row a keyboard's menu opens beside, within the list's visible
 /// part ([`KeyboardMenu::cursor_row`]): the row's leading inset, where the
-/// menu's leading edge starts, and its top and bottom edges.
+/// menu's leading edge starts, and its top and bottom edges. A menu can end
+/// at the list's trailing inset instead ([`RowAnchor::trailing`]).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct RowAnchor {
     /// Where the menu's leading edge starts.
     pub(super) x: Pixels,
     top: Pixels,
     bottom: Pixels,
+    /// Where the menu's trailing edge ends, in place of starting at `x`.
+    trailing: Option<Pixels>,
+}
+
+impl RowAnchor {
+    /// The menu ends at `right`, the list's trailing inset, rather than
+    /// starting at the row's leading inset: History's commit menu, which
+    /// would otherwise lie over the graph's lanes.
+    pub(super) fn trailing(self, right: Pixels) -> Self {
+        Self {
+            trailing: Some(right),
+            ..self
+        }
+    }
 }
 
 /// A row's menu opened from the keyboard beside the row it acts on, with
@@ -167,6 +182,7 @@ impl KeyboardMenu {
             x: bounds.left() + inset,
             top: visible(top),
             bottom: visible(top + height),
+            trailing: None,
         }
     }
 
@@ -215,11 +231,11 @@ impl KeyboardMenu {
 
 /// A keyboard's menu, placed beside its cursor row once its size is known:
 /// below the row where it fits in `room` there, and otherwise wholly above
-/// the row, its edge clear of it, at the row's leading inset and inside
-/// `room` either way. GPUI's anchor, which placed it before, slid a menu
-/// that ran past the window up just far enough, over its own row (5.5 px at
-/// 18 pt in a 461 × 490 window), and moved it by whole pixels, which can put
-/// half a pixel past the room.
+/// the row, its edge clear of it, at the row's leading inset or ending at
+/// its trailing one, and inside `room` either way. GPUI's anchor, which
+/// placed it before, slid a menu that ran past the window up just far
+/// enough, over its own row (5.5 px at 18 pt in a 461 × 490 window), and
+/// moved it by whole pixels, which can put half a pixel past the room.
 struct RowMenu {
     row: RowAnchor,
     room: Bounds<Pixels>,
@@ -235,7 +251,11 @@ impl RowMenu {
         } else {
             (self.row.top - MENU_EDGE - size.height).max(room.top())
         };
-        let x = self.row.x.min(room.right() - size.width).max(room.left());
+        let x = self
+            .row
+            .trailing
+            .map_or(self.row.x, |right| right - size.width);
+        let x = x.min(room.right() - size.width).max(room.left());
         point(x, y)
     }
 }

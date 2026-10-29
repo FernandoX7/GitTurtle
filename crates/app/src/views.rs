@@ -2577,10 +2577,11 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    /// Opens the selected commit's menu below its row, from Shift-F10 or the
-    /// Menu key: the menu a right-click on the row opens. It starts at the
-    /// row's leading inset in the part of the list the viewport shows, where
-    /// the columns scroll sideways.
+    /// Opens the selected commit's menu beside its row, from Shift-F10 or the
+    /// Menu key: the menu a right-click on the row opens. It ends at the
+    /// list's trailing inset in the part of the list the viewport shows,
+    /// where the columns scroll sideways, so it leaves the graph's lanes in
+    /// view.
     fn open_commit_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.commit_menu.is_some() || window.has_active_dialog(cx) || window.has_active_sheet(cx)
         {
@@ -2596,13 +2597,18 @@ impl GitTurtle {
             return;
         };
         let commit = recovery::commit_target(commit);
-        let mut anchor = native_accessibility::KeyboardMenu::cursor_row(
+        let inset = appearance::ui_size(appearance::PANE_INSET);
+        let anchor = native_accessibility::KeyboardMenu::cursor_row(
             &self.history_scroll,
             row,
             window.pixel_snap(px(self.settings.density.history_row_height())),
-            appearance::ui_size(appearance::PANE_INSET),
+            inset,
         );
-        anchor.x -= self.history_horizontal.offset().x;
+        // The list's right edge in the part the viewport shows, inside the
+        // 1 px edge drawn there (`history_list_edge`).
+        let list = self.history_scroll.0.borrow().base_handle.bounds().right();
+        let shown = self.history_horizontal.bounds().right() - px(1.);
+        let anchor = anchor.trailing(list.min(shown) - inset);
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         let build = self.keyboard_commit_menu(owner, repository, commit);
         self.commit_menu = Some(native_accessibility::KeyboardMenu::open(
@@ -12869,6 +12875,61 @@ pub(crate) mod tests {
             assert!(cx.debug_bounds(REVERT).is_none(), "{key}: Escape closed it");
             assert!(focused(cx), "{key}: Escape returned focus to the list");
         }
+    }
+
+    /// Shift-F10 on a commit opens its menu ending at the commit list's
+    /// trailing inset, the visible list's inner right edge less the inset
+    /// its rows start at, at 13 pt in 1000 × 680 and at 18 pt in 461 × 490.
+    /// Started at the row's leading inset, it lay over the graph's lanes,
+    /// and in Daylight and at 18 pt the next row's ellipsis showed past it.
+    #[gpui::test]
+    async fn keyboard_commit_menu_ends_at_the_lists_trailing_inset(cx: &mut TestAppContext) {
+        const REVERT: &str = "menu-item: Revert this commit… · MenuItem";
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(6, 1)).await;
+        cx.update(|window, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+            appearance::ThemeChoice::Midnight.apply(Some(window), cx);
+        });
+        for (text, width, height) in [(13, 1000., 680.), (18, 461., 490.)] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.select_commit(1, window, cx);
+                    app.pane = Pane::History;
+                    window.focus(&app.focus, cx);
+                })
+            });
+            settle(&app, cx).await;
+            cx.simulate_keystrokes("shift-f10");
+            draw(cx);
+            let item = cx
+                .debug_bounds(REVERT)
+                .unwrap_or_else(|| panic!("{at}: the commit's menu"));
+            let surface = menu_surface(cx, item);
+            // The list's 1 px edge, drawn over the part of the list the
+            // viewport shows, and the inset its rows start at.
+            let edge = cx
+                .debug_bounds("history-list-edge")
+                .unwrap_or_else(|| panic!("{at}: the list's edge"));
+            let (inset, device) = cx.update(|window, _| {
+                (
+                    appearance::ui_size(appearance::PANE_INSET),
+                    px(1. / window.scale_factor()),
+                )
+            });
+            let end = edge.right() - px(1.) - inset;
+            assert!(
+                (surface.right() - end).abs() <= device,
+                "{at}: the menu {surface:?} ends at the list's trailing inset, {end:?}"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// The 1 px band outside a menu's fill where the kit draws its edge, a
