@@ -901,14 +901,18 @@ impl GitRepository {
     /// The object IDs FETCH_HEAD lists, each line's first field, none where
     /// there is no FETCH_HEAD yet, or `None` where it cannot be read safely
     /// or holds a line without an object ID. Git names its place
-    /// (`rev-parse --git-path`, a worktree's own), and it is read beneath
-    /// that directory without following a symbolic link, only as a regular
-    /// file within [`MAX_BLOB_BYTES`] (`read_worktree_file`).
+    /// (`rev-parse --git-path`, a worktree's own). Its directory is reached
+    /// following symbolic links, as Git reaches it, where `.git` is a link to
+    /// the directory; FETCH_HEAD itself is read without following one, only
+    /// as a regular file within [`MAX_BLOB_BYTES`] (`read_worktree_file`).
     fn fetched_commits(&self) -> Option<Vec<String>> {
         let location = run_git(&self.path, &["rev-parse", "--git-path", "FETCH_HEAD"]).ok()?;
         let location = self.path.join(path_from_bytes(trim_line(&location)));
-        let (directory, name) = (location.parent()?, location.file_name()?);
-        let bytes = match read_worktree_file(directory, Path::new(name), "100644") {
+        // `read_worktree_file` opens the directory it is given without
+        // following a link, which a linked `.git` refuses.
+        let directory = location.parent()?.canonicalize().ok()?;
+        let name = location.file_name()?;
+        let bytes = match read_worktree_file(&directory, Path::new(name), "100644") {
             // A symbolic link's stored target: Git writes through the link.
             Ok((mode, _)) if mode == "120000" => return None,
             Ok((_, bytes)) => bytes,

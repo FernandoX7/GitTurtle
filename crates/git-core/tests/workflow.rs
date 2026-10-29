@@ -621,6 +621,40 @@ fn a_fetch_that_stores_no_ref_reports_new_commits_from_fetch_head() {
     }
 }
 
+/// A repository whose `.git` is a symbolic link to its directory, as Git
+/// follows it, reads FETCH_HEAD through that link: a Fetch that brings
+/// nothing is up to date. Its FETCH_HEAD as a symbolic link still fails
+/// closed. Before, the directory's no-follow open failed, so every Fetch
+/// after the first read as new.
+#[cfg(unix)]
+#[test]
+fn a_fetch_through_a_linked_git_directory_reads_its_fetch_head() {
+    let f = Fixture::new();
+    f.write("file.txt", "one");
+    f.commit("one");
+    bare_remote(&f, "origin");
+    f.repo().execute(&push("origin", "main")).unwrap();
+    let directory = f.temp.path().join("linked-git-directory");
+    fs::rename(f.root.join(".git"), &directory).unwrap();
+    std::os::unix::fs::symlink(&directory, f.root.join(".git")).unwrap();
+    let repo = f.repo();
+    let fetch = WriteCommand::Fetch {
+        remote: "origin".into(),
+    };
+
+    repo.execute(&fetch).unwrap();
+    let fetch_head = directory.join("FETCH_HEAD");
+    assert!(fs::symlink_metadata(&fetch_head).unwrap().is_file());
+    let fetched = repo.execute(&fetch).unwrap();
+    assert!(fetched.up_to_date, "{fetched:?}");
+
+    let target = f.temp.path().join("fetch-head-target");
+    fs::rename(&fetch_head, &target).unwrap();
+    std::os::unix::fs::symlink(&target, &fetch_head).unwrap();
+    let fetched = repo.execute(&fetch).unwrap();
+    assert!(!fetched.up_to_date, "{fetched:?}");
+}
+
 fn bare_remote(f: &Fixture, name: &str) -> PathBuf {
     let remote = f.temp.path().join(format!("{name}.git"));
     git(
