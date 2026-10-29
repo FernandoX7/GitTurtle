@@ -899,17 +899,21 @@ impl QuickForm {
     /// Returns once the paths the form's query asks for have landed: past
     /// the typing pause on the test clock, then once the form's reader, a
     /// thread `run_until_parked` cannot wait for, has answered. The test
-    /// clock moves only by that pause.
+    /// clock moves only by that pause, and by one more while the form is
+    /// still busy once its reader has answered, as a change the form handles
+    /// while it settles starts the pause again.
     #[cfg(test)]
     pub(crate) fn lands(form: &Entity<Self>, cx: &mut VisualTestContext) {
-        cx.executor().advance_clock(QUICK_SEARCH_DELAY);
-        cx.run_until_parked();
-        form.read_with(cx, |form, _| form.worker.wait_idle());
-        cx.run_until_parked();
-        assert!(
-            form.read_with(cx, |form, _| !form.busy),
-            "Quick Open's paths land"
-        );
+        for _ in 0..4 {
+            cx.executor().advance_clock(QUICK_SEARCH_DELAY);
+            cx.run_until_parked();
+            form.read_with(cx, |form, _| form.worker.wait_idle());
+            cx.run_until_parked();
+            if !form.read_with(cx, |form, _| form.busy) {
+                return;
+            }
+        }
+        panic!("Quick Open's paths never landed");
     }
 
     fn new(

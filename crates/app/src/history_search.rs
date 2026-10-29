@@ -744,11 +744,14 @@ fn search_reply_current(
 /// Returns once the search a query change started has finished: past its
 /// debounce on the test clock, then each page read on the app's reader,
 /// a thread `run_until_parked` cannot wait for, has answered and landed.
-/// The test clock moves only by the debounce.
+/// The test clock moves only by a debounce, and by one more whenever one is
+/// still armed, as a change the app handles while it settles arms it again.
 #[cfg(test)]
 pub(crate) fn search_lands(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
-    cx.executor().advance_clock(SEARCH_DEBOUNCE);
     for _ in 0..8 {
+        if app.read_with(cx, |app, _| app.history_search.debounce.is_some()) {
+            cx.executor().advance_clock(SEARCH_DEBOUNCE);
+        }
         cx.run_until_parked();
         if !app.read_with(cx, |app, _| app.history_search_pending()) {
             return;

@@ -4628,6 +4628,48 @@ pub(crate) mod tests {
         fits(cx);
     }
 
+    /// Under default motion the editor's alert slides in and, once at rest,
+    /// asks for no frame while nothing changes: a slide-in that kept asking
+    /// would draw the window every frame for as long as the editor is open.
+    /// The slide-in reads the wall clock (GPUI's animation element), which
+    /// the test clock does not move, so the test lets real time pass its
+    /// duration once; only that lower bound matters, so a loaded host
+    /// changes nothing. Every other editor test opens at rest
+    /// ([`open_at_rest`]).
+    #[gpui::test]
+    fn the_alert_asks_for_no_frame_once_it_has_slid_in(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        assert!(!cx.update(|_, cx| cx.reduce_motion()), "default motion");
+        cx.simulate_resize(size(px(1440.), px(900.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        // The slide-in's clock starts in the draw that first lays the alert
+        // out, so that draw shows it at the start of its travel however slow
+        // the host is. A frame count could not tell: the editor's first
+        // layout asks for a frame of its own.
+        draw_once(cx);
+        let opening = bounds(cx, "theme-editor-save".into());
+        std::thread::sleep(
+            *gpui_kit::component::dialog::ANIMATION_DURATION + std::time::Duration::from_millis(50),
+        );
+        // The frame that finds the slide-in over draws it at rest, and the
+        // side column may lay its content out once more.
+        for _ in 0..3 {
+            if next_frame(cx) == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            next_frame(cx),
+            0,
+            "the alert asks for no frame once it is at rest"
+        );
+        let rested = bounds(cx, "theme-editor-save".into());
+        assert!(
+            opening.top() < rested.top(),
+            "the alert slid in: from {opening:?} to {rested:?}"
+        );
+    }
+
     /// No readability warning is reachable wholly below the part of the side
     /// column the window draws. The warnings sit in a group between the
     /// column, which clips them, and themselves, and AccessKit compares a

@@ -124,9 +124,6 @@ impl GitTurtle {
         let opener = self.pull_requests_focus.clone();
         self.open_github_returning_to(Some(opener), window, cx);
     }
-    /// Open the panel from the command palette, which has already returned
-    /// focus to what it opened over, or from anywhere else: closing returns
-    /// focus to what is focused now.
     /// Returns once the panel's local read, which [`Self::open_github`]
     /// starts once the dialog's frame is drawn, has landed and been drawn. It
     /// runs on the app's operation executor, a thread `run_until_parked`
@@ -139,6 +136,9 @@ impl GitTurtle {
         crate::views::tests::draw(cx);
     }
 
+    /// Open the panel from the command palette, which has already returned
+    /// focus to what it opened over, or from anywhere else: closing returns
+    /// focus to what is focused now.
     pub(super) fn open_github(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let previous = window.focused(cx);
         self.open_github_returning_to(previous, window, cx);
