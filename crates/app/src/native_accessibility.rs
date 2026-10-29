@@ -1541,6 +1541,15 @@ pub(crate) fn recorded<E: IntoElement>(element: E) -> Recorded<E::Element> {
 }
 
 /// The element [`recorded`] returns.
+///
+/// Outside tests it costs nothing at run time, so it needs no `cfg(test)`
+/// twin: it is its element, transparent, so the same size; it reports the
+/// element's ID, so GPUI keeps one ID, one element state and one node for
+/// both; it returns the element's own layout node, adding none; it adds no
+/// allocation or lookup; and its methods only forward, the recording in
+/// `prepaint`, its one addition, being `cfg(test)`. A product build compiles
+/// one forwarding impl per wrapped type, nothing per frame.
+#[repr(transparent)]
 pub(crate) struct Recorded<E> {
     inner: E,
 }
