@@ -866,7 +866,6 @@ pub(crate) mod tests {
         Some((note.text.to_string(), note.failed))
     }
 
-    #[cfg(target_os = "linux")]
     fn crc32(data: &[u8]) -> u32 {
         let mut crc = !0u32;
         for &byte in data {
@@ -879,7 +878,6 @@ pub(crate) mod tests {
     }
 
     /// A 1 × 1 PNG, with `text` in a tEXt chunk when given.
-    #[cfg(target_os = "linux")]
     pub(crate) fn png(text: Option<&[u8]>) -> Vec<u8> {
         let chunk = |kind: &[u8], data: &[u8]| {
             let body = [kind, data].concat();

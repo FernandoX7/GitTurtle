@@ -12,7 +12,14 @@ pub(super) enum WorkingRow {
     File(usize, ChangeArea),
 }
 
-struct WorkingInspectorLayout {
+#[cfg(test)]
+thread_local! {
+    /// The layout state the Working inspector last drew with, for tests.
+    pub(crate) static WORKING_LAYOUT_STATE: std::cell::Cell<Option<EntityId>> =
+        const { std::cell::Cell::new(None) };
+}
+
+pub(crate) struct WorkingInspectorLayout {
     height: Pixels,
     /// The inspector's width as last laid out, which its rows fit
     /// (`WorkingForms`).
@@ -2629,10 +2636,37 @@ impl GitTurtle {
         );
     }
 
+    /// The Working inspector's layout as last laid out, which `window` keeps
+    /// while the inspector is drawn, `width` being the inspector's expected
+    /// width until it is first laid out. It is keyed as the window renders
+    /// (`render_repository`), before the inspector is built in its frame,
+    /// where the key would take the frame's ancestors: those change with the
+    /// project pane, and showing or hiding it lost the layout.
+    pub(super) fn working_inspector_layout(
+        &self,
+        width: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<WorkingInspectorLayout> {
+        let previous_list = self.working_scroll.0.borrow().last_item_size;
+        // Measure the list/composer body after Targets, feedback, the Changes
+        // header and wrapping path/selection controls have taken their space.
+        window.use_keyed_state("working-inspector-layout", cx, |window, _| {
+            WorkingInspectorLayout {
+                height: (window.viewport_size().height - px(400.)).max(px(160.)),
+                width,
+                list_size: previous_list.map(|size| size.item),
+                inspector: (window.viewport_size().height - px(200.)).max(px(160.)),
+            }
+        })
+    }
+
     /// `width` is the inspector's width where the window pins it, otherwise
-    /// the width it is expected to take until it is laid out.
+    /// the width it is expected to take until it is laid out; `layout` is its
+    /// layout as last laid out ([`Self::working_inspector_layout`]).
     pub(super) fn render_working_inspector(
         &self,
+        layout: Entity<WorkingInspectorLayout>,
         width: Pixels,
         pinned: bool,
         window: &mut Window,
@@ -2640,16 +2674,8 @@ impl GitTurtle {
     ) -> AnyElement {
         let p = palette(cx);
         let previous_list = self.working_scroll.0.borrow().last_item_size;
-        // Measure the list/composer body after Targets, feedback, the Changes
-        // header and wrapping path/selection controls have taken their space.
-        let layout = window.use_keyed_state("working-inspector-layout", cx, |window, _| {
-            WorkingInspectorLayout {
-                height: (window.viewport_size().height - px(400.)).max(px(160.)),
-                width,
-                list_size: previous_list.map(|size| size.item),
-                inspector: (window.viewport_size().height - px(200.)).max(px(160.)),
-            }
-        });
+        #[cfg(test)]
+        WORKING_LAYOUT_STATE.with(|state| state.set(Some(layout.entity_id())));
         // The short form also shapes the controls above the body, so it is
         // chosen before layout from the body's height as last laid out; the
         // list and the composer are sized from its height in this frame as

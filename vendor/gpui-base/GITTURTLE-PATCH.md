@@ -2,7 +2,7 @@
 
 This directory contains the crates.io `gpui-base` 0.6.0 source, licensed Apache-2.0. The upstream copyright and license are preserved in `LICENSE-APACHE`; `.cargo_vcs_info.json` records the published source revision. The registry archive checksum is `2caaf00ebe0482774dd370a82a936edf4bf19a18a0d1a39353d20ecf61f70330`.
 
-The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/mod.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popup.rs` and `src/positioner.rs`; `src/dialog_label.rs` and `src/disabled_focus.rs` are added private helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook.
+The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/mod.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popup.rs`, `src/positioner.rs` and `src/resizable/mod.rs`; `src/dialog_label.rs` and `src/disabled_focus.rs` are added private helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook.
 
 The existing rendered-node test now expects disabled metadata. GitTurtle also includes the equivalent rendered-node regression in its application test suite, where the matching GPUI Kit test-support feature is enabled. Run `cargo test --locked -p gitturtle native_accessibility` from the repository root. This verifies generated node role, label, disabled state, click availability and selected/unselected Tab metadata. Native VoiceOver behavior is a separate application validation gate.
 
@@ -154,3 +154,28 @@ right-click menu ended half a pixel past it.
 or more above the status bar. Remove this part of the patch when upstream lets
 an application keep popups clear of a region at the window's foot, and those
 tests pass without it.
+
+The panel-fit patch modifies `src/resizable/mod.rs`. Upstream a
+`ResizablePanelGroup` learns its size only as it is prepainted, after its
+panels were laid out at their sizes for the old size, and only then rescales
+them (`adjust_to_container_size`), so the first frame at a new size draws the
+panels where they were, and the rescaled panels reach the screen only with
+the next frame something asks for, as the next input: a notify during a draw
+asks for none. In GitTurtle's content columns that frame drew the inspector
+at its old width, held to its new range, and the comparison beside it up to
+120 px wider than it settles. `ResizableState::fit_container` rescales the
+panels for a size the caller knows before the group is laid out at it, as
+the group would after, and records the size, so the group's own adjustment
+then finds nothing to do; the group still adjusts itself where no caller
+fits it. The consumers are GitTurtle's three groups: the root render fits
+the project pane's group, `render_repository` the content columns' group
+and `render_content_columns` History's navigation group, each to the width
+it has in its frame (an `InFrame`) before building it. They are covered on
+every platform by
+`cargo test --locked -p gitturtle a_resize_lays_each_panel_group_out_where_it_settles`,
+and the project pane's fit to the width its body is drawn at, rather than to
+the window's content, by `the_project_pane_is_fitted_to_the_body_it_is_drawn_in`:
+a test window draws the body exactly as wide as its content, so a test-only
+inset narrows the body by 100 px. Remove the patch when upstream lays a
+group's panels out at their rescaled sizes in the first frame at a new size,
+and those tests pass with the three `fit_container` calls removed.

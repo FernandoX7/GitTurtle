@@ -3882,6 +3882,52 @@ fn content_size(window: &Window) -> Size<Pixels> {
     )
 }
 
+/// The width the window's body is laid out at in a window `viewport` wide,
+/// for this window's scale factor and decorations ([`laid_out_width`]): the
+/// width the project pane's group is fitted to.
+fn body_width(viewport: Pixels, window: &Window) -> Pixels {
+    laid_out_width(
+        viewport,
+        window.scale_factor(),
+        window.window_decorations(),
+        gpui_kit::component::window_paddings(window),
+    )
+}
+
+/// The width the window's content is laid out at, as the layout rounds it:
+/// the viewport, less, inside a client-decorated frame, the toolkit's
+/// `window_paddings` and its 1 px border on each untiled side, each rounded
+/// to device pixels as the layout rounds it (a padding to the nearest, the
+/// border as a stroke, never under one), and the far edge at the device
+/// pixel it is snapped to. At scale factor 1.5 an untiled frame's 20 px
+/// padding is 30 device pixels and its border 1, not the 1.5 that
+/// [`content_size`] subtracts, so in a 1,061 px window the body is laid out
+/// at 1,529 device pixels where the content snapped would be 1,528.
+fn laid_out_width(
+    viewport: Pixels,
+    scale: f32,
+    decorations: Decorations,
+    paddings: Edges<Pixels>,
+) -> Pixels {
+    // To the nearest device pixel, halves toward zero, as the layout rounds.
+    let device = |length: f32| (length.abs() - 0.5).ceil().copysign(length);
+    let (left, right) = match decorations {
+        Decorations::Server => (0., 0.),
+        Decorations::Client { tiling } => {
+            let border = |tiled: bool| if tiled { 0. } else { device(scale).max(1.) };
+            (
+                device(f32::from(paddings.left) * scale) + border(tiling.left),
+                device(f32::from(paddings.right) * scale) + border(tiling.right),
+            )
+        }
+    };
+    // Each inset is a whole number of device pixels, so the content's left
+    // edge lies on one, and its right edge is snapped where the layout snaps
+    // it.
+    let far = device(f32::from(viewport) * scale - right);
+    px((far - left).max(0.) / scale)
+}
+
 impl GitTurtle {
     /// The chrome a Repository frame draws, decided before layout so no
     /// frame shows the other form first. The full forms' heights are
@@ -3903,7 +3949,7 @@ impl GitTurtle {
         }
         let content = content_size(window);
         let widths = self.chrome_widths(window);
-        let (header, actions) = self.full_chrome_heights(&widths, window);
+        let (header, actions) = self.full_chrome_heights(&widths, window, cx);
         let full = header + actions;
         let tabs = window.pixel_snap(repository_tabs::tab_strip_min_height(
             appearance::button_ring_room(cx),
@@ -3911,7 +3957,7 @@ impl GitTurtle {
         let status = window.pixel_snap(appearance::ui_size(26.));
         let need = self
             .history_minimum(window)
-            .max(self.compare_minimum(window));
+            .max(self.compare_minimum(window, cx));
         if content.height - tabs - status - full >= need {
             return Chrome::Full { narrow };
         }
@@ -4002,10 +4048,15 @@ impl GitTurtle {
     /// The full header's and action bar's heights in this window: the header
     /// spans the window, the action bar the repository page beside the
     /// project pane.
-    fn full_chrome_heights(&self, widths: &ChromeWidths, window: &Window) -> (Pixels, Pixels) {
+    fn full_chrome_heights(
+        &self,
+        widths: &ChromeWidths,
+        window: &Window,
+        cx: &App,
+    ) -> (Pixels, Pixels) {
         let content = content_size(window);
         let narrow = window.viewport_size().width < appearance::ui_size(COMPACT_HEADER_WIDTH);
-        let page = self.full_actions_page(window);
+        let page = self.full_actions_page(window, cx);
         (
             self.full_header_height(
                 content.width,
@@ -4229,8 +4280,8 @@ impl GitTurtle {
     /// editor's 8 px padding above and below its text, three lines at the
     /// code size, and the footer. Its text widths are cached as the chrome's
     /// are, so History's frames ask the text system nothing for it either.
-    pub(super) fn compare_minimum(&self, window: &Window) -> Pixels {
-        let width = self.repository_width(window);
+    pub(super) fn compare_minimum(&self, window: &Window, cx: &App) -> Pixels {
+        let width = self.repository_width(window, cx);
         let narrow = width < appearance::ui_size(SIDEBAR_FIT_WIDTH);
         let rail = appearance::ui_size(44.);
         let columns = ColumnMinimums::new(width, rail, narrow);
@@ -4449,7 +4500,12 @@ impl GitTurtle {
     /// as the chrome measures it. The `compact` bar, one row that never
     /// wraps, draws the barest form, and its line as its glyph where even
     /// its shortest whole form would be cut ([`Self::compact_edge_fits`]).
-    pub(super) fn edge_form(&self, compact: bool, window: &Window) -> empty_state::EdgeForm {
+    pub(super) fn edge_form(
+        &self,
+        compact: bool,
+        window: &Window,
+        cx: &App,
+    ) -> empty_state::EdgeForm {
         let [.., barest] = empty_state::EdgeForm::ORDER;
         let Some(edge) = self.repository_edge() else {
             return barest;
@@ -4457,11 +4513,11 @@ impl GitTurtle {
         let widths = self.chrome_widths(window);
         if compact {
             return empty_state::EdgeForm {
-                glyph: !self.compact_edge_fits(&edge, &widths, window),
+                glyph: !self.compact_edge_fits(&edge, &widths, window, cx),
                 ..barest
             };
         }
-        let page = self.full_actions_page(window);
+        let page = self.full_actions_page(window, cx);
         let least = self.full_actions_height_with(page, &widths, barest, window);
         empty_state::EdgeForm::ORDER
             .into_iter()
@@ -4481,22 +4537,29 @@ impl GitTurtle {
         edge: &empty_state::RepositoryEdge,
         widths: &ChromeWidths,
         window: &Window,
+        cx: &App,
     ) -> bool {
         let actions = 4. + if edge.action().is_some() { 1. } else { 0. };
         window.pixel_snap(window.rem_size() * 0.5) * 2. + widths.edge_compact
-            <= self.compact_line_room(actions, widths, window)
+            <= self.compact_line_room(actions, widths, window, cx)
     }
 
     /// The room the compact action bar's row leaves the line after the
     /// branch picker: the row's `actions` 28 px controls keep their room,
     /// and the picker its whole label (`render_git_actions`).
-    fn compact_line_room(&self, actions: f32, widths: &ChromeWidths, window: &Window) -> Pixels {
+    fn compact_line_room(
+        &self,
+        actions: f32,
+        widths: &ChromeWidths,
+        window: &Window,
+        cx: &App,
+    ) -> Pixels {
         let rem = window.rem_size();
         let snap = |length: Pixels| window.pixel_snap(length);
         let control = snap(appearance::ui_size(28.));
         let gap = snap(rem * 0.5);
         let room =
-            self.full_actions_page(window) - snap(rem * 0.75) * 2. - (control + gap) * actions;
+            self.full_actions_page(window, cx) - snap(rem * 0.75) * 2. - (control + gap) * actions;
         room - self.compact_picker(widths, window) - gap
     }
 
@@ -4521,7 +4584,7 @@ impl GitTurtle {
     /// the kit's Button does not shrink. At 18 pt in a 461 × 490 half tile
     /// the words were cut to "↑ 0…", and to "↑ …" beside a longer branch
     /// name.
-    pub(super) fn sync_fit(&self, compact: bool, window: &Window) -> SyncFit {
+    pub(super) fn sync_fit(&self, compact: bool, window: &Window, cx: &App) -> SyncFit {
         let words = SyncFit {
             form: SyncForm::Words,
             picker: None,
@@ -4539,7 +4602,7 @@ impl GitTurtle {
         let rem = window.rem_size();
         let snap = |length: Pixels| window.pixel_snap(length);
         // Fetch, Pull, Push and Targets: an edge stands in the counts' place.
-        let room = self.compact_line_room(4., &widths, window);
+        let room = self.compact_line_room(4., &widths, window, cx);
         // The state's `px_2` box and each count's 12 px arrow, the two
         // `gap_2` apart, and each count's text a `gap_1` after its arrow.
         let arrows = snap(rem * 0.5) * 2. + px(12.) * 2. + snap(rem * 0.5);
@@ -4563,15 +4626,9 @@ impl GitTurtle {
     }
 
     /// The repository page's width beside the project pane, which the action
-    /// bar spans.
-    fn full_actions_page(&self, window: &Window) -> Pixels {
-        let content = content_size(window);
-        // Beside the pane the page keeps its 520 px minimum (`render`).
-        if self.settings.project_pane {
-            (content.width - self.project_pane_width(window)).max(px(520.))
-        } else {
-            content.width
-        }
+    /// bar spans ([`Self::repository_width`]).
+    fn full_actions_page(&self, window: &Window, cx: &App) -> Pixels {
+        self.repository_width(window, cx)
     }
 
     /// The full action bar's height, Targets collapsed, in a repository page
@@ -5328,6 +5385,11 @@ thread_local! {
     /// Widths History has taken from its measured bounds, each of which
     /// notifies so its columns are laid out again.
     static HISTORY_WIDTHS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Room taken off the left of the body beside the project pane, in
+    /// pixels, so the body is narrower than the window's content, as no test
+    /// window draws it otherwise
+    /// (`the_project_pane_is_fitted_to_the_body_it_is_drawn_in`).
+    static BODY_INSET: std::cell::Cell<f32> = const { std::cell::Cell::new(0.) };
     /// The accessible name each control of a compact layout was given since
     /// the map was last cleared, by debug selector
     /// (`compact_controls_carry_their_accessible_names`).
@@ -5574,8 +5636,8 @@ impl GitTurtle {
 
     /// Whether History has room for its navigation beside the table and the
     /// narrowest inspector.
-    pub(super) fn navigation_fits(&self, window: &Window) -> bool {
-        self.repository_width(window) >= appearance::ui_size(SIDEBAR_FIT_WIDTH)
+    pub(super) fn navigation_fits(&self, window: &Window, cx: &App) -> bool {
+        self.repository_width(window, cx) >= appearance::ui_size(SIDEBAR_FIT_WIDTH)
     }
 
     /// The shortcut, the menu bar and the command palette share this. Outside
@@ -5586,7 +5648,7 @@ impl GitTurtle {
     pub(super) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode != WorkspaceMode::History {
             self.back_to_history(window, cx);
-        } else if self.navigation_fits(window) {
+        } else if self.navigation_fits(window, cx) {
             self.sidebar = !self.sidebar;
             self.history_sidebar = self.sidebar;
             cx.notify();
@@ -5629,8 +5691,9 @@ impl GitTurtle {
     /// wide, which its contents are laid out for. The panel group lays the
     /// inspector out at its panel's size within `inspector_range`: the saved
     /// width until the group first measures it, then the size the group
-    /// keeps, which it rescales with the window and which a drag sets. That
-    /// size can differ from the saved width, which only a drag changes: where
+    /// keeps, which it rescales with the window, fitted before the frame that
+    /// draws it (`render_repository`), and which a drag sets. That size can
+    /// differ from the saved width, which only a drag changes: where
     /// a tiling window manager narrows the window after it opens, the group
     /// draws the inspector narrower than it was saved.
     fn drawn_inspector_width(&self, width: Pixels, columns: &ColumnMinimums, cx: &App) -> Pixels {
@@ -5648,35 +5711,91 @@ impl GitTurtle {
         size.min(range.end).max(range.start)
     }
 
-    /// The width the repository page receives beside the project pane.
-    fn repository_width(&self, window: &Window) -> Pixels {
-        let width = window.viewport_size().width;
+    /// The width the repository page is drawn at: the body's width as the
+    /// layout draws it ([`body_width`]), less, beside the project pane, the
+    /// pane as its group draws it there ([`Self::drawn_project_pane_width`]),
+    /// and at least the page's 520 px minimum. Every choice the page's width
+    /// makes reads this one width: the narrow rail, Toggle Sidebar and the
+    /// palette's entry, the chrome's action bar and Compare's minimum, the
+    /// columns' minimums and the inspector's range, and the width a drag of
+    /// the inspector saves.
+    fn repository_width(&self, window: &Window, cx: &App) -> Pixels {
+        let viewport = window.viewport_size().width;
+        let body = body_width(viewport, window);
         if self.settings.project_pane && self.page != AppPage::Projects {
-            width - self.project_pane_width(window)
+            // The page is laid out between the pane's edge and the body's,
+            // both on device pixels: at scale factor 1.5, 840 px between a
+            // 220.67 px pane and a 1,060.67 px body. The snap only drops the
+            // rounding of the two divided lengths.
+            let pane = self.drawn_project_pane_width(viewport, window, cx);
+            window.pixel_snap(body - pane).max(px(520.))
         } else {
-            width
+            body
         }
     }
 
+    /// The project pane's width as its group draws it in a window `viewport`
+    /// wide: the group's size for it, rescaled to the body's width
+    /// ([`body_width`]) as the group is fitted to it before layout
+    /// (`ResizableState::fit_container`), within the pane's 180–360 px range
+    /// and at the device pixel its edge is laid out on; before the group
+    /// first measures the pane, the width it starts at
+    /// ([`Self::project_pane_width`]).
+    fn drawn_project_pane_width(&self, viewport: Pixels, window: &Window, cx: &App) -> Pixels {
+        let panels = self.project_panels.read(cx);
+        let sizes = panels.sizes();
+        let size = match sizes
+            .first()
+            .filter(|pane| **pane != gpui_kit::base::PANEL_MIN_SIZE)
+        {
+            None => self.project_pane_width(window),
+            Some(&pane) => {
+                // The group is fitted to the body's width as the layout draws
+                // it, whole device pixels, which is not the window's content:
+                // at scale factor 1.5, 1,060.67 px in a 1,061 px window.
+                let body = body_width(viewport, window);
+                // It rescales its panels for any other width, as exactly as
+                // `fit_container` compares it: at scale factor 1.25 a group
+                // fitted to a 1,002 px window's body (1,001.6 px) rescales
+                // for a 1,001 px window's (1,000.8 px), though within a
+                // device pixel of the window's 1,001 px content.
+                let fitted = panels.container_size() == body;
+                // As the group rescales it, the same arithmetic in the same
+                // order.
+                let total = px(sizes.iter().map(|size| f32::from(*size)).sum::<f32>());
+                if fitted || total <= px(0.) {
+                    pane
+                } else {
+                    body * (pane / total)
+                }
+            }
+        };
+        // The panel's basis, held to its range, is laid out at a device
+        // pixel: a pane fitted to 212.2 px is drawn 212 px wide.
+        window.pixel_snap(size.min(px(360.)).max(px(180.)))
+    }
+
     /// `width` within the bounds a drag gives the inspector in this window
-    /// at the interface size (`inspector_range`), for the repository page
-    /// whichever page shows: the width a drag's end writes. Restores and
-    /// narrower windows draw a saved width within the range without
-    /// writing it.
-    pub(super) fn bounded_inspector_width(&self, width: f32, window: &Window) -> f32 {
-        let mut page = window.viewport_size().width;
-        if self.settings.project_pane {
-            page -= self.project_pane_width(window);
-        }
+    /// at the interface size (`inspector_range`), for the repository page:
+    /// the width a drag's end writes. Restores and narrower windows draw a
+    /// saved width within the range without writing it.
+    pub(super) fn bounded_inspector_width(&self, width: f32, window: &Window, cx: &App) -> f32 {
+        let page = self.repository_width(window, cx);
         let narrow = page < appearance::ui_size(SIDEBAR_FIT_WIDTH);
         let columns = ColumnMinimums::new(page, appearance::ui_size(44.), narrow);
         let range = Self::inspector_range(page, &columns);
         f32::from(px(width).min(range.end).max(range.start))
     }
 
-    fn render_repository(
+    /// The content column, History or the comparison beside the rail, and
+    /// the inspector, in their panel group, as the frame that draws them
+    /// builds them once the group fits their width
+    /// ([`Self::render_repository`]).
+    /// `working_layout` is the Working inspector's layout state, kept where
+    /// the window renders ([`Self::working_inspector_layout`]).
+    fn render_content_columns(
         &self,
-        chrome: Chrome,
+        working_layout: Option<Entity<crate::workspace::WorkingInspectorLayout>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -5684,8 +5803,9 @@ impl GitTurtle {
         // width that fits navigation, the history table and the narrowest
         // inspector, History shows the rail and the content column accepts
         // less, so the inspector stays whole; saved widths and the user's
-        // navigation choice are untouched.
-        let width = self.repository_width(window);
+        // navigation choice are untouched. The page's one width decides it,
+        // as it decides Toggle Sidebar and the palette's entry.
+        let width = self.repository_width(window, cx);
         let narrow = width < appearance::ui_size(SIDEBAR_FIT_WIDTH);
         let rail = appearance::ui_size(44.);
         let columns = ColumnMinimums::new(width, rail, narrow);
@@ -5722,55 +5842,19 @@ impl GitTurtle {
                 )
                 .into_any_element()
         } else if self.sidebar && !narrow {
-            h_resizable("history-columns")
-                .with_state(&self.history_panels)
-                // The kit paints its divider over History's first pixel,
-                // where the commit list draws its left edge and focus ring;
-                // the sidebar's own right border is the divider. Paint the
-                // line on that border instead, in its color at rest and the
-                // ring's while dragged; the hit area and drag stay the kit's.
-                .with_handle_appearance(std::rc::Rc::new(
-                    |handle: &gpui_kit::base::ResizeHandleContext, _, cx| {
-                        let line = if handle.is_active() {
-                            gpui_kit::component::Theme::global(cx).colors.ring
-                        } else {
-                            rgb(palette(cx).border).into()
-                        };
-                        Some(
-                            div()
-                                .flex_none()
-                                .h_full()
-                                .w(px(1.))
-                                .ml(px(-1.))
-                                .bg(line)
-                                .into_any_element(),
-                        )
-                    },
-                ))
-                .on_resize({
-                    let owner = cx.entity().downgrade();
-                    move |panels, window, cx| {
-                        if let Some(width) = panels.read(cx).sizes().first().copied() {
-                            let _ = owner.update(cx, |this, cx| {
-                                this.settings.navigation_width = f32::from(width);
-                                this.save_preferences(window, cx);
-                            });
-                        }
-                    }
-                })
-                .child(
-                    resizable_panel()
-                        .size(px(self.settings.navigation_width))
-                        .size_range(px(180.)..px(360.))
-                        .flex_none()
-                        .child(self.render_sidebar(window, cx)),
-                )
-                .child(
-                    resizable_panel()
-                        .size_range(px(320.)..px(10000.))
-                        .child(self.render_history(window, cx)),
-                )
-                .into_any_element()
+            // Navigation and History are laid out for the width the content
+            // column has in this frame, their group fitted to it first, as
+            // the content columns' is (`render_repository`).
+            let owner = cx.entity().downgrade();
+            let panels = self.history_panels.clone();
+            crate::in_frame::in_frame(move |bounds, window, cx| {
+                panels.update(cx, |panels, cx| panels.fit_container(bounds.size.width, cx));
+                owner
+                    .update(cx, |this, cx| this.render_history_columns(window, cx))
+                    .unwrap_or_else(|_| div().into_any_element())
+            })
+            .named("history-columns")
+            .into_any_element()
         } else {
             div()
                 .size_full()
@@ -5799,7 +5883,7 @@ impl GitTurtle {
                             // Only a drag writes the width, within the
                             // bounds it has at this moment.
                             this.settings.inspector_width =
-                                this.bounded_inspector_width(f32::from(width), window);
+                                this.bounded_inspector_width(f32::from(width), window, cx);
                             this.save_preferences(window, cx);
                         });
                     }
@@ -5815,24 +5899,123 @@ impl GitTurtle {
                     .size(px(self.settings.inspector_width))
                     .size_range(Self::inspector_range(width, &columns))
                     .flex_none()
-                    .child(if self.mode == WorkspaceMode::Working {
-                        self.render_working_inspector(inspector_width, columns.pinned, window, cx)
-                    } else {
-                        self.render_inspector(files_header, cx)
+                    .child(match working_layout {
+                        Some(layout) if self.mode == WorkspaceMode::Working => self
+                            .render_working_inspector(
+                                layout,
+                                inspector_width,
+                                columns.pinned,
+                                window,
+                                cx,
+                            ),
+                        _ => self.render_inspector(files_header, cx),
                     }),
             );
+        workspace.into_any_element()
+    }
+
+    /// History's navigation and its table in their panel group, as the frame
+    /// that draws them builds them once the group fits their width
+    /// ([`Self::render_content_columns`]).
+    fn render_history_columns(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        h_resizable("history-columns")
+            .with_state(&self.history_panels)
+            // The kit paints its divider over History's first pixel,
+            // where the commit list draws its left edge and focus ring;
+            // the sidebar's own right border is the divider. Paint the
+            // line on that border instead, in its color at rest and the
+            // ring's while dragged; the hit area and drag stay the kit's.
+            .with_handle_appearance(std::rc::Rc::new(
+                |handle: &gpui_kit::base::ResizeHandleContext, _, cx| {
+                    let line = if handle.is_active() {
+                        gpui_kit::component::Theme::global(cx).colors.ring
+                    } else {
+                        rgb(palette(cx).border).into()
+                    };
+                    Some(
+                        div()
+                            .flex_none()
+                            .h_full()
+                            .w(px(1.))
+                            .ml(px(-1.))
+                            .bg(line)
+                            .into_any_element(),
+                    )
+                },
+            ))
+            .on_resize({
+                let owner = cx.entity().downgrade();
+                move |panels, window, cx| {
+                    if let Some(width) = panels.read(cx).sizes().first().copied() {
+                        let _ = owner.update(cx, |this, cx| {
+                            this.settings.navigation_width = f32::from(width);
+                            this.save_preferences(window, cx);
+                        });
+                    }
+                }
+            })
+            .child(crate::in_frame::probed(
+                resizable_panel()
+                    .size(px(self.settings.navigation_width))
+                    .size_range(px(180.)..px(360.))
+                    .flex_none()
+                    .child(self.render_sidebar(window, cx)),
+                "history-navigation",
+            ))
+            .child(
+                resizable_panel()
+                    .size_range(px(320.)..px(10000.))
+                    .child(self.render_history(window, cx)),
+            )
+            .into_any_element()
+    }
+
+    fn render_repository(
+        &self,
+        chrome: Chrome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // The content column and the inspector are laid out for the width
+        // the page gives them in the frame they are drawn
+        // ([`crate::in_frame`]). Their panel group rescales its panels for a
+        // new width only once it has been laid out at it, so the first frame
+        // at a new width drew the inspector, and the column beside it, at
+        // their widths for the old one, until the next input; fitted to the
+        // width first, that frame lays them out where they settle.
+        // The Working inspector's layout state is kept here, as the window
+        // renders, so its key takes none of the ancestors the frame's build
+        // has, which the project pane changes. Until the inspector is laid
+        // out it expects the width the window's width gives it.
+        let working_layout = (self.mode == WorkspaceMode::Working).then(|| {
+            let page = self.repository_width(window, cx);
+            let narrow = page < appearance::ui_size(SIDEBAR_FIT_WIDTH);
+            let columns = ColumnMinimums::new(page, appearance::ui_size(44.), narrow);
+            let expected = self.drawn_inspector_width(page, &columns, cx);
+            self.working_inspector_layout(expected, window, cx)
+        });
+        let owner = cx.entity().downgrade();
+        let panels = self.content_panels.clone();
+        let columns = crate::in_frame::in_frame(move |bounds, window, cx| {
+            panels.update(cx, |panels, cx| panels.fit_container(bounds.size.width, cx));
+            owner
+                .update(cx, |this, cx| {
+                    this.render_content_columns(working_layout, window, cx)
+                })
+                .unwrap_or_else(|_| div().into_any_element())
+        });
         div()
             .size_full()
             .flex()
             .flex_col()
             .child(self.render_git_actions(
                 chrome.is_compact(),
-                self.edge_form(chrome.is_compact(), window),
-                self.sync_fit(chrome.is_compact(), window),
+                self.edge_form(chrome.is_compact(), window, cx),
+                self.sync_fit(chrome.is_compact(), window, cx),
                 cx,
             ))
             .child(self.render_operation_state(cx))
-            .child(div().flex_1().min_h_0().child(workspace))
+            .child(columns)
             .into_any_element()
     }
 
@@ -6019,7 +6202,7 @@ impl Render for GitTurtle {
         if self.navigation_refusals > 0
             && (self.page != AppPage::Repository
                 || self.mode != WorkspaceMode::History
-                || self.navigation_fits(window))
+                || self.navigation_fits(window, cx))
         {
             self.navigation_refusals = 0;
         }
@@ -6060,30 +6243,52 @@ impl Render for GitTurtle {
         // Repository and Settings. The hub already lists projects full width.
         let body = if self.settings.project_pane && self.page != AppPage::Projects {
             let pane_width = self.project_pane_width(window);
-            h_resizable("workspace-columns")
-                .with_state(&self.project_panels)
-                .on_resize({
-                    let owner = cx.entity().downgrade();
-                    move |panels, window, cx| {
-                        if let Some(width) = panels.read(cx).sizes().first().copied() {
-                            let _ = owner.update(cx, |this, cx| {
-                                this.settings.project_pane_width = f32::from(width);
-                                this.save_preferences(window, cx);
-                            });
-                        }
-                    }
-                })
+            let pane = self.render_project_pane(cx).into_any_element();
+            let owner = cx.entity().downgrade();
+            let panels = self.project_panels.clone();
+            // The group rescales the pane and the page for a new width only
+            // once it has been laid out at it, so the first frame at a new
+            // width drew them at their old widths, until the next input.
+            // Laid out for the body's width in the frame it is drawn, the
+            // group fitted to it first, as the content columns' is
+            // (`render_repository`), that frame lays them out where they
+            // settle; what was chosen from the page's width before layout
+            // read the pane's width as this fit leaves it
+            // (`drawn_project_pane_width`).
+            let frame = div().size_full().flex().flex_col();
+            #[cfg(test)]
+            let frame = frame.pl(px(BODY_INSET.with(std::cell::Cell::get)));
+            frame
                 .child(
-                    resizable_panel()
-                        .size(pane_width)
-                        .size_range(px(180.)..px(360.))
-                        .flex_none()
-                        .child(self.render_project_pane(cx)),
-                )
-                .child(
-                    resizable_panel()
-                        .size_range(px(520.)..px(10000.))
-                        .child(page),
+                    crate::in_frame::in_frame(move |bounds, _, cx| {
+                        panels.update(cx, |panels, cx| panels.fit_container(bounds.size.width, cx));
+                        h_resizable("workspace-columns")
+                            .with_state(&panels)
+                            .on_resize(move |panels, window, cx| {
+                                if let Some(width) = panels.read(cx).sizes().first().copied() {
+                                    let _ = owner.update(cx, |this, cx| {
+                                        this.settings.project_pane_width = f32::from(width);
+                                        this.save_preferences(window, cx);
+                                    });
+                                }
+                            })
+                            .child(crate::in_frame::probed(
+                                resizable_panel()
+                                    .size(pane_width)
+                                    .size_range(px(180.)..px(360.))
+                                    .flex_none()
+                                    .child(pane),
+                                "project-pane-panel",
+                            ))
+                            .child(crate::in_frame::probed(
+                                resizable_panel()
+                                    .size_range(px(520.)..px(10000.))
+                                    .child(page),
+                                "page-panel",
+                            ))
+                            .into_any_element()
+                    })
+                    .named("workspace-columns"),
                 )
                 .into_any_element()
         } else {
@@ -6830,12 +7035,10 @@ pub(crate) mod tests {
     }
 
     /// The `(path, bytes)` files a fixture commit writes.
-    #[cfg(target_os = "linux")]
     type Files<'a> = &'a [(&'a str, &'a [u8])];
 
     /// A `git fast-import` stream of one commit per `(message, files)` on
     /// `main`, oldest first, each writing its files.
-    #[cfg(target_os = "linux")]
     fn file_commits(commits: &[(&str, Files<'_>)]) -> Vec<u8> {
         let mut input = Vec::new();
         for (index, (message, files)) in commits.iter().enumerate() {
@@ -8781,10 +8984,8 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// Every frame lays out `region` as the frame it settles in: the frames
-    /// `step` draws, as the probe recorded them ([`crate::in_frame::probe`]),
-    /// all equal the last of two more draws. Frames before `from`, a part
-    /// that marks when what `step` brings is first drawn, are left out.
+    /// Every frame lays out `region` as the frame it settles in
+    /// ([`regions_match_their_settled_frames`]); its settled frame.
     fn frames_match_their_settled_frame(
         cx: &mut VisualTestContext,
         at: &str,
@@ -8792,32 +8993,51 @@ pub(crate) mod tests {
         from: Option<&str>,
         step: impl FnOnce(&mut VisualTestContext),
     ) -> crate::in_frame::probe::Frame {
+        regions_match_their_settled_frames(cx, at, &[region], from, step).remove(0)
+    }
+
+    /// Every frame lays out each of `regions` as the frame it settles in:
+    /// the frames `step` draws, as the probe recorded them
+    /// ([`crate::in_frame::probe`]), all equal the last of two more draws.
+    /// Frames before `from`, a part that marks when what `step` brings is
+    /// first drawn, are left out. Their settled frames, in the order named.
+    fn regions_match_their_settled_frames(
+        cx: &mut VisualTestContext,
+        at: &str,
+        regions: &[&str],
+        from: Option<&str>,
+        step: impl FnOnce(&mut VisualTestContext),
+    ) -> Vec<crate::in_frame::probe::Frame> {
         use crate::in_frame::probe;
         probe::take();
         step(cx);
-        let frames: Vec<_> = probe::take()
-            .into_iter()
-            .filter(|frame| frame.region == region)
-            .skip_while(|frame| from.is_some_and(|part| frame.part(part).is_none()))
-            .collect();
+        let frames = probe::take();
         draw(cx);
-        let settled = probe::take()
-            .into_iter()
-            .rfind(|frame| frame.region == region)
-            .unwrap_or_else(|| panic!("{at}: {region} is drawn"));
-        assert!(
-            !frames.is_empty(),
-            "{at}: {region} was drawn after the step"
-        );
-        for (index, frame) in frames.iter().enumerate() {
-            assert_eq!(
-                frame,
-                &settled,
-                "{at}: frame {index} of {} lays {region} out as it settles",
-                frames.len()
-            );
-        }
-        settled
+        let last = probe::take();
+        regions
+            .iter()
+            .map(|region| {
+                let settled = last
+                    .iter()
+                    .rfind(|frame| frame.region == *region)
+                    .unwrap_or_else(|| panic!("{at}: {region} is drawn"));
+                let drawn: Vec<_> = frames
+                    .iter()
+                    .filter(|frame| frame.region == *region)
+                    .skip_while(|frame| from.is_some_and(|part| frame.part(part).is_none()))
+                    .collect();
+                assert!(!drawn.is_empty(), "{at}: {region} was drawn after the step");
+                for (index, frame) in drawn.iter().enumerate() {
+                    assert_eq!(
+                        *frame,
+                        settled,
+                        "{at}: frame {index} of {} lays {region} out as it settles",
+                        drawn.len()
+                    );
+                }
+                settled.clone()
+            })
+            .collect()
     }
 
     /// An image comparison chooses what gives way beneath its toolbar (each
@@ -8899,35 +9119,17 @@ pub(crate) mod tests {
                 .step_by(40)
                 .chain((501..=1061).step_by(40));
             for width in widths {
-                use crate::in_frame::probe;
                 let at = format!("{text} pt, answered, resized to {width} × 980");
-                probe::take();
-                cx.simulate_resize(size(px(width as f32), px(980.)));
-                draw(cx);
-                let frames = probe::take();
-                draw(cx);
-                let last = probe::take();
-                let mut settled = Vec::new();
-                for region in ["compare-preview", "image-comparison"] {
-                    let region_frames: Vec<_> = frames
-                        .iter()
-                        .filter(|frame| frame.region == region)
-                        .collect();
-                    let region_settled = last
-                        .iter()
-                        .rfind(|frame| frame.region == region)
-                        .unwrap_or_else(|| panic!("{at}: {region} is drawn"));
-                    assert!(!region_frames.is_empty(), "{at}: {region} was drawn");
-                    for (index, frame) in region_frames.iter().enumerate() {
-                        assert_eq!(
-                            *frame,
-                            region_settled,
-                            "{at}: frame {index} of {} lays {region} out as it settles",
-                            region_frames.len()
-                        );
-                    }
-                    settled.push(region_settled.clone());
-                }
+                let settled = regions_match_their_settled_frames(
+                    cx,
+                    &at,
+                    &["compare-preview", "image-comparison"],
+                    None,
+                    |cx| {
+                        cx.simulate_resize(size(px(width as f32), px(980.)));
+                        draw(cx);
+                    },
+                );
                 let preview = &settled[0];
                 groups.insert(
                     [
@@ -8959,6 +9161,501 @@ pub(crate) mod tests {
         crate::in_frame::probe::stop();
         assert!(footer_left, "the walk meets the footer giving way");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The first frame after a resize lays each panel group out where it
+    /// settles. A group rescaled its panels for a new width only once it had
+    /// been laid out at it, so the first frame at a new width drew them at
+    /// their widths for the old one, held to their new ranges, and the
+    /// rescaled panels reached the screen only with the next input: with the
+    /// inspector dragged to 400 px in a 980 × 560 window, then narrowed to
+    /// 461 px, the first frame back at 980 px drew the inspector at its
+    /// 280 px minimum and the image comparison 656 px wide at 13 pt (531.5 px
+    /// at 18 pt), and only the next frame at 400 and 536 px (519 px). The
+    /// project pane's group moved the page beside it the same way, and
+    /// History's its navigation. At 13 and 18 pt, every frame of the preview
+    /// and the comparison after that jump, as the window narrows by 40 px
+    /// from 1,061 to 501 px and widens back, and from 1,200 to 1,000 px with
+    /// the project pane shown at 240 px, and every frame of History's
+    /// columns from 1,480 to 1,200 px with its navigation dragged to 300 px,
+    /// is laid out as the frame it settles in.
+    #[gpui::test]
+    async fn a_resize_lays_each_panel_group_out_where_it_settles(cx: &mut TestAppContext) {
+        use crate::in_frame::probe;
+        use crate::system_preview::tests::png;
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        probe::watch();
+        let regions = ["compare-preview", "image-comparison"];
+        for text in [13, 18] {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+            settle(&app, cx).await;
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(980.), px(560.)));
+            draw(cx);
+            // Where a drag of its edge leaves it.
+            let panels = app.read_with(cx, |app, _| app.content_panels.clone());
+            cx.update(|window, cx| {
+                panels.update(cx, |panels, cx| {
+                    panels.resize_panel(1, px(400.), window, cx)
+                })
+            });
+            draw(cx);
+            let steps = [(461, 560), (980, 560), (1061, 980)]
+                .into_iter()
+                .chain((501..=1021).rev().step_by(40).map(|width| (width, 980)))
+                .chain((541..=1061).step_by(40).map(|width| (width, 980)));
+            for (width, height) in steps {
+                let at = format!("{text} pt, resized to {width} × {height}");
+                let settled = regions_match_their_settled_frames(cx, &at, &regions, None, |cx| {
+                    cx.simulate_resize(size(px(width as f32), px(height as f32)));
+                    draw(cx);
+                });
+                if (width, height) == (980, 560) {
+                    assert_eq!(
+                        settled[0].bounds.right(),
+                        px(580.),
+                        "{at}: the inspector as it was dragged"
+                    );
+                }
+            }
+            // The project pane at 240 px in a 1,200 px window, which a
+            // 1,000 px window rescales to 200 px.
+            cx.simulate_resize(size(px(1200.), px(980.)));
+            app.update(cx, |app, cx| {
+                app.settings.project_pane_width = 240.;
+                app.settings.project_pane = true;
+                cx.notify();
+            });
+            draw(cx);
+            probe::take();
+            draw(cx);
+            let wide = probe::take()
+                .into_iter()
+                .rfind(|frame| frame.region == regions[0])
+                .expect("the preview beside the project pane");
+            let at = format!("{text} pt, beside the project pane, resized to 1000 × 980");
+            let settled = regions_match_their_settled_frames(cx, &at, &regions, None, |cx| {
+                cx.simulate_resize(size(px(1000.), px(980.)));
+                draw(cx);
+            });
+            assert_eq!(
+                settled[0].bounds.left(),
+                wide.bounds.left() - px(40.),
+                "{at}: the pane rescaled to 200 px"
+            );
+            app.update(cx, |app, cx| {
+                app.settings.project_pane = false;
+                cx.notify();
+            });
+            // History's navigation dragged to 300 px in a 1,480 px window.
+            cx.update(|window, cx| app.update(cx, |app, cx| app.back_to_history(window, cx)));
+            cx.simulate_resize(size(px(1480.), px(980.)));
+            draw(cx);
+            let history = app.read_with(cx, |app, _| app.history_panels.clone());
+            cx.update(|window, cx| {
+                history.update(cx, |panels, cx| {
+                    panels.resize_panel(0, px(300.), window, cx)
+                })
+            });
+            draw(cx);
+            let at = format!("{text} pt, History resized to 1200 × 980");
+            let settled =
+                regions_match_their_settled_frames(cx, &at, &["history-columns"], None, |cx| {
+                    cx.simulate_resize(size(px(1200.), px(980.)));
+                    draw(cx);
+                });
+            let navigation = settled[0]
+                .part("history-navigation")
+                .expect("History's navigation");
+            assert!(
+                navigation.size.width < px(300.),
+                "{at}: the navigation rescaled from 300 px: {navigation:?}"
+            );
+        }
+        probe::stop();
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Every choice the repository page's width makes reads one width: the
+    /// window's less the project pane as its group draws it. The page drew
+    /// its rail from its width in the frame, while Toggle Sidebar, the
+    /// palette's entry and the width a drag of the inspector saves read the
+    /// window less the pane's saved width: with the pane dragged to 300 px
+    /// in a 1,200 px window, then narrowed to 1,000 px, the page had 750 px
+    /// and drew the narrow rail, but they read 800 px, so Toggle Sidebar
+    /// changed the choice with nothing drawn differently, the palette
+    /// offered it, and a drag that drew the inspector 400 px wide saved
+    /// 280 px, the end of the range a wide page gives it.
+    #[gpui::test]
+    async fn the_page_beside_the_project_pane_takes_one_width(cx: &mut TestAppContext) {
+        use crate::command_palette::CommandId;
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.simulate_resize(size(px(1200.), px(980.)));
+        app.update(cx, |app, cx| {
+            app.settings.project_pane = true;
+            cx.notify();
+        });
+        draw(cx);
+        // As a drag of the pane's edge leaves it and saves it.
+        let pane = app.read_with(cx, |app, _| app.project_panels.clone());
+        cx.update(|window, cx| {
+            pane.update(cx, |panels, cx| {
+                panels.resize_panel(0, px(300.), window, cx)
+            })
+        });
+        app.update(cx, |app, _| app.settings.project_pane_width = 300.);
+        draw(cx);
+        cx.simulate_resize(size(px(1000.), px(980.)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("history-sidebar").is_none(),
+            "the 750 px page draws the narrow rail"
+        );
+        assert!(
+            cx.debug_bounds("repository-rail").is_some(),
+            "the 750 px page draws the narrow rail"
+        );
+        let narrow = Some("Widen the window to show branches and worktrees");
+        let state = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let app = app.read(cx);
+                (
+                    app.sidebar,
+                    app.menu_command_reason(CommandId::Sidebar, window, cx),
+                )
+            })
+        };
+        assert_eq!(state(cx), (true, narrow), "the palette refuses it");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_sidebar(window, cx)));
+        draw(cx);
+        assert_eq!(state(cx), (true, narrow), "Toggle Sidebar keeps the choice");
+        assert_eq!(app.read_with(cx, |app, _| app.navigation_refusals), 1);
+        // A drag of the inspector's edge, and the width its end saves.
+        let content = app.read_with(cx, |app, _| app.content_panels.clone());
+        cx.update(|window, cx| {
+            content.update(cx, |panels, cx| {
+                panels.resize_panel(1, px(400.), window, cx)
+            })
+        });
+        draw(cx);
+        let drawn = app.read_with(cx, |app, cx| app.content_panels.read(cx).sizes()[1]);
+        assert_eq!(drawn, px(400.), "the inspector drawn as dragged");
+        let saved = cx.update(|window, cx| {
+            app.read(cx)
+                .bounded_inspector_width(f32::from(drawn), window, cx)
+        });
+        assert_eq!(saved, 400., "the drag saves the width it drew");
+    }
+
+    /// The page's one width reads the project pane and the page at the
+    /// device pixels their edges are drawn on. The group fits the pane to a
+    /// fraction of a pixel and the panel is laid out at a device pixel: with
+    /// the pane at 240 px in a 1,200 px window narrowed to 1,061 px, it is
+    /// drawn 212 px wide beside an 849 px page, where the page's width once
+    /// read the 212.2 px it was fitted to, 848.8 px. At a fractional scale
+    /// factor the body is laid out at whole device pixels too, and its group
+    /// is fitted to that width: at 1.5, 1,060.67 px in a 1,061 px window,
+    /// where a 250 px pane narrowed from 1,200 px is drawn at 331 device
+    /// pixels beside an 840 px page (1,260), which the page's width once read
+    /// as the window's 1,061 px less the pane, 840.33 px. The group is fitted
+    /// already only at exactly the body's width: narrowed by one pixel, from
+    /// 1,002 to 1,001 px at 1.25 and from 1,061 to 1,060 px at 1.5, the body
+    /// loses 0.8 and 0.67 px, and a pane dragged to 240.5 and 240.4 px is
+    /// rescaled to 300 and 360 device pixels. Within a device pixel of the
+    /// window's content, the group was taken as fitted and the pane expected
+    /// at 301 and 361. Each pane is also read as the frame before the
+    /// narrowing expects the narrower window to draw it, before its group is
+    /// fitted to the new width. Without the pane the page is the body, at
+    /// 1.5 in a 1,061 px window 1,060.67 px, the width its content columns
+    /// are laid out at, which the page's width once read as 1,061 px.
+    #[gpui::test]
+    async fn the_page_reads_the_project_pane_at_the_pixel_it_is_drawn(cx: &mut TestAppContext) {
+        use crate::in_frame::probe;
+        let (_fixture, app, cx) = history_window(cx).await;
+        app.update(cx, |app, cx| {
+            app.settings.project_pane = true;
+            cx.notify();
+        });
+        let panels = app.read_with(cx, |app, _| app.project_panels.clone());
+        // The pane and the page as a window `viewport` wide draws them, and
+        // this window's page.
+        let read = |viewport: f32, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let app = app.read(cx);
+                (
+                    app.drawn_project_pane_width(px(viewport), window, cx),
+                    app.repository_width(window, cx),
+                )
+            })
+        };
+        probe::watch();
+        // The scale factor, the window's widths before and after, the width
+        // the pane is dragged to, and the pane and the page drawn after, in
+        // device pixels.
+        for (scale, from, to, dragged, pane, page) in [
+            (2., 1200., 1061., 240., 424., 1698.),
+            (1.5, 1200., 1061., 250., 331., 1260.),
+            (1.25, 1002., 1001., 240.5, 300., 951.),
+            (1.5, 1061., 1060., 240.4, 360., 1230.),
+        ] {
+            let at = format!(
+                "at scale factor {scale}, the pane dragged to {dragged} px at {from} px \
+                 and narrowed to {to} px"
+            );
+            let (pane, page) = (px(pane / scale), px(page / scale));
+            // A resize takes the test window's own factor, 2.
+            let resize = |width: f32, cx: &mut VisualTestContext| {
+                cx.simulate_resize(size(px(width), px(980.)));
+                cx.update(|window, _| window.set_scale_factor(scale));
+                draw(cx);
+            };
+            resize(from, cx);
+            cx.update(|window, cx| {
+                panels.update(cx, |panels, cx| {
+                    panels.resize_panel(0, px(dragged), window, cx)
+                })
+            });
+            draw(cx);
+            let before = read(to, cx).0;
+            resize(to, cx);
+            let drawn = probe::take()
+                .into_iter()
+                .rfind(|frame| frame.region == "workspace-columns")
+                .expect("the project pane beside the page");
+            let part = |name: &str| drawn.part(name).expect(name).size.width;
+            assert_eq!(part("project-pane-panel"), pane, "{at}: the pane drawn");
+            assert_eq!(part("page-panel"), page, "{at}: the page drawn");
+            assert_eq!(before, pane, "{at}: the pane expected before as drawn");
+            assert_eq!(read(to, cx), (pane, page), "{at}: the pane and page read");
+        }
+        probe::stop();
+        // Without the pane the page is the body as the layout draws it, the
+        // width its content columns are laid out at: at scale factor 1.5,
+        // 1,591 device pixels in a 1,061 px window.
+        app.update(cx, |app, cx| {
+            app.settings.project_pane = false;
+            cx.notify();
+        });
+        cx.simulate_resize(size(px(1061.), px(980.)));
+        cx.update(|window, _| window.set_scale_factor(1.5));
+        draw(cx);
+        let page = cx.update(|window, cx| {
+            let app = app.read(cx);
+            (
+                app.repository_width(window, cx),
+                app.content_panels.read(cx).container_size(),
+            )
+        });
+        let body = px(1591. / 1.5);
+        assert_eq!(page, (body, body), "the page without the pane");
+        cx.update(|window, _| window.set_scale_factor(2.));
+    }
+
+    /// The body's width is predicted at the width the layout draws it
+    /// ([`laid_out_width`]), with the platform's own decorations and inside
+    /// a client-decorated frame, which a test window cannot have: the frame
+    /// is laid out here as the toolkit's `window_border` lays it out, its
+    /// 20 px shadow padding, then its 1 px border, on each untiled side. At
+    /// scale factor 1.5 the layout rounds the padding to 30 device pixels and
+    /// the border, a stroke, to 1, so a 1,061 px window's body is drawn at
+    /// 1,529 device pixels; its content less 42 px and snapped, 1,528.
+    #[gpui::test]
+    fn the_body_is_predicted_at_the_width_it_is_laid_out(cx: &mut TestAppContext) {
+        struct Frame {
+            decorations: Decorations,
+            paddings: Edges<Pixels>,
+        }
+        impl Render for Frame {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let tiling = match self.decorations {
+                    Decorations::Server => None,
+                    Decorations::Client { tiling } => Some(tiling),
+                };
+                let untiled = |side: fn(&Tiling) -> bool| tiling.is_some_and(|t| !side(&t));
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .pl(self.paddings.left)
+                    .pr(self.paddings.right)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .when(untiled(|t| t.left), |frame| frame.border_l(px(1.)))
+                            .when(untiled(|t| t.right), |frame| frame.border_r(px(1.)))
+                            .child(div().size_full().debug_selector(|| "body".into())),
+                    )
+            }
+        }
+        let untiled = Decorations::Client {
+            tiling: Tiling::default(),
+        };
+        let tiled_left = Decorations::Client {
+            tiling: Tiling {
+                left: true,
+                ..Tiling::default()
+            },
+        };
+        let paddings = Edges::all(px(20.));
+        let frames = [
+            (Decorations::Server, Edges::default()),
+            (untiled, paddings),
+            (
+                tiled_left,
+                Edges {
+                    left: px(0.),
+                    ..paddings
+                },
+            ),
+        ];
+        let (view, cx) = cx.add_window_view(|_, _| Frame {
+            decorations: Decorations::Server,
+            paddings: Edges::default(),
+        });
+        for (decorations, paddings) in frames {
+            view.update(cx, |frame, cx| {
+                frame.decorations = decorations;
+                frame.paddings = paddings;
+                cx.notify();
+            });
+            for scale in [1., 1.25, 1.5, 1.75, 2.] {
+                for width in [1000., 1001., 1002., 1060., 1061.] {
+                    cx.simulate_resize(size(px(width), px(600.)));
+                    cx.update(|window, cx| {
+                        window.set_scale_factor(scale);
+                        window.draw(cx).clear(cx);
+                    });
+                    let drawn = cx.debug_bounds("body").expect("the body").size.width;
+                    assert_eq!(
+                        laid_out_width(px(width), scale, decorations, paddings),
+                        drawn,
+                        "a {width} px window at scale factor {scale} in {decorations:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            laid_out_width(px(1061.), 1.5, untiled, paddings),
+            px(1529. / 1.5)
+        );
+    }
+
+    /// The project pane's group is fitted to the width its body is drawn at,
+    /// in the frame it is drawn ([`crate::in_frame`]), not to the window's
+    /// content, which a test window draws the body exactly as wide as. With
+    /// the body inset 100 px ([`BODY_INSET`]), the pane dragged to 240 px in
+    /// a 1,200 px window keeps 240 px of the body's 1,100, and narrowed to
+    /// 1,000 px every frame draws it at its share of the 900 px body,
+    /// 196.5 px. Fitted to the window's content as the frame is built, the
+    /// group was laid out for 1,200 px in a body 1,100 px wide, and the pane
+    /// dragged to 240 px was drawn 286 px wide.
+    #[gpui::test]
+    async fn the_project_pane_is_fitted_to_the_body_it_is_drawn_in(cx: &mut TestAppContext) {
+        use crate::in_frame::probe;
+        let (_fixture, app, cx) = history_window(cx).await;
+        let _inset = BodyInset::new(100.);
+        cx.simulate_resize(size(px(1200.), px(980.)));
+        app.update(cx, |app, cx| {
+            app.settings.project_pane = true;
+            cx.notify();
+        });
+        draw(cx);
+        let panels = app.read_with(cx, |app, _| app.project_panels.clone());
+        cx.update(|window, cx| {
+            panels.update(cx, |panels, cx| {
+                panels.resize_panel(0, px(240.), window, cx)
+            })
+        });
+        probe::watch();
+        let widths = |frame: &probe::Frame| {
+            let pane = frame.part("project-pane-panel").expect("the pane");
+            (frame.bounds.size.width, pane.size.width)
+        };
+        let at = "dragged in a 1,100 px body";
+        let settled = frames_match_their_settled_frame(cx, at, "workspace-columns", None, draw);
+        assert_eq!(widths(&settled), (px(1100.), px(240.)), "{at}");
+        let at = "resized to 1000 × 980";
+        let settled = frames_match_their_settled_frame(cx, at, "workspace-columns", None, |cx| {
+            cx.simulate_resize(size(px(1000.), px(980.)));
+            draw(cx);
+        });
+        let share = cx.update(|window, _| window.pixel_snap(px(900.) * (px(240.) / px(1100.))));
+        assert_eq!(share, px(196.5));
+        assert_eq!(
+            widths(&settled),
+            (px(900.), share),
+            "{at}: the pane's share"
+        );
+        probe::stop();
+    }
+
+    /// [`BODY_INSET`] for as long as it lives, and none once it is dropped,
+    /// as a failing test unwinds too, so no inset outlives its test.
+    struct BodyInset;
+
+    impl BodyInset {
+        fn new(inset: f32) -> Self {
+            BODY_INSET.with(|cell| cell.set(inset));
+            Self
+        }
+    }
+
+    impl Drop for BodyInset {
+        fn drop(&mut self) {
+            BODY_INSET.with(|cell| cell.set(0.));
+        }
+    }
+
+    /// The body's test inset ends with its guard when a test fails while it
+    /// is set: reset only at a test's end, it outlived the failing test.
+    #[test]
+    fn the_body_inset_ends_with_a_failing_test() {
+        let failed = std::panic::catch_unwind(|| {
+            let _inset = BodyInset::new(100.);
+            assert_eq!(BODY_INSET.with(std::cell::Cell::get), 100.);
+            panic!("a test fails with the body inset");
+        });
+        assert!(failed.is_err());
+        assert_eq!(BODY_INSET.with(std::cell::Cell::get), 0.);
+    }
+
+    /// The Working inspector keeps its layout as the project pane comes and
+    /// goes. Kept where the inspector is built in its frame, the layout's
+    /// state took a key under that frame's ancestors, which the pane changes,
+    /// so showing or hiding the pane started it again from its estimate.
+    #[gpui::test]
+    async fn the_working_inspector_keeps_its_layout_beside_the_project_pane(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::workspace::WORKING_LAYOUT_STATE;
+        let (_fixture, app, cx) = working_window(cx).await;
+        // The state the inspector draws with, as the next draw records it.
+        let drawn = |cx: &mut VisualTestContext| {
+            WORKING_LAYOUT_STATE.with(|state| state.set(None));
+            draw(cx);
+            let state = WORKING_LAYOUT_STATE.with(|state| state.get());
+            assert!(state.is_some(), "the Working inspector is drawn");
+            state
+        };
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let mut states = vec![drawn(cx)];
+        for shown in [true, false, true] {
+            app.update(cx, |app, cx| {
+                app.settings.project_pane = shown;
+                cx.notify();
+            });
+            states.push(drawn(cx));
+        }
+        assert!(
+            states.windows(2).all(|pair| pair[0] == pair[1]),
+            "one layout state as the pane comes and goes: {states:?}"
+        );
     }
 
     /// Compare's toolbar and footer choose their form from the preview
@@ -10816,7 +11513,7 @@ pub(crate) mod tests {
             let app = app.read(cx);
             let widths = app.chrome_widths(window);
             (
-                app.full_chrome_heights(&widths, window),
+                app.full_chrome_heights(&widths, window, cx),
                 app.chrome(window, cx),
             )
         })
@@ -10927,7 +11624,7 @@ pub(crate) mod tests {
                     let at = format!("{branch} at {text} pt in {width} × {height}");
                     let form = cx.update(|window, cx| {
                         let app = app.read(cx);
-                        app.sync_fit(app.chrome(window, cx).is_compact(), window)
+                        app.sync_fit(app.chrome(window, cx).is_compact(), window, cx)
                             .form
                     });
                     seen.entry((branch.clone(), text, width as u32))
@@ -17376,7 +18073,7 @@ pub(crate) mod tests {
                 (
                     app.sidebar,
                     app.history_sidebar,
-                    app.menu_command_reason(CommandId::Sidebar, window),
+                    app.menu_command_reason(CommandId::Sidebar, window, cx),
                 )
             })
         };

@@ -250,6 +250,27 @@ impl ResizableState {
         self.bounds.size.along(self.axis)
     }
 
+    /// Fit the panels to a container `size` long on the group's axis before
+    /// the group is laid out at that size, as the group does itself once it
+    /// has been laid out at a new size.
+    ///
+    /// The group learns its size only as it is prepainted, after its panels
+    /// were laid out at their sizes for the old one, so the first frame at a
+    /// new size draws them there and only the next frame draws them
+    /// rescaled. A caller that knows the size the group will be drawn at
+    /// calls this before it builds the group, and the group then finds its
+    /// size unchanged and adjusts nothing.
+    pub fn fit_container(&mut self, size: Pixels, cx: &mut Context<Self>) {
+        if self.container_size() == size {
+            return;
+        }
+        match self.axis {
+            Axis::Horizontal => self.bounds.size.width = size,
+            Axis::Vertical => self.bounds.size.height = size,
+        }
+        self.adjust_to_container_size(cx);
+    }
+
     pub(crate) fn done_resizing(&mut self, cx: &mut Context<Self>) {
         self.resizing_panel_ix = None;
         cx.emit(ResizablePanelEvent::Resized);

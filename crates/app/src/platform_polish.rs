@@ -106,7 +106,7 @@ impl PrimaryMenu {
                     .iter()
                     .find(|spec| spec.id == id)
                     .expect("menu command is registered");
-                (spec, owner.read(cx).menu_command_reason(id, window))
+                (spec, owner.read(cx).menu_command_reason(id, window, cx))
             })
         });
         let target = self.owner.clone();

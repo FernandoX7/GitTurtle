@@ -491,8 +491,9 @@ impl GitTurtle {
         &self,
         id: CommandId,
         window: &Window,
+        cx: &App,
     ) -> Option<&'static str> {
-        id.reason(&self.palette_availability(window))
+        id.reason(&self.palette_availability(window, cx))
     }
 
     #[cfg(target_os = "linux")]
@@ -504,7 +505,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         if &self.path != path
-            || id.reason(&self.palette_availability(window)).is_some()
+            || id.reason(&self.palette_availability(window, cx)).is_some()
             || window.has_active_dialog(cx)
             || window.has_active_sheet(cx)
         {
@@ -513,9 +514,9 @@ impl GitTurtle {
         self.run_palette_command(id, window, cx);
     }
 
-    fn palette_context(&self, window: &Window) -> PaletteContext {
+    fn palette_context(&self, window: &Window, cx: &App) -> PaletteContext {
         PaletteContext {
-            availability: self.palette_availability(window),
+            availability: self.palette_availability(window, cx),
             path: self.path.clone(),
             label: self
                 .repository
@@ -560,7 +561,7 @@ impl GitTurtle {
             working: None,
         }
     }
-    fn palette_availability(&self, window: &Window) -> Availability {
+    fn palette_availability(&self, window: &Window, cx: &App) -> Availability {
         let file_scope = self.palette_file_scope();
         Availability {
             repository: self.repository.is_some(),
@@ -577,7 +578,8 @@ impl GitTurtle {
             blame: self.blame.is_visible(),
             integration: self.integration_state.is_some(),
             profile_saving: self.profile_save_pending(),
-            narrow_history: self.mode == WorkspaceMode::History && !self.navigation_fits(window),
+            narrow_history: self.mode == WorkspaceMode::History
+                && !self.navigation_fits(window, cx),
         }
     }
     pub(super) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -588,7 +590,7 @@ impl GitTurtle {
         let path = self.path.clone();
         let return_focus = window.focused(cx);
         let file_scope = self.palette_file_scope();
-        let context = self.palette_context(window);
+        let context = self.palette_context(window, cx);
         let form =
             cx.new(|cx| Palette::new(owner, path, file_scope, context, return_focus, window, cx));
         let query_focus = form.read(cx).query.read(cx).focus_handle(cx);
@@ -777,7 +779,7 @@ impl Palette {
         let owner_subscription = owner.upgrade().map(|owner| {
             cx.observe_in(&owner, window, |this, owner, window, cx| {
                 if !this.selection.closed {
-                    this.context = owner.read(cx).palette_context(window);
+                    this.context = owner.read(cx).palette_context(window, cx);
                     cx.notify();
                 }
             })
@@ -847,7 +849,7 @@ impl Palette {
                 self.error = Some("The selected file changed. Close and reopen the palette to review its current target.".into());
                 return;
             }
-            if let Some(reason) = command.reason(&owner.palette_availability(window)) {
+            if let Some(reason) = command.reason(&owner.palette_availability(window, cx)) {
                 self.error = Some(reason.into());
                 return;
             }
@@ -1888,7 +1890,7 @@ mod render_tests {
         let (app, cx) = hub(cx);
         cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
         crate::tags::tests::draw(cx);
-        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window));
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
         let available = |results: &[usize]| {
             results
                 .iter()
@@ -1990,7 +1992,7 @@ mod render_tests {
         let (app, cx) = hub(cx);
         cx.simulate_input("show");
         crate::tags::tests::draw(cx);
-        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window));
+        let availability = cx.update(|window, cx| app.read(cx).palette_availability(window, cx));
         let results = matches("show");
         let shown = results.len().min(7);
         let mut kinds = (false, false);
