@@ -3,8 +3,10 @@
 //! When focus moves onto a control that lies wholly or partly outside the
 //! container, the container scrolls by the least amount that shows the whole
 //! control plus a margin: to the nearest edge, without centring or animation.
-//! Only a change of focus reveals. Scrolling away from a focused control, or
-//! drawing again with the same focus, leaves the container where it is.
+//! Only a change of focus reveals, or a page that opens with focus on a
+//! control ([`FocusReveal::reveal_next_focus`]). Scrolling away from a
+//! focused control, or drawing again with the same focus, leaves the
+//! container where it is.
 //!
 //! The reveal lands in the frame that first draws the new focus. GPUI lays a
 //! frame out, prepaints and paints it, so a control's bounds are known only
@@ -116,7 +118,11 @@ impl FocusReveal {
     /// Has the next frame the container draws reveal the control focus has
     /// moved onto whatever moved it there, as a page that opens with focus
     /// on a control needs, whether a key or a click opened it: Settings in a
-    /// half tile at 18 pt, whose first control lies below its fold.
+    /// half tile at 18 pt, whose first control lies below its fold. It
+    /// reveals the control even when the container last drew focus on it, as
+    /// when the page opens again, scrolled to its top, onto the control it
+    /// was left with: reopened by Ctrl+, after Back, Settings left the
+    /// Omarchy theme's card below the fold.
     pub(crate) fn reveal_next_focus(&self) {
         self.next_focus.set(true);
     }
@@ -269,12 +275,13 @@ impl FocusReveal {
     }
 
     /// Whether focus has changed since the last frame in a way the trigger
-    /// reveals.
+    /// reveals, or a page opening asked for its focus to be revealed
+    /// ([`Self::reveal_next_focus`]) even onto the control it last drew
+    /// focused.
     fn due(&self, observed: &Observation, window: &Window) -> bool {
-        *self.observed.borrow() != *observed
-            && (self.trigger == Trigger::AnyFocus
-                || self.next_focus.get()
-                || window.last_input_was_keyboard())
+        self.next_focus.get()
+            || (*self.observed.borrow() != *observed
+                && (self.trigger == Trigger::AnyFocus || window.last_input_was_keyboard()))
     }
 
     /// Records that the frame being prepainted drew the control `focus`

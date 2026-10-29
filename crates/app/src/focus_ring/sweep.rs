@@ -654,14 +654,18 @@ async fn dialogs_open_with_a_whole_ring_on_their_first_field(cx: &mut TestAppCon
 
 /// Settings opens with focus on its first control, inside the window's
 /// handlers, and its first frames draw that control's ring whole, scrolled
-/// into view, at 13 pt in 1280 × 800 and 18 pt in 461 × 490, with no key
-/// pressed, as when a click opens the page: Follow system appearance, or, on
-/// Linux while the desktop's Omarchy theme decides the appearance and that
-/// switch is unavailable, the Omarchy theme's card, whose ring otherwise
-/// shows only after a key. It opened with focus on the window's root, which
-/// draws nothing, so nothing showed where the keyboard stood until a Tab
-/// landed on the tab strip; at 18 pt in the half tile the switch lies below
-/// the page's fold.
+/// into view, at 13 pt in 1280 × 800 and 18 pt in 461 × 490, opened by its
+/// button with no key pressed, as when a click opens the page, and then, back
+/// from it, by its shortcut: Follow system appearance, or, on Linux while the
+/// desktop's Omarchy theme decides the appearance and that switch is
+/// unavailable, the Omarchy theme's card, whose ring otherwise shows only
+/// after a key. It opened with focus on the window's root, which draws
+/// nothing, so nothing showed where the keyboard stood until a Tab landed on
+/// the tab strip; at 18 pt in the half tile the switch lies below the page's
+/// fold. Opened again onto the same control in the same window, the page
+/// started at its top and revealed nothing, since the control was the one it
+/// had last drawn focused: Ctrl+, after Back left the Omarchy card below the
+/// fold.
 #[gpui::test]
 async fn settings_opens_with_a_whole_ring_on_its_first_control(cx: &mut TestAppContext) {
     let (_fixture, app, cx) = views::tests::history_window(cx).await;
@@ -696,12 +700,27 @@ async fn settings_opens_with_a_whole_ring_on_its_first_control(cx: &mut TestAppC
         } else {
             "Follow system appearance"
         };
-        for (interface, width, height) in OPENING {
+        for ((interface, width, height), by) in OPENING
+            .into_iter()
+            .flat_map(|opening| [(opening, "its button"), (opening, "its shortcut")])
+        {
             cx.simulate_resize(size(px(width), px(height)));
             interface_size(cx, interface);
-            cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+            if by == "its button" {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+            } else {
+                #[cfg(target_os = "macos")]
+                cx.simulate_keystrokes("cmd-,");
+                #[cfg(not(target_os = "macos"))]
+                cx.simulate_keystrokes("ctrl-,");
+            }
             draw(cx, 2);
-            let at = format!("Settings at {interface} pt in {width} × {height}, {control}");
+            let at = format!("Settings by {by} at {interface} pt in {width} × {height}, {control}");
+            assert_eq!(
+                app.read_with(cx, |app, _| app.page),
+                AppPage::Settings,
+                "{at}: it opens"
+            );
             let first = app.update(cx, |app, cx| {
                 if omarchy {
                     app.theme_card_focus(ThemeSelection::Omarchy).clone()
