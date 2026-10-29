@@ -702,6 +702,178 @@ mod tests {
         assert!(cx.debug_bounds("working-row-4").is_none());
     }
 
+    /// What one frame laid out: the list's bounds and the composer's.
+    struct Frame {
+        at: String,
+        list: Bounds<Pixels>,
+        composer: Bounds<Pixels>,
+    }
+
+    /// Draws one frame, as the window draws one, and records what it laid
+    /// out under `at`.
+    fn one_frame(cx: &mut VisualTestContext, frames: &mut Vec<Frame>, at: String) {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        frames.push(Frame {
+            at,
+            list: cx.debug_bounds("working-pane").expect("the list"),
+            composer: cx.debug_bounds("commit-composer").expect("the composer"),
+        });
+    }
+
+    /// A 1480 × 980 window in Changes with six edited files, alpha and beta
+    /// staged, as the native reviews' fixture has them: [Staged 2, alpha,
+    /// beta, Unstaged 4, delta, epsilon, gamma, zeta].
+    async fn six_files(
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--hard", "--quiet"]);
+        for name in ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"] {
+            std::fs::write(root.join(format!("{name}.txt")), format!("{name}\n")).unwrap();
+        }
+        fixture_git(&root, &["add", "alpha.txt", "beta.txt"]);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        assert_eq!(app.read_with(cx, |app, _| app.working_rows.len()), 8);
+        (fixture, app, cx)
+    }
+
+    /// The row of `name` in `area`, in the list as drawn.
+    fn position_of(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        name: &str,
+        area: ChangeArea,
+    ) -> usize {
+        app.read_with(cx, |app, _| {
+            let status = app.work_status.as_ref().expect("a status");
+            app.actionable_working_rows()
+                .iter()
+                .position(|row| {
+                    matches!(row, workspace::WorkingRow::File(index, at)
+                        if *at == area && status.entries[*index].path == Path::new(name))
+                })
+                .unwrap_or_else(|| panic!("{name} in {area:?}"))
+        })
+    }
+
+    /// Presses the Stage or Unstage control of `name`'s row in `area` and
+    /// draws a frame for each step of the write, two where a step can ask
+    /// for another: the press, the write's outcome, its status read, the
+    /// rows that read produces, each 16 ms of the row's flight; then the
+    /// same for a quiet read of the same status, as the local watcher's
+    /// after a write.
+    async fn write_frames(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        name: &str,
+        area: ChangeArea,
+        frames: &mut Vec<Frame>,
+    ) {
+        let what = format!("{name} from {area:?}");
+        let selector: &'static str =
+            format!("working-stage-{}", position_of(app, cx, name, area)).leak();
+        let control = cx.debug_bounds(selector).expect(selector);
+        // The rows wait for the frames before them to be drawn.
+        let mut held = Some(app.update(cx, |app, _| app.file_paths.executor().hold()));
+        cx.simulate_click(control.center(), Modifiers::default());
+        one_frame(cx, frames, format!("{what}: the press"));
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        for read in ["its read", "a quiet read"] {
+            if read == "a quiet read" {
+                held = Some(app.update(cx, |app, _| app.file_paths.executor().hold()));
+                cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            }
+            for step in 0..8 {
+                one_frame(cx, frames, format!("{what}: {read} {step}"));
+                one_frame(cx, frames, format!("{what}: {read} {step}, again"));
+                let tasks = app.update(cx, |app, _| {
+                    [app.task.take(), app.status_task.take()]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                });
+                for task in tasks {
+                    task.await;
+                }
+                cx.executor().run_until_parked();
+                // The status is read; its rows are being prepared.
+                one_frame(cx, frames, format!("{what}: {read} {step}, read"));
+                one_frame(cx, frames, format!("{what}: {read} {step}, read again"));
+                drop(held.take());
+                app.update(cx, |app, _| app.file_paths.executor().drain());
+                cx.executor().run_until_parked();
+                let settled = app.read_with(cx, |app, _| {
+                    app.status_task.is_none()
+                        && !app.working_paths.pending
+                        && !matches!(app.working_travel, RowTravel::Departed(_))
+                });
+                if settled {
+                    break;
+                }
+            }
+            for frame in 0..12 {
+                one_frame(cx, frames, format!("{what}: {read}, frame {frame}"));
+                cx.executor().advance_clock(Duration::from_millis(16));
+                cx.executor().run_until_parked();
+            }
+            assert_eq!(flying(app, cx), None);
+        }
+    }
+
+    /// A row's Stage and Unstage lay the list out in the same bounds in every
+    /// frame the window draws from the press to the row's landing, and
+    /// through the quiet read after it, at 13 and 18 pt: the frame the write
+    /// starts in, the one its outcome arrives in, the one its status read
+    /// arrives in, the one its rows land in and each frame of the flight.
+    /// Its rows and headings keep their number, so the list keeps its height
+    /// throughout, and the composer below it its place.
+    #[gpui::test]
+    async fn the_list_keeps_its_bounds_in_every_frame_of_a_write(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        // At 18 pt a taller window keeps every row in view.
+        for (text, height) in [(13, 980.), (18, 1300.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(1480.), px(height)));
+            draw(cx);
+            let mut frames = Vec::new();
+            one_frame(cx, &mut frames, format!("{text} pt at rest"));
+            let (staged, unstaged) = (ChangeArea::Staged, ChangeArea::Unstaged);
+            write_frames(&app, cx, "delta.txt", unstaged, &mut frames).await;
+            write_frames(&app, cx, "alpha.txt", staged, &mut frames).await;
+            let rest = (frames[0].list, frames[0].composer);
+            let moved: Vec<_> = frames
+                .iter()
+                .filter(|frame| (frame.list, frame.composer) != rest)
+                .map(|frame| {
+                    format!(
+                        "{}: list {:?}, composer {:?}",
+                        frame.at, frame.list, frame.composer
+                    )
+                })
+                .collect();
+            assert!(
+                moved.is_empty(),
+                "{text} pt: at rest list {:?}, composer {:?}; moved in {}",
+                rest.0,
+                rest.1,
+                moved.join("; ")
+            );
+            // Back as it was for the next size.
+            write_frames(&app, cx, "delta.txt", staged, &mut Vec::new()).await;
+            write_frames(&app, cx, "alpha.txt", unstaged, &mut Vec::new()).await;
+        }
+    }
+
     /// Under reduced motion the row is in its slot in the first frame the
     /// new rows draw, and nothing departs or flies.
     #[gpui::test]
