@@ -1552,6 +1552,26 @@ mod render_tests {
                     vec![Background::from(Hsla::from(rgb(palette.selected)))],
                     "{dialog} {name} rows"
                 );
+                // Keyboard Shortcuts' list overflows at 1200 × 800, and its
+                // scrollbar's track rests on the raised surface, as the
+                // dialogs' list tracks rest on theirs, beneath the thumb.
+                if list == "shortcut-help-results" {
+                    let thumb = cx.update(|_, cx| Theme::global(cx).tokens.scrollbar_thumb);
+                    assert!(
+                        painted.scroll_fills.contains(&Background::from(surface)),
+                        "{dialog} {name}: the track {:?}",
+                        painted.scroll_fills
+                    );
+                    assert!(
+                        painted
+                            .scroll_fills
+                            .iter()
+                            .all(|fill| *fill == Background::from(surface)
+                                || *fill == Background::from(thumb)),
+                        "{dialog} {name}: the track and thumb {:?}",
+                        painted.scroll_fills
+                    );
+                }
             }
             cx.simulate_keystrokes("escape");
             draw(cx);

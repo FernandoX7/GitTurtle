@@ -1085,7 +1085,11 @@ impl Render for ShortcutHelpView {
                 .when(count > 0, |view| view.child(list).child(
                     gpui_kit::base::Scrollbar::vertical(&self.scroll)
                         .id("shortcut-help-scrollbar")
-                        .mode(gpui_kit::base::ScrollbarMode::Always),
+                        .mode(gpui_kit::base::ScrollbarMode::Always)
+                        // The track rests on the picker's raised surface, as
+                        // the dialogs' list tracks rest on theirs; the kit's
+                        // track is the page's canvas.
+                        .styles(|styles| styles.track(|track| track.bg(rgb(p.raised()).into()))),
                 ))
                 .when(count == 0, |view| view.child(native_accessibility::text("shortcut-help-empty",
                     if self.query.read(cx).value().len() > 4096 { "Search is limited to 4,096 bytes." }
