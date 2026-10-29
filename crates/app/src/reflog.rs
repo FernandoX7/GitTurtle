@@ -1,5 +1,6 @@
 //! A local reflog is an expiring Git record, separate from app activity.
 use crate::*;
+use focus_reveal::{FocusReveal, Trigger};
 use gitturtle_core::{ReflogEntry, ReflogPage, ReflogRecoveryPlan, WriteCommand};
 use gpui_kit::{
     base::ElementExt,
@@ -237,8 +238,13 @@ pub(crate) struct ReflogBrowser {
     commit: Option<Commit>,
     changes: Vec<FileChange>,
     message: Option<Entity<EditorState>>,
-    /// The content's scroll, which its scrollbar follows.
-    content_scroll: ScrollHandle,
+    /// The content's scroll, which its scrollbar follows and which reveals
+    /// the control the keyboard moves focus onto, the entry list as a whole
+    /// for an entry.
+    content: FocusReveal,
+    /// The entry list's scroll, which its scroll cue follows and which
+    /// reveals the entry the keyboard moves focus onto.
+    entries: FocusReveal,
     /// Whether the next frame scrolls the content to show the filter, if it
     /// holds focus: set as the dialog opens and as each read lands, since
     /// the scope's summary that a read adds above the filter moves it down.
@@ -305,7 +311,8 @@ impl ReflogBrowser {
             commit: None,
             changes: Vec::new(),
             message: None,
-            content_scroll: ScrollHandle::new(),
+            content: FocusReveal::new(Trigger::Keyboard),
+            entries: FocusReveal::new(Trigger::Keyboard),
             reveal_filter: false,
             files_scroll: ScrollHandle::new(),
             cut_entries: CutEntries::default(),
@@ -455,9 +462,20 @@ impl Render for ReflogBrowser {
         // one, and a scrolling list has none.
         //
         // The content's scrollbar stands in the dialog's side padding, beside
-        // the content and its ring room, so its thumb covers no control and
-        // nothing moves for it. It paints only while the content overflows.
+        // the content and its ring room, so neither its track nor its thumb
+        // covers a control or its ring, and nothing moves for it. It paints
+        // only while the content overflows; its track once started at the
+        // body's edge, over the right side of a focused entry's ring.
+        //
+        // A control the keyboard moves focus onto scrolls into view in this
+        // frame with its ring: the entry list shows the entry, and the
+        // content the whole list, which never outgrows the content's view,
+        // or the control. Each control reports where it lies to the content.
+        self.entries.reveal(window, cx);
+        self.content.reveal(window, cx);
         let room = appearance::button_ring_room(cx);
+        let content_height = px(590.).min(body_height) + room;
+        let list_height = (px(230.) + room * 2.).min(content_height - room * 2.);
         let file_row = file_row_height();
         let files_shown = file_rows_shown();
         let files_scroll = self.changes.len().min(100) > files_shown;
@@ -470,38 +488,56 @@ impl Render for ReflogBrowser {
             let filter = 2
                 + usize::from(self.page.is_some())
                 + usize::from(self.page.as_ref().is_some_and(|page| page.truncated));
-            self.content_scroll.scroll_to_item(filter);
+            self.content.scroll().scroll_to_item(filter);
         }
-        let content = div().id("reflog-browser-content").debug_selector(|| "reflog-browser-content".into()).flex().flex_col().gap_3().max_h(px(590.).min(body_height) + room).px(room).mx(-room).pb(room).overflow_y_scroll().track_scroll(&self.content_scroll)
+        let scope = self.scope.read(cx).focus_handle(cx);
+        let read_log = self.content.focus("refresh-reflog", cx);
+        let filter = self.query.read(cx).focus_handle(cx);
+        let name = self.name.read(cx).focus_handle(cx);
+        let copy = self.content.focus("copy-reflog-oid", cx);
+        let review = self.content.focus("review-reflog-recovery", cx);
+        let entries: Vec<_> = (0..matches.len().min(100))
+            .map(|index| self.entries.focus(("reflog-entry", index), cx))
+            .collect();
+        let show_entry = self.entries.items(entries.clone(), room);
+        let show_list = self.content.group(entries.clone(), room);
+        // Past its height the entry list cues the rest with its scrollbar.
+        let cue = crate::tags::ScrollCue::new(self.entries.scroll(), room);
+        let shown =
+            |focus: FocusHandle| div().on_children_prepainted(self.content.control(focus, room));
+        let content = div().on_children_prepainted(self.content.observe()).id("reflog-browser-content").debug_selector(|| "reflog-browser-content".into()).flex().flex_col().gap_3().max_h(content_height).px(room).mx(-room).pb(room).overflow_y_scroll().track_scroll(self.content.scroll())
             .child(label("reflog-explanation", "Git records local reference movements here, including actions by other tools. HEAD belongs to this worktree; branch logs are shared. Entries expire, and unreachable objects may be pruned. This is not a permanent backup or a complete activity history.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
-            .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh", false).debug_selector(|| "refresh-reflog".into()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
+            .child(div().flex().gap_2().on_children_prepainted(self.content.controls(vec![Some(scope), Some(read_log.clone())], room)).child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh", false).track_focus(&read_log).debug_selector(|| "refresh-reflog".into()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
             .when_some(self.page.as_ref(), |element, page| element.child(label("reflog-scope-summary", format!("{} · {} retained entries · newest first", page.reference, page.entries.len())).text_size(crate::appearance::ui_text(12.))).when(page.truncated, |element| element.child(label("reflog-limit", "Showing the newest 1,000 records within a 4 MiB tail. Older records are outside this bounded view.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
             // The filter stands in the ring's room, given back through its
             // margin, so revealing it shows its ring whole.
-            .child(div().py(room).my(-room).child(Input::new(&self.query).aria_label("Filter loaded reflog entries").cleanable(true)))
-            .when(self.pending, |element| element.child(div().flex().gap_2().child(label("reflog-loading", "Reading local reflog or selected commit…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-reflog-read", "Cancel", "", false).track_focus(self.cancel_read.handle()).debug_selector(|| "cancel-reflog-read".into()).on_click(cx.listener(|this, _, window, cx| { this.cancel(); this.leave_loading_row(window, cx); cx.notify(); })))))
+            .child(shown(filter).py(room).my(-room).child(Input::new(&self.query).aria_label("Filter loaded reflog entries").cleanable(true)))
+            .when(self.pending, |element| element.child(div().flex().gap_2().on_children_prepainted(self.content.controls(vec![None, Some(self.cancel_read.handle().clone())], room)).child(label("reflog-loading", "Reading local reflog or selected commit…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-reflog-read", "Cancel", "", false).track_focus(self.cancel_read.handle()).debug_selector(|| "cancel-reflog-read".into()).on_click(cx.listener(|this, _, window, cx| { this.cancel(); this.leave_loading_row(window, cx); cx.notify(); })))))
             .children(self.error.as_ref().map(|error| label("reflog-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().child(native_accessibility::clips_children(div().id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(px(230.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, entry)| {
+            .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().on_children_prepainted(show_list).child(cue.list(div().on_children_prepainted(cue.observe(show_entry)).id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(list_height).p(room).m(-room).overflow_y_scroll().track_scroll(self.entries.scroll()).flex().flex_col().gap_1().children(matches.iter().take(100).zip(entries).enumerate().map(|(index, (entry, focus))| {
                 let entry = entry.clone(); let text = format!("{} · {} · {} · {}", entry.selector, short_oid(&entry.oid), full_date(entry.timestamp), if entry.message.is_empty() { "Reference updated" } else { &entry.message });
-                entry_button(index, text, self.selected.as_ref() == Some(&entry), &self.cut_entries, cx.entity().downgrade(), p).on_click(cx.listener(move |this, _, window, cx| this.select(entry.clone(), window, cx)))
-            })).when(matches.is_empty() && self.page.is_some() && !self.pending, |element| element.child(div().ml(TEXT_INSET).child(if self.page.as_ref().is_some_and(|page| page.entries.is_empty()) { EmptyState::new("reflog-empty", "No reflog records for this scope").tooltip("Reflog recording may be disabled, the branch may not exist, or older entries may have expired.") } else { EmptyState::new("reflog-empty", "No loaded entries match this filter") }.block(cx)))))))
+                entry_button(index, text, self.selected.as_ref() == Some(&entry), &self.cut_entries, cx.entity().downgrade(), p).track_focus(&focus).on_click(cx.listener(move |this, _, window, cx| this.select(entry.clone(), window, cx)))
+            })).when(matches.is_empty() && self.page.is_some() && !self.pending, |element| element.child(div().ml(TEXT_INSET).child(if self.page.as_ref().is_some_and(|page| page.entries.is_empty()) { EmptyState::new("reflog-empty", "No reflog records for this scope").tooltip("Reflog recording may be disabled, the branch may not exist, or older entries may have expired.") } else { EmptyState::new("reflog-empty", "No loaded entries match this filter") }.block(cx)))), "reflog-list-scrollbar")))
             .when(matches.len() > 100, |element| element.child(label("reflog-match-limit", "Showing 100 matches. Narrow the filter to find another retained entry.").text_size(crate::appearance::ui_text(12.))))
             .when_some(self.selected.as_ref(), |element, entry| {
                 let oid = entry.oid.clone(); let mark = copy_feedback::Mark::new("copy-reflog-oid", &entry.oid); let copy_mark = mark.clone();
                 element.child(label("reflog-selected-object", format!("{}\nCommit: {}\nPrevious: {}", entry.selector, entry.oid, entry.previous_oid)).text_size(crate::appearance::ui_text(12.)))
-                    .child(copy_feedback::copy_button(mark, "Copy commit ID", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "commit ID", oid.clone())))
+                    .child(shown(copy.clone()).flex().flex_col().child(copy_feedback::copy_button(mark, "Copy commit ID", "", cx).track_focus(&copy).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "commit ID", oid.clone()))))
             })
             .when_some(self.commit.as_ref(), |element, commit| element
                 .child(label("reflog-commit-metadata", format!("{} · {}\n{} parent{} · {} against {}", commit.author, full_date(commit.timestamp), commit.parents.len(), if commit.parents.len() == 1 { "" } else { "s" }, crate::changed_files(self.changes.len()), if commit.parents.len() > 1 { "first parent" } else { "parent or empty tree" })).text_size(crate::appearance::ui_text(12.)))
-                .when_some(self.message.as_ref(), |element, message| element.child(div().debug_selector(|| "reflog-commit-message".into()).flex_shrink_0().child(crate::editor_find::Editor::new(message).readonly(true).h(px(110.)).aria_label("Reflog commit message"))))
+                // The read-only editor draws no edge of its own: holding
+                // keyboard focus, it rings its own edge over its lines, as
+                // Compare's text does, where it showed no focus at all.
+                .when_some(self.message.as_ref(), |element, message| { let focus = message.read(cx).focus_handle(cx); let ring = self.owner.upgrade().and_then(|owner| owner.read(cx).focus_ring.edge(&focus, rgb(p.accent))); element.child(shown(focus).debug_selector(|| "reflog-commit-message".into()).relative().flex_shrink_0().child(crate::editor_find::Editor::new(message).readonly(true).h(px(110.)).aria_label("Reflog commit message")).children(ring)) })
                 // Whole rows of one line each, so the list's bound cuts no
                 // row; past that bound its scrollbar, in a gutter of its own,
                 // cues the rest.
                 .child(div().relative().flex_shrink_0().child(native_accessibility::clips_children(div().id("reflog-commit-files").debug_selector(|| "reflog-commit-files".into()).max_h(file_row * files_shown as f32).overflow_y_scroll().track_scroll(&self.files_scroll).flex().flex_col().when(files_scroll, |list| list.pr(Scrollbar::width())).children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); native_accessibility::static_text(div().id(("reflog-commit-file", index)).debug_selector(move || format!("reflog-commit-file-{index}")), text.clone()).ml(TEXT_INSET).flex_shrink_0().h(file_row).text_size(crate::appearance::ui_text(FILE_ROW_TEXT)).line_height(file_row).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text) })))).when(files_scroll, |list| list.child(Scrollbar::vertical(&self.files_scroll).id("reflog-files-scrollbar").mode(ScrollbarMode::Always))))
                 .when(self.changes.len() > 100, |element| element.child(label("reflog-file-limit", "Showing the first 100 changed paths.").text_size(crate::appearance::ui_text(12.))))
                 .child(label("reflog-recovery-name-label", "Create a new branch at this commit to keep it reachable").text_size(crate::appearance::ui_text(12.)))
-                .child(Input::new(&self.name).aria_label("New recovery branch name"))
-                .child(button("review-reflog-recovery", "Review recovery branch…", "", false).debug_selector(|| "review-reflog-recovery".into()).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx)))));
+                .child(shown(name).child(Input::new(&self.name).aria_label("New recovery branch name")))
+                .child(shown(review.clone()).flex().flex_col().child(button("review-reflog-recovery", "Review recovery branch…", "", false).track_focus(&review).debug_selector(|| "review-reflog-recovery".into()).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx))))));
         div()
             .relative()
             .min_h_0()
@@ -514,10 +550,10 @@ impl Render for ReflogBrowser {
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .right(-Scrollbar::width())
+                    .right(-Scrollbar::width() - room)
                     .w(Scrollbar::width())
                     .child(
-                        Scrollbar::vertical(&self.content_scroll)
+                        Scrollbar::vertical(self.content.scroll())
                             .id("reflog-browser-scrollbar")
                             .mode(ScrollbarMode::Always)
                             .viewport_from_layout(),
@@ -694,6 +730,72 @@ mod tests {
             cx.update(|window, _| opener.is_focused(window)),
             "Escape returns focus to the opener"
         );
+    }
+
+    /// In a 461 × 490 half tile, at 13 and 18 pt, every Tab stop of the
+    /// Reflog draws its ring whole and in view while the pointer moves, with
+    /// the log alone and with an entry selected, whose form lies below the
+    /// content's fold. Tab once left every entry past the list's or the
+    /// content's fold where it lay, the first cut by the fold and the rest
+    /// drawing no ring, and the read-only commit message drew no ring at any
+    /// size.
+    #[gpui::test]
+    async fn a_narrow_reflog_shows_every_stop_whole(cx: &mut TestAppContext) {
+        use crate::focus_ring::sweep;
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 3);
+        let (app, cx) = window(cx, &repo);
+        sweep::prepare(&app, cx);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let mut failures = Vec::new();
+        for interface in sweep::SIZES {
+            sweep::interface_size(cx, interface);
+            for selected in [false, true] {
+                let surface = if selected {
+                    "the Reflog with an entry selected"
+                } else {
+                    "the Reflog"
+                };
+                let browser = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let opened = browser.clone();
+                sweep::open_dialog(&app, cx, surface, move |app, window, cx| {
+                    let browser = app.open_reflog_browser(window, cx);
+                    *opened.borrow_mut() = browser.clone();
+                    browser
+                })
+                .await;
+                let browser = browser.borrow().clone().expect("the Reflog opens");
+                if selected {
+                    select_newest(cx, &browser).await;
+                    let filter = browser.read_with(cx, |this, cx| this.filter_focus(cx));
+                    cx.update(|window, cx| window.focus(&filter, cx));
+                    draw(cx);
+                }
+                sweep::walk(&app, cx, surface, interface, &mut failures);
+                sweep::close_dialogs(cx, surface, interface, &mut failures);
+            }
+        }
+        sweep::assert_whole(failures);
+    }
+
+    /// Twelve entries overflow the entry list, and its scrollbar's thumb
+    /// follows the list's offset in a gutter clear of every entry's ring, at
+    /// 13 and 18 pt. The list cued nothing beyond its edge, where an AT-SPI
+    /// client still reaches the next entry past it (HEAD@{6} in a 640 × 680
+    /// window), as AccessKit intends.
+    #[gpui::test]
+    async fn entry_list_cues_entries_beyond_its_edge(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (app, browser, cx) = opened_browser(cx, &repo).await;
+        cx.simulate_resize(size(px(1000.), px(980.)));
+        draw(cx);
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let scroll = browser.read_with(cx, |this, _| this.entries.scroll().clone());
+        let rows: Vec<&'static str> = (0..12)
+            .map(|index| &*format!("reflog-entry-{index}").leak())
+            .collect();
+        crate::tags::tests::assert_scroll_cue(cx, &app, &scroll, "reflog-list", room, &rows);
     }
 
     /// The tooltips hovering `selector` newly paints, by the kit's popover
@@ -1039,8 +1141,8 @@ mod tests {
     /// pointer would land.
     fn content_to_end(cx: &mut VisualTestContext, browser: &Entity<ReflogBrowser>) {
         browser.update(cx, |this, _| {
-            let end = this.content_scroll.max_offset().y;
-            this.content_scroll.set_offset(point(px(0.), -end));
+            let end = this.content.scroll().max_offset().y;
+            this.content.scroll().set_offset(point(px(0.), -end));
         });
         cx.update(|window, _| window.refresh());
         draw(cx);
@@ -1219,8 +1321,9 @@ mod tests {
     /// At 1000x680 the content's scrollbar paints beside it, in the dialog's
     /// side padding, only while the content overflows: not for the log
     /// alone, which fits, and at rest once a commit with eight changed files
-    /// takes the branch form below the fold. Scrolled to its end, the thumb
-    /// moves down.
+    /// takes the branch form below the fold. Its track starts beside the
+    /// content's ring room, where it once painted over the right side of a
+    /// focused entry's ring. Scrolled to its end, the thumb moves down.
     #[gpui::test]
     async fn content_scrollbar_cues_the_fold(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
@@ -1246,12 +1349,18 @@ mod tests {
             resting.left() >= content.right(),
             "the thumb {resting:?} lies beside the content {content:?}"
         );
-        // The content's right edge is the body's plus the ring room; the
-        // track stands in the dialog's side padding, the kit's 16 px, beyond.
+        // The content's right edge is the body's plus the ring room. The
+        // track starts beyond it, so its fill covers no control's ring, as it
+        // covered the right side of a focused entry's; its thumb stays in the
+        // dialog's side padding, the kit's 16 px beyond the body.
         let room = cx.update(|_, cx| appearance::button_ring_room(cx));
         assert!(
-            track.right() <= content.right() - room + DIALOG_FOOTER_GAP + px(0.01),
-            "the track {track:?} stays inside the dialog's side padding"
+            track.left() >= content.right() - px(0.01),
+            "the track {track:?} starts beside the content and its ring room {content:?}"
+        );
+        assert!(
+            resting.right() <= content.right() - room + DIALOG_FOOTER_GAP + px(0.01),
+            "the thumb {resting:?} stays inside the dialog's side padding"
         );
         // The kit insets its thumb 4 px from the track's ends.
         let inset = px(4.5);

@@ -998,8 +998,9 @@ struct StashBrowser {
     decoration: Option<crate::editor_find::PatchDecorations>,
     patch_view: Option<Entity<diff_view::DiffView>>,
     stash_scroll: UniformListScrollHandle,
-    /// The detail's scroll, back at its top for each stash it inspects.
-    detail_scroll: ScrollHandle,
+    /// The detail's scroll, back at its top for each stash it inspects,
+    /// which reveals the control the keyboard moves focus onto.
+    detail: crate::focus_reveal::FocusReveal,
     file_scroll: UniformListScrollHandle,
     stash_focus: FocusHandle,
     file_focus: FocusHandle,
@@ -1044,7 +1045,7 @@ impl StashBrowser {
             decoration: None,
             patch_view: None,
             stash_scroll: UniformListScrollHandle::new(),
-            detail_scroll: ScrollHandle::new(),
+            detail: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
             file_scroll: UniformListScrollHandle::new(),
             stash_focus: cx.focus_handle(),
             file_focus: cx.focus_handle(),
@@ -1105,7 +1106,7 @@ impl StashBrowser {
         let generation = self.generation;
         self.clear_preview();
         self.snapshot = None;
-        self.detail_scroll.set_offset(Point::default());
+        self.detail.scroll().set_offset(Point::default());
         self.selected = None;
         self.selected_file = None;
         self.loading = Some("Reading stashes…");
@@ -1162,7 +1163,7 @@ impl StashBrowser {
         let generation = self.generation;
         self.clear_preview();
         self.snapshot = None;
-        self.detail_scroll.set_offset(Point::default());
+        self.detail.scroll().set_offset(Point::default());
         self.selected = Some(index);
         self.selected_file = None;
         self.loading = Some("Reading saved changes…");
@@ -1591,7 +1592,53 @@ impl Render for StashBrowser {
                 .as_ref()
                 .is_some_and(|page| page.entries.is_empty());
         let room = appearance::button_ring_room(cx);
-        let cue = crate::tags::ScrollCue::new(&self.detail_scroll, room);
+        // A control the keyboard moves focus onto scrolls into the detail's
+        // view in this frame with its ring; each reports where it lies.
+        self.detail.reveal(window, cx);
+        let cue = crate::tags::ScrollCue::new(self.detail.scroll(), room);
+        let areas: Vec<_> = (0..3_usize)
+            .map(|area| self.detail.focus(("stash-area", area), cx))
+            .collect();
+        let modes: Vec<_> = ["Diff", "Before", "After", "Diagrams"]
+            .into_iter()
+            .enumerate()
+            .filter(|(mode, _)| {
+                *mode != 3
+                    || matches!(
+                        self.content.as_deref(),
+                        Some(Content::Text {
+                            diagrams: Some(_),
+                            ..
+                        })
+                    )
+            })
+            .map(|(mode, label)| {
+                (
+                    mode,
+                    label,
+                    self.detail.focus(("stash-text-mode", mode), cx),
+                )
+            })
+            .collect();
+        let mode_focus: Vec<_> = modes
+            .iter()
+            .map(|(_, _, focus)| Some(focus.clone()))
+            .collect();
+        // The comparison's text, where the keyboard reaches it.
+        let text_focus: Vec<_> = self
+            .editors
+            .iter()
+            .flatten()
+            .map(|editor| editor.read(cx).focus_handle(cx))
+            .chain(
+                self.patch_view
+                    .as_ref()
+                    .map(|view| view.read(cx).focus_handle(cx)),
+            )
+            .collect();
+        let restore_index = self.detail.focus("stash-restore-index", cx);
+        let drop = self.detail.focus("drop-saved-stash", cx);
+        let restore = self.detail.focus("restore-saved-stash", cx);
         div().debug_selector(|| "stash-browser".into()).h(px(height)).min_h_0().flex().gap_3().when(narrow, |element| element.flex_col())
             .child(div().debug_selector(|| "stash-list-panel".into()).w(px(255.)).min_w_0().flex_shrink_0().h_full().flex().flex_col().border_1().border_color(rgb(p.border)).rounded(px(7.)).overflow_hidden()
                 .when(narrow && detail, |element| element.w_full().h(crate::appearance::ui_size(140.)))
@@ -1616,21 +1663,25 @@ impl Render for StashBrowser {
             // inspection, as below the stacked list in a short window, and
             // cues the rest with its scrollbar, as the dialogs' lists do. It
             // keeps the room of its controls' rings inside its clip and
-            // gives it back, so nothing moves. The comparison keeps a floor
+            // gives it back, so nothing moves, except below its last line:
+            // there the dialog's content clips at the browser's foot, which
+            // cut the ring of a control revealed at the detail's bottom. A
+            // control the keyboard moves onto scrolls into view with its
+            // ring, as the Reflog's do. The comparison keeps a floor
             // of its own rather than give its height up to the controls
             // around it, as at 18 pt in a 1000 × 680 window, where it kept
             // 30 px without one.
-            .when(detail, |element| element.child(cue.list(div().on_children_prepainted(cue.observe(|_, _, _| {})).id("stash-detail").debug_selector(|| "stash-detail".into()).flex_1().min_w_0().min_h_0().p(room).m(-room).overflow_y_scroll().track_scroll(&self.detail_scroll).flex().flex_col().gap_2()
+            .when(detail, |element| element.child(cue.list(div().on_children_prepainted(cue.observe(self.detail.observe())).id("stash-detail").debug_selector(|| "stash-detail".into()).flex_1().min_w_0().min_h_0().p(room).mx(-room).mt(-room).overflow_y_scroll().track_scroll(self.detail.scroll()).flex().flex_col().gap_2()
                 .children(self.loading.map(|loading| div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(loading)))
                 .children(self.error.as_ref().map(|error| form_error(error, cx)))
                 .when_some(snapshot, |element, snapshot| element
                     .child(div().flex().flex_col().gap_1()
                         .child(div().truncate().text_size(crate::appearance::ui_text(14.)).font_weight(FontWeight::SEMIBOLD).child(snapshot.stash.name.clone()))
                         .child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child(format!("{} · base {} · saved index {}", short_oid(&snapshot.stash.oid), short_oid(&snapshot.base_oid), short_oid(&snapshot.index_oid)))))
-                    .child(div().flex().flex_wrap().items_center().gap_1().children([StashArea::Staged, StashArea::Unstaged, StashArea::Untracked].into_iter().map(|area| {
-                        button(("stash-area", area as usize), format!("{} ({})", area.label(), area.files(&snapshot).len()), "", self.area == area).on_click(cx.listener(move |this, _, _, cx| this.choose_area(area, cx)))
+                    .child(div().flex().flex_wrap().items_center().gap_1().on_children_prepainted(self.detail.controls(areas.iter().cloned().map(Some).collect(), room)).children([StashArea::Staged, StashArea::Unstaged, StashArea::Untracked].into_iter().zip(areas).map(|(area, focus)| {
+                        button(("stash-area", area as usize), format!("{} ({})", area.label(), area.files(&snapshot).len()), "", self.area == area).track_focus(&focus).debug_selector(move || format!("stash-area-{}", area as usize)).on_click(cx.listener(move |this, _, _, cx| this.choose_area(area, cx)))
                     })))
-                    .child(crate::native_accessibility::clips_children(div().id("stash-files-focus").role(Role::ListBox).aria_label("Saved files").tab_stop(true).track_focus(&self.file_focus).h(px(if narrow { 85. } else { 130. })).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden()
+                    .child(div().flex().flex_col().flex_shrink_0().on_children_prepainted(self.detail.control(self.file_focus.clone(), room)).child(crate::native_accessibility::clips_children(div().id("stash-files-focus").role(Role::ListBox).aria_label("Saved files").tab_stop(true).track_focus(&self.file_focus).h(px(if narrow { 85. } else { 130. })).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden()
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                             if let Some(index) = list_key_selection(event.keystroke.key.as_str(), this.selected_file, this.files().len()) {
                                 cx.stop_propagation();
@@ -1639,16 +1690,16 @@ impl Render for StashBrowser {
                             }
                         }))
                         .when(!self.files().is_empty(), |element| element.child(files))
-                        .when(self.files().is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("No saved files in this group.")))))
-                    .child(div().flex().items_center().gap_1().children(["Diff", "Before", "After", "Diagrams"].into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, label)| {
-                        button(("stash-text-mode", mode), label, "", self.text_mode == mode).disabled(!matches!(self.content.as_deref(), Some(Content::Text { .. }))).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.ensure_editor(window, cx); cx.notify(); }))
+                        .when(self.files().is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("No saved files in this group."))))))
+                    .child(div().flex().items_center().gap_1().on_children_prepainted(self.detail.controls(mode_focus, room)).children(modes.into_iter().map(|(mode, label, focus)| {
+                        button(("stash-text-mode", mode), label, "", self.text_mode == mode).track_focus(&focus).disabled(!matches!(self.content.as_deref(), Some(Content::Text { .. }))).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.ensure_editor(window, cx); cx.notify(); }))
                     })))
-                    .child(div().flex_1().min_h(crate::appearance::ui_size(STASH_CONTENT_FLOOR)).border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden().child(frame.child(self.render_content(width, window, cx))))
-                    .child(div().flex().flex_wrap().items_center().gap_2().pt_1()
-                        .child(Checkbox::new("stash-restore-index").label("Restore staged state").checked(self.restore_index).on_click(cx.listener(|this, checked, _, cx| { this.restore_index = *checked; cx.notify(); })))
+                    .child(div().flex_1().min_h(crate::appearance::ui_size(STASH_CONTENT_FLOOR)).border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden().on_children_prepainted(self.detail.group(text_focus, room)).child(frame.child(self.render_content(width, window, cx))))
+                    .child(div().flex().flex_wrap().items_center().gap_2().pt_1().on_children_prepainted(self.detail.controls(vec![Some(restore_index.clone()), None, Some(drop.clone()), Some(restore.clone())], room))
+                        .child(Checkbox::new("stash-restore-index").track_focus(&restore_index).label("Restore staged state").checked(self.restore_index).on_click(cx.listener(|this, checked, _, cx| { this.restore_index = *checked; cx.notify(); })))
                         .child(div().flex_1())
-                        .child(button("drop-saved-stash", "Drop…", "", false).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))))
-                        .child(Button::new("restore-saved-stash").primary().small().label("Review restore…").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.restore(window, cx)))))
+                        .child(button("drop-saved-stash", "Drop…", "", false).track_focus(&drop).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))))
+                        .child(Button::new("restore-saved-stash").primary().small().label("Review restore…").track_focus(&restore).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.restore(window, cx)))))
                     .child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("Restoring keeps this stash saved. Drop it separately after checking the restored work.")))
                 // Where its loading line stood, at the detail's edge, and
                 // short enough for one line beside the stacked list at 18 pt
@@ -1782,6 +1833,57 @@ mod tests {
         assert_eq!(list_key_selection("end", None, 4), Some(3));
         assert_eq!(list_key_selection("home", Some(3), 4), Some(0));
         assert_eq!(list_key_selection("escape", Some(3), 4), None);
+    }
+
+    /// In a 461 × 490 half tile, at 13 and 18 pt, with a stash selected,
+    /// every Tab stop of the Stashes dialog draws its ring whole and in view:
+    /// the detail scrolls the control the keyboard moves onto into view with
+    /// its ring, as the dialogs' lists do. Its group, mode and restore
+    /// controls once stayed below the detail's fold, drawing no ring.
+    #[gpui::test]
+    async fn a_narrow_stash_detail_shows_every_stop_whole(cx: &mut gpui_kit::TestAppContext) {
+        use crate::focus_ring::sweep;
+        use crate::views::tests::{draw, fixture_git, history_window};
+        let (_fixture, app, cx) = history_window(cx).await;
+        sweep::prepare(&app, cx);
+        let root = app.read_with(cx, |app, _| app.path.clone().unwrap());
+        fixture_git(&root, &["config", "user.name", "Stash Fixture"]);
+        fixture_git(&root, &["config", "user.email", "stash@example.invalid"]);
+        std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
+        fixture_git(&root, &["stash", "push", "-m", "kept for later"]);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let mut failures = Vec::new();
+        for interface in sweep::SIZES {
+            sweep::interface_size(cx, interface);
+            sweep::open_dialog(&app, cx, "Stashes", |app, window, cx| {
+                app.open_stashes(window, cx)
+            })
+            .await;
+            // The saved stashes, then the selected stash's inspection, are
+            // read on the browser's own threads.
+            let landed = |cx: &mut VisualTestContext, selector: &'static str| {
+                for _ in 0..400 {
+                    cx.executor()
+                        .advance_clock(std::time::Duration::from_millis(50));
+                    draw(cx);
+                    if cx.debug_bounds(selector).is_some() {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                panic!("{selector} never drawn");
+            };
+            landed(cx, "saved-stash-row-0");
+            // A click focuses the list; Home selects the stash from the
+            // keyboard, as a person walking it with keys would.
+            let row = cx.debug_bounds("saved-stash-row-0").unwrap();
+            cx.simulate_click(row.center(), Modifiers::none());
+            cx.simulate_keystrokes("home");
+            landed(cx, "stash-area-0");
+            sweep::walk(&app, cx, "Stashes", interface, &mut failures);
+            sweep::close_dialogs(cx, "Stashes", interface, &mut failures);
+        }
+        sweep::assert_whole(failures);
     }
 
     /// Stacked in a 461 × 490 window, the Stashes dialog's saved-work list

@@ -188,6 +188,35 @@ impl FocusReveal {
         }
     }
 
+    /// For the `on_children_prepainted` of an element inside the container
+    /// that holds a group of controls, such as a list that scrolls on its
+    /// own, `focus` holding their handles: reveals the element's children
+    /// together, `margin` clear of the container's edges, when focus has
+    /// moved onto any of them. The list reveals the control inside itself;
+    /// the container shows the list, whose bounds the list's own scroll does
+    /// not move, so the two reveals agree in the frame focus moves.
+    pub(crate) fn group(
+        &self,
+        focus: Vec<FocusHandle>,
+        margin: Pixels,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        let this = self.clone();
+        move |bounds, window, cx| {
+            let Some(bounds) = bounds.into_iter().reduce(|a, b| a.union(&b)) else {
+                return;
+            };
+            for handle in &focus {
+                this.record(handle.downgrade(), bounds, margin);
+            }
+            if focus
+                .iter()
+                .any(|handle| handle.contains_focused(window, cx))
+            {
+                this.request(bounds, margin, window, cx);
+            }
+        }
+    }
+
     /// For the scrolling container's own `on_children_prepainted`, when its
     /// first children are the controls, `focus` holding each one's handle in
     /// order: reveals the control that has gained focus, `margin` clear of

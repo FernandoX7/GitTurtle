@@ -85,6 +85,11 @@ pub struct DiffView {
 impl EventEmitter<DiffViewEvent> for DiffView {}
 
 impl DiffView {
+    /// The patch editor's focus, which a scrolling pane around the view
+    /// reveals when the keyboard moves onto it.
+    pub fn focus_handle(&self, cx: &App) -> gpui_kit::FocusHandle {
+        gpui_kit::Focusable::focus_handle(self.editor.read(cx), cx)
+    }
     pub fn suspend_partial(&mut self, cx: &mut Context<Self>) {
         self.partial_busy = true;
         self.selection = LineSelection::default();
