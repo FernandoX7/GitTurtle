@@ -7632,8 +7632,16 @@ pub(crate) mod tests {
     /// the zoom menu's own items, which it is then named for ("Zoom and pan:
     /// 100%"). The sides' names and open controls stay where Fit drew them
     /// and the zooms keep the form Fit drew them in; at 18 pt in 461 × 490
-    /// both controls lie whole in the preview. The walk meets all three
-    /// forms, and each moves a large image as the arrow does.
+    /// both controls lie whole in the preview. Overlaid and wiped too, in
+    /// the named windows and every 80 px, the zooms keep the place they
+    /// have side by side (they moved to the toolbar's centre when an
+    /// adjustment joined it) and the adjustment lies in the column (its
+    /// labelled line ran past it at 13 pt in 461 px), and at every amount the
+    /// forms and widths stay. Wider, the zooms are never less labelled. The
+    /// walk meets all three forms, and each moves a large image as the arrow
+    /// does; at the images' start Pan left and Pan up are unavailable, the
+    /// menus passing over them, and Pan left becomes available once the
+    /// images have moved right.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn the_pan_never_takes_a_toolbar_row(cx: &mut TestAppContext) {
@@ -7682,106 +7690,207 @@ pub(crate) mod tests {
         let slack = px(0.5);
         let mut sizes = vec![(461., 490.), (461., 980.), (640., 680.), (1480., 980.)];
         sizes.extend((461..=1461).step_by(40).map(|width| (width as f32, 490.)));
-        let mut met = std::collections::BTreeSet::new();
+        let modes = [
+            crate::image_compare::Mode::SideBySide,
+            crate::image_compare::Mode::Overlay,
+            crate::image_compare::Mode::Wipe,
+        ];
+        // Where each form of the pan was first met side by side: its text
+        // size and window width, 490 px tall.
+        let mut met = std::collections::BTreeMap::new();
         for text in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            // Labelled zooms at a narrower width stay labelled wider.
+            let mut labelled = false;
             for &(width, height) in &sizes {
                 cx.simulate_resize(size(px(width), px(height)));
-                zoom(&app, cx, 0.);
-                let at = format!("{text} pt in {width} × {height}");
-                let fit = place(cx);
-                for scale in [0.5, 1., 2.] {
-                    zoom(&app, cx, scale);
-                    let at = format!("{at} at {scale}");
-                    assert_eq!(
-                        place(cx),
-                        fit,
-                        "{at}: the names, the open controls and the zooms' form stay as Fit draws them"
-                    );
-                    let content = bounds("preview-content", cx);
-                    let zooms = cx
-                        .debug_bounds("image-zooms")
-                        .or_else(|| cx.debug_bounds("image-zoom-menu"))
-                        .expect("the zooms");
-                    let name = COMPACT_LABELS
-                        .with(|labels| labels.borrow().get("image-zoom-menu").cloned())
-                        .filter(|_| !fit.1);
-                    let in_menu = name
-                        .as_deref()
-                        .is_some_and(|name| name.starts_with("Zoom and pan: "));
-                    let forms = [
-                        ("arrows", cx.debug_bounds("image-pan-arrows")),
-                        ("menu", cx.debug_bounds("image-pan-menu")),
-                    ];
-                    let drawn: Vec<_> = forms
-                        .iter()
-                        .filter_map(|(form, pan)| pan.map(|pan| (*form, pan)))
-                        .collect();
-                    match drawn.as_slice() {
-                        [(form, pan)] => {
-                            assert!(!in_menu, "{at}: the zoom menu {name:?} keeps only zooms");
-                            assert!(
-                                (pan.top() - zooms.top()).abs() <= slack
-                                    && pan.left() >= zooms.right() - slack,
-                                "{at}: the pan's {form} {pan:?} follow the zooms {zooms:?} on their row"
-                            );
-                            assert!(
-                                holds_with_ring(content, *pan),
-                                "{at}: the pan's {form} {pan:?} lie in the preview {content:?}"
-                            );
-                            met.insert(*form);
-                        }
-                        [] => {
-                            assert!(
-                                in_menu,
-                                "{at}: with neither arrows nor a Pan menu, the zoom menu {name:?} holds the pan"
-                            );
-                            met.insert("zoom menu");
-                        }
-                        _ => panic!("{at}: one form of the pan, not {drawn:?}"),
+                let mut zoom_place = None;
+                for mode in modes {
+                    // Overlaid and wiped, the named windows and every 80 px.
+                    if mode != crate::image_compare::Mode::SideBySide
+                        && height == 490.
+                        && width != 461.
+                        && (width as i32 - 461) % 80 != 0
+                    {
+                        continue;
                     }
-                }
-                if (text, width, height) == (18, 461., 490.) {
-                    let content = bounds("preview-content", cx);
-                    for control in &fit.0[2..] {
+                    app.update(cx, |app, cx| {
+                        app.set_image_mode(mode);
+                        cx.notify();
+                    });
+                    zoom(&app, cx, 0.);
+                    let at = format!("{text} pt in {width} × {height}, {mode:?}");
+                    let fit = place(cx);
+                    if mode == crate::image_compare::Mode::SideBySide && height == 490. {
                         assert!(
-                            control.bottom() <= content.bottom() + slack,
-                            "{at}: the open control {control:?} lies whole in the preview {content:?}"
+                            fit.1 || !labelled,
+                            "{at}: the zooms, labelled narrower, stay labelled"
                         );
+                        labelled = fit.1;
+                    }
+                    for scale in [0.5, 1., 2.] {
+                        zoom(&app, cx, scale);
+                        let at = format!("{at} at {scale}");
+                        assert_eq!(
+                            place(cx),
+                            fit,
+                            "{at}: the names, the open controls and the zooms' form stay as Fit draws them"
+                        );
+                        let content = bounds("preview-content", cx);
+                        let zooms = cx
+                            .debug_bounds("image-zooms")
+                            .or_else(|| cx.debug_bounds("image-zoom-menu"))
+                            .expect("the zooms");
+                        // The zooms keep one place in every mode.
+                        let here = (zooms.left(), zooms.top());
+                        let first = *zoom_place.get_or_insert(here);
+                        assert!(
+                            (first.0 - here.0).abs() <= slack && (first.1 - here.1).abs() <= slack,
+                            "{at}: the zooms {zooms:?} keep their place {first:?} across modes"
+                        );
+                        // Overlaid or wiped, the adjustment lies in the column.
+                        if let Some(adjust) = cx.debug_bounds("image-adjust") {
+                            assert!(
+                                holds_with_ring(content, adjust),
+                                "{at}: the adjustment {adjust:?} lies in the preview {content:?}"
+                            );
+                        }
+                        let name = COMPACT_LABELS
+                            .with(|labels| labels.borrow().get("image-zoom-menu").cloned())
+                            .filter(|_| !fit.1);
+                        let in_menu = name
+                            .as_deref()
+                            .is_some_and(|name| name.starts_with("Zoom and pan: "));
+                        let forms = [
+                            ("arrows", cx.debug_bounds("image-pan-arrows")),
+                            ("menu", cx.debug_bounds("image-pan-menu")),
+                        ];
+                        let drawn: Vec<_> = forms
+                            .iter()
+                            .filter_map(|(form, pan)| pan.map(|pan| (*form, pan)))
+                            .collect();
+                        let form = match drawn.as_slice() {
+                            [(form, pan)] => {
+                                assert!(!in_menu, "{at}: the zoom menu {name:?} keeps only zooms");
+                                assert!(
+                                    (pan.top() - zooms.top()).abs() <= slack
+                                        && pan.left() >= zooms.right() - slack,
+                                    "{at}: the pan's {form} {pan:?} follow the zooms {zooms:?} on their row"
+                                );
+                                assert!(
+                                    holds_with_ring(content, *pan),
+                                    "{at}: the pan's {form} {pan:?} lie in the preview {content:?}"
+                                );
+                                *form
+                            }
+                            [] => {
+                                assert!(
+                                    in_menu,
+                                    "{at}: with neither arrows nor a Pan menu, the zoom menu {name:?} holds the pan"
+                                );
+                                "zoom menu"
+                            }
+                            _ => panic!("{at}: one form of the pan, not {drawn:?}"),
+                        };
+                        if mode == crate::image_compare::Mode::SideBySide && height == 490. {
+                            met.entry(form).or_insert((text, width));
+                        }
+                    }
+                    if (text, width, height) == (18, 461., 490.) {
+                        let content = bounds("preview-content", cx);
+                        for control in &fit.0[2..] {
+                            assert!(
+                                control.bottom() <= content.bottom() + slack,
+                                "{at}: the open control {control:?} lies whole in the preview {content:?}"
+                            );
+                        }
                     }
                 }
             }
         }
         assert_eq!(
-            met,
-            ["arrows", "menu", "zoom menu"].into_iter().collect(),
+            met.keys().copied().collect::<Vec<_>>(),
+            ["arrows", "menu", "zoom menu"],
             "the walk meets every form of the pan"
         );
+        // Overlaid or wiped, at every amount, the zooms, the pan and the
+        // adjustment keep one form and one place: measured at the amount
+        // shown, "100%" once took a row from "50%".
+        for (text, width) in [(13, 501.), (13, 781.), (18, 941.), (18, 1461.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(490.)));
+            let mut first = None;
+            for mode in [
+                crate::image_compare::Mode::Overlay,
+                crate::image_compare::Mode::Wipe,
+            ] {
+                for amount in [0., 0.5, 1.] {
+                    app.update(cx, |app, cx| {
+                        app.set_image_mode(mode);
+                        app.set_image_amount(amount);
+                        cx.notify();
+                    });
+                    zoom(&app, cx, 1.);
+                    let shown = [
+                        "image-zooms",
+                        "image-zoom-menu",
+                        "image-pan-arrows",
+                        "image-pan-menu",
+                        "image-adjust",
+                        "image-side-caption-0",
+                    ]
+                    .map(|selector| cx.debug_bounds(selector).map(|bounds| bounds.size.width));
+                    let at = format!("{text} pt in {width} × 490, {mode:?} at {amount}");
+                    assert_eq!(
+                        *first.get_or_insert(shown),
+                        shown,
+                        "{at}: the zooms, the pan, the adjustment and the captions keep their forms"
+                    );
+                }
+            }
+        }
+        app.update(cx, |app, cx| {
+            app.set_image_mode(crate::image_compare::Mode::SideBySide);
+            cx.notify();
+        });
 
-        // Each form moves the images as its arrow does: Pan right, the
-        // second direction, shows more of the right.
+        // Each form moves the images as its arrow does: Pan right shows more
+        // of the right. At the images' start Pan left and Pan up cannot move
+        // them, so they are unavailable, and Pan left becomes available once
+        // the images have moved right.
         let moved = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
             app.read_with(cx, |app, _| app.image_pan())
         };
-        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
-        cx.simulate_resize(size(px(1480.), px(980.)));
+        let room = || crate::image_compare::PAN_ROOM.get();
+        let (text, width) = met["arrows"];
+        cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+        cx.simulate_resize(size(px(width), px(490.)));
         zoom(&app, cx, 1.);
+        draw(cx);
+        assert_eq!(
+            room(),
+            [false, true, false, true],
+            "left and up are unavailable"
+        );
         let arrow = bounds("pan-right", cx);
         cx.simulate_click(arrow.center(), Modifiers::default());
         draw(cx);
         assert_eq!(moved(&app, cx), [-80., 0.], "the arrow pans right");
-        for (text, width, menu, presses) in [
-            (18, 461., "image-pan-menu", "down down enter"),
+        assert_eq!(room(), [true, true, false, true], "left is available again");
+        // In the menus Pan left, unavailable, is passed over.
+        for (form, menu, presses) in [
+            ("menu", "image-pan-menu", "down enter"),
             (
-                13,
-                501.,
+                "zoom menu",
                 "image-zoom-menu",
-                "down down down down down down enter",
+                "down down down down down enter",
             ),
         ] {
+            let (text, width) = met[form];
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(490.)));
             zoom(&app, cx, 1.);
+            draw(cx);
             let control = bounds(menu, cx);
             cx.simulate_click(control.center(), Modifiers::default());
             draw(cx);

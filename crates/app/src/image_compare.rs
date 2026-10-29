@@ -21,7 +21,7 @@ const PANS: [(&str, &str, &str, [f32; 2]); 4] = [
     ("pan-down", "↓", "Pan down", [0., -80.]),
 ];
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Mode {
     #[default]
     SideBySide,
@@ -368,10 +368,27 @@ impl GitTurtle {
         self.zoom = zoom;
         self.image_comparison.pan = [0.; 2];
     }
+    /// Sets the overlay's opacity or the wipe's width, for a test.
+    #[cfg(test)]
+    pub(super) fn set_image_amount(&mut self, amount: f32) {
+        self.image_comparison.amount = amount;
+    }
     /// How far the images are panned, for a test.
     #[cfg(test)]
     pub(super) fn image_pan(&self) -> [f32; 2] {
         self.image_comparison.pan
+    }
+    /// Which ways the images can still move, in [`PANS`]' order, in the
+    /// images' bounds as last laid out, which panning reads too.
+    fn pan_room(&self) -> [bool; 4] {
+        let bounds = self.image_comparison.bounds;
+        let (_, _, most) = layout(
+            [f32::from(bounds.size.width), f32::from(bounds.size.height)],
+            self.image_geometry().extent,
+            self.zoom,
+            self.image_comparison.pan,
+        );
+        pan_room(self.image_comparison.pan, most)
     }
     /// Moves the zoomed images by `delta`, as a pan control does.
     fn pan_by(&mut self, delta: [f32; 2]) {
@@ -427,23 +444,16 @@ impl GitTurtle {
             .iter()
             .find(|(zoom, _)| *zoom == self.zoom)
             .map_or("Fit", |(_, name)| *name);
-        // The forms the zooms and the pan take, from what each group takes on
-        // its row at this width: the pan never takes a row of its own.
+        // The forms the zooms and the pan take at this width: the pan never
+        // takes a row of its own, and each form changes at one width.
+        let adjust_line = adjust_line(window);
         let forms = ToolbarWidths {
             room,
             gap: window.rem_size() * 0.5,
-            modes: (!source).then(|| {
-                if modes_labelled {
-                    mode_group
-                } else {
-                    // The menu gives its inset back to the toolbar's padding.
-                    menu_width(mode_label, &MODE_MENU, window)
-                        - crate::appearance::ui_size(crate::ICON_INSET)
-                }
-            }),
+            modes: (!source).then_some(mode_group),
             zooms: [
                 group_width(&ZOOMS.map(|(_, name)| name), &ZOOM_GROUP, window),
-                widest_zoom_menu(window),
+                widest_menu(&ZOOMS.map(|(_, name)| name), &WIDEST_ZOOM, window),
             ],
             pan: (!source).then(|| {
                 [
@@ -452,9 +462,14 @@ impl GitTurtle {
                 ]
             }),
             adjust: (!source && state.mode != Mode::SideBySide)
-                .then(|| adjust_width(state.mode, state.amount, window)),
+                .then(|| adjust_width(adjust_line, window)),
         }
         .forms(self.zoom > 0.);
+        // Which ways the zoomed images can still move, in PANS' order: a pan
+        // control that cannot move them is unavailable.
+        let pan_room = self.pan_room();
+        #[cfg(test)]
+        PAN_ROOM.set(pan_room);
         let modes = if modes_labelled {
             let mut modes = div().debug_selector(|| "image-modes".into()).flex().gap_1();
             for (mode, label) in MODES {
@@ -487,6 +502,13 @@ impl GitTurtle {
             // captions' names do and its focus ring stays in the column.
             .px(crate::appearance::ui_size(crate::ICON_INSET))
             .ml(-crate::appearance::ui_size(crate::ICON_INSET))
+            // As wide as its widest choice, so Overlay and Wipe, and Side by
+            // side, move nothing after it.
+            .min_w(widest_menu(
+                &MODES.map(|(_, name)| name),
+                &MODE_MENU,
+                window,
+            ))
             .dropdown_caret(true)
             .tooltip(format!("Comparison mode · {}", mode_tooltip(current)))
             .app_menu(move |menu, _, _| {
@@ -544,7 +566,11 @@ impl GitTurtle {
             // As wide as its widest choice, so choosing a zoom moves nothing
             // after it: "100%" once took the modes' row from a "Fit" that had
             // shared it, and the captions moved down a row.
-            .min_w(widest_zoom_menu(window))
+            .min_w(widest_menu(
+                &ZOOMS.map(|(_, name)| name),
+                &WIDEST_ZOOM,
+                window,
+            ))
             .dropdown_caret(true)
             .tooltip(if pans {
                 format!("Zoom and pan · {scale}")
@@ -564,7 +590,7 @@ impl GitTurtle {
                     ))
                 });
                 if pans {
-                    pan_items(menu.separator(), owner.clone())
+                    pan_items(menu.separator(), owner.clone(), pan_room)
                 } else {
                     menu
                 }
@@ -579,18 +605,19 @@ impl GitTurtle {
         // window, and Before's control under the preview's clip.
         let pan = match forms.pan {
             Some(Pan::Arrows) => {
-                let arrows = PANS.iter().fold(
+                let arrows = PANS.iter().zip(&pan_room).fold(
                     div()
                         .debug_selector(|| "image-pan-arrows".into())
                         .flex()
                         .items_center()
                         .gap_1(),
-                    |arrows, &(id, arrow, name, delta)| {
+                    |arrows, (&(id, arrow, name, delta), &room)| {
                         arrows.child(
                             button(id, arrow, "", false)
                                 .debug_selector(move || id.into())
                                 .accessibility_label(name)
                                 .tooltip(name)
+                                .disabled(!room)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.pan_by(delta);
                                     cx.notify();
@@ -615,7 +642,7 @@ impl GitTurtle {
                     .px(crate::appearance::ui_size(crate::ICON_INSET))
                     .dropdown_caret(true)
                     .tooltip("Pan · Move the zoomed images left, right, up or down")
-                    .app_menu(move |menu, _, _| pan_items(menu, owner.clone()))
+                    .app_menu(move |menu, _, _| pan_items(menu, owner.clone(), pan_room))
                     .into_any_element(),
                 )
             }
@@ -627,18 +654,47 @@ impl GitTurtle {
             .gap_2()
             .child(zooms)
             .children(pan);
-        let mut adjust = div().flex().items_center().gap_1();
+        // The overlay's or the wipe's adjustment keeps the toolbar's trailing
+        // edge, so the zooms stay beside the modes in every mode. Where its
+        // labelled line does not fit the toolbar, the line keeps only its
+        // value, its words in its tooltip and the buttons' names, and the
+        // group wraps rather than run past the column.
+        let adjust_labelled = adjust_width(adjust_line, window) <= room;
+        let mut adjust = div()
+            .debug_selector(|| "image-adjust".into())
+            .ml_auto()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1();
         if state.mode != Mode::SideBySide {
             let label = if state.mode == Mode::Wipe {
                 "Before width"
             } else {
                 "After opacity"
             };
+            let value = format!("{:.0}%", state.amount * 100.);
+            let whole = format!("{label} · {value}");
+            // As wide as its widest line, so the amount moves nothing.
+            let (shown, widest) = if adjust_labelled {
+                (whole.clone(), adjust_line[0])
+            } else {
+                (value, adjust_line[1])
+            };
             adjust = adjust.child(
                 div()
+                    .id("image-adjust-line")
+                    .debug_selector(|| "image-adjust-line".into())
+                    .min_w(widest)
                     .text_size(crate::appearance::ui_text(11.))
                     .text_color(rgb(p.muted))
-                    .child(format!("{label} · {:.0}%", state.amount * 100.)),
+                    .when(!adjust_labelled, |line| {
+                        line.tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(whole.clone())
+                                .build(window, cx)
+                        })
+                    })
+                    .child(shown),
             );
             for (id, label, delta) in [("image-less", "−", -0.1), ("image-more", "+", 0.1)] {
                 adjust = adjust.child(
@@ -1211,7 +1267,6 @@ impl GitTurtle {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .justify_between()
                     .gap_2()
                     .px_3()
                     .py_2()
@@ -1445,6 +1500,7 @@ thread_local! {
     static PAN_MENU: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// The overlay's or the wipe's adjustment: its line and its controls.
     static ADJUST_LINE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
+    static ADJUST_VALUE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     static ADJUST_GROUP: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
     /// The scale notice and the guidance, each laid out as one line.
     static SCALE_LINE: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
@@ -1504,12 +1560,15 @@ fn menu_width(
         + window.rem_size() * 0.875
 }
 
-/// The zoom menu reading its widest choice, which is its width whatever the
-/// zoom, so choosing one never changes the toolbar's rows or the zooms' form.
-fn widest_zoom_menu(window: &Window) -> Pixels {
-    let names = ZOOMS.map(|(_, name)| name);
+/// A menu reading the widest of `names`, which is its width whatever it
+/// reads, so choosing one never changes the toolbar's rows or forms.
+fn widest_menu(
+    names: &[&str],
+    cache: &'static std::thread::LocalKey<crate::views::TextWidth>,
+    window: &Window,
+) -> Pixels {
     crate::appearance::ui_size(crate::ICON_INSET * 2. + 6.)
-        + crate::views::cached_text_width(&WIDEST_ZOOM, &names.join("\n"), window, || {
+        + crate::views::cached_text_width(cache, &names.join("\n"), window, || {
             names
                 .iter()
                 .map(|name| {
@@ -1520,19 +1579,39 @@ fn widest_zoom_menu(window: &Window) -> Pixels {
         + window.rem_size() * 0.875
 }
 
-/// The overlay's or the wipe's adjustment as the toolbar draws it at
-/// `amount`: its 11 pt line, then − and + and 50:50, `gap_1` apart.
-fn adjust_width(mode: Mode, amount: f32, window: &Window) -> Pixels {
-    let label = if mode == Mode::Wipe {
-        "Before width"
-    } else {
-        "After opacity"
-    };
-    let line = format!("{label} · {:.0}%", amount * 100.);
-    crate::views::cached_text_width(&ADJUST_LINE, &line, window, || {
-        crate::views::line_widths(&[(&line, crate::appearance::ui_text(11.))], window)
-    }) + window.rem_size() * 0.25
-        + group_width(&["−", "+", "50:50"], &ADJUST_GROUP, window)
+/// The overlay's or the wipe's 11 pt line at its widest, whatever the mode
+/// and the amount: labelled ("After opacity · 100%"), and its value alone.
+fn adjust_line(window: &Window) -> [Pixels; 2] {
+    let size = crate::appearance::ui_text(11.);
+    [
+        crate::views::cached_text_width(&ADJUST_LINE, "labelled", window, || {
+            ["After opacity · 100%", "Before width · 100%"]
+                .iter()
+                .map(|line| crate::views::line_widths(&[(line, size)], window))
+                .fold(px(0.), Pixels::max)
+        }),
+        crate::views::cached_text_width(&ADJUST_VALUE, "100%", window, || {
+            crate::views::line_widths(&[("100%", size)], window)
+        }),
+    ]
+}
+
+/// The overlay's or the wipe's adjustment as the toolbar draws it labelled,
+/// at its widest `line`: the line, then − and + and 50:50, `gap_1` apart.
+fn adjust_width(line: [Pixels; 2], window: &Window) -> Pixels {
+    line[0] + window.rem_size() * 0.25 + group_width(&["−", "+", "50:50"], &ADJUST_GROUP, window)
+}
+
+/// Which ways the images can still move from `pan`, at most `most` from
+/// their start each way, in [`PANS`]' order: left and up move them back
+/// towards their start, right and down further from it.
+fn pan_room(pan: [f32; 2], most: [f32; 2]) -> [bool; 4] {
+    [
+        pan[0] < -0.01,
+        pan[0] > -most[0] + 0.01,
+        pan[1] < -0.01,
+        pan[1] > -most[1] + 0.01,
+    ]
 }
 
 /// `menu` with the pan's four directions, each moving the images as its
@@ -1540,19 +1619,26 @@ fn adjust_width(mode: Mode, amount: f32, window: &Window) -> Pixels {
 fn pan_items(
     menu: gpui_kit::component::menu::PopupMenu,
     owner: WeakEntity<GitTurtle>,
+    room: [bool; 4],
 ) -> gpui_kit::component::menu::PopupMenu {
-    PANS.iter().fold(menu, |menu, &(_, _, name, delta)| {
-        let owner = owner.clone();
-        menu.item(PopupMenuItem::new(name).on_click(move |_, _, cx| {
-            let _ = owner.update(cx, |this, cx| {
-                this.pan_by(delta);
-                cx.notify();
-            });
-        }))
-    })
+    PANS.iter()
+        .zip(room)
+        .fold(menu, |menu, (&(_, _, name, delta), room)| {
+            let owner = owner.clone();
+            menu.item(
+                PopupMenuItem::new(name)
+                    .disabled(!room)
+                    .on_click(move |_, _, cx| {
+                        let _ = owner.update(cx, |this, cx| {
+                            this.pan_by(delta);
+                            cx.notify();
+                        });
+                    }),
+            )
+        })
 }
 
-/// What the image toolbar's groups take on its rows in the frame being drawn,
+/// What the image toolbar's groups take on one row in the frame being drawn,
 /// from which [`ToolbarWidths::forms`] chooses the zooms' form and the pan's.
 #[derive(Clone, Copy, Debug)]
 struct ToolbarWidths {
@@ -1560,7 +1646,7 @@ struct ToolbarWidths {
     room: Pixels,
     /// The `gap_2` between its groups, and between the zooms and the pan.
     gap: Pixels,
-    /// The modes, in the form they take, where they are drawn.
+    /// The modes labelled, where they are drawn, whatever form they take.
     modes: Option<Pixels>,
     /// The zooms labelled, and as their menu, which is as wide as its widest
     /// choice whatever the zoom.
@@ -1568,7 +1654,8 @@ struct ToolbarWidths {
     /// The pan's four arrows, and the one Pan menu they fold into, where the
     /// images pan (not a source image).
     pan: Option<[Pixels; 2]>,
-    /// The overlay's or the wipe's adjustment, which follows the zooms.
+    /// The overlay's or the wipe's adjustment labelled at its widest, where
+    /// drawn, whatever form it takes.
     adjust: Option<Pixels>,
 }
 
@@ -1592,52 +1679,37 @@ struct ToolbarForms {
 }
 
 impl ToolbarWidths {
-    /// The rows the toolbar takes with its zoom group `zooms` wide, as its
-    /// wrapping row lays the groups out: each on the row before it where it
-    /// fits there, otherwise on a row of its own.
-    fn rows(&self, zooms: Pixels) -> usize {
-        let mut rows = 0;
-        let mut used: Option<Pixels> = None;
-        for group in [self.modes, Some(zooms), self.adjust].into_iter().flatten() {
-            used = match used {
-                Some(used) if used + self.gap + group <= self.room => Some(used + self.gap + group),
-                _ => {
-                    rows += 1;
-                    Some(group)
-                }
-            };
-        }
-        rows
+    /// Whether the toolbar's groups, with its zoom group `zooms` wide, fit
+    /// one row: the modes and the adjustment counted labelled, the widest
+    /// they are, so each form below changes at one width.
+    fn fits(&self, zooms: Pixels) -> bool {
+        let groups = [self.modes, Some(zooms), self.adjust];
+        let width = groups
+            .iter()
+            .flatten()
+            .fold(px(0.), |row, &group| row + group);
+        let gaps = groups.iter().flatten().count().saturating_sub(1) as f32;
+        width + self.gap * gaps <= self.room
     }
 
     /// The zooms' form, and the pan's where the images are `panning`
-    /// (zoomed past Fit). The pan follows the zooms in their group and never
-    /// takes a row the toolbar would not have without it: the four arrows
-    /// where they fit beside the zooms, otherwise one Pan menu there, and
-    /// where not even that fits, the zoom menu's own items. The zooms keep
-    /// their labels only where the labelled group and the Pan menu fit a row
-    /// and take no more rows than the zoom menu does, whatever the zoom, so
-    /// choosing a zoom never changes their form, and labelled zooms always
-    /// have the Pan menu's room beside them.
+    /// (zoomed past Fit). The pan follows the zooms in their group and takes
+    /// a place beside them only where every group fits one row with it, so
+    /// it never adds a row: four arrows beside labelled zooms, otherwise one
+    /// Pan menu, and where not even that fits, the zoom menu's own items. The
+    /// zooms keep their labels only where the Pan menu fits beside them so,
+    /// at Fit too, so choosing a zoom never changes their form. Each form
+    /// changes at one width, so a wider toolbar is never less labelled.
     fn forms(&self, panning: bool) -> ToolbarForms {
         let [labelled, menu] = self.zooms;
         let zooms_labelled = match self.pan {
-            Some([_, pan]) => {
-                let group = labelled + self.gap + pan;
-                group <= self.room && self.rows(group) <= self.rows(menu)
-            }
+            Some([_, pan]) => self.fits(labelled + self.gap + pan),
             None => labelled <= self.room,
         };
-        let zooms = if zooms_labelled { labelled } else { menu };
         let pan = self.pan.filter(|_| panning).map(|[arrows, pan]| {
-            let rows = self.rows(zooms);
-            let fits = |width: Pixels| {
-                let group = zooms + self.gap + width;
-                group <= self.room && self.rows(group) <= rows
-            };
-            if fits(arrows) {
+            if zooms_labelled && self.fits(labelled + self.gap + arrows) {
                 Pan::Arrows
-            } else if zooms_labelled || fits(pan) {
+            } else if zooms_labelled || self.fits(menu + self.gap + pan) {
                 Pan::Menu
             } else {
                 Pan::InZoomMenu
@@ -1648,6 +1720,12 @@ impl ToolbarWidths {
             pan,
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Which ways the zoomed images could move as last drawn, for a test.
+    pub(crate) static PAN_ROOM: std::cell::Cell<[bool; 4]> = const { std::cell::Cell::new([true; 4]) };
 }
 
 /// What `mode` shows, for its button's tooltip and the menu's.
@@ -2192,64 +2270,79 @@ mod tests {
         let fit = beneath(284. - 14., four).fit();
         assert!(!fit.footer, "{fit:?}");
     }
-    /// The pan never takes a toolbar row of its own: four arrows where they
-    /// fit beside the zooms, a Pan menu where it does, and the zoom menu's
-    /// own items otherwise; the zooms keep their labels only where the Pan
-    /// menu fits beside them without costing a row, at Fit too. Widths as at
-    /// 13 pt in the test fonts: the modes 233 labelled or 110.5 as their
-    /// menu, the zooms 191 or 58.5, the arrows 130, the Pan menu 51.
+    /// The pan never takes a toolbar row of its own, and each form changes at
+    /// one width, so a wider toolbar is never less labelled: the zoom menu's
+    /// own items, then a Pan menu, then labelled zooms, then the arrows
+    /// beside them, each only where every group fits one row with it, the
+    /// overlay's or the wipe's adjustment among them. The zooms' form is the
+    /// same at Fit. Widths as at 13 pt in the test fonts: the modes 233, the
+    /// zooms 191 labelled or 58.5 as their menu, the arrows 130, the Pan menu
+    /// 51, the adjustment 230.
     #[test]
     fn the_pan_folds_before_it_takes_a_row() {
         use super::{Pan, ToolbarForms, ToolbarWidths};
-        let widths = |room: f32, modes: f32| ToolbarWidths {
+        let widths = |room: f32, adjust: Option<f32>| ToolbarWidths {
             room: px(room),
             gap: px(6.5),
-            modes: Some(px(modes)),
+            modes: Some(px(233.)),
             zooms: [px(191.), px(58.5)],
             pan: Some([px(130.), px(51.)]),
-            adjust: None,
+            adjust: adjust.map(px),
         };
         let forms = |zooms_labelled, pan| ToolbarForms {
             zooms_labelled,
             pan: Some(pan),
         };
-        // Everything on one row.
-        assert_eq!(widths(1000., 233.).forms(true), forms(true, Pan::Arrows));
-        assert_eq!(widths(1000., 233.).forms(false).pan, None);
-        // Labelled zooms on a row of their own, the arrows too wide there.
-        assert_eq!(widths(292., 233.).forms(true), forms(true, Pan::Menu));
-        // The labelled zooms beside the labelled modes would push the Pan
-        // menu onto a row of its own: the zooms take their menu, at Fit too.
-        assert_eq!(widths(450., 233.).forms(true), forms(false, Pan::Arrows));
-        assert!(!widths(450., 233.).forms(false).zooms_labelled);
-        // The zoom menu on a row of its own: the Pan menu beside it.
-        assert_eq!(widths(157.5, 110.5).forms(true), forms(false, Pan::Menu));
-        // Both menus share a row with no room for the Pan menu.
-        assert_eq!(
-            widths(200., 110.5).forms(true),
-            forms(false, Pan::InZoomMenu)
-        );
-        // At every width the pan adds no row and the zooms keep their form.
-        for room in 150..1200 {
-            for modes in [233., 110.5] {
-                let widths = widths(room as f32, modes);
+        // Side by side: the Pan menu from 355.5 px, the labelled zooms from
+        // 488 and the arrows from 567.
+        for (adjust, by) in [(None, 0.), (Some(230.), 236.5)] {
+            let at = |room: f32| widths(room + by, adjust).forms(true);
+            assert_eq!(at(355.), forms(false, Pan::InZoomMenu), "{adjust:?}");
+            assert_eq!(at(355.5), forms(false, Pan::Menu), "{adjust:?}");
+            assert_eq!(at(487.5), forms(false, Pan::Menu), "{adjust:?}");
+            assert_eq!(at(488.), forms(true, Pan::Menu), "{adjust:?}");
+            assert_eq!(at(567.), forms(true, Pan::Arrows), "{adjust:?}");
+            assert_eq!(widths(1300., adjust).forms(false).pan, None);
+        }
+        let rank = |forms: ToolbarForms| {
+            (
+                forms.zooms_labelled,
+                match forms.pan {
+                    Some(Pan::Arrows) => 2,
+                    Some(Pan::Menu) => 1,
+                    _ => 0,
+                },
+            )
+        };
+        for adjust in [None, Some(230.)] {
+            let mut last = (false, 0);
+            for room in 150..1300 {
+                let widths = widths(room as f32, adjust);
                 let (fit, panned) = (widths.forms(false), widths.forms(true));
                 assert_eq!(fit.zooms_labelled, panned.zooms_labelled, "{room}");
+                let now = rank(panned);
+                assert!(
+                    now.0 >= last.0 && now.1 >= last.1,
+                    "{room}: {panned:?}, less labelled than {last:?} a pixel narrower"
+                );
+                last = now;
                 let zooms = px(if panned.zooms_labelled { 191. } else { 58.5 });
                 let group = match panned.pan {
                     Some(Pan::Arrows) => zooms + px(6.5 + 130.),
                     Some(Pan::Menu) => zooms + px(6.5 + 51.),
                     _ => zooms,
                 };
-                assert!(group <= px(room as f32), "{room}: {panned:?}");
-                assert_eq!(widths.rows(group), widths.rows(zooms), "{room}: {panned:?}");
+                assert!(
+                    group == zooms || widths.fits(group),
+                    "{room}: the pan {panned:?} lies beside the zooms only on one row"
+                );
             }
         }
         // A source image does not pan: its zooms are labelled where they fit.
         let source = ToolbarWidths {
             modes: None,
             pan: None,
-            ..widths(200., 0.)
+            ..widths(200., None)
         };
         assert_eq!(
             source.forms(true),
@@ -2257,6 +2350,24 @@ mod tests {
                 zooms_labelled: true,
                 pan: None
             }
+        );
+    }
+    /// The images can move back towards their start where they have left it,
+    /// and further where they have room: a pan control that cannot move them
+    /// is unavailable.
+    #[test]
+    fn pan_room_follows_the_pan_limits() {
+        assert_eq!(
+            super::pan_room([0., 0.], [200., 0.]),
+            [false, true, false, false]
+        );
+        assert_eq!(
+            super::pan_room([-80., 0.], [200., 300.]),
+            [true, true, false, true]
+        );
+        assert_eq!(
+            super::pan_room([-200., -300.], [200., 300.]),
+            [true, false, true, false]
         );
     }
     /// The dimensions give way only where that frees room: overlaid, a side
