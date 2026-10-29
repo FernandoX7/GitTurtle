@@ -428,6 +428,7 @@ impl Answer {
     fn frame(&self, cx: &App) -> Stateful<Div> {
         let key = self.key.clone();
         let probe = key.clone();
+        let path = key.clone();
         let color = if self.failed {
             appearance::labels(cx).warning
         } else {
@@ -449,6 +450,7 @@ impl Answer {
             .text_size(appearance::ui_text(11.))
             .text_color(rgb(color))
             .children(appearance::text_probe(move || probe))
+            .children(native_accessibility::node_path_probe(move || path))
     }
 
     /// The short line: the reason first ([`Answer::brief`]), whole, or on

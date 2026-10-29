@@ -30,6 +30,7 @@ mod history_updates;
 mod ignore;
 mod image_compare;
 mod image_lifetime;
+mod in_frame;
 mod integration;
 mod interactive_rebase;
 #[cfg(test)]

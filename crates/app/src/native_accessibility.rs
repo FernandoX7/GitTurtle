@@ -1230,6 +1230,44 @@ fn physical(bounds: Bounds<Pixels>, scale: f32) -> gpui::accesskit::Rect {
     }
 }
 
+/// Test-only: a probe drawn inside an element with an ID that records, under
+/// `key`, the ID path that element is drawn at, from which GPUI derives its
+/// accessibility node's ID and keys its state (a tooltip's among them), so a
+/// test can check that the node keeps its ID from frame to frame. A changed
+/// path is a new node, which assistive technology announces again if it is
+/// live. Absolutely positioned, it moves nothing; outside tests, nothing.
+pub(crate) fn node_path_probe(key: impl FnOnce() -> String) -> Option<AnyElement> {
+    #[cfg(test)]
+    {
+        let key = key();
+        Some(
+            canvas(
+                move |_, window, _| {
+                    // The probe's own ID ends the path; the rest is the
+                    // element's.
+                    let path = window.with_global_id("node-path-probe".into(), |id, _| {
+                        id[..id.len() - 1]
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    });
+                    written::NODE_PATHS.with(|paths| paths.borrow_mut().insert(key, path));
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_0()
+            .into_any_element(),
+        )
+    }
+    #[cfg(not(test))]
+    {
+        let _ = key;
+        None
+    }
+}
+
 /// The nodes this module's wrappers write, read back for tests: the test
 /// platform never builds a window's accessibility tree.
 #[cfg(test)]
@@ -1289,6 +1327,14 @@ pub(crate) mod written {
         static OPEN: RefCell<Vec<String>> = Default::default();
         /// The next node's [`Written::order`].
         static NEXT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        /// The ID path each [`super::node_path_probe`] last saw, by key.
+        pub(super) static NODE_PATHS: RefCell<HashMap<String, String>> = Default::default();
+    }
+
+    /// The ID path the element holding the [`super::node_path_probe`] under
+    /// `key` was last drawn at.
+    pub(crate) fn node_path(key: &str) -> Option<String> {
+        NODE_PATHS.with(|paths| paths.borrow().get(key).cloned())
     }
 
     /// Records the node `element` writes, at `bounds` if given, as the

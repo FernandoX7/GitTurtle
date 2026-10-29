@@ -2808,6 +2808,12 @@ impl GitTurtle {
     /// 220 px before the modes wrap below it, but never more than that column
     /// holds, and its buttons wrap below the path rather than clip. `column`
     /// is its width as last laid out, which the review options fit.
+    ///
+    /// An image comparison is laid out for the column's width in the frame
+    /// it is drawn instead ([`crate::in_frame`]): its toolbar's groups (the
+    /// path's actions, the modes and the zooms) and what gives way beneath
+    /// them are chosen from that width, so a width change never draws a
+    /// frame with the choice of the frame before.
     pub(super) fn render_preview(
         &self,
         column_min: Pixels,
@@ -2818,6 +2824,35 @@ impl GitTurtle {
         if self.blame.is_visible() {
             return self.render_blame(cx);
         }
+        if matches!(self.content.as_deref(), Some(Content::Images { .. })) {
+            let owner = cx.entity().downgrade();
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(
+                    crate::in_frame::in_frame(move |bounds, window, cx| {
+                        owner
+                            .update(cx, |this, cx| {
+                                this.render_preview_at(column_min, bounds.size.width, window, cx)
+                            })
+                            .unwrap_or_else(|_| div().into_any_element())
+                    })
+                    .named("image-preview"),
+                )
+                .into_any_element();
+        }
+        self.render_preview_at(column_min, column, window, cx)
+    }
+
+    /// The preview [`Self::render_preview`] draws, in a column `column` wide.
+    fn render_preview_at(
+        &self,
+        column_min: Pixels,
+        column: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = palette(cx);
         let quick_source = self.is_quick_source();
         let file = self.selected_file.and_then(|index| self.files.get(index));
@@ -2980,6 +3015,74 @@ impl GitTurtle {
             .border_b_1()
             .border_color(rgb(colors.border))
             .child(path_controls);
+        // Beneath the preview, the file's status, modes and object IDs on one
+        // line. Narrower than its line, the footer drops the object IDs first
+        // and then truncates with an ellipsis; its tooltip keeps the whole
+        // line. An image comparison draws it at its own foot, where it gives
+        // way before the image's minimum ([`CompareFooter`]).
+        let mut footer = file.map(|file| {
+            let (line, short) = if quick_source {
+                let line = format!("Tracked source · mode {}", file.new_mode);
+                (line.clone(), line)
+            } else {
+                let modes = format!(
+                    "{}   ·   {} → {}",
+                    file.status.label(),
+                    if file.old_mode == "000000" {
+                        "absent"
+                    } else {
+                        &file.old_mode
+                    },
+                    if file.new_mode == "000000" {
+                        "absent"
+                    } else {
+                        &file.new_mode
+                    },
+                );
+                (
+                    format!(
+                        "{modes}   ·   {} → {}",
+                        file.old_oid.as_deref().map(short_oid).unwrap_or("—".into()),
+                        file.new_oid.as_deref().map(short_oid).unwrap_or("—".into())
+                    ),
+                    modes,
+                )
+            };
+            let fits = cached_text_width(&FOOTER_LINE, &line, window, || {
+                line_widths(&[(&line, appearance::ui_text(10.))], window)
+            }) <= column - window.rem_size() * 1.5;
+            let shown = if fits { line.clone() } else { short };
+            let line = SharedString::from(line);
+            let whole = line.clone();
+            CompareFooter {
+                element: div()
+                    .id("compare-footer")
+                    .debug_selector(|| "compare-footer".into())
+                    .h(crate::appearance::ui_size(COMPARE_FOOTER_HEIGHT))
+                    .flex_shrink_0()
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .text_size(crate::appearance::ui_text(10.))
+                    .text_color(rgb(colors.muted))
+                    .border_t_1()
+                    .border_color(rgb(colors.border))
+                    .when(!fits, |footer| {
+                        footer.tooltip(move |window, cx| {
+                            Tooltip::new(whole.clone()).build(window, cx)
+                        })
+                    })
+                    .child(
+                        div()
+                            .debug_selector(|| "compare-footer-text".into())
+                            .min_w_0()
+                            .truncate()
+                            .child(shown),
+                    )
+                    .into_any_element(),
+                line,
+            }
+        });
         // The editor the text pane shows, which draws no edge of its own, so
         // the pane rings its edge for it.
         let mut text_focus = None;
@@ -3176,7 +3279,7 @@ impl GitTurtle {
                     }
                 }
                 Content::Images { old, new } => {
-                    self.render_image_comparison(old, new, column, window, cx)
+                    self.render_image_comparison(old, new, column, footer.take(), window, cx)
                 }
                 Content::Rich(preview) => self.render_rich_preview(preview, column, window, cx),
                 Content::Conflict(_) => self.conflict_view.as_ref().map_or_else(
@@ -3194,7 +3297,7 @@ impl GitTurtle {
             .flex()
             .flex_col()
             .bg(rgb(colors.canvas))
-            .child(toolbar)
+            .child(crate::in_frame::probed(toolbar, "compare-toolbar"))
             .child(self.render_lfs_download_actions(cx))
             .when(
                 matches!(self.content.as_deref(), Some(Content::Text { .. }))
@@ -3237,68 +3340,22 @@ impl GitTurtle {
                             .child(reason.clone())
                     }),
             )
-            .children(file.map(|file| {
-                let (line, short) = if quick_source {
-                    let line = format!("Tracked source · mode {}", file.new_mode);
-                    (line.clone(), line)
-                } else {
-                    let modes = format!(
-                        "{}   ·   {} → {}",
-                        file.status.label(),
-                        if file.old_mode == "000000" {
-                            "absent"
-                        } else {
-                            &file.old_mode
-                        },
-                        if file.new_mode == "000000" {
-                            "absent"
-                        } else {
-                            &file.new_mode
-                        },
-                    );
-                    (
-                        format!(
-                            "{modes}   ·   {} → {}",
-                            file.old_oid.as_deref().map(short_oid).unwrap_or("—".into()),
-                            file.new_oid.as_deref().map(short_oid).unwrap_or("—".into())
-                        ),
-                        modes,
-                    )
-                };
-                // Narrower than its line, the footer drops the object IDs
-                // first and then truncates with an ellipsis; its tooltip
-                // keeps the whole line.
-                let fits = cached_text_width(&FOOTER_LINE, &line, window, || {
-                    line_widths(&[(&line, appearance::ui_text(10.))], window)
-                }) <= column - window.rem_size() * 1.5;
-                let shown = if fits { line.clone() } else { short };
-                div()
-                    .id("compare-footer")
-                    .debug_selector(|| "compare-footer".into())
-                    .h(crate::appearance::ui_size(24.))
-                    .flex_shrink_0()
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .text_size(crate::appearance::ui_text(10.))
-                    .text_color(rgb(colors.muted))
-                    .border_t_1()
-                    .border_color(rgb(colors.border))
-                    .when(!fits, |footer| {
-                        footer
-                            .tooltip(move |window, cx| Tooltip::new(line.clone()).build(window, cx))
-                    })
-                    .child(
-                        div()
-                            .debug_selector(|| "compare-footer-text".into())
-                            .min_w_0()
-                            .truncate()
-                            .child(shown),
-                    )
-            }))
+            .children(footer.map(|footer| footer.element))
             .into_any_element()
     }
 }
+
+/// Compare's footer beneath the preview, as [`GitTurtle::render_preview`]
+/// builds it, and its whole line.
+pub(crate) struct CompareFooter {
+    pub(crate) element: AnyElement,
+    /// What the footer says, whole, which an image comparison keeps in its
+    /// accessible description once the footer has given way.
+    pub(crate) line: SharedString,
+}
+
+/// The footer's height before scaling, its top rule included.
+pub(crate) const COMPARE_FOOTER_HEIGHT: f32 = 24.;
 
 // The column and inspector minimums below are those of the default interface
 // text size; each is drawn scaled with the interface size (`appearance::ui_size`),
@@ -4177,7 +4234,7 @@ impl GitTurtle {
             + options
             + px(8.) * 2.
             + line * 3.
-            + window.pixel_snap(appearance::ui_size(24.))
+            + window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT))
     }
 
     /// `ChromeWidths` for the chrome's current text, measured again only when
@@ -7412,12 +7469,22 @@ pub(crate) mod tests {
     }
 
     /// Beneath a refusal's band the image is drawn only where it has at least
-    /// a pixel of room, and where it has less the band reaches the footer
-    /// with no rule of its own: once a 1 × 0.5 px sliver of the image lay
-    /// between the band's rule and the footer's at 13 pt, and at 18 pt the
-    /// two rules made one 2 px rule. Walked in half-pixel steps through the
-    /// heights of a 461 px window where the band's foot meets the image's
-    /// last pixels, at 13 and 18 pt.
+    /// a pixel of room, and where it has less the band reaches the column's
+    /// foot with no rule of its own: once a 1 × 0.5 px sliver of the image
+    /// lay between the band's rule and the footer's at 13 pt, and at 18 pt
+    /// the two rules made one 2 px rule. There Compare's footer has given
+    /// its room to the band, so the rule beneath the band is the status
+    /// bar's, and the footer's words are the band's accessible description:
+    /// they were once left only on the image, which was not drawn, so its
+    /// status, modes and object IDs were on no drawn node. There the band
+    /// is a group named "Comparison details", for what is drawn, where it
+    /// was named for the undrawn images. Its line keeps one ID path on both
+    /// sides of the image's last pixel: the band gained an ID'd group only
+    /// where the image was not drawn, so its alert's accessibility node, which
+    /// GPUI derives from the path, changed there and could be announced
+    /// again at every resize across it. Walked in half-pixel steps through
+    /// the heights of a 461 px window where the band's foot meets the
+    /// image's last pixels, at 13 and 18 pt.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn a_refusal_band_leaves_no_image_sliver_or_second_rule(cx: &mut TestAppContext) {
@@ -7439,7 +7506,7 @@ pub(crate) mod tests {
         let surface = cx.update(|_, cx| {
             gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(palette(cx).panel)))
         });
-        for (text, heights) in [(13, 470..=530), (18, 500..=580)] {
+        for (text, heights) in [(13, 440..=510), (18, 460..=550)] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(461.), px(980.)));
             draw(cx);
@@ -7448,13 +7515,25 @@ pub(crate) mod tests {
             cx.simulate_click(control.center(), Modifiers::default());
             cx.run_until_parked();
             let (mut drawn, mut left) = (false, false);
+            // The ID path the line saying why is drawn at, which GPUI derives
+            // its alert's accessibility node from, on each side of the
+            // image's last pixel.
+            let mut paths = std::collections::BTreeSet::new();
             for half_pixels in heights.clone().step_by(1).map(|h| h * 2) {
                 for height in [half_pixels as f32 / 2., (half_pixels + 1) as f32 / 2.] {
+                    // What this frame's drawn nodes record, and nothing else.
+                    COMPACT_LABELS.with(|labels| {
+                        let mut labels = labels.borrow_mut();
+                        labels.remove("image-canvas-area");
+                        labels.remove("image-open-notes");
+                        labels.remove("image-open-notes-name");
+                    });
                     cx.simulate_resize(size(px(461.), px(height)));
                     draw(cx);
                     let at = format!("{text} pt in 461 × {height}");
                     let band = bounds("image-side-note-1", cx);
-                    let footer = bounds("compare-footer", cx);
+                    let description = COMPACT_LABELS
+                        .with(|labels| labels.borrow().get("image-canvas-area").cloned());
                     // The band's half as painted: its surface, then any rule,
                     // which GPUI paints as a quad of its own over the half.
                     let (painted, rule) = cx.update(|window, _| {
@@ -7478,6 +7557,12 @@ pub(crate) mod tests {
                         )
                     });
                     assert!(painted, "{at}: the band's half {band:?} has its surface");
+                    paths.insert(
+                        crate::native_accessibility::written::node_path(
+                            "image-system-preview-1/note",
+                        )
+                        .unwrap_or_else(|| panic!("{at}: the line is drawn")),
+                    );
                     match cx.debug_bounds("image-canvas-area") {
                         Some(image) => {
                             drawn = true;
@@ -7486,13 +7571,50 @@ pub(crate) mod tests {
                                 "{at}: no sliver of the image {image:?}"
                             );
                             assert!(rule > 0., "{at}: the band's rule parts it from the image");
+                            // Where the footer gave way to the image, the
+                            // image, drawn, keeps its words.
+                            if cx.debug_bounds("compare-footer").is_none() {
+                                let description = description.unwrap_or_default();
+                                assert!(
+                                    description.contains("Modified")
+                                        && description.contains("100644"),
+                                    "{at}: the footer's words are the drawn image's description: {description:?}"
+                                );
+                            }
                         }
                         None => {
                             left = true;
-                            assert_eq!(rule, 0., "{at}: no second rule above the footer's");
+                            // The footer gave its room to the band, which
+                            // keeps its words, and no undrawn image records
+                            // a description.
                             assert!(
-                                (band.bottom() - footer.top()).abs() <= slack,
-                                "{at}: the band {band:?} reaches the footer {footer:?}"
+                                cx.debug_bounds("compare-footer").is_none(),
+                                "{at}: the footer gave way to the band"
+                            );
+                            assert_eq!(
+                                description, None,
+                                "{at}: only a drawn image records a description"
+                            );
+                            let kept = COMPACT_LABELS
+                                .with(|labels| labels.borrow().get("image-open-notes").cloned())
+                                .unwrap_or_default();
+                            assert!(
+                                kept.contains("Modified") && kept.contains("100644"),
+                                "{at}: the footer's words are the drawn band's description: {kept:?}"
+                            );
+                            assert_eq!(
+                                COMPACT_LABELS.with(|labels| labels
+                                    .borrow()
+                                    .get("image-open-notes-name")
+                                    .cloned()),
+                                Some("Comparison details".into()),
+                                "{at}: the band is named for what is drawn, not the undrawn images"
+                            );
+                            assert_eq!(rule, 0., "{at}: no second rule above the status bar's");
+                            let foot = bounds("preview-content", cx).bottom();
+                            assert!(
+                                (band.bottom() - foot).abs() <= slack,
+                                "{at}: the band {band:?} reaches the column's foot {foot:?}"
                             );
                         }
                     }
@@ -7501,6 +7623,11 @@ pub(crate) mod tests {
             assert!(
                 drawn && left,
                 "{text} pt: the walk crosses the image's last pixel"
+            );
+            assert_eq!(
+                paths.len(),
+                1,
+                "{text} pt: the line keeps one accessibility node, so it is not announced again, across the image's last pixel: {paths:?}"
             );
             app.update(cx, |app, cx| {
                 app.preview_showing = crate::system_preview::Showing::next();
@@ -7517,9 +7644,11 @@ pub(crate) mod tests {
     /// There each takes two lines, inside the column and below the image,
     /// which keeps its scaled 96 px, and both sides' names keep their shared
     /// top. In a 461 × 490 window, at 13 and 18 pt, and in a 640 × 490 one,
-    /// where one line each would fit but leave the image less than that, the
-    /// notes leave and the image takes the whole room beneath the captions,
-    /// the notes' words kept in its accessible description.
+    /// Compare's footer gives way first, its line kept in the image's
+    /// accessible description; where one line each would still leave the
+    /// image less than its minimum, the notes leave too and the image takes
+    /// the whole room beneath the captions, their words kept in that
+    /// description.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn image_notes_take_two_lines_where_the_image_keeps_its_room(cx: &mut TestAppContext) {
@@ -7582,31 +7711,68 @@ pub(crate) mod tests {
             "{at}: the side names share their top: {names:?}"
         );
 
+        // Whether the walk met notes that stay in the footer's room and
+        // notes that leave the image their room.
+        let (mut stayed, mut left) = (false, false);
         for (text, width) in [(13, 461.), (18, 461.), (13, 640.)] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            COMPACT_LABELS.with(|labels| labels.borrow_mut().remove("image-canvas-area"));
             cx.simulate_resize(size(px(width), px(490.)));
             draw(cx);
-            draw(cx);
             let at = format!("{text} pt in {width} × 490");
-            for note in notes {
-                assert!(cx.debug_bounds(note).is_none(), "{at}: {note} has left");
+            let footer = cx.debug_bounds("compare-footer");
+            let description = COMPACT_LABELS
+                .with(|labels| labels.borrow().get("image-canvas-area").cloned())
+                .unwrap_or_default();
+            if footer.is_none() {
+                assert!(
+                    description.contains("Modified") && description.contains("100644"),
+                    "{at}: the footer's words stay in the image's description: {description:?}"
+                );
             }
             let (room, image) = (
                 bounds("image-stage-room", cx),
                 bounds("image-canvas-area", cx),
             );
+            if cx.debug_bounds(notes[0]).is_some() {
+                // The notes stay beneath an image that keeps its minimum, in
+                // the footer's room where it gave way.
+                for note in notes {
+                    let drawn = bounds(note, cx);
+                    assert!(
+                        drawn.top() >= image.bottom() - slack
+                            && drawn.bottom() <= room.bottom() + slack,
+                        "{at}: {note} {drawn:?} lies below the image {image:?} in the room {room:?}"
+                    );
+                }
+                assert!(
+                    image.size.height >= appearance::ui_size(96.) - slack,
+                    "{at}: the image {image:?} keeps its usable minimum beneath the notes"
+                );
+                stayed = true;
+                continue;
+            }
+            left = true;
+            for note in notes {
+                assert!(cx.debug_bounds(note).is_none(), "{at}: {note} has left");
+            }
+            assert!(
+                footer.is_none(),
+                "{at}: the notes leave only after the footer"
+            );
             assert!(
                 (room.size.height - image.size.height).abs() <= slack,
                 "{at}: the image {image:?} takes the room {room:?} beneath the captions"
             );
-            let description = COMPACT_LABELS
-                .with(|labels| labels.borrow().get("image-canvas-area").cloned())
-                .unwrap_or_default();
             assert!(
                 description.contains("100% =") && description.contains("Linked zoom and pan"),
                 "{at}: the notes' words stay in the image's description: {description:?}"
             );
         }
+        assert!(
+            stayed && left,
+            "the walk meets notes that stay ({stayed}) and notes that leave ({left})"
+        );
     }
 
     /// A changed image's captions give way before the image beneath them, as
@@ -7615,13 +7781,20 @@ pub(crate) mod tests {
     /// 96 px, below the captions, and otherwise leave, their words staying in
     /// the name's accessible name and tooltip. In a 461 × 490 window, before
     /// any click, the image had 83 px at 13 pt and 60 at 18 pt beneath a
-    /// line of dimensions (two at 18 pt). The test fonts' glyphs are wider
-    /// than the interface font's, so in a 461 px window the toolbar's menus
-    /// take two rows and Before's control wraps below its name, and that room
-    /// falls at 461 × 560 at 13 pt and 461 × 590 at 18 pt: there the image now
-    /// keeps at least 96 px. At every height of a 461 px window from 490 to
-    /// 980, the dimensions are drawn only above an image that keeps it, and
-    /// neither side's name moves when they leave; a full window keeps them.
+    /// line of dimensions (two at 18 pt). Compare's footer, a label line, then
+    /// gives way too, its words staying in the image's accessible
+    /// description: at 18 pt in that window the toolbar and the names left the
+    /// image about 109 px above the footer's 33, under its scaled 133 px
+    /// minimum. The test fonts' glyphs are wider than the interface font's,
+    /// so in a 461 px window the toolbar's menus take two rows and Before's
+    /// control wraps below its name, and that room falls at 461 × 560 at
+    /// 13 pt and 461 × 590 at 18 pt: there the image now keeps its scaled
+    /// minimum. At every height of a 461 px window from 490 to 980, the
+    /// dimensions and the footer are drawn only above an image that keeps
+    /// it; the dimensions leave before the footer, the footer before the
+    /// notes beneath the image, and only where the image would keep less
+    /// with it and the notes on a line each; and neither side's name moves
+    /// when they leave. A full window keeps them.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn image_dimensions_give_way_before_the_image(cx: &mut TestAppContext) {
@@ -7642,10 +7815,23 @@ pub(crate) mod tests {
         let slack = px(0.5);
         let details = ["image-side-details-0", "image-side-details-1"];
         let names = ["image-side-name-0", "image-side-name-1"];
+        let notes = ["image-source-scale", "image-interaction-guidance"];
         let mut gave_way = [false; 2];
+        let mut footer_gave_way = [false; 2];
+        let mut notes_left = [false; 2];
+        let mut notes_in_its_room = [false; 2];
         for (index, text) in [13, 18].into_iter().enumerate() {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             let minimum = cx.update(|_, _| appearance::ui_size(96.));
+            // A note on one line: its line and its `py_1` either side.
+            let notes_one = cx.update(|window, _| {
+                (window
+                    .text_style()
+                    .line_height
+                    .to_pixels(appearance::ui_text(10.).into(), window.rem_size())
+                    + window.rem_size() * 0.5)
+                    * 2.
+            });
             for height in (490..=980).step_by(10) {
                 cx.simulate_resize(size(px(461.), px(height as f32)));
                 draw(cx);
@@ -7661,6 +7847,40 @@ pub(crate) mod tests {
                 } else {
                     gave_way[index] = true;
                 }
+                // The notes beneath the image, on however many lines they
+                // take, and what both take on one line each.
+                let shown = notes.map(|note| cx.debug_bounds(note));
+                assert_eq!(
+                    shown[0].is_some(),
+                    shown[1].is_some(),
+                    "{at}: both notes stay or leave"
+                );
+                let noted: Pixels = shown.iter().flatten().map(|note| note.size.height).sum();
+                if shown[0].is_none() {
+                    notes_left[index] = true;
+                    assert!(
+                        cx.debug_bounds("compare-footer").is_none(),
+                        "{at}: the notes leave only after the footer"
+                    );
+                }
+                match cx.debug_bounds("compare-footer") {
+                    Some(footer) => assert!(
+                        image.size.height >= minimum - slack,
+                        "{at}: the footer {footer:?} stays only beneath an image {image:?} that keeps its minimum"
+                    ),
+                    None => {
+                        footer_gave_way[index] = true;
+                        notes_in_its_room[index] |= shown[0].is_some();
+                        assert!(!drawn[0], "{at}: the footer leaves after the dimensions");
+                        let footer = cx.update(|window, _| {
+                            window.pixel_snap(appearance::ui_size(COMPARE_FOOTER_HEIGHT))
+                        });
+                        assert!(
+                            image.size.height + noted - footer - notes_one < minimum - slack,
+                            "{at}: the footer leaves only where the image {image:?} would keep less than its minimum with it and the notes on a line each"
+                        );
+                    }
+                }
             }
             // Where the test fonts reproduce the 461 × 490 window's room, the
             // image keeps at least 96 px (the scaled minimum at 13 pt), and
@@ -7670,16 +7890,31 @@ pub(crate) mod tests {
             draw(cx);
             let kept =
                 names.map(|name| bounds(name, cx).top() - bounds("preview-content", cx).top());
+            COMPACT_LABELS.with(|labels| labels.borrow_mut().remove("image-canvas-area"));
             cx.simulate_resize(size(px(461.), px(tall)));
             draw(cx);
             let at = format!("{text} pt in 461 × {tall}");
             let image = bounds("image-canvas-area", cx);
             assert!(
-                image.size.height >= px(96.) - slack,
-                "{at}: the image {image:?} keeps at least 96 px"
+                image.size.height >= minimum - slack,
+                "{at}: the image {image:?} keeps its minimum {minimum:?}"
             );
             for detail in details {
                 assert!(cx.debug_bounds(detail).is_none(), "{at}: {detail} gave way");
+            }
+            let footer = cx.debug_bounds("compare-footer");
+            assert!(
+                text == 13 || footer.is_none(),
+                "{at}: the footer {footer:?} gave way to the image"
+            );
+            if footer.is_none() {
+                let description = COMPACT_LABELS
+                    .with(|labels| labels.borrow().get("image-canvas-area").cloned())
+                    .unwrap_or_default();
+                assert!(
+                    description.contains("Modified") && description.contains("100644"),
+                    "{at}: the footer's words stay in the image's description: {description:?}"
+                );
             }
             assert_eq!(
                 names.map(|name| bounds(name, cx).top() - bounds("preview-content", cx).top()),
@@ -7691,6 +7926,15 @@ pub(crate) mod tests {
             gave_way, [true; 2],
             "the narrow window's dimensions give way"
         );
+        assert_eq!(
+            footer_gave_way, [true; 2],
+            "the narrow window's footer gives way"
+        );
+        assert_eq!(notes_left, [true; 2], "the narrow window's notes leave");
+        assert_eq!(
+            notes_in_its_room, [true; 2],
+            "the notes stay in the room the footer gave way"
+        );
         for text in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(1480.), px(980.)));
@@ -7701,7 +7945,191 @@ pub(crate) mod tests {
                     "{text} pt in 1480 × 980: {detail} stays"
                 );
             }
+            assert!(
+                cx.debug_bounds("compare-footer").is_some(),
+                "{text} pt in 1480 × 980: the footer stays"
+            );
         }
+    }
+
+    /// Every frame lays out `region` as the frame it settles in: the frames
+    /// `step` draws, as the probe recorded them ([`crate::in_frame::probe`]),
+    /// all equal the last of two more draws. Frames before `from`, a part
+    /// that marks when what `step` brings is first drawn, are left out.
+    fn frames_match_their_settled_frame(
+        cx: &mut VisualTestContext,
+        at: &str,
+        region: &str,
+        from: Option<&str>,
+        step: impl FnOnce(&mut VisualTestContext),
+    ) -> crate::in_frame::probe::Frame {
+        use crate::in_frame::probe;
+        probe::take();
+        step(cx);
+        let frames: Vec<_> = probe::take()
+            .into_iter()
+            .filter(|frame| frame.region == region)
+            .skip_while(|frame| from.is_some_and(|part| frame.part(part).is_none()))
+            .collect();
+        draw(cx);
+        let settled = probe::take()
+            .into_iter()
+            .rfind(|frame| frame.region == region)
+            .unwrap_or_else(|| panic!("{at}: {region} is drawn"));
+        assert!(
+            !frames.is_empty(),
+            "{at}: {region} was drawn after the step"
+        );
+        for (index, frame) in frames.iter().enumerate() {
+            assert_eq!(
+                frame,
+                &settled,
+                "{at}: frame {index} of {} lays {region} out as it settles",
+                frames.len()
+            );
+        }
+        settled
+    }
+
+    /// An image comparison chooses what gives way beneath its toolbar (each
+    /// side's dimensions, a click's band, the image's notes and Compare's
+    /// footer) from the room it has in the frame it is drawn
+    /// ([`crate::in_frame`]). Chosen from the room the frame before laid out,
+    /// the first frame after a resize drew the old choice: the footer stayed
+    /// beneath an image that had lost its minimum, or left a frame late.
+    /// Every frame drawn after each resize of a 461 px window between 490 and
+    /// 980 px tall, at 13 and 18 pt, and after a click's answer arrives,
+    /// lays the comparison out as the frame it settles in. So does every
+    /// frame after the window narrows or widens by 40 px between 501 and
+    /// 1,061 px with the answer's band shown, which wraps the band's line to
+    /// more or fewer lines and changes the toolbars' groups, and so does
+    /// every frame of the whole preview, those toolbars included: the band's
+    /// lines, the open controls' form, the notes' second lines and the
+    /// toolbars' groups (the path's actions, the modes and the zooms) were
+    /// chosen from the column's width a frame before, so the first frame
+    /// after a width change drew the old choice.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn an_image_comparison_is_laid_out_in_the_frame_it_is_drawn(cx: &mut TestAppContext) {
+        use crate::system_preview::tests::{png, queue, seen_as_svg};
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        crate::in_frame::probe::watch();
+        let mut footer_left = false;
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(980.)));
+            draw(cx);
+            let heights = (490..=980).rev().step_by(35).chain((490..=980).step_by(35));
+            for height in heights {
+                let at = format!("{text} pt, resized to 461 × {height}");
+                let settled =
+                    frames_match_their_settled_frame(cx, &at, "image-comparison", None, |cx| {
+                        cx.simulate_resize(size(px(461.), px(height as f32)));
+                        draw(cx);
+                    });
+                let stage = settled.part("image-stage-room").expect("the stage");
+                footer_left |= stage.bottom() >= settled.bounds.bottom() - px(0.5);
+            }
+            // A click's answer brings its band beneath the captions.
+            cx.simulate_resize(size(px(461.), px(560.)));
+            draw(cx);
+            let at = format!("{text} pt in 461 × 560, answered");
+            frames_match_their_settled_frame(
+                cx,
+                &at,
+                "image-comparison",
+                Some("image-open-notes"),
+                |cx| {
+                    queue(Err(seen_as_svg("a PNG image")));
+                    let control = cx
+                        .debug_bounds("image-system-preview-1")
+                        .expect("After's control");
+                    cx.simulate_click(control.center(), Modifiers::default());
+                    cx.run_until_parked();
+                },
+            );
+            // A width change wraps the band's line to more or fewer lines,
+            // labels or icons the open controls and wraps the notes, and
+            // changes the toolbars' groups above them: the path's actions,
+            // the modes and the zooms. Narrowed and widened, every frame
+            // lays the preview and the comparison out as it settles, for the
+            // width it is drawn at.
+            cx.simulate_resize(size(px(1061.), px(980.)));
+            draw(cx);
+            let mut band_heights = Vec::new();
+            let mut groups = std::collections::BTreeSet::new();
+            let widths = (501..=1061)
+                .rev()
+                .step_by(40)
+                .chain((501..=1061).step_by(40));
+            for width in widths {
+                use crate::in_frame::probe;
+                let at = format!("{text} pt, answered, resized to {width} × 980");
+                probe::take();
+                cx.simulate_resize(size(px(width as f32), px(980.)));
+                draw(cx);
+                let frames = probe::take();
+                draw(cx);
+                let last = probe::take();
+                let mut settled = Vec::new();
+                for region in ["image-preview", "image-comparison"] {
+                    let region_frames: Vec<_> = frames
+                        .iter()
+                        .filter(|frame| frame.region == region)
+                        .collect();
+                    let region_settled = last
+                        .iter()
+                        .rfind(|frame| frame.region == region)
+                        .unwrap_or_else(|| panic!("{at}: {region} is drawn"));
+                    assert!(!region_frames.is_empty(), "{at}: {region} was drawn");
+                    for (index, frame) in region_frames.iter().enumerate() {
+                        assert_eq!(
+                            *frame,
+                            region_settled,
+                            "{at}: frame {index} of {} lays {region} out as it settles",
+                            region_frames.len()
+                        );
+                    }
+                    settled.push(region_settled.clone());
+                }
+                let preview = &settled[0];
+                groups.insert(
+                    [
+                        "image-modes",
+                        "image-mode-menu",
+                        "image-zooms",
+                        "image-zoom-menu",
+                    ]
+                    .map(|group| preview.part(group).is_some()),
+                );
+                let band = settled[1].part("image-open-notes").expect("the band");
+                band_heights.push(band.size.height);
+            }
+            assert!(
+                band_heights.windows(2).any(|pair| pair[0] < pair[1])
+                    && band_heights.windows(2).any(|pair| pair[0] > pair[1]),
+                "{text} pt: narrowing wraps the band's line to more lines and widening to fewer: {band_heights:?}"
+            );
+            assert!(
+                groups.len() > 1,
+                "{text} pt: the walk changes the toolbar's groups: {groups:?}"
+            );
+            app.update(cx, |app, cx| {
+                app.preview_showing = crate::system_preview::Showing::next();
+                cx.notify();
+            });
+            draw(cx);
+        }
+        crate::in_frame::probe::stop();
+        assert!(footer_left, "the walk meets the footer giving way");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// The inspector's title keeps a file name whole where it fits beside
