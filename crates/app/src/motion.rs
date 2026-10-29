@@ -8,13 +8,19 @@
 //! travelling row's slot is an empty placeholder that records its bounds and
 //! the list's clip while the list is prepainted ([`slot`]). The row itself is
 //! drawn by [`TravellingRow`], beside the list inside the same pane, above
-//! the rows it passes and under the list's clip, from where it was towards
+//! the rows it passes, beneath the section headings, which are not rows and
+//! stay whole on top, and under the list's clip, from where it was towards
 //! that slot. Under reduced motion nothing departs, so the row is in its
 //! slot in the first frame.
 
 use crate::*;
 use gitturtle_core::{ChangeArea, RepositoryStatus};
-use std::{cell::Cell, path::Path, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    path::Path,
+    rc::Rc,
+    time::Duration,
+};
 
 /// How long a row takes to travel between Staged and Unstaged.
 pub(crate) const ROW_TRAVEL: Duration = Duration::from_millis(150);
@@ -93,9 +99,20 @@ pub(crate) struct StillPointer {
 
 /// The landing slot's bounds and the list's clip, recorded while the list is
 /// prepainted, so the row lands exactly where the list puts it, after any
-/// scroll the list applied in that frame.
+/// scroll the list applied in that frame, and the places of the section
+/// headings the list built in that frame, which the row passes beneath.
 #[derive(Clone, Default)]
-pub(crate) struct Slot(Rc<Cell<Option<SlotBounds>>>);
+pub(crate) struct Slot {
+    bounds: Rc<Cell<Option<SlotBounds>>>,
+    headings: Rc<RefCell<Vec<usize>>>,
+}
+
+impl Slot {
+    /// The list built a section heading at `position` in this frame.
+    pub(crate) fn heading(&self, position: usize) {
+        self.headings.borrow_mut().push(position);
+    }
+}
 
 #[derive(Clone, Copy)]
 struct SlotBounds {
@@ -133,7 +150,7 @@ pub(crate) fn landing(
 pub(crate) fn slot(slot: Slot, height: Pixels) -> AnyElement {
     canvas(
         move |bounds, window, _| {
-            slot.0.set(Some(SlotBounds {
+            slot.bounds.set(Some(SlotBounds {
                 slot: bounds,
                 clip: window.content_mask().bounds,
             }))
@@ -350,10 +367,40 @@ impl GitTurtle {
     }
 }
 
+/// The part of a travelling row's band, from `top` to `bottom` in the
+/// window, that no section heading covers, each heading given by its top
+/// and bottom. A heading is not a row: the row passes beneath it, so the
+/// heading stays whole and on top. Every row of the list is as tall as the
+/// travelling row, so a heading covers its top or its bottom and what
+/// remains is one band, empty where a heading covers it all.
+fn uncovered(
+    mut top: Pixels,
+    mut bottom: Pixels,
+    headings: impl IntoIterator<Item = (Pixels, Pixels)>,
+) -> (Pixels, Pixels) {
+    for (heading_top, heading_bottom) in headings {
+        if heading_top >= bottom || heading_bottom <= top {
+            continue;
+        }
+        if heading_top <= top {
+            top = top.max(heading_bottom);
+        } else if heading_bottom >= bottom {
+            bottom = bottom.min(heading_top);
+        } else if heading_top - top >= bottom - heading_bottom {
+            // A heading shorter than the row: the larger part shows.
+            bottom = heading_top;
+        } else {
+            top = heading_bottom;
+        }
+    }
+    (top, bottom.max(top))
+}
+
 /// Draws a travelling row over the list, from where it departed to the slot
-/// the list laid out for it, under the list's clip. It takes no room of its
-/// own. Where the list did not lay the slot out because it lies outside the
-/// list's viewport, nothing is drawn and no further frame is asked for.
+/// the list laid out for it, under the list's clip and beneath the section
+/// headings ([`uncovered`]). It takes no room of its own. Where the list did
+/// not lay the slot out because it lies outside the list's viewport, nothing
+/// is drawn and no further frame is asked for.
 pub(crate) struct TravellingRow {
     flight: Flight,
     row: AnyElement,
@@ -375,7 +422,8 @@ impl IntoElement for TravellingRow {
 
 impl Element for TravellingRow {
     type RequestLayoutState = ();
-    /// The list's clip, where the row was laid out.
+    /// The list's clip less the section headings, where the row was laid
+    /// out.
     type PrepaintState = Option<Bounds<Pixels>>;
 
     fn id(&self) -> Option<ElementId> {
@@ -409,9 +457,26 @@ impl Element for TravellingRow {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Bounds<Pixels>> {
-        let SlotBounds { slot, clip } = self.flight.slot.0.get()?;
+        let SlotBounds { slot, clip } = self.flight.slot.bounds.get()?;
         let departed = self.flight.departed;
         let top = departed + (slot.origin.y - departed) * self.flight.eased;
+        // The list lays every row out at the slot's height, so a heading `n`
+        // rows from the slot lies `n` slot heights from it.
+        let height = slot.size.height;
+        let headings = self.flight.slot.headings.borrow();
+        let (shown_top, shown_bottom) = uncovered(
+            top,
+            top + height,
+            headings.iter().map(|&heading| {
+                let at = slot.origin.y + height * (heading as f32 - self.flight.position as f32);
+                (at, at + height)
+            }),
+        );
+        let clip = Bounds::from_corners(
+            point(clip.left(), shown_top),
+            point(clip.right(), shown_bottom),
+        )
+        .intersect(&clip);
         self.row.layout_as_root(
             size(
                 AvailableSpace::Definite(slot.size.width),
@@ -629,6 +694,394 @@ mod tests {
             row(cx, 4),
             Bounds::new(point(alpha.left(), slot), alpha.size),
         );
+    }
+
+    /// What the last frame painted over the heading at row `heading`: each
+    /// quad's part inside it, clipped as it is drawn, with its fill and
+    /// border, in a stable order. A part thinner than half a device pixel,
+    /// an edge two snapped bounds share, is no cover.
+    fn painted_over(cx: &mut VisualTestContext, heading: usize) -> Vec<String> {
+        let heading = row(cx, heading);
+        cx.update(|window, _| {
+            let heading = heading.scale(window.scale_factor());
+            let mut painted: Vec<_> = window
+                .painted_quads()
+                .into_iter()
+                .filter_map(|quad| {
+                    let shown = quad
+                        .bounds
+                        .intersect(&quad.content_mask.bounds)
+                        .intersect(&heading);
+                    (shown.size.width.as_f32() > 0.5 && shown.size.height.as_f32() > 0.5).then(
+                        || {
+                            format!(
+                                "{shown:?} {:?} {:?} {:?}",
+                                quad.background, quad.border_color, quad.border_widths
+                            )
+                        },
+                    )
+                })
+                .collect();
+            painted.sort();
+            painted
+        })
+    }
+
+    /// How tall a part of the travelling row, drawn at `travelling`, the last
+    /// frame painted, in device pixels: the clipped height of the row's own
+    /// fill, the quad that spans its bounds under a mask no taller than the
+    /// row. Only the travelling row is drawn under such a mask, the band of
+    /// the list's clip it may show in; a row or a heading the list lays out
+    /// in the same place, as beta takes alpha's in the first frame of
+    /// alpha's flight, is drawn under the list's whole clip.
+    fn row_shown(cx: &mut VisualTestContext, travelling: Bounds<Pixels>) -> f32 {
+        cx.update(|window, _| {
+            let travelling = travelling.scale(window.scale_factor());
+            let near = |a: gpui_kit::ScaledPixels, b: gpui_kit::ScaledPixels| {
+                (a.as_f32() - b.as_f32()).abs() <= 1.
+            };
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| {
+                    !quad.background.is_transparent()
+                        && quad.content_mask.bounds.size.height.as_f32()
+                            <= travelling.size.height.as_f32() + 1.
+                        && near(quad.bounds.top(), travelling.top())
+                        && near(quad.bounds.bottom(), travelling.bottom())
+                        && near(quad.bounds.left(), travelling.left())
+                        && near(quad.bounds.right(), travelling.right())
+                })
+                .map(|quad| {
+                    quad.bounds
+                        .intersect(&quad.content_mask.bounds)
+                        .size
+                        .height
+                        .as_f32()
+                })
+                .fold(0., f32::max)
+        })
+    }
+
+    /// How much of the band from `top` to `bottom` lies inside `clip`'s
+    /// height and outside every one of `covers`, in device pixels at `scale`.
+    fn uncovered_height(
+        (top, bottom): (Pixels, Pixels),
+        clip: Bounds<Pixels>,
+        covers: &[Bounds<Pixels>],
+        scale: f32,
+    ) -> f32 {
+        let mut parts = vec![(top.max(clip.top()), bottom.min(clip.bottom()))];
+        for cover in covers {
+            parts = parts
+                .into_iter()
+                .flat_map(|(start, end)| {
+                    [
+                        (start, end.min(cover.top())),
+                        (start.max(cover.bottom()), end),
+                    ]
+                })
+                .filter(|(start, end)| start < end)
+                .collect();
+        }
+        parts
+            .iter()
+            .fold(0., |sum, (start, end)| sum + f32::from(*end - *start))
+            * scale
+    }
+
+    /// What [`assert_headings_on_top`] saw: how many frames drew the flight,
+    /// the list's viewport, and the place and bounds of each section heading
+    /// the list drew.
+    struct Flown {
+        frames: usize,
+        viewport: Bounds<Pixels>,
+        headings: Vec<(usize, Bounds<Pixels>)>,
+    }
+
+    /// Draws every frame of the flight under way, 16 ms apart, until it
+    /// lands, and then the list at rest. In every frame, the first included,
+    /// each section heading the list draws paints exactly what it paints at
+    /// rest, and the row shows all of itself that lies in the list's
+    /// viewport and under no heading: it passes above the rows and beneath
+    /// the headings, which stay whole and on top.
+    fn assert_headings_on_top(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        at: &str,
+    ) -> Flown {
+        let scale = cx.update(|window, _| window.scale_factor());
+        // The probe counts the frames the window draws, so none goes unread.
+        app.update(cx, |app, _| {
+            app.working_probe.line.set(workspace::ProbeLine::Watch)
+        });
+        let mut headings: Vec<usize> = Vec::new();
+        let mut frames = Vec::new();
+        while let Some(position) = flying(app, cx) {
+            let index = frames.len();
+            app.read_with(cx, |app, _| app.working_probe.frames.borrow_mut().clear());
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            let drawn = app.read_with(cx, |app, _| app.working_probe.frames.borrow().len());
+            assert_eq!(drawn, 1, "{at}, frame {index}: one frame drawn");
+            if index == 0 {
+                // The list's layout is final in the first frame.
+                let rows = app.read_with(cx, |app, _| app.working_rows.clone());
+                headings = (0..rows.len())
+                    .filter(|&place| {
+                        matches!(rows[place], workspace::WorkingRow::Heading(..))
+                            && cx
+                                .debug_bounds(format!("working-row-{place}").leak())
+                                .is_some()
+                    })
+                    .collect();
+                assert!(!headings.is_empty(), "{at}: the list draws a heading");
+            }
+            let viewport = app.read_with(cx, |app, _| {
+                app.working_scroll.0.borrow().base_handle.bounds()
+            });
+            let travelling = row(cx, position);
+            let covers: Vec<_> = headings.iter().map(|&heading| row(cx, heading)).collect();
+            let expected = uncovered_height(
+                (travelling.top(), travelling.bottom()),
+                viewport,
+                &covers,
+                scale,
+            );
+            let shown = row_shown(cx, travelling);
+            assert!(
+                (shown - expected).abs() <= 1.,
+                "{at}, frame {index}: the row at {travelling:?} shows {shown} device px, \
+                 expected {expected} in {viewport:?} under the headings {covers:?}"
+            );
+            let painted: Vec<_> = headings
+                .iter()
+                .map(|&heading| painted_over(cx, heading))
+                .collect();
+            frames.push((travelling, viewport, painted));
+            cx.executor().advance_clock(Duration::from_millis(16));
+            cx.executor().run_until_parked();
+        }
+        app.update(cx, |app, _| {
+            app.working_probe.line.set(workspace::ProbeLine::Off)
+        });
+        draw(cx);
+        let rest: Vec<_> = headings
+            .iter()
+            .map(|&heading| painted_over(cx, heading))
+            .collect();
+        for (index, (travelling, _, painted)) in frames.iter().enumerate() {
+            for ((heading, painted), rest) in headings.iter().zip(painted).zip(&rest) {
+                assert!(
+                    painted == rest,
+                    "{at}, frame {index} of {}: the row at {travelling:?} covers the heading \
+                     at row {heading}, {:?}: painted\n{}\nwhere at rest\n{}",
+                    frames.len(),
+                    row(cx, *heading),
+                    painted.join("\n"),
+                    rest.join("\n")
+                );
+            }
+        }
+        let viewport = frames.first().map_or_else(Bounds::default, |frame| frame.1);
+        Flown {
+            frames: frames.len(),
+            viewport,
+            headings: headings
+                .iter()
+                .map(|&heading| (heading, row(cx, heading)))
+                .collect(),
+        }
+    }
+
+    /// Draws every frame of the flight under way, 16 ms apart, cuts as
+    /// cleanly as [`assert_headings_on_top`], and says how many frames there
+    /// were, at least nine of the 150 ms.
+    fn assert_flight(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, at: &str) -> Flown {
+        let flown = assert_headings_on_top(app, cx, at);
+        assert!(flown.frames >= 9, "{at}: flies for {} frames", flown.frames);
+        flown
+    }
+
+    /// Stages or unstages the row at `position`, as [`toggle`] does, and
+    /// checks that it flies to `lands`.
+    async fn toggle_flying(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        position: usize,
+        lands: usize,
+    ) {
+        toggle(app, cx, position).await;
+        assert_eq!(
+            flying(app, cx),
+            Some(lands),
+            "row {position} lands at {lands}"
+        );
+    }
+
+    /// Stages or unstages the row at `position` with no flight, as reduced
+    /// motion does, to set the list back between sizes.
+    async fn toggle_still(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, position: usize) {
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        toggle(app, cx, position).await;
+        cx.update(|_, cx| cx.set_reduce_motion(false));
+        draw(cx);
+        assert_eq!(flying(app, cx), None);
+    }
+
+    /// The section headings are not rows: a travelling row passes beneath
+    /// them, and they stay whole and on top in every frame of its flight, at
+    /// 13 and 18 pt. Staging notes.txt draws it first where it stood, which
+    /// the Unstaged heading now takes, and it rises from beneath the heading
+    /// into its slot; unstaging alpha.txt sends it down past beta and notes
+    /// and beneath the Unstaged heading to the foot of the list. The row
+    /// was drawn over the heading, covering it whole in the first frame.
+    #[gpui::test]
+    async fn a_travelling_row_passes_beneath_the_section_headings(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working(cx, false).await;
+        // At 18 pt a taller window keeps every row in view.
+        for (text, height) in [(13, 980.), (18, 1300.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(1480.), px(height)));
+            draw(cx);
+            assert!(row(cx, 4).bottom() <= cx.debug_bounds("working-pane").unwrap().bottom());
+            // [Staged 2, alpha, beta, Unstaged 1, notes]
+            toggle_flying(&app, cx, 4, 3).await;
+            // [Staged 3, alpha, beta, notes, Unstaged 0]
+            let flown = assert_flight(&app, cx, &format!("{text} pt, notes"));
+            assert_eq!(flown.headings.len(), 2);
+            toggle_flying(&app, cx, 1, 4).await;
+            // [Staged 2, beta, notes, Unstaged 1, alpha]
+            assert_flight(&app, cx, &format!("{text} pt, alpha"));
+            // Back as it was for the next size.
+            toggle_still(&app, cx, 4).await;
+            toggle_still(&app, cx, 3).await;
+        }
+    }
+
+    /// A heading the list's edge cuts stays on top of the travelling row
+    /// too, in the part the list shows, at 13 and 18 pt: with eight files
+    /// staged and eight not, and the list scrolled so the Unstaged heading
+    /// lands 15 px past its top edge, a08 leaves Staged from beneath it
+    /// and drops into Unstaged; scrolled so the heading lands 15 px past
+    /// its bottom edge, a08 goes back from beneath it into Staged.
+    #[gpui::test]
+    async fn a_heading_the_lists_edge_cuts_stays_on_top(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--hard", "--quiet"]);
+        for index in 1..=8 {
+            for group in ["a", "b"] {
+                std::fs::write(root.join(format!("{group}{index:02}.txt")), "file\n").unwrap();
+            }
+        }
+        for index in 1..=8 {
+            fixture_git(&root, &["add", &format!("a{index:02}.txt")]);
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        rows_arrived(&app, cx).await;
+        // [Staged 8, a01…a08, Unstaged 8, b01…b08]
+        assert_eq!(app.read_with(cx, |app, _| app.working_rows.len()), 18);
+        let scroll_to = |cx: &mut VisualTestContext, offset: Pixels| {
+            app.update(cx, |app, _| {
+                app.working_scroll
+                    .0
+                    .borrow()
+                    .base_handle
+                    .set_offset(point(px(0.), offset))
+            });
+            cx.update(|window, _| window.refresh());
+            draw(cx);
+        };
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(1480.), px(980.)));
+            draw(cx);
+            let height = row(cx, 0).size.height;
+            // The Unstaged heading will take a08's place, 15 px past the
+            // list's top edge.
+            scroll_to(cx, -(height * 8. + px(15.)));
+            toggle_flying(&app, cx, 8, 9).await;
+            // [Staged 7, a01…a07, Unstaged 9, a08, b01…b08]
+            let flown = assert_flight(&app, cx, &format!("{text} pt, a08 from Staged"));
+            let (_, heading) = *flown
+                .headings
+                .iter()
+                .find(|(place, _)| *place == 8)
+                .expect("the Unstaged heading is drawn");
+            assert!(
+                heading.top() < flown.viewport.top() && heading.bottom() > flown.viewport.top(),
+                "{text} pt: the list's top edge cuts the heading {heading:?}, {:?}",
+                flown.viewport
+            );
+            // The Unstaged heading will take a08's place, 15 px past the
+            // list's bottom edge.
+            let viewport = flown.viewport.size.height;
+            scroll_to(cx, viewport - height * 10. + px(15.));
+            toggle_flying(&app, cx, 9, 8).await;
+            // [Staged 8, a01…a08, Unstaged 8, b01…b08]
+            let flown = assert_flight(&app, cx, &format!("{text} pt, a08 from Unstaged"));
+            let (_, heading) = *flown
+                .headings
+                .iter()
+                .find(|(place, _)| *place == 9)
+                .expect("the Unstaged heading is drawn");
+            assert!(
+                heading.top() < flown.viewport.bottom()
+                    && heading.bottom() > flown.viewport.bottom(),
+                "{text} pt: the list's bottom edge cuts the heading {heading:?}, {:?}",
+                flown.viewport
+            );
+            scroll_to(cx, px(0.));
+        }
+    }
+
+    /// With Directories on, a travelling row passes above the directory
+    /// rows, which are rows, and beneath the section headings, at 13 and 18
+    /// pt: notes.txt rises from below the list's last row and beneath the
+    /// Unstaged heading, and alpha.txt drops past beta and notes, beneath
+    /// the Unstaged heading and over the repository root's directory row
+    /// below it.
+    #[gpui::test]
+    async fn a_travelling_row_passes_above_directory_rows(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working(cx, false).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.working_selection.grouped = true;
+                app.filter_working_paths(window, cx);
+            })
+        });
+        rows_arrived(&app, cx).await;
+        // A taller window keeps every row in view.
+        cx.simulate_resize(size(px(1480.), px(1300.)));
+        draw(cx);
+        let directory = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext, place: usize| {
+            app.read_with(cx, |app, _| {
+                matches!(
+                    app.working_rows[place],
+                    workspace::WorkingRow::Directory(..)
+                )
+            })
+        };
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            draw(cx);
+            // [Staged 2, root, alpha, beta, Unstaged 1, root, notes]
+            assert_eq!(app.read_with(cx, |app, _| app.working_rows.len()), 7);
+            assert!(directory(&app, cx, 1) && directory(&app, cx, 5));
+            assert!(row(cx, 6).bottom() <= cx.debug_bounds("working-pane").unwrap().bottom());
+            toggle_flying(&app, cx, 6, 4).await;
+            // [Staged 3, root, alpha, beta, notes, Unstaged 0]
+            assert_flight(&app, cx, &format!("{text} pt, notes"));
+            toggle_flying(&app, cx, 2, 6).await;
+            // [Staged 2, root, beta, notes, Unstaged 1, root, alpha]
+            assert!(directory(&app, cx, 5));
+            assert_flight(&app, cx, &format!("{text} pt, alpha"));
+            toggle_still(&app, cx, 6).await;
+            toggle_still(&app, cx, 4).await;
+        }
     }
 
     /// With a path filter set, staging a row leaves the list as it was until

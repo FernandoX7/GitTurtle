@@ -2744,7 +2744,8 @@ impl GitTurtle {
         // The Description section's own rows, which leave with it.
         let section = self.description_section(&metrics, fitted_width, window);
         // A row that its Stage or Unstage moved travels to its slot above
-        // the list, which keeps the slot empty until it lands (`motion`).
+        // the rows and beneath the section headings, and the list keeps the
+        // slot empty until it lands (`motion`).
         let flight = self.working_flight(cx);
         let landing = flight
             .as_ref()
@@ -2759,7 +2760,14 @@ impl GitTurtle {
                         Some((position, slot)) if *position == i => {
                             crate::motion::slot(slot.clone(), row_height)
                         }
-                        _ => this.render_working_row(i, forms, window, cx),
+                        landing => {
+                            if let (Some((_, slot)), Some(WorkingRow::Heading(..))) =
+                                (landing, this.working_rows.get(i))
+                            {
+                                slot.heading(i);
+                            }
+                            this.render_working_row(i, forms, window, cx)
+                        }
                     })
                     .collect::<Vec<_>>()
             }),
