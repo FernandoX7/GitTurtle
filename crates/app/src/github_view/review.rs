@@ -64,6 +64,8 @@ pub(super) struct ReviewState {
     pub section: Section,
     pub body_scroll: ScrollHandle,
     pub revealed_focus: std::rc::Rc<std::cell::RefCell<FocusObservation>>,
+    /// Where the body's blocks start, for its reveals.
+    pub body_blocks: Blocks,
     pub files: Vec<PullFile>,
     pub file_page: u32,
     pub files_next: bool,
@@ -113,6 +115,7 @@ impl ReviewState {
             section: Section::Overview,
             body_scroll: ScrollHandle::new(),
             revealed_focus: Default::default(),
+            body_blocks: Blocks::default(),
             files: vec![],
             file_page: 1,
             files_next: false,
@@ -227,20 +230,140 @@ fn source_presentation(patch: &str) -> Option<text::PatchPresentation> {
         .then(|| text::PatchPresentation::prepare(patch))
 }
 /// The key context entry that names a part of the panel's body ([`Panel::part`]).
-const PART: &str = "GitTurtleGithubPart";
+pub(super) const PART: &str = "GitTurtleGithubPart";
 /// The key context entry that names a part of the conversation list, a conversation's
 /// actions ([`Panel::conversation_part`]).
 const CONVERSATION: &str = "GitTurtleGithubConversation";
+/// The key context of the panel's scrolling body, on the focus path of whatever it draws.
+pub(super) const BODY: &str = "GitTurtleGithubBody";
 
-/// Scrolls `scroll`, the panel's body or a list inside it, by the least that shows
-/// `bounds`, the children of what focus has moved into, `inset` clear of its edges, after
-/// this frame paints, unless focus or a scroll supersedes it. Only a change of focus since
-/// the frame `revealed` records reveals.
+/// For the `on_children_prepainted` of `scroll`'s box, the panel's body or the conversation
+/// list: records in `revealed` the focus the frame being prepainted drew, which its reveals
+/// have shown, once the frame before it drew that focus inside the box too, which `inside`
+/// tells from a key context on its focus path. Focus that frame did not draw stays unrecorded,
+/// so the next frame, whose parts find it on their focus path, reveals it: reopening the panel
+/// restores focus to a pane no frame had drawn, and recording it then left the pane where the
+/// body last scrolled, its ring's top edge above the clip.
+pub(super) fn record_shown(
+    revealed: &std::cell::RefCell<FocusObservation>,
+    scroll: &ScrollHandle,
+    inside: impl Fn(&KeyContext) -> bool,
+    window: &Window,
+    cx: &App,
+) {
+    if window.context_stack().iter().any(inside) {
+        *revealed.borrow_mut() = FocusObservation {
+            focus: window.focused(cx),
+            viewport: scroll.bounds(),
+            rem_size: window.rem_size(),
+        };
+    }
+}
+
+/// Where the blocks of a scrolling container start: its rows, its parts and the lines a reveal
+/// may bring to its top edge, so the edge cuts no line ([`reveal`]). The container's own
+/// children are its scroll handle's; elements inside it report their children through
+/// [`Blocks::starts`] or [`Blocks::report`] while a frame prepaints, and the container keeps
+/// that frame's once everything in it has prepainted ([`Blocks::finish`]).
+#[derive(Clone, Default)]
+pub(super) struct Blocks {
+    drawing: std::rc::Rc<std::cell::RefCell<Vec<Pixels>>>,
+    drawn: std::rc::Rc<std::cell::RefCell<Vec<Pixels>>>,
+}
+impl Blocks {
+    /// For an element's `on_children_prepainted`: each of its children starts a block.
+    pub(super) fn starts(&self) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        let blocks = self.clone();
+        move |children, _, _| blocks.report(&children)
+    }
+    /// Each of `children`, prepainted in the frame being drawn, starts a block.
+    pub(super) fn report(&self, children: &[Bounds<Pixels>]) {
+        self.drawing
+            .borrow_mut()
+            .extend(children.iter().map(|child| child.top()));
+    }
+    /// For the container's own `on_children_prepainted`, after everything in it has
+    /// prepainted: keeps the starts this frame reported.
+    pub(super) fn finish(&self) {
+        let drawing = std::mem::take(&mut *self.drawing.borrow_mut());
+        *self.drawn.borrow_mut() = drawing;
+    }
+    /// The starts of the last prepainted frame, in its coordinates with `scroll` at its
+    /// offset then: the container's children and those reported from inside it.
+    fn at(&self, scroll: &ScrollHandle) -> Vec<Pixels> {
+        let offset = scroll.offset().y;
+        let mut starts = self.drawn.borrow().clone();
+        starts.extend(
+            (0..scroll.children_count())
+                .filter_map(|index| scroll.bounds_for_item(index))
+                .map(|child| child.top() + offset),
+        );
+        starts
+    }
+}
+
+/// Where the top edge of `viewport` lands, in its frame's coordinates, when it scrolls to show
+/// `top..bottom`, a part with its ring's room, whole. A part taller than the view shows the
+/// side it lies beyond, its top where it lies above the view and otherwise its bottom, unless
+/// `edge`, the part draws focus as a ring on its own edge, such as the conversations pane: then
+/// its top, so the ring's top edge stays drawn. A part above the view brings its top to the
+/// edge, which then moves back to the nearest of `starts` (each with the ring's `inset` above it)
+/// that keeps the part whole, so a part at the top of a box, such as the panel's banner, shows
+/// the box's top with it and the first part returns the body to its top. Below the view, the
+/// least scroll leaves the part at the bottom edge and the top edge wherever that falls, so
+/// the edge moves on to the first start that keeps the part whole, or to the part's own top.
+/// Where the content ends at `end`, the farthest the edge can go, before the edge gets there,
+/// it stops at the last start before `end` that keeps the part whole instead. Either way the
+/// edge lies at the start of a block, never through a line.
+fn landing(
+    viewport: Bounds<Pixels>,
+    top: Pixels,
+    bottom: Pixels,
+    starts: &[Pixels],
+    inset: Pixels,
+    end: Pixels,
+    edge: bool,
+) -> Pixels {
+    let height = viewport.size.height;
+    let edges = || {
+        starts
+            .iter()
+            .map(|start| *start - inset)
+            .filter(move |edge| *edge <= top && *edge >= bottom - height)
+    };
+    let edge = if bottom - top > height {
+        if edge || top < viewport.top() {
+            top
+        } else {
+            bottom - height
+        }
+    } else if top < viewport.top() {
+        edges().reduce(Pixels::max).unwrap_or(top)
+    } else {
+        edges().reduce(Pixels::min).unwrap_or(top)
+    };
+    if edge <= end {
+        return edge;
+    }
+    edges()
+        .filter(|edge| *edge <= end)
+        .reduce(Pixels::max)
+        .unwrap_or(end)
+}
+
+/// Scrolls `scroll`, the panel's body or a list inside it, to show `bounds`, the children of
+/// what focus has moved into, `inset` clear of its edges, landing its top edge at the start of
+/// one of `blocks` ([`landing`]), after this frame paints, unless focus or a scroll supersedes
+/// it. Only a change of focus since the frame `revealed` records reveals. `edge` is the focus
+/// whose ring the part draws on its own edge, if it has one.
+#[allow(clippy::too_many_arguments)]
 fn reveal(
     scroll: &ScrollHandle,
     revealed: &std::cell::RefCell<FocusObservation>,
+    blocks: &Blocks,
     bounds: Vec<Bounds<Pixels>>,
     inset: Pixels,
+    edge: Option<&FocusHandle>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -262,45 +385,70 @@ fn reveal(
         return;
     };
     let viewport = observed.viewport;
-    let delta = if bounds.top() < viewport.top() + inset {
-        viewport.top() + inset - bounds.top()
-    } else if bounds.bottom() > viewport.bottom() - inset {
-        viewport.bottom() - inset - bounds.bottom()
-    } else {
-        return;
-    };
-    let previous = scroll.offset();
-    let offset = point(
-        previous.x,
-        (previous.y + delta).clamp(-scroll.max_offset().y, px(0.)),
-    );
-    if offset == previous {
+    let (top, bottom) = (bounds.top() - inset, bounds.bottom() + inset);
+    if top >= viewport.top() && bottom <= viewport.bottom() {
         return;
     }
-    let scroll = scroll.clone();
+    let ringed = edge.is_some_and(|edge| edge.is_focused(window));
+    let previous = scroll.offset();
+    let (scroll, blocks) = (scroll.clone(), blocks.clone());
+    // The blocks are known once the container has prepainted, after this part.
     window.defer(cx, move |window, cx| {
-        if window.focused(cx) == observed.focus
-            && scroll.offset() == previous
-            && scroll.bounds() == viewport
+        if window.focused(cx) != observed.focus
+            || scroll.offset() != previous
+            || scroll.bounds() != viewport
         {
-            scroll.set_offset(offset);
-            window.refresh();
+            return;
         }
+        let end = viewport.top() + previous.y + scroll.max_offset().y;
+        let edge = landing(
+            viewport,
+            top,
+            bottom,
+            &blocks.at(&scroll),
+            inset,
+            end,
+            ringed,
+        );
+        scroll_edge_to(&scroll, viewport, previous, edge, window);
     });
+}
+
+/// Scrolls `scroll`, at `previous` over `viewport`, so its top edge lies at `edge`, a place
+/// in the frame drawn at `previous`, as far as its content allows.
+fn scroll_edge_to(
+    scroll: &ScrollHandle,
+    viewport: Bounds<Pixels>,
+    previous: Point<Pixels>,
+    edge: Pixels,
+    window: &mut Window,
+) {
+    let offset = point(
+        previous.x,
+        (previous.y + viewport.top() - edge).clamp(-scroll.max_offset().y, px(0.)),
+    );
+    if offset != previous {
+        scroll.set_offset(offset);
+        window.refresh();
+    }
 }
 
 /// `element`, named `name` under `key` in its key context, as a part of what `scroll`
 /// scrolls: when the keyboard moves focus onto a control in it, and no smaller part under
-/// `key` holds that control, `scroll` scrolls by the least that shows the part's children,
-/// `inset` clear of its edges ([`reveal`]). The key context names the part on the focus path
-/// of the frame that drew the control, so a control needs no focus handle of the panel's.
+/// `key` holds that control, `scroll` scrolls to show the part's children, `inset` clear of
+/// its edges, its top edge at the start of one of `blocks` ([`reveal`]). The key context names
+/// the part on the focus path of the frame that drew the control, so a control needs no focus
+/// handle of the panel's. `edge` is the focus whose ring the part draws on its own edge.
+#[allow(clippy::too_many_arguments)]
 fn revealing(
     element: Div,
     key: &'static str,
     name: SharedString,
     scroll: ScrollHandle,
     revealed: std::rc::Rc<std::cell::RefCell<FocusObservation>>,
+    blocks: Blocks,
     inset: Pixels,
+    edge: Option<FocusHandle>,
 ) -> Div {
     let mut context = KeyContext::default();
     context.set(key, name.clone());
@@ -313,7 +461,16 @@ fn revealing(
                 .rev()
                 .find_map(|context| context.get(key).cloned());
             if window.last_input_was_keyboard() && innermost.as_ref() == Some(&name) {
-                reveal(&scroll, &revealed, bounds, inset, window, cx);
+                reveal(
+                    &scroll,
+                    &revealed,
+                    &blocks,
+                    bounds,
+                    inset,
+                    edge.as_ref(),
+                    window,
+                    cx,
+                );
             }
         })
 }
@@ -325,10 +482,11 @@ impl Panel {
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
         let scroll = self.review.body_scroll.clone();
         let revealed = self.review.revealed_focus.clone();
+        let blocks = self.review.body_blocks.clone();
         move |bounds, window, cx| {
             if focus.contains_focused(window, cx) {
                 let inset = window.rem_size() + px(2.);
-                reveal(&scroll, &revealed, bounds, inset, window, cx);
+                reveal(&scroll, &revealed, &blocks, bounds, inset, None, window, cx);
             }
         }
     }
@@ -344,7 +502,29 @@ impl Panel {
             name.into(),
             self.review.body_scroll.clone(),
             self.review.revealed_focus.clone(),
+            self.review.body_blocks.clone(),
             appearance::button_ring_room(cx),
+            None,
+        )
+    }
+    /// [`Panel::part`] for a pane that draws `focus`'s ring on its own edge: taller than the
+    /// body, it shows its top, the ring's top edge in view.
+    pub(super) fn ringed_part(
+        &self,
+        name: &'static str,
+        element: Div,
+        focus: &FocusHandle,
+        cx: &App,
+    ) -> Div {
+        revealing(
+            element,
+            PART,
+            name.into(),
+            self.review.body_scroll.clone(),
+            self.review.revealed_focus.clone(),
+            self.review.body_blocks.clone(),
+            appearance::button_ring_room(cx),
+            Some(focus.clone()),
         )
     }
     /// `element`, the actions of the conversation at `index`, as a part of the conversation
@@ -359,7 +539,9 @@ impl Panel {
             index.to_string().into(),
             self.conversations.list_scroll.clone(),
             self.conversations.list_revealed.clone(),
+            self.conversations.list_blocks.clone(),
             appearance::button_ring_room(cx),
+            None,
         )
     }
     /// Whether the pane that `focus` tracks draws the window's keyboard ring:
@@ -915,17 +1097,23 @@ impl Panel {
                 .into_iter()
                 .enumerate()
                 .map(|(i, (section, name))| {
-                    button(
-                        ("github-section", i),
-                        name,
-                        "",
-                        self.review.section == section,
-                    )
-                    .debug_selector(move || format!("github-section-{i}"))
-                    .toggled(self.review.section == section)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.change_section(section, window, cx)
-                    }))
+                    // Each tab is a part of its own: where the tabs wrap, their part may be
+                    // taller than the body, as at 18 pt in a 461 × 490 window, and Tab shows
+                    // the tab it moves onto with its ring.
+                    self.part(["section-0", "section-1", "section-2"][i], div(), cx)
+                        .child(
+                            button(
+                                ("github-section", i),
+                                name,
+                                "",
+                                self.review.section == section,
+                            )
+                            .debug_selector(move || format!("github-section-{i}"))
+                            .toggled(self.review.section == section)
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| this.change_section(section, window, cx),
+                            )),
+                        )
                 }),
             )
             // Grows to push the draft status to the row's end beside the tabs; where the status

@@ -1146,8 +1146,10 @@ impl Render for Panel {
             self.create || (self.pull.is_some() && self.review.section == Section::Review);
         // The room a focused control's ring takes outside its edge.
         let room = appearance::button_ring_room(cx);
-        // The panel's content, its text one inset in from this edge.
-        let content = div().debug_selector(||"github-panel-content".into()).min_w_0().flex().flex_col().gap_2()
+        let blocks = self.review.body_blocks.clone();
+        // The panel's content, its text one inset in from this edge. Each part of it starts a
+        // block of the body, where a reveal may bring the body's top edge.
+        let content = div().debug_selector(||"github-panel-content".into()).on_children_prepainted(blocks.starts()).min_w_0().flex().flex_col().gap_2()
             .when(self.review.fixture,|element|element.child(self.part("banner",div(),cx).flex().flex_wrap().items_center().gap_2().py_2().px(text_inset()).rounded(px(6.)).bg(rgb(p.subtle))
                 .child(label("github-fixture-mode","OFFLINE FIXTURE · native review · no network or credentials").debug_selector(||"github-fixture-mode".into()).min_w_0().text_color(rgb(p.muted)))
                 .child(button("github-fixture-move",if self.review.fixture_moved{"Fixture head moved"}else{"Move fixture head"},"",false).disabled(pending||self.review.fixture_moved).on_click(cx.listener(|this,_,_,cx|{this.review.fixture_moved=true;this.confirm=None;this.notice=Some("Fixture head moved remotely. This view and its draft retain the original commit. Submit to verify stale-head refusal, or Refresh PRs and reopen to inspect the new head.".into());cx.notify();})))))
@@ -1156,9 +1158,9 @@ impl Render for Panel {
                 // reveals it even when it holds focus already, scrolls it into view with its
                 // ring, as a Tab onto it does.
                 .child(div().debug_selector(||"github-destination".into()).w(appearance::ui_size(280.)).min_w(px(190.)).on_children_prepainted(self.reveal_on_focus(self.destination.read(cx).focus_handle(cx))).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending)))
-                .child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx))))
-                .child(button("github-create","New pull request","plus",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx))))
-                .child(div().flex_1()).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();}))))
+                .child(self.part("refresh",div(),cx).child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx)))))
+                .child(self.part("create",div(),cx).child(button("github-create","New pull request","plus",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx)))))
+                .child(div().flex_1()).child(self.part("account",div(),cx).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();})))))
             .when(self.review.connection_open,|element|element.child(self.part("connection",div(),cx).p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                 .child(label("github-worktree",format!("Local worktree: {}",self.repo.path().display())).text_color(rgb(p.muted)))
                 .child(label("github-connection-help","Connect uses your current GitHub CLI account and saves GitTurtle authorization in secure storage. Refresh and PR selection are explicit network reads.").text_color(rgb(p.muted)))
@@ -1267,12 +1269,16 @@ impl Render for Panel {
         cue.list(
             div()
                 .on_children_prepainted(cue.observe(move |_, window, cx| {
-                    *observed.borrow_mut() = review::FocusObservation {
-                        focus: window.focused(cx),
-                        viewport: scroll.bounds(),
-                        rem_size: window.rem_size(),
-                    };
+                    review::record_shown(
+                        &observed,
+                        &scroll,
+                        |context| context.contains(review::BODY),
+                        window,
+                        cx,
+                    );
+                    blocks.finish();
                 }))
+                .key_context(review::BODY)
                 .id("github-panel")
                 .debug_selector(|| "github-panel".into())
                 .track_scroll(&self.review.body_scroll)
@@ -2606,6 +2612,282 @@ mod tests {
              body {body:?}"
         );
         cx.update(|window, cx| window.close_dialog(cx));
+    }
+
+    /// The sizes the reveal tests walk: interface size and window, a half tile at the default
+    /// and the largest size and a wide window.
+    const REVEAL_SIZES: [(u8, f32, f32); 4] = [
+        (13, 461., 490.),
+        (18, 461., 490.),
+        (13, 1480., 800.),
+        (18, 1480., 800.),
+    ];
+
+    /// A window whose root marks every text run (`width_walk::text_mark`), with the app's key
+    /// bindings, Midnight and dialogs at rest (`focus_ring::sweep::prepare`), and the panel
+    /// open on the offline fixture: the destination named, its first PR listed, signed in as
+    /// the fixture's reviewer, with the first page of that PR's conversations, as the native
+    /// review loads it. Keep the returned directory until the test ends.
+    async fn fixture_panel(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        PullRequest,
+        &mut VisualTestContext,
+    ) {
+        let (fixture, app, cx) = crate::views::tests::styled_history_window(
+            cx,
+            b"commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 13\nfixture notes\nM 100644 inline notes.txt\ndata 6\nnotes\n\ndone\n",
+            |root| root.text_bg(crate::width_walk::text_mark()),
+        )
+        .await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let repo = cx.read(|cx| app.read(cx).repository.clone().unwrap());
+        let panel = cx.update(|window, cx| {
+            cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx))
+        });
+        app.read_with(cx, |app, _| app.operations.submit(|| Ok(())))
+            .await
+            .unwrap()
+            .unwrap();
+        cx.executor().run_until_parked();
+        let pull = github::review::fixture_pull(false);
+        let captured = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let threads = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&captured, None, &OperationControl::default())
+            .unwrap();
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.rows = vec![pull.clone()];
+                panel.review.fixture = true;
+                panel.account = Some("offline-reviewer".into());
+                panel.receive_threads(threads, None);
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        cx.executor().run_until_parked();
+        (fixture, app, panel, pull, cx)
+    }
+
+    /// Shows `pull`'s Overview at `interface` pt in a `width` × `height` window, the body and
+    /// the conversation list at their tops and focus on the conversations pane, as the panel
+    /// opens on it.
+    fn show_overview(
+        panel: &Entity<Panel>,
+        pull: &PullRequest,
+        (interface, width, height): (u8, f32, f32),
+        cx: &mut VisualTestContext,
+    ) {
+        crate::focus_ring::sweep::interface_size(cx, interface);
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull.clone());
+                panel.review.section = Section::Overview;
+                panel.review.show_list = false;
+                panel.review.body_scroll.set_offset(point(px(0.), px(0.)));
+                panel
+                    .conversations
+                    .list_scroll
+                    .set_offset(point(px(0.), px(0.)));
+                panel.focus_visible_section(window, cx);
+                cx.notify();
+            })
+        });
+        for _ in 0..3 {
+            crate::width_walk::frame(cx);
+        }
+    }
+
+    /// The lines of text the last frame drew inside `container`, a box that clips them, that
+    /// its top edge cuts: each line's run, marked by the window's root, starts above the edge
+    /// and ends below it by more than half a pixel.
+    fn lines_cut_at_top(
+        cx: &mut VisualTestContext,
+        container: Bounds<Pixels>,
+    ) -> Vec<Bounds<Pixels>> {
+        let mark = gpui_kit::Background::from(crate::width_walk::text_mark());
+        let scale = cx.update(|window, _| window.scale_factor());
+        let clip = |value: gpui_kit::ScaledPixels| px(value.as_f32() / scale);
+        let slack = px(0.5);
+        quads(cx)
+            .into_iter()
+            .filter(|(line, quad)| {
+                let mask = quad.content_mask.bounds;
+                quad.background == mark
+                    && clip(mask.top()) >= container.top() - slack
+                    && clip(mask.bottom()) <= container.bottom() + slack
+                    && line.left() >= container.left() - px(1.)
+                    && line.right() <= container.right() + px(1.)
+                    && line.top() < container.top() - slack
+                    && line.bottom() > container.top() + slack
+            })
+            .map(|(line, _)| line)
+            .collect()
+    }
+
+    /// Tab through a PR's Overview on the offline fixture, at 13 and 18 pt in a 461 × 490
+    /// window and in a 1,480 × 800 one: where a stop scrolls the body or the conversation list,
+    /// the scrolled box's top edge lies at the start of a block, cutting no line, as long as
+    /// the box has content left below to show; and wrapping from the dialog's last stop to its
+    /// first, the banner's, returns the body to its top. A conversation's reveal once cut its
+    /// author line at the list's top, and the wrap left the body 6.5 px (13 pt) and 9 px (18
+    /// pt) down, the banner's top cut. Every stop draws its ring whole (`focus_ring::sweep`),
+    /// but for the conversations pane, which is taller than the body in a 461 × 490 window and
+    /// shows its top edge there, its bottom below the fold.
+    #[gpui::test]
+    async fn tab_reveals_land_on_whole_lines_and_wrap_to_the_body_top(cx: &mut TestAppContext) {
+        use crate::focus_ring::sweep;
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        let (body_scroll, list_scroll) = cx.read(|cx| {
+            let panel = panel.read(cx);
+            (
+                panel.review.body_scroll.clone(),
+                panel.conversations.list_scroll.clone(),
+            )
+        });
+        let mut rings = Vec::new();
+        for sizes in REVEAL_SIZES {
+            let (interface, width, height) = sizes;
+            let at = format!("{interface} pt in {width} × {height}");
+            show_overview(&panel, &pull, sizes, cx);
+            let mut offsets = (body_scroll.offset().y, list_scroll.offset().y);
+            let mut wrapped = false;
+            let mut list_moves = 0;
+            for stop in 0..60 {
+                cx.simulate_keystrokes("tab");
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                let part = cx.update(|window, _| {
+                    window
+                        .context_stack()
+                        .iter()
+                        .rev()
+                        .find_map(|context| context.get(review::PART).cloned())
+                });
+                let now = (body_scroll.offset().y, list_scroll.offset().y);
+                let ends = (-body_scroll.max_offset().y, -list_scroll.max_offset().y);
+                let here = format!("{at}, stop {stop} in {part:?}");
+                if now.0 != offsets.0 && now.0 > ends.0 + px(0.5) {
+                    let body = cx.debug_bounds("github-panel").expect("the body");
+                    let cut = lines_cut_at_top(cx, body);
+                    assert!(
+                        cut.is_empty(),
+                        "{here}: the body's top edge {body:?} cuts {cut:?}"
+                    );
+                }
+                if now.1 != offsets.1 {
+                    list_moves += 1;
+                    let list = cx.debug_bounds("github-threads").expect("the list");
+                    let cut = lines_cut_at_top(cx, list);
+                    if now.1 > ends.1 + px(0.5) {
+                        assert!(
+                            cut.is_empty(),
+                            "{here}: the list's top edge {list:?} cuts {cut:?}"
+                        );
+                    }
+                }
+                offsets = now;
+                if part.as_ref().is_some_and(|part| part.as_ref() == "banner") {
+                    assert_eq!(
+                        now.0,
+                        px(0.),
+                        "{here}: the wrap returns the body to its top"
+                    );
+                    wrapped = true;
+                    break;
+                }
+            }
+            assert!(wrapped, "{at}: Tab wraps to the banner");
+            assert!(list_moves > 0, "{at}: Tab scrolls the conversation list");
+            // Each stop's ring, Tab round from the pane.
+            show_overview(&panel, &pull, sizes, cx);
+            let mut failures = Vec::new();
+            sweep::walk(&app, cx, &at, interface, &mut failures);
+            rings.extend(failures);
+        }
+        sweep::assert_whole_except(
+            rings,
+            &[
+                (
+                    "13 pt in 461 × 490 at 13 pt, stop 21",
+                    "a clip cuts the right, bottom, left",
+                ),
+                (
+                    "18 pt in 461 × 490 at 18 pt, stop 21",
+                    "a clip cuts the right, bottom, left",
+                ),
+            ],
+        );
+    }
+
+    /// Closing the panel with Escape after Tab has scrolled a PR's Overview, and opening it
+    /// again, restores focus to the conversations pane, which draws its keyboard ring on its
+    /// edge with its top edge drawn inside the body's clip, the room a ring takes clear of it:
+    /// in a 461 × 490 window, at 13 and 18 pt, the pane is taller than the body and once showed
+    /// its bottom with its top above the clip. In a 1,480 × 800 window the pane fits, and its
+    /// ring is whole.
+    #[gpui::test]
+    async fn a_reopened_prs_conversations_pane_draws_its_rings_top_edge(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        for sizes in REVEAL_SIZES {
+            let (interface, width, height) = sizes;
+            let at = format!("{interface} pt in {width} × {height}");
+            show_overview(&panel, &pull, sizes, cx);
+            // Into the conversation list, scrolling the body down to it.
+            cx.simulate_keystrokes("tab tab");
+            crate::width_walk::frame(cx);
+            escape(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}: Escape closes the panel"
+            );
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+            for _ in 0..4 {
+                crate::width_walk::frame(cx);
+            }
+            let section = cx.read(|cx| panel.read(cx).review.section_focus.clone());
+            assert!(
+                cx.update(|window, _| section.is_focused(window)),
+                "{at}: the reopened panel restores focus to the conversations pane"
+            );
+            let (body, pane) = (
+                cx.debug_bounds("github-panel").expect("the body"),
+                cx.debug_bounds("github-thread-section").expect("the pane"),
+            );
+            let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+            let rings: Vec<_> = crate::focus_ring::painted_outlines(cx, accent)
+                .into_iter()
+                .filter(|ring| near(ring.bounds, pane))
+                .collect();
+            let [ring] = rings[..] else {
+                panic!("{at}: one ring on the pane's edge {pane:?}: {rings:?}");
+            };
+            let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+            assert!(
+                ring.sides[0] && pane.top() >= body.top() + room - px(0.5),
+                "{at}: the ring's top edge lies inside the body {body:?}, its room clear: {ring:?}"
+            );
+            if pane.size.height + room * 2. <= body.size.height {
+                assert!(
+                    ring.whole,
+                    "{at}: the pane fits, and its ring is whole: {ring:?}"
+                );
+            }
+            if width > 1000. {
+                assert!(
+                    ring.whole,
+                    "{at}: the wide window fits the pane whole: {ring:?}"
+                );
+            }
+        }
     }
 
     /// Escape, the frame after the dialog closes, and the app's repair of

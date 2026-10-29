@@ -35,6 +35,9 @@ pub(super) struct State {
     /// (`Panel::conversation_part`), and the focus it last showed.
     pub list_scroll: ScrollHandle,
     pub list_revealed: std::rc::Rc<std::cell::RefCell<super::review::FocusObservation>>,
+    /// Where the list's blocks start: its conversations and their rows, each comment with
+    /// its author's line, so a reveal never cuts one at the list's top.
+    pub list_blocks: super::review::Blocks,
     /// What the conversations pane draws besides its list, laid out last frame: the list
     /// keeps the pane inside the panel's body.
     pub list_chrome: std::rc::Rc<std::cell::Cell<Pixels>>,
@@ -61,6 +64,7 @@ impl State {
             confirm_focus: cx.focus_handle(),
             list_scroll: ScrollHandle::new(),
             list_revealed: Default::default(),
+            list_blocks: Default::default(),
             list_chrome: Default::default(),
         }
     }
@@ -501,6 +505,8 @@ impl Panel {
         );
         let list_scroll = self.conversations.list_scroll.clone();
         let list_revealed = self.conversations.list_revealed.clone();
+        let list_blocks = self.conversations.list_blocks.clone();
+        let body_blocks = self.review.body_blocks.clone();
         let visible = self
             .conversations
             .threads
@@ -517,10 +523,11 @@ impl Panel {
         let next = self.conversations.next_cursor.clone();
         // The pane is a part of the body, and so are its header, its list and its pager:
         // Tab into one shows that one, and onto the pane itself shows the whole pane.
-        self.part("conversations", div(), cx).min_w_0().child(crate::native_accessibility::clips_children(div()
+        self.ringed_part("conversations", div(), &self.review.section_focus, cx).min_w_0().child(crate::native_accessibility::clips_children(div()
             .on_children_prepainted(move |bounds, window, cx| {
                 // Everything but the list, the second child: the pane's padding and border
                 // around the span of its children, less the list.
+                body_blocks.report(&bounds);
                 let (Some(list), Some(span)) = (bounds.get(1).copied(), bounds.iter().copied().reduce(|a, b| a.union(&b))) else { return };
                 let measured = span.size.height - list.size.height + window.rem_size() * 1.5 + px(2.);
                 if (measured - chrome.get()).abs() > px(0.5) {
@@ -536,7 +543,8 @@ impl Panel {
                 .child(button("github-threads-refresh","Refresh conversations","refresh",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|this.thread_page(None,window,cx)))))
             .child(self.part("conversation-list", div(), cx).flex_shrink_0().min_w_0().child(crate::native_accessibility::clips_children(div()
                 .on_children_prepainted(move |_, window, cx| {
-                    *list_revealed.borrow_mut() = super::review::FocusObservation { focus: window.focused(cx), viewport: list_scroll.bounds(), rem_size: window.rem_size() };
+                    super::review::record_shown(&list_revealed, &list_scroll, |context| context.get(super::review::PART).is_some_and(|part| part == "conversation-list"), window, cx);
+                    list_blocks.finish();
                 })
                 .id("github-threads").debug_selector(||"github-threads".into())
                 .track_scroll(&self.conversations.list_scroll).flex_shrink_0().min_w_0().max_h(list_height).overflow_y_scroll().flex().flex_col().gap_3()
@@ -547,7 +555,7 @@ impl Panel {
                     let opening_missing=target.root_comment_id.as_ref().is_some_and(|root|!thread.comments.iter().any(|comment|&comment.id==root));
                     let can_reply=reply_matches(thread,&target,self.account.as_deref());
                     let can_resolve=if resolved{thread.viewer_can_unresolve}else{thread.viewer_can_resolve};
-                    div().id(("github-conversation",index)).flex_shrink_0().min_w_0().p_3().bg(rgb(p.panel)).border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
+                    div().on_children_prepainted(self.conversations.list_blocks.starts()).id(("github-conversation",index)).flex_shrink_0().min_w_0().p_3().bg(rgb(p.panel)).border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                         .child(div().flex().flex_wrap().items_center().gap_2()
                             .child(label(("github-thread-path",index),thread.location()).font_weight(FontWeight::SEMIBOLD))
                             .child(div().flex_1())
@@ -558,7 +566,7 @@ impl Panel {
                         .when(thread.context_incomplete,|element|element.child(label(("github-thread-incomplete",index),"Opening or earlier context is unavailable on this page. Replies keep their original conversation identity.").text_color(rgb(p.warning))))
                         .children(thread.comments.iter().enumerate().map(|(comment_index,comment)|{
                             let is_reply=comment.reply_to.is_some() || comment_index>0;
-                            div().min_w_0().when(is_reply,|element|element.ml_3().pl_3().border_l_1().border_color(rgb(p.border))).flex().flex_col().gap_1().py_1()
+                            div().on_children_prepainted(self.conversations.list_blocks.starts()).min_w_0().when(is_reply,|element|element.ml_3().pl_3().border_l_1().border_color(rgb(p.border))).flex().flex_col().gap_1().py_1()
                                 .child(div().flex().flex_wrap().items_center().gap_2()
                                     .child(label(("github-conversation-author",index * 1000 + comment_index),comment.author.clone()).font_weight(FontWeight::SEMIBOLD))
                                     .child(label(("github-conversation-time",index * 1000 + comment_index),format!("{}{}",comment.created_at.replace('T'," ").trim_end_matches('Z'),if is_reply{" · reply"}else{""})).text_color(rgb(p.muted))))
