@@ -1130,14 +1130,14 @@ impl GitTurtle {
                 }
                 _ => return,
             };
-        let position = native_accessibility::KeyboardMenu::below_row(
+        let anchor = native_accessibility::KeyboardMenu::cursor_row(
             &self.nav_scroll,
             index,
             crate::appearance::ui_size(30.),
             nav_row_inset(depth, true),
         );
         self.nav_menu = Some(native_accessibility::KeyboardMenu::open(
-            position,
+            anchor,
             self.nav_focus.clone(),
             build,
             Self::dismiss_nav_menu,
@@ -2596,17 +2596,17 @@ impl GitTurtle {
             return;
         };
         let commit = recovery::commit_target(commit);
-        let mut position = native_accessibility::KeyboardMenu::below_row(
+        let mut anchor = native_accessibility::KeyboardMenu::cursor_row(
             &self.history_scroll,
             row,
             window.pixel_snap(px(self.settings.density.history_row_height())),
             appearance::ui_size(appearance::PANE_INSET),
         );
-        position.x -= self.history_horizontal.offset().x;
+        anchor.x -= self.history_horizontal.offset().x;
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         let build = self.keyboard_commit_menu(owner, repository, commit);
         self.commit_menu = Some(native_accessibility::KeyboardMenu::open(
-            position,
+            anchor,
             self.focus.clone(),
             build,
             Self::dismiss_commit_menu,
@@ -2651,7 +2651,7 @@ impl GitTurtle {
             .selected_commit
             .and_then(|index| self.commits.get(index))
             .map(|commit| commit.oid.clone());
-        let position = native_accessibility::KeyboardMenu::below_row(
+        let anchor = native_accessibility::KeyboardMenu::cursor_row(
             &self.file_scroll,
             row,
             window.pixel_snap(px(self.settings.density.file_row_height())),
@@ -2659,7 +2659,7 @@ impl GitTurtle {
         );
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         self.file_menu = Some(native_accessibility::KeyboardMenu::open(
-            position,
+            anchor,
             self.file_focus.clone(),
             move |menu| changed_file_menu(menu, owner, repository, file, commit),
             Self::dismiss_file_menu,
@@ -12871,13 +12871,20 @@ pub(crate) mod tests {
         }
     }
 
-    /// At 18 pt in a 461 × 490 window, Shift-F10 on any of History's rows
-    /// opens the commit's menu ending at least 8 px above the status bar,
-    /// moved up where the row leaves it less: on a low row, whose menu's
-    /// least height reached past the bar but not past the window's foot, it
-    /// ended 2 px above the bar, as the anchor moves a menu only once it
-    /// runs past the window. A press on the bar below the menu still closes
-    /// it and returns focus to the list, as one anywhere outside it does.
+    /// The 1 px band outside a menu's fill where the kit draws its edge, a
+    /// ring in the popup's shadow (`popover_shadow`), which the test scene
+    /// does not report as a quad.
+    const MENU_RING: Pixels = px(1.);
+
+    /// At 13 and 18 pt in a 461 × 490 window, Shift-F10 on any of History's
+    /// rows opens the commit's menu with its edge, the ring outside its fill,
+    /// at least 8 px above the status bar. Below its row where it fits there,
+    /// and otherwise wholly above it, its edge clear of the row, rather than
+    /// slid up just far enough: a raised menu once covered its own row, and
+    /// the edge of a menu kept 8 px above the bar by its fill alone ended
+    /// 7 px above it, 6.5 px on the lowest row at 13 pt. A press on the bar
+    /// below the menu still closes it and returns focus to the list, as one
+    /// anywhere outside it does.
     #[gpui::test]
     async fn keyboard_commit_menu_stays_above_the_status_bar(cx: &mut TestAppContext) {
         const REVERT: &str = "menu-item: Revert this commit… · MenuItem";
@@ -12887,11 +12894,7 @@ pub(crate) mod tests {
             shortcuts::bind_keys(cx);
             native_accessibility::bind_keys(cx);
             appearance::ThemeChoice::Midnight.apply(Some(window), cx);
-            appearance::apply_text_sizes(18, 12, window, cx);
         });
-        cx.simulate_resize(size(px(461.), px(490.)));
-        draw(cx);
-        let status = crate::theme_editor::tests::status_bar_top(cx);
         let focused = |cx: &mut VisualTestContext| {
             cx.update(|window, cx| app.read(cx).focus.is_focused(window))
         };
@@ -12904,64 +12907,103 @@ pub(crate) mod tests {
                 })
             });
         };
-        // Each whole row of the list, selected in place as a click selects
-        // it, from the top down to the list's foot.
-        let mut lowest = None;
-        for index in 0..COMMITS {
-            open(index, cx);
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            draw(cx);
+            let status = crate::theme_editor::tests::status_bar_top(cx);
+            // Each whole row of the list, selected in place as a click
+            // selects it, from the top down to the list's foot.
+            let mut lowest = None;
+            for index in 0..COMMITS {
+                let at = format!("{text} pt, row {index}");
+                open(index, cx);
+                settle(&app, cx).await;
+                let list = app.read_with(cx, |app, _| {
+                    app.history_scroll.0.borrow().base_handle.bounds()
+                });
+                let Some(row) = cx
+                    .debug_bounds(format!("history-row-{index}").leak())
+                    .filter(|row| row.bottom() <= list.bottom())
+                else {
+                    break;
+                };
+                cx.simulate_keystrokes("shift-f10");
+                draw(cx);
+                let item = cx
+                    .debug_bounds(REVERT)
+                    .unwrap_or_else(|| panic!("{at} {row:?}: the commit's menu"));
+                let surface = menu_surface(cx, item);
+                assert!(
+                    surface.bottom() + MENU_RING <= status - px(8.) + px(0.01)
+                        && surface.top() - MENU_RING >= px(0.),
+                    "{at} {row:?}: the menu {surface:?} ends with its edge 8 px above \
+                     the status bar at {status:?}"
+                );
+                let raised = surface.top() < row.bottom() - px(0.01);
+                assert!(
+                    !raised || surface.bottom() + MENU_RING <= row.top() + px(0.01),
+                    "{at}: the raised menu {surface:?} lies wholly above its row {row:?}"
+                );
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+                assert!(cx.debug_bounds(REVERT).is_none(), "{at}: Escape closed it");
+                lowest = Some((index, row, raised, surface.size.height));
+            }
+            let (lowest, row, raised, height) = lowest.expect("the list's whole rows");
+            assert!(
+                lowest >= 1,
+                "{text} pt: the rows down to a low one, {lowest}"
+            );
+            assert!(
+                raised,
+                "{text} pt: the lowest row's menu, with no room below {row:?}, moved above it"
+            );
+            // A press on the bar, below the lowest row's menu, closes it.
+            open(lowest, cx);
             settle(&app, cx).await;
-            let list = app.read_with(cx, |app, _| {
-                app.history_scroll.0.borrow().base_handle.bounds()
-            });
-            let Some(row) = cx
-                .debug_bounds(format!("history-row-{index}").leak())
-                .filter(|row| row.bottom() <= list.bottom())
-            else {
-                break;
-            };
             cx.simulate_keystrokes("shift-f10");
             draw(cx);
-            let item = cx
-                .debug_bounds(REVERT)
-                .unwrap_or_else(|| panic!("row {index} {row:?}: the commit's menu"));
+            let item = cx.debug_bounds(REVERT).expect("the lowest row's menu");
             let surface = menu_surface(cx, item);
-            assert!(
-                surface.bottom() <= status - px(8.) + px(0.25) && surface.top() >= px(0.),
-                "row {index} {row:?}: the menu {surface:?} ends 8 px above the status bar at {status:?}"
+            cx.simulate_click(
+                point(surface.center().x, status + px(4.)),
+                Modifiers::default(),
             );
-            cx.simulate_keystrokes("escape");
             draw(cx);
             assert!(
                 cx.debug_bounds(REVERT).is_none(),
-                "row {index}: Escape closed it"
+                "{text} pt: a press on the bar closed the menu"
             );
-            lowest = Some(index);
+            assert!(
+                focused(cx),
+                "{text} pt: the press returned focus to the list"
+            );
+
+            // A window that leaves the lowest row's menu room below it down
+            // to half a pixel short of its edge's 8 px above the bar: its
+            // fill would fit there and its edge would not, so it goes above.
+            let short = row.bottom() + height + MENU_RING + px(8.) - px(0.5);
+            cx.simulate_resize(size(px(461.), px(490.) + (short - status)));
+            draw(cx);
+            let status = crate::theme_editor::tests::status_bar_top(cx);
+            open(lowest, cx);
+            settle(&app, cx).await;
+            let row = cx
+                .debug_bounds(format!("history-row-{lowest}").leak())
+                .expect("the lowest row");
+            cx.simulate_keystrokes("shift-f10");
+            draw(cx);
+            let item = cx.debug_bounds(REVERT).expect("the lowest row's menu");
+            let surface = menu_surface(cx, item);
+            let at = format!("{text} pt with the bar at {status:?}, row {lowest} {row:?}");
+            assert!(
+                surface.bottom() + MENU_RING <= row.top() + px(0.01),
+                "{at}: the menu {surface:?} lies wholly above its row"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
         }
-        let lowest = lowest.expect("the list's whole rows");
-        assert!(lowest >= 1, "the rows down to a low one, {lowest}");
-        // The lowest row's menu moves up to the bar's margin, the room it
-        // keeps below lying over the bar: a press on the bar there, outside
-        // the menu, closes it.
-        open(lowest, cx);
-        settle(&app, cx).await;
-        cx.simulate_keystrokes("shift-f10");
-        draw(cx);
-        let item = cx.debug_bounds(REVERT).expect("the lowest row's menu");
-        let surface = menu_surface(cx, item);
-        assert!(
-            (status - px(8.) - surface.bottom()).abs() <= px(0.5),
-            "row {lowest}: the menu {surface:?} moved up to 8 px above the bar at {status:?}"
-        );
-        cx.simulate_click(
-            point(surface.center().x, status + px(4.)),
-            Modifiers::default(),
-        );
-        draw(cx);
-        assert!(
-            cx.debug_bounds(REVERT).is_none(),
-            "a press on the bar closed the menu"
-        );
-        assert!(focused(cx), "the press returned focus to the list");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

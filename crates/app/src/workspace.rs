@@ -3484,7 +3484,7 @@ impl GitTurtle {
         else {
             return;
         };
-        let position = native_accessibility::KeyboardMenu::below_row(
+        let anchor = native_accessibility::KeyboardMenu::cursor_row(
             &self.working_scroll,
             row,
             window.pixel_snap(px(self.settings.density.file_row_height())),
@@ -3493,7 +3493,7 @@ impl GitTurtle {
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         let busy = self.operation_busy.is_some();
         self.file_menu = Some(native_accessibility::KeyboardMenu::open(
-            position,
+            anchor,
             self.file_focus.clone(),
             move |menu| {
                 working_row_menu(

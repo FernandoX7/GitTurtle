@@ -60,49 +60,72 @@ pub(super) fn bind_keys(cx: &mut App) {
     ]);
 }
 
+/// The cursor row a keyboard's menu opens beside, within the list's visible
+/// part ([`KeyboardMenu::cursor_row`]): the row's leading inset, where the
+/// menu's leading edge starts, and its top and bottom edges.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct RowAnchor {
+    /// Where the menu's leading edge starts.
+    pub(super) x: Pixels,
+    top: Pixels,
+    bottom: Pixels,
+}
+
 /// A row's menu opened from the keyboard beside the row it acts on, with
 /// Shift-F10 or the Menu key: the navigator's and the project pane's cursor
 /// row ([`ManageNavigation`]), and History's commit list's and a file
 /// list's ([`RowActions`]). A right-click menu belongs to
 /// its row; this one is placed from the cursor row's geometry and takes the
 /// keys until it closes. It opens with the keyboard's cursor on its first
-/// action, the kit's menu keys passing over entries that cannot act, and
-/// stays above the status bar ([`open_menu`]); Escape returns focus to the
-/// list or tree that opened it, its action context. Focus that leaves
-/// it otherwise, to a dialog one of its items opens or with the page that
-/// drew it, closes it as well, so it never reappears over another
-/// repository tab or mode.
+/// action, the kit's menu keys passing over entries that cannot act, below
+/// its row, or wholly above it where the room below is too short
+/// ([`RowMenu`]), with its edge [`MENU_MARGIN`] above the status bar either
+/// way; Escape returns focus to the list or tree that opened it, its action
+/// context. Focus that leaves it otherwise, to a dialog one of its items
+/// opens or with the page that drew it, closes it as well, so it never
+/// reappears over another repository tab or mode.
 pub(super) struct KeyboardMenu {
     menu: Entity<PopupMenu>,
-    position: Point<Pixels>,
+    row: RowAnchor,
     /// The window's size when the menu opened, which its overlay covers. The
     /// menu also closes on a press outside itself, past an overlay that a
     /// larger window has outgrown.
     viewport: Size<Pixels>,
-    /// The room the menu keeps from the window's foot: the status bar and
-    /// [`MENU_MARGIN`] above it, less the client inset the anchor keeps
-    /// there already.
-    bottom: Pixels,
+    /// Where the menu's fill may lie when it opened ([`menu_bounds`]).
+    room: Bounds<Pixels>,
     _subscriptions: [Subscription; 2],
 }
 
 impl KeyboardMenu {
     /// Builds the row's menu with `build`, the builder its right-click menu
-    /// uses, focuses it, and calls `dismissed` once it closes.
+    /// uses, focuses it, and calls `dismissed` once it closes. Its items are
+    /// no taller than the room below `row` where that holds about four rows
+    /// ([`MENU_FLOOR`]), and otherwise no taller than the larger of the room
+    /// below and the room above, where it goes when the room below is too
+    /// short for it.
     pub(super) fn open(
-        position: Point<Pixels>,
+        row: RowAnchor,
         focus: FocusHandle,
         build: impl FnOnce(PopupMenu) -> PopupMenu + 'static,
         dismissed: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
         window: &mut Window,
         cx: &mut Context<GitTurtle>,
     ) -> Self {
+        let room = menu_bounds(window);
+        let below = room.bottom() - row.bottom;
+        let above = row.top - MENU_EDGE - room.top();
+        let cap = if below >= appearance::ui_size(MENU_FLOOR) {
+            below
+        } else {
+            below.max(above)
+        }
+        .max(Pixels::ZERO);
         let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
             open_menu(
                 build(menu).action_context(focus),
                 true,
-                Some(position.y),
                 None,
+                Some(cap),
                 window,
                 cx,
             )
@@ -117,36 +140,34 @@ impl KeyboardMenu {
             dismissed(this, window, cx)
         });
         window.focus(&handle, cx);
-        let viewport = window.viewport_size();
-        // The anchor keeps the client inset from every window edge itself.
-        let inset = window.client_inset().unwrap_or_default();
         Self {
             menu,
-            position,
-            viewport,
-            bottom: (viewport.height - crate::theme_editor::status_bar_top(window) + MENU_MARGIN
-                - inset)
-                .max(Pixels::ZERO),
+            row,
+            viewport: window.viewport_size(),
+            room,
             _subscriptions: [dismiss, blur],
         }
     }
 
-    /// The bottom of the `row`th row of a uniform list of `height` tall rows,
-    /// `inset` from its leading edge: the list's origin, its scroll offset
-    /// and the row's index place it, within the list's visible part.
-    pub(super) fn below_row(
+    /// The `row`th row of a uniform list of `height` tall rows, its menu
+    /// starting `inset` from the list's leading edge: the list's origin, its
+    /// scroll offset and the row's index place it, within the list's visible
+    /// part.
+    pub(super) fn cursor_row(
         scroll: &UniformListScrollHandle,
         row: usize,
         height: Pixels,
         inset: Pixels,
-    ) -> Point<Pixels> {
+    ) -> RowAnchor {
         let state = scroll.0.borrow();
         let bounds = state.base_handle.bounds();
-        let bottom = bounds.top() + state.base_handle.offset().y + height * (row as f32 + 1.);
-        point(
-            bounds.left() + inset,
-            bottom.clamp(bounds.top(), bounds.bottom()),
-        )
+        let top = bounds.top() + state.base_handle.offset().y + height * row as f32;
+        let visible = |y: Pixels| y.clamp(bounds.top(), bounds.bottom());
+        RowAnchor {
+            x: bounds.left() + inset,
+            top: visible(top),
+            bottom: visible(top + height),
+        }
     }
 
     /// Whether focus is in the menu, as it is until an item, Escape or a
@@ -156,7 +177,8 @@ impl KeyboardMenu {
     }
 
     /// The menu over a window-wide overlay, `id`, that a press outside the
-    /// menu dismisses through `dismiss`.
+    /// menu dismisses through `dismiss`. The overlay covers the status bar,
+    /// so a press there closes the menu too.
     pub(super) fn render(
         &self,
         id: &'static str,
@@ -174,39 +196,16 @@ impl KeyboardMenu {
                     .on_any_mouse_down(cx.listener(move |this, _, window, cx| {
                         dismiss(this, window, cx);
                     }))
-                    .child(
-                        anchored()
-                            .position(self.position)
-                            // Where the row leaves the menu less than its
-                            // least room above the status bar, it moves up
-                            // rather than cover the bar. The anchor moves
-                            // its child only once the child overflows the
-                            // window itself, adding the margin after, so a
-                            // margin alone never kept a menu off the bar
-                            // (at 18 pt in a 461 × 490 window one ended 2 px
-                            // above it): the bar and its margin are part of
-                            // the child, a spacer with no hitbox below the
-                            // menu, so a press there still reaches the
-                            // overlay, and the anchor's own bottom margin is
-                            // nothing.
-                            .snap_to_window_with_margin(Edges {
-                                bottom: Pixels::ZERO,
-                                ..Edges::all(MENU_MARGIN)
-                            })
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        // A press inside the menu must reach
-                                        // its item, not the overlay behind it.
-                                        div()
-                                            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-                                            .child(self.menu.clone()),
-                                    )
-                                    .child(div().flex_shrink_0().h(self.bottom)),
-                            ),
-                    ),
+                    .child(RowMenu {
+                        row: self.row,
+                        room: self.room,
+                        // A press inside the menu must reach its item, not
+                        // the overlay behind it.
+                        menu: div()
+                            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                            .child(self.menu.clone())
+                            .into_any_element(),
+                    }),
             ),
         )
         .with_priority(gpui_kit::base::POPUP_PRIORITY)
@@ -214,13 +213,129 @@ impl KeyboardMenu {
     }
 }
 
+/// A keyboard's menu, placed beside its cursor row once its size is known:
+/// below the row where it fits in `room` there, and otherwise wholly above
+/// the row, its edge clear of it, at the row's leading inset and inside
+/// `room` either way. GPUI's anchor, which placed it before, slid a menu
+/// that ran past the window up just far enough, over its own row (5.5 px at
+/// 18 pt in a 461 × 490 window), and moved it by whole pixels, which can put
+/// half a pixel past the room.
+struct RowMenu {
+    row: RowAnchor,
+    room: Bounds<Pixels>,
+    menu: AnyElement,
+}
+
+impl RowMenu {
+    /// Where the menu's fill, `size`, starts.
+    fn origin(&self, size: Size<Pixels>) -> Point<Pixels> {
+        let room = self.room;
+        let y = if self.row.bottom + size.height <= room.bottom() {
+            self.row.bottom
+        } else {
+            (self.row.top - MENU_EDGE - size.height).max(room.top())
+        };
+        let x = self.row.x.min(room.right() - size.width).max(room.left());
+        point(x, y)
+    }
+}
+
+impl IntoElement for RowMenu {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for RowMenu {
+    /// The menu's layout.
+    type RequestLayoutState = LayoutId;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, LayoutId) {
+        let menu = self.menu.request_layout(window, cx);
+        // Laid out as GPUI's anchor lays out its child, out of the overlay's
+        // flow.
+        let style = Style {
+            position: Position::Absolute,
+            display: Display::Flex,
+            ..Style::default()
+        };
+        (window.request_layout(style, [menu], cx), menu)
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        menu: &mut LayoutId,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let laid = window.layout_bounds(*menu);
+        let offset = self.origin(laid.size) - laid.origin;
+        window.with_element_offset(offset, |window| self.menu.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut LayoutId,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.menu.paint(window, cx);
+    }
+}
+
 /// How far a menu stays above the status bar's top edge: the 8 px the kit's
-/// popup hosts keep from the window's edges.
+/// popup hosts keep from the window's edges. A keyboard's menu keeps it from
+/// its drawn edge, [`MENU_EDGE`] outside its fill ([`menu_bounds`]).
 const MENU_MARGIN: Pixels = px(8.);
+/// The band outside a menu's fill where the kit draws its edge, a ring in
+/// the popup's shadow. A menu whose fill ended [`MENU_MARGIN`] above the
+/// status bar showed its edge 7 px above it.
+const MENU_EDGE: Pixels = px(1.);
 /// The least height a menu's items take, at the default interface size,
 /// where its top lies too near the status bar for more: about four rows. A
-/// keyboard's menu there moves up instead ([`KeyboardMenu::render`]).
+/// keyboard's menu there moves above its row instead ([`RowMenu`]).
 const MENU_FLOOR: f32 = 120.;
+
+/// Where a keyboard's menu's fill may lie in `window`, its edge
+/// [`MENU_MARGIN`] inside the window's top edge and above the status bar,
+/// and its fill [`MENU_MARGIN`] inside the window's sides, as the kit's
+/// popup hosts keep it, all inside the client inset.
+fn menu_bounds(window: &Window) -> Bounds<Pixels> {
+    let inset = window.client_inset().unwrap_or_default();
+    let viewport = window.viewport_size();
+    let edge = MENU_MARGIN + MENU_EDGE;
+    Bounds::from_corners(
+        point(inset + MENU_MARGIN, inset + edge),
+        point(
+            viewport.width - inset - MENU_MARGIN,
+            crate::theme_editor::status_bar_top(window) - edge,
+        ),
+    )
+}
 
 /// The tallest a menu's items may be when its top edge is at `top`: down to
 /// [`MENU_MARGIN`] above the status bar, so that it never covers the bar,

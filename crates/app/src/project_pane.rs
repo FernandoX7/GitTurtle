@@ -589,7 +589,7 @@ impl GitTurtle {
         let indent = px(24. + row.depth() as f32 * 12.);
         // Rows are uniform, so the cursor row's bottom edge follows from the
         // list's origin, its scroll offset and the row height.
-        let position = native_accessibility::KeyboardMenu::below_row(
+        let anchor = native_accessibility::KeyboardMenu::cursor_row(
             &self.project_pane.scroll,
             index,
             crate::appearance::ui_size(30.),
@@ -598,7 +598,7 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let snapshot = self.menu_snapshot(&key);
         self.project_pane.keyboard_menu = Some(native_accessibility::KeyboardMenu::open(
-            position,
+            anchor,
             self.project_pane.focus.clone(),
             move |menu| row_menu(menu, &owner, &key, Some(snapshot)),
             Self::dismiss_project_menu,
