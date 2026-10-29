@@ -69,9 +69,10 @@ order and each file once; with File History's revision list focused, the
 selected revision's full hash. Text that is selected, such as part of the commit
 message, is copied instead. With Blame
 focused, Copy acts on Blame's selected line. Select All Message Text is scoped
-to the focused commit message. In the changed-file and Working Changes lists,
-Shift-F10, or on Linux the Menu key, opens the cursor row's menu, the one a
-right-click opens; the reference lists it under Keyboard Navigation. Repository
+to the focused commit message. In the navigator, the project list, History's
+commit list and the changed-file and Working Changes lists, Shift-F10, or on
+Linux the Menu key, opens the cursor row's menu, the one a right-click opens;
+the reference lists them under Keyboard Navigation. Repository
 writes remain in their existing explicitly reviewed workflows.
 
 `cargo test --locked -p gitturtle shortcuts::` checks binding uniqueness, both

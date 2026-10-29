@@ -292,7 +292,9 @@ impl GitTurtle {
         commit_actions_trigger(labelled)
             .ml_auto()
             .disabled(self.operation_busy.is_some())
-            .app_menu(move |menu, _, cx| commit_menu(menu, &owner, &repository, &commit, cx))
+            .app_menu(move |menu, _, cx| {
+                Self::recovery_context_menu(menu, &owner, &repository, &commit, cx)
+            })
             .into_any_element()
     }
 
@@ -303,7 +305,37 @@ impl GitTurtle {
         commit: &Arc<CommitTarget>,
         cx: &App,
     ) -> PopupMenu {
-        commit_menu(menu, owner, repository, commit, cx)
+        let Some(this) = owner.upgrade() else {
+            return menu;
+        };
+        let (disabled, current) = this.read(cx).commit_menu_state(commit);
+        commit_menu(menu, owner, repository, commit, disabled, current)
+    }
+
+    /// The commit's menu as a right-click builds it, for the keyboard to
+    /// open below the selected row: built from the window's state now,
+    /// since the menu is built while the window is being updated.
+    pub(super) fn keyboard_commit_menu(
+        &self,
+        owner: WeakEntity<Self>,
+        repository: Option<PathBuf>,
+        commit: Arc<CommitTarget>,
+    ) -> impl FnOnce(PopupMenu) -> PopupMenu + 'static {
+        let (disabled, current) = self.commit_menu_state(&commit);
+        move |menu| commit_menu(menu, &owner, &repository, &commit, disabled, current)
+    }
+
+    /// Whether a commit's menu offers nothing while a write or an
+    /// integration runs, and whether the commit is HEAD, which adds Amend
+    /// and Undo.
+    fn commit_menu_state(&self, commit: &CommitTarget) -> (bool, bool) {
+        let disabled = self.operation_busy.is_some() || self.integration_state.is_some();
+        let current = self
+            .work_status
+            .as_ref()
+            .and_then(|status| status.head.as_ref())
+            == Some(&commit.oid);
+        (disabled, current)
     }
 
     fn choose_commit_recovery(
@@ -590,18 +622,9 @@ fn commit_menu(
     owner: &WeakEntity<GitTurtle>,
     repository: &Option<PathBuf>,
     commit: &Arc<CommitTarget>,
-    cx: &App,
+    disabled: bool,
+    current: bool,
 ) -> PopupMenu {
-    let Some(this) = owner.upgrade() else {
-        return menu;
-    };
-    let this = this.read(cx);
-    let disabled = this.operation_busy.is_some() || this.integration_state.is_some();
-    let current = this
-        .work_status
-        .as_ref()
-        .and_then(|status| status.head.as_ref())
-        == Some(&commit.oid);
     for (label, kind) in [
         ("Revert this commit…", RecoveryKind::Revert),
         ("Cherry-pick this commit…", RecoveryKind::CherryPick),

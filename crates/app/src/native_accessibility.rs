@@ -45,20 +45,25 @@ pub(super) fn bind_keys(cx: &mut App) {
         KeyBinding::new("left", CollapseNavigation, Some("GitTurtleNavigation")),
         KeyBinding::new("enter", ActivateNavigation, Some("GitTurtleNavigation")),
         KeyBinding::new("space", ActivateNavigation, Some("GitTurtleNavigation")),
+        // A tree's or a list's cursor row opens its menu from the keyboard,
+        // as a right-click opens it: the navigator's branch or worktree, the
+        // project list's row, History's commit, and a file list's row, whose
+        // menu takes a Stage or Unstage control a narrow row has no room
+        // for. Linux reports the Menu key as `menu`; macOS keyboards have
+        // none.
         KeyBinding::new("shift-f10", ManageNavigation, Some("GitTurtleNavigation")),
-        // A file list's cursor row opens its menu from the keyboard, as a
-        // right-click opens it: a row too narrow for its Stage or Unstage
-        // control moves that action into the menu. Linux reports the Menu
-        // key as `menu`; macOS keyboards have none.
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("menu", ManageNavigation, Some("GitTurtleNavigation")),
         KeyBinding::new("shift-f10", RowActions, Some("GitTurtleList")),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("menu", RowActions, Some("GitTurtleList")),
     ]);
 }
 
-/// A row's menu opened from the keyboard beside the row it acts on: the
-/// project pane's cursor row with Shift-F10, and a file list's with
-/// Shift-F10 or the Menu key ([`RowActions`]). A right-click menu belongs to
+/// A row's menu opened from the keyboard beside the row it acts on, with
+/// Shift-F10 or the Menu key: the navigator's and the project pane's cursor
+/// row ([`ManageNavigation`]), and History's commit list's and a file
+/// list's ([`RowActions`]). A right-click menu belongs to
 /// its row; this one is placed from the cursor row's geometry and takes the
 /// keys until it closes. It opens with the keyboard's cursor on its first
 /// action, the kit's menu keys passing over entries that cannot act, and
@@ -1224,24 +1229,6 @@ impl GitTurtle {
         }
         window.focus(&self.nav_focus, cx);
         cx.notify();
-    }
-    pub(super) fn manage_navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if window.has_active_dialog(cx)
-            || window.has_active_sheet(cx)
-            || self.operation_busy.is_some()
-        {
-            return;
-        }
-        match self.nav_cursor.and_then(|index| self.nav_rows.get(index)) {
-            Some(NavRow::Branch(index, _)) => {
-                let branch = &self.branches[*index];
-                self.open_contextual_branch(branch.name.clone(), branch.remote, window, cx);
-            }
-            Some(NavRow::Worktree(index)) => {
-                self.open_worktree_actions(self.worktrees[*index].clone(), None, window, cx);
-            }
-            _ => {}
-        }
     }
 }
 

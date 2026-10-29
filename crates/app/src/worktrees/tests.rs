@@ -376,7 +376,10 @@ async fn keyboard_actions_review_focused_worktree_without_opening_it(cx: &mut Te
         });
     });
     draw(cx);
+    // Shift-F10 opens the row's menu, the one a right-click opens, whose
+    // Worktree actions… reviews it.
     cx.simulate_keystrokes("shift-f10");
+    click(cx, "menu-item: Worktree actions… · MenuItem");
     let manager = manager(&app, cx);
     settle(&manager, cx).await;
     manager.read_with(cx, |manager, _| {

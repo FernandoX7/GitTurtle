@@ -569,8 +569,16 @@ fn help_entries() -> Vec<HelpEntry> {
         ("Previous Control", "shift-tab"),
         ("Activate Focused Button", "space"),
         ("Branch / Worktree Actions in Navigator", "shift-f10"),
+        ("Project Actions in the Project List", "shift-f10"),
+        ("Commit Actions in History", "shift-f10"),
         ("File Actions in a File List", "shift-f10"),
         // Linux reports the Menu key; macOS keyboards have none.
+        #[cfg(not(target_os = "macos"))]
+        ("Branch / Worktree Actions in Navigator", "menu"),
+        #[cfg(not(target_os = "macos"))]
+        ("Project Actions in the Project List", "menu"),
+        #[cfg(not(target_os = "macos"))]
+        ("Commit Actions in History", "menu"),
         #[cfg(not(target_os = "macos"))]
         ("File Actions in a File List", "menu"),
     ] {

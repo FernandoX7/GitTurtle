@@ -375,6 +375,47 @@ async fn the_keyboard_browses_the_tree_like_the_navigator(cx: &mut TestAppContex
     });
 }
 
+/// Shift-F10 and the Menu key on the tree's cursor row open its menu, the
+/// one a right-click opens, and Escape returns focus to the tree. The Menu
+/// key did nothing.
+#[gpui::test]
+fn shift_f10_and_the_menu_key_open_the_cursor_rows_menu(cx: &mut TestAppContext) {
+    const MENU_KEY: &str = if cfg!(target_os = "macos") {
+        "shift-f10"
+    } else {
+        "menu"
+    };
+    let (library, _, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    cx.update(|_, cx| native_accessibility::bind_keys(cx));
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.move_project_cursor(true, false, window, cx);
+            window.focus(&app.project_pane.focus, cx);
+        })
+    });
+    settle(cx);
+    let focused = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| app.read(cx).project_pane.focus.is_focused(window))
+    };
+    for key in ["shift-f10", MENU_KEY] {
+        cx.simulate_keystrokes(key);
+        settle(cx);
+        assert!(
+            cx.debug_bounds("menu-item: Work · Label").is_some(),
+            "{key} opened the group's menu"
+        );
+        assert!(!focused(cx), "{key}: the menu takes the keys");
+        cx.simulate_keystrokes("escape");
+        settle(cx);
+        assert!(
+            cx.debug_bounds("menu-item: Work · Label").is_none(),
+            "{key}: Escape closed it"
+        );
+        assert!(focused(cx), "{key}: Escape returned focus to the tree");
+    }
+}
+
 /// A row's menu opens with the row's name, a label. Opened from the
 /// keyboard, it starts on the first action below the name, so Enter alone
 /// renames the group: the kit's first Down used to select the name, and

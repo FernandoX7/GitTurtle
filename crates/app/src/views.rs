@@ -758,7 +758,10 @@ impl GitTurtle {
                     .on_action(cx.listener(|this, _: &native_accessibility::ManageNavigation, window, cx| this.manage_navigation(window, cx)))
                     .child(uniform_list("navigation", self.nav_rows.len(), cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                         range.map(|i| this.render_nav_row(i, cx)).collect::<Vec<_>>()
-                    })).size_full().track_scroll(&self.nav_scroll))),
+                    })).size_full().track_scroll(&self.nav_scroll))
+                    .children(self.nav_menu.as_ref().map(|menu| {
+                        menu.render("navigation-menu-overlay", Self::dismiss_nav_menu, cx)
+                    }))),
             )
             .child(
                 div()
@@ -907,6 +910,7 @@ impl GitTurtle {
         };
         let element = div()
             .id(("nav", index))
+            .debug_selector(move || format!("nav-row-{index}"))
             .role(Role::TreeItem)
             .aria_level(depth + 1)
             .when(self.nav_cursor == Some(index), |row| {
@@ -944,27 +948,16 @@ impl GitTurtle {
         if let Some((name, remote)) = contextual_branch {
             element
                 .app_context_menu(move |menu, _, cx| {
-                    let owner = branch_owner.clone();
-                    let repository = branch_repository.clone();
-                    let name = name.clone();
-                    let disabled = owner
+                    let disabled = branch_owner
                         .upgrade()
                         .is_none_or(|owner| owner.read(cx).operation_busy.is_some());
-                    menu.label(name.clone()).item(
-                        PopupMenuItem::new("Branch actions…")
-                            .disabled(disabled)
-                            .on_click(move |_, window, cx| {
-                                let _ = owner.update(cx, |this, cx| {
-                                    if this.path == repository && this.page == AppPage::Repository {
-                                        this.open_contextual_branch(
-                                            name.clone(),
-                                            remote,
-                                            window,
-                                            cx,
-                                        );
-                                    }
-                                });
-                            }),
+                    branch_row_menu(
+                        menu,
+                        branch_owner.clone(),
+                        branch_repository.clone(),
+                        name.clone(),
+                        remote,
+                        disabled,
                     )
                 })
                 .into_any_element()
@@ -977,38 +970,82 @@ impl GitTurtle {
                             || owner.path != branch_repository
                             || owner.page != AppPage::Repository
                     });
-                    let mut menu = menu.label(tree.path.display().to_string());
-                    for (label, removal) in [
-                        ("Worktree actions…", None),
-                        ("Remove worktree…", Some(worktrees::RemovalMode::Ordinary)),
-                        (
-                            "Force remove worktree…",
-                            Some(worktrees::RemovalMode::Force),
-                        ),
-                    ] {
-                        let owner = branch_owner.clone();
-                        let repository = branch_repository.clone();
-                        let tree = tree.clone();
-                        menu = menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
-                            move |_, window, cx| {
-                                let _ = owner.update(cx, |this, cx| {
-                                    if this.path == repository && this.page == AppPage::Repository {
-                                        this.open_worktree_actions(
-                                            tree.clone(),
-                                            removal,
-                                            window,
-                                            cx,
-                                        );
-                                    }
-                                });
-                            },
-                        ));
-                    }
-                    menu
+                    worktree_row_menu(
+                        menu,
+                        branch_owner.clone(),
+                        branch_repository.clone(),
+                        tree.clone(),
+                        disabled,
+                    )
                 })
                 .into_any_element()
         } else {
             element.into_any_element()
+        }
+    }
+
+    /// Shift-F10, or on Linux the Menu key, in the navigator: opens the
+    /// cursor row's menu below it, the one a right-click on a branch or a
+    /// worktree opens, its actions unavailable while a write runs.
+    pub(super) fn manage_navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.nav_menu.is_some() || window.has_active_dialog(cx) || window.has_active_sheet(cx) {
+            return;
+        }
+        let Some(index) = self.nav_cursor else {
+            return;
+        };
+        let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
+        let busy = self.operation_busy.is_some();
+        let (depth, build): (usize, Box<dyn FnOnce(PopupMenu) -> PopupMenu>) =
+            match self.nav_rows.get(index) {
+                Some(NavRow::Branch(branch, depth)) => {
+                    let branch = &self.branches[*branch];
+                    let (name, remote) = (branch.name.clone(), branch.remote);
+                    (
+                        *depth,
+                        Box::new(move |menu| {
+                            branch_row_menu(menu, owner, repository, name, remote, busy)
+                        }),
+                    )
+                }
+                Some(NavRow::Worktree(tree)) => {
+                    let tree = self.worktrees[*tree].clone();
+                    let disabled = busy || self.page != AppPage::Repository;
+                    (
+                        0,
+                        Box::new(move |menu| {
+                            worktree_row_menu(menu, owner, repository, tree, disabled)
+                        }),
+                    )
+                }
+                _ => return,
+            };
+        let position = native_accessibility::KeyboardMenu::below_row(
+            &self.nav_scroll,
+            index,
+            crate::appearance::ui_size(30.),
+            nav_row_inset(depth, true),
+        );
+        self.nav_menu = Some(native_accessibility::KeyboardMenu::open(
+            position,
+            self.nav_focus.clone(),
+            build,
+            Self::dismiss_nav_menu,
+            window,
+            cx,
+        ));
+        cx.notify();
+    }
+
+    /// Closes the navigator's keyboard menu. A press outside it leaves focus
+    /// in the menu, so focus returns to the tree; an item or Escape has
+    /// moved it already, to the tree or to the dialog the item opened.
+    fn dismiss_nav_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = self.nav_menu.take() {
+            if menu.has_focus(window, cx) || window.focused(cx).is_none() {
+                window.focus(&self.nav_focus, cx);
+            }
+            cx.notify();
         }
     }
 
@@ -1615,6 +1652,11 @@ impl GitTurtle {
                                             this.copy_list_item(ListCopy::CommitHash, window, cx)
                                         },
                                     ))
+                                    .on_action(cx.listener(
+                                        |this, _: &native_accessibility::RowActions, window, cx| {
+                                            this.open_commit_menu(window, cx)
+                                        },
+                                    ))
                                     // The list's 1 px edge is `history_list_edge`'s,
                                     // over the part of the table the viewport shows.
                                     .p(px(1.))
@@ -1630,7 +1672,14 @@ impl GitTurtle {
                                         }),
                                     )
                                     .child(history)
-                                    .child(self.list_viewport_probe(true, cx)),
+                                    .child(self.list_viewport_probe(true, cx))
+                                    .children(self.commit_menu.as_ref().map(|menu| {
+                                        menu.render(
+                                            "commit-menu-overlay",
+                                            Self::dismiss_commit_menu,
+                                            cx,
+                                        )
+                                    })),
                             )),
                     ))
                     .child(self.history_list_edge(colors)),
@@ -2394,6 +2443,57 @@ impl GitTurtle {
                     })),
             ))
             .into_any_element()
+    }
+
+    /// Opens the selected commit's menu below its row, from Shift-F10 or the
+    /// Menu key: the menu a right-click on the row opens. It starts at the
+    /// row's leading inset in the part of the list the viewport shows, where
+    /// the columns scroll sideways.
+    fn open_commit_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.commit_menu.is_some() || window.has_active_dialog(cx) || window.has_active_sheet(cx)
+        {
+            return;
+        }
+        let Some(index) = self.selected_commit else {
+            return;
+        };
+        let Some(row) = self.visible.iter().position(|visible| *visible == index) else {
+            return;
+        };
+        let Some(commit) = self.commits.get(index) else {
+            return;
+        };
+        let commit = recovery::commit_target(commit);
+        let mut position = native_accessibility::KeyboardMenu::below_row(
+            &self.history_scroll,
+            row,
+            window.pixel_snap(px(self.settings.density.history_row_height())),
+            appearance::ui_size(appearance::PANE_INSET),
+        );
+        position.x -= self.history_horizontal.offset().x;
+        let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
+        let build = self.keyboard_commit_menu(owner, repository, commit);
+        self.commit_menu = Some(native_accessibility::KeyboardMenu::open(
+            position,
+            self.focus.clone(),
+            build,
+            Self::dismiss_commit_menu,
+            window,
+            cx,
+        ));
+        cx.notify();
+    }
+
+    /// Closes the commit list's keyboard menu. A press outside it leaves
+    /// focus in the menu, so focus returns to the list; an item or Escape
+    /// has moved it already, to the list or to the dialog the item opened.
+    fn dismiss_commit_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = self.commit_menu.take() {
+            if menu.has_focus(window, cx) || window.focused(cx).is_none() {
+                window.focus(&self.focus, cx);
+            }
+            cx.notify();
+        }
     }
 
     /// Opens the highlighted changed file's menu beside its row, from
@@ -3218,6 +3318,67 @@ impl FilesHeader {
             status: name - gap - word >= word,
         }
     }
+}
+
+/// A navigator branch's menu, which a right-click on its row and Shift-F10
+/// or the Menu key on the cursor row open alike: its name, then Branch
+/// actions…, which acts only while the repository the menu was built for is
+/// still the one shown.
+fn branch_row_menu(
+    menu: PopupMenu,
+    owner: WeakEntity<GitTurtle>,
+    repository: Option<PathBuf>,
+    name: String,
+    remote: bool,
+    disabled: bool,
+) -> PopupMenu {
+    menu.label(name.clone()).item(
+        PopupMenuItem::new("Branch actions…")
+            .disabled(disabled)
+            .on_click(move |_, window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if this.path == repository && this.page == AppPage::Repository {
+                        this.open_contextual_branch(name.clone(), remote, window, cx);
+                    }
+                });
+            }),
+    )
+}
+
+/// A navigator worktree's menu, which a right-click on its row and
+/// Shift-F10 or the Menu key on the cursor row open alike: its path, then
+/// its actions and removals, which act only while the repository the menu
+/// was built for is still the one shown.
+fn worktree_row_menu(
+    menu: PopupMenu,
+    owner: WeakEntity<GitTurtle>,
+    repository: Option<PathBuf>,
+    tree: Worktree,
+    disabled: bool,
+) -> PopupMenu {
+    let mut menu = menu.label(tree.path.display().to_string());
+    for (label, removal) in [
+        ("Worktree actions…", None),
+        ("Remove worktree…", Some(worktrees::RemovalMode::Ordinary)),
+        (
+            "Force remove worktree…",
+            Some(worktrees::RemovalMode::Force),
+        ),
+    ] {
+        let owner = owner.clone();
+        let repository = repository.clone();
+        let tree = tree.clone();
+        menu = menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
+            move |_, window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if this.path == repository && this.page == AppPage::Repository {
+                        this.open_worktree_actions(tree.clone(), removal, window, cx);
+                    }
+                });
+            },
+        ));
+    }
+    menu
 }
 
 /// A History changed file's menu, which a right-click on its row and
@@ -10896,6 +11057,126 @@ pub(crate) mod tests {
             app.read_with(cx, |app, _| app.file_history.is_active()),
             "File history… opened"
         );
+    }
+
+    /// Shift-F10 and the Menu key open History's selected commit's menu,
+    /// the one a right-click on its row opens, below the row: Revert and
+    /// Cherry-pick, and for HEAD Amend and Undo. Escape closes it and
+    /// returns focus to the list. The commit list had no keyboard menu, so
+    /// its actions were the pointer's alone.
+    #[gpui::test]
+    async fn commit_menu_opens_from_the_keyboard(cx: &mut TestAppContext) {
+        const REVERT: &str = "menu-item: Revert this commit… · MenuItem";
+        const UNDO: &str = "menu-item: Undo last local commit… · MenuItem";
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+        });
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).focus.is_focused(window))
+        };
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.select_commit(0, window, cx);
+                app.pane = Pane::History;
+                window.focus(&app.focus, cx);
+            })
+        });
+        settle(&app, cx).await;
+        let index = app.read_with(cx, |app, _| app.selected_commit.expect("a selected commit"));
+        let row = cx
+            .debug_bounds(format!("history-row-{index}").leak())
+            .expect("the selected row");
+        let window = cx.update(|window, _| window.viewport_size());
+        for key in ["shift-f10", MENU_KEY] {
+            assert!(cx.debug_bounds(REVERT).is_none(), "{key}: no menu yet");
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            let item = cx
+                .debug_bounds(REVERT)
+                .unwrap_or_else(|| panic!("{key} opened the commit's menu"));
+            assert!(cx.debug_bounds(UNDO).is_some(), "{key}: HEAD's actions");
+            assert!(
+                item.top() >= row.bottom()
+                    && item.top() < row.bottom() + row.size.height
+                    && item.left() >= row.left()
+                    && item.right() <= window.width,
+                "{key}: the menu's item {item:?} below the row {row:?}"
+            );
+            assert!(!focused(cx), "{key}: the menu takes the keys");
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{key}: nothing opened past the menu"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(cx.debug_bounds(REVERT).is_none(), "{key}: Escape closed it");
+            assert!(focused(cx), "{key}: Escape returned focus to the list");
+        }
+    }
+
+    /// Shift-F10 and the Menu key open the navigator's cursor row's menu,
+    /// the one a right-click opens, below the row: a branch's name and
+    /// Branch actions…. Escape closes it and returns focus to the tree.
+    /// Shift-F10 used to skip the menu for the branch's dialog, and the
+    /// Menu key did nothing.
+    #[gpui::test]
+    async fn navigator_row_menu_opens_from_the_keyboard(cx: &mut TestAppContext) {
+        const ACTIONS: &str = "menu-item: Branch actions… · MenuItem";
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|_, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+        });
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).nav_focus.is_focused(window))
+        };
+        let branch = app.read_with(cx, |app, _| {
+            app.nav_rows
+                .iter()
+                .position(|row| matches!(row, NavRow::Branch(..)))
+                .expect("a branch row")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.nav_cursor = Some(branch);
+                window.focus(&app.nav_focus, cx);
+                cx.notify();
+            })
+        });
+        draw(cx);
+        let row = cx
+            .debug_bounds(format!("nav-row-{branch}").leak())
+            .expect("the cursor row");
+        for key in ["shift-f10", MENU_KEY] {
+            assert!(cx.debug_bounds(ACTIONS).is_none(), "{key}: no menu yet");
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            let item = cx
+                .debug_bounds(ACTIONS)
+                .unwrap_or_else(|| panic!("{key} opened the row's menu"));
+            assert!(
+                cx.debug_bounds("menu-item: main · Label").is_some(),
+                "{key}: the menu names its branch"
+            );
+            assert!(
+                item.top() >= row.bottom() && item.left() >= row.left(),
+                "{key}: the menu's item {item:?} below the row {row:?}"
+            );
+            assert!(!focused(cx), "{key}: the menu takes the keys");
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{key}: the menu, not the branch's dialog"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                cx.debug_bounds(ACTIONS).is_none(),
+                "{key}: Escape closed it"
+            );
+            assert!(focused(cx), "{key}: Escape returned focus to the tree");
+        }
     }
 
     /// With two staged files in a 461 × 490 window, the composer's heading
