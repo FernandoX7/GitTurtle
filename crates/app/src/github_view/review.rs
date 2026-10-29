@@ -479,16 +479,42 @@ fn revealing(
 }
 
 impl Panel {
+    /// For the `on_children_prepainted` of the element holding a form that `focus` tracks,
+    /// such as the reply composer or the outbound confirmation, which report the content inside
+    /// their padding: when focus moves into it, by the keyboard or not, the body scrolls to
+    /// show its children with a line's room clear of its edges ([`reveal`]), which holds the
+    /// form's padding, edge and focus ring, and not at all where they are in view with that
+    /// room.
     pub(super) fn reveal_on_focus(
         &self,
         focus: FocusHandle,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        self.reveal_focus(focus, |window, _| window.rem_size() + px(2.))
+    }
+    /// [`Panel::reveal_on_focus`] for the element holding a field alone, whose edge is its own,
+    /// as the destination field and the review summary are: the body scrolls only where the
+    /// field and its focus ring are not whole in view, and then by the least that shows them,
+    /// as the panel reopens onto either. With a line's room, the panel reopening onto its
+    /// destination field at 18 pt in a 461 × 490 window scrolled the body 112 px although the
+    /// field was whole at its top, the banner out of view.
+    pub(super) fn reveal_field_on_focus(
+        &self,
+        focus: FocusHandle,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        self.reveal_focus(focus, |_, cx| appearance::button_ring_room(cx))
+    }
+    /// Reveals what `focus` moves into with `room(window, cx)` clear of the body's edges.
+    fn reveal_focus(
+        &self,
+        focus: FocusHandle,
+        room: fn(&Window, &App) -> Pixels,
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
         let scroll = self.review.body_scroll.clone();
         let revealed = self.review.revealed_focus.clone();
         let blocks = self.review.body_blocks.clone();
         move |bounds, window, cx| {
             if focus.contains_focused(window, cx) {
-                let inset = window.rem_size() + px(2.);
+                let inset = room(window, cx);
                 reveal(&scroll, &revealed, &blocks, bounds, inset, None, window, cx);
             }
         }

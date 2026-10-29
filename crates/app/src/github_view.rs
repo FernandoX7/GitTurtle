@@ -1197,10 +1197,14 @@ impl Render for Panel {
                 .child(label("github-fixture-mode","OFFLINE FIXTURE · native review · no network or credentials").debug_selector(||"github-fixture-mode".into()).min_w_0().text_color(rgb(p.muted)))
                 .child(button("github-fixture-move",if self.review.fixture_moved{"Fixture head moved"}else{"Move fixture head"},"",false).debug_selector(||"github-fixture-move".into()).disabled(pending||self.review.fixture_moved).on_click(cx.listener(|this,_,_,cx|{this.review.fixture_moved=true;this.confirm=None;this.notice=Some("Fixture head moved remotely. This view and its draft retain the original commit. Submit to verify stale-head refusal, or Refresh PRs and reopen to inspect the new head.".into());cx.notify();})))))
             .child(self.part("toolbar",div(),cx).flex().flex_wrap().items_center().gap_2()
-                // Focus moved onto the field, by a click or by Name repository below, which
-                // reveals it even when it holds focus already, scrolls it into view with its
-                // ring, as a Tab onto it does.
-                .child(div().debug_selector(||"github-destination".into()).w(appearance::ui_size(280.)).min_w(px(190.)).on_children_prepainted(self.reveal_on_focus(self.destination.read(cx).focus_handle(cx))).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending)))
+                // Focus moved onto the field, by a click, by Name repository below, which
+                // reveals it even when it holds focus already, or by the panel reopening onto
+                // it, scrolls it into view with its ring, as a Tab onto it does, and only where
+                // it is not whole already. It is a part of its own, as each control in the row
+                // is: at 18 pt in a 461 × 490 window the row is taller than the body, and
+                // revealing the whole row scrolled a field already whole, and the banner above
+                // it out of view.
+                .child(self.part("destination",div(),cx).debug_selector(||"github-destination".into()).w(appearance::ui_size(280.)).min_w(px(190.)).child(div().on_children_prepainted(self.reveal_field_on_focus(self.destination.read(cx).focus_handle(cx))).child(Input::new(&self.destination).aria_label("GitHub destination owner and repository").disabled(pending))))
                 .child(self.part("refresh",div(),cx).child(button("github-refresh",if self.review.fixture{"Refresh fixture PRs"}else{"Refresh PRs"},"refresh",false).disabled(pending).on_click(cx.listener(|this,_,window,cx|this.refresh(1,window,cx)))))
                 .child(self.part("create",div(),cx).child(button("github-create","New pull request","plus",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.create(window,cx)))))
                 .child(div().flex_1()).child(self.part("account",div(),cx).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();})))))
@@ -1287,7 +1291,7 @@ impl Render for Panel {
                 .when(!self.create,|element|element.child(self.part("events",div(),cx).flex().flex_wrap().gap_1()
                     .children([ReviewEvent::Comment,ReviewEvent::Approve,ReviewEvent::RequestChanges].map(|event|button(event.label(),event.label(),"",!self.discussion&&self.event==event).toggled(!self.discussion&&self.event==event).disabled(pending).on_click(cx.listener(move|this,_,window,cx|{this.discussion=false;this.event=event;this.confirm=None;this.save_draft(window,cx);}))))
                     .child(button("github-discussion","Discussion only","",self.discussion).toggled(self.discussion).disabled(pending||!self.review.comments.is_empty()||self.review.composing.is_some()).on_click(cx.listener(|this,_,_,cx|{this.discussion=true;this.confirm=None;cx.notify();})))))
-                .child(div().debug_selector(||"github-review-summary".into()).on_children_prepainted(self.reveal_on_focus(self.body.read(cx).focus_handle(cx))).child(Textarea::new(&self.body).h(appearance::ui_size(130.)).aria_label(if self.create{"Pull request description"}else{"Review summary"}).disabled(pending)))
+                .child(div().debug_selector(||"github-review-summary".into()).on_children_prepainted(self.reveal_field_on_focus(self.body.read(cx).focus_handle(cx))).child(Textarea::new(&self.body).h(appearance::ui_size(130.)).aria_label(if self.create{"Pull request description"}else{"Review summary"}).disabled(pending)))
                 // The draft status beside Review submission… where it fits there whole, at the
                 // panel's text inset; otherwise on a line of its own below it, wrapping, so its
                 // remedy stays readable and the button stays inside the panel (at 18 pt a failed
@@ -3284,6 +3288,173 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Reopening the panel onto its destination field keeps the body at its top wherever the
+    /// field is whole there with its ring, as at 13 and 18 pt in a 461 × 490 window, so the
+    /// banner and its Move fixture head stay in view, whether a key or the pointer came last.
+    /// At 18 pt it scrolled the body down, by 129.5 px the field's row to its top, and the
+    /// banner out of view: the field kept a line's room clear of the body's edges rather than
+    /// its ring's, which alone scrolled 112 px, and after a key its row, taller than the body,
+    /// revealed itself rather than the field. In a 461 × 470 window, where the field is not
+    /// whole at the body's top, reopening scrolls the body until it is. A PR's Review reopens
+    /// onto its summary, a field too: where the body shows it whole with its ring, at 13 pt in
+    /// a 461 × 490 window and 18 pt in a 1,480 × 800 one, the body stays where it was, where a
+    /// line's room clear of its edges scrolled it on.
+    #[gpui::test]
+    async fn reopening_onto_a_whole_field_keeps_the_body_at_its_top(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let (scroll, field) = cx.read(|cx| {
+            let panel = panel.read(cx);
+            (
+                panel.review.body_scroll.clone(),
+                panel.destination.read(cx).focus_handle(cx),
+            )
+        });
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        for (interface, width, height) in [(13, 461., 490.), (18, 461., 490.), (18, 461., 470.)] {
+            for pointer in [false, true] {
+                let at = format!(
+                    "{interface} pt in {width} × {height}, reopened after the {}",
+                    if pointer { "pointer" } else { "keyboard" }
+                );
+                cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+                settle_panel(&app, cx).await;
+                escape(cx);
+                assert!(
+                    !cx.update(|window, cx| window.has_active_dialog(cx)),
+                    "{at}: Escape closes the panel"
+                );
+                // The body at its top, as a panel opens that nothing has scrolled.
+                scroll.set_offset(point(px(0.), px(0.)));
+                if pointer {
+                    cx.simulate_mouse_move(point(px(4.), px(4.)), None, Modifiers::default());
+                }
+                cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+                settle_panel(&app, cx).await;
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                assert!(
+                    cx.update(|window, _| field.is_focused(window)),
+                    "{at}: the panel reopens onto the destination field"
+                );
+                let offset = scroll.offset().y;
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let shown = cx.debug_bounds("github-destination").expect("the field");
+                assert!(
+                    shown.top() - room >= body.top() - px(0.5)
+                        && shown.bottom() + room <= body.bottom() + px(0.5),
+                    "{at}: the field {shown:?} is whole with its ring in the body {body:?}"
+                );
+                // Where the field lies with the body at its top.
+                let (top, bottom) = (shown.top() - offset, shown.bottom() - offset);
+                let whole_at_top =
+                    top - room >= body.top() - px(0.5) && bottom + room <= body.bottom() + px(0.5);
+                assert_eq!(
+                    whole_at_top,
+                    height > 480.,
+                    "{at}: the field is whole at the body's top in the taller window only"
+                );
+                if whole_at_top {
+                    assert_eq!(offset, px(0.), "{at}: the body stays at its top");
+                    let banner = cx
+                        .debug_bounds("github-fixture-move")
+                        .expect("Move fixture head");
+                    assert!(
+                        banner.top() >= body.top() && banner.bottom() <= body.bottom(),
+                        "{at}: Move fixture head {banner:?} stays in view in {body:?}"
+                    );
+                } else {
+                    assert!(offset < px(0.), "{at}: the body scrolls to the field");
+                }
+                escape(cx);
+            }
+        }
+
+        // A PR's Review, reopened onto its summary where the body shows it whole with its
+        // ring and less than a line's room below it.
+        let summary = cx.read(|cx| panel.read(cx).body.read(cx).focus_handle(cx));
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(github::review::fixture_pull(false));
+                panel.review.section = Section::Review;
+                panel.review.show_list = false;
+            })
+        });
+        // Opened and closed once, so the draft status the destination's close left ("Draft
+        // not saved: choose a pull request…", three lines at 13 pt in 461 × 490) gives way to
+        // the PR's own, and nothing above the summary moves across the reopens below: the
+        // status shrank by 39 px across the first one and took the summary out of the place
+        // that leaves it less than a line's room.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(&app, cx).await;
+        escape(cx);
+        for (interface, width, height) in [(13, 461., 490.), (18, 1480., 800.)] {
+            for pointer in [false, true] {
+                let at = format!(
+                    "Review at {interface} pt in {width} × {height}, reopened after the {}",
+                    if pointer { "pointer" } else { "keyboard" }
+                );
+                cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+                settle_panel(&app, cx).await;
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                let body = cx.debug_bounds("github-panel").expect("the body");
+                let shown = cx
+                    .debug_bounds("github-review-summary")
+                    .expect("the summary");
+                let line = cx.update(|window, _| window.rem_size()) + px(2.);
+                let placed = (scroll.offset().y + (body.bottom() - room - px(1.) - shown.bottom()))
+                    .clamp(-scroll.max_offset().y, px(0.));
+                scroll.set_offset(point(px(0.), placed));
+                draw(cx);
+                draw(cx);
+                let shown = cx
+                    .debug_bounds("github-review-summary")
+                    .expect("the summary");
+                assert!(
+                    shown.top() - room >= body.top()
+                        && shown.bottom() + room <= body.bottom()
+                        && shown.bottom() + line > body.bottom(),
+                    "{at}: the summary {shown:?} is whole with its ring in the body {body:?}, \
+                     with less than a line's room below it"
+                );
+                escape(cx);
+                if pointer {
+                    cx.simulate_mouse_move(point(px(4.), px(4.)), None, Modifiers::default());
+                }
+                cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+                settle_panel(&app, cx).await;
+                for _ in 0..3 {
+                    crate::width_walk::frame(cx);
+                }
+                assert!(
+                    cx.update(|window, _| summary.is_focused(window)),
+                    "{at}: the panel reopens onto the summary"
+                );
+                assert_eq!(
+                    scroll.offset().y,
+                    placed,
+                    "{at}: the body stays where it was"
+                );
+                assert_eq!(
+                    cx.debug_bounds("github-review-summary"),
+                    Some(shown),
+                    "{at}: the summary stays where it was placed"
+                );
+                escape(cx);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// Opening a PR from the list, by the keyboard, at 13 and 18 pt in a 461 × 490 window shows
