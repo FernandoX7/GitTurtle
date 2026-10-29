@@ -7640,11 +7640,11 @@ pub(crate) mod tests {
     /// as its whole line, "After opacity · 50%", even where it shows its
     /// value alone, as at 18 pt in 461 px (it once read only "50%"), and at
     /// every amount the forms and widths stay. Wider, the zooms are never
-    /// less labelled. The
-    /// walk meets all three forms, and each moves a large image as the arrow
-    /// does; at the images' start Pan left and Pan up are unavailable, the
-    /// menus passing over them, and Pan left becomes available once the
-    /// images have moved right.
+    /// less labelled. The walk meets all three forms, and each moves a large
+    /// image as the arrow does; at the images' start Pan left and Pan up are
+    /// unavailable, the drawn arrows disabled and the menus passing over
+    /// them, and Pan left becomes available once the images have moved
+    /// right.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn the_pan_never_takes_a_toolbar_row(cx: &mut TestAppContext) {
@@ -7894,6 +7894,20 @@ pub(crate) mod tests {
             app.read_with(cx, |app, _| app.image_pan())
         };
         let room = || crate::image_compare::PAN_ROOM.get();
+        // Which drawn arrows answer a pointer over them: an available one
+        // lifts with the hover fill, and an unavailable one, disabled, stays
+        // flat.
+        let lifts = |cx: &mut VisualTestContext| {
+            ["pan-left", "pan-right", "pan-up", "pan-down"].map(|arrow| {
+                let center = bounds(arrow, cx).center();
+                cx.simulate_mouse_move(center, None, Modifiers::default());
+                draw(cx);
+                let lifted = !painted_fills(cx, arrow).is_empty();
+                cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
+                draw(cx);
+                lifted
+            })
+        };
         let (text, width) = met["arrows"];
         cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
         cx.simulate_resize(size(px(width), px(490.)));
@@ -7904,11 +7918,21 @@ pub(crate) mod tests {
             [false, true, false, true],
             "left and up are unavailable"
         );
+        assert_eq!(
+            lifts(cx),
+            [false, true, false, true],
+            "the drawn Pan left and Pan up are disabled"
+        );
         let arrow = bounds("pan-right", cx);
         cx.simulate_click(arrow.center(), Modifiers::default());
         draw(cx);
         assert_eq!(moved(&app, cx), [-80., 0.], "the arrow pans right");
         assert_eq!(room(), [true, true, false, true], "left is available again");
+        assert_eq!(
+            lifts(cx),
+            [true, true, false, true],
+            "the drawn Pan left is available again"
+        );
         // In the menus Pan left, unavailable, is passed over.
         for (form, menu, presses) in [
             ("menu", "image-pan-menu", "down enter"),
