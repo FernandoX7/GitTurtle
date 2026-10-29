@@ -951,7 +951,7 @@ async fn walk_with(
 /// Subscribes `app`'s repository again through a watcher that cannot start,
 /// as one cannot once the host's inotify instances are exhausted, and waits
 /// for the status bar to say that some changes need Refresh.
-fn unwatch(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+pub(crate) fn unwatch(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
             app.watch_through(local_refresh::Backend::Unavailable, window, cx)

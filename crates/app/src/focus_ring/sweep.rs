@@ -386,6 +386,35 @@ async fn history_and_compare_draw_a_whole_ring_at_every_stop(cx: &mut TestAppCon
     assert_whole(failures);
 }
 
+/// History with the local watch unable to start: the status bar's Refresh
+/// and Details… are Tab stops whose rings lie whole inside the bar, where at
+/// 13 pt they ran 0.5 px past the window's foot.
+#[gpui::test]
+async fn the_refresh_warning_draws_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    crate::width_walk::unwatch(&app, cx);
+    let mut failures = Vec::new();
+    for interface in SIZES {
+        interface_size(cx, interface);
+        let rings = walk(&app, cx, "The refresh warning", interface, &mut failures);
+        for control in ["retry-local-refresh", "local-refresh-details"] {
+            let drawn = cx.debug_bounds(control).expect(control);
+            let ringed = rings.iter().any(|ring| {
+                ring.left() < drawn.left()
+                    && ring.right() > drawn.right()
+                    && ring.top() < drawn.top()
+                    && ring.bottom() > drawn.bottom()
+            });
+            assert!(
+                ringed,
+                "{control} at {interface} pt: a Tab stop with its ring"
+            );
+        }
+    }
+    assert_whole(failures);
+}
+
 /// Working Changes with a modified and an untracked file.
 #[gpui::test]
 async fn working_changes_draw_a_whole_ring_at_every_stop(cx: &mut TestAppContext) {

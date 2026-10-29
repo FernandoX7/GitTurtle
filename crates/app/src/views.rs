@@ -5022,8 +5022,19 @@ const WATCH_WARNING: &str = "Some changes need Refresh";
 const WATCH_REFRESH: &str = "Refresh";
 const WATCH_DETAILS: &str = "Details…";
 /// The height of the warning's controls in the 26 px bar, and the side of
-/// Details… where it is drawn as its icon, at the default interface size.
+/// Details… where it is drawn as its icon, at the default interface size
+/// ([`watch_control_height`]).
 const WATCH_CONTROL: f32 = 20.;
+
+/// The height of the warning's Refresh and Details… in the 26 px status
+/// bar: [`WATCH_CONTROL`], or less where the Button focus ring outside them
+/// would not fit inside the bar below its 1 px top rule. At 13 pt the bar
+/// holds 25 px there, and the ring of a 20 px control ran 0.5 px past the
+/// window's foot, cut along its bottom.
+fn watch_control_height(cx: &App) -> Pixels {
+    let room = appearance::ui_size(26.) - px(1.) - appearance::button_ring_room(cx) * 2.;
+    appearance::ui_size(WATCH_CONTROL).min(room)
+}
 
 /// What the status bar's fitting measures, in the font and sizes of a
 /// [`LineKey`]: each form its keyboard hints can take, in the order they
@@ -6057,7 +6068,7 @@ impl Render for GitTurtle {
                                 .whitespace_nowrap()
                                 .aria_label("Some local changes need Refresh")
                                 .child(WATCH_WARNING))
-                            .child(button("retry-local-refresh", WATCH_REFRESH, "", false).h(crate::appearance::ui_size(WATCH_CONTROL)).text_size(crate::appearance::ui_text(10.)).disabled(self.operation_busy.is_some())
+                            .child(button("retry-local-refresh", WATCH_REFRESH, "", false).h(watch_control_height(cx)).text_size(crate::appearance::ui_text(10.)).disabled(self.operation_busy.is_some())
                                 .debug_selector(|| "retry-local-refresh".into())
                                 .on_click(cx.listener(|this, _, window, cx| this.retry_automatic_refresh(window, cx))))
                             .child(if status.details_icon {
@@ -6069,7 +6080,7 @@ impl Render for GitTurtle {
                             } else {
                                 button("local-refresh-details", WATCH_DETAILS, "", false)
                             }
-                                .h(crate::appearance::ui_size(WATCH_CONTROL)).text_size(crate::appearance::ui_text(10.))
+                                .h(watch_control_height(cx)).text_size(crate::appearance::ui_text(10.))
                                 .debug_selector(|| "local-refresh-details".into())
                                 .on_click(cx.listener(|this, _, window, cx| this.show_automatic_refresh_details(window, cx)))))
                     })
