@@ -76,6 +76,21 @@ pub(crate) struct Flight {
     pub(crate) slot: Slot,
 }
 
+/// Where the pointer pressed a row's own Stage or Unstage, until it moves.
+/// The rows that write produces put another row, or a heading, where the
+/// pressed row stood, and its control would light up under the still
+/// pointer and show its tooltip though the person never moved to it. Once
+/// they do, what arrived there shows neither until the pointer moves.
+pub(crate) struct StillPointer {
+    at: Point<Pixels>,
+    /// The pressed row: its place in the list, its path and its group.
+    position: usize,
+    path: PathBuf,
+    area: ChangeArea,
+    /// The list's new rows put something else under the pointer.
+    moved: bool,
+}
+
 /// The landing slot's bounds and the list's clip, recorded while the list is
 /// prepainted, so the row lands exactly where the list puts it, after any
 /// scroll the list applied in that frame.
@@ -171,6 +186,72 @@ impl GitTurtle {
             from,
             top: viewport.top() + scroll + height * position as f32,
         });
+    }
+
+    /// Remembers the pointer where the row at `position`'s own Stage or
+    /// Unstage was pressed and accepted.
+    pub(super) fn hold_still_pointer(&mut self, position: usize, window: &Window) {
+        self.still_pointer = None;
+        let Some(&workspace::WorkingRow::File(index, area)) =
+            self.actionable_working_rows().get(position)
+        else {
+            return;
+        };
+        let Some(entry) = self
+            .work_status
+            .as_ref()
+            .and_then(|status| status.entries.get(index))
+        else {
+            return;
+        };
+        self.still_pointer = Some(StillPointer {
+            at: window.mouse_position(),
+            position,
+            path: entry.path.clone(),
+            area,
+            moved: false,
+        });
+    }
+
+    /// New rows were installed. Where the pressed row no longer stands in
+    /// its place under the still pointer, what arrived there shows no hover
+    /// and no tooltip until the pointer moves.
+    pub(super) fn rows_moved_under_pointer(&mut self) {
+        let status = self.work_status.as_ref();
+        let Some(still) = self.still_pointer.as_mut() else {
+            return;
+        };
+        let stays = match self.working_rows.get(still.position) {
+            Some(&workspace::WorkingRow::File(index, area)) => {
+                area == still.area
+                    && status
+                        .and_then(|status| status.entries.get(index))
+                        .is_some_and(|entry| entry.path == still.path)
+            }
+            _ => false,
+        };
+        still.moved |= !stays;
+    }
+
+    /// The pointer is at `position`: once it has moved, controls under it
+    /// light up again. A frame's synthetic move, at the same place, does not
+    /// count.
+    pub(super) fn pointer_moved(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        if let Some(still) = &self.still_pointer
+            && still.at != position
+        {
+            let moved = still.moved;
+            self.still_pointer = None;
+            if moved {
+                cx.notify();
+            }
+        }
+    }
+
+    /// Whether the list's rows moved under a pointer that has not moved
+    /// since it pressed a row's Stage or Unstage.
+    pub(super) fn still_over_moved_rows(&self) -> bool {
+        self.still_pointer.as_ref().is_some_and(|still| still.moved)
     }
 
     /// The departed row the next rows should look for, in this repository.
@@ -1035,6 +1116,60 @@ mod tests {
         rows_arrived(&app, cx).await;
         frame(cx);
         assert!(looks_busy(&app, cx).is_empty(), "landed");
+    }
+
+    /// After gamma's Stage moves its row, epsilon's row takes its place under
+    /// the pointer, which has not moved: epsilon's Stage draws no hover fill
+    /// and shows no tooltip, as it did while the person never moved to it.
+    /// Once the pointer moves a pixel, it lights up and its tooltip shows.
+    #[gpui::test]
+    async fn a_still_pointer_lights_nothing_the_rows_moved_under_it(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        let (_, palette) = crate::appearance::test_palettes().remove(0);
+        cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+        // Tall enough that every row is in view.
+        cx.simulate_resize(size(px(1480.), px(1300.)));
+        draw(cx);
+        let repository = app.read_with(cx, |app, _| app.path.clone());
+        let tooltip: &'static str = format!(
+            "{}/tooltip/rest",
+            workspace::confirmations::file(
+                &repository,
+                Path::new("epsilon.txt"),
+                ChangeArea::Unstaged
+            )
+            .control()
+        )
+        .leak();
+        let fills = |cx: &mut VisualTestContext| {
+            let control = cx.debug_bounds("working-stage-6").expect("row 6's Stage");
+            crate::appearance::painted_button(cx, control).0
+        };
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+        assert_eq!(position_of(&app, cx, "gamma.txt", ChangeArea::Unstaged), 6);
+        let pointer = cx.debug_bounds("working-stage-6").unwrap().center();
+        toggle(&app, cx, 6).await;
+        advance(cx, ROW_TRAVEL.as_millis() as u64);
+        assert_eq!(flying(&app, cx), None);
+        // [Staged 3, alpha, beta, gamma, Unstaged 3, delta, epsilon, zeta]
+        assert_eq!(
+            position_of(&app, cx, "epsilon.txt", ChangeArea::Unstaged),
+            6
+        );
+        assert!(
+            cx.debug_bounds("working-stage-6")
+                .unwrap()
+                .contains(&pointer)
+        );
+        assert_eq!(fills(cx), [], "no hover under the still pointer");
+        advance(cx, 1000);
+        assert!(cx.debug_bounds(tooltip).is_none(), "no tooltip");
+
+        cx.simulate_mouse_move(pointer + point(px(1.), px(0.)), None, Modifiers::default());
+        draw(cx);
+        assert_eq!(fills(cx).len(), 1, "the moved pointer lights it up");
+        advance(cx, 1000);
+        assert!(cx.debug_bounds(tooltip).is_some(), "and shows its tooltip");
     }
 
     /// Under reduced motion the row is in its slot in the first frame the

@@ -404,6 +404,8 @@ struct GitTurtle {
     working_scroll: UniformListScrollHandle,
     /// A row moving between Staged and Unstaged after its Stage or Unstage.
     working_travel: motion::RowTravel,
+    /// The pointer where a row's Stage or Unstage was pressed, until it moves.
+    still_pointer: Option<motion::StillPointer>,
     page: AppPage,
     hub: Entity<projects::ProjectHub>,
     commit_title: Entity<InputState>,
@@ -752,6 +754,7 @@ impl GitTurtle {
             working_selected: None,
             working_scroll: UniformListScrollHandle::new(),
             working_travel: motion::RowTravel::Idle,
+            still_pointer: None,
             page: if initial.is_some() {
                 AppPage::Repository
             } else {

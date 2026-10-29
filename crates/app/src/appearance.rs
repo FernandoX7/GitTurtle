@@ -287,6 +287,9 @@ thread_local! {
 #[derive(Clone, Copy)]
 struct ControlButton {
     idle: ButtonCustomVariant,
+    /// `idle` without its hover fill, for a control that arrived under a
+    /// still pointer ([`still_control_button_variant`]).
+    still: ButtonCustomVariant,
     /// Only for a palette whose [`Palette::control_label`] is not `text`.
     selected: Option<ButtonCustomVariant>,
     /// The selected button's fill while hovered, [`Palette::row_hover`] of a
@@ -547,6 +550,17 @@ pub fn control_button_variant(selected: bool) -> ButtonVariant {
     }
 }
 
+/// The shared control at rest, as [`control_button_variant`]`(false)`, with
+/// no hover fill: a control a list's rows moved under a pointer that has not
+/// moved since shows no hover until the pointer moves (`motion::StillPointer`).
+/// Before any palette is applied it is the kit's ghost.
+pub fn still_control_button_variant() -> ButtonVariant {
+    match CONTROL_BUTTON.get() {
+        Some(control) => ButtonVariant::Custom(control.still),
+        None => ButtonVariant::Ghost,
+    }
+}
+
 /// Fills every shared control at rest with `fill` until a palette is applied
 /// again, so a test finds each one among the painted quads with the content
 /// mask that clips it (`width_walk`); a control transparent at rest paints
@@ -555,6 +569,7 @@ pub fn control_button_variant(selected: bool) -> ButtonVariant {
 pub(crate) fn mark_controls(fill: gpui_kit::Hsla) {
     if let Some(mut control) = CONTROL_BUTTON.get() {
         control.idle = control.idle.color(fill);
+        control.still = control.still.color(fill);
         CONTROL_BUTTON.set(Some(control));
     }
 }
@@ -929,6 +944,13 @@ impl Palette {
         ButtonCustomVariant::new(cx)
             .foreground(rgb(self.control_label()).into())
             .hover(self.control_fill(self.hover).into())
+            .active(self.control_fill(self.selected).into())
+    }
+
+    /// [`Self::control_button`] with the kit's transparent hover.
+    fn still_control_button(self, cx: &App) -> ButtonCustomVariant {
+        ButtonCustomVariant::new(cx)
+            .foreground(rgb(self.control_label()).into())
             .active(self.control_fill(self.selected).into())
     }
 
@@ -1975,6 +1997,7 @@ impl Palette {
         self.configure(is_light, roles, highlights, Theme::global_mut(cx));
         CONTROL_BUTTON.set(Some(ControlButton {
             idle: self.control_button(cx),
+            still: self.still_control_button(cx),
             selected: self.selected_control_button(cx),
             selected_hover: self.row_hover(true),
         }));

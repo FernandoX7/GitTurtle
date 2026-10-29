@@ -2719,6 +2719,7 @@ impl GitTurtle {
             .child(native_accessibility::clips_children(
                 div().id("working-pane").debug_selector(|| "working-pane".into()).role(Role::ListBox).aria_label("Working tree files")
                     .tab_stop(true).key_context("GitTurtleList").track_focus(&self.file_focus)
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| this.pointer_moved(event.position, cx)))
                     .on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, window, cx| {
                         this.copy_list_item(crate::views::ListCopy::WorkingPaths, window, cx)
                     }))
@@ -2922,6 +2923,17 @@ impl GitTurtle {
         // leave these controls inert at once (`write_from`,
         // `depart_working_row`) and dimmed once the spell looks busy.
         let looks_busy = self.busy_shown();
+        // What the rows moved under a pointer that has not moved since it
+        // pressed a row's Stage or Unstage shows no hover and no tooltip
+        // until it moves (`motion::StillPointer`).
+        let still = self.still_over_moved_rows();
+        let quiet = move |button: Button| {
+            if still {
+                button.with_variant(appearance::still_control_button_variant())
+            } else {
+                button
+            }
+        };
         // The shown rows index the shown status, an earlier one while a
         // newer status's rows are prepared.
         match self.working_rows[position] {
@@ -2976,21 +2988,31 @@ impl GitTurtle {
                     || count == 0
                     || self.working_paths.error.is_some()
                     || !self.working_filter.read(cx).value().is_empty();
-                let control = if forms.section_action_label {
-                    copy_feedback::feedback_button(mark, confirmation, action, detail, cx)
+                let control = quiet(if forms.section_action_label {
+                    copy_feedback::feedback_button(
+                        mark,
+                        confirmation,
+                        action,
+                        if still { "" } else { detail },
+                        cx,
+                    )
                 } else {
                     crate::views::compact_control_name(
                         copy_feedback::feedback_button(
                             mark,
                             confirmation,
                             "",
-                            format!("{action} · {detail}"),
+                            if still {
+                                String::new()
+                            } else {
+                                format!("{action} · {detail}")
+                            },
                             cx,
                         ),
                         selector,
                         action,
                     )
-                };
+                });
                 let part = move |part: &'static str| -> String {
                     format!(
                         "{}-heading-{part}",
@@ -3167,7 +3189,9 @@ impl GitTurtle {
                     .bg(rgb(if active { p.selected } else { p.panel }))
                     .border_l_2()
                     .border_color(if active { rgb(p.accent) } else { rgba(0) })
-                    .hover(move |s| s.bg(rgb(p.row_hover(active))))
+                    .when(!still, |row| {
+                        row.hover(move |s| s.bg(rgb(p.row_hover(active))))
+                    })
                     .active(move |s| s.bg(rgb(p.selected)))
                     .cursor_pointer()
                     // Where the name needs its room, the tile gives way to
@@ -3209,7 +3233,8 @@ impl GitTurtle {
                                 !window
                                     .context_stack()
                                     .iter()
-                                    .any(|context| context.contains("PopupMenu")),
+                                    .any(|context| context.contains("PopupMenu"))
+                                    && !still,
                                 |path| {
                                     path.tooltip(move |window, cx| {
                                         let text = path_detail.clone();
@@ -3264,7 +3289,7 @@ impl GitTurtle {
                         // once the Stage or Unstage that moved its file here
                         // succeeded, and keeps its name.
                         row.child(
-                            copy_feedback::feedback_button(
+                            quiet(copy_feedback::feedback_button(
                                 confirmations::file(&self.path, &entry.path, area),
                                 if staged {
                                     confirmations::STAGED_FILE
@@ -3272,15 +3297,22 @@ impl GitTurtle {
                                     confirmations::UNSTAGED_FILE
                                 },
                                 "",
-                                stage_label.clone(),
+                                if still {
+                                    String::new()
+                                } else {
+                                    stage_label.clone()
+                                },
                                 cx,
-                            )
+                            ))
                             .debug_selector(move || format!("working-stage-{position}"))
                             .accessibility_label(stage_label)
                             .disabled(busy && looks_busy)
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
                                     cx.stop_propagation();
+                                    if this.operation_busy.is_none() {
+                                        this.hold_still_pointer(position, window);
+                                    }
                                     this.depart_working_row(position, window, cx);
                                     this.stage_working_paths(
                                         paths.clone(),
