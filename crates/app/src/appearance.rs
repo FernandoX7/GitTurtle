@@ -768,6 +768,39 @@ impl Palette {
         toward_extreme_in(256, self.border, extreme, clears)
     }
 
+    /// The opacity of the black a dialog's backdrop lays over the page: the
+    /// least, from the kit's own (20% in a dark palette, 5% in a light one)
+    /// in steps of 1%, that leaves the dialog's surface, `canvas`, at least
+    /// [`DIALOG_LIFT`] lighter than every page surface it dims (canvas, panel
+    /// and subtle), so the page recedes beneath the dialog. With the kit's
+    /// 20%, Midnight's dialog stood 1.03:1 over the dimmed canvas, 1.00:1
+    /// over the dimmed subtle and darker than History's dimmed panel
+    /// (1.03:1 the other way), so it read as a hole in the page with only
+    /// its edge to mark it. Where no backdrop up to [`DIALOG_BACKDROP_MAX_PERCENT`]
+    /// lifts a near-black canvas that far over a lighter panel (Omarchy
+    /// ethereal and hackerman), the least that leaves the dialog no darker
+    /// than any dimmed surface; where none does that either (vantablack's
+    /// black canvas), the kit's own, since no more black would help. The
+    /// backdrop is blended over the page's sRGB values, as it is drawn.
+    pub fn dialog_backdrop(self) -> f64 {
+        let lifts = |alpha: f64, lift: f64| {
+            [self.canvas, self.panel, self.subtle]
+                .iter()
+                .all(|&surface| {
+                    let dimmed = backdrop_over(surface, alpha);
+                    custom::luminance(self.canvas) >= custom::luminance(dimmed)
+                        && custom::contrast(self.canvas, dimmed) >= lift
+                })
+        };
+        let base = if self.is_light() { 5 } else { 20 };
+        let steps =
+            || (base..=DIALOG_BACKDROP_MAX_PERCENT).map(|percent| f64::from(percent) / 100.);
+        steps()
+            .find(|&alpha| lifts(alpha, DIALOG_LIFT))
+            .or_else(|| steps().find(|&alpha| lifts(alpha, 1.)))
+            .unwrap_or(f64::from(base) / 100.)
+    }
+
     /// The edge of an outline drawn on a picker's selected row, such as a
     /// Keyboard Shortcuts key chip: [`Self::raised_edge`], the edge it takes
     /// on a resting row, unless that misses [`POPUP_EDGE`] against `selected`,
@@ -985,6 +1018,26 @@ pub fn cursor_marker(palette: Palette) -> gpui_kit::Div {
 /// draw a hairline below its token: an edge fitted to the border rule's 1.3
 /// drew 1.21:1 to 1.26:1 natively, so the token keeps room above that rule.
 const POPUP_EDGE: f64 = 1.4;
+
+/// How much lighter a dialog's surface stands than any page surface its
+/// backdrop dims ([`Palette::dialog_backdrop`]): the step at which the page
+/// reads as receding beneath the dialog rather than level with it.
+const DIALOG_LIFT: f64 = 1.05;
+
+/// The darkest a dialog's backdrop grows, so the page stays legible beneath
+/// it.
+const DIALOG_BACKDROP_MAX_PERCENT: u32 = 60;
+
+/// `surface` under a backdrop of black at `alpha`, blended per sRGB channel.
+pub(crate) fn backdrop_over(surface: u32, alpha: f64) -> u32 {
+    [16, 8, 0]
+        .map(|shift| {
+            let channel = f64::from((surface >> shift) & 0xff) * (1. - alpha);
+            (channel.round() as u32) << shift
+        })
+        .into_iter()
+        .fold(0, |color, channel| color | channel)
+}
 
 /// The first of 32 even steps from `from` to `extreme`, `from` included, that
 /// `accepts`, or `extreme`.
@@ -1943,6 +1996,8 @@ impl Palette {
     ) {
         let palette = self;
         theme.colors.background = rgb(palette.canvas).into();
+        // A dialog's backdrop dims the page until the dialog stands above it.
+        theme.colors.overlay = gpui_kit::hsla(0., 0., 0., palette.dialog_backdrop() as f32);
         theme.colors.foreground = rgb(palette.text).into();
         theme.colors.muted = rgb(palette.hover).into();
         theme.colors.muted_foreground = rgb(palette.muted).into();
@@ -2800,6 +2855,99 @@ mod tests {
     use super::*;
     use gpui_kit as gpui;
     use gpui_kit::{Background, Hsla};
+
+    /// In every palette a dialog's backdrop dims the page until the dialog's
+    /// surface stands at least 1.05:1 lighter than every page surface beneath
+    /// it, with no more than 60% black and no more black than that takes;
+    /// where 60% cannot lift a near-black canvas that far, the dialog is at
+    /// least level with every dimmed surface wherever 60% allows that. With
+    /// the kit's 20% black, Midnight's dialog was darker than History's
+    /// dimmed panel (1.03:1 the other way) and 1.00:1 over the dimmed
+    /// subtle; there its edge keeps the popup edge's 1.4:1 against the
+    /// dialog and the dimmed page alike.
+    #[test]
+    fn every_dialog_stands_above_the_page_its_backdrop_dims() {
+        /// The least lift of `canvas` over the page surfaces dimmed by
+        /// `alpha`, below 1 where one dimmed surface is lighter.
+        fn lift(palette: Palette, alpha: f64) -> f64 {
+            [palette.canvas, palette.panel, palette.subtle]
+                .map(|surface| {
+                    let dimmed = backdrop_over(surface, alpha);
+                    let ratio = contrast(palette.canvas, dimmed);
+                    if luminance(palette.canvas) >= luminance(dimmed) {
+                        ratio
+                    } else {
+                        1. / ratio
+                    }
+                })
+                .into_iter()
+                .fold(f64::INFINITY, f64::min)
+        }
+        let mut lifted = 0;
+        let mut failures = Vec::new();
+        for (name, palette) in test_palettes() {
+            let alpha = palette.dialog_backdrop();
+            let kit = if palette.is_light() { 0.05 } else { 0.2 };
+            if !(kit..=f64::from(DIALOG_BACKDROP_MAX_PERCENT) / 100.).contains(&alpha) {
+                failures.push(format!("{name}: backdrop {alpha}"));
+            }
+            let most = lift(palette, f64::from(DIALOG_BACKDROP_MAX_PERCENT) / 100.);
+            // Where even 60% cannot leave the dialog level with the dimmed
+            // page, as over a black canvas, more black would not help: the
+            // kit's own dim stays.
+            if most < 1. {
+                if (alpha - kit).abs() > 1e-9 {
+                    failures.push(format!("{name}: {alpha} where no dim helps"));
+                }
+                continue;
+            }
+            let floor = if most >= DIALOG_LIFT { DIALOG_LIFT } else { 1. };
+            let reached = lift(palette, alpha);
+            if reached < floor {
+                failures.push(format!("{name}: {reached:.3}:1 at {alpha}, needs {floor}"));
+            }
+            if alpha > kit + 0.005 && lift(palette, alpha - 0.01) >= floor {
+                failures.push(format!("{name}: {alpha} where {} lifts it", alpha - 0.01));
+            }
+            lifted += usize::from(floor == DIALOG_LIFT);
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+        assert!(lifted >= 20, "the built-in palettes lift: {lifted}");
+
+        let midnight = ThemeChoice::Midnight.palette();
+        let alpha = midnight.dialog_backdrop();
+        assert!(
+            alpha > 0.2,
+            "Midnight's backdrop {alpha} darkens past the kit's"
+        );
+        for surface in [midnight.canvas, midnight.panel, midnight.subtle] {
+            let dimmed = backdrop_over(surface, alpha);
+            let edge = contrast(midnight.border, dimmed);
+            assert!(
+                edge >= POPUP_EDGE,
+                "Midnight's edge over #{dimmed:06x}: {edge:.3}:1"
+            );
+        }
+        assert!(contrast(midnight.border, midnight.canvas) >= POPUP_EDGE);
+    }
+
+    /// Applying a palette installs its backdrop as the kit's overlay, which
+    /// every dialog draws beneath itself.
+    #[gpui::test]
+    fn the_applied_overlay_is_the_palettes_backdrop(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            for choice in [ThemeChoice::Midnight, ThemeChoice::Daylight] {
+                choice.apply(None, cx);
+                let overlay = Theme::global(cx).colors.overlay;
+                let alpha = choice.palette().dialog_backdrop() as f32;
+                assert!(
+                    overlay.l == 0. && (overlay.a - alpha).abs() < 1e-6,
+                    "{choice:?}: overlay {overlay:?}, backdrop {alpha}"
+                );
+            }
+        });
+    }
 
     /// Hovering an enabled unchecked Switch visibly lifts its track in every
     /// palette: at least 6 of 255 in one channel from its resting `border`.
