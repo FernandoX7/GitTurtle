@@ -39,6 +39,16 @@ async fn refresh(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
     settle(app, cx).await;
 }
 
+/// Opens Tags and draws it once its list has landed: the list is read on
+/// the app's operation executor, a thread of its own, and the dialog opens
+/// with the reply, so the test waits for that read
+/// (`tags::tests::read_lands`) rather than for wall-clock time.
+async fn open_tags(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+    crate::tags::tests::read_lands(app, cx).await;
+    draw(cx);
+}
+
 /// Draws, letting the reader threads answer, until `done` holds.
 fn wait(
     cx: &mut VisualTestContext,
@@ -249,10 +259,7 @@ async fn empty_lists_and_panels_are_read_by_their_lines(cx: &mut TestAppContext)
         &[],
     );
 
-    cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
-    wait(cx, "the Tags list", |cx| {
-        cx.debug_bounds("tag-list-empty-line").is_some()
-    });
+    open_tags(&app, cx).await;
     read(
         cx,
         "Tags",
@@ -374,10 +381,7 @@ async fn every_label_of_these_screens_is_named(cx: &mut TestAppContext) {
     });
     labels_named(cx, "Changes", &["working-filter-empty"]);
 
-    cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
-    wait(cx, "the Tags list", |cx| {
-        cx.debug_bounds("tag-list-empty-line").is_some()
-    });
+    open_tags(&app, cx).await;
     labels_named(cx, "Tags", &["tags-dialog-title", "tag-list-empty-line"]);
     cx.update(|window, cx| window.close_all_dialogs(cx));
     draw(cx);

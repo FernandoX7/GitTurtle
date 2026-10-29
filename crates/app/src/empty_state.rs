@@ -504,6 +504,17 @@ mod tests {
         settle(app, cx).await;
     }
 
+    /// Opens Tags and draws it once its list has landed. The list is read on
+    /// the app's operation executor, a thread of its own, and the dialog opens
+    /// with the reply, so the test waits for that read
+    /// (`tags::tests::read_lands`) rather than for wall-clock time, which a
+    /// slow read outlasted.
+    async fn open_tags(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        crate::tags::tests::read_lands(app, cx).await;
+        draw(cx);
+    }
+
     /// Draws, letting the reader threads answer, until `done` holds.
     fn wait(
         cx: &mut VisualTestContext,
@@ -1172,10 +1183,7 @@ mod tests {
     #[gpui::test]
     async fn empty_tags_and_stash_lists_say_so(cx: &mut TestAppContext) {
         let (_fixture, app, cx, _) = window(cx, &history_script(1, 1)).await;
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
-        wait(cx, "the Tags list", |cx| {
-            cx.debug_bounds("tag-list-empty-line").is_some()
-        });
+        open_tags(&app, cx).await;
         check(
             cx,
             "tag-list-empty",
@@ -1244,10 +1252,7 @@ mod tests {
     #[gpui::test]
     async fn the_tags_line_starts_at_the_dialogs_edge(cx: &mut TestAppContext) {
         let (_fixture, app, cx, _) = window(cx, &history_script(1, 1)).await;
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
-        wait(cx, "the Tags list", |cx| {
-            cx.debug_bounds("tag-list-empty-line").is_some()
-        });
+        open_tags(&app, cx).await;
         for interface in SIZES {
             for (width, height) in [(1280., 800.), WINDOWS[0]] {
                 cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
@@ -1272,10 +1277,7 @@ mod tests {
     #[gpui::test]
     async fn tags_without_a_commit_point_at_the_first_commit(cx: &mut TestAppContext) {
         let (_fixture, app, cx, _) = window(cx, "done\n").await;
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
-        wait(cx, "the Tags list", |cx| {
-            cx.debug_bounds("tag-list-empty-line").is_some()
-        });
+        open_tags(&app, cx).await;
         check(
             cx,
             "tag-list-empty",
