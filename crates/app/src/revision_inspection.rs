@@ -158,6 +158,7 @@ impl GitTurtle {
             dialog
                 .title("Compare local revisions")
                 .width(appearance::dialog_width(px(660.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
                 .footer(
                     DialogFooter::new()
@@ -240,6 +241,7 @@ impl GitTurtle {
                         .mb(-room),
                 )
                 .width(appearance::dialog_width(px(700.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .gap(crate::tags::DIALOG_FOOTER_GAP - room)
                 .bg(rgb(surface.raised()))
                 .border_color(rgb(surface.raised_edge()))

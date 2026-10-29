@@ -1797,9 +1797,10 @@ impl GitTurtle {
                     this.open_repository_tab(path, window, cx);
                 }
                 Ok(None) => {}
-                Err(error) => window.open_alert_dialog(cx, move |dialog, _, cx| {
+                Err(error) => window.open_alert_dialog(cx, move |dialog, window, cx| {
                     dialog
                         .kind(DialogKind::Alert)
+                        .max_h(appearance::dialog_max_height(window))
                         .title("Could not open repository picker")
                         .child(
                             native_accessibility::static_text(

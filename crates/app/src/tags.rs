@@ -191,6 +191,7 @@ impl GitTurtle {
                                     .mb(-room),
                             )
                             .width(appearance::dialog_width(px(600.), window))
+                            .max_h(appearance::dialog_max_height(window))
                             .gap(DIALOG_FOOTER_GAP - room)
                             .child(browser.clone())
                             .button_props(DialogButtonProps::default().ok_text("Done"))
@@ -328,7 +329,7 @@ impl GitTurtle {
                         });
                     })
                 })).when(remotes.is_empty(), |element| element.child(static_text("tag-remotes-empty", "No remotes configured. Add a remote from the branch menu to push a tag.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "tag-remote-scrollbar"));
-            dialog.title(native_accessibility::dialog_title("tag-inspector-title", details.tag.name.clone())).width(appearance::dialog_width(px(640.), window)).gap(DIALOG_FOOTER_GAP - room).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
+            dialog.title(native_accessibility::dialog_title("tag-inspector-title", details.tag.name.clone())).width(appearance::dialog_width(px(640.), window)).max_h(appearance::dialog_max_height(window)).gap(DIALOG_FOOTER_GAP - room).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
         });
     }
     pub(super) fn finish_tag_write(
@@ -381,6 +382,7 @@ impl GitTurtle {
                     "Create a local tag",
                 ))
                 .width(appearance::dialog_width(px(560.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
                 .button_props(
                     DialogButtonProps::default()

@@ -165,6 +165,20 @@ pub fn dialog_width(width: Pixels, window: &Window) -> Pixels {
     width.min(room - DIALOG_MARGIN * 2.).max(Pixels::ZERO)
 }
 
+/// The tallest a dialog may be: from where the kit opens it, a tenth of the
+/// window down inside a client-decorated frame's padding, to
+/// [`DIALOG_MARGIN`] above the status bar's top edge
+/// (`theme_editor::status_bar_top`), so its foot never lies on the bar. A
+/// dialog's scrolling list gives up the height first, and its body scrolls
+/// past that. A dialog reads it on every frame, so one open while the window
+/// shortens or the text grows stays above the bar.
+pub fn dialog_max_height(window: &Window) -> Pixels {
+    let paddings = gpui_kit::component::window_paddings(window);
+    let room = window.viewport_size().height - paddings.top - paddings.bottom;
+    let top = paddings.top + window.pixel_snap(room / 10.);
+    (crate::theme_editor::status_bar_top(window) - DIALOG_MARGIN - top).max(Pixels::ZERO)
+}
+
 pub fn ui_text(base: f32) -> Pixels {
     ui_size(base)
 }

@@ -100,6 +100,7 @@ impl GitTurtle {
                         .mb(-room),
                 )
                 .width(appearance::dialog_width(px(700.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .gap(crate::tags::DIALOG_FOOTER_GAP - room)
                 .child(manager.clone())
                 .button_props(DialogButtonProps::default().ok_text("Done"))
@@ -154,7 +155,7 @@ impl GitTurtle {
             let open_owner = owner.clone(); let open_path = plan.destination.clone();
             let finder = plan.destination.clone(); let editor_owner = owner.clone(); let editor_path = plan.destination.clone();
             dialog.title(native_accessibility::dialog_title("worktree-created-title", "Worktree created"))
-                .width(appearance::dialog_width(px(600.), window)).child(div().flex().flex_col().gap_3()
+                .width(appearance::dialog_width(px(600.), window)).max_h(appearance::dialog_max_height(window)).child(div().flex().flex_col().gap_3()
                     .child(label("worktree-created-target", format!("{}\n{}", plan.branch, plan.destination.display())).text_size(crate::appearance::ui_text(13.)))
                     .child(label("worktree-created-context", "Each worktree keeps its own working files, index, HEAD, and GitTurtle commit draft. Branches and objects are shared.").text_size(crate::appearance::ui_text(12.)))
                     .child(div().flex().flex_wrap().gap_2()

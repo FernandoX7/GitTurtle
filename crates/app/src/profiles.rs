@@ -272,7 +272,7 @@ impl GitTurtle {
                             .child(button(("edit-profile", index), "Edit…", "", false).on_click(move |_, window, cx| { let _ = edit_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(Some(edit_profile.clone()), window, cx); }); }))
                             .child(button(("delete-profile", index), "Delete…", "", false).on_click(move |_, window, cx| { let _ = delete_owner.update(cx, |this, cx| { window.close_dialog(cx); this.delete_profile(delete_profile.clone(), window, cx); }); })))
                 })));
-            dialog.title("Git profiles").width(appearance::dialog_width(px(600.), window)).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
+            dialog.title("Git profiles").width(appearance::dialog_width(px(600.), window)).max_h(appearance::dialog_max_height(window)).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
         });
         window.refresh();
     }
@@ -439,6 +439,7 @@ impl GitTurtle {
                     "Create Git profile"
                 })
                 .width(appearance::dialog_width(px(550.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
                 .button_props(
                     DialogButtonProps::default()
@@ -472,7 +473,8 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) {
         let owner = cx.entity().downgrade();
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
+            let dialog = dialog.max_h(appearance::dialog_max_height(window));
             let owner = owner.clone(); let definition = definition.clone(); let explanation = format!("Delete the saved '{}' profile and its app assignments? Repository Git configuration remains as it is. Repositories, keys and drafts are preserved.", definition.label);
             dialog.kind(DialogKind::Alert).title("Delete saved profile").child(label("delete-profile-consequences", explanation))
                 .button_props(DialogButtonProps::default().ok_text("Delete profile").cancel_text("Cancel").show_cancel(true))

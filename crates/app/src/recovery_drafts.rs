@@ -500,6 +500,7 @@ impl GitTurtle {
             dialog
                 .title("Saved recovery drafts")
                 .width(appearance::dialog_width(px(720.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
                 .footer(DialogFooter::new().child(
                     button("close-saved-recovery", "Close", "", false).on_click(

@@ -1254,6 +1254,7 @@ fn open_local_document(
         dialog
             .title(format!("Captured local document · {}", path.display()))
             .width(appearance::dialog_width(px(900.), window))
+            .max_h(appearance::dialog_max_height(window))
             .child(document.clone())
             .footer(gpui_kit::component::dialog::DialogFooter::new().child(
                 button("close-local-markdown", "Back to document", "", false).on_click(
@@ -1352,8 +1353,8 @@ impl Render for LocalDocument {
 fn open_link(destination: &str, window: &mut Window, cx: &mut App) {
     let external = destination.starts_with("https://") || destination.starts_with("http://");
     let destination = destination.to_owned();
-    window.open_alert_dialog(cx,move|dialog,_,_| {
-        let target=destination.clone();dialog.title(if external {"Open external link"}else{"Local Markdown link"}).child(destination.clone())
+    window.open_alert_dialog(cx,move|dialog,window,_| {
+        let target=destination.clone();dialog.max_h(appearance::dialog_max_height(window)).title(if external {"Open external link"}else{"Local Markdown link"}).child(destination.clone())
             .child(if external {"This opens your browser."}else{"This destination is local to the captured document. Use Quick Open to inspect repository files; no external application will be opened."})
             .footer(gpui_kit::component::dialog::DialogFooter::new().child(button("cancel-markdown-link","Close","",false).on_click(|_,window,cx|window.close_dialog(cx)))
                 .child(button("open-markdown-link","Open in browser","external-link",true).disabled(!external).on_click(move|_,window,cx| {cx.open_url(&target);window.close_dialog(cx);})))

@@ -564,6 +564,7 @@ impl GitTurtle {
                     dialog
                         .title(title.clone())
                         .width(appearance::dialog_width(px(540.), window))
+                        .max_h(appearance::dialog_max_height(window))
                         .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                         .child(chooser.clone())
                         .button_props(
@@ -590,6 +591,7 @@ impl GitTurtle {
                     dialog
                         .title("Remotes")
                         .width(appearance::dialog_width(px(580.), window))
+                        .max_h(appearance::dialog_max_height(window))
                         .child(manager.clone())
                         .button_props(DialogButtonProps::default().ok_text("Done"))
                 });
@@ -639,7 +641,7 @@ impl GitTurtle {
                 .child(div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(metadata))
                 .child(div().text_size(crate::appearance::ui_text(12.)).child(deletion_note))
                 .child(actions);
-            dialog.title(plan.name.clone()).width(appearance::dialog_width(px(560.), window)).child(content)
+            dialog.title(plan.name.clone()).width(appearance::dialog_width(px(560.), window)).max_h(appearance::dialog_max_height(window)).child(content)
                 .button_props(DialogButtonProps::default().ok_text("Done"))
         });
     }
@@ -717,6 +719,7 @@ impl GitTurtle {
             dialog
                 .title(short_reference(&reference).to_owned())
                 .width(appearance::dialog_width(px(540.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(content)
                 .button_props(DialogButtonProps::default().ok_text("Done"))
         });
@@ -919,6 +922,7 @@ fn show_branch_form(form: Entity<BranchForm>, window: &mut Window, cx: &mut App)
         dialog
             .title(title)
             .width(appearance::dialog_width(px(520.), window))
+            .max_h(appearance::dialog_max_height(window))
             .child(form.clone())
             .button_props(
                 DialogButtonProps::default()
@@ -943,6 +947,7 @@ fn show_remote_form(form: Entity<RemoteForm>, window: &mut Window, cx: &mut App)
         dialog
             .title(title.clone())
             .width(appearance::dialog_width(px(580.), window))
+            .max_h(appearance::dialog_max_height(window))
             .child(form.clone())
             .button_props(
                 DialogButtonProps::default()

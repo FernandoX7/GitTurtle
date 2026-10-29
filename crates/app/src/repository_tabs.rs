@@ -1738,6 +1738,7 @@ impl GitTurtle {
             dialog
                 .title("Local workspaces")
                 .width(appearance::dialog_width(px(680.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(view.clone())
                 .button_props(
                     gpui_kit::component::dialog::DialogButtonProps::default().ok_text("Done"),

@@ -24,6 +24,7 @@ impl GitTurtle {
             dialog
                 .title("Review rewritten series")
                 .width(appearance::dialog_width(px(980.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
                 .footer(DialogFooter::new().child(
                     button("close-series-review", "Back to repository", "", false).on_click(

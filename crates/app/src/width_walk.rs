@@ -34,7 +34,7 @@
 //! checks the width on either side of it as well.
 
 use crate::views::shaped_width;
-use crate::views::tests::{fixture_git, settle, styled_history_window};
+use crate::views::tests::{bounds_of, fixture_git, settle, styled_history_window};
 use crate::*;
 use core::prelude::v1::test;
 use gpui_kit::{ScaledPixels, Styled as _};
@@ -1170,6 +1170,27 @@ impl Dialog {
         }
     }
 
+    /// A list that gives up its height to the dialog's height cap, its
+    /// height where the dialog has the room, and the body's last line and
+    /// the footer's control after it: the list, not the body, gives way, so
+    /// the last line ends above the control rather than below the body's
+    /// fold.
+    fn yielding_list(self) -> Option<(&'static str, Pixels, String, String)> {
+        use crate::shortcuts::DialogKeys;
+        match self {
+            Dialog::KeyboardShortcuts => Some((
+                "shortcut-help-results",
+                crate::shortcuts::list_height(),
+                format!(
+                    "dialog-help-escape: {}",
+                    DialogKeys::Shortcuts.escape_help()
+                ),
+                format!("dialog-dismiss: {}", DialogKeys::Shortcuts.dismiss()),
+            )),
+            _ => None,
+        }
+    }
+
     /// Opens it from History once its reads land, as the focus sweep does.
     async fn open(self, app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
         use crate::focus_ring::sweep::open_dialog;
@@ -1275,18 +1296,20 @@ impl Dialog {
 const DIALOG_PADDING: Pixels = px(16.);
 
 /// What the last frame drew wrong in the open dialog of a `width`-wide
-/// window: the dialog closer to a side than `margin`, and every text run
-/// or shared control above the window's overlay that crosses a side of its
-/// clip, as [`Walk::inspect`] finds them on a page.
+/// window: the dialog closer to a side than `margin`, its foot closer to
+/// the status bar's top edge than `margin` (`appearance::dialog_max_height`),
+/// and every text run or shared control above the window's overlay that
+/// crosses a side of its clip, as [`Walk::inspect`] finds them on a page.
 fn dialog_findings(cx: &mut VisualTestContext, width: f32, margin: Pixels) -> Vec<String> {
     let (text, control) = (
         gpui_kit::Background::from(text_mark()),
         gpui_kit::Background::from(control_mark()),
     );
-    let (scale, viewport, mut quads) = cx.update(|window, _| {
+    let (scale, viewport, status_bar, mut quads) = cx.update(|window, _| {
         (
             window.scale_factor(),
             window.viewport_size(),
+            theme_editor::status_bar_top(window),
             window.painted_quads(),
         )
     });
@@ -1326,10 +1349,12 @@ fn dialog_findings(cx: &mut VisualTestContext, width: f32, margin: Pixels) -> Ve
                     f32::from(margin)
                 ));
             }
-            if bottom > viewport.height + slack {
+            if bottom > status_bar - margin + slack {
                 findings.push(format!(
-                    "the dialog ends {:.1} px down, past the window's foot",
-                    f32::from(bottom)
+                    "the dialog ends {:.1} px down, closer than {:.0} px to the status bar at {:.1}",
+                    f32::from(bottom),
+                    f32::from(margin),
+                    f32::from(status_bar)
                 ));
             }
         }
@@ -1387,8 +1412,10 @@ fn dialog_findings(cx: &mut VisualTestContext, width: f32, margin: Pixels) -> Ve
 /// Opens every dialog with a width of its own in a 461 × 490 half tile at
 /// `text` pt: each lies inside the window with its margin on either side,
 /// rather than centred at its width with its left side past the window's,
-/// and its content gives way in the responsive order with nothing cut by
-/// its clip (DESIGN.md, "One responsive order").
+/// ends that margin above the status bar, where Keyboard Shortcuts once
+/// ended 14 px over the bar at 13 pt and on its top rule at 18 pt, and its
+/// content gives way in the responsive order with nothing cut by its clip
+/// (DESIGN.md, "One responsive order").
 async fn narrow_dialogs(text: u8, cx: &mut TestAppContext) {
     let (_fixture, app, cx, _) = open(Page::History, cx).await;
     cx.update(|_, cx| {
@@ -1420,6 +1447,27 @@ async fn narrow_dialogs(text: u8, cx: &mut TestAppContext) {
                 (shown, drawn) => findings.push(format!(
                     "{list} at {shown:?} does not show {row} at {drawn:?} whole"
                 )),
+            }
+        }
+        if let Some((list, full, last, control)) = dialog.yielding_list() {
+            match (
+                cx.debug_bounds(list),
+                bounds_of(cx, last),
+                bounds_of(cx, control),
+            ) {
+                (Some(list), Some(last), Some(control)) => {
+                    if list.size.height >= full - px(0.5) {
+                        findings.push(format!(
+                            "{list:?} keeps its full {full:?} rather than giving it up"
+                        ));
+                    }
+                    if last.bottom() > control.top() {
+                        findings.push(format!(
+                            "the body's last line at {last:?} runs below the fold, under {control:?}"
+                        ));
+                    }
+                }
+                drawn => findings.push(format!("the list, last line and control at {drawn:?}")),
             }
         }
         let mut seen = BTreeSet::new();

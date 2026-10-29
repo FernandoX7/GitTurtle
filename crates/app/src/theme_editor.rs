@@ -1048,6 +1048,7 @@ impl GitTurtle {
             let (route_cancel, route_delete) = (cancel_focus.clone(), delete_focus.clone());
             dialog
                 .kind(DialogKind::Alert)
+                .max_h(appearance::dialog_max_height(window))
                 .title(title.clone())
                 .child(native_accessibility::text(
                     "delete-theme-consequences",

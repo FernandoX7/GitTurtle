@@ -53,6 +53,7 @@ impl GitTurtle {
                     "Ignore untracked content",
                 ))
                 .width(appearance::dialog_width(px(560.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
                 .button_props(
                     DialogButtonProps::default()

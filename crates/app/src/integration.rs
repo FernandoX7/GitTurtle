@@ -26,6 +26,7 @@ impl GitTurtle {
             dialog
                 .title("Git operation details")
                 .width(appearance::dialog_width(px(680.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(
                     crate::editor_find::Editor::new(&editor)
                         .readonly(true)
@@ -73,6 +74,7 @@ impl GitTurtle {
                 .kind(DialogKind::Alert)
                 .title(title.clone())
                 .width(appearance::dialog_width(px(520.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(
                     native_accessibility::static_text(
                         div()

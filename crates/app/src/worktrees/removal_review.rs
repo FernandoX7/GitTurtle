@@ -182,7 +182,7 @@ impl GitTurtle {
             dialog
                 .kind(DialogKind::Alert)
                 .title(native_accessibility::dialog_title("worktree-force-title", "Force remove worktree?"))
-                .width(appearance::dialog_width(px(720.), window))
+                .width(appearance::dialog_width(px(720.), window)).max_h(appearance::dialog_max_height(window))
                 .child(
                     div()
                         .id("operation-consequences")

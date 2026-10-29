@@ -658,6 +658,7 @@ impl GitTurtle {
             dialog
                 .title(title)
                 .width(crate::appearance::dialog_width(px(520.), window))
+                .max_h(crate::appearance::dialog_max_height(window))
                 .child(form.clone())
                 .keyboard(!pending)
                 .footer(

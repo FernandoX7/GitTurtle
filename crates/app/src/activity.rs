@@ -323,6 +323,7 @@ impl GitTurtle {
             dialog
                 .title("GitTurtle activity")
                 .width(appearance::dialog_width(px(760.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(browser.clone())
                 .button_props(DialogButtonProps::default().ok_text("Done"))
         });

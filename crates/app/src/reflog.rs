@@ -190,6 +190,7 @@ impl ReflogBrowser {
                         .ml(TEXT_INSET),
                 )
                 .width(appearance::dialog_width(px(740.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .gap(DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                 .child(browser.clone())
                 .button_props(DialogButtonProps::default().ok_text("Done"))

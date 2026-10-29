@@ -1,6 +1,7 @@
 //! The app-owned bindings are also the source for menu, palette and help labels.
 //! Toolkit text-editing bindings keep their own focused input contexts.
 use crate::*;
+use gpui_kit::base::ElementExt as _;
 use gpui_kit::component::kbd::Kbd;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -757,9 +758,17 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
                 .mb(-room),
             )
             .width(appearance::dialog_width(appearance::ui_size(650.), window))
+            .max_h(appearance::dialog_max_height(window))
             .bg(rgb(surface.raised()))
             .border_color(rgb(surface.raised_edge()))
-            .child(help.clone())
+            // In the dialog's content rather than its scrolling body, whose
+            // scroller lays what it holds out at full height: here the view
+            // shrinks with the dialog's height cap and its list gives up the
+            // height, so the field, the hint and Done stay in view.
+            .content({
+                let help = help.clone();
+                move |content, _, _| content.min_h_0().child(help.clone())
+            })
             .footer(
                 DialogFooter::new().child(
                     DialogKeys::Shortcuts
@@ -782,11 +791,28 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
     window.refresh();
 }
 
+/// The shortcut list's height at the default interface size, where the
+/// dialog has the room.
+const SHORTCUT_LIST_HEIGHT: f32 = 430.;
+/// The least the list gives up its height to, at the default interface size:
+/// one 42 px row inside its 1 px border, as at 18 pt in a 461 × 490 window,
+/// where the hint below it wraps to three lines.
+const SHORTCUT_LIST_FLOOR: f32 = 44.;
+
+/// The shortcut list's height where the dialog has the room, at the
+/// interface size.
+pub(crate) fn list_height() -> Pixels {
+    appearance::ui_size(SHORTCUT_LIST_HEIGHT)
+}
+
 struct ShortcutHelpView {
     query: Entity<InputState>,
     rows: Vec<HelpRow>,
     selected: usize,
     scroll: UniformListScrollHandle,
+    /// The list's height as last laid out: when the dialog's height cap
+    /// changes it, the list keeps the selected entry in view.
+    list_height: std::rc::Rc<std::cell::Cell<Pixels>>,
     return_focus: Option<FocusHandle>,
     closed: bool,
     _subscription: Subscription,
@@ -809,6 +835,7 @@ impl ShortcutHelpView {
             rows: help_matches(""),
             selected: 1,
             scroll: UniformListScrollHandle::new(),
+            list_height: Default::default(),
             return_focus,
             closed: false,
             _subscription: subscription,
@@ -830,7 +857,7 @@ impl ShortcutHelpView {
 }
 
 impl Render for ShortcutHelpView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::prelude::FluentBuilder;
         let p = palette(cx);
         let count = self
@@ -838,9 +865,11 @@ impl Render for ShortcutHelpView {
             .iter()
             .filter(|row| matches!(row, HelpRow::Entry(_)))
             .count();
-        let height = (window.viewport_size().height - appearance::ui_size(280.))
-            .max(appearance::ui_size(88.))
-            .min(appearance::ui_size(430.));
+        // The list asks for its full height and gives up what the dialog's
+        // height cap (`appearance::dialog_max_height`) takes, down to its
+        // floor, by layout: the chrome around it, such as the hint that wraps
+        // in a narrow window, is never estimated.
+        let height = list_height();
         let list = uniform_list(
             "shortcut-help-list",
             self.rows.len(),
@@ -916,7 +945,7 @@ impl Render for ShortcutHelpView {
         .track_scroll(&self.scroll)
         .size_full();
         div().id("keyboard-shortcuts-view").debug_selector(|| "keyboard-shortcuts-view".into()).key_context("GitTurtleShortcuts")
-            .flex().flex_col().gap_3().pt(appearance::button_ring_room(cx)).text_size(appearance::ui_text(12.))
+            .flex().flex_col().min_h_0().gap_3().pt(appearance::button_ring_room(cx)).text_size(appearance::ui_text(12.))
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| {
                 this.close(window, cx); cx.stop_propagation();
             }))
@@ -948,7 +977,19 @@ impl Render for ShortcutHelpView {
                 .text_color(rgb(p.muted)).child(format!("{count} shortcuts · {}",
                     if cfg!(target_os = "macos") { "⌘ Command  ⌥ Option  ⌃ Control  ⇧ Shift" } else { "Ctrl, Alt and Shift" })))
             .child(crate::native_accessibility::clips_children(div().id("shortcut-help-results").debug_selector(|| "shortcut-help-results".into()).role(Role::ListBox)
-                .aria_label("Keyboard shortcuts by group").h(height).overflow_hidden()
+                .aria_label("Keyboard shortcuts by group").h(height).min_h(appearance::ui_size(SHORTCUT_LIST_FLOOR)).overflow_hidden()
+                // Prepainted before the rows, so the scroll lands in the
+                // frame whose height changed: a list given up to its floor,
+                // as at 18 pt in a 461 × 490 window, shows the selected entry
+                // whole rather than its group's heading over a sliver of it.
+                .on_prepaint({
+                    let (seen, scroll, selected) = (self.list_height.clone(), self.scroll.clone(), self.selected);
+                    move |bounds, _, _| {
+                        if seen.replace(bounds.size.height) != bounds.size.height {
+                            scroll.scroll_to_item(selected, ScrollStrategy::Nearest);
+                        }
+                    }
+                })
                 .rounded(px(7.)).border_1().border_color(rgb(p.raised_edge()))
                 .when(count > 0, |view| view.child(list))
                 .when(count == 0, |view| view.child(div().p_4().text_color(rgb(p.muted)).child(

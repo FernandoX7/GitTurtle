@@ -198,6 +198,10 @@ impl GitTurtle {
                 )
                 .on_ok(|_, _, _| false)
                 .width(appearance::dialog_width(px(1100.), window))
+                // No `appearance::dialog_max_height`: the panel bounds its
+                // own scrolling body from the window (`body_max_height`),
+                // which reveals the control Tab moves onto; the dialog's cap
+                // would clip that body and scroll it a second time.
                 .child(form.clone())
                 .footer(DialogFooter::new().child(
                     button("github-close", "Back to repository", "", false).on_click(

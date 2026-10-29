@@ -327,6 +327,7 @@ fn read_page_text(
         dialog
             .title(format!("{label} · Page {number} text"))
             .width(appearance::dialog_width(px(800.), window))
+            .max_h(appearance::dialog_max_height(window))
             .child(body)
             .footer(DialogFooter::new().child(
                 button("close-pdf-text", "Back to PDF", "", false).on_click(
@@ -400,6 +401,7 @@ fn page_picker(
         dialog
             .title(format!("{label}: go to page"))
             .width(appearance::dialog_width(px(360.), window))
+            .max_h(appearance::dialog_max_height(window))
             .child(
                 div()
                     .flex()

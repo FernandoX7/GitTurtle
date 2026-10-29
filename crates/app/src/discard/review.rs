@@ -103,7 +103,7 @@ impl GitTurtle {
             dialog
                 .kind(DialogKind::Alert)
                 .title(native_accessibility::dialog_title("discard-title", title))
-                .width(appearance::dialog_width(px(620.), window))
+                .width(appearance::dialog_width(px(620.), window)).max_h(appearance::dialog_max_height(window))
                 .child(
                     div()
                         .id("operation-consequences")

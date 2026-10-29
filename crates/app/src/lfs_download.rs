@@ -130,6 +130,7 @@ impl GitTurtle {
                     "Download an LFS preview",
                 ))
                 .width(appearance::dialog_width(px(650.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
                 .button_props(
                     DialogButtonProps::default()

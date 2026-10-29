@@ -456,8 +456,9 @@ impl GitTurtle {
             self.settings.code_text_size,
         );
         let details = cx.new(|_| AboutDetails { report });
-        window.open_alert_dialog(cx, move |dialog, _, _| {
+        window.open_alert_dialog(cx, move |dialog, window, _| {
             dialog
+                .max_h(appearance::dialog_max_height(window))
                 .title("About GitTurtle")
                 .description("A native Git workspace for history inspection and everyday Git work.")
                 .width(appearance::ui_size(550.))

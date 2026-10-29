@@ -351,7 +351,7 @@ impl GitTurtle {
             let owner = cx.entity().downgrade();
             let repository = self.path.clone();
             window.open_alert_dialog(cx, move |dialog, window, _| {
-                dialog.title("Choose the mainline parent").width(appearance::dialog_width(px(560.), window))
+                dialog.title("Choose the mainline parent").width(appearance::dialog_width(px(560.), window)).max_h(appearance::dialog_max_height(window))
                     .child(div().text_size(crate::appearance::ui_text(12.)).child(format!("{} is a merge commit. Choose the parent against which its change should be calculated.", short_oid(&commit.oid))))
                     .child(crate::native_accessibility::clips_children(div().id("recovery-mainline-parents").max_h(px(320.)).overflow_y_scroll().flex().flex_col().gap_2()
                         .children(commit.parents.iter().enumerate().take(128).map(|(index, parent)| {
@@ -467,6 +467,7 @@ impl GitTurtle {
             dialog
                 .title("Stashes")
                 .width(appearance::dialog_width(px(1060.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(browser.clone())
                 .button_props(DialogButtonProps::default().ok_text("Close"))
         });
@@ -832,6 +833,7 @@ fn show_amend(form: Entity<AmendForm>, window: &mut Window, cx: &mut App) {
         dialog
             .title("Amend last commit")
             .width(appearance::dialog_width(px(580.), window))
+            .max_h(appearance::dialog_max_height(window))
             .child(form.clone())
             .button_props(
                 DialogButtonProps::default()
@@ -912,6 +914,7 @@ fn show_stash_form(form: Entity<StashForm>, window: &mut Window, cx: &mut App) {
         dialog
             .title("Save changes to stash")
             .width(appearance::dialog_width(px(520.), window))
+            .max_h(appearance::dialog_max_height(window))
             .child(form.clone())
             .button_props(
                 DialogButtonProps::default()

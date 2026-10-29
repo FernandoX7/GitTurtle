@@ -219,6 +219,7 @@ impl GitTurtle {
                     "Git authentication"
                 })
                 .width(appearance::dialog_width(px(540.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .child(body)
                 .button_props(
                     DialogButtonProps::default()

@@ -133,6 +133,7 @@ impl GitTurtle {
                     .debug_selector(|| "interactive-rebase-title".into()),
                 )
                 .width(appearance::dialog_width(px(720.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                 .child(draft.clone())
                 .footer(
@@ -271,6 +272,7 @@ impl GitTurtle {
                                 "Continue rebase",
                             ))
                             .width(appearance::dialog_width(px(640.), window))
+                            .max_h(appearance::dialog_max_height(window))
                             .child(form.clone())
                             .footer(DialogFooter::new().child(
                                 button("close-rebase-message", "Close", "", false).on_click(

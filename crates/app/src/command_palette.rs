@@ -606,6 +606,7 @@ impl GitTurtle {
             dialog
                 .title("Command palette")
                 .width(appearance::dialog_width(px(660.), window))
+                .max_h(appearance::dialog_max_height(window))
                 .bg(rgb(surface.raised()))
                 .border_color(rgb(surface.raised_edge()))
                 .child(form.clone())
