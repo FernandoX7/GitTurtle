@@ -14,6 +14,9 @@
 //! pane's 1 px edge all count, so a stop shows its focus however it draws it.
 //! The modules whose dialogs need their own fixtures walk them with
 //! [`walk`]: `discard::tests`, `worktrees::tests` and `github_view::tests`.
+//! [`walk_back`] walks with Shift+Tab, for a scrolling body that must reveal
+//! each stop from the other side too, as the worktree manager's Create form
+//! does in a half tile.
 use super::{PaintedOutline, painted_outlines_where};
 use crate::appearance::{ThemeChoice, custom::ThemeSelection};
 use crate::*;
@@ -134,6 +137,27 @@ pub(crate) fn walk(
     walk_with(app, cx, surface, interface, failures, &mut |_, _| {})
 }
 
+/// [`walk`] with Shift+Tab: the same stops in the other order, so a
+/// scrolling body must reveal each from the other side, and Shift+Tab from
+/// the first stop round to the last.
+pub(crate) fn walk_back(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    surface: &str,
+    interface: u8,
+    failures: &mut Vec<String>,
+) -> Vec<Bounds<Pixels>> {
+    walk_keyed(
+        app,
+        cx,
+        "shift-tab",
+        surface,
+        interface,
+        failures,
+        &mut |_, _| {},
+    )
+}
+
 /// [`walk`], running `between` between the frames each stop's ring is read
 /// from ([`ring`]).
 fn walk_with(
@@ -144,11 +168,25 @@ fn walk_with(
     failures: &mut Vec<String>,
     between: &mut dyn FnMut(&mut VisualTestContext, bool),
 ) -> Vec<Bounds<Pixels>> {
+    walk_keyed(app, cx, "tab", surface, interface, failures, between)
+}
+
+/// [`walk_with`], moving focus with `key`: "tab" or "shift-tab".
+fn walk_keyed(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    key: &str,
+    surface: &str,
+    interface: u8,
+    failures: &mut Vec<String>,
+    between: &mut dyn FnMut(&mut VisualTestContext, bool),
+) -> Vec<Bounds<Pixels>> {
+    let name = if key == "tab" { "Tab" } else { "Shift+Tab" };
     let root = app.read_with(cx, |app, _| app.app_focus.clone());
     let mut order: Vec<FocusHandle> = Vec::new();
     let mut rings = Vec::new();
     for stop in 0..MAX_STOPS {
-        cx.simulate_keystrokes("tab");
+        cx.simulate_keystrokes(key);
         draw(cx, 2);
         // Moving the pointer without a press keeps the ring: GPUI's
         // `focus_visible` dropped it here.
@@ -167,12 +205,12 @@ fn walk_with(
         });
         let at = format!("{surface} at {interface} pt, stop {stop} ({contexts})");
         let Some(focused) = cx.update(|window, cx| window.focused(cx)) else {
-            failures.push(format!("{at}: Tab left nothing focused"));
+            failures.push(format!("{at}: {name} left nothing focused"));
             return rings;
         };
         if let Some(seen) = order.iter().position(|other| *other == focused) {
             if seen > 0 && seen + 1 == order.len() {
-                failures.push(format!("{at}: Tab keeps focus where it was"));
+                failures.push(format!("{at}: {name} keeps focus where it was"));
             }
             return rings;
         }
@@ -207,7 +245,7 @@ fn walk_with(
         order.push(focused);
     }
     failures.push(format!(
-        "{surface} at {interface} pt: Tab did not come round in {MAX_STOPS} stops"
+        "{surface} at {interface} pt: {name} did not come round in {MAX_STOPS} stops"
     ));
     rings
 }

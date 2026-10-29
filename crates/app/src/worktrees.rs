@@ -234,12 +234,15 @@ struct WorktreeManager {
     /// first field, if it holds focus: set as the dialog opens.
     reveal_field: bool,
     /// The content's scroll, which its scrollbar follows and which reveals
-    /// the control the keyboard moves focus onto, the worktree list as a
-    /// whole for a row.
+    /// the control the keyboard moves focus onto, the worktree list or
+    /// Create's branch choices as a whole for one of theirs.
     content: crate::focus_reveal::FocusReveal,
     /// The worktree list's scroll, which its scroll cue follows and which
     /// reveals the row the keyboard moves focus onto.
     rows: crate::focus_reveal::FocusReveal,
+    /// Create's branch choices' scroll, which reveals the choice the
+    /// keyboard moves focus onto.
+    choices: crate::focus_reveal::FocusReveal,
     reviewing: bool,
     error: Option<String>,
     creating: bool,
@@ -287,6 +290,7 @@ impl WorktreeManager {
             reveal_field: false,
             content: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
             rows: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
+            choices: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
             reviewing: false,
             error: None,
             creating: false,
@@ -370,8 +374,24 @@ impl WorktreeManager {
                 self.cancel();
             }
             self.creating = creating;
+            self.show_first_choice();
             cx.notify();
         }
+    }
+    /// Shows Create for an existing branch, with its choices, or a new one.
+    fn set_new_branch(&mut self, new_branch: bool, cx: &mut Context<Self>) {
+        if self.new_branch != new_branch {
+            self.new_branch = new_branch;
+            self.show_first_choice();
+        }
+        self.error = None;
+        cx.notify();
+    }
+    /// The branch choices' scroll stays with the manager while they are
+    /// hidden, so they show again from their first choice rather than where
+    /// a reveal or a wheel last left them.
+    fn show_first_choice(&self) {
+        self.choices.scroll().set_offset(Point::default());
     }
     fn read<T: Send + 'static>(
         &mut self,
@@ -653,18 +673,32 @@ impl Render for WorktreeManager {
         // where the details below wrap, the content scrolls rather than
         // squeeze the list: at 13 pt in a 461 × 490 half tile it kept one of
         // two worktrees, too short a track for a scrollbar's thumb to move
-        // in. Past its height the list cues the rest with its scrollbar, and
-        // the content, beside it in the dialog's side padding, cues its own.
+        // in. A list with no worktree keeps its whole explanation: at 18 pt
+        // in the half tile, with a worktree's details shown, a filter that
+        // matched nothing left "No worktrees match this filter." in a list
+        // 6 px tall. Past its height the list cues the rest with its
+        // scrollbar, and the content, beside it in the dialog's side
+        // padding, cues its own. Create's branch choices keep two whole
+        // choices, or the one there is, or their whole explanation, the
+        // same way, and cue theirs: in the half tile the content squeezed
+        // them to nothing, so a choice Tab moved onto showed nowhere.
         let room = appearance::button_ring_room(cx);
         let row = appearance::ui_size(36.);
         let floor_rows = trees.len().clamp(1, 2) as f32;
         let rows_floor = row * floor_rows + (room + ROW_RING_CLEARANCE) * (floor_rows - 1.);
+        let floor_choices = choices.len().clamp(1, 2) as f32;
+        let choices_floor = appearance::ui_size(28.) * floor_choices
+            + rems(0.25).to_pixels(window.rem_size()) * (floor_choices - 1.);
         // A control the keyboard moves focus onto scrolls into view in this
         // frame with its ring: the list shows the row, and the content the
         // whole list, or the control, as the Reflog's do. Each control
         // reports where it lies to the content; the selected worktree's
-        // details, below the list, once stayed below the content's fold.
+        // details, below the list, once stayed below the content's fold, as
+        // did every control of Create's form. Create's branch choices reveal
+        // a choice as the worktree list reveals a row, and the content shows
+        // the choices' list.
         self.rows.reveal(window, cx);
+        self.choices.reveal(window, cx);
         self.content.reveal(window, cx);
         let rows: Vec<_> = (0..trees.len().min(100))
             .map(|index| self.rows.focus(("managed-worktree-row", index), cx))
@@ -686,7 +720,20 @@ impl Render for WorktreeManager {
             "force-remove-managed-worktree",
         ]
         .map(|id| self.content.focus(id, cx));
+        let kinds = ["worktree-existing-branch", "worktree-new-branch"]
+            .map(|id| self.content.focus(id, cx));
+        let branch_field = self.branch.read(cx).focus_handle(cx);
+        let start_field = self.start.read(cx).focus_handle(cx);
+        let folder_field = self.folder.read(cx).focus_handle(cx);
+        let [parent_action, review_action] = ["choose-worktree-parent", "review-create-worktree"]
+            .map(|id| self.content.focus(id, cx));
+        let choice_focus: Vec<_> = (0..choices.len())
+            .map(|index| self.choices.focus(("worktree-branch-choice", index), cx))
+            .collect();
+        let reveal_choice = self.choices.items(choice_focus.clone(), room);
+        let show_choices = self.content.group(choice_focus.clone(), room);
         let cue = crate::tags::ScrollCue::new(self.rows.scroll(), room);
+        let choice_cue = crate::tags::ScrollCue::new(self.choices.scroll(), room);
         // As the dialog opens, the content scrolls the shown form's first
         // field into view with its ring: it follows the tabs' row, the
         // loading row and the error, and in Create the branch choice and its
@@ -712,7 +759,7 @@ impl Render for WorktreeManager {
                 // Past its height, as where a half tile leaves it one row,
                 // the list cues the rest with its scrollbar, and a row Tab
                 // moves onto scrolls into view with its ring.
-                .child(div().debug_selector(|| "managed-worktree-entries".into()).on_children_prepainted(show_list).flex().flex_col().min_h_0().when(!trees.is_empty(), |entries| entries.min_h(rows_floor)).child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap(room + ROW_RING_CLEARANCE).children(trees.iter().take(100).zip(rows).enumerate().map(|(index, (tree, focus))| {
+                .child(div().debug_selector(|| "managed-worktree-entries".into()).on_children_prepainted(show_list).flex().flex_col().min_h_0().map(|entries| if trees.is_empty() { entries.flex_shrink_0() } else { entries.min_h(rows_floor) }).child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap(room + ROW_RING_CLEARANCE).children(trees.iter().take(100).zip(rows).enumerate().map(|(index, (tree, focus))| {
                     let tree = tree.clone(); let selected = self.selected.as_ref() == Some(&tree.path); let text = format!("{} · {}{}{}", tree.branch.as_deref().unwrap_or("Detached HEAD"), tree.path.display(), if tree.locked { " · Locked" } else { "" }, if tree.prunable { " · Missing or stale" } else { "" });
                     worktree_row(index, text, selected, p).track_focus(&focus).on_click(cx.listener(move |this, _, window, cx| this.select(tree.clone(), window, cx)))
                 })).when(trees.is_empty() && !self.pending, |element| element.child(label("worktrees-empty", "No worktrees match this filter.").text_size(crate::appearance::ui_text(12.)))), "managed-worktree-scrollbar").min_h_0()))
@@ -732,19 +779,24 @@ impl Render for WorktreeManager {
                         .when_some(details.force_removal_blocked.as_ref(), |element, reason| element.child(label("worktree-force-removal-protection", format!("Force removal unavailable: {reason}")).debug_selector(|| "worktree-force-removal-protection".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
                 }))
             .when(self.creating, |element| element
-                .child(div().flex().gap_2().children([(false, "Existing branch"), (true, "New branch")].map(|(new, name)| button(name, name, "", self.new_branch == new).toggled(self.new_branch == new).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| { this.new_branch = new; this.error = None; cx.notify(); })))))
+                .child(div().flex().gap_2().on_children_prepainted(self.content.controls(kinds.iter().cloned().map(Some).collect(), room)).children([(false, "Existing branch", "worktree-existing-branch"), (true, "New branch", "worktree-new-branch")].into_iter().zip(kinds).map(|((new, name, selector), focus)| button(name, name, "", self.new_branch == new).track_focus(&focus).debug_selector(move || selector.to_string()).toggled(self.new_branch == new).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| this.set_new_branch(new, cx))))))
                 .child(label("worktree-branch-label", if self.new_branch { "New branch name" } else { "Choose a local branch" }).text_size(crate::appearance::ui_text(12.)))
-                .child(div().py(room).my(-room).child(Input::new(&self.branch).aria_label("Worktree branch name")))
-                .when(!self.new_branch, |element| element.child(div().debug_selector(|| "worktree-branch-entries".into()).flex().flex_col().min_h_0().child(crate::native_accessibility::clips_children(div().id("worktree-branch-choices").debug_selector(|| "worktree-branch-choices".into()).max_h(px(140.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(choices.iter().enumerate().map(|(index, branch)| {
+                .child(div().on_children_prepainted(self.content.control(branch_field, room)).py(room).my(-room).child(Input::new(&self.branch).aria_label("Worktree branch name")))
+                // A choice Tab moves onto scrolls into the list's view with
+                // its ring, and the content shows the list.
+                .when(!self.new_branch, |element| element.child(div().debug_selector(|| "worktree-branch-entries".into()).on_children_prepainted(show_choices).flex().flex_col().min_h_0().map(|entries| if choices.is_empty() { entries.flex_shrink_0() } else { entries.min_h(choices_floor) }).child(choice_cue.list(div().on_children_prepainted(choice_cue.observe(reveal_choice)).id("worktree-branch-choices").debug_selector(|| "worktree-branch-choices".into()).max_h(px(140.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.choices.scroll()).flex().flex_col().gap_1().children(choices.iter().zip(choice_focus).enumerate().map(|(index, (branch, focus))| {
                     let name = branch.name.clone(); let occupied = self.trees.iter().any(|tree| tree.branch.as_deref() == Some(&name));
-                    button(("worktree-branch-choice", index), format!("{}{}", name, if occupied { " · In use" } else { "" }), "", false).debug_selector(move || format!("worktree-branch-choice-{index}")).disabled(occupied || self.pending).on_click(cx.listener(move |this, _, window, cx| { this.branch.update(cx, |input, cx| input.set_value(name.clone(), window, cx)); cx.notify(); }))
-                })).when(choices.is_empty(), |element| element.child(label("worktree-branches-empty", "No local branch matches. Create a new branch or change the name.").text_size(crate::appearance::ui_text(12.))))))))
-                .when(self.new_branch, |element| element.child(label("worktree-start-label", "Start from local branch, tag, or commit").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.start).aria_label("New worktree starting revision")))
-                .child(label("worktree-parent", format!("Parent folder: {}", self.parent.display())).text_size(crate::appearance::ui_text(12.)))
-                .child(button("choose-worktree-parent", "Choose parent folder…", "folder", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.choose_parent(window, cx))))
-                .child(Input::new(&self.folder).aria_label("New worktree folder name"))
-                .child(label("worktree-destination-rule", "Choose a new folder inside the parent. Existing folders and branches checked out elsewhere are protected. Review the resolved branch and destination before creating.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
-                .child(refusing(button("review-create-worktree", "Review worktree…", "", false), "review-create-worktree", false, false).on_click(cx.listener(|this, _, window, cx| this.prepare_create(window, cx))))));
+                    button(("worktree-branch-choice", index), format!("{}{}", name, if occupied { " · In use" } else { "" }), "", false).track_focus(&focus).debug_selector(move || format!("worktree-branch-choice-{index}")).disabled(occupied || self.pending).on_click(cx.listener(move |this, _, window, cx| { this.branch.update(cx, |input, cx| input.set_value(name.clone(), window, cx)); cx.notify(); }))
+                })).when(choices.is_empty(), |element| element.child(label("worktree-branches-empty", "No local branch matches. Create a new branch or change the name.").text_size(crate::appearance::ui_text(12.)))), "worktree-branch-choices-scrollbar").min_h_0())))
+                .when(self.new_branch, |element| element.child(label("worktree-start-label", "Start from local branch, tag, or commit").text_size(crate::appearance::ui_text(12.))).child(div().on_children_prepainted(self.content.control(start_field, room)).child(Input::new(&self.start).aria_label("New worktree starting revision"))))
+                // The rest of the form, laid out as the content's own
+                // children are, so that its controls report where they lie.
+                .child(div().flex().flex_col().gap_3().on_children_prepainted(self.content.controls(vec![None, Some(parent_action.clone()), Some(folder_field), None, Some(review_action.clone())], room))
+                    .child(label("worktree-parent", format!("Parent folder: {}", self.parent.display())).text_size(crate::appearance::ui_text(12.)))
+                    .child(button("choose-worktree-parent", "Choose parent folder…", "folder", false).track_focus(&parent_action).debug_selector(|| "choose-worktree-parent".to_string()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.choose_parent(window, cx))))
+                    .child(Input::new(&self.folder).aria_label("New worktree folder name"))
+                    .child(label("worktree-destination-rule", "Choose a new folder inside the parent. Existing folders and branches checked out elsewhere are protected. Review the resolved branch and destination before creating.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
+                    .child(refusing(button("review-create-worktree", "Review worktree…", "", false).track_focus(&review_action).debug_selector(|| "review-create-worktree".to_string()), "review-create-worktree", false, false).on_click(cx.listener(|this, _, window, cx| this.prepare_create(window, cx)))))));
         // The content's scrollbar stands in the dialog's side padding, beside
         // the content and its ring room, as the Reflog's does, and paints
         // only while the content overflows.
@@ -1466,6 +1518,61 @@ pub(crate) mod ring_room_tests {
             "managed-worktree-list",
             room,
             &rows,
+        );
+    }
+
+    /// Create's twelve branch choices overflow their list in a 461 px wide
+    /// window and in a 1480 × 980 one, at 13 and 18 pt, and their
+    /// scrollbar's thumb follows the list's offset in a gutter clear of
+    /// every choice's ring, as the worktree list's does; the choices cued
+    /// nothing. With one choice, the list keeps no gutter and draws none.
+    #[gpui::test]
+    async fn branch_choices_cue_choices_beyond_their_edge(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        for index in 0..11 {
+            git(repo.path(), &["branch", &format!("feature-{index:02}")]);
+        }
+        git(repo.path(), &["checkout", "--quiet", "--detach"]);
+        let (app, manager, cx) = opened_manager(cx, &repo).await;
+        manager.update(cx, |manager, cx| {
+            manager.set_creating(true, cx);
+            manager.set_new_branch(false, cx);
+        });
+        draw(cx);
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let scroll = manager.read_with(cx, |manager, _| manager.choices.scroll().clone());
+        let choices = crate::tags::tests::selectors("worktree-branch-choice", 12);
+        // In a 461 × 490 half tile at 18 pt the list lies below the
+        // content's fold until a choice Tab moves onto reveals it, so its
+        // thumb is checked in a window as narrow and taller.
+        for (width, height) in [(461., 900.), (1480., 980.)] {
+            cx.simulate_resize(gpui::size(px(width), px(height)));
+            draw(cx);
+            crate::tags::tests::assert_scroll_cue(
+                cx,
+                &app,
+                &scroll,
+                "worktree-branch-choices",
+                room,
+                &choices,
+            );
+        }
+        cx.update(|window, cx| {
+            manager.update(cx, |manager, cx| {
+                manager
+                    .branch
+                    .update(cx, |input, cx| input.set_value("feature-07", window, cx))
+            })
+        });
+        draw(cx);
+        draw(cx);
+        crate::tags::tests::assert_no_scroll_cue(
+            cx,
+            &app,
+            "worktree-branch-choices",
+            room,
+            &["worktree-branch-choice-0"],
         );
     }
 }

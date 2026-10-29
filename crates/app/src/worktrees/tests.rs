@@ -1004,6 +1004,163 @@ async fn a_narrow_manager_shows_every_detail_stop_whole(cx: &mut TestAppContext)
     sweep::assert_whole(failures);
 }
 
+/// In a 461 × 490 half tile, at 13 and 18 pt, every Tab stop of the
+/// manager's Create form draws its ring whole and in view, walked with Tab
+/// and then back with Shift+Tab, in its New branch form and in its Existing
+/// branch form, whose branch choices, more than their list shows at once,
+/// scroll on their own.
+#[gpui::test]
+async fn a_narrow_create_form_shows_every_stop_whole(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let fixture = Fixture::new();
+    // Local branches free to check out, more than the choices list shows.
+    for index in 0..8 {
+        git(fixture.repo.path(), &["branch", &format!("topic-{index}")]);
+    }
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    sweep::prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    let mut failures = Vec::new();
+    for interface in sweep::SIZES {
+        sweep::interface_size(cx, interface);
+        for (existing, surface) in [
+            (false, "the narrow Create form, New branch"),
+            (true, "the narrow Create form, Existing branch"),
+        ] {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+            let manager = manager(&app, cx);
+            settle(&manager, cx).await;
+            cx.update(|window, cx| {
+                manager.update(cx, |manager, cx| {
+                    manager.switch_form(true, window, cx);
+                    manager.new_branch = !existing;
+                })
+            });
+            draw(cx);
+            draw(cx);
+            assert!(
+                cx.debug_bounds("worktree-branch-choices").is_some() == existing,
+                "{interface} pt: {surface} shows its branch choices only for an existing branch"
+            );
+            sweep::walk(&app, cx, surface, interface, &mut failures);
+            if existing {
+                // Tab reached the free choices below the list's fold.
+                let offset =
+                    manager.read_with(cx, |manager, _| manager.choices.scroll().offset().y);
+                assert!(
+                    offset < px(0.),
+                    "{interface} pt: Tab scrolled the branch choices"
+                );
+            }
+            sweep::walk_back(&app, cx, surface, interface, &mut failures);
+            sweep::close_dialogs(cx, surface, interface, &mut failures);
+        }
+    }
+    sweep::assert_whole(failures);
+}
+
+/// The branch choices' scroll stays with the manager, as the worktree
+/// list's does, so the choices kept the offset a reveal or a wheel left
+/// them at while they were hidden. Each time they show again, after New
+/// branch and Existing branch or Manage and Create worktree…, they start at
+/// their first choice.
+#[gpui::test]
+async fn the_branch_choices_show_again_from_their_first_choice(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let fixture = Fixture::new();
+    for index in 0..8 {
+        git(fixture.repo.path(), &["branch", &format!("topic-{index}")]);
+    }
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    sweep::prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    draw(cx);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+    let manager = manager(&app, cx);
+    settle(&manager, cx).await;
+    click(cx, "worktree-create-tab");
+    click(cx, "worktree-existing-branch");
+    let offset = |cx: &mut VisualTestContext| {
+        manager.read_with(cx, |manager, _| manager.choices.scroll().offset().y)
+    };
+    let scroll_to_end = |cx: &mut VisualTestContext| {
+        manager.update(cx, |manager, _| {
+            let scroll = manager.choices.scroll();
+            scroll.set_offset(point(px(0.), -scroll.max_offset().y));
+        });
+        cx.update(|window, _| window.refresh());
+        draw(cx);
+        assert!(offset(cx) < px(0.), "the choices scroll");
+    };
+    let first = |cx: &mut VisualTestContext, at: &str| {
+        assert_eq!(offset(cx), px(0.), "{at}: the choices start at the top");
+        let list = cx
+            .debug_bounds("worktree-branch-choices")
+            .expect("the choices");
+        let choice = cx
+            .debug_bounds("worktree-branch-choice-0")
+            .expect("the first choice");
+        assert!(
+            choice.top() >= list.top(),
+            "{at}: the first choice {choice:?} shows in {list:?}"
+        );
+    };
+    scroll_to_end(cx);
+    click(cx, "worktree-new-branch");
+    click(cx, "worktree-existing-branch");
+    first(cx, "after New branch");
+    scroll_to_end(cx);
+    click(cx, "worktree-browse-tab");
+    click(cx, "worktree-create-tab");
+    first(cx, "after Manage");
+}
+
+/// With a worktree's details shown in a 461 × 490 half tile, a filter that
+/// matches no worktree leaves the list its whole explanation at 13 and 18
+/// pt, though the details run past the content's fold.
+#[gpui::test]
+async fn a_narrow_manager_shows_its_whole_no_match_line(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let fixture = Fixture::new();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    sweep::prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    for interface in sweep::SIZES {
+        sweep::interface_size(cx, interface);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_worktree_actions(fixture.second.clone(), None, window, cx)
+            })
+        });
+        let manager = manager(&app, cx);
+        settle(&manager, cx).await;
+        cx.update(|window, cx| {
+            manager.update(cx, |manager, cx| {
+                manager.filter.update(cx, |input, cx| {
+                    input.set_value("no such worktree", window, cx)
+                })
+            })
+        });
+        draw(cx);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("worktree-selected-identity").is_some(),
+            "{interface} pt: the details stay shown"
+        );
+        let line = cx
+            .debug_bounds("worktrees-empty")
+            .unwrap_or_else(|| panic!("{interface} pt: the no-match line"));
+        let list = cx
+            .debug_bounds("managed-worktree-list")
+            .unwrap_or_else(|| panic!("{interface} pt: the list"));
+        assert!(
+            line.top() >= list.top() - px(0.01) && line.bottom() <= list.bottom() + px(0.01),
+            "{interface} pt: the no-match line {line:?} lies whole in the list {list:?}"
+        );
+        sweep::close_dialogs(cx, "the filtered manager", interface, &mut Vec::new());
+    }
+}
+
 /// A read that answers while keyboard focus is on its loading row's Cancel
 /// takes the row away and hands focus to the first field below it, ringed
 /// whole: the filter in Manage, the branch field in Create. Escape still
