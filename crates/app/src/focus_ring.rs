@@ -123,8 +123,9 @@ pub(crate) mod sweep;
 
 /// An outline the last frame painted, read back for tests: its bounds and
 /// width in logical pixels, its colour, which of its sides (top, right,
-/// bottom, left) are drawn whole, whether any of it shows, and whether all
-/// four sides are whole.
+/// bottom, left) are drawn whole, whether any of it shows, whether all four
+/// sides are whole, and the lowest scene order of its strips, which a fill
+/// painted over it, such as a dialog's backdrop, exceeds.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PaintedOutline {
@@ -134,6 +135,7 @@ pub(crate) struct PaintedOutline {
     pub(crate) sides: [bool; 4],
     pub(crate) drawn: bool,
     pub(crate) whole: bool,
+    pub(crate) order: u32,
 }
 
 /// The outlines of `color`, borders with no fill, that the last frame
@@ -203,21 +205,25 @@ pub(crate) fn painted_outlines_where(
                     (quad.bounds, quad.border_color),
                     quad.border_widths,
                     quad.content_mask.bounds,
+                    quad.order,
                 )
             })
             .collect();
         let mut outlines: Vec<PaintedOutline> = Vec::new();
         let mut seen = Vec::new();
-        for ((bounds, color), widths, _) in &strips {
+        for ((bounds, color), widths, _, _) in &strips {
             if seen.contains(&(*bounds, *color)) {
                 continue;
             }
             seen.push((*bounds, *color));
-            let masks: Vec<_> = strips
+            let same = strips
                 .iter()
-                .filter(|(other, _, _)| *other == (*bounds, *color))
-                .map(|(_, _, mask)| *mask)
-                .collect();
+                .filter(|(other, _, _, _)| *other == (*bounds, *color));
+            let masks: Vec<_> = same.clone().map(|(_, _, mask, _)| *mask).collect();
+            let order = same
+                .map(|(_, _, _, order)| *order)
+                .min()
+                .unwrap_or_default();
             let band = |left, top, right, bottom| {
                 Bounds::from_corners(point(left, top), point(right, bottom))
             };
@@ -256,6 +262,7 @@ pub(crate) fn painted_outlines_where(
                 sides,
                 drawn,
                 whole: sides.iter().all(|side| *side),
+                order,
             });
         }
         outlines

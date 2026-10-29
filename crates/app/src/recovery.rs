@@ -1844,11 +1844,6 @@ mod tests {
     /// the detail scrolls the control the keyboard moves onto into view with
     /// its ring, as the dialogs' lists do. Its group, mode and restore
     /// controls once stayed below the detail's fold, drawing no ring.
-    ///
-    /// The window lists no History beneath the dialog, as the Reflog's walk
-    /// does not: on the History fixture the selected commit row's accent bar
-    /// under the backdrop now and then differed between the walk's focused
-    /// and blurred frames and was read as a stop's ring.
     #[gpui::test]
     async fn a_narrow_stash_detail_shows_every_stop_whole(cx: &mut gpui_kit::TestAppContext) {
         use crate::focus_ring::sweep;

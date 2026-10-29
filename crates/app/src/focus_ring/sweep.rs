@@ -5,8 +5,11 @@
 //! a clip around it, the window's edge included.
 //!
 //! A stop's ring is what focus adds to the frame: the outlines in the accent,
-//! at any opacity, that the frame draws with the stop focused and not with
-//! the window blurred, its layout otherwise the same. A Button's 2 px ring,
+//! at any opacity, that the frame draws with the stop focused, not with the
+//! window blurred, and again with focus back on the stop, its layout
+//! otherwise the same; under a dialog, only those it paints above its
+//! backdrop. Nothing that lands on the page between those frames, such as a
+//! refresh moving History's selected row, counts. A Button's 2 px ring,
 //! an Input's accent edge and the kit's ring outside it, and a list's or a
 //! pane's 1 px edge all count, so a stop shows its focus however it draws it.
 //! The modules whose dialogs need their own fixtures walk them with
@@ -48,23 +51,70 @@ fn accent_outlines(cx: &mut VisualTestContext) -> Vec<PaintedOutline> {
     })
 }
 
+/// The scene order of the open dialog's backdrop, the fill in the kit's
+/// overlay colour over the whole window, in the last frame: whatever the
+/// page beneath the dialog paints lies below it, and what the dialog paints
+/// above. None with no dialog open, or one that dims nothing.
+fn backdrop_order(cx: &mut VisualTestContext) -> Option<u32> {
+    use gpui_kit::component::Theme;
+    let overlay = cx.read(|cx| Background::from(Theme::global(cx).colors.overlay));
+    cx.update(|window, cx| {
+        if !window.has_active_dialog(cx) || overlay.is_transparent() {
+            return None;
+        }
+        let scale = window.scale_factor();
+        let viewport = window.viewport_size();
+        let covers = |bounds: Bounds<gpui_kit::ScaledPixels>| {
+            bounds.size.width.as_f32() >= viewport.width.as_f32() * scale - 1.
+                && bounds.size.height.as_f32() >= viewport.height.as_f32() * scale - 1.
+        };
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background == overlay && covers(quad.bounds))
+            .map(|quad| quad.order)
+            .max()
+    })
+}
+
 /// What holding focus on `focus` adds to the frame: the accent outlines that
-/// show with it focused and that a blurred window does not draw. Focus is
-/// back on `focus` afterwards.
-fn ring(cx: &mut VisualTestContext, focus: &FocusHandle) -> Vec<PaintedOutline> {
+/// show with it focused, that a blurred window does not draw, and that show
+/// again once focus is back on `focus`, where it stays. Only focus may make
+/// the difference: replies keep landing on the page while the frames are
+/// drawn, and an outline a reply moves, such as History's selected row's
+/// leading border, which a quiet refresh listing new commits above the row
+/// moves down, differed between the focused and the blurred frame. Under a
+/// dialog, only what the dialog paints above its backdrop counts, since
+/// focus in a dialog draws nothing on the page beneath it.
+///
+/// `between` runs before each frame after the first, with false before the
+/// blurred frame and true before the refocused one, for the sweep's own
+/// tests to change the page there as a landing reply does.
+fn ring(
+    cx: &mut VisualTestContext,
+    focus: &FocusHandle,
+    between: &mut dyn FnMut(&mut VisualTestContext, bool),
+) -> Vec<PaintedOutline> {
     let focused = accent_outlines(cx);
+    let beneath = backdrop_order(cx);
+    between(cx, false);
     cx.update(|window, cx| window.blur(cx));
     draw(cx, 1);
     let blurred = accent_outlines(cx);
+    between(cx, true);
     cx.update(|window, cx| window.focus(focus, cx));
     draw(cx, 1);
+    let refocused = accent_outlines(cx);
+    let same = |outline: &PaintedOutline, other: &PaintedOutline| {
+        other.bounds == outline.bounds && other.color == outline.color
+    };
     focused
         .into_iter()
         .filter(|outline| {
             outline.drawn
-                && !blurred
-                    .iter()
-                    .any(|other| other.bounds == outline.bounds && other.color == outline.color)
+                && beneath.is_none_or(|backdrop| outline.order > backdrop)
+                && !blurred.iter().any(|other| same(outline, other))
+                && refocused.iter().any(|other| same(outline, other))
         })
         .collect()
 }
@@ -80,6 +130,19 @@ pub(crate) fn walk(
     surface: &str,
     interface: u8,
     failures: &mut Vec<String>,
+) -> Vec<Bounds<Pixels>> {
+    walk_with(app, cx, surface, interface, failures, &mut |_, _| {})
+}
+
+/// [`walk`], running `between` between the frames each stop's ring is read
+/// from ([`ring`]).
+fn walk_with(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    surface: &str,
+    interface: u8,
+    failures: &mut Vec<String>,
+    between: &mut dyn FnMut(&mut VisualTestContext, bool),
 ) -> Vec<Bounds<Pixels>> {
     let root = app.read_with(cx, |app, _| app.app_focus.clone());
     let mut order: Vec<FocusHandle> = Vec::new();
@@ -122,7 +185,7 @@ pub(crate) fn walk(
                 "{at}: focus is on an element the frame does not draw"
             ));
         } else {
-            let ring = ring(cx, &focused);
+            let ring = ring(cx, &focused, between);
             rings.extend(ring.iter().map(|outline| outline.bounds));
             if ring.is_empty() {
                 failures.push(format!("{at}: the focused element paints no ring"));
@@ -505,7 +568,7 @@ async fn dialogs_open_with_a_whole_ring_on_their_first_field(cx: &mut TestAppCon
             if !cx.update(|window, _| field.is_focused(window)) {
                 failures.push(format!("{at}: its first field does not hold focus"));
             } else {
-                let ring = ring(cx, &field);
+                let ring = ring(cx, &field, &mut |_, _| {});
                 if ring.is_empty() {
                     failures.push(format!("{at}: its first field paints no ring"));
                 }
@@ -585,6 +648,74 @@ async fn repository_dialogs_draw_a_whole_ring_at_every_stop(cx: &mut TestAppCont
             |app, window, cx| app.shortcut_help(window, cx),
         )
         .await;
+    }
+    assert_whole(failures);
+}
+
+/// Moves History's selection between its first two rows, as a reply landing
+/// between two frames moves the selected row: a quiet refresh that lists new
+/// commits above it, such as a stash's two.
+fn move_selection(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.selected_commit = Some(usize::from(app.selected_commit == Some(0)));
+            cx.notify();
+        })
+    });
+}
+
+/// Only focus makes a stop's ring, never a change on the page between the
+/// frames the ring is read from. A quiet refresh that landed there, listing
+/// a new stash's two commits above History's selected row, moved that row's
+/// 2 px accent leading border, and the Stashes walk over History read the
+/// border it left as a ring cut on three sides (13 pt, stop 3, in one seed
+/// of twelve). Here History's selection moves between the frames at every
+/// stop: once for good, as that reply moved it, in History's own walk and in
+/// a dialog's over History, and away and back, as a page beneath a dialog
+/// that drew differently while the window held no focus would. Every stop
+/// stays whole.
+#[gpui::test]
+async fn a_page_changing_between_a_stops_frames_is_not_its_ring(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) =
+        views::tests::history_window_from(cx, views::tests::history_script(3, 1)).await;
+    prepare(&app, cx);
+    let mut failures = Vec::new();
+    for interface in SIZES {
+        interface_size(cx, interface);
+        walk_with(
+            &app,
+            cx,
+            "History as a reply lands",
+            interface,
+            &mut failures,
+            &mut |cx, refocus| {
+                if !refocus {
+                    move_selection(&app, cx)
+                }
+            },
+        );
+        for (surface, back) in [
+            ("Keyboard Shortcuts over History as a reply lands", false),
+            ("Keyboard Shortcuts over History that marks the blur", true),
+        ] {
+            open_dialog(&app, cx, surface, |app, window, cx| {
+                app.shortcut_help(window, cx)
+            })
+            .await;
+            walk_with(
+                &app,
+                cx,
+                surface,
+                interface,
+                &mut failures,
+                &mut |cx, refocus| {
+                    if !refocus || back {
+                        move_selection(&app, cx)
+                    }
+                },
+            );
+            close_dialogs(cx, surface, interface, &mut failures);
+        }
     }
     assert_whole(failures);
 }
