@@ -471,6 +471,26 @@ and the resolved ring and separator. Native frames of the Menu record the render
 Remove this part of the patch when upstream lets a theme set a popup's edge
 colour.
 
+The dialog-edge patch modifies `src/theme/mod.rs` and
+`src/dialog/dialog.rs`. Upstream draws a dialog panel's 1 px border in the
+shared `border`, which an application fits against its page, not against a
+dialog over the backdrop that dims the page: GitTurtle's Braden `border` read
+1.28:1 against the dialog and 1.08:1 against the dimmed page.
+`Theme::dialog_edge`, `None` by default, set in code and skipped by theme
+files, is the panel's border where an application sets one; unset, the panel
+keeps `border`, as upstream. A caller's own `border_color` on a dialog still
+wins, as GitTurtle's raised pickers set theirs. The consumers are every app
+dialog; the app sets the edge to `Palette::dialog_edge`
+(`crates/app/src/appearance.rs`), fitted to 1.4:1 against the dialog's surface
+and each page surface its backdrop dims.
+`cargo test --locked -p gitturtle a_dialog_draws_its_edge_in_the_themes_dialog_edge`
+opens a bare kit dialog and reads its painted border, in `border` unset and in
+the edge once set, and
+`every_dialog_edge_holds_against_the_dialog_and_the_dimmed_page` applies every
+built-in and embedded Omarchy palette and reads the edge each dialog draws.
+Remove this part of the patch when upstream lets a theme set a dialog's border
+apart from `border`, and those tests pass without it.
+
 The `usize`-constant patch modifies `src/highlighter/highlighter.rs`. Upstream
 imports the `std::usize` module (`use std::{…, usize}`), so the `usize::MIN`
 and `usize::MAX` in `HighlightSummary`'s `Summary::zero` and in

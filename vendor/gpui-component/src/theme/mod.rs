@@ -166,6 +166,14 @@ pub struct Theme {
     /// its surfaces can fit the edge against them too.
     #[serde(skip)]
     pub popover_edge: Option<Hsla>,
+    /// GitTurtle patch: the 1 px border of a dialog's panel, or `None` for
+    /// the shared `border`, as upstream draws it.
+    ///
+    /// Set in code, not read from theme files, so an application that fits
+    /// its dialog surface and the backdrop beneath it can fit the edge
+    /// against both: the page's `border` is fitted against the page.
+    #[serde(skip)]
+    pub dialog_edge: Option<Hsla>,
     /// The label of a control that cannot be used, which
     /// [`Self::disabled_foreground`] resolves, or `None` for
     /// `muted_foreground` at half strength.
@@ -707,6 +715,7 @@ impl From<&ThemeColor> for Theme {
             ghost_hover: None,
             ghost_active: None,
             popover_edge: None,
+            dialog_edge: None,
             disabled_label: None,
             menu_label_size: None,
             scrollbar_mode: ScrollbarMode::default(),

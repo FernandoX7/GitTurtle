@@ -2972,6 +2972,113 @@ mod tests {
         });
     }
 
+    /// A probe that opens a bare kit dialog holding `dialog-edge-probe`.
+    struct DialogProbe;
+
+    impl gpui::Render for DialogProbe {
+        fn render(
+            &mut self,
+            window: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui_kit::{ParentElement as _, Styled as _};
+            gpui::div()
+                .size_full()
+                .children(gpui_kit::component::Root::render_dialog_layer(window, cx))
+        }
+    }
+
+    /// A window holding [`DialogProbe`] with its dialog open.
+    pub(crate) fn dialog_probe(cx: &mut gpui::TestAppContext) -> &mut gpui::VisualTestContext {
+        use gpui_kit::component::{Root, WindowExt as _};
+        use gpui_kit::{AppContext as _, InteractiveElement as _, ParentElement as _, Styled as _};
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let probe = cx.new(|_| DialogProbe);
+            Root::new(probe, window, cx)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(800.), gpui::px(600.)));
+        cx.update(|window, cx| {
+            window.open_dialog(cx, |dialog, _, _| {
+                dialog.title("Probe").child(
+                    gpui::div()
+                        .debug_selector(|| "dialog-edge-probe".into())
+                        .h(gpui::px(40.)),
+                )
+            })
+        });
+        crate::tags::tests::draw(cx);
+        crate::tags::tests::draw(cx);
+        cx
+    }
+
+    /// The border colours of the dialog panel the last frame painted: the
+    /// smallest quad with a 1 px border on every side around the probe's
+    /// content, each colour once.
+    pub(crate) fn painted_dialog_edge(cx: &mut gpui::VisualTestContext) -> Vec<Hsla> {
+        let content = cx
+            .debug_bounds("dialog-edge-probe")
+            .expect("the dialog's content");
+        cx.update(|window, _| {
+            let scale = window.scale_factor();
+            let logical = |value: gpui_kit::ScaledPixels| gpui::px(value.as_f32() / scale);
+            let quads = window.painted_quads();
+            let bordered = |quad: &&gpui_kit::Quad| {
+                let widths = quad.border_widths;
+                [widths.top, widths.right, widths.bottom, widths.left]
+                    .iter()
+                    .all(|width| logical(*width) == gpui::px(1.))
+            };
+            let holds = |quad: &&gpui_kit::Quad| {
+                logical(quad.bounds.left()) < content.left()
+                    && logical(quad.bounds.top()) < content.top()
+                    && logical(quad.bounds.right()) > content.right()
+                    && logical(quad.bounds.bottom()) > content.bottom()
+            };
+            let area = |quad: &&gpui_kit::Quad| {
+                logical(quad.bounds.size.width).as_f32() * logical(quad.bounds.size.height).as_f32()
+            };
+            let panel = quads
+                .iter()
+                .filter(bordered)
+                .filter(holds)
+                .min_by(|a, b| area(a).total_cmp(&area(b)))
+                .expect("the dialog paints a bordered panel around its content")
+                .bounds;
+            let mut edges = Vec::new();
+            for quad in quads
+                .iter()
+                .filter(|quad| quad.bounds == panel)
+                .filter(bordered)
+            {
+                if !edges.contains(&quad.border_color) {
+                    edges.push(quad.border_color);
+                }
+            }
+            edges
+        })
+    }
+
+    /// A kit dialog draws its panel's 1 px edge in the theme's `dialog_edge`
+    /// where an application sets one, and in the shared `border` otherwise,
+    /// as upstream does. The page's `border` is fitted against the page, not
+    /// against a dialog over a dimmed page: 1.28:1 in Braden.
+    #[gpui::test]
+    fn a_dialog_draws_its_edge_in_the_themes_dialog_edge(cx: &mut gpui::TestAppContext) {
+        let cx = dialog_probe(cx);
+        let unset = cx.update(|_, cx| {
+            let theme = Theme::global_mut(cx);
+            theme.dialog_edge = None;
+            theme.border
+        });
+        crate::tags::tests::draw(cx);
+        assert_eq!(painted_dialog_edge(cx), vec![unset], "unset: the border");
+        let edge = Hsla::from(rgb(0x7a3e9d));
+        cx.update(|_, cx| Theme::global_mut(cx).dialog_edge = Some(edge));
+        crate::tags::tests::draw(cx);
+        assert_eq!(painted_dialog_edge(cx), vec![edge], "set: the dialog edge");
+    }
+
     /// Hovering an enabled unchecked Switch visibly lifts its track in every
     /// palette: at least 6 of 255 in one channel from its resting `border`.
     #[test]

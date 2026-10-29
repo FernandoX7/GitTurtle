@@ -588,7 +588,11 @@ impl RenderOnce for Dialog {
                                     .id(layer_ix)
                                     .bg(cx.theme().tokens.background)
                                     .border_1()
-                                    .border_color(cx.theme().border)
+                                    // GitTurtle patch: the theme's dialog
+                                    // edge where it sets one.
+                                    .border_color(
+                                        cx.theme().dialog_edge.unwrap_or(cx.theme().border),
+                                    )
                                     .rounded(cx.theme().radius_lg)
                                     .min_h_24()
                                     .pt(paddings.top)
