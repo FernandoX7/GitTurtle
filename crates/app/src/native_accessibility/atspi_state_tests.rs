@@ -592,3 +592,69 @@ fn a_node_outside_an_outer_clip_is_not_showing() {
         );
     }
 }
+
+/// A point query passes over a node wholly outside a clipping ancestor to
+/// what is drawn at the point. AccessKit's hit test ignores clips and tries
+/// later siblings first, so a control AccessKit's filter keeps past a
+/// scrolling body's top fold, reported where it lies under the dialog's
+/// title, answered for the title's pixels (vendored patch,
+/// `GITTURTLE-PATCH.md`).
+#[test]
+fn a_point_query_passes_over_a_node_its_clip_leaves_out() {
+    use gpui_kit::gpui::accesskit::Rect as Bounds;
+    let named = |role: Role, name: &str, y0: f64, y1: f64| {
+        let mut node = Node::new(role);
+        node.set_label(name);
+        node.set_bounds(Bounds {
+            x0: 0.,
+            y0,
+            x1: 100.,
+            y1,
+        });
+        node
+    };
+    let [root, title, body, above, inside] = [0, 1, 2, 3, 4].map(LocalNodeId);
+    let mut window = named(Role::Window, "Window", 0., 500.);
+    window.set_children(vec![title, body]);
+    let mut body_node = named(Role::ScrollView, "Body", 40., 140.);
+    body_node.set_clips_children();
+    body_node.set_children(vec![above, inside]);
+    let adapter = Adapter::new(
+        &AppContext::new(None),
+        IgnoreCallbacks,
+        TreeUpdate {
+            nodes: vec![
+                (root, window),
+                (title, named(Role::Heading, "Dialog title", 0., 40.)),
+                (body, body_node),
+                (above, named(Role::Button, "Above the fold", 10., 36.)),
+                (inside, named(Role::Button, "Inside", 50., 80.)),
+            ],
+            tree: Some(Tree::new(root)),
+            tree_id: TreeId::ROOT,
+            focus: root,
+        },
+        true,
+        WindowBounds::default(),
+        IgnoreCallbacks,
+    );
+    let window = adapter.platform_node(adapter.root_id());
+    let at = |y: i32| {
+        window
+            .accessible_at_point(50, y, CoordType::Window)
+            .unwrap()
+            .map(|id| adapter.platform_node(id).name().unwrap())
+    };
+    let body = adapter.platform_node(window.child_at_index(1).unwrap().expect("the body"));
+    let names: Vec<String> = (0..body.child_count().unwrap() as usize)
+        .filter_map(|index| body.child_at_index(index).unwrap())
+        .map(|id| adapter.platform_node(id).name().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["Above the fold", "Inside"],
+        "AccessKit's filter keeps the control past the top fold"
+    );
+    assert_eq!(at(20).as_deref(), Some("Dialog title"));
+    assert_eq!(at(60).as_deref(), Some("Inside"));
+}

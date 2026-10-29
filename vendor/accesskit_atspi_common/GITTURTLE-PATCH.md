@@ -15,7 +15,7 @@ match the supplemental notices in `docs/licenses/dependencies.json`.
 
 ## Changes
 
-Two files are modified: `src/node.rs`, with two changes, and `src/adapter.rs`.
+Two files are modified: `src/node.rs`, with three changes, and `src/adapter.rs`.
 No other source, manifest or dependency changes.
 
 ### Disabled controls (`src/node.rs`)
@@ -68,6 +68,22 @@ uses `accesskit_macos`, which this does not touch.
 Upstream status: not proposed upstream. The published 0.19.1 source inserts
 both states for every included node; whether a later release tells an
 off-screen node apart has not been checked.
+
+### Point queries past a clip (`src/node.rs`)
+
+A GitTurtle change, not a backport. `PlatformNode::accessible_at_point`
+answers AT-SPI's `Component.GetAccessibleAtPoint` with `accesskit_consumer`'s
+hit test, which ignores clips and tries later siblings first, so a node kept
+past a scrolling body's top fold, reported where it lies under the dialog's
+title, answered for the title's pixels. The query now passes over a node
+`clipped_out` leaves out, as it passes over a node the filter passes over
+(`ExcludeNode`): its children are still tried, and the point finds what is
+drawn there, a sibling or the nearest ancestor holding it that shows. The
+extra work is the same ancestor walk for each included node the hit test
+visits, only when a client asks for a point. macOS's hit test lives in
+`accesskit_macos` and is unchanged.
+
+Upstream status: not proposed upstream; it depends on the off-screen change.
 
 ### A page shown again after a modal dialog (`src/adapter.rs`)
 
@@ -125,7 +141,9 @@ control with no clipping ancestor: the two wholly outside are `Visible`
 without `Showing` at their own extents, the others show. Its
 `a_node_outside_an_outer_clip_is_not_showing` maps an inner clipping node
 kept past an outer one's fold, with a row inside it: both are `Visible`
-without `Showing`. In the
+without `Showing`. Its `a_point_query_passes_over_a_node_its_clip_leaves_out`
+asks for the point a control kept past a body's top fold shares with the
+dialog's title, and gets the title. In the
 application, `github_view::tests::the_notice_reports_the_part_the_panel_draws`
 reads the GitHub panel's notice through the adapter at 13 and 18 pt in a
 461 x 490 window and at 13 pt in 1,480 x 980 (showing where the body draws
@@ -145,8 +163,10 @@ upstream 0.19.x release carries #788. The `src/adapter.rs` change can go once
 the adapter GitTurtle uses handles a node that moves between `ExcludeNode` and
 `ExcludeSubtree`; until then carry it onto the newer source. The off-screen
 change can go once the adapter GitTurtle uses withholds `Showing` from a node
-wholly outside its clipping ancestor, or AccessKit offers an off-screen
-property that GitTurtle sets instead; until then carry it too. Retire this
+wholly outside a clipping ancestor, or AccessKit offers an off-screen
+property that GitTurtle sets instead; until then carry it too, and the
+point-query change with it, which can go with it or once AccessKit's hit
+test passes over a clipped-out node. Retire this
 patch, the `[patch.crates-io]` entry, the workspace exclusion and the
 `vendor/AGENTS.md` row when no change remains. Keep the application
 tests; they then cover the upstream crate.

@@ -1106,7 +1106,16 @@ impl PlatformNode {
                 coord_type,
             );
             let point = node.transform().inverse() * point;
-            Ok(node.node_at_point(point, &filter).map(|node| node.id()))
+            // GitTurtle patch (GITTURTLE-PATCH.md): a node wholly outside a
+            // clipping ancestor is drawn nowhere, so the query passes over
+            // it, as over a node the filter passes over, to what is drawn at
+            // the point: a sibling there, or else its nearest ancestor that
+            // holds the point and shows.
+            let drawn = |node: &Node<'_>| match filter(node) {
+                FilterResult::Include if clipped_out(node) => FilterResult::ExcludeNode,
+                result => result,
+            };
+            Ok(node.node_at_point(point, &drawn).map(|node| node.id()))
         })
     }
 
