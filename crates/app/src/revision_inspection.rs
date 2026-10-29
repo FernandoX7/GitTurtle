@@ -218,6 +218,8 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let return_focus = window.focused(cx);
         let form = cx.new(|cx| QuickForm::new(owner, repo, revision, return_focus, window, cx));
+        #[cfg(test)]
+        OPENED_QUICK_FORM.with(|opened| *opened.borrow_mut() = Some(form.downgrade()));
         let query_focus = form.read(cx).query.read(cx).focus_handle(cx);
         self.dialog_hints
             .register(&query_focus, shortcuts::DialogKeys::QuickOpen);
@@ -791,8 +793,71 @@ impl Render for CompareForm {
             .child(div().text_color(rgb(p.muted)).child("Type a local revision, or choose a matching branch/tag for the most recently edited field. Names resolve when you press Compare. A merge-base comparison shows the changes leading to After."))
             .children(choices.into_iter().enumerate().map(|(i,name)|button(("revision-choice",i),name.clone(),"",false).disabled(self.busy).on_click(cx.listener(move |this,_,window,cx|{let input=if this.selected_side==0{&this.before}else{&this.after};input.update(cx,|input,cx|input.set_value(name.clone(),window,cx));}))))
             .when(self.busy,|el|el.child(div().child("Resolving local revisions and changed files… Cancel closes this read.")))
-            .children(self.error.as_ref().map(|error|crate::native_accessibility::text("quick-open-error",error.clone()).text_color(rgb(p.removed))))))
+            .children(self.error.as_ref().map(|error|failure_line("revision-comparison-error",error.clone()).text_color(rgb(p.removed))))))
     }
+}
+
+/// A dialog's in-place failure, `text`, as an alert announced once as it
+/// appears, as System preview's refusal is: Quick Open's and Compare
+/// revisions' were silent, and Quick Open's not even text on the tree.
+fn failure_line(
+    id: &'static str,
+    text: String,
+) -> crate::native_accessibility::StaticText<Stateful<Div>> {
+    crate::native_accessibility::static_text(
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .role(Role::Alert)
+            .aria_label(text.clone())
+            .a11y_synthetic_children(crate::native_accessibility::assertive)
+            .child(text.clone()),
+        text,
+    )
+}
+
+/// A failure of a search the typing started, `text`, as a polite status:
+/// heard once speech pauses, never interrupting the next keystroke, where
+/// an alert after each 120 ms pause cut in on every partial revision.
+/// [`failure_line`] takes its place once Enter asks for the result.
+fn typing_failure_line(
+    id: &'static str,
+    text: String,
+) -> crate::native_accessibility::StaticText<Stateful<Div>> {
+    crate::native_accessibility::static_text(
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .role(Role::Status)
+            .aria_label(text.clone())
+            .a11y_synthetic_children(crate::native_accessibility::polite)
+            .child(text.clone()),
+        text,
+    )
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The Quick Open dialog last opened, for a test to await its search.
+    static OPENED_QUICK_FORM: std::cell::RefCell<Option<WeakEntity<QuickForm>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs the open Quick Open's search to its answer, for tests: past its
+/// typing pause, then the worker's reply, awaited rather than polled.
+#[cfg(test)]
+pub(crate) async fn settle_quick_open(cx: &mut gpui::VisualTestContext) {
+    let form = OPENED_QUICK_FORM
+        .with(|form| form.borrow().clone())
+        .and_then(|form| form.upgrade())
+        .expect("Quick Open is open");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(150));
+    cx.executor().run_until_parked();
+    if let Some(task) = form.update(cx, |form, _| form.task.take()) {
+        task.await;
+    }
+    cx.executor().run_until_parked();
 }
 
 struct QuickForm {
@@ -809,6 +874,9 @@ struct QuickForm {
     generation: u64,
     busy: bool,
     error: Option<String>,
+    /// Enter asked for the failed search's result, so its failure is an
+    /// alert; until then it is the polite line the typing started.
+    failure_asked: bool,
     subscriptions: Vec<Subscription>,
     closed: Arc<AtomicBool>,
     accepted: Arc<AtomicBool>,
@@ -843,6 +911,7 @@ impl QuickForm {
             generation: 0,
             busy: false,
             error: None,
+            failure_asked: false,
             subscriptions: vec![],
             closed: Arc::new(AtomicBool::new(false)),
             accepted: Arc::new(AtomicBool::new(false)),
@@ -886,6 +955,7 @@ impl QuickForm {
         let was_busy = self.busy;
         self.busy = true;
         self.error = None;
+        self.failure_asked = false;
         let timer = cx
             .background_executor()
             .timer(std::time::Duration::from_millis(120));
@@ -940,6 +1010,13 @@ impl QuickForm {
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.closed.load(Ordering::Acquire) || self.accepted.load(Ordering::Acquire)
         {
+            return;
+        }
+        // Enter on a failed search asks for its answer: the failure is
+        // announced now, assertively, once.
+        if self.error.is_some() && !self.failure_asked {
+            self.failure_asked = true;
+            cx.notify();
             return;
         }
         let Some(page) = &self.page else {
@@ -1041,7 +1118,7 @@ impl Render for QuickForm {
                 let shown = help.clone();
                 div().debug_selector(move || format!("quick-open-help: {shown}")).child(crate::native_accessibility::static_text(shortcuts::dialog_help_by_phrase(help.clone()).id("quick-open-help"), help).text_color(rgb(p.muted)))
             })
-            .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone())))
+            .children(self.error.as_ref().map(|error|if self.failure_asked { failure_line("quick-open-error-alert",error.clone()) } else { typing_failure_line("quick-open-error",error.clone()) }.text_color(rgb(p.removed))))
             .child(crate::native_accessibility::clips_children(div().id("quick-open-results").debug_selector(|| "quick-open-results".into()).role(Role::ListBox).aria_label("Matching tracked files").h(desired_height.min(available_height)).border_1().border_color(rgb(p.raised_edge())).overflow_hidden().when(count>0,|el|el.child(list)).when(count==0&&!self.busy,|el|el.child(crate::native_accessibility::text("quick-open-empty","No matching tracked files. Untracked files are available in Working Changes.").p_3()))))
             .child(crate::native_accessibility::text("quick-open-note","File History and Blame are available after opening. Worktree reads show raw current bytes; a chosen revision is pinned to its resolved commit.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))))
     }
@@ -1050,6 +1127,8 @@ impl Render for QuickForm {
 #[cfg(test)]
 mod tests {
     use super::{AtomicBool, Ordering, claim_modal_result};
+    use crate::*;
+    use core::prelude::v1::test;
     #[test]
     fn enter_and_dialog_confirmation_activate_once_and_closed_results_are_ignored() {
         let closed = AtomicBool::new(false);
@@ -1060,5 +1139,73 @@ mod tests {
         closed.store(true, Ordering::Release);
         assert!(!claim_modal_result(&closed, &accepted));
         assert!(!accepted.load(Ordering::Acquire));
+    }
+
+    /// Quick Open's failure, here a chosen revision that does not resolve,
+    /// has a node of its own, named by its whole text. A search the typing
+    /// started reports it as a polite status, heard once speech pauses, so a
+    /// partial revision never interrupts the next keystroke; Enter, which asks
+    /// for the result, makes it an alert, a fresh node announced once, as
+    /// System preview's refusal is; and typing again makes it the polite line
+    /// again. It was a bare line with no node of its own, and then an alert
+    /// after every 120 ms pause.
+    #[gpui::test]
+    async fn quick_open_announces_its_failure_as_an_alert(cx: &mut gpui::TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::{draw, tagged_repository, window};
+        use gpui::accesskit::Role;
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_quick_file(window, cx)));
+        draw(cx);
+        let revision = cx
+            .debug_bounds("quick-open-revision")
+            .expect("Chosen revision");
+        cx.simulate_click(revision.center(), Modifiers::default());
+        draw(cx);
+        super::settle_quick_open(cx).await;
+        // The failure's node, by the line's id, after the next frame.
+        let line = |cx: &mut VisualTestContext, id: &str| {
+            written::forget();
+            draw(cx);
+            written::get(id).map(|written| written.node)
+        };
+        // The revision field leads the query, which has focus. Each pause in
+        // the typing searches, and each partial revision fails.
+        cx.simulate_keystrokes("shift-tab");
+        for typed in ["-un", "known"] {
+            cx.simulate_input(typed);
+            super::settle_quick_open(cx).await;
+            let status = line(cx, "quick-open-error")
+                .unwrap_or_else(|| panic!("after {typed:?}: the failure writes its node"));
+            assert_eq!(status.role(), Role::Status, "after {typed:?}");
+            assert!(
+                line(cx, "quick-open-error-alert").is_none(),
+                "after {typed:?}: no alert while typing"
+            );
+        }
+        let error = line(cx, "quick-open-error")
+            .and_then(|node| node.label().map(str::to_owned))
+            .expect("the failure is named");
+        assert!(
+            error.contains("unknown"),
+            "named by the whole failure: {error:?}"
+        );
+        cx.simulate_keystrokes("enter");
+        let alert = line(cx, "quick-open-error-alert").expect("Enter makes the failure an alert");
+        assert_eq!(alert.role(), Role::Alert);
+        assert_eq!(alert.label(), Some(error.as_str()));
+        assert!(line(cx, "quick-open-error").is_none(), "one line at a time");
+        cx.simulate_input("x");
+        super::settle_quick_open(cx).await;
+        assert_eq!(
+            line(cx, "quick-open-error").map(|node| node.role()),
+            Some(Role::Status),
+            "typing again"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
     }
 }
