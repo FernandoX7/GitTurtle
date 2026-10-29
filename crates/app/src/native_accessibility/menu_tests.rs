@@ -614,3 +614,167 @@ fn kit_menus_stay_above_the_bottom_inset_an_application_sets(cx: &mut TestAppCon
         row.center()
     );
 }
+
+/// The app's dropdown (`AppMenu`) on a button `lead` below the window's top,
+/// opening sixteen items, the first "One", and recording what is chosen.
+struct AppDropdownProbe {
+    lead: Pixels,
+    chosen: Chosen,
+}
+
+impl Render for AppDropdownProbe {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let chosen = self.chosen.clone();
+        div().size_full().pt(self.lead).px_2().child(
+            Button::new("app-dropdown")
+                .debug_selector(|| "app-dropdown".into())
+                .label("Open")
+                .app_menu(move |menu, _, _| {
+                    (0..16).fold(menu, |menu, index| {
+                        let name: &'static str = if index == 0 {
+                            "One"
+                        } else {
+                            format!("Item {index}").leak()
+                        };
+                        let chosen = chosen.clone();
+                        menu.item(
+                            PopupMenuItem::new(name)
+                                .on_click(move |_, _, _| chosen.borrow_mut().push(name)),
+                        )
+                    })
+                }),
+        )
+    }
+}
+
+/// A dropdown whose room below, down to the status bar's margin, holds
+/// fewer than its least rows never covers its own button: it opens above it
+/// where the room above holds them, and otherwise on the roomier side with
+/// as many whole rows as that side holds, and a second click on the button
+/// lands on the button and closes the menu, choosing nothing. Moved up by
+/// the status bar's inset, the menu once covered its button, which a second
+/// click then missed for an item.
+#[gpui::test]
+fn a_dropdown_kept_above_the_status_bar_never_covers_its_button(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        super::keep_popups_above_the_status_bar(cx);
+    });
+    // In a 461 × 490 window, a button whose foot lies 43 px above the
+    // menu's foot, and in a 461 × 230 window one with 57 px above it and
+    // 89 px below, where neither side holds the least rows.
+    for (height, lead, above) in [(490., 380., true), (230., 70., false)] {
+        let chosen = Chosen::default();
+        let (_, cx) = cx.add_window_view({
+            let chosen = chosen.clone();
+            move |window, cx| {
+                let probe = cx.new(|_| AppDropdownProbe {
+                    lead: px(lead),
+                    chosen,
+                });
+                Root::new(probe, window, cx)
+            }
+        });
+        cx.simulate_resize(size(px(461.), px(height)));
+        draw(cx);
+        let at = format!("461 × {height}");
+        let foot = cx.update(|window, _| super::menu_foot(window));
+        let button = cx.debug_bounds("app-dropdown").expect("the dropdown");
+        let (below, over) = (foot - button.bottom(), button.top());
+        assert!(
+            below < appearance::ui_size(super::MENU_FLOOR),
+            "{at}: {below:?} below the button holds fewer than the least rows"
+        );
+        cx.simulate_click(button.center(), Modifiers::default());
+        draw(cx);
+        draw(cx);
+        let surface = open_menu_surface(cx);
+        assert!(
+            surface.bottom() <= button.top() || surface.top() >= button.bottom(),
+            "{at}: the menu {surface:?} covers its button {button:?}"
+        );
+        assert_eq!(
+            surface.bottom() <= button.top(),
+            above,
+            "{at}: the menu {surface:?} opens {} its button {button:?}, with {over:?} above \
+             and {below:?} below",
+            if above { "above" } else { "below" }
+        );
+        assert!(
+            surface.bottom() <= foot && surface.top() >= px(0.),
+            "{at}: the menu {surface:?} stays in the window above {foot:?}"
+        );
+        cx.simulate_click(button.center(), Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("menu-item: One · MenuItem").is_none(),
+            "{at}: a second click on the button closes the menu"
+        );
+        assert!(
+            chosen.borrow().is_empty(),
+            "{at}: the second click chose {:?}",
+            chosen.borrow()
+        );
+    }
+}
+
+/// A button's menu open above it when the window grows, as a tiling
+/// compositor re-tiles it, never ends over the button: the resize closes it,
+/// its rows having been capped for the side the old size gave it, and
+/// opened again it takes the side the new size gives it. Its side was
+/// chosen again in every frame while its rows kept their cap, so a window
+/// grown from 490 to 600 px turned it below its button with the rows capped
+/// for above, and the kit moved it up over the button.
+#[gpui::test]
+fn a_resized_window_closes_a_button_s_menu_rather_than_turn_it_over_the_button(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        super::keep_popups_above_the_status_bar(cx);
+    });
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let probe = cx.new(|_| AppDropdownProbe {
+            lead: px(380.),
+            chosen: Chosen::default(),
+        });
+        Root::new(probe, window, cx)
+    });
+    cx.simulate_resize(size(px(461.), px(490.)));
+    draw(cx);
+    let button = cx.debug_bounds("app-dropdown").expect("the dropdown");
+    cx.simulate_click(button.center(), Modifiers::default());
+    draw(cx);
+    draw(cx);
+    let surface = open_menu_surface(cx);
+    assert!(
+        surface.bottom() <= button.top(),
+        "at 490 px the menu {surface:?} opens above its button {button:?}"
+    );
+    for height in [520., 560., 600., 640., 700.] {
+        cx.simulate_resize(size(px(461.), px(height)));
+        draw(cx);
+        let button = cx.debug_bounds("app-dropdown").expect("the dropdown");
+        if cx.debug_bounds("menu-item: One · MenuItem").is_some() {
+            let surface = open_menu_surface(cx);
+            assert!(
+                surface.bottom() <= button.top() || surface.top() >= button.bottom(),
+                "at {height} px the menu {surface:?} covers its button {button:?}"
+            );
+        }
+        draw(cx);
+        assert!(
+            cx.debug_bounds("menu-item: One · MenuItem").is_none(),
+            "at {height} px the resize closed the menu"
+        );
+    }
+    let button = cx.debug_bounds("app-dropdown").expect("the dropdown");
+    cx.simulate_click(button.center(), Modifiers::default());
+    draw(cx);
+    draw(cx);
+    let surface = open_menu_surface(cx);
+    assert!(
+        surface.top() >= button.bottom(),
+        "opened again at 700 px the menu {surface:?} takes the room below its button {button:?}"
+    );
+}

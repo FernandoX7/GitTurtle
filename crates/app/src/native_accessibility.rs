@@ -364,6 +364,41 @@ pub(crate) fn menu_room(top: Pixels, window: &Window) -> Pixels {
     (menu_foot(window) - top).max(appearance::ui_size(MENU_FLOOR))
 }
 
+/// Where a Button's dropdown opens and how tall its items may be there, so
+/// that it never covers its Button, which a second click must reach.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DropdownRoom {
+    /// Above the Button rather than below it.
+    above: bool,
+    /// The tallest its items may be on that side.
+    room: Pixels,
+}
+
+impl DropdownRoom {
+    /// For a Button painted at `trigger`: below it, down to [`menu_foot`],
+    /// where that room holds the least rows ([`MENU_FLOOR`]); otherwise
+    /// above it, up to the window's top margin, where that room holds them;
+    /// otherwise on the roomier side, with the whole rows that side holds.
+    /// The kit's popover keeps a quarter rem from the Button on either side.
+    fn of(trigger: Bounds<Pixels>, window: &Window) -> Self {
+        let gap = window.rem_size() * 0.25;
+        let floor = appearance::ui_size(MENU_FLOOR);
+        let below = menu_foot(window) - trigger.bottom() - gap;
+        let above = trigger.top() - gap - menu_bounds(window).top();
+        if below >= floor || below >= above {
+            Self {
+                above: false,
+                room: below.max(px(0.)),
+            }
+        } else {
+            Self {
+                above: true,
+                room: above,
+            }
+        }
+    }
+}
+
 /// The lowest a popup's fill reaches in `window`: its drawn edge, the ring
 /// the kit paints in the band outside the fill
 /// ([`gpui_kit::component::POPOVER_EDGE_WIDTH`]), [`MENU_MARGIN`] above the
@@ -395,17 +430,28 @@ pub(crate) fn keep_popups_above_the_status_bar(cx: &mut App) {
 /// room above the status bar, nor than `max` where the menu has a cap of its
 /// own, and scroll past that.
 pub(crate) fn open_menu(
-    mut menu: PopupMenu,
+    menu: PopupMenu,
     keyboard: bool,
     top: Option<Pixels>,
     max: Option<Pixels>,
     window: &Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
+    let room = top.map(|top| menu_room(top, window));
+    open_menu_in(menu, keyboard, room, max, cx)
+}
+
+/// [`open_menu`] for a menu whose items may be `room` tall where it opens.
+fn open_menu_in(
+    mut menu: PopupMenu,
+    keyboard: bool,
+    room: Option<Pixels>,
+    max: Option<Pixels>,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
     if keyboard {
         menu.select_first_item(cx);
     }
-    let room = top.map(|top| menu_room(top, window));
     if let Some(cap) = match (room, max) {
         (Some(room), Some(max)) => Some(room.min(max)),
         (room, max) => room.or(max),
@@ -555,24 +601,46 @@ impl RenderOnce for AppDropdown {
         let painted = anchor.clone();
         let (build, max, on_open_change) = (self.build, self.max, self.on_open_change);
         let writes = self.writes;
-        // The menu as it opens, or as a write's start or end builds it again.
+        // The kit's popup host only moves a dropdown into the window, so one
+        // taller than the room below its Button moved up over it; the side
+        // is chosen here instead, from the same painted bounds as the room.
+        let corner = match anchor
+            .get()
+            .map(|trigger| DropdownRoom::of(trigger, window))
+        {
+            Some(DropdownRoom { above: true, .. }) => gpui::Anchor::BottomLeft,
+            _ => gpui::Anchor::TopLeft,
+        };
+        // The menu as it opens, or as a write's start or end builds it again,
+        // its rows capped at the room of its side.
+        let bounds = anchor.clone();
         let open = std::rc::Rc::new(
             move |menu: PopupMenu,
                   keyboard: bool,
                   window: &mut Window,
                   cx: &mut Context<PopupMenu>| {
                 let menu = build(menu, window, cx);
-                // The kit's popover sets the menu a quarter rem below its
-                // trigger (`top_1`).
-                let gap = window.rem_size() * 0.25;
-                let top = anchor.get().map(|trigger| trigger.bottom() + gap);
-                open_menu(menu, keyboard, top, max, window, cx)
+                let room = bounds
+                    .get()
+                    .map(|trigger| DropdownRoom::of(trigger, window).room);
+                open_menu_in(menu, keyboard, room, max, cx)
             },
         );
         let dropdown = self
             .trigger
             .on_prepaint(move |bounds, _, _| painted.set(Some(bounds)))
-            .dropdown_menu(move |menu, window, cx| {
+            .dropdown_menu_with_anchor(corner, move |menu, window, cx| {
+                // A resized window, as a tiling compositor re-tiles it,
+                // closes the menu: its rows were capped for the side the
+                // size it opened in gave it, and a larger or smaller window
+                // could turn it to the other side, over its Button.
+                let viewport = window.viewport_size();
+                cx.observe_window_bounds(window, move |_, window, cx| {
+                    if window.viewport_size() != viewport {
+                        cx.emit(gpui::DismissEvent);
+                    }
+                })
+                .detach();
                 let keyboard = window.last_input_was_keyboard();
                 let menu = open(menu, keyboard, window, cx);
                 if let Some(app) = writes.as_ref().and_then(WeakEntity::upgrade) {
