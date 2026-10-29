@@ -499,6 +499,30 @@ cover current upstream x86-64 Omarchy.
         - Driver gaps (tools, not product): a tap does not move keyboard focus (P1's ring),
           Return from History opened the commit actions menu instead of Compare, the 18 pt
           GitHub list in 461 px, the review text and Files in the candidate's walk.
+        Found by the implementers and reviews of 2026-10-29 (owed native checks in
+        `.local/item8-2026-10-27/native-checks-2026-10-29.md`):
+        - Bugs: History's Changes body is measured a frame late, so any one-frame height change
+          above it brings back the 23 px jump; while a write's busy look waits its 200 ms the write
+          controls are announced enabled and an opened Actions menu lists enabled items (each
+          refuses); the Targets inputs, History's Latest and "View commit", and dialogs still dim at
+          once when a write starts; Quick Open's error line is not an alert.
+        - Focus and selection: labelled navigation modes and the header's History/Changes toggles
+          show selection by a 1.40:1 fill only (icon form now has a 2 px accent bar); Settings opens
+          with focus on its root (in a brief); the worktree manager's details are not revealed by
+          Tab (in a brief).
+        - Edges and menus: the light palettes' dialog edge is 1.28:1 (Braden; needs a kit
+          `dialog_edge` like `popover_edge`); the commit menu should end at the list's trailing
+          inset rather than land on the graph lane; right-click menus near the status bar need the
+          kit's margin; the Shortcuts scrollbar's canvas track on the raised picker needs a design
+          look.
+        - Motion (decision: keep DESIGN.md's instant re-layout and draw the travelling row
+          beneath section headings, which are not rows): during a row's flight the Unstaged
+          heading snaps and the travelling row covers it.
+        - Tests: the focus sweep once counted History's selected-row bar beneath a dialog's
+          backdrop as a cut ring (`891f109` moved the Stashes walk off History; root cause in a
+          brief); wall-clock waits remain in `empty_state.rs`, `state_tests.rs`, `width_walk.rs`
+          and the theme editor (`SerialExecutor::drain()` for `drain_preference_writer`).
+        - macOS later: VoiceOver on dialog titles (now value only) and the dialog's own label.
         Owner decision, 2026-10-28: Linux reaches feature parity with macOS where possible; macOS is
         checked later on a Mac. The gaps (README "Linux gaps", `docs/file-previews.md`,
         `docs/linux.md`), each a separate change with a dated research note on the dependency
