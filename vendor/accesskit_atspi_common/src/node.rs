@@ -35,8 +35,11 @@ use crate::{
 pub(crate) struct NodeWrapper<'a>(pub(crate) &'a Node<'a>);
 
 // GitTurtle patch (GITTURTLE-PATCH.md): whether `node`'s bounding box lies
-// wholly outside that of its nearest ancestor that clips its children, which
-// the application reports as the part of that ancestor it draws. A node
+// wholly outside that of any ancestor that clips its children, which the
+// application reports as the part of that ancestor it draws. Every clipping
+// ancestor counts: a node can overlap its nearest one and still lie past an
+// outer one's fold, where nothing of it is drawn. One walk up the
+// ancestors, which stops at the first clip that leaves the node out. A node
 // without bounds, or without a clipping ancestor, is not.
 fn clipped_out(node: &Node<'_>) -> bool {
     let Some(bounds) = node.bounding_box() else {
@@ -44,13 +47,15 @@ fn clipped_out(node: &Node<'_>) -> bool {
     };
     let mut ancestor = node.parent();
     while let Some(parent) = ancestor {
-        if parent.clips_children() {
-            return parent.bounding_box().is_some_and(|clip| {
+        if parent.clips_children()
+            && parent.bounding_box().is_some_and(|clip| {
                 bounds.x1 <= clip.x0
                     || bounds.x0 >= clip.x1
                     || bounds.y1 <= clip.y0
                     || bounds.y0 >= clip.y1
-            });
+            })
+        {
+            return true;
         }
         ancestor = parent.parent();
     }
@@ -342,8 +347,8 @@ impl NodeWrapper<'_> {
         let filter_result = filter(self.0);
         if filter_result == FilterResult::Include {
             // GitTurtle patch (GITTURTLE-PATCH.md): a node that lies wholly
-            // outside its nearest clipping ancestor is visible but not
-            // showing, off screen, as browsers report one.
+            // outside any clipping ancestor is visible but not showing, off
+            // screen, as browsers report one.
             atspi_state.insert(State::Visible);
             if !clipped_out(self.0) {
                 atspi_state.insert(State::Showing);

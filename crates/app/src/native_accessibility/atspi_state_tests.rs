@@ -530,3 +530,65 @@ fn a_node_outside_its_clip_is_visible_but_not_showing() {
         past.extents
     );
 }
+
+/// A node wholly outside any clipping ancestor is visible but not showing,
+/// though it lies inside its nearest one. AccessKit's filter keeps an inner
+/// clipping node past the outer one's fold when the child before it lies
+/// inside, and keeps every child inside that inner node, so the adapter,
+/// comparing a node with its nearest clipping ancestor alone, reported a row
+/// of a list the window draws none of showing (vendored patch,
+/// `GITTURTLE-PATCH.md`).
+#[test]
+fn a_node_outside_an_outer_clip_is_not_showing() {
+    use gpui_kit::gpui::accesskit::Rect as Bounds;
+    let named = |role: Role, name: &str, y0: f64, y1: f64| {
+        let mut node = Node::new(role);
+        node.set_label(name);
+        node.set_bounds(Bounds {
+            x0: 0.,
+            y0,
+            x1: 100.,
+            y1,
+        });
+        node
+    };
+    let [root, body, inside, inner, row] = [0, 1, 2, 3, 4].map(LocalNodeId);
+    let mut window = named(Role::Window, "Window", 0., 500.);
+    window.set_children(vec![body]);
+    let mut body_node = named(Role::ScrollView, "Body", 0., 100.);
+    body_node.set_clips_children();
+    body_node.set_children(vec![inside, inner]);
+    let mut inner_node = named(Role::ScrollView, "Inner", 120., 220.);
+    inner_node.set_clips_children();
+    inner_node.set_children(vec![row]);
+    let found = reached(TreeUpdate {
+        nodes: vec![
+            (root, window),
+            (body, body_node),
+            (inside, named(Role::Button, "Inside", 10., 30.)),
+            (inner, inner_node),
+            (row, named(Role::Button, "Row", 130., 150.)),
+        ],
+        tree: Some(Tree::new(root)),
+        tree_id: TreeId::ROOT,
+        focus: root,
+    });
+    let state = |name: &str| {
+        found
+            .iter()
+            .find(|node| node.name == name)
+            .map(|node| node.state)
+            .unwrap_or_else(|| panic!("{name} is reached: {found:?}"))
+    };
+    assert!(
+        state("Inside").contains(State::Visible | State::Showing),
+        "Inside shows"
+    );
+    for name in ["Inner", "Row"] {
+        let state = state(name);
+        assert!(
+            state.contains(State::Visible) && !state.contains(State::Showing),
+            "{name}, past the body's fold, is visible but not showing: {state:?}"
+        );
+    }
+}

@@ -2065,6 +2065,9 @@ mod tests {
     /// a failure's alert, which is announced at once as it appears. Each undrawn one reported
     /// an empty rectangle on the body's edge (y 557 at 18 pt), as the pager's "Page 1 · up to
     /// 50 PRs" did at 13 pt. The alert's own node is no live region: the window's alert says it.
+    /// The list past the fold reports one pixel beside its top, so no platform's filter
+    /// reaches its pull requests: reported at its layout, it kept #42 and #43 reachable,
+    /// showing on AT-SPI and activatable, though the body draws neither.
     #[gpui::test]
     async fn no_panel_node_reports_an_empty_rectangle(cx: &mut TestAppContext) {
         use crate::native_accessibility::written;
@@ -2117,6 +2120,12 @@ mod tests {
             cx.update(|_, cx| {
                 panel.update(cx, |panel, cx| {
                     panel.notice = None;
+                    if interface == 18 {
+                        let pull = github::review::fixture_pull(false);
+                        let mut other = pull.clone();
+                        other.number = 43;
+                        panel.rows = vec![pull, other];
+                    }
                     cx.notify();
                 })
             });
@@ -2128,6 +2137,55 @@ mod tests {
                         .any(|node| node.role == Role::ScrollView && past_fold(node)),
                     "{at}: the pull request list is kept past the fold where it lies: {found:?}"
                 );
+                // The body draws none of the list, which reports one pixel beside its top,
+                // outside which its rows lie, so no platform's filter reaches a row.
+                let scale = pixel(cx);
+                let list = native_accessibility::clipping_node("github-pr-list")
+                    .and_then(|node| node.bounds())
+                    .expect("the list clips its rows");
+                let layout = cx.debug_bounds("github-pr-list").expect("the list");
+                let layout = physical_rect(cx, layout);
+                assert!(
+                    (list.y1 - list.y0 - scale).abs() < 0.01 && list.y1 <= layout.y0 + 0.01,
+                    "{at}: the list the body draws none of reports {list:?}, not one pixel \
+                     beside its top at {}",
+                    layout.y0
+                );
+                let rows = panel.read_with(cx, |panel, _| {
+                    panel
+                        .rows
+                        .iter()
+                        .map(|pull| format!("#{} · {}", pull.number, pull.title))
+                        .collect::<Vec<_>>()
+                });
+                assert!(
+                    !rows.is_empty() && cx.debug_bounds("github-pr-42").is_some(),
+                    "{at}: the list lays out its pull requests"
+                );
+                for row in &rows {
+                    assert!(
+                        !found.iter().any(|node| node.name.as_deref() == Some(row)),
+                        "{at}: {row}, which the body does not draw, is out of reach: {found:?}"
+                    );
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    use crate::native_accessibility::atspi_state_tests::{next_frame, reached};
+                    use accesskit_atspi_common::State;
+                    for node in reached(next_frame(cx))
+                        .iter()
+                        .filter(|node| rows.contains(&node.name))
+                    {
+                        assert!(
+                            node.state.contains(State::Visible)
+                                && !node.state.contains(State::Showing),
+                            "{at}: AT-SPI reports {} showing: {:?}",
+                            node.name,
+                            node.state
+                        );
+                    }
+                }
+                cx.update(|_, cx| panel.update(cx, |panel, _| panel.rows.clear()));
             }
 
             #[cfg(target_os = "linux")]

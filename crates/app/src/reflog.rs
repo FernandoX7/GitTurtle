@@ -1527,7 +1527,10 @@ mod tests {
     /// 640 × 490 the dialog's content scrolls and its edge cuts the list, so
     /// entries inside the list's own bounds lie below the dialog. AccessKit
     /// still offers the first entry past an edge, for an assistive technology
-    /// to move into, which AT-SPI reports visible but not showing.
+    /// to move into, which AT-SPI reports visible but not showing. At 640 ×
+    /// 400 the content's fold lies above the list, which the dialog draws none
+    /// of: the list reports one pixel beside its top, past the fold, outside
+    /// which every entry lies, where its layout kept every entry inside it.
     ///
     /// The test platform builds no accessibility tree, so the test builds the
     /// part GPUI would: the window, each clipping container's node as it
@@ -1556,7 +1559,7 @@ mod tests {
             y1: f64::from(f32::from(bounds.bottom())) * scale,
         };
 
-        for height in [680., 490.] {
+        for height in [680., 490., 400.] {
             crate::native_accessibility::forget_clipping_nodes();
             cx.simulate_resize(size(px(640.), px(height)));
             draw(cx);
@@ -1656,15 +1659,14 @@ mod tests {
                     );
                 }
             }
-            // The list reports the part of itself the dialog shows.
+            // The list reports the part of itself the dialog shows, and where
+            // it shows none of it, one pixel beside its top, past the
+            // content's fold, which leaves every entry outside it.
             let panels: Vec<_> = found
                 .iter()
                 .filter(|node| node.role == accesskit_atspi_common::Role::Panel)
                 .map(|node| node.extents)
                 .collect();
-            let [content_extents, list_extents] = panels[..] else {
-                panic!("the content and the list are scroll views: {found:?}");
-            };
             let inside = |inner: accesskit_atspi_common::Rect,
                           outer: accesskit_atspi_common::Rect| {
                 inner.x >= outer.x
@@ -1672,25 +1674,62 @@ mod tests {
                     && inner.x + inner.width <= outer.x + outer.width
                     && inner.y + inner.height <= outer.y + outer.height
             };
-            assert!(
-                inside(list_extents, content_extents) && inside(content_extents, found[0].extents),
-                "at 640 × {height} the list {list_extents:?} lies in the content {content_extents:?} in the window {:?}",
-                found[0].extents
-            );
+            let hidden = physical(list).intersect(physical(content)).is_empty();
+            if hidden {
+                let reported = clipping_node("reflog-list")
+                    .and_then(|node| node.bounds())
+                    .expect("the list clips its entries");
+                assert!(
+                    (reported.y1 - reported.y0 - scale).abs() < 0.01
+                        && reported.y1 <= physical(list).y0 + 0.01
+                        && reported.y0 >= physical(content).y1 - 0.01,
+                    "at 640 × {height} the list {:?} the content draws none of, below {:?}, \
+                     reports {reported:?}, not one pixel beside its top",
+                    physical(list),
+                    physical(content)
+                );
+                assert!(
+                    entries
+                        .iter()
+                        .all(|entry| entry.intersect(reported).is_empty()),
+                    "at 640 × {height} every entry lies outside the list's {reported:?}"
+                );
+                let [content_extents] = panels[..] else {
+                    panic!(
+                        "only the content is reached, AccessKit leaving out the list: {found:?}"
+                    );
+                };
+                assert!(inside(content_extents, found[0].extents));
+            } else {
+                let [content_extents, list_extents] = panels[..] else {
+                    panic!("the content and the list are scroll views: {found:?}");
+                };
+                assert!(
+                    inside(list_extents, content_extents)
+                        && inside(content_extents, found[0].extents),
+                    "at 640 × {height} the list {list_extents:?} lies in the content {content_extents:?} in the window {:?}",
+                    found[0].extents
+                );
+            }
 
-            // Focus keeps an entry reachable wherever it lies, showing only
-            // where the list draws it.
+            // Focus keeps an entry reachable wherever it lies in a list
+            // AccessKit keeps, showing only where the list draws it.
             let last = count - 1;
             let found = reached(tree(Some(last)));
             let focused = found
                 .iter()
-                .find(|node| node.name == format!("entry {last}"))
-                .unwrap_or_else(|| panic!("the focused entry {last} is reached at 640 × {height}"));
-            assert!(
-                focused.state.contains(State::Visible | State::Focused)
-                    && focused.state.contains(State::Showing) == drawn[last],
-                "{focused:?}"
-            );
+                .find(|node| node.name == format!("entry {last}"));
+            match focused {
+                Some(focused) => assert!(
+                    focused.state.contains(State::Visible | State::Focused)
+                        && focused.state.contains(State::Showing) == drawn[last],
+                    "{focused:?}"
+                ),
+                None => assert!(
+                    hidden,
+                    "the focused entry {last} is reached at 640 × {height}"
+                ),
+            }
         }
     }
 

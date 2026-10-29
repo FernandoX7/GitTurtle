@@ -41,24 +41,29 @@ A GitTurtle change, not a backport: upstream `NodeWrapper::state` inserts
 filter keeps a clipped node's first child past each edge, for an assistive
 technology to move into, and any focused node wherever it lies. GitTurtle
 reports such a node where it lies (`native_accessibility::drawn_part`
-reports the layout of text or a clipping container the window draws none
-of), so without this change AT-SPI read the GitHub panel's notice, below its
-body's fold at 18 pt in a 461 x 490 window, as shown over the dialog's Back
-to repository button. Before that, GitTurtle reported such text as an empty
-rectangle on the clip's edge, which AT-SPI listed 0 px tall at y 557.
+reports the layout of text the window draws none of), so without this
+change AT-SPI read the GitHub panel's notice, below its body's fold at 18 pt
+in a 461 x 490 window, as shown over the dialog's Back to repository
+button. Before that, GitTurtle reported such text as an empty rectangle on
+the clip's edge, which AT-SPI listed 0 px tall at y 557.
 
 `NodeWrapper::state` now inserts `Visible` for an included node and
-`Showing` only when the node's bounding box does not lie wholly outside the
-bounding box of its nearest ancestor that clips its children
+`Showing` only when the node's bounding box lies wholly outside the
+bounding box of none of its ancestors that clip their children
 (`clipped_out`): off screen, as browsers report a scrolled-away element. A
 partly drawn node, a node without bounds and a node with no clipping
 ancestor keep `Showing`. GitTurtle's clipping nodes report the part of
-themselves the window draws (`native_accessibility::clips_children`), so the
-nearest one's bounds are what the node could be drawn in. The work is one
-walk up the node's ancestors when a client reads its state or the adapter
-compares a changed node's states; a change of `Showing` reaches clients as
-the existing state-change event. macOS has no showing state and uses
-`accesskit_macos`, which this does not touch.
+themselves the window draws (`native_accessibility::clips_children`), and
+one the window draws none of reports one pixel beside its own edge nearest
+what is drawn, outside which its children lie. Every clipping ancestor
+counts, not the nearest alone: AccessKit's filter keeps an inner clipping
+node past an outer one's fold as the child past that edge, so a node inside
+the inner one can lie wholly outside the outer one, the one place nothing of
+it is drawn. The work is one walk up the node's ancestors, ending at the
+first clip that leaves the node out, when a client reads its state or the
+adapter compares a changed node's states; a change of `Showing` reaches
+clients as the existing state-change event. macOS has no showing state and
+uses `accesskit_macos`, which this does not touch.
 
 Upstream status: not proposed upstream. The published 0.19.1 source inserts
 both states for every included node; whether a later release tells an
@@ -117,7 +122,10 @@ announced again. Its `a_node_outside_its_clip_is_visible_but_not_showing`
 maps a clipping scroll view whose children lie inside, across its edge,
 wholly past it (kept by the filter) and far past it with focus, and a
 control with no clipping ancestor: the two wholly outside are `Visible`
-without `Showing` at their own extents, the others show. In the
+without `Showing` at their own extents, the others show. Its
+`a_node_outside_an_outer_clip_is_not_showing` maps an inner clipping node
+kept past an outer one's fold, with a row inside it: both are `Visible`
+without `Showing`. In the
 application, `github_view::tests::the_notice_reports_the_part_the_panel_draws`
 reads the GitHub panel's notice through the adapter at 13 and 18 pt in a
 461 x 490 window and at 13 pt in 1,480 x 980 (showing where the body draws

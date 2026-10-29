@@ -1505,8 +1505,9 @@ impl<E: StatefulInteractiveElement + Element> LiveRegion for E {}
 
 /// `element`, a container that scrolls or clips what it holds, as the
 /// accessibility node AccessKit expects of one: it clips its children, and its
-/// bounds are the part of it that its ancestors leave visible, or its layout
-/// where they leave none of it (`drawn_part`).
+/// bounds are the part of it that its ancestors leave visible, or, where they
+/// leave none of it, one pixel beside its own edge nearest what they leave,
+/// outside it, so its children lie outside it too (`drawn_part`).
 ///
 /// GPUI gives each node its layout bounds and never says that a node clips,
 /// so a control scrolled out of a list, a Reflog entry below the dialog's
@@ -1518,7 +1519,11 @@ impl<E: StatefulInteractiveElement + Element> LiveRegion for E {}
 /// move into it, and any focused node, wherever it lies. The filter compares
 /// a child with its nearest clipping parent only, so a viewport inside
 /// another viewport reports the part of itself that the outer one shows, and
-/// each child is measured against what is drawn. A container without a role
+/// each child is measured against what is drawn. Reported at its layout, a
+/// viewport the outer one draws none of, which that filter keeps as the
+/// child past an edge, kept every child inside it, so the GitHub panel's
+/// pull requests, past its body's fold at 18 pt in a 461 × 490 window, could
+/// be reached and activated undrawn. A container without a role
 /// of its own becomes a scroll view; one with a role, such as a list box,
 /// keeps it. Children keep their own bounds, as AccessKit and the platforms
 /// report a partly visible control whole; a row wider than its list, such as
@@ -1604,7 +1609,7 @@ impl<E: Element> Element for ClipsChildren<E> {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let visible = drawn_part(bounds, window);
+        let visible = drawn_part(bounds, window, Undrawn::Edge);
         self.visible = Some(visible);
         #[cfg(test)]
         let written = written::open(self, Some(visible));
@@ -1959,7 +1964,7 @@ impl<E: Element> Element for StaticText<E> {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let visible = drawn_part(bounds, window);
+        let visible = drawn_part(bounds, window, Undrawn::Layout);
         self.visible = Some(visible);
         #[cfg(test)]
         let written = written::open(self, Some(visible));
@@ -2082,36 +2087,94 @@ pub(crate) fn dialog_title(
     title
 }
 
+/// What [`drawn_part`] reports for an element its ancestors leave none of
+/// visible.
+#[derive(Clone, Copy)]
+enum Undrawn {
+    /// Text: its whole layout, where it lies.
+    Layout,
+    /// A clipping container: one pixel against its own edge nearest what is
+    /// drawn, outside its layout, which leaves its children outside it.
+    Edge,
+}
+
 /// The part of `bounds`, an element's layout as it prepaints, that its
 /// ancestors leave visible, in the physical window pixels of AccessKit's
 /// bounds. The content mask is what the ancestors let through; GPUI scales
 /// layout bounds to a node's bounds the same way.
 ///
 /// An element the mask leaves out, or shows less than a pixel of across,
-/// keeps its whole layout instead: that is where it lies. AccessKit's filter
-/// keeps the first child past each edge of a clipping node, for an assistive
-/// technology to move into, and every other control it keeps there reports
-/// its layout, as GPUI writes it. Such text once reported an empty rectangle
-/// on the mask's edge nearest to it, so the GitHub panel's notice, below its
-/// body's fold at 18 pt in a 461 × 490 window, reached AT-SPI 0 px tall on
-/// the body's bottom edge (y 557 in physical pixels).
-fn drawn_part(bounds: Bounds<Pixels>, window: &Window) -> gpui::accesskit::Rect {
+/// reports as `undrawn` says. Text keeps its whole layout: that is where it
+/// lies. AccessKit's filter keeps the first child past each edge of a
+/// clipping node, for an assistive technology to move into, and every other
+/// control it keeps there reports its layout, as GPUI writes it. Such text
+/// once reported an empty rectangle on the mask's edge nearest to it, so the
+/// GitHub panel's notice, below its body's fold at 18 pt in a 461 × 490
+/// window, reached AT-SPI 0 px tall on the body's bottom edge (y 557 in
+/// physical pixels). A clipping container reports one pixel beside its own
+/// edge instead ([`clips_children`]): AccessKit's filter measures each child
+/// against its clipping parent alone, so a list the window draws none of,
+/// reported at its layout, kept every row inside it, and the GitHub panel's
+/// pull requests, past its body's fold at 18 pt in a 461 × 490 window, were
+/// reached, showing, wherever the list lay.
+fn drawn_part(bounds: Bounds<Pixels>, window: &Window, undrawn: Undrawn) -> gpui::accesskit::Rect {
     let scale = window.scale_factor();
-    let mask = physical(window.content_mask().bounds, scale);
-    let laid_out = physical(bounds, scale);
-    let drawn = gpui::accesskit::Rect {
-        x0: laid_out.x0.max(mask.x0),
-        y0: laid_out.y0.max(mask.y0),
-        x1: laid_out.x1.min(mask.x1),
-        y1: laid_out.y1.min(mask.y1),
+    drawn_rect(
+        physical(bounds, scale),
+        physical(window.content_mask().bounds, scale),
+        f64::from(scale),
+        undrawn,
+    )
+}
+
+/// [`drawn_part`] of `laid_out` in `mask`, in physical pixels `pixel` wide.
+fn drawn_rect(
+    laid_out: gpui::accesskit::Rect,
+    mask: gpui::accesskit::Rect,
+    pixel: f64,
+    undrawn: Undrawn,
+) -> gpui::accesskit::Rect {
+    let x = drawn_span(laid_out.x0, laid_out.x1, mask.x0, mask.x1, pixel);
+    let y = drawn_span(laid_out.y0, laid_out.y1, mask.y0, mask.y1, pixel);
+    let ((x0, x1), (y0, y1)) = match (x, y, undrawn) {
+        (Some(x), Some(y), _) => (x, y),
+        (_, _, Undrawn::Layout) => return laid_out,
+        // Along an axis the mask leaves the container out of, one pixel
+        // beside its edge nearest the mask; along the other, its own extent,
+        // at least a pixel.
+        (_, None, Undrawn::Edge) => (
+            (laid_out.x0, laid_out.x1.max(laid_out.x0 + pixel)),
+            beside(laid_out.y0, laid_out.y1, mask.y0, mask.y1, pixel),
+        ),
+        (None, Some(_), Undrawn::Edge) => (
+            beside(laid_out.x0, laid_out.x1, mask.x0, mask.x1, pixel),
+            (laid_out.y0, laid_out.y1.max(laid_out.y0 + pixel)),
+        ),
     };
-    // Less than a pixel across, at the window's scale, is no part.
-    let pixel = f64::from(scale);
-    if drawn.x1 - drawn.x0 < pixel || drawn.y1 - drawn.y0 < pixel {
-        laid_out
+    gpui::accesskit::Rect { x0, y0, x1, y1 }
+}
+
+/// The part of `start..end` that `from..to` shows along one axis, `None`
+/// where that is less than `pixel` long: less than a pixel across, at the
+/// window's scale, is no part.
+fn drawn_span(start: f64, end: f64, from: f64, to: f64, pixel: f64) -> Option<(f64, f64)> {
+    let (low, high) = (start.max(from), end.min(to));
+    (high - low >= pixel).then_some((low, high))
+}
+
+/// `pixel` against the edge of `start..end` nearest `from..to`, which shows
+/// none of it, on the side facing it: outside both where the gap between
+/// them allows, otherwise against `from..to`'s edge. An element with no
+/// extent inside `from..to` takes the pixel before it.
+fn beside(start: f64, end: f64, from: f64, to: f64, pixel: f64) -> (f64, f64) {
+    let near = if end <= from {
+        end.min(from - pixel)
+    } else if start >= to {
+        start.max(to + pixel) - pixel
     } else {
-        drawn
-    }
+        start - pixel
+    };
+    (near, near + pixel)
 }
 
 /// `bounds` in the physical window pixels of AccessKit's bounds, at `scale`.
