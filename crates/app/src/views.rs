@@ -2706,8 +2706,12 @@ impl GitTurtle {
         };
         let row = div()
             .id(("file", index))
-            .when(active, |row| {
-                row.debug_selector(|| "selected-changed-file".into())
+            .debug_selector(move || {
+                if active {
+                    "selected-changed-file".into()
+                } else {
+                    format!("changed-file-{index}")
+                }
             })
             .role(Role::ListBoxOption)
             .aria_label(format!("{} · {}", path.display(), file.status.label()))

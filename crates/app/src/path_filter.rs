@@ -13,6 +13,9 @@ pub(super) const MAX_INDEX_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const MAX_QUERY_BYTES: usize = 4096;
 
 pub(super) type Index = Vec<[String; 2]>;
+/// The filter worker's answer: the index it prepared and the rows matching.
+type Answer =
+    std::result::Result<Result<(Arc<Index>, Arc<[usize]>)>, futures::channel::oneshot::Canceled>;
 #[derive(Default)]
 pub(super) struct State {
     executor: Option<SerialExecutor>,
@@ -162,7 +165,6 @@ impl GitTurtle {
         let ticket = self.file_paths.cancellation.fetch_add(1, Ordering::Relaxed) + 1;
         self.file_paths.task = None;
         self.file_paths.error = None;
-        self.file_paths.visible = Arc::from([]);
         self.file_paths.pending = false;
         if query.is_empty() {
             self.file_paths.visible = (0..self.files.len()).collect::<Vec<_>>().into();
@@ -170,11 +172,13 @@ impl GitTurtle {
             return;
         }
         if query.len() > MAX_QUERY_BYTES || self.files.len() > MAX_PATHS {
+            self.file_paths.visible = Arc::from([]);
             self.file_paths.error = Some("Path filtering supports 100,000 changed files and queries up to 4,096 bytes. Clear the filter to browse every file.".into());
             cx.notify();
             return;
         }
         if self.files.is_empty() {
+            self.file_paths.visible = Arc::from([]);
             cx.notify();
             return;
         }
@@ -187,6 +191,7 @@ impl GitTurtle {
                 .map(|path| path.as_os_str().len())
                 .fold(0usize, usize::saturating_add);
             if bytes > MAX_INDEX_BYTES {
+                self.file_paths.visible = Arc::from([]);
                 self.file_paths.error = Some("Changed paths exceed the 16 MiB filter limit. Clear the filter to browse every file.".into());
                 cx.notify();
                 return;
@@ -210,42 +215,63 @@ impl GitTurtle {
             let visible = matching(&index, &query, &cancellation, ticket)?;
             Ok((index, visible))
         });
+        // The rows the last answer left stay drawn until this query's answer
+        // lands, so typing never shows an empty list or a false "No
+        // matches" in between; a fresh snapshot has none to keep and shows
+        // the pending state.
         self.file_paths.pending = true;
         self.file_paths.task = Some(cx.spawn(async move |this, cx| {
             let result = response.await;
             let _ = this.update(cx, |this, cx| {
-                if this.file_paths.cancellation.load(Ordering::Relaxed) != ticket
-                    || this.file_paths.identity != identity
-                    || identity != Some((this.files.as_ptr() as usize, this.files.len()))
-                    || this.mode == WorkspaceMode::Working
-                {
-                    return;
-                }
-                this.file_paths.pending = false;
-                this.file_paths.task = None;
-                match result {
-                    Ok(Ok((index, visible))) => {
-                        this.file_paths.index = Some(index);
-                        this.file_paths.raw = None;
-                        if this
-                            .selected_file
-                            .is_some_and(|selected| !visible.contains(&selected))
-                        {
-                            this.invalidate_read();
-                            this.clear_preview();
-                            this.selected_file = None;
-                        }
-                        this.file_paths.visible = visible;
-                    }
-                    Ok(Err(error)) => this.file_paths.error = Some(error.to_string()),
-                    Err(_) => {
-                        this.file_paths.error =
-                            Some("Path filtering stopped. Edit or clear the query to retry.".into())
-                    }
-                }
-                cx.notify();
+                this.land_file_filter(ticket, identity, result, cx)
             });
         }));
+        cx.notify();
+    }
+
+    /// Takes the filter's answer for the query `ticket` numbered, asked of
+    /// the snapshot `identity` names. An answer to an older query, or to a
+    /// snapshot since replaced, is dropped, keeping the rows drawn.
+    fn land_file_filter(
+        &mut self,
+        ticket: u64,
+        identity: Option<(usize, usize)>,
+        result: Answer,
+        cx: &mut Context<Self>,
+    ) {
+        if self.file_paths.cancellation.load(Ordering::Relaxed) != ticket
+            || self.file_paths.identity != identity
+            || identity != Some((self.files.as_ptr() as usize, self.files.len()))
+            || self.mode == WorkspaceMode::Working
+        {
+            return;
+        }
+        self.file_paths.pending = false;
+        self.file_paths.task = None;
+        match result {
+            Ok(Ok((index, visible))) => {
+                self.file_paths.index = Some(index);
+                self.file_paths.raw = None;
+                if self
+                    .selected_file
+                    .is_some_and(|selected| !visible.contains(&selected))
+                {
+                    self.invalidate_read();
+                    self.clear_preview();
+                    self.selected_file = None;
+                }
+                self.file_paths.visible = visible;
+            }
+            Ok(Err(error)) => {
+                self.file_paths.visible = Arc::from([]);
+                self.file_paths.error = Some(error.to_string());
+            }
+            Err(_) => {
+                self.file_paths.visible = Arc::from([]);
+                self.file_paths.error =
+                    Some("Path filtering stopped. Edit or clear the query to retry.".into());
+            }
+        }
         cx.notify();
     }
 }
@@ -366,6 +392,121 @@ mod tests {
                 app._display_preferences_task = None;
             });
         });
+    }
+
+    /// Typing a filter keeps the rows the last answer left until the
+    /// worker answers the query typed: with the worker held, every frame
+    /// draws the same rows, never an empty list or "No matches", and an
+    /// answer to an older query that lands meanwhile is dropped. The
+    /// newest query's answer then replaces the rows.
+    #[gpui::test]
+    async fn typing_a_filter_keeps_its_rows_until_the_answer_lands(cx: &mut gpui::TestAppContext) {
+        use crate::views::tests::{draw, history_window_from};
+        use gpui::VisualTestContext;
+        use std::sync::{Arc, atomic::Ordering, mpsc};
+
+        const PATHS: [&str; 4] = [
+            "src/app/views.rs",
+            "src/app/main.rs",
+            "docs/guide.md",
+            "README.md",
+        ];
+        let mut script = String::from(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 7\nfiles 4\n",
+        );
+        for path in PATHS {
+            script.push_str(&format!(
+                "M 100644 inline {path}\ndata {}\n{path}\n",
+                path.len()
+            ));
+        }
+        script.push_str("done\n");
+        let (_fixture, app, cx) = history_window_from(cx, &script).await;
+        // The rows the last frame drew, by their files' indices.
+        let drawn = |cx: &mut VisualTestContext| -> Vec<usize> {
+            let selected = app.read_with(cx, |app, _| app.selected_file);
+            const ROWS: [&str; 4] = [
+                "changed-file-0",
+                "changed-file-1",
+                "changed-file-2",
+                "changed-file-3",
+            ];
+            (0..PATHS.len())
+                .filter(|index| {
+                    cx.debug_bounds(ROWS[*index]).is_some()
+                        || (selected == Some(*index)
+                            && cx.debug_bounds("selected-changed-file").is_some())
+                })
+                .collect()
+        };
+        assert_eq!(drawn(cx), vec![0, 1, 2, 3], "every changed file");
+        let (release, wait) = mpsc::channel::<()>();
+        let held = app.update(cx, |app, _| {
+            app.file_paths.executor().submit_read(move || {
+                wait.recv()?;
+                Ok(())
+            })
+        });
+        cx.update(|window, cx| {
+            let filter = app.read(cx).file_filter.clone();
+            filter.update(cx, |input, cx| input.focus(window, cx));
+        });
+        draw(cx);
+        // Within the executor's queue of eight jobs.
+        for typed in ["a", "p", "p", "/", "m"] {
+            cx.simulate_input(typed);
+            for _ in 0..2 {
+                draw(cx);
+                assert!(
+                    app.read_with(cx, |app, _| app.file_paths.pending),
+                    "{typed:?} typed into {:?}",
+                    app.read_with(cx, |app, cx| app.file_filter.read(cx).value().to_string())
+                );
+                assert_eq!(
+                    drawn(cx),
+                    vec![0, 1, 2, 3],
+                    "the rows stay while {typed:?} pends"
+                );
+                assert!(
+                    cx.debug_bounds("files-no-match").is_none(),
+                    "no false No matches"
+                );
+            }
+        }
+        // An older query's answer that lands now is dropped.
+        app.update(cx, |app, cx| {
+            let current = app.file_paths.cancellation.load(Ordering::Relaxed);
+            let identity = app.file_paths.identity;
+            app.land_file_filter(
+                current - 1,
+                identity,
+                Ok(Ok((Arc::new(Vec::new()), Arc::from([0usize])))),
+                cx,
+            );
+            assert!(app.file_paths.pending, "the newest query still pends");
+        });
+        draw(cx);
+        assert_eq!(drawn(cx), vec![0, 1, 2, 3], "a stale answer is dropped");
+        release.send(()).unwrap();
+        held.await.unwrap().unwrap();
+        let drained = app.update(cx, |app, _| {
+            app.file_paths.executor().submit_read(|| Ok(()))
+        });
+        drained.await.unwrap().unwrap();
+        cx.executor().run_until_parked();
+        draw(cx);
+        let main = app.read_with(cx, |app, _| {
+            app.files
+                .iter()
+                .position(|file| file.path() == std::path::Path::new("src/app/main.rs"))
+                .unwrap()
+        });
+        assert!(!app.read_with(cx, |app, _| app.file_paths.pending));
+        assert_eq!(drawn(cx), vec![main], "the newest query's answer");
+        assert_eq!(
+            app.read_with(cx, |app, cx| app.file_filter.read(cx).value().to_string()),
+            "app/m"
+        );
     }
 
     #[test]
