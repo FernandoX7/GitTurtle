@@ -602,10 +602,7 @@ impl GitTurtle {
         // the dimensions change, so the choice never feeds back.
         let dimensions = laid_out.beneath.is_none_or(|beneath| {
             let size = crate::appearance::ui_text(11.);
-            let line = window
-                .text_style()
-                .line_height
-                .to_pixels(size.into(), window.rem_size());
+            let line = text_line(size, window);
             let room = caption_width - window.rem_size() * 1.5;
             let captions = [0, 1]
                 .into_iter()
@@ -622,27 +619,10 @@ impl GitTurtle {
         });
         let opener =
             crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing);
-        // The line saying why a click opened nothing scrolls inside the room
-        // beneath the captions less its band's padding and rule, so it never
-        // reaches past the column; where that room holds no line beside the
-        // padding, the band gives up its padding first.
-        let band_chrome = window.rem_size() * 0.5 + px(1.);
-        let reason_line = window
-            .text_style()
-            .line_height
-            .to_pixels(crate::appearance::ui_text(11.).into(), window.rem_size());
-        let (band_padded, line_cap) = match laid_out.below {
-            None => (true, crate::appearance::ui_size(100.)),
-            Some(below) if below - band_chrome >= reason_line => (
-                true,
-                crate::appearance::ui_size(100.).min(below - band_chrome),
-            ),
-            Some(below) => (false, (below - px(1.)).max(px(0.))),
-        };
-        // Each side's open control, which its caption draws, and the line
-        // saying why its last click opened nothing, drawn beneath it.
+        // Each side's open control, which its caption draws, and why its last
+        // click opened nothing, which a band beneath the captions says.
         let mut controls: [Option<Button>; 2] = [None, None];
-        let mut notes: [Option<Stateful<Div>>; 2] = [None, None];
+        let mut answers: [Option<crate::system_preview::Answer>; 2] = [None, None];
         for (index, side) in [old, new].into_iter().enumerate() {
             let label = if index == 0 { "Before" } else { "After" };
             let side_path = self
@@ -681,15 +661,41 @@ impl GitTurtle {
                     control
                 };
                 controls[index] = Some(control);
-                notes[index] = target.note(cx).map(|note| note.max_h(line_cap));
+                answers[index] = target.answered(cx);
             }
         }
+        // The band saying why a click opened nothing shows each side's short
+        // line in that side's half, whole where the image keeps its usable
+        // minimum beneath it and otherwise on two lines, and always ends at
+        // a whole line.
+        let stage_min = crate::appearance::ui_size(STAGE_MIN);
+        let band_size = crate::appearance::ui_text(11.);
+        let band_room = caption_width - window.rem_size() * 1.5;
+        let natural = answers.each_ref().map(|answer| {
+            answer.as_ref().map_or(0, |answer| {
+                wrapped_lines(answer.brief(), band_size, band_room, window).min(64)
+            })
+        });
+        let banded = answers.iter().any(Option::is_some);
+        let band = BandLines {
+            line: text_line(band_size, window),
+            padding: window.rem_size() * 0.5,
+        };
+        let (band_lines, band_padded) = band.fit(
+            natural.into_iter().max().unwrap_or(0),
+            laid_out.below,
+            stage_min,
+        );
+        let band_height = if banded {
+            band.height(band_lines, band_padded)
+        } else {
+            px(0.)
+        };
         // The comparison's notes take two lines each where the room beneath
         // the captions, after any band, keeps the image its usable minimum
         // beneath them, one where only that does, and otherwise leave the
         // image their room, their words staying in its accessible
         // description: labels give way before content.
-        let banded = notes.iter().any(Option::is_some);
         let note_size = crate::appearance::ui_text(10.);
         let note_room = width - window.rem_size() * 1.5;
         let wraps = [
@@ -699,7 +705,7 @@ impl GitTurtle {
         .map(|(text, cache)| one_line_width(text, cache, note_size, window) > note_room);
         let note_lines = laid_out.below.map_or(1, |below| {
             note_lines(
-                below - if banded { laid_out.band } else { px(0.) },
+                below - band_height,
                 wraps,
                 2,
                 window
@@ -711,42 +717,38 @@ impl GitTurtle {
             )
         });
         let band = banded.then(|| {
-            let measured = measured.clone();
             div()
                 .debug_selector(|| "image-open-notes".into())
                 .flex()
                 .flex_shrink_0()
-                .bg(rgb(p.panel))
-                .border_b_1()
-                .border_color(rgb(p.border))
-                // Its padding and rule too stay inside the room, where the
-                // captions leave less than them.
+                // Where the captions leave less than one line and its rule,
+                // the band still stays inside the room.
                 .when_some(laid_out.below, |band, below| {
                     band.max_h(below).overflow_hidden()
                 })
-                .on_prepaint(move |bounds, _, cx| {
-                    measured.update(cx, |room, cx| {
-                        if room.band != bounds.size.height {
-                            room.band = bounds.size.height;
-                            cx.notify();
-                        }
-                    })
-                })
                 .children(
-                    notes
+                    answers
                         .into_iter()
                         .enumerate()
                         .filter(|(index, _)| !source || *index == 1)
-                        .map(|(i, note)| {
+                        .map(|(i, answer)| {
+                            // Both halves keep the captions' inset, so they
+                            // share the column as the captions do, and only a
+                            // side with a line has the band's surface and
+                            // rule, which span the half whose text it carries.
                             div()
-                                .when(note.is_some(), |half| {
-                                    half.debug_selector(move || format!("image-side-note-{i}"))
-                                })
                                 .flex_1()
                                 .min_w_0()
                                 .px_3()
-                                .when(band_padded, |half| half.py_1())
-                                .children(note)
+                                .when_some(answer, |half, answer| {
+                                    let clamp = (natural[i] > band_lines).then_some(band_lines);
+                                    half.debug_selector(move || format!("image-side-note-{i}"))
+                                        .bg(rgb(p.panel))
+                                        .border_b_1()
+                                        .border_color(rgb(p.border))
+                                        .when(band_padded, |half| half.py_1())
+                                        .child(answer.short_line(clamp, cx))
+                                })
                         }),
                 )
         });
@@ -1236,7 +1238,7 @@ const STAGE_MIN: f32 = 96.;
 /// and the comparison's notes take. It belongs to the window's layout, so it
 /// outlives one file's comparison and the next starts from it; before the
 /// first layout the captions keep their dimensions, the notes take one line
-/// each and the line its scaled 100 px.
+/// each and the line all of its lines.
 #[derive(Clone, Copy, Default)]
 struct Room {
     /// The height beneath the toolbar, which the captions, the band, the
@@ -1248,8 +1250,43 @@ struct Room {
     /// The height beneath the captions, which the band, the image and its
     /// notes share; the column sets it whatever they hold.
     below: Option<Pixels>,
-    /// The band's height while a side shows its line, its rule included.
-    band: Pixels,
+}
+
+/// The lines of the band beneath an image comparison's captions, each `line`
+/// tall, inside `padding` above and below and over its 1 px rule.
+#[derive(Clone, Copy)]
+struct BandLines {
+    line: Pixels,
+    padding: Pixels,
+}
+
+impl BandLines {
+    /// The band's height on `lines` lines, `padded` or not, its rule included.
+    fn height(self, lines: usize, padded: bool) -> Pixels {
+        (if padded { self.padding } else { px(0.) }) + self.line * lines as f32 + px(1.)
+    }
+
+    /// How many lines the band takes for a line that wraps to `most` in the
+    /// room `below` the captions, and whether it keeps its padding: every
+    /// line where the image keeps `stage` beneath it, and otherwise two, so
+    /// the image stays in view. Where the room holds less than that, the band
+    /// gives up its padding, then whole lines, never ending inside one;
+    /// before the room is laid out, every line.
+    fn fit(self, most: usize, below: Option<Pixels>, stage: Pixels) -> (usize, bool) {
+        let Some(below) = below else {
+            return (most, true);
+        };
+        let mut lines = if below - self.height(most, true) >= stage {
+            most
+        } else {
+            most.min(2)
+        };
+        let padded = self.height(lines, true) <= below;
+        while lines > 1 && self.height(lines, padded) > below {
+            lines -= 1;
+        }
+        (lines, padded)
+    }
 }
 
 /// How many lines each of the comparison's notes takes in `room`, the height
@@ -1340,6 +1377,17 @@ fn comparison_note(
                 })
                 .child(text),
         ),
+    )
+}
+
+/// One line of text at `size` in the inherited interface font, as its text
+/// element lays it out: the style's line height snapped to a device pixel.
+pub(crate) fn text_line(size: Pixels, window: &Window) -> Pixels {
+    window.pixel_snap(
+        window
+            .text_style()
+            .line_height
+            .to_pixels(size.into(), window.rem_size()),
     )
 }
 

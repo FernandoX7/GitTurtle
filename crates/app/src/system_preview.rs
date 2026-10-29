@@ -20,7 +20,9 @@
 //! control's row says why ([`Target::note`]): a failure in the warning color,
 //! announced at once, or, when the portal reports the request cancelled (a
 //! closed application chooser, whether or not it offered an application), a
-//! muted "Nothing opened.". The line stays while that comparison is shown and goes when
+//! muted "Nothing opened.". Beneath an image side's caption the line is short and
+//! leads with the reason ([`Answer::short_line`]), the whole answer in its tooltip
+//! and name. The line stays while that comparison is shown and goes when
 //! another is ([`Showing`]); nothing reaches the window-wide notice.
 
 use crate::copy_feedback::{self, Action, Mark};
@@ -289,7 +291,103 @@ struct Note {
     mark: Mark,
     showing: Showing,
     failed: bool,
+    /// The whole answer, which the line's tooltip, accessible name and
+    /// announcement carry: "Could not open After. …" or "Nothing opened.".
     text: SharedString,
+    /// What a short line shows: the reason first ([`brief`]).
+    brief: SharedString,
+}
+
+/// What a short line beneath an image side's caption shows for a failure:
+/// its reason first, in a few words a side's half of a narrow column holds
+/// in two lines. A copy the desktop would type as something else reads
+/// "Seen as an SVG document, so not opened" in place of the launcher's
+/// sentence, whose reason comes after "The desktop would open this copy as";
+/// every other reason already leads with itself ("No default application is
+/// set for image/png, so nothing was opened."), and keeps its own words. The
+/// side the line belongs to is the caption above it.
+fn brief(reason: &str) -> String {
+    let reason = reason.trim_end_matches('.');
+    if let Some((_, rest)) = reason.split_once(" would open this copy as ")
+        && let Some((seen, _)) = rest.split_once(" rather than as ")
+    {
+        // "an SVG document (image/svg+xml)": the type's name, without the
+        // media type the tooltip keeps.
+        let seen = seen.split_once(" (").map_or(seen, |(name, _)| name);
+        return format!("Seen as {seen}, so not opened");
+    }
+    format!("{reason}.")
+}
+
+/// Why the last click on an open control in its showing opened nothing, as
+/// its line beneath the control says it.
+pub(crate) struct Answer {
+    id: usize,
+    key: String,
+    failed: bool,
+    text: SharedString,
+    brief: SharedString,
+}
+
+impl Answer {
+    /// What the short line shows ([`brief`]), or "Nothing opened.".
+    pub(crate) fn brief(&self) -> &str {
+        &self.brief
+    }
+
+    /// The line's frame: a failure in the warning color fitted to the
+    /// page's surfaces, announced at once, or a closed chooser in muted text,
+    /// announced politely, both by their whole answer. Tests find it as
+    /// `<control id>/note`.
+    fn frame(&self, cx: &App) -> Stateful<Div> {
+        let key = self.key.clone();
+        let probe = key.clone();
+        let color = if self.failed {
+            appearance::labels(cx).warning
+        } else {
+            palette(cx).muted
+        };
+        div()
+            .id(("open-note", self.id))
+            .debug_selector(move || key.clone())
+            .map(|line| {
+                if self.failed {
+                    line.role(Role::Alert)
+                        .a11y_synthetic_children(native_accessibility::assertive)
+                } else {
+                    line.role(Role::Status)
+                        .a11y_synthetic_children(native_accessibility::polite)
+                }
+            })
+            .aria_label(self.text.clone())
+            .w_full()
+            .min_w_0()
+            .text_size(appearance::ui_text(11.))
+            .text_color(rgb(color))
+            .children(appearance::text_probe(move || probe))
+    }
+
+    /// The short line: the reason first ([`Answer::brief`]), whole, or on
+    /// `clamp` lines ending in an ellipsis where it needs more, so it ends at
+    /// a whole line. Its whole answer is in its tooltip, as in its name,
+    /// wherever the line shows less of it.
+    pub(crate) fn short_line(self, clamp: Option<usize>, cx: &App) -> Stateful<Div> {
+        let whole = self.text.clone();
+        let tooltip = (clamp.is_some() || self.text != self.brief).then_some(whole);
+        let brief = self.brief.clone();
+        self.frame(cx)
+            .when_some(tooltip, |line, whole| {
+                line.tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(whole.clone()).build(window, cx)
+                })
+            })
+            .child(
+                div()
+                    .min_w_0()
+                    .when_some(clamp, |line, lines| line.line_clamp(lines).text_ellipsis())
+                    .child(brief),
+            )
+    }
 }
 
 impl Target {
@@ -326,57 +424,48 @@ impl Target {
     /// showing opened nothing, as wide as the row so it starts a line of its
     /// own in a wrapping row: a failure in the warning color fitted to the
     /// page's surfaces, announced at once, or a closed chooser in muted
-    /// text, announced politely. A long reason scrolls inside the line's
-    /// scaled 100 px, which a caller may lower to the room it has. Tests find
-    /// it as `<control id>/note`.
+    /// text, announced politely, each by its whole answer. A long reason
+    /// scrolls inside the line's scaled 100 px. Tests find it as
+    /// `<control id>/note`.
     pub(crate) fn note(&self, cx: &App) -> Option<Stateful<Div>> {
+        let answer = self.answered(cx)?;
+        Some(
+            answer
+                .frame(cx)
+                .max_h(appearance::ui_size(100.))
+                .overflow_y_scroll()
+                .child(answer.text),
+        )
+    }
+
+    /// Why its last click in this showing opened nothing, for a caller that
+    /// draws the short line itself ([`Answer::short_line`]), as an image
+    /// side's band does beneath its caption.
+    pub(crate) fn answered(&self, cx: &App) -> Option<Answer> {
         let note = cx
             .try_global::<Notes>()?
             .notes
             .iter()
             .rev()
             .find(|note| note.mark == self.mark && note.showing == self.opener.showing)?;
-        let key = format!("{}/note", self.mark.control());
-        let probe = key.clone();
-        let color = if note.failed {
-            appearance::labels(cx).warning
-        } else {
-            palette(cx).muted
-        };
-        Some(
-            div()
-                .id(("open-note", note.id))
-                .debug_selector(move || key.clone())
-                .map(|line| {
-                    if note.failed {
-                        line.role(Role::Alert)
-                            .a11y_synthetic_children(native_accessibility::assertive)
-                    } else {
-                        line.role(Role::Status)
-                            .a11y_synthetic_children(native_accessibility::polite)
-                    }
-                })
-                .aria_label(note.text.clone())
-                .w_full()
-                .min_w_0()
-                .max_h(appearance::ui_size(100.))
-                .overflow_y_scroll()
-                .text_size(appearance::ui_text(11.))
-                .text_color(rgb(color))
-                .child(note.text.clone())
-                .children(appearance::text_probe(move || probe)),
-        )
+        Some(Answer {
+            id: note.id,
+            key: format!("{}/note", self.mark.control()),
+            failed: note.failed,
+            text: note.text.clone(),
+            brief: note.brief.clone(),
+        })
     }
 
     /// The control's answer to one click: Opened on the control and one
     /// polite announcement, or the line saying why nothing opened.
     fn answer(self, outcome: Result<(), NotOpened>, window: &mut Window, cx: &mut App) {
-        let (failed, text) = match outcome {
+        let (failed, text, brief) = match outcome {
             Ok(()) => {
                 copy_feedback::confirm(window, cx, Some(self.mark), OPENED);
                 return;
             }
-            Err(NotOpened::Dismissed) => (false, DISMISSED.into()),
+            Err(NotOpened::Dismissed) => (false, DISMISSED.into(), DISMISSED.into()),
             Err(NotOpened::Failed(reason)) => (
                 true,
                 format!(
@@ -384,6 +473,7 @@ impl Target {
                     self.side,
                     reason.trim_end_matches('.')
                 ),
+                brief(&reason),
             ),
         };
         let notes = cx.default_global::<Notes>();
@@ -395,6 +485,7 @@ impl Target {
             showing: self.opener.showing,
             failed,
             text: text.into(),
+            brief: brief.into(),
         });
         while notes.notes.len() > NOTES_KEPT {
             notes.notes.pop_front();
@@ -584,6 +675,89 @@ pub(crate) mod tests {
         png.extend(chunk(b"IDAT", pixels));
         png.extend(chunk(b"IEND", b""));
         png
+    }
+
+    /// A failure's short line leads with its reason. The launcher's sentence
+    /// for a copy the desktop would type as something else puts its reason
+    /// after "The desktop would open this copy as", which a band in a 461 px
+    /// window's half never reached ("Could not / open After." at 18 pt), so
+    /// the line reads "Seen as …, so not opened"; every other reason keeps
+    /// its own words, which already lead with it.
+    #[::core::prelude::v1::test]
+    fn a_failure_line_leads_with_its_reason() {
+        assert_eq!(
+            brief(
+                "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened."
+            ),
+            "Seen as an SVG document, so not opened"
+        );
+        assert_eq!(
+            brief(
+                "xdg-open would open this copy as application/x-php rather than as a PDF document, so nothing was opened; the desktop portal (xdg-desktop-portal) opens it by its type."
+            ),
+            "Seen as application/x-php, so not opened"
+        );
+        assert_eq!(
+            brief(
+                "The desktop would open this copy as an unknown type rather than as a PNG image, so nothing was opened."
+            ),
+            "Seen as an unknown type, so not opened"
+        );
+        for reason in [
+            "No default application is set for image/png, so nothing was opened.",
+            "This needs gio (GLib) to check what the desktop would open the copy as, and it is not installed.",
+        ] {
+            assert_eq!(brief(reason), reason);
+        }
+        assert_eq!(
+            brief("The desktop portal refused it: denied"),
+            "The desktop portal refused it: denied."
+        );
+    }
+
+    /// The short line beneath an image side's caption shows its reason first
+    /// and is named, as it is announced, by the whole answer, with the side
+    /// it could not open: "Could not open After. The desktop would open …".
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_short_line_is_named_by_the_whole_answer(cx: &mut gpui_kit::TestAppContext) {
+        use gpui::Element as _;
+        let (_app, cx) = crate::copy_feedback::tests::history(cx, Vec::new());
+        let opener = Opener::new(WeakEntity::new_invalid(), Showing::next());
+        let png: Arc<[u8]> = Arc::from(png(None));
+        let target = cx.update(|_, _| {
+            let offer = offer(&png, &|| Ok(())).unwrap().expect("offered");
+            opener.target(
+                ("image-system-preview", 1usize),
+                "After",
+                &png,
+                std::path::Path::new("captured"),
+                offer,
+            )
+        });
+        let reason = "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened.";
+        cx.update(|window, cx| {
+            target
+                .clone()
+                .answer(Err(NotOpened::Failed(reason.into())), window, cx)
+        });
+        let mut written = None;
+        let viewport = cx.update(|window, _| window.viewport_size());
+        cx.draw(gpui::point(px(0.), px(0.)), viewport, |_, cx| {
+            let answer = target.answered(cx).expect("the click's answer");
+            assert_eq!(answer.brief(), "Seen as an SVG document, so not opened");
+            let element = answer.short_line(Some(2), cx).into_element();
+            let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
+            element.write_a11y_info(&mut node);
+            written = Some(node);
+            div()
+        });
+        let node = written.expect("the line was built");
+        assert_eq!(node.role(), gpui::accesskit::Role::Alert);
+        assert_eq!(
+            node.label(),
+            Some(format!("Could not open After. {reason}").as_str())
+        );
     }
 
     /// Every open control is named in one form that starts with what it

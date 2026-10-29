@@ -6727,6 +6727,239 @@ pub(crate) mod tests {
         }
     }
 
+    /// After a click on After's Open in default app that opens nothing, with
+    /// `reason`, at `text` pt in a `width` × `height` window: After's caption,
+    /// the band's half, its line, the image and the line's height, the
+    /// lines it shows and the room beneath the captions.
+    #[cfg(target_os = "linux")]
+    fn refused(
+        cx: &mut VisualTestContext,
+        reason: &str,
+        (text, width, height): (u8, f32, f32),
+    ) -> RefusedBand {
+        use crate::system_preview::{NotOpened, tests::queue};
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn at {text} pt in {width} × {height}"))
+        };
+        cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+        cx.simulate_resize(size(px(width), px(height)));
+        draw(cx);
+        queue(Err(NotOpened::Failed(reason.into())));
+        let control = bounds("image-system-preview-1", cx);
+        cx.simulate_click(control.center(), Modifiers::default());
+        cx.run_until_parked();
+        draw(cx);
+        // Each line as the text element lays it out, at a device pixel.
+        let line_height = cx
+            .update(|window, _| crate::image_compare::text_line(appearance::ui_text(11.), window));
+        let line = bounds("image-system-preview-1/note", cx);
+        RefusedBand {
+            caption: bounds("image-side-caption-1", cx),
+            band: bounds("image-side-note-1", cx),
+            line,
+            image: cx.debug_bounds("image-canvas-area"),
+            room: bounds("image-stage-room", cx),
+            line_height,
+            lines: line.size.height / line_height,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    struct RefusedBand {
+        caption: Bounds<Pixels>,
+        band: Bounds<Pixels>,
+        line: Bounds<Pixels>,
+        image: Option<Bounds<Pixels>>,
+        room: Bounds<Pixels>,
+        line_height: Pixels,
+        lines: f32,
+    }
+
+    /// The polyglot refusal the launcher reports when GIO types a PNG copy
+    /// as SVG (`system_preview::launch`'s tests pin its words).
+    #[cfg(target_os = "linux")]
+    const SVG_REFUSAL: &str = "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened.";
+
+    /// When a click on a changed image's Open in default app opens nothing,
+    /// the band beneath that side's caption says why in a short line that
+    /// leads with the reason ("Seen as an SVG document, so not opened"), on
+    /// its own side: its surface spans After's half, where it once spanned
+    /// both halves while its text wrapped in After's. It shows every line
+    /// where the image keeps its usable minimum beneath it and otherwise
+    /// two, so the image stays in view: in a 461 × 490 window the band once
+    /// took the whole room beneath the captions, showing "Could not / open
+    /// After." at 18 pt, while the image was hidden. The test fonts' wider
+    /// glyphs reproduce that room at 13 pt in 461 × 640, where the line now
+    /// takes two lines above an image that keeps its minimum. At every size
+    /// checked the band ends at a whole line, and a band of more than two
+    /// lines leaves the image its minimum.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_refusal_band_leads_with_its_reason_on_its_own_side(cx: &mut TestAppContext) {
+        use crate::system_preview::tests::{latest_note, png};
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let slack = px(0.5);
+        let surface = cx.update(|_, cx| {
+            gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(palette(cx).panel)))
+        });
+        for size in [
+            (13, 461., 640.),
+            (13, 461., 980.),
+            (18, 461., 980.),
+            (13, 640., 680.),
+            (13, 1480., 980.),
+            (18, 1480., 980.),
+        ] {
+            let at = format!("{} pt in {} × {}", size.0, size.1, size.2);
+            let refused = refused(cx, SVG_REFUSAL, size);
+            assert_eq!(
+                cx.read(latest_note),
+                Some((format!("Could not open After. {SVG_REFUSAL}"), true)),
+                "{at}: the whole answer stays the line's"
+            );
+            let RefusedBand {
+                caption,
+                band,
+                line,
+                image,
+                room,
+                line_height,
+                lines,
+            } = refused;
+            assert!(
+                (lines - lines.round()).abs() * line_height <= slack && lines.round() >= 1.,
+                "{at}: the line {line:?} ends at a whole line of {line_height:?}"
+            );
+            assert!(
+                line.bottom() <= band.bottom() + slack && band.bottom() <= room.bottom() + slack,
+                "{at}: the line {line:?} lies whole in its band {band:?} inside the room {room:?}"
+            );
+            let image = image.unwrap_or_else(|| panic!("{at}: the image stays in view"));
+            let minimum = cx.update(|_, _| appearance::ui_size(96.));
+            assert!(
+                image.size.height >= px(1.) && image.top() >= band.bottom() - slack,
+                "{at}: the image {image:?} stays in view below the band {band:?}"
+            );
+            if lines.round() > 2. {
+                assert!(
+                    image.size.height >= minimum - slack,
+                    "{at}: a band of {lines} lines leaves the image {image:?} its minimum"
+                );
+            }
+            if size == (13, 461., 640.) {
+                assert_eq!(lines.round(), 2., "{at}: two lines of the reason");
+                assert!(
+                    image.size.height >= minimum - slack,
+                    "{at}: the image {image:?} keeps its minimum beneath them"
+                );
+            }
+            // The band's surface lies in After's half alone.
+            let painted = cx.update(|window, _| {
+                let scale = window.scale_factor();
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == surface)
+                    .map(|quad| {
+                        Bounds::from_corners(
+                            point(
+                                px(quad.bounds.left().as_f32() / scale),
+                                px(quad.bounds.top().as_f32() / scale),
+                            ),
+                            point(
+                                px(quad.bounds.right().as_f32() / scale),
+                                px(quad.bounds.bottom().as_f32() / scale),
+                            ),
+                        )
+                    })
+                    .filter(|quad| {
+                        quad.top() < band.bottom() - slack && quad.bottom() > band.top() + slack
+                    })
+                    .collect::<Vec<_>>()
+            });
+            assert!(!painted.is_empty(), "{at}: the band has its surface");
+            for quad in painted.iter().filter(|quad| {
+                quad.left() >= room.left() - slack && quad.right() <= room.right() + slack
+            }) {
+                assert!(
+                    quad.left() >= caption.left() - slack
+                        && quad.right() <= caption.right() + slack,
+                    "{at}: the band's surface {quad:?} spans After's half {caption:?} alone"
+                );
+            }
+            // The next showing starts without the line.
+            app.update(cx, |app, cx| {
+                app.preview_showing = crate::system_preview::Showing::next();
+                cx.notify();
+            });
+            draw(cx);
+        }
+    }
+
+    /// A band ends at a whole line: at 13 pt in a 640 × 680 window the
+    /// scaled 100 px it was capped at cut its last line ("nothing was
+    /// opened.") through its glyphs. A reason longer than that, where the
+    /// image keeps its minimum beneath it, now shows every line, whole, and
+    /// at 13 pt in 461 × 640, where it would not, two whole lines.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_refusal_band_ends_at_a_whole_line(cx: &mut TestAppContext) {
+        use crate::system_preview::tests::png;
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let slack = px(0.5);
+        let long = "Text opens only through the desktop portal, which is not running here; xdg-open would choose an application from what the text contains, not its type.";
+        for (size, shown) in [((13, 640., 680.), None), ((13, 461., 640.), Some(2.))] {
+            let at = format!("{} pt in {} × {}", size.0, size.1, size.2);
+            let RefusedBand {
+                band,
+                line,
+                image,
+                line_height,
+                lines,
+                ..
+            } = refused(cx, long, size);
+            assert!(
+                (lines - lines.round()).abs() * line_height <= slack,
+                "{at}: the line {line:?} ends at a whole line of {line_height:?}"
+            );
+            assert!(
+                line.bottom() <= band.bottom() + slack,
+                "{at}: the line {line:?} lies whole in its band {band:?}"
+            );
+            let image = image.unwrap_or_else(|| panic!("{at}: the image stays in view"));
+            let minimum = cx.update(|_, _| appearance::ui_size(96.));
+            match shown {
+                None => assert!(
+                    line.size.height > appearance::ui_size(100.) && image.size.height >= minimum,
+                    "{at}: every line {line:?} shows above an image {image:?} that keeps its minimum"
+                ),
+                Some(two) => assert_eq!(lines.round(), two, "{at}: two whole lines"),
+            }
+            app.update(cx, |app, cx| {
+                app.preview_showing = crate::system_preview::Showing::next();
+                cx.notify();
+            });
+            draw(cx);
+        }
+    }
+
     /// A changed image's notes beneath it, the scale notice and the
     /// interaction guidance, wrap to a second line where the column leaves the
     /// image its usable minimum beneath them: at 13 pt in a 640 × 680 window
