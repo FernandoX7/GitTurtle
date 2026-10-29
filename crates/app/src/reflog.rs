@@ -167,6 +167,39 @@ impl crate::focus_ring::sweep::Opened for Option<Entity<ReflogBrowser>> {
         );
     }
 }
+#[cfg(test)]
+impl ReflogBrowser {
+    /// Opens `app`'s Reflog, reads its log, selects its newest entry and
+    /// reads that commit, for tests in other modules.
+    pub(crate) async fn open_selected(
+        app: &Entity<GitTurtle>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Entity<Self> {
+        let browser = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.open_reflog_browser(window, cx)))
+            .expect("the Reflog opens");
+        let read = browser.update(cx, |this, _| this.task.take());
+        read.expect("the log is read").await;
+        let entry = browser.read_with(cx, |this, _| {
+            let page = this.page.as_ref().expect("the log loaded");
+            page.entries.first().expect("the log has an entry").clone()
+        });
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.select(entry, window, cx)));
+        let read = browser.update(cx, |this, _| this.task.take());
+        read.expect("the commit is read").await;
+        cx.executor().run_until_parked();
+        browser
+    }
+
+    /// Whether the browser started a read: one yet to answer, or one that
+    /// answered with a failure, as a review read while a write runs does.
+    /// Its reader is drained first, so a read that was started has answered.
+    pub(crate) fn started_a_read(&self) -> bool {
+        self.reader.drain();
+        self.pending || self.task.is_some() || self.error.is_some()
+    }
+}
+
 impl ReflogBrowser {
     /// The filter's focus handle, for the focus sweep.
     #[cfg(test)]
@@ -333,11 +366,7 @@ impl ReflogBrowser {
         let filter = self.query.read(cx).focus_handle(cx);
         self.cancel_read.release_to(&filter, window, cx);
     }
-    /// Whether the browser may act now. Its recovery controls dim the moment
-    /// a write runs, without the busy look's delay (`workspace::BusyLook`):
-    /// the write is the recovery branch this browser's own review created,
-    /// and the name and commit it read dim with it so they are not taken
-    /// for ones a second review could still change.
+    /// Whether the browser may act now: not while a write runs.
     fn current(&self, cx: &App) -> bool {
         self.owner.upgrade().is_some_and(|owner| {
             let owner = owner.read(cx);
@@ -452,7 +481,16 @@ impl Render for ReflogBrowser {
         let p = palette(cx);
         let body_height = (window.viewport_size().height - px(240.)).max(px(120.));
         let matches = self.matches(cx);
+        // A write refuses the recovery at once, and it dims only once the
+        // write looks busy (`workspace::BusyLook`), as everywhere else; it
+        // dimmed the moment any write started. The browser closes before its
+        // own review submits, so a write it sees is never its own.
         let unavailable = self.pending || !self.current(cx);
+        let dimmed = self.pending
+            || self.owner.upgrade().is_none_or(|owner| {
+                let owner = owner.read(cx);
+                owner.path.as_deref() != Some(self.repo.path()) || owner.operation_shown().is_some()
+            });
         // The content and its list scroll, so each clips to its bounds on both
         // axes and keeps the focus ring's room inside: the content beside and
         // below its controls, giving the sides back through its margin, and
@@ -542,7 +580,7 @@ impl Render for ReflogBrowser {
                 .when(self.changes.len() > 100, |element| element.child(label("reflog-file-limit", "Showing the first 100 changed paths.").text_size(crate::appearance::ui_text(12.))))
                 .child(label("reflog-recovery-name-label", "Create a new branch at this commit to keep it reachable").text_size(crate::appearance::ui_text(12.)))
                 .child(shown(name).child(Input::new(&self.name).aria_label("New recovery branch name")))
-                .child(shown(review.clone()).flex().flex_col().child(button("review-reflog-recovery", "Review recovery branch…", "", false).track_focus(&review).debug_selector(|| "review-reflog-recovery".into()).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx))))));
+                .child(shown(review.clone()).flex().flex_col().child(button("review-reflog-recovery", "Review recovery branch…", "", false).track_focus(&review).debug_selector(|| "review-reflog-recovery".into()).map(|review| crate::workspace::refusing(review, || "review-reflog-recovery".into(), unavailable, dimmed)).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx))))));
         div()
             .relative()
             .min_h_0()

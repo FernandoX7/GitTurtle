@@ -25,6 +25,11 @@ impl State {
     pub(super) fn watch_warning(&self) -> Option<&str> {
         self.watch_warning.as_deref()
     }
+    /// Whether a rescan waits to run, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn rescan_queued(&self) -> bool {
+        self.pending.rescan
+    }
     pub fn reset(&mut self) {
         let epoch = self.epoch.wrapping_add(1);
         *self = Self {

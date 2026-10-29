@@ -1291,6 +1291,27 @@ mod tests {
         advance(cx, ROW_TRAVEL.as_millis() as u64);
         assert_eq!(seen(), states(false, false), "landed");
 
+        // An Actions menu opened while a write runs is built again, in place,
+        // when the write ends: Browse stashes… reads available without
+        // reopening it.
+        let held = held_write(&app, cx);
+        cx.simulate_click(actions.center(), Modifiers::default());
+        frame(cx);
+        assert!(
+            cx.debug_bounds("menu-item: Browse stashes… · MenuItem disabled")
+                .is_some(),
+            "Browse stashes… disabled while the write runs"
+        );
+        release(&app, held, cx).await;
+        frame(cx);
+        assert!(
+            cx.debug_bounds("menu-item: Browse stashes… · MenuItem")
+                .is_some(),
+            "Browse stashes… available in the open menu once the write ends"
+        );
+        cx.simulate_keystrokes("escape");
+        frame(cx);
+
         // The node each writes: announced unavailable alone, disabled.
         let nodes = crate::worktrees::ring_room_tests::row_nodes(
             cx,
@@ -1409,6 +1430,470 @@ mod tests {
             .expect("the write");
         write.await;
         crate::views::tests::settle(&app, cx).await;
+    }
+
+    /// What each of `keys` was last built with (`workspace::refusing`).
+    fn refusals_of(keys: &[&'static str]) -> Vec<(&'static str, Option<Refusal>)> {
+        keys.iter()
+            .map(|key| (*key, crate::workspace::refusals::get(key)))
+            .collect()
+    }
+
+    use crate::workspace::refusals::Refusal;
+
+    /// Draws a frame, as the window would after a notify.
+    fn next_frame(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+
+    /// Starts a Stage all and holds it, as a slow write.
+    fn held_write(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> crate::operations::Held {
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::StageAll,
+                    "Staging files…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        next_frame(cx);
+        held
+    }
+
+    /// Lets the held write finish and its reads settle.
+    async fn release(
+        app: &Entity<GitTurtle>,
+        held: crate::operations::Held,
+        cx: &mut VisualTestContext,
+    ) {
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        crate::views::tests::settle(app, cx).await;
+    }
+
+    /// Clicks the control `selector` draws, and draws the frame after it.
+    fn press(cx: &mut VisualTestContext, selector: &'static str) {
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(bounds.center(), Modifiers::default());
+        next_frame(cx);
+    }
+
+    /// Whether a dialog is open.
+    fn dialog_open(cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| window.has_active_dialog(cx))
+    }
+
+    /// Closes the open dialog, its closing motion included.
+    fn close_dialog(cx: &mut VisualTestContext) {
+        cx.update(|window, cx| window.close_dialog(cx));
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.executor().run_until_parked();
+        next_frame(cx);
+    }
+
+    /// The other controls a write leaves unavailable wait for its busy look
+    /// too. The branch picker and the Git profile picker, whose menus open
+    /// until then, look available and offer none of the items the write
+    /// refuses, and a menu opened then is built again when the write ends;
+    /// diverged branches' Merge… and Rebase…, History search's Restart, the
+    /// status bar's Refresh, a paused merge's Continue, Abort… and Keep
+    /// files…, and the Worktrees and Reflog dialogs' actions refuse at once
+    /// and are announced so, and dim once the write has run 200 ms. Pressed
+    /// while they still look available, each changes nothing: no dialog or
+    /// confirmation opens, no rescan waits, the search keeps its results, no
+    /// editor is asked for and no review is read. Each dimmed the moment any
+    /// write started, a quick Stage's too.
+    #[gpui::test]
+    async fn pickers_banners_and_dialogs_dim_only_once_a_write_looks_busy(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        // The import checked nothing out; the reset does, and gives HEAD a
+        // reflog entry.
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        fixture_git(&repository, &["reset", "-q", "--hard"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        // The branch has diverged from its upstream, as a status read says,
+        // the local watch could not start, the profile store could not be
+        // read and a search has found its match.
+        app.update(cx, |app, cx| {
+            let status = app.work_status.as_deref().cloned().unwrap_or_default();
+            app.work_status = Some(Arc::new(RepositoryStatus {
+                upstream: Some("origin/main".into()),
+                ahead: 1,
+                behind: 1,
+                ..status
+            }));
+            app.fail_profile_store("The profile store could not be read.");
+            cx.notify();
+        });
+        crate::width_walk::unwatch(&app, cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search.update(cx, |input, cx| {
+                    input.set_value("fixture notes 3", window, cx)
+                });
+                app.history_query_changed(window, cx);
+            })
+        });
+        crate::history_search::settle_history_search(&app, cx).await;
+        draw(cx);
+        let pickers = ["current-branch", "profile-button"];
+        let refused = [
+            "merge-upstream",
+            "rebase-upstream",
+            "history-search-restart",
+            "retry-local-refresh",
+        ];
+        let states = |keys: &[&'static str], announced, dimmed| {
+            keys.iter()
+                .map(|key| (*key, Some(Refusal { announced, dimmed })))
+                .collect::<Vec<_>>()
+        };
+        crate::workspace::refusals::forget();
+        next_frame(cx);
+        assert_eq!(
+            [refusals_of(&pickers), refusals_of(&refused)].concat(),
+            [
+                states(&pickers, false, false),
+                states(&refused, false, false)
+            ]
+            .concat(),
+            "at rest"
+        );
+        assert!(!app.read_with(cx, |app, _| app.automatic.rescan_queued()));
+
+        let held = held_write(&app, cx);
+        assert_eq!(
+            [refusals_of(&pickers), refusals_of(&refused)].concat(),
+            [
+                states(&pickers, false, false),
+                states(&refused, true, false)
+            ]
+            .concat(),
+            "the write starts"
+        );
+        // Pressed while they look available, Merge…, Restart and Refresh
+        // change nothing.
+        for control in [
+            "merge-upstream",
+            "history-search-restart",
+            "retry-local-refresh",
+        ] {
+            press(cx, control);
+        }
+        cx.executor().run_until_parked();
+        assert!(!dialog_open(cx), "Merge… opens no review");
+        assert!(
+            !app.read_with(cx, |app, _| app.history_search_pending()),
+            "Restart leaves the search as it was"
+        );
+        assert!(
+            !app.read_with(cx, |app, _| app.automatic.rescan_queued()),
+            "Refresh queues no rescan"
+        );
+        // Each picker's menu, opened as the write starts, offers none of the
+        // items it refuses; Activity and the profile store's retry still
+        // work.
+        for (picker, disabled, enabled) in [
+            (
+                "current-branch",
+                &[
+                    "Find or create a branch…",
+                    "Manage another branch…",
+                    "Tags…",
+                    "Worktrees…",
+                ][..],
+                "GitTurtle activity…",
+            ),
+            (
+                "profile-button",
+                &["Manage profiles…"][..],
+                "Retry profile storage",
+            ),
+        ] {
+            press(cx, picker);
+            for item in disabled {
+                assert!(
+                    cx.debug_bounds(format!("menu-item: {item} · MenuItem disabled").leak())
+                        .is_some(),
+                    "{picker}: {item} disabled in the menu opened while the write runs"
+                );
+            }
+            assert!(
+                cx.debug_bounds(format!("menu-item: {enabled} · MenuItem").leak())
+                    .is_some(),
+                "{picker}: {enabled} stays available"
+            );
+            cx.simulate_keystrokes("escape");
+            next_frame(cx);
+        }
+
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            [refusals_of(&pickers), refusals_of(&refused)].concat(),
+            [states(&pickers, true, true), states(&refused, true, true)].concat(),
+            "once the write looks busy"
+        );
+        release(&app, held, cx).await;
+
+        // A menu opened while a write runs is built again, in place, when it
+        // ends: its items read available without reopening it.
+        for (picker, item) in [
+            ("current-branch", "Find or create a branch…"),
+            ("profile-button", "Manage profiles…"),
+        ] {
+            let held = held_write(&app, cx);
+            press(cx, picker);
+            assert!(
+                cx.debug_bounds(format!("menu-item: {item} · MenuItem disabled").leak())
+                    .is_some(),
+                "{picker}: {item} disabled while the write runs"
+            );
+            release(&app, held, cx).await;
+            next_frame(cx);
+            assert!(
+                cx.debug_bounds(format!("menu-item: {item} · MenuItem").leak())
+                    .is_some(),
+                "{picker}: {item} available in the open menu once the write ends"
+            );
+            cx.simulate_keystrokes("escape");
+            next_frame(cx);
+        }
+
+        // The Worktrees dialog, open as a write starts elsewhere. Its editor
+        // is one that cannot start, so a press that went through would only
+        // fail, never open anything.
+        app.update(cx, |app, _| {
+            app.settings.external_editor = "/nonexistent/gitturtle-test-editor".into()
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_worktree_manager(window, cx)));
+        // Its own reads list the worktrees and inspect the selected one.
+        crate::worktrees::tests::settle_open_manager(&app, cx).await;
+        let actions = [
+            "open-managed-worktree",
+            "edit-managed-worktree",
+            "remove-managed-worktree",
+            "force-remove-managed-worktree",
+            "review-create-worktree",
+        ];
+        crate::workspace::refusals::forget();
+        next_frame(cx);
+        let rest: Vec<_> = refusals_of(&actions)
+            .into_iter()
+            .filter_map(|(key, refusal)| Some((key, refusal?)))
+            .collect();
+        assert!(!rest.is_empty(), "the dialog draws its actions");
+        assert_eq!(
+            rest.iter().find(|(key, _)| *key == "edit-managed-worktree"),
+            Some(&(
+                "edit-managed-worktree",
+                Refusal {
+                    announced: false,
+                    dimmed: false
+                }
+            )),
+            "Editor is available at rest"
+        );
+        let shown: Vec<_> = rest.iter().map(|(key, _)| *key).collect();
+        let held = held_write(&app, cx);
+        assert_eq!(
+            refusals_of(&shown),
+            rest.iter()
+                .map(|(key, at_rest)| (
+                    *key,
+                    Some(Refusal {
+                        announced: true,
+                        dimmed: at_rest.dimmed
+                    })
+                ))
+                .collect::<Vec<_>>(),
+            "Worktrees as the write starts"
+        );
+        press(cx, "edit-managed-worktree");
+        app.read_with(cx, |app, _| app.preferences_writer.drain());
+        cx.executor().run_until_parked();
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None,
+            "Editor asks for no editor"
+        );
+        assert!(dialog_open(cx), "Worktrees stays open");
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            refusals_of(&shown),
+            states(&shown, true, true),
+            "Worktrees once the write looks busy"
+        );
+        release(&app, held, cx).await;
+        close_dialog(cx);
+
+        // The Reflog, its newest entry selected, open as a write starts, its
+        // content scrolled to its end, where the review action lies.
+        let browser = crate::reflog::ReflogBrowser::open_selected(&app, cx).await;
+        draw(cx);
+        let explanation = cx
+            .debug_bounds("reflog-explanation")
+            .expect("the Reflog's explanation");
+        cx.simulate_mouse_move(explanation.center(), None, Modifiers::default());
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: explanation.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-2000.))),
+            modifiers: Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        draw(cx);
+        let review = ["review-reflog-recovery"];
+        crate::workspace::refusals::forget();
+        next_frame(cx);
+        assert_eq!(
+            refusals_of(&review),
+            states(&review, false, false),
+            "Reflog at rest"
+        );
+        let held = held_write(&app, cx);
+        assert_eq!(
+            refusals_of(&review),
+            states(&review, true, false),
+            "Reflog as the write starts"
+        );
+        press(cx, "review-reflog-recovery");
+        assert!(
+            !browser.read_with(cx, |browser, _| browser.started_a_read()),
+            "Review recovery branch… reads no review"
+        );
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            refusals_of(&review),
+            states(&review, true, true),
+            "Reflog once the write looks busy"
+        );
+        release(&app, held, cx).await;
+        close_dialog(cx);
+
+        // A merge paused before its commit, with nothing left to resolve.
+        let identity = [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+        ];
+        fixture_git(&repository, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(repository.join("side.txt"), "side\n").unwrap();
+        fixture_git(&repository, &["add", "side.txt"]);
+        fixture_git(
+            &repository,
+            &[&identity[..], &["commit", "-q", "-m", "side"]].concat(),
+        );
+        fixture_git(&repository, &["checkout", "-q", "main"]);
+        fixture_git(
+            &repository,
+            &[
+                &identity[..],
+                &["merge", "-q", "--no-commit", "--no-ff", "side"],
+            ]
+            .concat(),
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        let paused = ["continue-operation", "abort-operation", "stop-operation"];
+        crate::workspace::refusals::forget();
+        next_frame(cx);
+        assert_eq!(
+            refusals_of(&paused),
+            states(&paused, false, false),
+            "paused at rest"
+        );
+        let held = held_write(&app, cx);
+        assert_eq!(
+            refusals_of(&paused),
+            states(&paused, true, false),
+            "paused as the write starts"
+        );
+        for control in paused {
+            press(cx, control);
+            cx.executor().run_until_parked();
+            assert!(!dialog_open(cx), "{control} opens no confirmation");
+        }
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            refusals_of(&paused),
+            states(&paused, true, true),
+            "paused once the write looks busy"
+        );
+        release(&app, held, cx).await;
+        drop(fixture);
+    }
+
+    /// The Settings page's identity fields and actions wait for a write's
+    /// busy look too: they refuse at once, the fields read-only, and dim,
+    /// with Save reading "Working…", only once the write has run 200 ms. The
+    /// page, a view of its own, is drawn again when the look shows.
+    #[gpui::test]
+    async fn settings_identity_dims_only_once_a_write_looks_busy(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, history_script(4, 1)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        // The page is a view of its own, drawn again only when what it shows
+        // changes.
+        crate::workspace::refusals::forget();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.show_settings(window, cx);
+                app.identity_name
+                    .update(cx, |input, cx| input.set_value("Another Name", window, cx));
+            })
+        });
+        draw(cx);
+        let controls = [
+            "settings-field-Name",
+            "settings-field-Email",
+            "save-repository-identity",
+            "settings-manage-profiles",
+        ];
+        let states = |announced, dimmed| {
+            controls
+                .iter()
+                .map(|key| (*key, Some(Refusal { announced, dimmed })))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(refusals_of(&controls), states(false, false), "at rest");
+        let held = held_write(&app, cx);
+        assert_eq!(
+            refusals_of(&controls),
+            states(true, false),
+            "the write starts"
+        );
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            refusals_of(&controls),
+            states(true, true),
+            "once the write looks busy"
+        );
+        release(&app, held, cx).await;
     }
 
     /// After gamma's Stage moves its row, epsilon's row takes its place under

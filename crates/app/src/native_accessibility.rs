@@ -468,9 +468,19 @@ pub(crate) struct AppDropdown {
     max: Option<Pixels>,
     build: std::rc::Rc<BuildMenu>,
     on_open_change: Option<std::rc::Rc<OpenChange>>,
+    /// The app whose writes the menu's items follow ([`Self::follows_writes`]).
+    writes: Option<WeakEntity<crate::GitTurtle>>,
 }
 
 impl AppDropdown {
+    /// Builds the open menu again, in place, when a write in `app` starts or
+    /// ends: a menu opened while a write ran, its items the write refuses
+    /// disabled, kept them disabled after a quick write had ended.
+    pub(crate) fn follows_writes(mut self, app: WeakEntity<crate::GitTurtle>) -> Self {
+        self.writes = Some(app);
+        self
+    }
+
     /// Calls `callback` with the menu's new open state when it opens or
     /// closes, as the kit's dropdown does.
     pub(crate) fn on_open_change(
@@ -510,6 +520,7 @@ impl AppMenu for Button {
             max: None,
             build: std::rc::Rc::new(build),
             on_open_change: None,
+            writes: None,
         }
     }
 
@@ -543,16 +554,42 @@ impl RenderOnce for AppDropdown {
             .clone();
         let painted = anchor.clone();
         let (build, max, on_open_change) = (self.build, self.max, self.on_open_change);
-        let dropdown = self
-            .trigger
-            .on_prepaint(move |bounds, _, _| painted.set(Some(bounds)))
-            .dropdown_menu(move |menu, window, cx| {
+        let writes = self.writes;
+        // The menu as it opens, or as a write's start or end builds it again.
+        let open = std::rc::Rc::new(
+            move |menu: PopupMenu,
+                  keyboard: bool,
+                  window: &mut Window,
+                  cx: &mut Context<PopupMenu>| {
                 let menu = build(menu, window, cx);
                 // The kit's popover sets the menu a quarter rem below its
                 // trigger (`top_1`).
                 let gap = window.rem_size() * 0.25;
                 let top = anchor.get().map(|trigger| trigger.bottom() + gap);
-                open_menu(menu, window.last_input_was_keyboard(), top, max, window, cx)
+                open_menu(menu, keyboard, top, max, window, cx)
+            },
+        );
+        let dropdown = self
+            .trigger
+            .on_prepaint(move |bounds, _, _| painted.set(Some(bounds)))
+            .dropdown_menu(move |menu, window, cx| {
+                let keyboard = window.last_input_was_keyboard();
+                let menu = open(menu, keyboard, window, cx);
+                if let Some(app) = writes.as_ref().and_then(WeakEntity::upgrade) {
+                    let mut busy = app.read(cx).operation_busy.is_some();
+                    let open = open.clone();
+                    cx.observe_in(&app, window, move |menu, app, window, cx| {
+                        let now = app.read(cx).operation_busy.is_some();
+                        if now != busy {
+                            busy = now;
+                            menu.rebuild(window, cx, |menu, window, cx| {
+                                open(menu, keyboard, window, cx)
+                            });
+                        }
+                    })
+                    .detach();
+                }
+                menu
             });
         match on_open_change {
             Some(callback) => dropdown

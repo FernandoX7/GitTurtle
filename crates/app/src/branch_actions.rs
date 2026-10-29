@@ -177,7 +177,18 @@ impl GitTurtle {
             .label(label)
             .icon(Icon::default().path(symbol).size(px(16.)))
             .dropdown_caret(true)
-            .disabled(self.operation_busy.is_some())
+            // Its menu opens until a write looks busy, offering none of the
+            // items the write refuses; only then does the picker look
+            // unavailable (`workspace::BusyLook`). It dimmed the moment any
+            // write started, a quick Stage's too.
+            .map(|picker| {
+                workspace::refusing(
+                    picker,
+                    || "current-branch".into(),
+                    false,
+                    self.operation_shown().is_some(),
+                )
+            })
             .accessibility_label(format!(
                 "Current branch: {named}. Switch or manage branches"
             ))
@@ -188,6 +199,8 @@ impl GitTurtle {
                 };
                 let this = view.read(cx);
                 let path = this.path.clone();
+                // Read as it opens: a write refuses every item but Activity.
+                let busy = this.operation_busy.is_some();
                 let current = this
                     .work_status
                     .as_ref()
@@ -204,17 +217,25 @@ impl GitTurtle {
                 let find_owner = owner.clone();
                 let find_path = path.clone();
                 menu = menu
-                    .item(PopupMenuItem::new("Find or create a branch…").on_click(
-                        move |_, window, cx| {
-                            let _ = find_owner.update(cx, |this, cx| {
-                                if this.path == find_path && this.page == AppPage::Repository {
-                                    this.git_actions_open = true;
-                                    this.branch_name.read(cx).focus_handle(cx).focus(window, cx);
-                                    cx.notify();
-                                }
-                            });
-                        },
-                    ))
+                    .item(
+                        PopupMenuItem::new("Find or create a branch…")
+                            .disabled(busy)
+                            .on_click(move |_, window, cx| {
+                                let _ = find_owner.update(cx, |this, cx| {
+                                    if this.path == find_path
+                                        && this.page == AppPage::Repository
+                                        && this.operation_busy.is_none()
+                                    {
+                                        this.git_actions_open = true;
+                                        this.branch_name
+                                            .read(cx)
+                                            .focus_handle(cx)
+                                            .focus(window, cx);
+                                        cx.notify();
+                                    }
+                                });
+                            }),
+                    )
                     .separator();
                 let candidates: Vec<_> = this
                     .branches
@@ -248,7 +269,7 @@ impl GitTurtle {
                     menu = menu.item(
                         PopupMenuItem::new(label)
                             .checked(false)
-                            .disabled(occupied.is_some())
+                            .disabled(occupied.is_some() || busy)
                             .on_click(move |_, window, cx| {
                                 let _ = owner.update(cx, |this, cx| {
                                     if this.path == path && this.page == AppPage::Repository {
@@ -282,6 +303,7 @@ impl GitTurtle {
                         MenuAction::ManageCurrent,
                         &owner,
                         &path,
+                        busy,
                     );
                 }
                 menu = add_menu_action(
@@ -290,6 +312,7 @@ impl GitTurtle {
                     MenuAction::ManageLocal,
                     &owner,
                     &path,
+                    busy,
                 );
                 menu = add_menu_action(
                     menu,
@@ -297,6 +320,7 @@ impl GitTurtle {
                     MenuAction::Track,
                     &owner,
                     &path,
+                    busy,
                 );
                 if current.is_some() && this.integration_state.is_none() {
                     menu = add_menu_action(
@@ -305,6 +329,7 @@ impl GitTurtle {
                         MenuAction::Merge,
                         &owner,
                         &path,
+                        busy,
                     );
                     menu = add_menu_action(
                         menu,
@@ -312,6 +337,7 @@ impl GitTurtle {
                         MenuAction::Rebase,
                         &owner,
                         &path,
+                        busy,
                     );
                     menu = add_menu_action(
                         menu,
@@ -319,15 +345,24 @@ impl GitTurtle {
                         MenuAction::InteractiveRebase,
                         &owner,
                         &path,
+                        busy,
                     );
                 }
-                menu = add_menu_action(menu.separator(), "Tags…", MenuAction::Tags, &owner, &path);
+                menu = add_menu_action(
+                    menu.separator(),
+                    "Tags…",
+                    MenuAction::Tags,
+                    &owner,
+                    &path,
+                    busy,
+                );
                 menu = add_menu_action(
                     menu,
                     "GitTurtle activity…",
                     MenuAction::Activity,
                     &owner,
                     &path,
+                    busy,
                 );
                 menu = add_menu_action(
                     menu,
@@ -335,6 +370,7 @@ impl GitTurtle {
                     MenuAction::CompareRevisions,
                     &owner,
                     &path,
+                    busy,
                 );
                 menu = add_menu_action(
                     menu,
@@ -342,17 +378,35 @@ impl GitTurtle {
                     MenuAction::QuickFile,
                     &owner,
                     &path,
+                    busy,
                 );
-                menu = add_menu_action(menu, "Worktrees…", MenuAction::Worktrees, &owner, &path);
+                menu = add_menu_action(
+                    menu,
+                    "Worktrees…",
+                    MenuAction::Worktrees,
+                    &owner,
+                    &path,
+                    busy,
+                );
                 menu = add_menu_action(
                     menu,
                     "Local reflog & recovery…",
                     MenuAction::Reflog,
                     &owner,
                     &path,
+                    busy,
                 );
-                add_menu_action(menu, "Manage remotes…", MenuAction::Remotes, &owner, &path)
+                add_menu_action(
+                    menu,
+                    "Manage remotes…",
+                    MenuAction::Remotes,
+                    &owner,
+                    &path,
+                    busy,
+                )
             })
+            // A write's start or end builds the open menu again.
+            .follows_writes(cx.entity().downgrade())
             .into_any_element()
     }
 
@@ -844,22 +898,30 @@ impl GitTurtle {
     }
 }
 
+/// The branch picker's `action`, disabled while `busy`, a write running as
+/// the menu opened: each action but Activity refuses until the write ends.
 fn add_menu_action(
     mut menu: PopupMenu,
     label: &'static str,
     action: MenuAction,
     owner: &WeakEntity<GitTurtle>,
     path: &Option<PathBuf>,
+    busy: bool,
 ) -> PopupMenu {
     let owner = owner.clone();
     let path = path.clone();
-    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
-        let _ = owner.update(cx, |this, cx| {
-            if this.path == path && this.page == AppPage::Repository {
-                this.branch_menu_action(action, window, cx);
-            }
-        });
-    }));
+    let refused = busy && !matches!(action, MenuAction::Activity);
+    menu = menu.item(
+        PopupMenuItem::new(label)
+            .disabled(refused)
+            .on_click(move |_, window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if this.path == path && this.page == AppPage::Repository {
+                        this.branch_menu_action(action, window, cx);
+                    }
+                });
+            }),
+    );
     menu
 }
 

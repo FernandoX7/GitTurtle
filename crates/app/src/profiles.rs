@@ -47,6 +47,11 @@ impl GitTurtle {
     pub(super) fn profile_save_pending(&self) -> bool {
         self.profiles.saving
     }
+    /// The profile store failed with `error`, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn fail_profile_store(&mut self, error: &str) {
+        self.profiles.error = Some(error.into());
+    }
     pub(super) fn load_profiles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let response = self.preferences_writer.submit_read(Store::load);
         cx.spawn_in(window, async move |this, cx| {
@@ -140,7 +145,18 @@ impl GitTurtle {
                 px(16.)
             }))
             .dropdown_caret(!compact)
-            .disabled(self.operation_busy.is_some() || self.profiles.saving)
+            // Its menu opens until a write looks busy, offering none of the
+            // items the write refuses; only then does the picker look
+            // unavailable (`workspace::BusyLook`). It dimmed the moment any
+            // write started. A profile save in progress leaves it so at once.
+            .map(|picker| {
+                crate::workspace::refusing(
+                    picker,
+                    || "profile-button".into(),
+                    false,
+                    self.operation_shown().is_some() || self.profiles.saving,
+                )
+            })
             .accessibility_label(format!("Git profile: {title}. Choose or manage profiles"))
             .tooltip(
                 self.profile
@@ -165,6 +181,11 @@ impl GitTurtle {
                 };
                 let this = view.read(cx);
                 let path = this.path.clone();
+                // Read as it opens: a write refuses choosing, creating and
+                // managing profiles until it ends, and the menu is built again
+                // when it does (`AppDropdown::follows_writes`). Retrying the
+                // profile store, which no write touches, stays available.
+                let busy = this.operation_busy.is_some();
                 if let Some(profile) = &this.profile {
                     menu = menu.label(current_identity(profile)).separator();
                 }
@@ -186,7 +207,8 @@ impl GitTurtle {
                             PopupMenuItem::new(format!("{} · {}", profile.label, profile.email))
                                 .checked(checked)
                                 .disabled(
-                                    this.repository.is_none() || this.page == AppPage::Projects,
+                                    busy || this.repository.is_none()
+                                        || this.page == AppPage::Projects,
                                 )
                                 .on_click(move |_, window, cx| {
                                     let _ = owner.update(cx, |this, cx| {
@@ -214,17 +236,19 @@ impl GitTurtle {
                         // Creating a profile needs the saved profiles it joins,
                         // as the manager's New profile… does.
                         PopupMenuItem::new("New profile…")
-                            .disabled(this.profiles.store.is_none())
+                            .disabled(busy || this.profiles.store.is_none())
                             .on_click(move |_, window, cx| {
                                 let _ = create_owner
                                     .update(cx, |this, cx| this.edit_profile(None, window, cx));
                             }),
                     )
                     .item(
-                        PopupMenuItem::new("Manage profiles…").on_click(move |_, window, cx| {
-                            let _ =
-                                manage_owner.update(cx, |this, cx| this.open_profiles(window, cx));
-                        }),
+                        PopupMenuItem::new("Manage profiles…")
+                            .disabled(busy)
+                            .on_click(move |_, window, cx| {
+                                let _ = manage_owner
+                                    .update(cx, |this, cx| this.open_profiles(window, cx));
+                            }),
                     );
                 if this.profiles.error.is_some() {
                     let retry_owner = owner.clone();
@@ -242,6 +266,8 @@ impl GitTurtle {
                 }
                 menu
             })
+            // A write's start or end builds the open menu again.
+            .follows_writes(cx.entity().downgrade())
             .into_any_element()
     }
     pub(super) fn open_profiles(&mut self, window: &mut Window, cx: &mut Context<Self>) {

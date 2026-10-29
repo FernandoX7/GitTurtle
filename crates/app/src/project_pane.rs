@@ -564,6 +564,11 @@ impl GitTurtle {
         let Some(row) = self.project_pane.rows.get(index).cloned() else {
             return;
         };
+        // A write refuses a project before the cursor or focus moves, as
+        // `open_project_from_pane` would once they had.
+        if matches!(row, PaneRow::Project { .. }) && self.operation_busy.is_some() {
+            return;
+        }
         self.project_pane.cursor = Some(index);
         window.focus(&self.project_pane.focus, cx);
         match row {
@@ -1043,16 +1048,30 @@ impl GitTurtle {
                             .child(format!("· {detail}"))
                     }))
                     .into_any_element();
+                // `open_project_from_pane` refuses while a write runs; the
+                // row looks so once the write looks busy
+                // (`workspace::BusyLook`).
                 (
                     body,
                     active,
-                    self.operation_busy.is_some(),
+                    self.operation_shown().is_some(),
                     format!("Open {name}, {location}"),
                     location.clone(),
                 )
             }
         };
         let is_group = matches!(row, PaneRow::Group { .. });
+        // A write refuses a project's row at once (`activate_project_row`),
+        // and assistive technology hears it unavailable at once, while it
+        // dims only once the write looks busy, as `workspace::refusing` has a
+        // control. A group's row only folds, which no write refuses.
+        let refused = !is_group && self.operation_busy.is_some();
+        #[cfg(test)]
+        crate::workspace::refusals::record(
+            format!("project-pane-row-{index}"),
+            refused || dimmed,
+            dimmed,
+        );
         let expanded = match row {
             PaneRow::Group { collapsed, .. } => Some(!collapsed),
             PaneRow::Project { .. } => None,
@@ -1068,6 +1087,11 @@ impl GitTurtle {
             .role(Role::TreeItem)
             .aria_level(depth + 1)
             .aria_label(label)
+            // GPUI's Div has no disabled setter; the hook sets the row's own
+            // node, as a live region's is set.
+            .when(refused || dimmed, |row| {
+                row.a11y_synthetic_children(|builder| builder.parent_node().set_disabled())
+            })
             .when(cursor, |row| row.aria_active_descendant())
             .when_some(expanded, |row, expanded| row.aria_expanded(expanded))
             .when(!is_group, |row| row.aria_selected(active))

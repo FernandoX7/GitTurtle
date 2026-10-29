@@ -924,3 +924,59 @@ async fn a_group_dialog_shows_its_own_failed_save_beside_a_newer_one(cx: &mut Te
         );
     });
 }
+
+/// A write refuses a project's row at once: assistive technology hears it
+/// unavailable from the write's start, and a click leaves the cursor where it
+/// was and opens nothing, while the row dims only once the write looks busy
+/// (`workspace::BusyLook`). The click once moved the cursor onto the row
+/// before the open was refused, and the row was never announced unavailable.
+#[gpui::test]
+async fn a_write_refuses_a_project_row_before_it_moves_anything(cx: &mut TestAppContext) {
+    use crate::workspace::refusals::{self, Refusal};
+    let (library, _, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    let index = app.read_with(cx, |app, _| {
+        app.project_pane
+            .rows
+            .iter()
+            .position(|row| matches!(row, PaneRow::Project { .. }))
+            .expect("a project row")
+    });
+    let key = format!("project-pane-row-{index}");
+    let row = |cx: &mut VisualTestContext| {
+        refusals::forget();
+        settle(cx);
+        refusals::get(&key)
+    };
+    let state = |announced, dimmed| Some(Refusal { announced, dimmed });
+    assert_eq!(row(cx), state(false, false), "at rest");
+    app.update(cx, |app, cx| {
+        app.operation_busy = Some("Staging files…");
+        cx.notify();
+    });
+    assert_eq!(row(cx), state(true, false), "as the write starts");
+    let cursor = app.read_with(cx, |app, _| app.project_pane.cursor);
+    assert_ne!(cursor, Some(index));
+    let bounds = cx
+        .debug_bounds(format!("project-pane-row-{index}").leak())
+        .expect("the project's row");
+    cx.simulate_click(bounds.center(), Modifiers::default());
+    settle(cx);
+    // The click focuses the tree, as a click in any list does; the row's own
+    // activation, which moved the cursor onto it first, is refused.
+    assert_eq!(
+        app.read_with(cx, |app, _| app.project_pane.cursor),
+        cursor,
+        "the refused click leaves the cursor where it was"
+    );
+    app.read_with(cx, |app, _| assert_eq!(app.page, AppPage::Settings));
+    cx.executor()
+        .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+    cx.run_until_parked();
+    assert_eq!(row(cx), state(true, true), "once the write looks busy");
+    app.update(cx, |app, cx| {
+        app.operation_busy = None;
+        cx.notify();
+    });
+    assert_eq!(row(cx), state(false, false), "once the write ends");
+}

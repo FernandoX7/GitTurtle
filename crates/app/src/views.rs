@@ -6057,8 +6057,10 @@ impl Render for GitTurtle {
             .when(self.page != AppPage::Projects, |root| {
                 root.child(self.render_header(chrome, window, cx))
             })
+            // The busy look, which waits for the write to run a moment
+            // (`workspace::BusyLook`), as the header's progress label does.
             .when(
-                self.page == AppPage::Projects && self.operation_busy.is_some(),
+                self.page == AppPage::Projects && self.operation_shown().is_some(),
                 |root| {
                     root.child(
                         div()
@@ -6226,9 +6228,11 @@ impl Render for GitTurtle {
                                 .whitespace_nowrap()
                                 .aria_label("Some local changes need Refresh")
                                 .child(WATCH_WARNING))
-                            .child(button("retry-local-refresh", WATCH_REFRESH, "", false).h(watch_control_height(cx)).text_size(crate::appearance::ui_text(10.)).disabled(self.operation_busy.is_some())
+                            .child(crate::workspace::refusing(button("retry-local-refresh", WATCH_REFRESH, "", false).h(watch_control_height(cx)).text_size(crate::appearance::ui_text(10.)), || "retry-local-refresh".into(), self.operation_busy.is_some(), self.operation_shown().is_some())
                                 .debug_selector(|| "retry-local-refresh".into())
-                                .on_click(cx.listener(|this, _, window, cx| this.retry_automatic_refresh(window, cx))))
+                                // Refused at once while a write runs, before
+                                // it looks so (`workspace::BusyLook`).
+                                .on_click(cx.listener(|this, _, window, cx| if this.operation_busy.is_none() { this.retry_automatic_refresh(window, cx) })))
                             .child(if status.details_icon {
                                 // Its whole label names it and is its tooltip.
                                 let side = crate::appearance::ui_size(WATCH_CONTROL);
@@ -15198,13 +15202,30 @@ pub(crate) mod tests {
                 );
             }
         }
-        // While an operation runs the arrows are disabled.
+        // While an operation runs the arrows refuse at once but look
+        // disabled only once it looks busy (`workspace::BusyLook`).
         cx.update(|_, cx| {
             app.update(cx, |app, cx| {
                 app.operation_busy = Some("Fetching remote…");
                 cx.notify()
             })
         });
+        let hover = cx.update(|_, cx| {
+            let p = palette(cx);
+            gpui_kit::Background::from(gpui_kit::Hsla::from(p.control_fill(p.hover)))
+        });
+        for selector in ["previous-text-change", "next-text-change"] {
+            away(cx);
+            hover_over(cx, selector);
+            assert_eq!(
+                fills(cx, selector),
+                vec![hover],
+                "{selector} hovered before the operation looks busy"
+            );
+        }
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.executor().run_until_parked();
         for selector in ["previous-text-change", "next-text-change"] {
             away(cx);
             hover_over(cx, selector);
@@ -15349,7 +15370,7 @@ pub(crate) mod tests {
             };
             let nodes = crate::worktrees::ring_room_tests::row_nodes(
                 cx,
-                vec![context_button(options, false)],
+                vec![context_button(options, false, false)],
             );
             let [node] = nodes.as_slice() else {
                 panic!("one node, not {nodes:?}");

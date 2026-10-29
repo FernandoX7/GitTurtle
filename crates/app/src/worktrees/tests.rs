@@ -152,6 +152,12 @@ async fn settle(manager: &Entity<WorktreeManager>, cx: &mut VisualTestContext) {
     assert!(!manager.read_with(cx, |manager, _| manager.pending));
 }
 
+/// [`settle`] for `app`'s open Worktrees dialog, for tests in other modules.
+pub(crate) async fn settle_open_manager(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    let manager = manager(app, cx);
+    settle(&manager, cx).await;
+}
+
 fn draw(cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         window.simulate_next_frame(cx);

@@ -660,7 +660,7 @@ pub(crate) mod refusals {
         static LAST: RefCell<HashMap<String, Refusal>> = Default::default();
     }
 
-    pub(super) fn record(key: String, announced: bool, dimmed: bool) {
+    pub(crate) fn record(key: String, announced: bool, dimmed: bool) {
         LAST.with(|last| last.borrow_mut().insert(key, Refusal { announced, dimmed }));
     }
 

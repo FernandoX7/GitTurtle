@@ -362,6 +362,7 @@ impl GitTurtle {
         PageKey {
             error: self.operation_error.clone(),
             busy: self.operation_busy.is_some(),
+            looks_busy: self.operation_shown().is_some(),
             status: self.status.clone(),
             profile: self.profile.clone(),
             repository: self.repository.as_ref().map(|repository| {
@@ -2186,7 +2187,10 @@ impl GitTurtle {
         // A control the keyboard has focused scrolls into view in this frame.
         self.theme_editor.page().reveal(window, cx);
         let p = palette(cx);
+        // A write refuses the identity's fields and actions at once; they
+        // look so once the write looks busy (`workspace::BusyLook`).
         let busy = self.operation_busy.is_some();
+        let looks_busy = self.operation_shown().is_some();
         let compact = window.viewport_size().width < appearance::ui_size(1060.);
         let narrow = window.viewport_size().width < appearance::ui_size(720.);
         let retry = self.page_focus("retry-save-settings", cx);
@@ -2512,8 +2516,8 @@ impl GitTurtle {
                             },
                         )),
                 )
-                .child(settings_field("Name", &self.identity_name, busy, cx))
-                .child(settings_field("Email", &self.identity_email, busy, cx))
+                .child(settings_field("Name", &self.identity_name, (busy, looks_busy), cx))
+                .child(settings_field("Email", &self.identity_email, (busy, looks_busy), cx))
                 .child(
                     div()
                         .text_size(crate::appearance::ui_text(11.))
@@ -2539,20 +2543,24 @@ impl GitTurtle {
                                 .track_focus(&save_identity)
                                 .primary()
                                 .icon(Icon::default().path("icons/check.svg").size(px(14.)))
-                                .label(if busy { "Working…" } else { "Save repository identity" })
-                                .disabled(busy || !identity_edited)
+                                .label(if looks_busy { "Working…" } else { "Save repository identity" })
+                                .map(|save| crate::workspace::refusing(save, || "save-repository-identity".into(), busy || !identity_edited, looks_busy || !identity_edited))
                                 .on_click(cx.listener(|this, _, window, cx| this.save_identity(window, cx))),
                         )
                         .child(
                             button("use-current-identity", "Reset edits", "refresh", false)
                                 .track_focus(&reset_identity)
                                 .tooltip("Restore the repository’s current name and email")
-                                .disabled(busy || self.profile.is_none() || !identity_edited)
-                                .on_click(cx.listener(|this, _, window, cx| this.fill_identity_inputs(window, cx))),
+                                .map(|reset| {
+                                    let unavailable = self.profile.is_none() || !identity_edited;
+                                    crate::workspace::refusing(reset, || "use-current-identity".into(), busy || unavailable, looks_busy || unavailable)
+                                })
+                                // Refused at once while a write runs.
+                                .on_click(cx.listener(|this, _, window, cx| if this.operation_busy.is_none() { this.fill_identity_inputs(window, cx) })),
                         ),
                 )
                 .child(div().text_size(crate::appearance::ui_text(11.)).line_height(relative(1.5)).text_color(rgb(p.muted)).child(if self.profile.as_ref().is_some_and(|profile| profile.private_worktree) { "Name and email are saved only to this worktree’s existing private Git configuration." } else { "Name and email are saved to repository Git configuration shared by linked worktrees. Global identity is preserved." }))
-                .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).track_focus(&manage_profiles).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))))
+                .child(button("settings-manage-profiles", "Manage named profiles…", "user", false).track_focus(&manage_profiles).map(|manage| crate::workspace::refusing(manage, || "settings-manage-profiles".into(), busy, looks_busy)).on_click(cx.listener(|this, _, window, cx| this.open_profiles(window, cx))))
                 .into_any_element()
         } else {
             let open_projects = self.page_focus("settings-open-projects", cx);
@@ -2756,6 +2764,9 @@ pub(super) struct SettingsPage {
 struct PageKey {
     error: Option<String>,
     busy: bool,
+    /// Whether the write has looked busy, which the page's write controls
+    /// wait for before they dim (`workspace::BusyLook`).
+    looks_busy: bool,
     status: String,
     profile: Option<gitturtle_core::GitProfile>,
     repository: Option<(PathBuf, String)>,
@@ -4331,10 +4342,12 @@ fn steady_setting_description(
     .into_any_element()
 }
 
+/// A labelled field which a write leaves `(refused, dimmed)`
+/// (`workspace::refusing_input`).
 fn settings_field(
     label: &'static str,
     input: &Entity<InputState>,
-    disabled: bool,
+    (refused, dimmed): (bool, bool),
     cx: &App,
 ) -> AnyElement {
     div()
@@ -4353,7 +4366,12 @@ fn settings_field(
                     format!("settings-field-label: {label}")
                 })),
         )
-        .child(Input::new(input).disabled(disabled))
+        .child(crate::workspace::refusing_input(
+            Input::new(input),
+            || format!("settings-field-{label}"),
+            refused,
+            dimmed,
+        ))
         .into_any_element()
 }
 

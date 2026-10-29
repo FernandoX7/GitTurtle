@@ -138,6 +138,26 @@ impl Progress {
     }
 }
 
+/// Runs `app`'s search to its end, for tests in other modules: past its
+/// typing pause, then its read, awaited rather than polled.
+#[cfg(test)]
+pub(crate) async fn settle_history_search(
+    app: &Entity<GitTurtle>,
+    cx: &mut gpui::VisualTestContext,
+) {
+    for _ in 0..8 {
+        cx.executor().advance_clock(Duration::from_millis(250));
+        cx.executor().run_until_parked();
+        match app.update(cx, |app, _| app.history_search.task.take()) {
+            Some(task) => task.await,
+            None if !app.read_with(cx, |app, _| app.history_search_pending()) => break,
+            None => {}
+        }
+    }
+    cx.executor().run_until_parked();
+    assert!(!app.read_with(cx, |app, _| app.history_search_pending()));
+}
+
 impl GitTurtle {
     pub(super) fn history_search_active(&self) -> bool {
         self.history_search.progress.is_some()
@@ -397,6 +417,10 @@ impl GitTurtle {
     }
 
     fn restart_history_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Refused at once while a write runs, before Restart looks so.
+        if self.operation_busy.is_some() {
+            return;
+        }
         if let Some(progress) = &mut self.history_search.progress {
             progress.query.clear();
         }
@@ -632,12 +656,20 @@ impl GitTurtle {
                             "chevron",
                             continue_tooltip,
                         )
-                        .disabled(
-                            running
+                        // A write refuses it at once
+                        // (`continue_history_search`); it looks so once the
+                        // write looks busy (`workspace::BusyLook`).
+                        .map(|more| {
+                            let spent = running
                                 || progress.exhausted()
-                                || self.commits.len() >= MAX_RESULTS
-                                || self.operation_busy.is_some(),
-                        )
+                                || self.commits.len() >= MAX_RESULTS;
+                            crate::workspace::refusing(
+                                more,
+                                || "history-search-continue".into(),
+                                spent || self.operation_busy.is_some(),
+                                spent || self.operation_shown().is_some(),
+                            )
+                        })
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.continue_history_search(window, cx)
                         })),
@@ -654,7 +686,14 @@ impl GitTurtle {
                                 "Restart this search at the current local branch and worktree tips",
                             )
                         })
-                        .disabled(self.operation_busy.is_some())
+                        .map(|restart| {
+                            crate::workspace::refusing(
+                                restart,
+                                || "history-search-restart".into(),
+                                self.operation_busy.is_some(),
+                                self.operation_shown().is_some(),
+                            )
+                        })
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.restart_history_search(window, cx)
                         })),

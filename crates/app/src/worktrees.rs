@@ -325,18 +325,31 @@ impl WorktreeManager {
         let field = self.first_field(cx);
         self.cancel_read.release_to(&field, window, cx);
     }
-    /// Whether the dialog may act now. Its controls dim the moment a write
-    /// runs, without the busy look's delay (`workspace::BusyLook`): the
-    /// write is the one this dialog's own Create or Remove submitted, and
-    /// the fields and choices it read dim with it so they are not taken
-    /// for ones a second press could still change.
-    fn current(&self, cx: &App) -> bool {
-        self.owner.upgrade().is_some_and(|owner| {
+    /// Whether the app refuses the dialog's actions, and whether they look
+    /// it: refused while its repository is no longer the one shown or a
+    /// write runs, and dimmed with a write only once it looks busy
+    /// (`workspace::BusyLook`), as everywhere else; they dimmed the moment
+    /// any write started. Its own Create and Remove close the dialog before
+    /// their review submits, so a write it sees is never its own.
+    fn refusal(&self, cx: &App) -> (bool, bool) {
+        self.owner.upgrade().map_or((true, true), |owner| {
             let owner = owner.read(cx);
-            owner.path.as_deref() == Some(self.repo.path())
-                && owner.page == AppPage::Repository
-                && owner.operation_busy.is_none()
+            let elsewhere = owner.path.as_deref() != Some(self.repo.path())
+                || owner.page != AppPage::Repository;
+            (
+                elsewhere || owner.operation_busy.is_some(),
+                elsewhere || owner.operation_shown().is_some(),
+            )
         })
+    }
+    /// Whether the dialog may act now ([`Self::refusal`]).
+    fn current(&self, cx: &App) -> bool {
+        !self.refusal(cx).0
+    }
+    /// [`Self::refusal`], with the dialog's own read in progress.
+    fn unavailable(&self, cx: &App) -> (bool, bool) {
+        let (refused, dimmed) = self.refusal(cx);
+        (self.pending || refused, self.pending || dimmed)
     }
     /// Shows Manage or Create from its tab. Focus the hidden form's first
     /// field held, as it does from the dialog's opening, moves to the shown
@@ -594,7 +607,15 @@ impl Render for WorktreeManager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let body_height = (window.viewport_size().height - px(240.)).max(px(120.));
-        let unavailable = self.pending || !self.current(cx);
+        let (unavailable, dimmed) = self.unavailable(cx);
+        let refusing = |control: Button, key: &'static str, refused: bool, dims: bool| {
+            crate::workspace::refusing(
+                control,
+                || key.into(),
+                unavailable || refused,
+                dimmed || dims,
+            )
+        };
         let query = self.filter.read(cx).value().trim().to_lowercase();
         let trees: Vec<_> = self
             .trees
@@ -703,11 +724,11 @@ impl Render for WorktreeManager {
                         .child(label("worktree-selected-status", if details.missing { "Folder missing or unavailable".into() } else { format!("{} changed/untracked files · {} ignored files{}", details.changed_files, details.ignored_files, if details.removal_blocked.is_none() { " · Clean" } else { "" }) }).text_size(crate::appearance::ui_text(12.)))
                         .when(details.force_removal_blocked.is_none(), |element| element.when_some(details.removal_blocked.as_ref(), |element, reason| element.child(label("worktree-removal-protection", reason.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
                         .child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.content.controls(actions.iter().cloned().map(Some).collect(), room))
-                            .child(button("open-managed-worktree", "Open in GitTurtle", "", false).track_focus(&actions[0]).disabled(unavailable || details.missing || details.current).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| { if owner.operation_busy.is_none() && owner.path.as_deref() == Some(this.repo.path()) { window.close_dialog(cx); owner.open(path.clone(), None, window, cx); } }); })))
+                            .child(refusing(button("open-managed-worktree", "Open in GitTurtle", "", false).track_focus(&actions[0]), "open-managed-worktree", details.missing || details.current, details.missing || details.current).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| { if owner.operation_busy.is_none() && owner.path.as_deref() == Some(this.repo.path()) { window.close_dialog(cx); owner.open(path.clone(), None, window, cx); } }); })))
                             .child(button("reveal-managed-worktree", if cfg!(target_os = "macos") { "Finder" } else { "Files" }, "", false).track_focus(&actions[1]).disabled(details.missing).on_click(move |_, _, cx| cx.reveal_path(&finder)))
-                            .child(button("edit-managed-worktree", "Editor", "", false).track_focus(&actions[2]).disabled(unavailable || details.missing).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| owner.open_worktree_editor(editor.clone(), window, cx)); })))
-                            .child(button("remove-managed-worktree", "Remove worktree…", "", false).track_focus(&actions[3]).debug_selector(|| "remove-managed-worktree".to_string()).disabled(unavailable || details.removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Ordinary, window, cx))))
-                            .child(button("force-remove-managed-worktree", "Force remove worktree…", "", false).track_focus(&actions[4]).debug_selector(|| "force-remove-managed-worktree".to_string()).when(!unavailable && details.force_removal_blocked.is_none(), |button| button.text_color(rgb(p.removed))).disabled(unavailable || details.force_removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Force, window, cx)))))
+                            .child(refusing(button("edit-managed-worktree", "Editor", "", false).track_focus(&actions[2]).debug_selector(|| "edit-managed-worktree".into()), "edit-managed-worktree", details.missing, details.missing).on_click(cx.listener(move |this, _, window, cx| { if this.unavailable(cx).0 { return; } let _ = this.owner.update(cx, |owner, cx| owner.open_worktree_editor(editor.clone(), window, cx)); })))
+                            .child(button("remove-managed-worktree", "Remove worktree…", "", false).track_focus(&actions[3]).debug_selector(|| "remove-managed-worktree".to_string()).map(|remove| refusing(remove, "remove-managed-worktree", details.removal_blocked.is_some(), details.removal_blocked.is_some())).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Ordinary, window, cx))))
+                            .child(button("force-remove-managed-worktree", "Force remove worktree…", "", false).track_focus(&actions[4]).debug_selector(|| "force-remove-managed-worktree".to_string()).when(!dimmed && details.force_removal_blocked.is_none(), |button| button.text_color(rgb(p.removed))).map(|remove| refusing(remove, "force-remove-managed-worktree", details.force_removal_blocked.is_some(), details.force_removal_blocked.is_some())).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Force, window, cx)))))
                         .when_some(details.force_removal_blocked.as_ref(), |element, reason| element.child(label("worktree-force-removal-protection", format!("Force removal unavailable: {reason}")).debug_selector(|| "worktree-force-removal-protection".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
                 }))
             .when(self.creating, |element| element
@@ -723,7 +744,7 @@ impl Render for WorktreeManager {
                 .child(button("choose-worktree-parent", "Choose parent folder…", "folder", false).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.choose_parent(window, cx))))
                 .child(Input::new(&self.folder).aria_label("New worktree folder name"))
                 .child(label("worktree-destination-rule", "Choose a new folder inside the parent. Existing folders and branches checked out elsewhere are protected. Review the resolved branch and destination before creating.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
-                .child(button("review-create-worktree", "Review worktree…", "", false).disabled(unavailable).on_click(cx.listener(|this, _, window, cx| this.prepare_create(window, cx))))));
+                .child(refusing(button("review-create-worktree", "Review worktree…", "", false), "review-create-worktree", false, false).on_click(cx.listener(|this, _, window, cx| this.prepare_create(window, cx))))));
         // The content's scrollbar stands in the dialog's side padding, beside
         // the content and its ring room, as the Reflog's does, and paints
         // only while the content overflows.
@@ -752,7 +773,7 @@ impl Render for WorktreeManager {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Lets the open manager's reads land, the registrations and then the row a
 /// targeted refresh inspects, so the narrow-window walk (`width_walk`)

@@ -12,7 +12,7 @@ use anyhow::{Result, ensure};
 use gpui_kit::{
     AnyElement, Context, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, Window,
     component::{
-        Disableable, Icon, Sizable,
+        Icon, Sizable,
         button::{Button, ButtonVariants},
         menu::PopupMenuItem,
     },
@@ -422,10 +422,15 @@ impl GitTurtle {
     ) -> AnyElement {
         let colors = palette(cx);
         let options = self.review.options;
+        // A write refuses these at once, and they look it only once the
+        // write looks busy (`workspace::BusyLook`); a preview still loading
+        // leaves them unavailable at once.
         let busy = self.loading.is_some() || self.operation_busy.is_some();
+        let looks_busy = self.loading.is_some() || self.operation_shown().is_some();
         let has_changes = matches!(self.content.as_deref(), Some(Content::Text { presentation, .. }) if !presentation.change_rows.is_empty());
         let modified = options != Options::default();
-        let reset_disabled = busy || (!modified && self.error.is_none());
+        let unmodified = !modified && self.error.is_none();
+        let reset_disabled = busy || unmodified;
         let row = div()
             .debug_selector(|| "text-review-options".into())
             .flex()
@@ -462,10 +467,19 @@ impl GitTurtle {
                 "Previous change · {}",
                 crate::shortcuts::label(crate::shortcuts::ShortcutId::PreviousChange)
             ))
-            .disabled(busy || !has_changes)
-            .on_click(
-                cx.listener(|this, _, window, cx| this.navigate_text_change(false, window, cx)),
-            );
+            .map(|button| {
+                crate::workspace::refusing(
+                    button,
+                    || "previous-text-change".into(),
+                    busy || !has_changes,
+                    looks_busy || !has_changes,
+                )
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.loading.is_none() && this.operation_busy.is_none() {
+                    this.navigate_text_change(false, window, cx)
+                }
+            }));
         let next = Button::new("next-text-change")
             .debug_selector(|| "next-text-change".into())
             .small()
@@ -474,10 +488,19 @@ impl GitTurtle {
                 "Next change · {}",
                 crate::shortcuts::label(crate::shortcuts::ShortcutId::NextChange)
             ))
-            .disabled(busy || !has_changes)
-            .on_click(
-                cx.listener(|this, _, window, cx| this.navigate_text_change(true, window, cx)),
-            );
+            .map(|button| {
+                crate::workspace::refusing(
+                    button,
+                    || "next-text-change".into(),
+                    busy || !has_changes,
+                    looks_busy || !has_changes,
+                )
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.loading.is_none() && this.operation_busy.is_none() {
+                    this.navigate_text_change(true, window, cx)
+                }
+            }));
         if column < options_row_width(window) {
             // The app's arrow, turned up and down.
             let arrow = |turn: f32| {
@@ -558,13 +581,13 @@ impl GitTurtle {
             row.child(previous.label("Previous change"))
                 .child(next.label("Next change"))
                 .child(Button::new("hide-whitespace-changes").debug_selector(|| "hide-whitespace-changes".into()).small().ghost().label(if options.hide_whitespace { "Whitespace hidden" } else { "Hide whitespace" })
-                    .toggled(options.hide_whitespace).disabled(busy)
+                    .toggled(options.hide_whitespace).map(|hide| crate::workspace::refusing(hide, || "hide-whitespace-changes".into(), busy, looks_busy))
                     .tooltip("Hide whitespace-only changes, including indentation and line endings. Source tabs keep exact content; partial staging requires the original diff.")
                     .on_click(cx.listener(move |this, _, window, cx| this.set_text_review(Options { hide_whitespace: !options.hide_whitespace, ..options }, window, cx))))
-                .child(context_button(options, busy)
+                .child(context_button(options, busy, looks_busy)
                     .on_click(cx.listener(move |this, _, window, cx| { if let Some(options) = more_context(options) { this.set_text_review(options, window, cx); } })))
                 .child(Button::new("reset-text-review").small().ghost().label("Reset review")
-                    .disabled(reset_disabled).mr_neg_2()
+                    .map(|reset| crate::workspace::refusing(reset, || "reset-text-review".into(), reset_disabled, looks_busy || unmodified)).mr_neg_2()
                     .on_click(cx.listener(|this, _, window, cx| this.set_text_review(Options::default(), window, cx))))
                 .child(caption(div().debug_selector(|| "text-review-caption".into()).child(caption_text).into_any_element()))
                 .into_any_element()
@@ -607,8 +630,9 @@ fn context_name(context: usize) -> String {
 }
 
 /// The full row's context button. Its accessible name says what it does and
-/// the context shown now, and its tooltip the step it takes.
-pub(crate) fn context_button(options: Options, busy: bool) -> Button {
+/// the context shown now, and its tooltip the step it takes. `busy` refuses
+/// it, which it looks only where `looks_busy` (`workspace::refusing`).
+pub(crate) fn context_button(options: Options, busy: bool, looks_busy: bool) -> Button {
     let context = options.context;
     let next = more_context(options);
     Button::new("expand-text-context")
@@ -617,7 +641,14 @@ pub(crate) fn context_button(options: Options, busy: bool) -> Button {
         .ghost()
         .label(context_label(context))
         .accessibility_label(context_name(context))
-        .disabled(busy || next.is_none())
+        .map(|button| {
+            crate::workspace::refusing(
+                button,
+                || "expand-text-context".into(),
+                busy || next.is_none(),
+                looks_busy || next.is_none(),
+            )
+        })
         .tooltip(match next {
             Some(next) => format!(
                 "Show {} unchanged lines around each hunk instead of {context}, in steps of 3, \

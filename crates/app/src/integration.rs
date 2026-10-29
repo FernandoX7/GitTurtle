@@ -1,3 +1,4 @@
+use crate::workspace::refusing;
 use crate::*;
 use gitturtle_core::{IntegrationCommand, OperationKind, OperationState, WriteCommand};
 use gpui_kit::component::{WindowExt, dialog::DialogButtonProps};
@@ -157,6 +158,10 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Refused at once while a write runs, before it looks so.
+        if self.operation_busy.is_some() {
+            return;
+        }
         if operation.kind == OperationKind::Rebase {
             self.prepare_interactive_rebase_continue(window, cx);
             return;
@@ -186,6 +191,10 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Refused at once while a write runs, before it looks so.
+        if self.operation_busy.is_some() {
+            return;
+        }
         let action = if keep_files {
             "Stop and keep files"
         } else {
@@ -228,6 +237,10 @@ impl GitTurtle {
 
     pub(super) fn render_operation_state(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
+        // A write refuses each action here at once, and they look it only
+        // once the write looks busy (`workspace::BusyLook`).
+        let busy = self.operation_busy.is_some();
+        let looks_busy = self.operation_shown().is_some();
         let Some(operation) = self.integration_state.as_ref() else {
             let diverged = self
                 .work_status
@@ -238,8 +251,10 @@ impl GitTurtle {
                 let merge = "@{upstream}".to_owned();
                 div().px_3().py_2().flex().items_center().gap_2().bg(rgb(p.subtle)).border_b_1().border_color(rgb(p.border))
                     .child(div().flex_1().text_size(crate::appearance::ui_text(11.)).child(format!("Branches diverged · {} local and {} upstream commits. Choose how to integrate {}.", status.ahead, status.behind, upstream)))
-                    .child(button("merge-upstream", "Merge…", "", false).disabled(self.operation_busy.is_some()).on_click(cx.listener(move |this, _, window, cx| this.prepare_integration(merge.clone(), false, window, cx))))
-                    .child(button("rebase-upstream", "Rebase…", "", false).disabled(self.operation_busy.is_some()).on_click(cx.listener(move |this, _, window, cx| this.prepare_integration("@{upstream}".into(), true, window, cx))))
+                    // `prepare_integration` refuses while a write runs;
+                    // each looks unavailable for it once the write looks busy.
+                    .child(refusing(button("merge-upstream", "Merge…", "", false).debug_selector(|| "merge-upstream".into()), || "merge-upstream".into(), busy, looks_busy).on_click(cx.listener(move |this, _, window, cx| this.prepare_integration(merge.clone(), false, window, cx))))
+                    .child(refusing(button("rebase-upstream", "Rebase…", "", false).debug_selector(|| "rebase-upstream".into()), || "rebase-upstream".into(), busy, looks_busy).on_click(cx.listener(move |this, _, window, cx| this.prepare_integration("@{upstream}".into(), true, window, cx))))
             })).into_any_element();
         };
         let unresolved = self.work_status.as_ref().map_or(0, |status| {
@@ -249,7 +264,6 @@ impl GitTurtle {
                 .filter(|entry| entry.conflicted)
                 .count()
         });
-        let busy = self.operation_busy.is_some();
         let continue_state = operation.clone();
         let abort_state = operation.clone();
         let stop_state = operation.clone();
@@ -304,25 +318,40 @@ impl GitTurtle {
                     .on_click(cx.listener(|this, _, window, cx| this.show_working(window, cx))),
             )
             .child(
-                button("continue-operation", continuation, "", false)
-                    .disabled(busy || unresolved > 0)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.confirm_continue(continue_state.clone(), window, cx)
-                    })),
+                refusing(
+                    button("continue-operation", continuation, "", false)
+                        .debug_selector(|| "continue-operation".into()),
+                    || "continue-operation".into(),
+                    busy || unresolved > 0,
+                    looks_busy || unresolved > 0,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.confirm_continue(continue_state.clone(), window, cx)
+                })),
             )
             .child(
-                button("abort-operation", "Abort…", "", false)
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.confirm_operation_end(abort_state.clone(), false, window, cx)
-                    })),
+                refusing(
+                    button("abort-operation", "Abort…", "", false)
+                        .debug_selector(|| "abort-operation".into()),
+                    || "abort-operation".into(),
+                    busy,
+                    looks_busy,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.confirm_operation_end(abort_state.clone(), false, window, cx)
+                })),
             )
             .child(
-                button("stop-operation", "Keep files…", "", false)
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.confirm_operation_end(stop_state.clone(), true, window, cx)
-                    })),
+                refusing(
+                    button("stop-operation", "Keep files…", "", false)
+                        .debug_selector(|| "stop-operation".into()),
+                    || "stop-operation".into(),
+                    busy,
+                    looks_busy,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.confirm_operation_end(stop_state.clone(), true, window, cx)
+                })),
             )
             .into_any_element()
     }

@@ -285,6 +285,8 @@ impl GitTurtle {
                     },
                 )
             })
+            // A write's start or end builds the open menu again.
+            .follows_writes(cx.entity().downgrade())
             .into_any_element()
     }
 
@@ -306,6 +308,8 @@ impl GitTurtle {
             .app_menu(move |menu, _, cx| {
                 Self::recovery_context_menu(menu, &owner, &repository, &commit, cx)
             })
+            // A write's start or end builds the open menu again.
+            .follows_writes(cx.entity().downgrade())
             .into_any_element()
     }
 

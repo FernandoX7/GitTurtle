@@ -91,7 +91,16 @@ impl GitTurtle {
                     "pull",
                     false,
                 )
-                .disabled(self.operation_busy.is_some())
+                // `open_lfs_download` refuses while a write runs; it looks
+                // so once the write looks busy (`workspace::BusyLook`).
+                .map(|download| {
+                    crate::workspace::refusing(
+                        download,
+                        || format!("download-lfs-side-{side}"),
+                        self.operation_busy.is_some(),
+                        self.operation_shown().is_some(),
+                    )
+                })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_lfs_download(target.clone(), window, cx)
                 }))
