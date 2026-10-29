@@ -402,8 +402,32 @@ impl GitTurtle {
         self.image_drag = None;
         self.end_image_drag();
         self.sync_settings_drafts(window, cx);
-        window.focus(&self.app_focus, cx);
+        // Focus opens on the page's first control, inside the page so the
+        // application's keys still reach the window's handlers, with its
+        // ring drawn and the page scrolled to show it, as a key moving focus
+        // there would, whether a key or a click opened the page.
+        let first = self.settings_first_control(cx);
+        window.focus(&first, cx);
+        self.focus_ring.mark(window);
+        self.theme_editor.page().reveal_next_focus();
         self.repaint_page(window, cx);
+    }
+
+    /// The control Settings opens with focus on, its first: Follow system
+    /// appearance, or, while the desktop's Omarchy theme decides the
+    /// appearance and that switch is unavailable, the selected theme's card.
+    /// The page opened with focus on the window's root, which draws nothing,
+    /// so nothing showed where the keyboard stood until a Tab landed on the
+    /// tab strip.
+    fn settings_first_control(&self, cx: &mut App) -> FocusHandle {
+        if !self.follows_desktop_theme(cx) {
+            return self.page_focus("follow-system", cx);
+        }
+        let selected = self.settings.theme.on_desktop(cx);
+        self.theme_card_focus
+            .iter()
+            .find_map(|(drawn, focus)| (*drawn == selected).then(|| focus.clone()))
+            .unwrap_or_else(|| self.app_focus.clone())
     }
 
     pub(super) fn capture_page_return_focus(&mut self, window: &Window, cx: &App) {
@@ -2140,7 +2164,7 @@ impl GitTurtle {
 
     /// The focus handle Settings control `id` tracks, the same in every
     /// frame, so the page can tell when the keyboard focuses it.
-    fn page_focus(&self, id: impl Into<ElementId>, cx: &mut App) -> FocusHandle {
+    pub(super) fn page_focus(&self, id: impl Into<ElementId>, cx: &mut App) -> FocusHandle {
         self.theme_editor.page().focus(id, cx)
     }
 

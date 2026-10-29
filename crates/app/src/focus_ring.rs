@@ -40,6 +40,16 @@ impl FocusRing {
         *self.ringed.borrow_mut() = self.keyboard.get().then(|| window.focused(cx)).flatten();
     }
 
+    /// Marks the focus a page opens with, as a key press would, until the
+    /// next pointer press, so the control it lands on draws this ring even
+    /// when a click opened the page: Settings opens with focus on a theme
+    /// card where its Follow system switch is unavailable.
+    pub(crate) fn mark(&self, window: &mut Window) {
+        if !self.keyboard.replace(true) {
+            window.refresh();
+        }
+    }
+
     /// Whether `focus` draws its keyboard ring this frame.
     pub(crate) fn shows(&self, focus: &FocusHandle) -> bool {
         self.ringed.borrow().as_ref() == Some(focus)

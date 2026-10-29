@@ -585,6 +585,89 @@ async fn dialogs_open_with_a_whole_ring_on_their_first_field(cx: &mut TestAppCon
     assert_whole(failures);
 }
 
+/// Settings opens with focus on its first control, inside the window's
+/// handlers, and its first frames draw that control's ring whole, scrolled
+/// into view, at 13 pt in 1280 × 800 and 18 pt in 461 × 490, with no key
+/// pressed, as when a click opens the page: Follow system appearance, or, on
+/// Linux while the desktop's Omarchy theme decides the appearance and that
+/// switch is unavailable, the Omarchy theme's card, whose ring otherwise
+/// shows only after a key. It opened with focus on the window's root, which
+/// draws nothing, so nothing showed where the keyboard stood until a Tab
+/// landed on the tab strip; at 18 pt in the half tile the switch lies below
+/// the page's fold.
+#[gpui::test]
+async fn settings_opens_with_a_whole_ring_on_its_first_control(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    let mut desktops = vec![false];
+    #[cfg(target_os = "linux")]
+    let desktop = {
+        desktops.push(true);
+        tempfile::tempdir().unwrap()
+    };
+    let mut failures = Vec::new();
+    for omarchy in desktops {
+        #[cfg(target_os = "linux")]
+        if omarchy {
+            let root = desktop.path().join("current");
+            std::fs::create_dir_all(root.join("theme")).unwrap();
+            let colors = include_bytes!("../../tests/fixtures/omarchy/tokyo-night.toml");
+            std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+            std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+            cx.update(|_, cx| drop(appearance::omarchy::install(Some(root), cx)));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.theme = ThemeSelection::Omarchy;
+                    app.apply_appearance(window, cx);
+                })
+            });
+            views::tests::settle(&app, cx).await;
+        }
+        let control = if omarchy {
+            "the Omarchy theme's card"
+        } else {
+            "Follow system appearance"
+        };
+        for (interface, width, height) in OPENING {
+            cx.simulate_resize(size(px(width), px(height)));
+            interface_size(cx, interface);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+            draw(cx, 2);
+            let at = format!("Settings at {interface} pt in {width} × {height}, {control}");
+            let first = app.update(cx, |app, cx| {
+                if omarchy {
+                    app.theme_card_focus(ThemeSelection::Omarchy).clone()
+                } else {
+                    app.page_focus("follow-system", cx)
+                }
+            });
+            let root = app.read_with(cx, |app, _| app.app_focus.clone());
+            let (holds, inside) = cx
+                .update(|window, cx| (first.is_focused(window), root.contains_focused(window, cx)));
+            if !holds || !inside {
+                failures.push(format!(
+                    "{at}: it does not hold focus inside the window's handlers"
+                ));
+            } else {
+                let ring = ring(cx, &first, &mut |_, _| {});
+                if ring.is_empty() {
+                    failures.push(format!("{at}: it paints no ring in view"));
+                }
+                for outline in ring.iter().filter(|outline| !outline.whole) {
+                    failures.push(format!(
+                        "{at}: a clip cuts its ring at {:?}, sides {:?}",
+                        outline.bounds, outline.sides
+                    ));
+                }
+            }
+            cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+            views::tests::settle(&app, cx).await;
+        }
+    }
+    assert_whole(failures);
+}
+
 /// The repository's dialogs: Reflog, interactive rebase, the rewrite review,
 /// the command palette, Quick Open and Keyboard Shortcuts.
 #[gpui::test]

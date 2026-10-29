@@ -20,7 +20,11 @@
 //! painting unless focus or a user's scroll has superseded it.
 
 use gpui_kit::*;
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    rc::Rc,
+};
 
 /// What the container last drew with. A reveal is due only when this changes,
 /// so a render without a focus change scrolls nothing.
@@ -65,6 +69,9 @@ pub(crate) enum Trigger {
 pub(crate) struct FocusReveal {
     scroll: ScrollHandle,
     trigger: Trigger,
+    /// The next frame reveals a focus change whatever made it
+    /// ([`Self::reveal_next_focus`]).
+    next_focus: Rc<Cell<bool>>,
     observed: Rc<RefCell<Observation>>,
     controls: Rc<RefCell<HashMap<ElementId, FocusHandle>>>,
     /// The controls reported so far in the frame being prepainted.
@@ -80,6 +87,7 @@ impl FocusReveal {
         Self {
             scroll: ScrollHandle::new(),
             trigger,
+            next_focus: Rc::default(),
             observed: Rc::default(),
             controls: Rc::default(),
             drawing: Rc::default(),
@@ -103,6 +111,14 @@ impl FocusReveal {
             .entry(id.into())
             .or_insert_with(|| cx.focus_handle())
             .clone()
+    }
+
+    /// Has the next frame the container draws reveal the control focus has
+    /// moved onto whatever moved it there, as a page that opens with focus
+    /// on a control needs, whether a key or a click opened it: Settings in a
+    /// half tile at 18 pt, whose first control lies below its fold.
+    pub(crate) fn reveal_next_focus(&self) {
+        self.next_focus.set(true);
     }
 
     /// The control holding focus among those [`Self::focus`] handed out.
@@ -256,7 +272,9 @@ impl FocusReveal {
     /// reveals.
     fn due(&self, observed: &Observation, window: &Window) -> bool {
         *self.observed.borrow() != *observed
-            && (self.trigger == Trigger::AnyFocus || window.last_input_was_keyboard())
+            && (self.trigger == Trigger::AnyFocus
+                || self.next_focus.get()
+                || window.last_input_was_keyboard())
     }
 
     /// Records that the frame being prepainted drew the control `focus`
@@ -283,6 +301,7 @@ impl FocusReveal {
             drawn.items = items;
         }
         *self.observed.borrow_mut() = self.observation(window, cx);
+        self.next_focus.set(false);
         #[cfg(test)]
         {
             let offset = self.scroll.offset().y;
