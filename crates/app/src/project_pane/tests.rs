@@ -411,6 +411,74 @@ fn shift_f10_and_the_menu_key_open_the_cursor_rows_menu(cx: &mut TestAppContext)
     }
 }
 
+/// A project row's menu opened by Shift-F10 or the Menu key follows writes
+/// as its right-click menu does: Open project is disabled in place as a
+/// write starts and available again as it ends, with focus kept in the menu.
+/// It read the write once, as it opened, and kept Open project so.
+#[gpui::test]
+fn a_project_rows_keyboard_menu_follows_writes(cx: &mut TestAppContext) {
+    const MENU_KEY: &str = if cfg!(target_os = "macos") {
+        "shift-f10"
+    } else {
+        "menu"
+    };
+    let (library, _, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    cx.update(|_, cx| native_accessibility::bind_keys(cx));
+    // The last row, beta, a project.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.move_project_cursor(true, true, window, cx);
+            window.focus(&app.project_pane.focus, cx);
+        })
+    });
+    settle(cx);
+    let in_menu = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            app.read(cx)
+                .project_pane
+                .keyboard_menu
+                .as_ref()
+                .is_some_and(|menu| menu.has_focus(window, cx))
+        })
+    };
+    let open = |cx: &mut VisualTestContext, disabled: bool| {
+        let selector = if disabled {
+            "menu-item: Open project · MenuItem disabled"
+        } else {
+            "menu-item: Open project · MenuItem"
+        };
+        cx.debug_bounds(selector).is_some()
+    };
+    let busy = |cx: &mut VisualTestContext, busy: Option<&'static str>| {
+        app.update(cx, |app, cx| {
+            app.operation_busy = busy;
+            cx.notify();
+        });
+        settle(cx);
+    };
+    for key in ["shift-f10", MENU_KEY] {
+        cx.simulate_keystrokes(key);
+        settle(cx);
+        assert!(open(cx, false), "{key}: Open project at rest");
+        busy(cx, Some("Testing"));
+        assert!(open(cx, true), "{key}: Open project once a write starts");
+        assert!(
+            in_menu(cx),
+            "{key}: focus stays in the menu as a write starts"
+        );
+        busy(cx, None);
+        assert!(open(cx, false), "{key}: Open project once the write ends");
+        assert!(in_menu(cx), "{key}: focus stays in the menu as it ends");
+        cx.simulate_keystrokes("escape");
+        settle(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.project_pane.keyboard_menu.is_none()),
+            "{key}: Escape closed the menu"
+        );
+    }
+}
+
 /// A row's menu opens with the row's name, a label. Opened from the
 /// keyboard, it starts on the first action below the name, so Enter alone
 /// renames the group: the kit's first Down used to select the name, and

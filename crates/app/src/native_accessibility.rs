@@ -246,6 +246,15 @@ impl ListRow {
 /// context. Focus that leaves it otherwise, to a dialog one of its items
 /// opens or with the page that drew it, closes it as well, so it never
 /// reappears over another repository tab or mode.
+///
+/// A menu whose items read the window's state follows writes and pauses as a
+/// right-click menu does ([`Self::following`], [`MenuInputs`]): built again
+/// in place, still focused, when a write starts or ends or an integration
+/// pauses or ends, its keyboard's cursor back on its first item that can
+/// act, or on none while every item is refused, since the kit's rebuild
+/// forgets which item held it. It read both once, as it opened, so one
+/// opened at rest offered Revert while a merge paused under it and one
+/// opened during a quick write kept its items disabled after the write.
 pub(super) struct KeyboardMenu {
     menu: Entity<PopupMenu>,
     row: RowPlace,
@@ -260,8 +269,17 @@ pub(super) struct KeyboardMenu {
     /// Its action context, and the tallest its items may be.
     focus: FocusHandle,
     cap: Pixels,
+    /// What Enter in the menu reports while an integration is paused
+    /// ([`Self::refuses_while_paused`]).
+    paused: Option<fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>)>,
     _subscriptions: [Subscription; 2],
+    /// Builds a [`Self::following`] menu again as the window's state changes.
+    _follows: Option<Subscription>,
 }
+
+/// How a [`KeyboardMenu`] opened by [`KeyboardMenu::following`] builds its
+/// items from the window's state.
+type BuildFrom = dyn Fn(PopupMenu, &GitTurtle) -> PopupMenu;
 
 impl KeyboardMenu {
     /// Builds the row's menu with `build`, the builder its right-click menu
@@ -279,25 +297,67 @@ impl KeyboardMenu {
         window: &mut Window,
         cx: &mut Context<GitTurtle>,
     ) -> Self {
-        let row = row.into();
+        Self::built(row.into(), focus, build, dismissed, window, cx)
+    }
+
+    /// [`Self::open`] for a menu whose items read the window's state: from
+    /// `app`, the window being updated, as it opens, and from the window
+    /// itself after. It is built again in place, as [`Self::rebuild`]
+    /// builds it, when a write starts or ends or an integration pauses or
+    /// ends ([`MenuInputs`]).
+    pub(super) fn following(
+        row: impl Into<RowPlace>,
+        focus: FocusHandle,
+        build: impl Fn(PopupMenu, &GitTurtle) -> PopupMenu + 'static,
+        dismissed: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+        app: &GitTurtle,
+        window: &mut Window,
+        cx: &mut Context<GitTurtle>,
+    ) -> Self {
+        let build: std::rc::Rc<BuildFrom> = std::rc::Rc::new(build);
+        let first = build.clone();
+        let mut this = Self::built(
+            row.into(),
+            focus,
+            move |menu| first(menu, app),
+            dismissed,
+            window,
+            cx,
+        );
+        let mut inputs = MenuInputs::of(app);
+        let (menu, focus, cap) = (this.menu.downgrade(), this.focus.clone(), this.cap);
+        let owner = cx.entity();
+        this._follows = Some(cx.observe_in(&owner, window, move |app, _, window, cx| {
+            let now = MenuInputs::of(app);
+            if now == inputs {
+                return;
+            }
+            inputs = now;
+            if let Some(menu) = menu.upgrade() {
+                let app = &*app;
+                Self::build_again(&menu, focus.clone(), cap, |menu| build(menu, app), window, cx);
+            }
+        }));
+        this
+    }
+
+    /// The menu built with `build` beside `row`, focused.
+    fn built(
+        row: RowPlace,
+        focus: FocusHandle,
+        build: impl FnOnce(PopupMenu) -> PopupMenu,
+        dismissed: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+        window: &mut Window,
+        cx: &mut Context<GitTurtle>,
+    ) -> Self {
         if let RowPlace::Listed(listed) = &row {
             listed.reveal();
         }
         let room = menu_bounds(window);
         let opened = row.anchor();
         let cap = opened.cap(room);
-        let menu = PopupMenu::build(window, cx, {
-            let focus = focus.clone();
-            move |menu, window, cx| {
-                open_menu(
-                    build(menu).action_context(focus),
-                    true,
-                    None,
-                    Some(cap),
-                    window,
-                    cx,
-                )
-            }
+        let menu = PopupMenu::build(window, cx, |menu, window, cx| {
+            Self::finish(build(menu), focus.clone(), cap, window, cx)
         });
         let dismiss = cx.subscribe_in(
             &menu,
@@ -317,8 +377,22 @@ impl KeyboardMenu {
             opened,
             focus,
             cap,
+            paused: None,
             _subscriptions: [dismiss, blur],
+            _follows: None,
         }
+    }
+
+    /// The menu's items, opened from the keyboard in `focus`'s context, no
+    /// taller than `cap`.
+    fn finish(
+        menu: PopupMenu,
+        focus: FocusHandle,
+        cap: Pixels,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        open_menu(menu.action_context(focus), true, None, Some(cap), window, cx)
     }
 
     /// Builds the menu again in place with `build`, as it opened, its
@@ -329,23 +403,41 @@ impl KeyboardMenu {
     /// kit's rebuild clears it.
     pub(super) fn rebuild(
         &self,
-        build: impl FnOnce(PopupMenu) -> PopupMenu + 'static,
+        build: impl FnOnce(PopupMenu) -> PopupMenu,
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (focus, cap) = (self.focus.clone(), self.cap);
-        self.menu.update(cx, |menu, cx| {
+        Self::build_again(&self.menu, self.focus.clone(), self.cap, build, window, cx);
+    }
+
+    /// [`Self::rebuild`] for the open `menu`, in `focus`'s context and no
+    /// taller than `cap`.
+    fn build_again(
+        menu: &Entity<PopupMenu>,
+        focus: FocusHandle,
+        cap: Pixels,
+        build: impl FnOnce(PopupMenu) -> PopupMenu,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        menu.update(cx, |menu, cx| {
             menu.rebuild(window, cx, move |menu, window, cx| {
-                open_menu(
-                    build(menu).action_context(focus),
-                    true,
-                    None,
-                    Some(cap),
-                    window,
-                    cx,
-                )
+                Self::finish(build(menu), focus, cap, window, cx)
             })
         });
+    }
+
+    /// The menu of a row whose every item a paused merge, rebase,
+    /// cherry-pick or revert refuses, a commit's: Enter in it then reports
+    /// the refusal through `refuse` and keeps the menu open, focused, rather
+    /// than doing nothing. Built again disabled, its items take no Enter, and
+    /// the keyboard's cursor rests on none of them.
+    pub(super) fn refuses_while_paused(
+        mut self,
+        refuse: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+    ) -> Self {
+        self.paused = Some(refuse);
+        self
     }
 
     /// The `row`th row of a uniform list of `height` tall rows, its menu
@@ -401,6 +493,21 @@ impl KeyboardMenu {
                 let _ = owner.update(cx, |this, cx| dismiss(this, window, cx));
             });
         });
+        // A press inside the menu must reach its item, not the overlay
+        // behind it.
+        let mut menu = div().on_any_mouse_down(|_, _, cx| cx.stop_propagation());
+        if let Some(refuse) = self.paused {
+            // Before the menu's own Enter, which does nothing with every
+            // item disabled.
+            menu = menu.capture_action(cx.listener(
+                move |this, _: &gpui_kit::component::dialog::Confirm, window, cx| {
+                    if this.integration_state.is_some() {
+                        cx.stop_propagation();
+                        refuse(this, window, cx);
+                    }
+                },
+            ));
+        }
         deferred(
             anchored().position(Point::default()).child(
                 div()
@@ -417,12 +524,7 @@ impl KeyboardMenu {
                         opened: self.opened,
                         close,
                         room: self.room,
-                        // A press inside the menu must reach its item, not
-                        // the overlay behind it.
-                        menu: div()
-                            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-                            .child(self.menu.clone())
-                            .into_any_element(),
+                        menu: menu.child(self.menu.clone()).into_any_element(),
                     }),
             ),
         )
@@ -763,7 +865,8 @@ pub(crate) struct AppDropdown {
 }
 
 /// What a menu that follows writes reads as it is built
-/// ([`AppDropdown::follows_writes`], [`PointerMenu::follows_writes`]):
+/// ([`AppDropdown::follows_writes`], [`PointerMenu::follows_writes`],
+/// [`KeyboardMenu`]):
 /// whether a write runs, and whether a merge, rebase, cherry-pick or revert
 /// is paused, which disables a commit's Revert, Cherry-pick, Amend and Undo
 /// (`GitTurtle::commit_menu_state`) and the Changes Actions menu's Save

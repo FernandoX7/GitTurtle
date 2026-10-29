@@ -2142,7 +2142,17 @@ impl GitTurtle {
         self.zoom = 0.;
         self.image_scroll.set_offset(point(px(0.), px(0.)));
         self.interaction_started = Some(Instant::now());
-        window.focus(&self.file_focus, cx);
+        // The list's keyboard menu, open on the row as a write's status read
+        // selects it again, keeps focus and returns it here as it closes:
+        // focused away, it closed as each write ended rather than being
+        // built again ([`native_accessibility::KeyboardMenu`]).
+        if !self
+            .file_menu
+            .as_ref()
+            .is_some_and(|menu| menu.has_focus(window, cx))
+        {
+            window.focus(&self.file_focus, cx);
+        }
         self.request(
             Job::WorkingPreview {
                 repo,
@@ -4223,17 +4233,28 @@ impl GitTurtle {
             appearance::ui_size(appearance::PANE_INSET),
         );
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
-        let busy = self.operation_busy.is_some();
         let target = MenuRow {
             entry,
             staged: area == ChangeArea::Staged,
         };
         let built = target.clone();
-        self.file_menu = Some(native_accessibility::KeyboardMenu::open(
+        self.file_menu = Some(native_accessibility::KeyboardMenu::following(
             anchor,
             self.file_focus.clone(),
-            move |menu| working_row_menu(menu, owner, repository, built, stage_control, busy),
+            // Read as it is built: a write's start or end builds the open
+            // menu again.
+            move |menu, app: &GitTurtle| {
+                working_row_menu(
+                    menu,
+                    owner.clone(),
+                    repository.clone(),
+                    built.clone(),
+                    stage_control,
+                    app.operation_busy.is_some(),
+                )
+            },
             Self::dismiss_file_menu,
+            self,
             window,
             cx,
         ));

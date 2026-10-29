@@ -602,12 +602,16 @@ impl GitTurtle {
             indent,
         );
         let owner = cx.entity().downgrade();
-        let snapshot = self.menu_snapshot(&key);
-        self.project_pane.keyboard_menu = Some(native_accessibility::KeyboardMenu::open(
+        self.project_pane.keyboard_menu = Some(native_accessibility::KeyboardMenu::following(
             anchor,
             self.project_pane.focus.clone(),
-            move |menu| row_menu(menu, &owner, &key, Some(snapshot)),
+            // Read as it is built: a write's start or end builds the open
+            // menu again.
+            move |menu, app: &GitTurtle| {
+                row_menu(menu, &owner, &key, Some(app.menu_snapshot(&key)))
+            },
             Self::dismiss_project_menu,
+            self,
             window,
             cx,
         ));

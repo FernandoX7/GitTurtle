@@ -424,16 +424,30 @@ impl GitTurtle {
     }
 
     /// The commit's menu as a right-click builds it, for the keyboard to
-    /// open below the selected row: built from the window's state now,
-    /// since the menu is built while the window is being updated.
+    /// open below the selected row: built from the window's state it is
+    /// given, as the menu opens while the window is being updated and again
+    /// as a write or a pause starts or ends (`KeyboardMenu`).
     pub(super) fn keyboard_commit_menu(
-        &self,
         owner: WeakEntity<Self>,
         repository: Option<PathBuf>,
         commit: Arc<CommitTarget>,
-    ) -> impl FnOnce(PopupMenu) -> PopupMenu + 'static {
-        let (disabled, current) = self.commit_menu_state(&commit);
-        move |menu| commit_menu(menu, &owner, &repository, &commit, disabled, current)
+    ) -> impl Fn(PopupMenu, &GitTurtle) -> PopupMenu + 'static {
+        move |menu, app| {
+            let (disabled, current) = app.commit_menu_state(&commit);
+            commit_menu(menu, &owner, &repository, &commit, disabled, current)
+        }
+    }
+
+    /// Enter in a keyboard's commit menu while an integration is paused,
+    /// which disables every item it holds: says why in the window's error,
+    /// as a press on one of them would have, and leaves the menu open
+    /// (`KeyboardMenu::refuses_while_paused`).
+    pub(super) fn refuse_commit_menu_while_paused(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.refuse_while_paused(None, window, cx);
     }
 
     /// Whether a commit's menu offers nothing while a write or an
@@ -452,11 +466,11 @@ impl GitTurtle {
     /// A commit menu's Revert, Cherry-pick, Amend or Undo. Each refuses while
     /// an integration is paused, as the menu shows it disabled
     /// ([`Self::commit_menu_state`]), before a merge's mainline is asked for,
-    /// and says why in the window's error, as Review restore… does: a
-    /// keyboard's menu, built as it opened and not built again, still offers
-    /// it once a merge pauses under it, and Enter there closed the menu and
-    /// did nothing visible.
-    fn choose_commit_recovery(
+    /// and says why in the window's error, as Review restore… does, should a
+    /// press reach one, as one could in a keyboard's menu when it was built
+    /// only as it opened: Enter there closed the menu and did nothing
+    /// visible.
+    pub(super) fn choose_commit_recovery(
         &mut self,
         kind: RecoveryKind,
         commit: Arc<CommitTarget>,

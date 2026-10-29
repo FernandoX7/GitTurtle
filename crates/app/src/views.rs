@@ -1099,7 +1099,8 @@ impl GitTurtle {
 
     /// Shift-F10, or on Linux the Menu key, in the navigator: opens the
     /// cursor row's menu below it, the one a right-click on a branch or a
-    /// worktree opens, its actions unavailable while a write runs.
+    /// worktree opens, its actions unavailable while a write runs and
+    /// built again in place as one starts or ends.
     pub(super) fn manage_navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.nav_menu.is_some() || window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return;
@@ -1108,42 +1109,57 @@ impl GitTurtle {
             return;
         };
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
-        let busy = self.operation_busy.is_some();
-        let (depth, build): (usize, Box<dyn FnOnce(PopupMenu) -> PopupMenu>) =
-            match self.nav_rows.get(index) {
-                Some(NavRow::Branch(branch, depth)) => {
-                    let branch = &self.branches[*branch];
-                    let (name, remote) = (branch.name.clone(), branch.remote);
-                    (
-                        *depth,
-                        Box::new(move |menu| {
-                            branch_row_menu(menu, owner, repository, name, remote, busy)
-                        }),
-                    )
-                }
-                Some(NavRow::Worktree(tree)) => {
-                    let tree = self.worktrees[*tree].clone();
-                    let disabled = busy || self.page != AppPage::Repository;
-                    (
-                        0,
-                        Box::new(move |menu| {
-                            worktree_row_menu(menu, owner, repository, tree, disabled)
-                        }),
-                    )
-                }
-                _ => return,
-            };
+        type Build = Box<dyn Fn(PopupMenu, &GitTurtle) -> PopupMenu>;
+        let (depth, build): (usize, Build) = match self.nav_rows.get(index) {
+            Some(NavRow::Branch(branch, depth)) => {
+                let branch = &self.branches[*branch];
+                let (name, remote) = (branch.name.clone(), branch.remote);
+                (
+                    *depth,
+                    Box::new(move |menu, app: &GitTurtle| {
+                        branch_row_menu(
+                            menu,
+                            owner.clone(),
+                            repository.clone(),
+                            name.clone(),
+                            remote,
+                            app.operation_busy.is_some(),
+                        )
+                    }),
+                )
+            }
+            Some(NavRow::Worktree(tree)) => {
+                let tree = self.worktrees[*tree].clone();
+                (
+                    0,
+                    Box::new(move |menu, app: &GitTurtle| {
+                        let disabled = app.operation_busy.is_some()
+                            || app.path != repository
+                            || app.page != AppPage::Repository;
+                        worktree_row_menu(
+                            menu,
+                            owner.clone(),
+                            repository.clone(),
+                            tree.clone(),
+                            disabled,
+                        )
+                    }),
+                )
+            }
+            _ => return,
+        };
         let anchor = native_accessibility::KeyboardMenu::cursor_row(
             &self.nav_scroll,
             index,
             crate::appearance::ui_size(30.),
             nav_row_inset(depth, true),
         );
-        self.nav_menu = Some(native_accessibility::KeyboardMenu::open(
+        self.nav_menu = Some(native_accessibility::KeyboardMenu::following(
             anchor,
             self.nav_focus.clone(),
             build,
             Self::dismiss_nav_menu,
+            self,
             window,
             cx,
         ));
@@ -2615,15 +2631,19 @@ impl GitTurtle {
         let shown = self.history_horizontal.bounds().right() - px(1.);
         let anchor = anchor.trailing(list.min(shown) - inset);
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
-        let build = self.keyboard_commit_menu(owner, repository, commit);
-        self.commit_menu = Some(native_accessibility::KeyboardMenu::open(
-            anchor,
-            self.focus.clone(),
-            build,
-            Self::dismiss_commit_menu,
-            window,
-            cx,
-        ));
+        let build = Self::keyboard_commit_menu(owner, repository, commit);
+        self.commit_menu = Some(
+            native_accessibility::KeyboardMenu::following(
+                anchor,
+                self.focus.clone(),
+                build,
+                Self::dismiss_commit_menu,
+                self,
+                window,
+                cx,
+            )
+            .refuses_while_paused(Self::refuse_commit_menu_while_paused),
+        );
         cx.notify();
     }
 
@@ -2669,11 +2689,20 @@ impl GitTurtle {
             appearance::ui_size(appearance::PANE_INSET),
         );
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
-        self.file_menu = Some(native_accessibility::KeyboardMenu::open(
+        self.file_menu = Some(native_accessibility::KeyboardMenu::following(
             anchor,
             self.file_focus.clone(),
-            move |menu| changed_file_menu(menu, owner, repository, file, commit),
+            move |menu, _: &GitTurtle| {
+                changed_file_menu(
+                    menu,
+                    owner.clone(),
+                    repository.clone(),
+                    file.clone(),
+                    commit.clone(),
+                )
+            },
             Self::dismiss_file_menu,
+            self,
             window,
             cx,
         ));

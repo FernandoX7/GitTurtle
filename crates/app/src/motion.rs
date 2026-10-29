@@ -2612,15 +2612,14 @@ mod tests {
     /// (`GitTurtle::commit_menu_state`). A History commit's right-click menu
     /// open as a merge pauses is built again in place, its items disabled,
     /// and available again once the merge is abandoned; a press on one
-    /// prepares nothing. Enter on a merge's Revert in a keyboard's menu,
-    /// which was built as it opened at rest and is not built again, asks for
-    /// no mainline and prepares nothing either, and reports the core's
-    /// refusal, as Review restore… in Stashes does without reading a plan;
-    /// it closed the menu and did nothing visible. The menus were built
-    /// again only as a write
-    /// started or ended, so a cherry-pick that stopped on conflicts left
-    /// those items offered until the menu was opened again, and a press read
-    /// a plan that the core then refused.
+    /// prepares nothing. A merge's Revert that a press still reaches while
+    /// paused, as Enter could in a keyboard's menu built only as it opened,
+    /// asks for no mainline and prepares nothing either, and reports the
+    /// core's refusal, as Review restore… in Stashes does without reading a
+    /// plan; it closed the menu and did nothing visible. The menus were
+    /// built again only as a write started or ended, so a cherry-pick that
+    /// stopped on conflicts left those items offered until the menu was
+    /// opened again, and a press read a plan that the core then refused.
     #[gpui::test]
     async fn commit_actions_refuse_while_an_integration_is_paused(cx: &mut TestAppContext) {
         const REVERT: &str = "Revert this commit…";
@@ -2724,47 +2723,31 @@ mod tests {
         cx.simulate_keystrokes("escape");
         next_frame(cx);
 
-        // A keyboard's menu, opened at rest.
-        // A keyboard's menu on a merge, opened at rest.
+        // A merge's Revert, as a press that still reached it while paused
+        // chose it.
         let merge = app.read_with(cx, |app, _| {
             app.commits
                 .iter()
                 .position(|commit| commit.parents.len() > 1)
+                .map(|merge| crate::recovery::commit_target(&app.commits[merge]))
                 .expect("main's merge")
         });
-        cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                app.select_commit(merge, window, cx);
-                app.pane = Pane::History;
-                window.focus(&app.focus, cx);
-            })
-        });
-        crate::views::tests::settle(&app, cx).await;
-        cx.simulate_keystrokes("shift-f10");
-        next_frame(cx);
-        assert_eq!(
-            offered(cx, REVERT),
-            Some(true),
-            "the keyboard's menu at rest"
-        );
         pause();
         refreshed(&app, cx).await;
         assert!(paused(cx), "the merge paused again");
         let held = app.update(cx, |app, _| app.operations.hold());
-        // Its cursor starts on Revert, still offered.
-        assert_eq!(
-            offered(cx, REVERT),
-            Some(true),
-            "the keyboard's menu paused"
-        );
-        cx.simulate_keystrokes("enter");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.choose_commit_recovery(gitturtle_core::RecoveryKind::Revert, merge, window, cx)
+            })
+        });
         cx.executor().run_until_parked();
         assert_eq!(
             quiet(cx),
             (None, Some(crate::recovery::PAUSED_REFUSAL.into())),
-            "Enter on Revert prepares nothing and says why"
+            "Revert prepares nothing and says why"
         );
-        assert!(!dialog_open(cx), "Enter on Revert asks nothing");
+        assert!(!dialog_open(cx), "Revert asks for no mainline");
         drop(held);
         app.update(cx, |app, _| app.operation_error = None);
 
@@ -2798,6 +2781,326 @@ mod tests {
         }
         cx.simulate_keystrokes("escape");
         next_frame(cx);
+        drop(fixture);
+    }
+
+    /// The rows `keyboard_row_menus_follow_writes_and_pauses` opens a menu
+    /// on from the keyboard.
+    #[derive(Clone, Copy, Debug)]
+    enum KeyedRow {
+        /// HEAD's row in History, whose menu adds Amend and Undo.
+        Commit,
+        /// A navigator branch, by its row.
+        Branch(usize),
+        /// extra.txt's untracked row in Changes.
+        Working,
+    }
+
+    impl KeyedRow {
+        /// The items its menu holds that a write refuses.
+        fn items(self) -> &'static [&'static str] {
+            match self {
+                Self::Commit => &COMMIT_ITEMS,
+                Self::Branch(_) => &["Branch actions…"],
+                Self::Working => &["Ignore…", "Delete untracked file…"],
+            }
+        }
+    }
+
+    /// HEAD's menu: every item a write or a paused integration refuses.
+    const COMMIT_ITEMS: [&str; 4] = [
+        "Revert this commit…",
+        "Cherry-pick this commit…",
+        "Amend last commit…",
+        "Undo last local commit…",
+    ];
+
+    /// Selects `row`, focuses its list or tree, and opens its menu with
+    /// `key`.
+    async fn open_keyed_menu(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        row: KeyedRow,
+        key: &str,
+    ) {
+        match row {
+            KeyedRow::Commit | KeyedRow::Branch(_) => {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.show_history(window, cx);
+                        let head = app
+                            .work_status
+                            .as_ref()
+                            .and_then(|status| status.head.clone());
+                        let head = app
+                            .commits
+                            .iter()
+                            .position(|commit| Some(&commit.oid) == head.as_ref())
+                            .expect("HEAD in History");
+                        app.select_commit(head, window, cx);
+                        app.pane = Pane::History;
+                    })
+                });
+                crate::views::tests::settle(app, cx).await;
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| match row {
+                        KeyedRow::Branch(branch) => {
+                            app.nav_cursor = Some(branch);
+                            window.focus(&app.nav_focus, cx);
+                        }
+                        _ => window.focus(&app.focus, cx),
+                    })
+                });
+            }
+            KeyedRow::Working => {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+                rows_arrived(app, cx).await;
+                draw(cx);
+                let position = position_of(app, cx, "extra.txt", ChangeArea::Unstaged);
+                let bounds = cx
+                    .debug_bounds(format!("working-row-{position}").leak())
+                    .expect("extra.txt's row");
+                cx.simulate_click(bounds.center(), Modifiers::default());
+                let list = app.read_with(cx, |app, _| app.file_focus.clone());
+                cx.update(|window, cx| list.focus(window, cx));
+            }
+        }
+        next_frame(cx);
+        cx.simulate_keystrokes(key);
+        next_frame(cx);
+        let opened = app.read_with(cx, |app, _| match row {
+            KeyedRow::Commit => app.commit_menu.is_some(),
+            KeyedRow::Branch(_) => app.nav_menu.is_some(),
+            KeyedRow::Working => app.file_menu.is_some(),
+        });
+        assert!(opened, "{key} opened {row:?}'s menu");
+    }
+
+    /// Whether the open keyboard's menu holds focus.
+    fn focus_in_keyed_menu(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> bool {
+        cx.update(|window, cx| {
+            let app = app.read(cx);
+            [&app.commit_menu, &app.nav_menu, &app.file_menu]
+                .into_iter()
+                .flatten()
+                .any(|menu| menu.has_focus(window, cx))
+        })
+    }
+
+    /// Asserts that the open menu draws each of `items` available, or
+    /// disabled, with focus in the menu.
+    fn keyed_items(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        items: &[&str],
+        available: bool,
+        when: &str,
+    ) {
+        for item in items {
+            assert_eq!(
+                offered(cx, item),
+                Some(available),
+                "{when}: {item} {}",
+                if available { "available" } else { "disabled" }
+            );
+        }
+        assert!(
+            focus_in_keyed_menu(app, cx),
+            "{when}: focus stays in the menu"
+        );
+    }
+
+    /// Escape closes the open keyboard's menu.
+    fn close_keyed_menu(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, when: &str) {
+        cx.simulate_keystrokes("escape");
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.commit_menu.is_none()
+                && app.nav_menu.is_none()
+                && app.file_menu.is_none()),
+            "{when}: Escape closed the menu"
+        );
+    }
+
+    /// Enter in a commit's keyboard menu while a merge is paused: it
+    /// prepares nothing and reports the core's refusal in the window's
+    /// error, announced at once, the menu open and focused with its items
+    /// disabled.
+    fn enter_is_refused(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, when: &str) {
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.simulate_keystrokes("enter");
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| (
+                app.operation_busy,
+                app.operation_error.clone()
+            )),
+            (None, Some(crate::recovery::PAUSED_REFUSAL.into())),
+            "{when}: Enter prepares nothing and says why"
+        );
+        assert!(
+            cx.debug_bounds("operation-error-summary").is_some(),
+            "{when}: the window's error draws the refusal"
+        );
+        assert_eq!(
+            crate::native_accessibility::written::announced("operation-error-summary"),
+            Some(crate::native_accessibility::written::Announced::ASSERTIVE),
+            "{when}: the refusal is announced at once"
+        );
+        assert!(!dialog_open(cx), "{when}: Enter asks nothing");
+        keyed_items(
+            app,
+            cx,
+            &COMMIT_ITEMS,
+            false,
+            &format!("{when}, after Enter"),
+        );
+        drop(held);
+        app.update(cx, |app, _| app.operation_error = None);
+    }
+
+    /// A row's menu opened from the keyboard, by Shift-F10 and on Linux by
+    /// the Menu key, follows writes and pauses as a right-click menu does,
+    /// built again in place with focus kept in it: a History commit's, a
+    /// navigator branch's and an untracked working row's items are disabled
+    /// while a write runs, whether it started before or after the menu
+    /// opened, and available once it ends. A commit's Revert, Cherry-pick,
+    /// Amend and Undo are disabled while a merge is paused, whether it paused
+    /// before or after the menu opened, and Enter there reports the core's
+    /// refusal in the window's error, announced at once, preparing nothing
+    /// and leaving the menu open and focused; they are available once the
+    /// merge is abandoned. Each read the write and the pause once, as it
+    /// opened: a menu opened at rest offered Revert under a paused merge and
+    /// one opened during a quick write kept its items disabled after it.
+    #[gpui::test]
+    async fn keyboard_row_menus_follow_writes_and_pauses(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let identity = [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+        ];
+        let git =
+            |arguments: &[&str]| fixture_git(&repository, &[&identity[..], arguments].concat());
+        git(&["reset", "-q", "--hard"]);
+        // A side branch to merge without its commit, and an untracked file.
+        git(&["checkout", "-q", "-b", "side"]);
+        std::fs::write(repository.join("side.txt"), "side\n").unwrap();
+        git(&["add", "side.txt"]);
+        git(&["commit", "-q", "-m", "side"]);
+        git(&["checkout", "-q", "main"]);
+        std::fs::write(repository.join("extra.txt"), "extra\n").unwrap();
+        refreshed(&app, cx).await;
+        let paused = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.integration_state.is_some())
+        };
+        let write =
+            |cx: &mut VisualTestContext| held(&app, cx, gitturtle_core::WriteCommand::UnstageAll);
+        let branch = app.read_with(cx, |app, _| {
+            app.nav_rows
+                .iter()
+                .position(|row| matches!(row, crate::NavRow::Branch(..)))
+                .expect("a branch in the navigator")
+        });
+        let keys: &[&str] = if cfg!(target_os = "macos") {
+            &["shift-f10"]
+        } else {
+            &["shift-f10", "menu"]
+        };
+        for key in keys {
+            for row in [
+                KeyedRow::Commit,
+                KeyedRow::Branch(branch),
+                KeyedRow::Working,
+            ] {
+                let items = row.items();
+                let on = format!("{key} on {row:?}");
+                // Opened at rest, as a write starts and ends.
+                open_keyed_menu(&app, cx, row, key).await;
+                keyed_items(&app, cx, items, true, &format!("{on} at rest"));
+                let held = write(cx);
+                next_frame(cx);
+                keyed_items(&app, cx, items, false, &format!("{on} once a write starts"));
+                release(&app, held, cx).await;
+                next_frame(cx);
+                keyed_items(&app, cx, items, true, &format!("{on} once the write ends"));
+                close_keyed_menu(&app, cx, &on);
+                // Opened while a write runs, until it ends.
+                let held = write(cx);
+                open_keyed_menu(&app, cx, row, key).await;
+                keyed_items(
+                    &app,
+                    cx,
+                    items,
+                    false,
+                    &format!("{on} opened during a write"),
+                );
+                release(&app, held, cx).await;
+                next_frame(cx);
+                keyed_items(&app, cx, items, true, &format!("{on} once that write ends"));
+                close_keyed_menu(&app, cx, &on);
+            }
+
+            // A commit's menu opened at rest, as a merge pauses and ends.
+            let on = format!("{key} on a commit");
+            open_keyed_menu(&app, cx, KeyedRow::Commit, key).await;
+            keyed_items(&app, cx, &COMMIT_ITEMS, true, &format!("{on} at rest"));
+            git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+            refreshed(&app, cx).await;
+            assert!(paused(cx), "{on}: the merge paused");
+            keyed_items(
+                &app,
+                cx,
+                &COMMIT_ITEMS,
+                false,
+                &format!("{on} once a merge pauses"),
+            );
+            enter_is_refused(&app, cx, &format!("{on} once a merge pauses"));
+            git(&["merge", "--abort"]);
+            refreshed(&app, cx).await;
+            assert!(!paused(cx), "{on}: the merge was abandoned");
+            keyed_items(
+                &app,
+                cx,
+                &COMMIT_ITEMS,
+                true,
+                &format!("{on} once the merge ends"),
+            );
+            close_keyed_menu(&app, cx, &on);
+            // Opened while a merge is paused, until it ends.
+            git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+            refreshed(&app, cx).await;
+            assert!(paused(cx), "{on}: the merge paused again");
+            open_keyed_menu(&app, cx, KeyedRow::Commit, key).await;
+            keyed_items(
+                &app,
+                cx,
+                &COMMIT_ITEMS,
+                false,
+                &format!("{on} opened while paused"),
+            );
+            enter_is_refused(&app, cx, &format!("{on} opened while paused"));
+            git(&["merge", "--abort"]);
+            refreshed(&app, cx).await;
+            assert!(!paused(cx), "{on}: the merge was abandoned again");
+            keyed_items(
+                &app,
+                cx,
+                &COMMIT_ITEMS,
+                true,
+                &format!("{on} once that merge ends"),
+            );
+            close_keyed_menu(&app, cx, &on);
+        }
         drop(fixture);
     }
 
