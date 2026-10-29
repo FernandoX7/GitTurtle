@@ -892,6 +892,15 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                         .w(viewport.width)
                         .h(viewport.height)
                         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                        // The row's menu is open already, and it holds the
+                        // keys: Shift-F10 or the Menu key in it opens no
+                        // keyboard's menu beside it. Drawn inside the row,
+                        // the menu passed both on to the list or tree, which
+                        // opened its cursor row's menu and focused it; the
+                        // next frame this menu took focus back and that one
+                        // closed, both drawn for a frame.
+                        .on_action(|_: &RowActions, _, _| {})
+                        .on_action(|_: &ManageNavigation, _, _| {})
                         .child(RowMenu {
                             row,
                             room: menu_bounds(window),

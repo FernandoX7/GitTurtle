@@ -2947,6 +2947,101 @@ mod tests {
         }
     }
 
+    /// Shift-F10 in an open right-click menu, on a History commit, a
+    /// navigator branch or a working row, opens no keyboard's menu beside
+    /// it: one menu is open at a time, and the right-click menu, the row's
+    /// already, keeps the keys and stays until Escape returns focus to its
+    /// list or tree. Drawn inside its row, the menu passed the key on to the
+    /// list or tree, which opened its cursor row's menu and focused it; the
+    /// next frame the right-click menu took focus back and the keyboard's
+    /// menu closed, both drawn for that frame.
+    #[gpui::test]
+    async fn shift_f10_in_a_right_click_menu_opens_no_second_menu(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        fixture_git(&repository, &["reset", "-q", "--hard"]);
+        refreshed(&app, cx).await;
+        let branch = app.read_with(cx, |app, _| {
+            app.nav_rows
+                .iter()
+                .position(|row| matches!(row, crate::NavRow::Branch(..)))
+                .expect("a branch in the navigator")
+        });
+        // The navigator's cursor on it, where its keyboard menu would open.
+        app.update(cx, |app, _| app.nav_cursor = Some(branch));
+        let branch: &'static str = format!("nav-row-{branch}").leak();
+        // Whether the navigator's, History's or a file list's keyboard menu
+        // opened at all: a test window draws as each key's work settles, so
+        // one that closed in the frame after it would be gone by then.
+        let opened = std::rc::Rc::new(std::cell::Cell::new(false));
+        let _opened = cx.update(|_, cx| {
+            let opened = opened.clone();
+            cx.observe(&app, move |app, cx| {
+                let app = app.read(cx);
+                if app.nav_menu.is_some() || app.commit_menu.is_some() || app.file_menu.is_some() {
+                    opened.set(true);
+                }
+            })
+        });
+        let (history, navigator, files) = app.read_with(cx, |app, _| {
+            (
+                app.focus.clone(),
+                app.nav_focus.clone(),
+                app.file_focus.clone(),
+            )
+        });
+        let rows = [
+            ("history-row-0", "Revert this commit…", history),
+            (branch, "Branch actions…", navigator),
+            ("working", "Delete untracked file…", files),
+        ];
+        for (row, item, list) in rows {
+            let row = if row == "working" {
+                // An untracked file in Changes.
+                std::fs::write(repository.join("extra.txt"), "extra\n").unwrap();
+                cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+                rows_arrived(&app, cx).await;
+                draw(cx);
+                let position = position_of(&app, cx, "extra.txt", ChangeArea::Unstaged);
+                let row: &'static str = format!("working-row-{position}").leak();
+                // Selected, where its keyboard menu would open.
+                let bounds = cx.debug_bounds(row).expect(row);
+                cx.simulate_click(bounds.center(), Modifiers::default());
+                row
+            } else {
+                row
+            };
+            let focused =
+                |cx: &mut VisualTestContext| cx.update(|window, _| list.is_focused(window));
+            cx.update(|window, cx| list.focus(window, cx));
+            next_frame(cx);
+            right_click(cx, row);
+            assert_eq!(offered(cx, item), Some(true), "{row}: its menu opened");
+            assert!(!focused(cx), "{row}: the menu holds focus");
+            opened.set(false);
+            cx.simulate_keystrokes("shift-f10");
+            next_frame(cx);
+            assert!(!opened.get(), "{row}: Shift-F10 opened no keyboard's menu");
+            assert_eq!(
+                offered(cx, item),
+                Some(true),
+                "{row}: the right-click menu stays"
+            );
+            assert!(!focused(cx), "{row}: the menu keeps the keys");
+            cx.simulate_keystrokes("escape");
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert_eq!(offered(cx, item), None, "{row}: Escape closed the menu");
+            assert!(focused(cx), "{row}: focus is back on its list or tree");
+        }
+        drop(fixture);
+    }
+
     /// The Settings page's identity fields and actions wait for a write's
     /// busy look too: they refuse at once, the fields read-only, and dim,
     /// with Save reading "Working…", only once the write has run 200 ms. The
