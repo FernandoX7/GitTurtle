@@ -5,7 +5,7 @@ use gitturtle_core::{RemoteConfig, Tag, TagCommand, TagDetails, TagList, WriteCo
 use gpui_kit::{
     component::{
         WindowExt,
-        dialog::DialogButtonProps,
+        dialog::{DialogButtonProps, DialogFooter},
         scroll::{Scrollbar, ScrollbarHandle, ScrollbarMode},
     },
     prelude::FluentBuilder,
@@ -391,21 +391,32 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(560.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Review tag")
-                        .cancel_text("Cancel")
-                        .show_cancel(true),
+                // The kit's own Cancel and OK, built here rather than by the
+                // kit so that Review tag can follow a write (`ReviewTag`).
+                .footer(
+                    DialogFooter::new()
+                        .child({
+                            // Cancels its own form and closes the dialog,
+                            // wherever focus is: asking the focused element
+                            // to cancel missed the dialog once Settings had
+                            // shown and taken focus.
+                            let form = form.clone();
+                            Button::new("cancel")
+                                .label("Cancel")
+                                .debug_selector(|| "cancel-create-tag".into())
+                                .on_click(move |_, window, cx| {
+                                    form.update(cx, |form, cx| form.cancel(cx));
+                                    window.close_dialog(cx);
+                                })
+                        })
+                        .child(ReviewTag { form: form.clone() }),
                 )
                 .on_ok(move |_, window, cx| {
                     submit.update(cx, |this, cx| this.submit(window, cx));
                     false
                 })
                 .on_cancel(move |_, _, cx| {
-                    cancel.update(cx, |form, cx| {
-                        form.pending = false;
-                        let _ = form.owner.update(cx, |this, _| this.cancel_tag_action());
-                    });
+                    cancel.update(cx, |form, cx| form.cancel(cx));
                     true
                 })
         });
@@ -591,7 +602,9 @@ struct TagForm {
     message: Entity<TextareaState>,
     annotated: bool,
     error: Option<String>,
-    pending: bool,
+    /// The generation of the window's tag read this form started
+    /// (`TagForm::pending`).
+    preparing: Option<u64>,
 }
 impl TagForm {
     fn new(
@@ -613,11 +626,36 @@ impl TagForm {
             }),
             annotated: true,
             error: None,
-            pending: false,
+            preparing: None,
         }
     }
+    /// Whether the read this form started still runs: the window's tag read
+    /// of its generation, which ends when it lands, is dropped, or is
+    /// cancelled. A flag the read's reply cleared stayed set when the reply
+    /// was dropped, as one landing while Settings showed was, so every
+    /// later Review tag was refused while it looked available.
+    fn pending(&self, cx: &App) -> bool {
+        self.preparing.is_some_and(|generation| {
+            self.owner.upgrade().is_some_and(|owner| {
+                let owner = owner.read(cx);
+                owner.tag_actions.generation == generation
+                    && owner.operation_busy == Some(PREPARING)
+            })
+        })
+    }
+    /// Ends the form's preparation and its read, as Cancel or Escape closes
+    /// the dialog.
+    fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.preparing = None;
+        let _ = self.owner.update(cx, |this, _| this.cancel_tag_action());
+    }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pending {
+        // Refused at once while a write runs, as Review tag is announced
+        // (`ReviewTag`), before anything changes: a press set the form's
+        // error, "The repository changed or another operation is running".
+        // The form's own read runs as such a busy spell, so it is refused
+        // here too.
+        if crate::workspace::dialog_refusal(&self.owner, self.path.as_deref(), cx).0 {
             return;
         }
         let name = self.name.read(cx).value().trim().to_owned();
@@ -626,10 +664,10 @@ impl TagForm {
             .annotated
             .then(|| self.message.read(cx).value().to_string());
         let form = cx.entity().downgrade();
-        let accepted = self.owner.update(cx, |this, cx| {
-            if this.path != self.path { return false; }
+        let preparing = self.owner.update(cx, |this, cx| {
+            if this.path != self.path { return None; }
             this.read_tag_action(move |repo| repo.create_tag_plan(&name, &target, message), move |result, this, window, cx| {
-                let _ = form.update(cx, |form, cx| { form.pending = false; cx.notify(); });
+                let _ = form.update(cx, |form, cx| { form.preparing = None; cx.notify(); });
                 match result {
                     Ok(plan) => {
                         window.close_dialog(cx);
@@ -638,10 +676,10 @@ impl TagForm {
                     }
                     Err(error) => { let _ = form.update(cx, |form, cx| { form.error = Some(format!("{error:#}")); cx.notify(); }); }
                 }
-            }, window, cx)
-        }).unwrap_or(false);
-        self.pending = accepted;
-        if !accepted {
+            }, window, cx).then_some(this.tag_actions.generation)
+        }).ok().flatten();
+        self.preparing = preparing;
+        if preparing.is_none() {
             self.error = Some("The repository changed or another operation is running. Reopen Create tag when it finishes.".into());
         }
         cx.notify();
@@ -650,15 +688,82 @@ impl TagForm {
 impl Render for TagForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
+        let pending = self.pending(cx);
         div().flex().flex_col().gap_3()
             .child(static_text("tag-name-label", "Tag name").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.name).aria_label("Tag name"))
             .child(static_text("tag-target-label", "Target commit (selected commit by default)").text_size(crate::appearance::ui_text(12.))).child(Input::new(&self.target).aria_label("Target commit for tag"))
-            .child(div().flex().gap_2().children([(false, "Lightweight"), (true, "Annotated")].map(|(annotated, label)| button(label, label, "", self.annotated == annotated).toggled(self.annotated == annotated).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| { this.annotated = annotated; this.error = None; cx.notify(); })))))
+            .child(div().flex().gap_2().children([(false, "Lightweight"), (true, "Annotated")].map(|(annotated, label)| button(label, label, "", self.annotated == annotated).toggled(self.annotated == annotated).disabled(pending).on_click(cx.listener(move |this, _, _, cx| { this.annotated = annotated; this.error = None; cx.notify(); })))))
             .when(self.annotated, |element| element.child(shortcuts::tab_leaves(Textarea::new(&self.message).aria_label("Tag annotation"))))
             .child(static_text("tag-signing-explanation", "Signing follows Git configuration. Signing failures are reported without an unsigned fallback.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
-            .when(self.pending, |element| element.child(static_text("tag-preparation-status", "Preparing exact target and signing settings…").text_size(crate::appearance::ui_text(12.))))
+            .when(pending, |element| element.child(static_text("tag-preparation-status", "Preparing exact target and signing settings…").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| static_text("tag-preparation-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
     }
+}
+
+/// Review tag's name and tooltip while a write refuses it, which say why,
+/// as Create tag…'s say why it waits for a first commit.
+const REVIEW_TAG_BUSY_NAME: &str =
+    "Review tag, unavailable until the current Git operation finishes";
+const REVIEW_TAG_BUSY_REASON: &str = "Wait for the current Git operation to finish";
+
+/// Create tag's Review tag, the kit's OK as its own footer would draw it.
+/// A write refuses it at once, and assistive technology hears it unavailable
+/// at once, its name saying why, while it dims, its tooltip saying why, only
+/// once the write looks busy (`workspace::BusyLook`), as Tags' own actions
+/// do (`workspace::dialog_refusal`). The kit drew it available through any
+/// write, and a press set the form's error. The dialog is built in the
+/// window's render, so Review tag reads the window's state as it lays out,
+/// as `workspace::dialog_refusing` does. The form's own preparation runs as
+/// a read the window counts busy; its status line says what it does, so it
+/// gives no reason of its own.
+#[derive(IntoElement)]
+struct ReviewTag {
+    form: Entity<TagForm>,
+}
+
+impl RenderOnce for ReviewTag {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        review_tag(self.form, cx)
+    }
+}
+
+/// Review tag as `form` and the window leave it now ([`ReviewTag`]).
+fn review_tag(form: Entity<TagForm>, cx: &App) -> Button {
+    let state = form.read(cx);
+    // The form's own read runs as a busy spell, which refuses Review tag and
+    // dims it with its busy look; it gives no reason, as its status line
+    // says what it does.
+    let pending = state.pending(cx);
+    let (refused, dimmed, writing) = state.owner.upgrade().map_or((true, true, false), |owner| {
+        let owner = owner.read(cx);
+        let (refused, dimmed) = owner.dialog_refusal(state.path.as_deref());
+        (refused, dimmed, owner.operation_busy.is_some() && !pending)
+    });
+    let reason = (writing && dimmed).then_some(REVIEW_TAG_BUSY_REASON);
+    #[cfg(test)]
+    REVIEW_TAG.with(|review| review.set(reason));
+    {
+        let review = Button::new("ok")
+            .label("Review tag")
+            .primary()
+            .debug_selector(|| "review-tag".into())
+            .when(writing, |review| {
+                review.accessibility_label(REVIEW_TAG_BUSY_NAME)
+            })
+            .when_some(reason, |review, reason| review.tooltip(reason));
+        // A press submits its own form, wherever focus is: the kit's OK
+        // asked the focused element to confirm, which missed the dialog
+        // once Settings had shown and taken focus.
+        crate::workspace::refusing(review, || "review-tag".into(), refused, dimmed)
+            .on_click(move |_, window, cx| form.update(cx, |form, cx| form.submit(window, cx)))
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The tooltip Review tag was last built with, which no node carries.
+    static REVIEW_TAG: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// The filter of the Tags dialog opened last, for the focus sweep.
@@ -1437,6 +1542,265 @@ pub(crate) mod tests {
             off_page,
             "Delete local tag… is refused"
         );
+    }
+
+    /// Create tag's Review tag follows a write as Tags' own actions do. A
+    /// write that ends within the busy look's delay leaves it looking
+    /// available in every frame, announced unavailable, by a name that says
+    /// why, only while the write runs. A slower write refuses a press at
+    /// once, before anything changes, and dims it, its tooltip saying why,
+    /// once the write has run 200 ms; when the write ends it is available
+    /// again and Enter opens the tag's review. Its name is read from the
+    /// node it writes. It belonged to the kit's
+    /// footer, which drew it available through any write, and a press set
+    /// the form's error. Enter, after each press, changes nothing either.
+    #[gpui::test]
+    async fn review_tag_waits_for_the_busy_look(cx: &mut TestAppContext) {
+        use crate::workspace::refusals::{self, Refusal};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_create_tag(window, cx)));
+        draw(cx);
+        let form = app
+            .read_with(cx, |app, _| app.tag_actions.draft.clone())
+            .expect("Create tag opens");
+        // A lightweight tag, which needs no annotation.
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.annotated = false;
+                form.name
+                    .update(cx, |name, cx| name.set_value("v9.0", window, cx))
+            })
+        });
+        draw(cx);
+        // Review tag's accessibility node as the window would write it now,
+        // built inside a draw as `views::tests::input_node` builds a field's.
+        let node = |cx: &mut VisualTestContext| {
+            let form = form.clone();
+            crate::views::tests::view_node(cx, move |window, cx| {
+                use gpui::Element as _;
+                let button = review_tag(form.clone(), cx).base(window, cx);
+                let element = RenderOnce::render(button, window, cx).into_element();
+                let mut node =
+                    gpui::accesskit::Node::new(element.a11y_role().expect("Review tag's role"));
+                element.write_a11y_info(&mut node);
+                node
+            })
+        };
+        // What the next frame built Review tag with: its announced and
+        // drawn availability, whether its node is disabled and named by
+        // why, and its tooltip.
+        let frame = |cx: &mut VisualTestContext| {
+            let node = node(cx);
+            refusals::forget();
+            REVIEW_TAG.with(|review| review.set(None));
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            (
+                refusals::get("review-tag"),
+                node.role(),
+                node.is_disabled(),
+                node.label() == Some(REVIEW_TAG_BUSY_NAME),
+                REVIEW_TAG.with(|review| review.get()),
+            )
+        };
+        let state = |announced, dimmed, busy, tooltip| {
+            (
+                Some(Refusal { announced, dimmed }),
+                gpui::accesskit::Role::Button,
+                announced,
+                busy,
+                tooltip,
+            )
+        };
+        let at_rest = state(false, false, false, None);
+        let busy = true;
+        let start = |cx: &mut VisualTestContext| {
+            let held = app.update(cx, |app, _| app.operations.hold());
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.write(WriteCommand::StageAll, "Working…", window, cx)
+                })
+            });
+            held
+        };
+        async fn release(
+            app: &Entity<GitTurtle>,
+            held: crate::operations::Held,
+            cx: &mut VisualTestContext,
+        ) {
+            drop(held);
+            let write = app
+                .update(cx, |app, _| app.operation_task.take())
+                .expect("the write");
+            write.await;
+            crate::views::tests::settle(app, cx).await;
+        }
+        let untouched = |cx: &mut VisualTestContext, at: &str| {
+            assert!(
+                cx.update(|window, cx| window.has_active_dialog(cx))
+                    && cx.debug_bounds("create-tag-dialog-title").is_some(),
+                "{at}: Create tag stays open"
+            );
+            let (error, pending) =
+                form.read_with(cx, |form, cx| (form.error.clone(), form.pending(cx)));
+            assert_eq!(
+                (error, pending),
+                (None, false),
+                "{at}: the form is unchanged"
+            );
+            assert!(
+                app.read_with(cx, |app, _| app.tag_actions.task.is_none()),
+                "{at}: nothing is read"
+            );
+        };
+        assert_eq!(frame(cx), at_rest, "at rest");
+
+        // A quick write: announced unavailable while it runs, never dimmed.
+        let held = start(cx);
+        assert_eq!(frame(cx), state(true, false, busy, None), "a quick write");
+        release(&app, held, cx).await;
+        assert_eq!(frame(cx), at_rest, "after a quick write");
+
+        // A slow write: a press is refused at once and changes nothing.
+        let held = start(cx);
+        assert_eq!(frame(cx), state(true, false, busy, None), "a write starts");
+        let review = rendered(cx, "review-tag");
+        cx.simulate_click(review.center(), Modifiers::default());
+        frame(cx);
+        untouched(cx, "pressed as the write starts");
+        cx.simulate_keystrokes("enter");
+        frame(cx);
+        untouched(cx, "Enter as the write starts");
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.executor().run_until_parked();
+        assert_eq!(
+            frame(cx),
+            state(true, true, busy, Some(REVIEW_TAG_BUSY_REASON)),
+            "once the write looks busy"
+        );
+        cx.simulate_click(review.center(), Modifiers::default());
+        frame(cx);
+        untouched(cx, "pressed once the write looks busy");
+        cx.simulate_keystrokes("enter");
+        frame(cx);
+        untouched(cx, "Enter once the write looks busy");
+        release(&app, held, cx).await;
+        assert_eq!(frame(cx), at_rest, "after the write");
+
+        // Available again: Enter reads the tag's plan and opens its review.
+        cx.simulate_keystrokes("enter");
+        read_lands(&app, cx).await;
+        draw(cx);
+        assert!(
+            cx.debug_bounds("operation-consequences").is_some(),
+            "Review tag opens the tag's review once the write has ended"
+        );
+    }
+
+    /// A plan read that lands while Settings shows is dropped, and with it
+    /// the form's preparation: back on the repository, Review tag is
+    /// announced and drawn available, and a press reads the plan again and
+    /// opens the tag's review. The form kept a flag only the dropped reply
+    /// cleared, so Review tag looked available and refused every press.
+    #[gpui::test]
+    async fn a_plan_read_dropped_off_the_page_leaves_review_tag_working(cx: &mut TestAppContext) {
+        use crate::workspace::refusals::{self, Refusal};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_create_tag(window, cx)));
+        draw(cx);
+        let form = app
+            .read_with(cx, |app, _| app.tag_actions.draft.clone())
+            .expect("Create tag opens");
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.annotated = false;
+                form.name
+                    .update(cx, |name, cx| name.set_value("v9.0", window, cx))
+            })
+        });
+        draw(cx);
+        let review = rendered(cx, "review-tag");
+        // The read waits behind a held executor until Settings shows.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.simulate_click(review.center(), Modifiers::default());
+        refusals::forget();
+        draw(cx);
+        assert!(
+            form.read_with(cx, |form, cx| form.pending(cx)),
+            "the plan is read"
+        );
+        assert_eq!(
+            refusals::get("review-tag").map(|refusal| refusal.announced),
+            Some(true),
+            "Review tag is refused while its read runs"
+        );
+        // Settings opens over the dialog before the read lands.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        drop(held);
+        read_lands(&app, cx).await;
+        draw(cx);
+        assert!(
+            !form.read_with(cx, |form, cx| form.pending(cx)),
+            "the dropped read leaves the form preparing"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        refusals::forget();
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Create tag stays open"
+        );
+        assert_eq!(
+            refusals::get("review-tag"),
+            Some(Refusal {
+                announced: false,
+                dimmed: false
+            }),
+            "Review tag is available on the repository again"
+        );
+        cx.simulate_click(review.center(), Modifiers::default());
+        read_lands(&app, cx).await;
+        draw(cx);
+        assert!(
+            cx.debug_bounds("operation-consequences").is_some(),
+            "Review tag opens the tag's review"
+        );
+    }
+
+    /// Cancel closes Create tag wherever focus is: with Settings shown over
+    /// the open dialog, which takes focus, Cancel asked the focused element
+    /// to cancel, which missed the dialog, so it stayed open.
+    #[gpui::test]
+    async fn cancel_closes_create_tag_with_settings_shown(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_create_tag(window, cx)));
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        draw(cx);
+        let open =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
+        assert!(open(cx), "Create tag stays open over Settings");
+        let cancel = rendered(cx, "cancel-create-tag");
+        cx.simulate_click(cancel.center(), Modifiers::default());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        draw(cx);
+        assert!(!open(cx), "Cancel closes Create tag");
     }
 
     /// The application in a 1000 × 680 window on a repository with three
