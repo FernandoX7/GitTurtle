@@ -3,7 +3,8 @@
 //! bytes in another application (`system_preview`), and the Git writes a
 //! control asks for, which confirm once Git reports success (`workspace`'s
 //! `write_from`: a file row's Stage or Unstage, Stage all and Unstage all,
-//! Fetch, Pull, Push, Create and Switch, and the branch picker's switch).
+//! Fetch, Pull, Push, Create and Switch, and the branch picker's switch and
+//! tracking-branch creation).
 //!
 //! Every copy a person asks for goes through [`copy`]: it writes the
 //! clipboard, marks the copy button it came from, if any, and posts one polite

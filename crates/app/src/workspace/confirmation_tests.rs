@@ -625,7 +625,7 @@ async fn create_switch_and_the_pickers_switch_confirm_where_they_were_asked(
                     branch: "feature".into(),
                 },
                 "Switching branch…",
-                Some(picker),
+                Some(picker.into()),
                 window,
                 cx,
             )
@@ -636,6 +636,7 @@ async fn create_switch_and_the_pickers_switch_confirm_where_they_were_asked(
     });
     let during = bounds(cx, "current-branch");
     assert_eq!(announced(cx).unwrap().1, "Switched to feature");
+    assert_eq!(picker_tooltip(), "Switched · feature");
     wait(cx, RESTORE_AFTER);
     assert_eq!(icon(), "icons/branch.svg");
     assert_eq!(
@@ -643,6 +644,106 @@ async fn create_switch_and_the_pickers_switch_confirm_where_they_were_asked(
         during,
         "only its icon changed"
     );
+}
+
+/// The tooltip the branch picker was last drawn with.
+fn picker_tooltip() -> String {
+    crate::views::CONTROL_TOOLTIPS
+        .with(|tooltips| tooltips.borrow().get("current-branch").cloned())
+        .unwrap()
+}
+
+/// A tracking branch created in its review dialog with Switch to the new
+/// branch confirms on the branch picker once the picker names it: the check
+/// takes the branch icon's place and the tooltip says "Created · tracked",
+/// while "Created and switched to tracked · tracks origin/tracked" is
+/// announced once and recorded in the status line. Created without the
+/// switch, no control confirms, as the picker still names the branch it
+/// named: "Created kept · tracks origin/kept" is announced and recorded.
+/// Neither raises the window-wide notice, which both once did.
+#[gpui::test]
+async fn a_tracking_branch_confirms_on_the_picker_or_in_the_status_line(cx: &mut TestAppContext) {
+    let (fixture, app, cx) = with_remote(cx).await;
+    let worktree = fixture.path().join("narrow");
+    for branch in ["tracked", "kept"] {
+        // Pushing to the named remote also stores its remote-tracking ref.
+        let refspec = format!("main:refs/heads/{branch}");
+        fixture_git(&worktree, &["push", "--quiet", "origin", &refspec]);
+    }
+    let repo = app.read_with(cx, |app, _| app.repository.clone().unwrap());
+    let create = |cx: &mut VisualTestContext, name: &str, checkout: bool| {
+        let reference = format!("refs/remotes/origin/{name}");
+        let plan = repo
+            .tracking_branch_plan(name, &reference, checkout)
+            .unwrap();
+        let command = gitturtle_core::WriteCommand::Branch(
+            gitturtle_core::BranchCommand::CreateTracking { plan }.into(),
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let title = format!("Create tracking branch {name}");
+                let action = if checkout {
+                    "Create and switch"
+                } else {
+                    "Create branch"
+                };
+                app.confirm_git_write(title, String::new(), action, command, window, cx)
+            })
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(window.has_active_dialog(cx), "the review is open");
+            window.dispatch_action(
+                Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
+                cx,
+            );
+        });
+    };
+    let icon = || {
+        crate::views::CONTROL_ICONS
+            .with(|icons| icons.borrow().get("current-branch").cloned())
+            .unwrap()
+    };
+    let outcome = |app: &GitTurtle| {
+        assert_eq!(app.operation_notice, None);
+        assert_eq!(app.operation_error, None);
+        app.status_line().to_owned()
+    };
+
+    create(cx, "tracked", true);
+    finish(&app, cx, "the tracking branch's switch", |_| {
+        icon() == "icons/check.svg"
+    });
+    assert_eq!(picker_tooltip(), "Created · tracked");
+    let announcement = "Created and switched to tracked · tracks origin/tracked";
+    assert_eq!(announced(cx).unwrap().1, announcement);
+    assert_eq!(app.read_with(cx, |app, _| outcome(app)), announcement);
+    assert!(cx.debug_bounds("operation-notice-summary").is_none());
+    wait(cx, RESTORE_AFTER);
+    assert_eq!(icon(), "icons/branch.svg");
+    assert_eq!(
+        picker_tooltip(),
+        "tracked · Switch branch and repository actions"
+    );
+
+    create(cx, "kept", false);
+    let announcement = "Created kept · tracks origin/kept";
+    finish(&app, cx, "the tracking branch without a switch", |cx| {
+        announced(cx).is_some_and(|(_, text)| text == announcement)
+    });
+    assert_eq!(app.read_with(cx, |app, _| outcome(app)), announcement);
+    assert!(cx.debug_bounds("operation-notice-summary").is_none());
+    assert_eq!(icon(), "icons/branch.svg", "the picker names tracked still");
+    assert_eq!(
+        picker_tooltip(),
+        "tracked · Switch branch and repository actions"
+    );
+    app.read_with(cx, |app, _| {
+        let branch = app.work_status.as_ref().and_then(|s| s.branch.as_deref());
+        assert_eq!(branch, Some("tracked"));
+    });
+    let branches = repo.branches().unwrap();
+    assert!(branches.iter().any(|b| !b.remote && b.name == "kept"));
 }
 
 /// The status line keeps a write's outcome for as long as the control that

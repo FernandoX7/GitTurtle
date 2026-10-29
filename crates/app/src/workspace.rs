@@ -1876,7 +1876,7 @@ impl GitTurtle {
             )
         };
         let origin = confirmations::file(&self.path, path, arrives);
-        self.write_from(command, label, Some(origin), window, cx);
+        self.write_from(command, label, Some(origin.into()), window, cx);
     }
 
     /// Submits `command` with no control to confirm it: its outcome reaches
@@ -1891,18 +1891,19 @@ impl GitTurtle {
         self.write_from(command, label, None, window, cx);
     }
 
-    /// Submits `command`, which the control `origin` marks asked for. Once Git
-    /// reports success, while its repository is still the one shown, that
-    /// control confirms it where it was touched (`copy_feedback::confirm`),
-    /// the outcome is announced once and the status line records it, and the
-    /// window-wide notice stays down. A failure, an uncertain result, or a
-    /// write with no `origin` or whose repository is no longer shown keeps
-    /// today's error or notice; nothing is retried.
+    /// Submits `command`, asked for from `origin`. Once Git reports success,
+    /// while its repository is still the one shown, the control `origin`
+    /// marks, if any, confirms it where it was touched
+    /// (`copy_feedback::confirm`), the outcome is announced once and the
+    /// status line records it, and the window-wide notice stays down. A
+    /// failure, an uncertain result, or a write with no `origin` or whose
+    /// repository is no longer shown keeps today's error or notice; nothing
+    /// is retried.
     pub(super) fn write_from(
         &mut self,
         command: WriteCommand,
         label: &'static str,
-        origin: Option<copy_feedback::Mark>,
+        origin: Option<confirmations::Origin>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2010,6 +2011,17 @@ impl GitTurtle {
                 local_branch,
                 remote_branch,
             } => Some(format!("Pushed {local_branch} to {remote}/{remote_branch}")),
+            WriteCommand::Branch(branch) => match branch.as_ref() {
+                gitturtle_core::BranchCommand::CreateTracking { plan } => {
+                    let upstream = plan.remote_ref.trim_start_matches("refs/remotes/");
+                    Some(if plan.checkout {
+                        format!("Created and switched to {} · tracks {upstream}", plan.name)
+                    } else {
+                        format!("Created {} · tracks {upstream}", plan.name)
+                    })
+                }
+                _ => None,
+            },
             _ => None,
         };
         // A Fetch or Pull that brought nothing new (`WriteOutcome::up_to_date`)
@@ -2124,10 +2136,10 @@ impl GitTurtle {
                             outcome.message.lines().find(|line| !line.trim().is_empty()).unwrap_or("Git operation completed").to_owned()
                         };
                         match origin.filter(|_| this.path.as_ref() == Some(&path) && this.page == AppPage::Repository) {
-                            Some(control) => {
+                            Some(origin) => {
                                 this.tab_operation_feedback(&path, None, None, cx);
                                 this.record_outcome(&path, notice.clone(), cx);
-                                copy_feedback::confirm(window, cx, Some(control), notice);
+                                copy_feedback::confirm(window, cx, origin.mark(), notice);
                             }
                             None => this.tab_operation_feedback(&path, Some(notice), None, cx),
                         }
@@ -2980,7 +2992,7 @@ impl GitTurtle {
                                     } else {
                                         "Staging files…"
                                     },
-                                    Some(origin.clone()),
+                                    Some(origin.clone().into()),
                                     window,
                                     cx,
                                 )
@@ -3593,7 +3605,7 @@ impl GitTurtle {
                                 "pull" => "Pulling fast-forward…",
                                 _ => "Pushing branch…",
                             },
-                            Some(origin),
+                            Some(origin.into()),
                             window,
                             cx,
                         );
@@ -3684,13 +3696,13 @@ impl GitTurtle {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         let branch = this.branch_name.read(cx).value().trim().to_owned();
                                         let origin = confirmations::branch_form("checkout-branch", &this.path);
-                                        this.write_from(WriteCommand::Checkout { branch }, "Switching branch…", Some(origin), window, cx);
+                                        this.write_from(WriteCommand::Checkout { branch }, "Switching branch…", Some(origin.into()), window, cx);
                                     })))
                                 .child(copy_feedback::feedback_button(confirmations::branch_form("create-branch", &self.path), confirmations::CREATE, "Create", "Create and switch to a branch from HEAD", cx).disabled(busy || branch_empty)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         let name = this.branch_name.read(cx).value().trim().to_owned();
                                         let origin = confirmations::branch_form("create-branch", &this.path);
-                                        this.write_from(WriteCommand::CreateBranch { name, start_point: None }, "Creating branch…", Some(origin), window, cx);
+                                        this.write_from(WriteCommand::CreateBranch { name, start_point: None }, "Creating branch…", Some(origin.into()), window, cx);
                                     })))))
                         .child(div().w(px(1.)).h(crate::appearance::ui_size(32.)).mx_1().bg(rgb(p.border)))
                         .child(div().w(appearance::ui_size(120.)).flex().flex_col().gap_1()
@@ -3816,7 +3828,7 @@ fn action_inset() -> Pixels {
 /// labelled Fetch, Pull and Push, alone (`copy_feedback::Fit`).
 pub(super) mod confirmations {
     use crate::copy_feedback::{Action, Mark};
-    use gitturtle_core::ChangeArea;
+    use gitturtle_core::{BranchCommand, ChangeArea, WriteCommand};
     use std::path::{Path, PathBuf};
 
     /// A file row's control in Staged, which unstages at rest and reads
@@ -3911,6 +3923,60 @@ pub(super) mod confirmations {
     /// chosen from its menu confirms once the picker names that branch.
     pub(crate) fn picker(repository: &Option<PathBuf>, branch: &str) -> Mark {
         Mark::new("current-branch", (repository, branch))
+    }
+
+    /// The branch picker while it shows `branch` of `repository`, a tracking
+    /// branch just created and switched to: it reads [`CREATE`]'s word
+    /// rather than [`SWITCH`]'s.
+    pub(crate) fn picker_created(repository: &Option<PathBuf>, branch: &str) -> Mark {
+        Mark::new("current-branch", (repository, branch, CREATE.state))
+    }
+
+    /// Where a write confirms once Git reports success
+    /// (`GitTurtle::write_from`); a write with none keeps the window-wide
+    /// notice.
+    #[derive(Clone, Debug)]
+    pub(crate) enum Origin {
+        /// The control that asked reads its word, the outcome is announced
+        /// once and the status line records it.
+        Control(Mark),
+        /// No control reads anything: the outcome is announced once and the
+        /// status line records it.
+        StatusLine,
+    }
+
+    impl Origin {
+        pub(crate) fn mark(self) -> Option<Mark> {
+            match self {
+                Self::Control(mark) => Some(mark),
+                Self::StatusLine => None,
+            }
+        }
+    }
+
+    impl From<Mark> for Origin {
+        fn from(mark: Mark) -> Self {
+            Self::Control(mark)
+        }
+    }
+
+    /// Where a write confirmed in a review dialog (`confirm_git_write`)
+    /// confirms in `repository`. A tracking branch, created from the branch
+    /// picker's menu or a remote branch's details, confirms on the picker
+    /// once the picker names it where Git switched to it, and otherwise in
+    /// the status line; every other reviewed write keeps the window-wide
+    /// notice (`None`).
+    pub(crate) fn reviewed(repository: &Option<PathBuf>, command: &WriteCommand) -> Option<Origin> {
+        match command {
+            WriteCommand::Branch(branch) => match branch.as_ref() {
+                BranchCommand::CreateTracking { plan } if plan.checkout => {
+                    Some(picker_created(repository, &plan.name).into())
+                }
+                BranchCommand::CreateTracking { .. } => Some(Origin::StatusLine),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 }
 

@@ -4937,6 +4937,11 @@ thread_local! {
     /// (`note_control_icon`).
     pub(crate) static CONTROL_ICONS: RefCell<std::collections::BTreeMap<SharedString, SharedString>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
+    /// The tooltip text each control was last drawn with, by its element ID,
+    /// where a confirmation's word is only in its tooltip, as the branch
+    /// picker's is (`note_control_tooltip`).
+    pub(crate) static CONTROL_TOOLTIPS: RefCell<std::collections::BTreeMap<SharedString, String>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
     /// Each History row's reference chip as it last drew it, the References
     /// column's badge or narrow History's pill, by commit index.
     static HISTORY_PILLS: RefCell<std::collections::BTreeMap<usize, PillProbe>> =
@@ -5039,6 +5044,19 @@ pub(crate) fn note_control_icon(id: &ElementId, path: &str) {
     }
     #[cfg(not(test))]
     let _ = (id, path);
+}
+
+/// Notes `tooltip` as the tooltip text the control with element ID `id` is
+/// drawn with, for a test to read back ([`CONTROL_TOOLTIPS`]); outside tests
+/// it does nothing.
+pub(crate) fn note_control_tooltip(id: &ElementId, tooltip: &str) {
+    #[cfg(test)]
+    if let ElementId::Name(id) = id {
+        CONTROL_TOOLTIPS
+            .with(|tooltips| tooltips.borrow_mut().insert(id.clone(), tooltip.to_owned()));
+    }
+    #[cfg(not(test))]
+    let _ = (id, tooltip);
 }
 
 /// Notes `name` as the accessible name the compact form of the element whose

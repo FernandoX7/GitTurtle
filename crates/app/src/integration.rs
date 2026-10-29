@@ -96,7 +96,11 @@ impl GitTurtle {
                 .on_ok(move |_, window, cx| {
                     let _ = view.update(cx, |this, cx| {
                         if this.path == path {
-                            this.write(command.as_ref().clone(), action, window, cx);
+                            // Most reviewed writes report in the window-wide
+                            // notice; a tracking branch's creation confirms
+                            // where it was asked (`confirmations::reviewed`).
+                            let origin = workspace::confirmations::reviewed(&path, &command);
+                            this.write_from(command.as_ref().clone(), action, origin, window, cx);
                         }
                     });
                     true

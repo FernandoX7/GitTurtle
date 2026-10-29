@@ -115,9 +115,21 @@ impl GitTurtle {
         // A switch chosen from this menu confirms here once the picker names
         // the branch it switched to: the check takes the branch icon's place
         // and the tooltip says Switched, while the label, the width and the
-        // name stay (`copy_feedback`).
-        let switched =
-            copy_feedback::confirmed(&workspace::confirmations::picker(&self.path, &branch), cx);
+        // name stay (`copy_feedback`). A tracking branch created and switched
+        // to confirms the same way, its tooltip saying Created.
+        let confirmation = [
+            (
+                workspace::confirmations::picker_created(&self.path, &branch),
+                workspace::confirmations::CREATE,
+            ),
+            (
+                workspace::confirmations::picker(&self.path, &branch),
+                workspace::confirmations::SWITCH,
+            ),
+        ]
+        .into_iter()
+        .find_map(|(mark, action)| copy_feedback::confirmed(&mark, cx).then_some(action.done));
+
         // Detached, HEAD is a commit: the picker says which, as "Detached
         // HEAD at" its short ID, and in the compact bar, whose line then
         // says only "Detached", its label is that ID beside the commit glyph,
@@ -133,14 +145,19 @@ impl GitTurtle {
             Some(head) => (branch.clone(), format!("Detached HEAD at {head}")),
             None => (branch.clone(), branch.clone()),
         };
-        let symbol = if switched {
+        let symbol = if confirmation.is_some() {
             "icons/check.svg"
         } else if head.is_some() && compact {
             "icons/commit.svg"
         } else {
             "icons/branch.svg"
         };
+        let tooltip = match confirmation {
+            Some(done) => format!("{done} · {branch}"),
+            None => format!("{named} · Switch branch and repository actions"),
+        };
         crate::views::note_control_icon(&"current-branch".into(), symbol);
+        crate::views::note_control_tooltip(&"current-branch".into(), &tooltip);
         Button::new("current-branch")
             .debug_selector(|| "current-branch".into())
             .secondary()
@@ -157,11 +174,7 @@ impl GitTurtle {
             .accessibility_label(format!(
                 "Current branch: {named}. Switch or manage branches"
             ))
-            .tooltip(if switched {
-                format!("{} · {branch}", workspace::confirmations::SWITCH.done)
-            } else {
-                format!("{named} · Switch branch and repository actions")
-            })
+            .tooltip(tooltip)
             .app_menu(move |mut menu, _, cx| {
                 let Some(view) = owner.upgrade() else {
                     return menu;
@@ -239,7 +252,7 @@ impl GitTurtle {
                                                 branch: name.clone(),
                                             },
                                             "Switching branch…",
-                                            Some(origin),
+                                            Some(origin.into()),
                                             window,
                                             cx,
                                         );
