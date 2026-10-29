@@ -1648,22 +1648,31 @@ impl<E: StatefulInteractiveElement + Element> LiveRegion for E {}
 /// each time: opened again within a frame, as a refusal while an
 /// integration is paused opens it, the form kept the line's node, which an
 /// assistive technology announces only as it is added or its text changes,
-/// so the same reason again went unannounced. Tests find the line by its
-/// debug selector, `id`, and what it asks to announce under
-/// `<id>-<opening>` ([`written::announced_from`]).
+/// so the same reason again went unannounced. The text is the node's name
+/// and its value, as the narrow rail's refusal has it: AccessKit's adapters
+/// announce a live node as it is added by different properties, AT-SPI
+/// (Orca) its name and macOS its value. `style` lays the line out. Tests
+/// find the line by its debug selector, `id`, what it asks to announce
+/// under `<id>-<opening>` ([`written::announced_from`]) and its node there
+/// ([`written::get`]).
 pub(crate) fn refusal_line(
     id: &'static str,
     opening: usize,
     text: impl Into<SharedString>,
-) -> Stateful<Div> {
+    style: impl FnOnce(Stateful<Div>) -> Stateful<Div>,
+) -> AnyElement {
     let text = text.into();
-    div()
-        .id((id, opening))
-        .debug_selector(move || id.to_owned())
-        .role(Role::Alert)
-        .aria_label(text.clone())
-        .assertive()
-        .child(text)
+    recorded(style(
+        div()
+            .id((id, opening))
+            .debug_selector(move || id.to_owned())
+            .role(Role::Alert)
+            .aria_label(text.clone())
+            .aria_value(text.clone())
+            .assertive()
+            .child(text),
+    ))
+    .into_any_element()
 }
 
 /// `element`, a container that scrolls or clips what it holds, as the

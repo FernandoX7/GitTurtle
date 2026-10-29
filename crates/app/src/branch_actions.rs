@@ -1326,9 +1326,15 @@ impl Render for BranchForm {
             })
             // Announced at once, again each time the form opens with it.
             .children(self.error.as_ref().map(|error| {
-                native_accessibility::refusal_line("branch-form-error", self.opened, error.clone())
-                    .text_size(crate::appearance::ui_text(12.))
-                    .text_color(rgb(p.warning))
+                native_accessibility::refusal_line(
+                    "branch-form-error",
+                    self.opened,
+                    error.clone(),
+                    |line| {
+                        line.text_size(crate::appearance::ui_text(12.))
+                            .text_color(rgb(p.warning))
+                    },
+                )
             }))
     }
 }
@@ -1588,7 +1594,7 @@ impl Render for RemoteForm {
                 .when(self.store_refs, |element| element.child(shortcuts::tab_leaves(Textarea::new(&self.rules).h(px(90.)).aria_label("Git fetch refspecs, one per line"))))
                 .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Advanced Git refspecs, one per line. The standard mapping tracks every remote branch under this remote's name."))))
             // Announced at once, again each time the form opens with it.
-            .children(self.error.as_ref().map(|error| native_accessibility::refusal_line("remote-form-error", self.opened, error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
+            .children(self.error.as_ref().map(|error| native_accessibility::refusal_line("remote-form-error", self.opened, error.clone(), |line| line.text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
     }
 }
 

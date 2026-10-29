@@ -277,9 +277,14 @@ async fn remote_manager_that_fits_paints_no_thumb(cx: &mut TestAppContext) {
 
 /// Asks for the open branch or remote form's review, as its button does,
 /// lets its preparation fail and returns the node that announces why: the
-/// form opens again with the reason in its line beneath the fields, `line`,
-/// an alert announced at once.
-async fn review_fails(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, line: &str) -> String {
+/// form opens again with the reason, which holds `reason`, in its line
+/// beneath the fields, `line`, an alert announced at once.
+async fn review_fails(
+    app: &Entity<GitTurtle>,
+    cx: &mut VisualTestContext,
+    line: &str,
+    reason: &str,
+) -> String {
     cx.update(|window, cx| {
         window.dispatch_action(
             Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
@@ -309,6 +314,14 @@ async fn review_fails(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, line:
         native_accessibility::written::Announced::ASSERTIVE,
         "{line}: announced at once"
     );
+    // The reason is its name, which AT-SPI announces, and its value, which
+    // macOS does.
+    let written = native_accessibility::written::get(&node).expect("the line's node");
+    let (name, value) = (written.node.label(), written.node.value());
+    assert!(
+        name.is_some_and(|name| name.contains(reason)) && value == name,
+        "{line}: named and valued by why: {name:?}, {value:?}"
+    );
     node
 }
 
@@ -334,8 +347,9 @@ async fn a_reopened_branch_or_remote_form_announces_why_afresh(cx: &mut TestAppC
         })
     });
     draw(cx);
-    let first = review_fails(&app, cx, "branch-form-error").await;
-    let second = review_fails(&app, cx, "branch-form-error").await;
+    let named = "is already named 'feature-00'";
+    let first = review_fails(&app, cx, "branch-form-error", named).await;
+    let second = review_fails(&app, cx, "branch-form-error", named).await;
     assert_ne!(
         first, second,
         "Rename branch…: a fresh node announces it again"
@@ -366,8 +380,9 @@ async fn a_reopened_branch_or_remote_form_announces_why_afresh(cx: &mut TestAppC
     });
     draw(cx);
     git(repo.path(), &["remote", "remove", "upstream"]);
-    let first = review_fails(&app, cx, "remote-form-error").await;
-    let second = review_fails(&app, cx, "remote-form-error").await;
+    let gone = "This remote no longer exists";
+    let first = review_fails(&app, cx, "remote-form-error", gone).await;
+    let second = review_fails(&app, cx, "remote-form-error", gone).await;
     assert_ne!(
         first, second,
         "Edit remote: a fresh node announces it again"

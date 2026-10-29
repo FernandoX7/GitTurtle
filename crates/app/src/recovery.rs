@@ -1140,14 +1140,17 @@ fn form_line(
     cx: &App,
 ) -> Option<AnyElement> {
     match error {
-        Some(error) => Some(
-            native_accessibility::refusal_line("recovery-form-error", opened, error.to_owned())
-                .max_h(px(130.))
-                .overflow_y_scroll()
-                .text_size(crate::appearance::ui_text(12.))
-                .text_color(rgb(palette(cx).warning))
-                .into_any_element(),
-        ),
+        Some(error) => Some(native_accessibility::refusal_line(
+            "recovery-form-error",
+            opened,
+            error.to_owned(),
+            |line| {
+                line.max_h(px(130.))
+                    .overflow_y_scroll()
+                    .text_size(crate::appearance::ui_text(12.))
+                    .text_color(rgb(palette(cx).warning))
+            },
+        )),
         None => pause_ended.then(|| {
             native_accessibility::static_text(
                 div()
@@ -2838,6 +2841,13 @@ mod tests {
             how,
             crate::native_accessibility::written::Announced::ASSERTIVE,
             "{form:?}: the refusal is announced at once"
+        );
+        // Its name, which AT-SPI announces, and its value, which macOS does.
+        let written = crate::native_accessibility::written::get(&node).expect("the refusal's node");
+        assert_eq!(
+            (written.node.label(), written.node.value()),
+            (Some(PAUSED_REFUSAL), Some(PAUSED_REFUSAL)),
+            "{form:?}: the refusal is its node's name and value"
         );
         node
     }
