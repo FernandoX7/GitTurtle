@@ -705,6 +705,7 @@ impl GitTurtle {
             self.working_filter.clone(),
             &FILTER_FIT,
             &[FILTER_PLACEHOLDER, FILTER_SHORT_PLACEHOLDER],
+            12.,
         )
     }
 
@@ -1105,19 +1106,22 @@ fn whole_form(forms: &[&str], room: Pixels, size: Pixels, window: &Window) -> Sh
 /// placeholder only when that changes, and then draws again, since refresh is
 /// ignored during paint. Its parent is positioned; it takes no room. The
 /// placeholder is no name: the field keeps its whole accessible name
-/// (`aria_label`) whichever form shows.
+/// (`aria_label`) whichever form shows. `text` is the size the field draws
+/// its text at, at the default interface size: 12 pt for most fields, 11 pt
+/// for the navigation's filter.
 pub(super) fn placeholder_fit<M: gpui_kit::base::input::InputModeKind + 'static>(
     field: Entity<gpui_kit::base::input::InputBaseState<M>>,
     cache: &'static std::thread::LocalKey<PlaceholderFit>,
     forms: &'static [&'static str],
+    text: f32,
 ) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |_, _, window, cx| {
-            let Some(text) = field.read(cx).text_bounds() else {
+            let Some(bounds) = field.read(cx).text_bounds() else {
                 return;
             };
-            let fit = fitted_placeholder(cache, forms, text.size.width, window);
+            let fit = fitted_placeholder(cache, forms, bounds.size.width, text, window);
             if *field.read(cx).presentation().placeholder() != fit {
                 field.update(cx, |state, cx| state.set_placeholder(fit, window, cx));
                 window.defer(cx, |window, _| window.refresh());
@@ -1128,12 +1132,13 @@ pub(super) fn placeholder_fit<M: gpui_kit::base::input::InputModeKind + 'static>
     .size_0()
 }
 
-/// `forms` as they fit `room` (`whole_form`), laid out again only when the
-/// room, the font or the sizes change.
+/// `forms` at `text` pt as they fit `room` (`whole_form`), laid out again
+/// only when the room, the font or the sizes change.
 fn fitted_placeholder(
     cache: &'static std::thread::LocalKey<PlaceholderFit>,
     forms: &[&str],
     room: Pixels,
+    text: f32,
     window: &Window,
 ) -> SharedString {
     let key = crate::views::LineKey::current(window);
@@ -1142,9 +1147,9 @@ fn fitted_placeholder(
         match &*cache {
             Some((cached, width, text)) if *cached == key && *width == room => text.clone(),
             _ => {
-                let text = whole_form(forms, room, crate::appearance::ui_text(12.), window);
-                *cache = Some((key, room, text.clone()));
-                text
+                let fit = whole_form(forms, room, crate::appearance::ui_text(text), window);
+                *cache = Some((key, room, fit.clone()));
+                fit
             }
         }
     })
@@ -2714,11 +2719,13 @@ impl GitTurtle {
                         self.commit_title.clone(),
                         &TITLE_FIT,
                         &[TITLE_PLACEHOLDER, TITLE_SHORT_PLACEHOLDER],
+                        12.,
                     ))
                     .child(placeholder_fit(
                         self.commit_message.clone(),
                         &DESCRIPTION_FIT,
                         &[DESCRIPTION_PLACEHOLDER],
+                        12.,
                     )),
             )))
             .into_any_element()

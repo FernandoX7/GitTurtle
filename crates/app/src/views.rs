@@ -692,8 +692,9 @@ impl GitTurtle {
             .into_any_element()
     }
 
-    pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = palette(cx);
+        let form = self.sidebar_form(window, cx);
         div()
             .debug_selector(|| "history-sidebar".into())
             .size_full()
@@ -715,29 +716,40 @@ impl GitTurtle {
                     .items_center()
                     .gap_1()
                     .px(crate::appearance::ui_size(crate::appearance::PANE_INSET))
-                    .children(
-                        [
-                            (NavMode::Local, "Local"),
-                            (NavMode::Remote, "Remote"),
-                            (NavMode::Worktrees, "Worktrees"),
-                        ]
-                        .map(|(mode, name)| {
-                            button(name, name, "", self.nav_mode == mode).toggled(self.nav_mode == mode).on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.nav_mode = mode;
-                                    this.rebuild_navigation(cx);
-                                    this.nav_scroll.scroll_to_item(0, ScrollStrategy::Top);
-                                    cx.notify();
-                                },
-                            ))
-                        }),
-                    ),
+                    // Where the three labels do not fit one row, each mode
+                    // becomes its glyph, named, before any wraps.
+                    .children(NAV_MODES.map(|(mode, name, symbol, selector)| {
+                        let selected = self.nav_mode == mode;
+                        let control = if form.labelled_modes {
+                            button(name, name, "", selected)
+                        } else {
+                            compact_control_name(button(name, "", symbol, selected), selector, name)
+                                .tooltip(name)
+                        };
+                        control
+                            .debug_selector(move || selector.into())
+                            .toggled(selected)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.nav_mode = mode;
+                                this.rebuild_navigation(cx);
+                                this.nav_scroll.scroll_to_item(0, ScrollStrategy::Top);
+                                cx.notify();
+                            }))
+                    })),
             )
             .child(
                 div()
+                    .relative()
                     .px(crate::appearance::ui_size(crate::appearance::PANE_INSET))
                     .pb_3()
-                    .child(Input::new(&self.nav_search).aria_label("Filter branches and worktrees").text_size(crate::appearance::ui_text(11.))),
+                    .child(Input::new(&self.nav_search).aria_label(NAV_FILTER_NAME).text_size(crate::appearance::ui_text(11.)))
+                    // Painted after the field, it fits its placeholder.
+                    .child(crate::workspace::placeholder_fit(
+                        self.nav_search.clone(),
+                        &NAV_FILTER_FIT,
+                        NAV_FILTER_PLACEHOLDERS,
+                        11.,
+                    )),
             )
             .child(
                 crate::native_accessibility::clips_children(div()
@@ -763,19 +775,62 @@ impl GitTurtle {
                         menu.render("navigation-menu-overlay", Self::dismiss_nav_menu, cx)
                     }))),
             )
-            .child(
-                div()
-                    .p_3()
-                    .text_size(crate::appearance::ui_text(10.))
-                    .text_color(rgb(colors.muted))
-                    .border_t_1()
-                    .border_color(rgb(colors.border))
-                    .child(format!(
-                        "Arrows browse · Enter filters or opens.\nLeft/Right folders · {} actions.",
-                        shortcuts::key_label("shift-f10")
-                    )),
-            )
+            // Each of its lines whole, or none of it: the tree's accessible
+            // name keeps the keys.
+            .when(form.hint, |sidebar| {
+                sidebar.child(
+                    div()
+                        .debug_selector(|| "navigation-hint".into())
+                        .p_3()
+                        .text_size(crate::appearance::ui_text(10.))
+                        .text_color(rgb(colors.muted))
+                        .border_t_1()
+                        .border_color(rgb(colors.border))
+                        .child(nav_hint_lines().join("\n")),
+                )
+            })
             .into_any_element()
+    }
+
+    /// How the navigation lays out at the width it is drawn at
+    /// ([`SidebarForm`]), decided before layout from the interface font: the
+    /// width its panel group last gave it, or before that its saved width,
+    /// within its 1 px right border.
+    pub(crate) fn sidebar_form(&self, window: &Window, cx: &App) -> SidebarForm {
+        let width = self
+            .history_panels
+            .read(cx)
+            .sizes()
+            .first()
+            .copied()
+            .filter(|size| *size != gpui_kit::base::PANEL_MIN_SIZE)
+            .unwrap_or(px(self.settings.navigation_width))
+            - px(1.);
+        let widths = cached_width(&SIDEBAR_WIDTHS, &LineKey::current(window), || {
+            let label = appearance::ui_text(12.);
+            SidebarWidths {
+                modes: NAV_MODES.map(|(_, name, _, _)| line_widths(&[(name, label)], window)),
+                hint: nav_hint_lines()
+                    .iter()
+                    .map(|line| line_widths(&[(line, appearance::ui_text(10.))], window))
+                    .fold(px(0.), Pixels::max),
+            }
+        });
+        let rem = window.rem_size();
+        // The toggles `gap_1` apart, inside the row's pane insets.
+        let modes = widths
+            .modes
+            .iter()
+            .map(|label| self.labelled_width(*label, false, window))
+            .fold(rem * 0.25 * (NAV_MODES.len() - 1) as f32, |sum, toggle| {
+                sum + toggle
+            });
+        let insets = window.pixel_snap(appearance::ui_size(appearance::PANE_INSET)) * 2.;
+        SidebarForm {
+            labelled_modes: modes <= width - insets,
+            // Inside the hint's `p_3` either side.
+            hint: widths.hint <= width - rem * 0.75 * 2.,
+        }
     }
 
     pub(super) fn render_nav_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -1609,6 +1664,7 @@ impl GitTurtle {
                         self.search.clone(),
                         &SEARCH_FIT,
                         SEARCH_PLACEHOLDERS,
+                        12.,
                     )),
             )
             .child(self.render_history_search_controls(cx))
@@ -2374,6 +2430,7 @@ impl GitTurtle {
                             CHANGED_FILTER_PLACEHOLDER,
                             crate::workspace::FILTER_SHORT_PLACEHOLDER,
                         ],
+                        12.,
                     )),
             )
             .child(native_accessibility::clips_children(
@@ -4740,7 +4797,68 @@ thread_local! {
     /// History's search placeholder as it fits the width its field last
     /// painted at.
     static SEARCH_FIT: crate::workspace::PlaceholderFit = const { RefCell::new(None) };
+    /// The navigation filter's placeholder as it fits the width its field
+    /// last painted at.
+    static NAV_FILTER_FIT: crate::workspace::PlaceholderFit = const { RefCell::new(None) };
+    /// [`SidebarWidths`] for the current font and sizes.
+    static SIDEBAR_WIDTHS: RefCell<Option<(LineKey, SidebarWidths)>> = const { RefCell::new(None) };
 }
+
+/// The navigation's mode toggles, in order: each mode, its name, the glyph
+/// it shows where the names do not fit one row, and its debug selector.
+const NAV_MODES: [(NavMode, &str, &str, &str); 3] = [
+    (NavMode::Local, "Local", "branch", "nav-mode-local"),
+    (NavMode::Remote, "Remote", "remote", "nav-mode-remote"),
+    (
+        NavMode::Worktrees,
+        "Worktrees",
+        "worktree",
+        "nav-mode-worktrees",
+    ),
+];
+
+/// The navigation's keyboard hint, line by line.
+pub(crate) fn nav_hint_lines() -> [String; 2] {
+    [
+        "Arrows browse · Enter filters or opens.".to_owned(),
+        format!(
+            "Left/Right folders · {} actions.",
+            shortcuts::key_label("shift-f10")
+        ),
+    ]
+}
+
+/// How the navigation lays out at the width it is drawn at, in the one
+/// responsive order (DESIGN.md): its mode toggles keep their labels where
+/// all three fit one row, and otherwise become their 28 px glyphs, each
+/// named and with its name in its tooltip, before one wraps under the
+/// others; its keyboard hint shows where each of its lines fits whole, and
+/// otherwise gives way whole rather than wrap inside a phrase, since the
+/// tree's accessible name keeps the keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SidebarForm {
+    pub(crate) labelled_modes: bool,
+    pub(crate) hint: bool,
+}
+
+/// What [`SidebarForm`] measures: each mode's name at 12 pt and the
+/// hint's widest line at 10 pt.
+#[derive(Clone, Copy)]
+struct SidebarWidths {
+    modes: [Pixels; 3],
+    hint: Pixels,
+}
+
+/// The navigation filter's placeholders, each a shorter wording of the one
+/// before it in whole words: the first that fits the field shows, so a
+/// narrow sidebar or a large interface size reads "Filter branches…" or
+/// "Filter" rather than "Filter branches & worktre" cut at the field's edge
+/// (`workspace::placeholder_fit`).
+pub(crate) const NAV_FILTER_PLACEHOLDERS: &[&str] =
+    &["Filter branches & worktrees", "Filter branches…", "Filter"];
+/// The navigation filter's accessible name, whole whatever form its
+/// placeholder takes.
+pub(crate) const NAV_FILTER_NAME: &str = "Filter branches and worktrees";
 
 /// History's search field's placeholders, each a shorter wording of the one
 /// before it in whole phrases: the first that fits the field shows, so a
@@ -5188,7 +5306,7 @@ impl GitTurtle {
                         .size(px(self.settings.navigation_width))
                         .size_range(px(180.)..px(360.))
                         .flex_none()
-                        .child(self.render_sidebar(cx)),
+                        .child(self.render_sidebar(window, cx)),
                 )
                 .child(
                     resizable_panel()
@@ -10632,6 +10750,125 @@ pub(crate) mod tests {
                 Some(SEARCH_NAME),
                 "{at}: the name"
             );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The navigation gives way in the one responsive order at the width it
+    /// is drawn at. In 360 px at 13 pt Local, Remote and Worktrees keep their
+    /// labels on one row, the filter reads its whole placeholder and the
+    /// keyboard hint shows. At its 180 px minimum at 18 pt, where "Worktrees"
+    /// once wrapped under the others, the hint wrapped inside its phrases and
+    /// the filter read "Filter branches & worktre" cut at its edge, each
+    /// mode is its 28 px glyph on that row, named after the mode, the hint
+    /// gives way whole and the filter reads a shorter whole form. At every
+    /// size the modes share one row inside the navigation, the placeholder
+    /// lies inside its field, the hint shows exactly where the form keeps
+    /// it, and the field is named "Filter branches and worktrees".
+    #[gpui::test]
+    async fn the_navigation_folds_its_modes_and_hint_before_they_wrap(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|_, cx| crate::appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        draw(cx);
+        let panels = app.read_with(cx, |app, _| app.history_panels.clone());
+        let search = app.read_with(cx, |app, _| app.nav_search.clone());
+        for (text, navigation) in [(13, 360.), (13, 180.), (18, 360.), (18, 180.)] {
+            let at = format!("{text} pt in a {navigation} px navigation");
+            cx.update(|window, cx| {
+                appearance::apply_text_sizes(text, 12, window, cx);
+                panels.update(cx, |panels, cx| {
+                    panels.resize_panel(0, px(navigation), window, cx)
+                });
+            });
+            draw(cx);
+            // Only what this layout names.
+            COMPACT_NAMES.with(|names| names.borrow_mut().clear());
+            CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
+            app.update(cx, |_, cx| cx.notify());
+            draw(cx);
+            let sidebar = cx
+                .debug_bounds("history-sidebar")
+                .unwrap_or_else(|| panic!("{at}: the navigation drawn"));
+            // The window's 1,480 px leave History its minimum beside 327.5
+            // px of navigation at 18 pt.
+            if navigation == 180. {
+                assert_eq!(sidebar.size.width, px(navigation), "{at}");
+            } else {
+                assert!(sidebar.size.width > px(300.), "{at}: {sidebar:?}");
+            }
+            let at = format!("{at}, drawn {:?} wide", sidebar.size.width);
+            let form = cx.update(|window, cx| app.read(cx).sidebar_form(window, cx));
+            let (named, icons) = (
+                COMPACT_NAMES.with(|names| names.borrow().clone()),
+                CONTROL_ICONS.with(|icons| icons.borrow().clone()),
+            );
+            let row = cx.debug_bounds("nav-mode-local").unwrap();
+            for (_, name, symbol, selector) in NAV_MODES {
+                let mode = cx
+                    .debug_bounds(selector)
+                    .unwrap_or_else(|| panic!("{at}: {name} drawn"));
+                assert_eq!(mode.top(), row.top(), "{at}: {name} on the modes' row");
+                assert!(
+                    mode.right() <= sidebar.right(),
+                    "{at}: {name} {mode:?} inside {sidebar:?}"
+                );
+                if form.labelled_modes {
+                    assert_eq!(named.get(selector), None, "{at}: {name} labelled");
+                } else {
+                    assert_eq!(named.get(selector), Some(&name), "{at}: {name} named");
+                    assert_eq!(
+                        icons.get(name).map(SharedString::as_ref),
+                        Some(format!("icons/{symbol}.svg").as_str()),
+                        "{at}: {name}'s glyph"
+                    );
+                    assert_eq!(
+                        mode.size.width,
+                        appearance::ui_size(28.).ceil(),
+                        "{at}: {name} is its glyph"
+                    );
+                }
+            }
+            assert_eq!(
+                cx.debug_bounds("navigation-hint").is_some(),
+                form.hint,
+                "{at}: the hint where its lines fit whole"
+            );
+            let (field, shown) = search.read_with(cx, |search, _| {
+                (
+                    search.text_bounds(),
+                    search.presentation().placeholder().clone(),
+                )
+            });
+            let field = field.unwrap_or_else(|| panic!("{at}: the filter unpainted"));
+            let drawn = cx.update(|window, _| {
+                shaped_width(
+                    &shown,
+                    appearance::ui_text(11.),
+                    window.text_style().font_weight,
+                    window,
+                )
+            });
+            assert!(drawn <= field.size.width, "{at}: {shown:?} in {field:?}");
+            assert_eq!(
+                field_name(cx, &search).as_deref(),
+                Some(NAV_FILTER_NAME),
+                "{at}: the filter's name"
+            );
+            match (text, navigation) {
+                (13, 360.) => {
+                    assert!(form.labelled_modes && form.hint, "{at}: {form:?}");
+                    assert_eq!(shown.as_ref(), NAV_FILTER_PLACEHOLDERS[0], "{at}");
+                }
+                (18, 180.) => {
+                    assert!(!form.labelled_modes && !form.hint, "{at}: {form:?}");
+                    assert!(
+                        NAV_FILTER_PLACEHOLDERS[1..].contains(&shown.as_ref()),
+                        "{at}: a shorter whole form, not {shown:?}"
+                    );
+                }
+                _ => {}
+            }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }

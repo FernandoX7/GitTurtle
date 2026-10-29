@@ -4,10 +4,13 @@
 //! orphaned text, on a repository tab's name cut while the tab strip's
 //! Menu or Workspaces keeps its label, on the Git action bar's repository
 //! edge left out, its line short of its text or a control running into the
-//! next (DESIGN.md, "One responsive order"), and on the selected commit's
-//! Actions wrapped off the row of the message toolbar's copy controls. The
-//! fixture has no remote, so every page's bar shows that edge; History is
-//! walked again on a detached HEAD and on a branch with no upstream. The
+//! next (DESIGN.md, "One responsive order"), on the selected commit's
+//! Actions wrapped off the row of the message toolbar's copy controls, on
+//! the navigation's mode toggles wrapped onto a second row or its keyboard
+//! hint wrapped inside a phrase, and on a field's placeholder wider than
+//! its field. The fixture has no remote, so every page's bar shows that
+//! edge; History is walked again on a detached HEAD, on a branch with no
+//! upstream and with the navigation at its 180 px minimum. The
 //! window is resized from width to width as a person or a tiling window
 //! manager resizes it, so the inspector is drawn at the size its panel
 //! group rescales it to, not only its saved width.
@@ -73,6 +76,21 @@ enum Rule {
     /// it out (`commit_message::Toolbar`): the toolbar was fitted to another
     /// width than the inspector is drawn at.
     Wrapped,
+    /// The navigation's mode toggles are drawn on more than one row, as
+    /// "Worktrees" under Local and Remote at 18 pt in a 220 px navigation
+    /// and at 13 pt in a 180 px one: actions become their glyphs before
+    /// they wrap.
+    ModesWrapped,
+    /// The navigation's keyboard hint is drawn on more lines than it has,
+    /// wrapped inside a phrase, as in a 180 px navigation: it is whole on
+    /// its lines or gives way whole.
+    HintWrapped,
+    /// A field's placeholder is wider than the room the field draws its
+    /// text in, so the field's edge cuts it mid-glyph, as the navigation
+    /// filter's "Filter branches & worktre" at 18 pt: a placeholder fits in
+    /// whole words or ends in an ellipsis. The kit draws a field's text
+    /// without the marked background, so the cut-text rule cannot see it.
+    PlaceholderCut,
 }
 
 /// The pages the walk lays out.
@@ -121,6 +139,7 @@ const REGIONS: &[&str] = &[
     "git-actions",
     "repository-rail",
     "status-hints",
+    "history-sidebar",
     "history-pane",
     "files-pane",
 ];
@@ -357,6 +376,8 @@ impl Walk<'_> {
             );
         }
         self.inspect_tabs(width, height, cx);
+        self.inspect_navigation(width, height, cx);
+        self.inspect_placeholders(width, height, cx);
         self.inspect_edge(width, height, cx);
     }
 
@@ -459,6 +480,94 @@ impl Walk<'_> {
                 (width, height),
                 detail,
             );
+        }
+    }
+
+    /// Records the navigation's mode toggles drawn on more than one row and
+    /// its keyboard hint drawn on more lines than it has: each line of text
+    /// paints its own marked background.
+    fn inspect_navigation(&mut self, width: f32, height: f32, cx: &mut VisualTestContext) {
+        let at = (width, height);
+        if cx.debug_bounds("history-sidebar").is_none() {
+            return;
+        }
+        let modes: Vec<(&str, Bounds<Pixels>)> =
+            ["nav-mode-local", "nav-mode-remote", "nav-mode-worktrees"]
+                .into_iter()
+                .filter_map(|mode| cx.debug_bounds(mode).map(|bounds| (mode, bounds)))
+                .collect();
+        if let Some((first, row)) = modes.first().copied() {
+            for (mode, bounds) in &modes[1..] {
+                if (bounds.top() - row.top()).abs() > px(0.5) {
+                    let detail = format!("{mode} {bounds:?} off {first}'s row {row:?}");
+                    self.found(Rule::ModesWrapped, "history-sidebar", at, detail);
+                }
+            }
+        }
+        let Some(hint) = cx.debug_bounds("navigation-hint") else {
+            return;
+        };
+        let (scale, quads) = cx.update(|window, _| (window.scale_factor(), window.painted_quads()));
+        let text = gpui_kit::Background::from(text_mark());
+        let lines: BTreeSet<i32> = quads
+            .iter()
+            .filter(|quad| quad.background == text)
+            .map(|quad| {
+                let top = px(quad.bounds.top().0 / scale);
+                let left = px(quad.bounds.left().0 / scale);
+                (top, left)
+            })
+            .filter(|(top, left)| {
+                *top >= hint.top()
+                    && *top < hint.bottom()
+                    && *left < hint.right()
+                    && *left >= hint.left()
+            })
+            .map(|(top, _)| f32::from(top).round() as i32)
+            .collect();
+        let whole = crate::views::nav_hint_lines().len();
+        if lines.len() > whole {
+            let detail = format!("{} lines for its {whole} in {hint:?}", lines.len());
+            self.found(Rule::HintWrapped, "history-sidebar", at, detail);
+        }
+    }
+
+    /// Records a placeholder wider than the room its field draws text in:
+    /// the navigation filter's where the navigation is drawn, and History's
+    /// search on History.
+    fn inspect_placeholders(&mut self, width: f32, height: f32, cx: &mut VisualTestContext) {
+        let (navigation, search) = self
+            .app
+            .read_with(cx, |app, _| (app.nav_search.clone(), app.search.clone()));
+        let mut fields = Vec::new();
+        if cx.debug_bounds("history-sidebar").is_some() {
+            fields.push(("navigation-filter", navigation, 11.));
+        }
+        if self.page == Page::History {
+            fields.push(("history-search", search, 12.));
+        }
+        for (region, field, text) in fields {
+            let (room, shown) = field.read_with(cx, |field, _| {
+                (
+                    field.text_bounds(),
+                    field.presentation().placeholder().clone(),
+                )
+            });
+            let Some(room) = room else {
+                continue;
+            };
+            let need = cx.update(|window, _| {
+                shaped_width(
+                    &shown,
+                    appearance::ui_text(text),
+                    window.text_style().font_weight,
+                    window,
+                )
+            });
+            if need > room.size.width + px(0.5) {
+                let detail = format!("{shown:?} takes {need:?} in {:?}", room.size.width);
+                self.found(Rule::PlaceholderCut, region, (width, height), detail);
+            }
         }
     }
 
@@ -614,10 +723,42 @@ async fn walk(page: Page, text: u8, cx: &mut TestAppContext) {
     walk_at_edge(page, text, &[], cx).await;
 }
 
+/// [`walk`] on History with the navigation dragged to its 180 px minimum.
+async fn walk_narrowest_navigation(text: u8, cx: &mut TestAppContext) {
+    walk_with(Page::History, text, &[], true, cx).await;
+}
+
 /// [`walk`], once the Git commands `edge` have moved the fixture to another
 /// repository edge, as a detached HEAD or a branch with no upstream.
 async fn walk_at_edge(page: Page, text: u8, edge: &[&[&str]], cx: &mut TestAppContext) {
+    walk_with(page, text, edge, false, cx).await;
+}
+
+/// [`walk_at_edge`], with the navigation dragged to its 180 px minimum
+/// where `narrowest`, as its divider drags it.
+async fn walk_with(
+    page: Page,
+    text: u8,
+    edge: &[&[&str]],
+    narrowest: bool,
+    cx: &mut TestAppContext,
+) {
     let (_fixture, app, cx, path) = open(page, cx).await;
+    if narrowest {
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        crate::views::tests::draw(cx);
+        let panels = app.read_with(cx, |app, _| app.history_panels.clone());
+        cx.update(|window, cx| {
+            panels.update(cx, |panels, cx| {
+                panels.resize_panel(0, px(180.), window, cx)
+            })
+        });
+        crate::views::tests::draw(cx);
+        let drawn = cx
+            .debug_bounds("history-sidebar")
+            .map(|bounds| bounds.size.width);
+        assert_eq!(drawn, Some(px(180.)), "the navigation at its minimum");
+    }
     if !edge.is_empty() {
         let root = app.read_with(cx, |app, _| {
             app.repository.as_ref().unwrap().path().to_owned()
@@ -720,6 +861,16 @@ async fn history_keeps_its_text_whole_at_13_pt(cx: &mut TestAppContext) {
 #[gpui::test]
 async fn history_keeps_its_text_whole_at_18_pt(cx: &mut TestAppContext) {
     walk(Page::History, 18, cx).await;
+}
+
+#[gpui::test]
+async fn the_narrowest_navigation_keeps_its_text_whole_at_13_pt(cx: &mut TestAppContext) {
+    walk_narrowest_navigation(13, cx).await;
+}
+
+#[gpui::test]
+async fn the_narrowest_navigation_keeps_its_text_whole_at_18_pt(cx: &mut TestAppContext) {
+    walk_narrowest_navigation(18, cx).await;
 }
 
 #[gpui::test]

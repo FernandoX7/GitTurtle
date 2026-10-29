@@ -543,7 +543,7 @@ impl GitTurtle {
         let search =
             cx.new(|cx| InputState::new(window, cx).placeholder(views::SEARCH_PLACEHOLDERS[0]));
         let nav_search =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter branches & worktrees"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(views::NAV_FILTER_PLACEHOLDERS[0]));
         let settings = preferences.settings.clone();
         appearance::apply_text_sizes(
             settings.interface_text_size,
