@@ -306,14 +306,18 @@ pub(crate) fn confirming(
                     .gap(gap)
                     .children(icon)
                     .when(!text.is_empty(), |content| {
+                        let key = format!("{text_probe}/{state}/text");
+                        let probe = key.clone();
                         content.child(
                             div()
-                                .debug_selector(move || format!("{text_probe}/{state}/text"))
+                                .debug_selector(move || key)
                                 .min_w_0()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
                                 .line_height(relative(1.))
-                                .child(text),
+                                .child(text)
+                                // In tests, the colour the text is painted in.
+                                .children(appearance::text_probe(move || probe)),
                         )
                     }),
             )

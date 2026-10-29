@@ -260,6 +260,73 @@ async fn stage_all_confirms_in_its_own_bounds_and_nothing_else_confirms_it(
     });
 }
 
+/// Stage all empties Unstaged, and Unstage all Staged, so each is disabled
+/// while it confirms on its own heading. It reads its outcome in its resting
+/// label colour, at 4.5:1 or more on the heading in every palette, and takes
+/// the disabled colour only once the confirmation ends: "✓ Staged" was drawn
+/// disabled, 3.19:1 on Midnight's heading, and read as unavailable.
+#[gpui::test]
+async fn a_heading_action_confirms_in_its_resting_colour_then_reads_disabled(
+    cx: &mut TestAppContext,
+) {
+    use crate::appearance::{custom::contrast, packed, test_palettes};
+    let (_fixture, app, cx, _repository) = working(cx).await;
+    cx.simulate_resize(size(px(1000.), px(900.)));
+    draw(cx);
+    let palettes = test_palettes();
+    let mut failures = Vec::new();
+    for (id, state, emptied) in [
+        ("stage-all", "staged", ChangeArea::Unstaged),
+        ("unstage-all", "unstaged", ChangeArea::Staged),
+    ] {
+        click(cx, id);
+        finish(&app, cx, id, |cx| {
+            confirms(cx, id, state) == Some(true)
+                && app.read_with(cx, |app, _| {
+                    !app.working_paths.pending
+                        && app.working_rows.iter().any(
+                            |row| matches!(row, WorkingRow::Heading(area, 0) if *area == emptied),
+                        )
+                })
+        });
+        let text = format!("{id}/{state}/text");
+        for (name, palette) in &palettes {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            draw(cx);
+            assert_eq!(confirms(cx, id, state), Some(true), "{name}: {id}");
+            let drawn = crate::appearance::drawn_color(&text).expect("the confirmation's text");
+            assert_eq!(
+                packed(drawn),
+                palette.control_label(),
+                "{name}: {id} confirms in its resting colour"
+            );
+            let ratio = contrast(packed(drawn), palette.subtle);
+            if ratio < 4.5 {
+                failures.push(format!("{name} {id} {ratio:.2}:1"));
+            }
+        }
+        wait(cx, RESTORE_AFTER);
+        let rest = format!("{id}/rest/text");
+        for (name, palette) in &palettes {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            draw(cx);
+            assert_eq!(confirms(cx, id, state), Some(false), "{name}: {id}");
+            let disabled =
+                cx.update(|_, cx| gpui_kit::component::Theme::global(cx).disabled_foreground());
+            assert_eq!(
+                crate::appearance::drawn_color(&rest),
+                Some(disabled),
+                "{name}: {id} reads disabled once the confirmation ends"
+            );
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "confirmations below 4.5:1 on their heading: {}",
+        failures.join(", ")
+    );
+}
+
 /// The fixture with `origin`, a bare repository beside it that holds `main`
 /// as its upstream, read into the action bar's targets.
 async fn with_remote(

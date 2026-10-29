@@ -2790,6 +2790,12 @@ impl GitTurtle {
                     },
                 );
                 let origin = mark.clone();
+                let confirming = copy_feedback::confirmed(&mark, cx);
+                let unavailable = busy
+                    || count == 0
+                    || self.working_paths.pending
+                    || self.working_paths.error.is_some()
+                    || !self.working_filter.read(cx).value().is_empty();
                 let control = if forms.section_action_label {
                     copy_feedback::feedback_button(mark, confirmation, action, detail, cx)
                 } else {
@@ -2860,12 +2866,17 @@ impl GitTurtle {
                         control
                             .debug_selector(move || selector.into())
                             .ml_auto()
-                            .disabled(
-                                busy || count == 0
-                                    || self.working_paths.pending
-                                    || self.working_paths.error.is_some()
-                                    || !self.working_filter.read(cx).value().is_empty(),
-                            )
+                            .disabled(unavailable)
+                            // The write it confirms leaves it unavailable, its
+                            // group emptied or the reads after it pending, and
+                            // the disabled colour, 3.19:1 on Midnight's heading,
+                            // read the outcome as unavailable. While it confirms
+                            // it stays inert in its resting label colour, which
+                            // the kit replays over the disabled one; it takes
+                            // the disabled look when the confirmation ends.
+                            .when(unavailable && confirming, |control| {
+                                control.text_color(rgb(p.control_label()))
+                            })
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.write_from(
                                     if staged {
