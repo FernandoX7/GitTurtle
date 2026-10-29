@@ -1943,14 +1943,15 @@ mod tests {
     }
 
     /// The panel's notice, a status, reports the part of itself the panel's scrolling body
-    /// draws, and where the body draws none of it, or less than a pixel of it, its layout:
-    /// where it lies. It reported its layout where the body cut it, so at 18 pt in a 461 × 490
-    /// window AT-SPI gave a notice the fold cut y 569–731, over Back to repository; then an
-    /// empty rectangle on the body's edge where the body drew none of it, which AccessKit
-    /// keeps as the child past the fold and AT-SPI reported 0 px tall at y 557. On Linux the
-    /// notice the body draws none of is visible but not showing on AT-SPI, at the extents of
-    /// its layout, and one it draws some of shows: reported where it lies and showing, it
-    /// read as shown over Back to repository.
+    /// draws, one pixel inside the body at its fold where the body draws less than a pixel of
+    /// it, and where the body draws none of it, its layout: where it lies. It reported its
+    /// layout where the body cut it, so at 18 pt in a 461 × 490 window AT-SPI gave a notice
+    /// the fold cut y 569–731, over Back to repository; then an empty rectangle on the body's
+    /// edge where the body drew none of it, which AccessKit keeps as the child past the fold
+    /// and AT-SPI reported 0 px tall at y 557; then, half a pixel above the fold, its layout
+    /// over Back to repository again, showing. On Linux the notice the body draws none of is
+    /// visible but not showing on AT-SPI, at the extents of its layout, and one it draws some
+    /// of shows: reported where it lies and showing, it read as shown over Back to repository.
     #[gpui::test]
     async fn the_notice_reports_the_part_the_panel_draws(cx: &mut TestAppContext) {
         use crate::native_accessibility::written;
@@ -2003,7 +2004,7 @@ mod tests {
                         shown.state.contains(State::Visible),
                         shown.state.contains(State::Showing)
                     ),
-                    (true, bottom - top >= scale),
+                    (true, bottom > top),
                     "{at}: the notice is visible, and shows only where the body draws it: {:?}",
                     shown.state
                 );
@@ -2013,6 +2014,14 @@ mod tests {
                     (notice.y0 - top).abs() <= 0.5 && (notice.y1 - bottom).abs() <= 0.5,
                     "{at}: the notice reports {notice:?}, not the part of it the body draws, \
                      {top}–{bottom}"
+                );
+            } else if bottom > top {
+                assert!(
+                    (notice.y1 - notice.y0 - scale).abs() <= 0.01
+                        && notice.y0 >= body.y0 - 0.01
+                        && notice.y1 <= body.y1 + 0.01,
+                    "{at}: the notice the body draws less than a pixel of reports {notice:?}, \
+                     not one pixel inside the body"
                 );
             } else {
                 assert!(
@@ -2039,14 +2048,45 @@ mod tests {
                      the fold at {}",
                     body.y1
                 );
-                // Less than a pixel above the fold, it reports where it lies.
+                // Half a pixel above the fold, it reports one pixel inside the body at the
+                // fold, where the body draws it, and shows; its layout runs on over Back to
+                // repository.
                 scroll_notice_to(cx, &scroll, fold - px(0.5));
-                let (notice, _, layout) = measure(cx);
+                let (notice, body, layout) = measure(cx);
                 assert!(
-                    same_rect(notice, layout),
-                    "{at}: the notice half a pixel above the fold reports {notice:?}, not where \
-                     it lies, {layout:?}"
+                    layout.y0 < body.y1 && body.y1 - layout.y0 < scale,
+                    "{at}: the body draws less than a pixel of the notice {layout:?}, above its \
+                     fold at {}",
+                    body.y1
                 );
+                assert!(
+                    (notice.y0 - (body.y1 - scale)).abs() <= 0.01
+                        && (notice.y1 - body.y1).abs() <= 0.01,
+                    "{at}: the notice half a pixel above the fold reports {notice:?}, not one \
+                     pixel inside the body at its fold, {}",
+                    body.y1
+                );
+                #[cfg(target_os = "linux")]
+                {
+                    use crate::native_accessibility::atspi_state_tests::{next_frame, reached};
+                    use accesskit_atspi_common::State;
+                    let found = reached(next_frame(cx));
+                    let shown = found
+                        .iter()
+                        .find(|found| found.name == OFFLINE)
+                        .unwrap_or_else(|| panic!("{at}: AT-SPI reaches the notice"));
+                    assert_eq!(
+                        (shown.extents.y, shown.extents.y + shown.extents.height),
+                        (notice.y0 as i32, notice.y1 as i32),
+                        "{at}: AT-SPI reports the notice half a pixel above the fold inside the \
+                         body"
+                    );
+                    assert!(
+                        shown.state.contains(State::Visible | State::Showing),
+                        "{at}: the notice the body draws half a pixel of shows: {:?}",
+                        shown.state
+                    );
+                }
                 cut += 1;
             }
             escape(cx);

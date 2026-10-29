@@ -2103,20 +2103,25 @@ enum Undrawn {
 /// bounds. The content mask is what the ancestors let through; GPUI scales
 /// layout bounds to a node's bounds the same way.
 ///
-/// An element the mask leaves out, or shows less than a pixel of across,
-/// reports as `undrawn` says. Text keeps its whole layout: that is where it
-/// lies. AccessKit's filter keeps the first child past each edge of a
-/// clipping node, for an assistive technology to move into, and every other
-/// control it keeps there reports its layout, as GPUI writes it. Such text
-/// once reported an empty rectangle on the mask's edge nearest to it, so the
-/// GitHub panel's notice, below its body's fold at 18 pt in a 461 × 490
-/// window, reached AT-SPI 0 px tall on the body's bottom edge (y 557 in
-/// physical pixels). A clipping container reports one pixel beside its own
-/// edge instead ([`clips_children`]): AccessKit's filter measures each child
-/// against its clipping parent alone, so a list the window draws none of,
-/// reported at its layout, kept every row inside it, and the GitHub panel's
-/// pull requests, past its body's fold at 18 pt in a 461 × 490 window, were
-/// reached, showing, wherever the list lay.
+/// Where the mask shows less than a pixel across of the element, but some of
+/// it, the element reports one pixel inside the mask at the edge it crosses:
+/// its whole layout there, as for one the mask leaves out, ran on over the
+/// controls past that edge, the GitHub panel's notice half a pixel above its
+/// body's fold over Back to repository, while AT-SPI reported it showing.
+///
+/// An element the mask leaves out reports as `undrawn` says. Text keeps its
+/// whole layout: that is where it lies. AccessKit's filter keeps the first
+/// child past each edge of a clipping node, for an assistive technology to
+/// move into, and every other control it keeps there reports its layout, as
+/// GPUI writes it. Such text once reported an empty rectangle on the mask's
+/// edge nearest to it, so the GitHub panel's notice, below its body's fold
+/// at 18 pt in a 461 × 490 window, reached AT-SPI 0 px tall on the body's
+/// bottom edge (y 557 in physical pixels). A clipping container reports one
+/// pixel beside its own edge instead ([`clips_children`]): AccessKit's filter
+/// measures each child against its clipping parent alone, so a list the
+/// window draws none of, reported at its layout, kept every row inside it,
+/// and the GitHub panel's pull requests, past its body's fold at 18 pt in a
+/// 461 × 490 window, were reached, showing, wherever the list lay.
 fn drawn_part(bounds: Bounds<Pixels>, window: &Window, undrawn: Undrawn) -> gpui::accesskit::Rect {
     let scale = window.scale_factor();
     drawn_rect(
@@ -2154,12 +2159,24 @@ fn drawn_rect(
     gpui::accesskit::Rect { x0, y0, x1, y1 }
 }
 
-/// The part of `start..end` that `from..to` shows along one axis, `None`
-/// where that is less than `pixel` long: less than a pixel across, at the
-/// window's scale, is no part.
+/// The part of `start..end` that `from..to` shows along one axis: the
+/// overlap, at least `pixel` long, or, where it is shorter but not empty,
+/// `pixel` inside `from..to` at the edge the element crosses (its whole
+/// extent where it crosses none, being shorter than `pixel` itself); `None`
+/// where nothing of it shows.
 fn drawn_span(start: f64, end: f64, from: f64, to: f64, pixel: f64) -> Option<(f64, f64)> {
     let (low, high) = (start.max(from), end.min(to));
-    (high - low >= pixel).then_some((low, high))
+    if high <= low {
+        None
+    } else if high - low >= pixel {
+        Some((low, high))
+    } else if end > to {
+        Some((to - pixel, to))
+    } else if start < from {
+        Some((from, from + pixel))
+    } else {
+        Some((low, high))
+    }
 }
 
 /// `pixel` against the edge of `start..end` nearest `from..to`, which shows
