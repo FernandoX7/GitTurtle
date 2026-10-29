@@ -189,10 +189,20 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                                             cx.stop_propagation();
                                         })
                                         .child(
-                                            anchored()
-                                                .position(position)
-                                                .snap_to_window_with_margin(px(8.))
-                                                .anchor(anchor)
+                                            // GitTurtle patch: placed as the
+                                            // popup host places a dropdown,
+                                            // inside the window less its
+                                            // margin and above the room the
+                                            // application keeps at its foot.
+                                            // GPUI's anchor moved the menu
+                                            // only once it ran past the
+                                            // window, so it could end over a
+                                            // status bar.
+                                            gpui_base::Positioner::corner(anchor, position)
+                                                .margin(px(8.))
+                                                .bottom_inset(gpui_base::popup_bottom_inset(
+                                                    window, cx,
+                                                ))
                                                 .when_some(menu_view, |this, menu| {
                                                     // Focus the menu, so that can be handle the action.
                                                     if !menu

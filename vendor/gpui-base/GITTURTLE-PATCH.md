@@ -2,7 +2,7 @@
 
 This directory contains the crates.io `gpui-base` 0.6.0 source, licensed Apache-2.0. The upstream copyright and license are preserved in `LICENSE-APACHE`; `.cargo_vcs_info.json` records the published source revision. The registry archive checksum is `2caaf00ebe0482774dd370a82a936edf4bf19a18a0d1a39353d20ecf61f70330`.
 
-The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/mod.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs` and `src/color_picker.rs`; `src/dialog_label.rs` and `src/disabled_focus.rs` are added private helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook.
+The modified upstream sources are `src/button.rs`, `src/focus_trap.rs`, `src/dialog.rs`, `src/alert_dialog.rs`, `src/lib.rs`, `src/input/base/state.rs`, `src/input/base/element.rs`, `src/input/mod.rs`, `src/checkbox.rs`, `src/switch.rs`, `src/radio.rs`, `src/toggle.rs`, `src/link.rs`, `src/color_picker.rs`, `src/popup.rs` and `src/positioner.rs`; `src/dialog_label.rs` and `src/disabled_focus.rs` are added private helpers. The existing Button element is wrapped by a private element that delegates identity, layout, painting, role, and synthetic children. When `disabled` is true, the wrapper also sets the AccessKit disabled property in `write_a11y_info`, as it does for a Button that `accessibility_disabled` reports disabled alone: that Button keeps its enabled styling, focus and click handler, for an application that refuses the press in its handler before it dims the control (GitTurtle's `workspace::refusing`, through the [component patch](../gpui-component/GITTURTLE-PATCH.md)). When the resolved role is Tab, it also reports the existing selected state without adding pressed metadata; ordinary button presentation selection remains separate. Existing disabled pointer blocking, absence of click actions and keyboard focus behavior are unchanged. Delegation preserves caller-provided synthetic children instead of replacing that hook.
 
 The existing rendered-node test now expects disabled metadata. GitTurtle also includes the equivalent rendered-node regression in its application test suite, where the matching GPUI Kit test-support feature is enabled. Run `cargo test --locked -p gitturtle native_accessibility` from the repository root. This verifies generated node role, label, disabled state, click availability and selected/unselected Tab metadata. Native VoiceOver behavior is a separate application validation gate.
 
@@ -127,3 +127,30 @@ consumer is the component Switch's focus ring
 `cargo test --locked -p gitturtle a_focused_switch_draws_the_button_ring_whole_and_moves_nothing`.
 Remove it when upstream Switch accepts a caller focus handle or exposes its
 focus state.
+
+The popup-inset patch modifies `src/popup.rs`, `src/positioner.rs` and
+`src/lib.rs`. Upstream keeps every popup inside its window less a margin and
+offers no way to keep one clear of anything else at the window's foot, such
+as an application's status bar. `set_popup_bottom_inset` lets an application
+give the room to keep clear there in each window, measured up from the
+viewport's bottom edge, client inset included; `popup_bottom_inset` reads it,
+nothing where it is unset. `Positioner::bottom_inset` resolves a popup in a
+viewport shortened by the part of that room past its margin, so the side a
+popup flips to and the clamp that moves it up both keep it, and the `Popup`
+host passes the inset to every popover it places, dropdown menus among them.
+The positioner still moves a popup by whole pixels, but where rounding to the
+nearest one would carry a popup that ends within the bottom limit past it, it
+rounds down instead, so a popup no longer ends half a pixel past that room. Unset, a popup keeps
+only its margin, as upstream; tooltips and the component's Select, Combobox
+and DatePicker dropdowns, which build their own positioners, take no inset.
+The component's context menu takes the same inset
+([component patch](../gpui-component/GITTURTLE-PATCH.md)), which also lists
+the consumers.
+`cargo test --locked -p gitturtle kit_menus_stay_above_the_bottom_inset_an_application_sets`
+opens a kit dropdown and a kit right-click menu at the foot of a window under
+an inset of 120.5 px and reads each above it; without the whole-pixel rule the
+right-click menu ended half a pixel past it.
+`menus_keep_their_edge_8_px_above_the_status_bar` reads the app's menus 8 px
+or more above the status bar. Remove this part of the patch when upstream lets
+an application keep popups clear of a region at the window's foot, and those
+tests pass without it.

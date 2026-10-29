@@ -460,3 +460,119 @@ fn a_context_menu_goes_with_its_row(cx: &mut TestAppContext) {
         "the row's menu outlived the row"
     );
 }
+
+/// A dropdown and a row with a right-click menu at the foot of the window,
+/// each opening the same four items with the kit's own menus.
+struct LowMenusProbe;
+
+impl Render for LowMenusProbe {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::component::menu::ContextMenuExt as _;
+        fn items(menu: PopupMenu) -> PopupMenu {
+            ["One", "Two", "Three", "Four"]
+                .into_iter()
+                .fold(menu, |menu, name| menu.item(PopupMenuItem::new(name)))
+        }
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .justify_end()
+            .gap_2()
+            .p_2()
+            .child(
+                Button::new("low-dropdown")
+                    .debug_selector(|| "low-dropdown".into())
+                    .label("Open")
+                    .dropdown_menu(|menu, _, _| items(menu)),
+            )
+            .child(
+                div()
+                    .id("low-row")
+                    .debug_selector(|| "low-row".into())
+                    .h(px(24.))
+                    .w_full()
+                    .child("A row")
+                    .context_menu(|menu, _, _| items(menu)),
+            )
+    }
+}
+
+/// The open menu's surface: the last fill of the popover colour painted
+/// around its first item.
+fn open_menu_surface(cx: &mut VisualTestContext) -> Bounds<Pixels> {
+    let item = cx
+        .debug_bounds("menu-item: One · MenuItem")
+        .expect("the menu's first item");
+    cx.update(|window, cx| {
+        let fill = Background::from(Theme::global(cx).popover);
+        let scale = window.scale_factor();
+        let logical = |value: gpui_kit::ScaledPixels| px(value.as_f32() / scale);
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| quad.background == fill)
+            .map(|quad| {
+                let bounds = Bounds::from_corners(
+                    point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                    point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                );
+                (quad.order, bounds)
+            })
+            .filter(|(_, surface)| surface.contains(&item.center()))
+            .max_by_key(|(order, _)| *order)
+            .map(|(_, surface)| surface)
+            .expect("the menu's surface")
+    })
+}
+
+/// A kit dropdown and a kit right-click menu opened at the foot of the
+/// window stay above the room an application keeps there
+/// (`gpui_kit::base::set_popup_bottom_inset`), whole pixels included, as
+/// they stay inside the window's margin: they move up rather than run into
+/// it. The dropdown's popup host kept only the window's 8 px margin and the
+/// context menu's anchor moved it only once it ran past the window, so
+/// both ended over a status bar.
+#[gpui::test]
+fn kit_menus_stay_above_the_bottom_inset_an_application_sets(cx: &mut TestAppContext) {
+    const INSET: Pixels = px(120.5);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        gpui_kit::base::set_popup_bottom_inset(cx, |_| INSET);
+    });
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let probe = cx.new(|_| LowMenusProbe);
+        Root::new(probe, window, cx)
+    });
+    cx.simulate_resize(size(px(400.), px(320.)));
+    draw(cx);
+    let foot = px(320.) - INSET;
+
+    let trigger = cx.debug_bounds("low-dropdown").expect("the dropdown");
+    cx.simulate_click(trigger.center(), Modifiers::default());
+    draw(cx);
+    draw(cx);
+    let surface = open_menu_surface(cx);
+    assert!(
+        surface.bottom() <= foot,
+        "the dropdown's menu {surface:?} ends above the inset at {foot:?}"
+    );
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+
+    let row = cx.debug_bounds("low-row").expect("the row");
+    cx.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
+    draw(cx);
+    draw(cx);
+    let surface = open_menu_surface(cx);
+    assert!(
+        surface.bottom() <= foot,
+        "the row's menu {surface:?} ends above the inset at {foot:?}"
+    );
+    assert!(
+        surface.top() < row.center().y,
+        "the row's menu {surface:?} moved up from the pointer at {:?}",
+        row.center()
+    );
+}

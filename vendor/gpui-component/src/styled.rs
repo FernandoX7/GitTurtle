@@ -52,6 +52,12 @@ const SURFACE_SHADOW_INK: f32 = 0.1;
 /// over the element's own background, not over the shadow.
 const POPOVER_RING_INK: f32 = 0.1;
 
+/// GitTurtle patch: the band outside a popup surface's fill in which its
+/// edge, the ring in [`popover_shadow`], is drawn: a popup's visible extent is
+/// its bounds grown by this on every side, so an application that keeps a
+/// popup clear of something keeps it this much further.
+pub const POPOVER_EDGE_WIDTH: Pixels = px(1.);
+
 /// The colour of a popup surface's hairline ring in this theme: the theme's
 /// [`crate::Theme::popover_edge`] when it sets one, and otherwise 10% of the
 /// foreground.
@@ -135,7 +141,7 @@ pub(crate) fn popover_shadow(ring: Hsla, strength: f32) -> Vec<BoxShadow> {
         // last: under the ink it read up to 11% darker along the bottom.
         BoxShadow::new(px(0.), px(0.), ring.alpha(ring.a * strength))
             .blur_radius(px(0.))
-            .spread_radius(px(1.)),
+            .spread_radius(POPOVER_EDGE_WIDTH),
     ]
 }
 

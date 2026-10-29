@@ -14,6 +14,28 @@ const WINDOW_MARGIN: Pixels = px(8.);
 /// Deferred paint priority for interactive surfaces that must appear above dialogs.
 pub const POPUP_PRIORITY: usize = 100;
 
+/// GitTurtle patch: the room an application keeps clear of popups at a
+/// window's foot, from the viewport's bottom edge ([`set_popup_bottom_inset`]).
+struct PopupBottomInset(Rc<dyn Fn(&Window) -> Pixels>);
+
+impl gpui::Global for PopupBottomInset {}
+
+/// GitTurtle patch: keeps every popup menu and popover a window's [`Popup`]
+/// host or a context menu places clear of the room `inset` gives for that
+/// window, measured up from the viewport's bottom edge, such as a status bar
+/// and the margin kept above it. The host's own margin still applies where it
+/// is larger. Unset, a popup keeps only that margin, as upstream does.
+pub fn set_popup_bottom_inset(cx: &mut App, inset: impl Fn(&Window) -> Pixels + 'static) {
+    cx.set_global(PopupBottomInset(Rc::new(inset)));
+}
+
+/// GitTurtle patch: the room [`set_popup_bottom_inset`] keeps clear of popups
+/// at `window`'s foot, or nothing where no application set it.
+pub fn popup_bottom_inset(window: &Window, cx: &App) -> Pixels {
+    cx.try_global::<PopupBottomInset>()
+        .map_or(Pixels::ZERO, |inset| (inset.0)(window))
+}
+
 #[derive(Default)]
 struct PopupAnchorState {
     bounds: Bounds<Pixels>,
@@ -136,6 +158,7 @@ impl RenderOnce for Popup {
             deferred(
                 Positioner::corner(anchor, position.get())
                     .margin(WINDOW_MARGIN)
+                    .bottom_inset(popup_bottom_inset(window, cx))
                     // The host blocks the mouse, so no caller has to remember:
                     // what a popup covers belongs to the popup.
                     .occlude()

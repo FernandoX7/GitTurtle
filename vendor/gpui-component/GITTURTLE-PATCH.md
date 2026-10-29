@@ -491,6 +491,44 @@ built-in and embedded Omarchy palette and reads the edge each dialog draws.
 Remove this part of the patch when upstream lets a theme set a dialog's border
 apart from `border`, and those tests pass without it.
 
+The popup-inset patch modifies `src/menu/context_menu.rs`, `src/popover.rs`
+and `src/styled.rs`, with the base patch's `set_popup_bottom_inset`
+([base patch](../gpui-base/GITTURTLE-PATCH.md)). Upstream keeps a popup only
+inside its window: the base popup host, which places dropdown menus and
+popovers, keeps 8 px from the window's edges, and a context menu's GPUI anchor
+moved it only once it ran past the window. A menu opened at a low row, or
+below a low button with less room than its items, could therefore end over
+GitTurtle's status bar, and nothing an application set kept it off: at 13 pt
+in a 461 × 490 window a right-click menu on History's lowest row ran 19.5 px
+over the bar. A context menu is now placed by the base `Positioner`, as the
+popup host places a dropdown: inside the window less the same 8 px and above
+the room the application keeps at the window's foot
+(`gpui_base::popup_bottom_inset`), moving up where it would run lower, as it
+moves in from the window's sides. A popover's quarter-rem gap from its
+trigger is now a margin (`mt_1`, `mb_1`) rather than a relative offset
+(`top_1`, `bottom_1`): the host measures and places the box, and a relative
+offset lies outside it, so a surface the host moved to the inset ended a
+quarter rem past it. The surface draws where it did. `POPOVER_EDGE_WIDTH`
+names the 1 px band outside a popup's fill in which `popover_shadow` draws its
+ring, so an application keeps the drawn edge, not only the fill, clear of
+what it protects.
+
+The consumers are every app dropdown (`AppMenu`) and right-click menu
+(`AppContextMenu`) in `crates/app/src/native_accessibility.rs`, whose
+`keep_popups_above_the_status_bar` sets the inset to the status bar, the 8 px
+above it and the edge band.
+`cargo test --locked -p gitturtle kit_menus_stay_above_the_bottom_inset_an_application_sets`
+sets an inset of 120.5 px and opens a kit dropdown and a kit right-click menu
+at the foot of a 400 × 320 window: the host moves each up so that it ends
+above the inset, the right-click menu up from the pointer. Without the margin
+the dropdown ended 3.5 px past the inset.
+`menus_keep_their_edge_8_px_above_the_status_bar` opens the Working Actions
+menu and a right-click menu on History's lowest whole row at 13 and 18 pt in
+461 × 490 and reads each drawn edge 8 px or more above the status bar. Remove
+this part of the patch when upstream lets an application keep popups clear of
+a region at the window's foot and places a context menu as it places a
+dropdown, and those tests pass without it.
+
 The `usize`-constant patch modifies `src/highlighter/highlighter.rs`. Upstream
 imports the `std::usize` module (`use std::{…, usize}`), so the `usize::MIN`
 and `usize::MAX` in `HighlightSummary`'s `Summary::zero` and in

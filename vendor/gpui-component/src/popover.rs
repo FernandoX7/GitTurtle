@@ -290,10 +290,15 @@ impl Popover {
             .occlude()
             .tab_group()
             .when(appearance, |this| this.popover_style(cx).p_3())
+            // GitTurtle patch: the gap from the trigger is a margin, which the
+            // popup host measures and keeps inside the window and above the
+            // application's bottom inset with the surface. Upstream offset
+            // the surface by its relative `top`, which the host never saw,
+            // so a surface it moved to the inset ended a quarter rem past it.
             .map(|this| match anchor {
-                Anchor::TopLeft | Anchor::TopCenter | Anchor::TopRight => this.top_1(),
-                Anchor::BottomLeft | Anchor::BottomCenter | Anchor::BottomRight => this.bottom_1(),
-                Anchor::LeftCenter | Anchor::RightCenter => this.top_1(), // Fallback for centered
+                Anchor::TopLeft | Anchor::TopCenter | Anchor::TopRight => this.mt_1(),
+                Anchor::BottomLeft | Anchor::BottomCenter | Anchor::BottomRight => this.mb_1(),
+                Anchor::LeftCenter | Anchor::RightCenter => this.mt_1(), // Fallback for centered
             })
     }
 }

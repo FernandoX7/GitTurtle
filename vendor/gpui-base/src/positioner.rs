@@ -62,6 +62,9 @@ pub struct ResolvedPosition {
 pub struct Positioner {
     strategy: Strategy,
     margin: Pixels,
+    /// GitTurtle patch: the room kept clear at the viewport's foot
+    /// ([`Positioner::bottom_inset`]).
+    bottom_inset: Pixels,
     occlude: bool,
     children: Vec<AnyElement>,
 }
@@ -82,6 +85,7 @@ impl Positioner {
                 offset: px(0.),
             },
             margin: px(4.),
+            bottom_inset: px(0.),
             occlude: false,
             children: Vec::new(),
         }
@@ -96,6 +100,7 @@ impl Positioner {
         Self {
             strategy: Strategy::Corner { anchor, position },
             margin: px(4.),
+            bottom_inset: px(0.),
             occlude: false,
             children: Vec::new(),
         }
@@ -144,6 +149,16 @@ impl Positioner {
     /// Sets the minimum distance kept between the popup and the viewport edge.
     pub fn margin(mut self, margin: Pixels) -> Self {
         self.margin = margin;
+        self
+    }
+
+    /// GitTurtle patch: keeps the popup at least `inset` above the
+    /// viewport's bottom edge, client inset included, where that is more
+    /// than the margin: the room an application keeps at a window's foot,
+    /// such as a status bar ([`crate::set_popup_bottom_inset`]). It decides
+    /// the room below a trigger for a side's flip as well.
+    pub fn bottom_inset(mut self, inset: Pixels) -> Self {
+        self.bottom_inset = inset;
         self
     }
 }
@@ -335,12 +350,13 @@ impl Element for Positioner {
 
         let popup_size = (child_max - child_min).into();
         let client_inset = window.client_inset().unwrap_or(px(0.));
-        let position = resolve(
-            self.strategy,
-            popup_size,
-            window.viewport_size(),
-            self.margin + client_inset,
-        );
+        let margin = self.margin + client_inset;
+        // GitTurtle patch: a bottom inset larger than the margin shortens
+        // the viewport the popup is resolved in by the difference, so the
+        // margin then ends at the inset.
+        let mut viewport = window.viewport_size();
+        viewport.height -= (self.bottom_inset - margin).max(px(0.));
+        let position = resolve(self.strategy, popup_size, viewport, margin);
         // Ahead of the children so it blocks what is behind the popup without
         // blocking the popup's own content.
         if self.occlude {
@@ -348,7 +364,20 @@ impl Element for Positioner {
         }
 
         let offset = position.bounds.origin - bounds.origin;
-        let offset = point(offset.x.round(), offset.y.round());
+        // GitTurtle patch: a popup that ends inside the room above the
+        // viewport's foot is moved by whole pixels without crossing it:
+        // rounding to the nearest pixel put a popup ending 8 px above a
+        // status bar another half pixel lower.
+        let bottom = viewport.height - margin;
+        let y = match offset.y.round() {
+            y if position.bounds.bottom() <= bottom
+                && position.bounds.bottom() + (y - offset.y) > bottom =>
+            {
+                offset.y.floor()
+            }
+            y => y,
+        };
+        let offset = point(offset.x.round(), y);
 
         window.with_element_offset(offset, |window| {
             for child in &mut self.children {
