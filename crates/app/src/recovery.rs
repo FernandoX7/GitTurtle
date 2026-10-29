@@ -27,6 +27,9 @@ const STASH_PAGE_SIZE: usize = 40;
 /// than its inspection and it scrolls: about six lines of a patch.
 const STASH_CONTENT_FLOOR: f32 = 120.;
 type Failure = Box<dyn FnOnce(String, &mut Window, &mut Context<GitTurtle>)>;
+/// What runs as a prepared recovery action's review opens, before it does:
+/// Stashes closes for Restore stash's.
+type Reviewing = Box<dyn FnOnce(&mut Window, &mut Context<GitTurtle>)>;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -34,8 +37,10 @@ pub(super) struct State {
     task: Option<Task<()>>,
     amend: Option<Entity<AmendForm>>,
     stash: Option<Entity<StashForm>>,
-    /// The Stashes dialog opened last, for tests.
-    #[cfg(test)]
+    /// The Stashes dialog opened last, which keeps its own Review restore…
+    /// refusal and hears when the pause it was refused for ends
+    /// ([`GitTurtle::integration_ended`]). The dialog holds it; closed, it
+    /// goes.
     browser: Option<WeakEntity<StashBrowser>>,
 }
 
@@ -108,6 +113,12 @@ impl GitTurtle {
             }
             cx.notify();
         });
+        self.read_pause_again(window, cx);
+    }
+
+    /// Asks for a quiet read of the working state, which reads and writes
+    /// nothing else, so the window's pause is read again.
+    fn read_pause_again(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.queue_automatic_refresh(
             local_refresh::LocalChange {
                 worktree: true,
@@ -119,12 +130,23 @@ impl GitTurtle {
     }
 
     /// A status read found that the integration paused when the window last
-    /// read it has ended: a recovery form of this repository whose line
-    /// refuses because one was paused says it has ended instead, and the
-    /// window's error stops refusing so. The refusal may be the window's or
-    /// the core's, which share their words; any later reason stays.
+    /// read it has ended: a recovery form of this repository, or its open
+    /// Stashes dialog, whose line refuses because one was paused says it has
+    /// ended instead, and the window's error stops refusing so. The refusal
+    /// may be the window's or the core's, which share their words; any later
+    /// reason stays.
     pub(super) fn integration_ended(&mut self, cx: &mut Context<Self>) {
         let path = self.path.clone();
+        if let Some(browser) = self.recovery.browser.as_ref().and_then(WeakEntity::upgrade)
+            && path.as_deref() == Some(browser.read(cx).repository.path())
+        {
+            browser.update(cx, |browser, cx| {
+                if pause_ended(&mut browser.restore_line, &mut browser.pause_ended) {
+                    browser.reveal_note.set(true);
+                    cx.notify();
+                }
+            });
+        }
         if let Some(form) = &self.recovery.amend
             && form.read(cx).repository == path
         {
@@ -160,12 +182,9 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.operation_busy.is_some() || self.page != AppPage::Repository {
+        if self.recovery_repository().is_none() {
             return false;
         }
-        let Some(repo) = self.repository.clone() else {
-            return false;
-        };
         if self.integration_state.is_some() {
             // Every recovery plan refuses while a merge, rebase, cherry-pick
             // or revert is paused (the core's `recovery_head`), as the menus
@@ -173,6 +192,36 @@ impl GitTurtle {
             self.refuse_while_paused(failure, window, cx);
             return true;
         }
+        self.prepare_recovery(prepare, failure, None, window, cx)
+    }
+
+    /// The repository a recovery action reads; none while a write runs, off
+    /// the repository page or without a repository.
+    fn recovery_repository(&self) -> Option<GitRepository> {
+        if self.operation_busy.is_some() || self.page != AppPage::Repository {
+            return None;
+        }
+        self.repository.clone()
+    }
+
+    /// Prepares a recovery action, as [`Self::read_recovery`] does, without
+    /// refusing first from the pause the window read last: the core's plan
+    /// reads the pause itself. `reviewing` runs as the review opens, before
+    /// it does. Where the core's answer and the window's pause disagree, a
+    /// refusal for a pause the window has not read or a plan where it reads
+    /// one, the window reads its working state again, quietly
+    /// ([`Self::read_pause_again`]).
+    fn prepare_recovery(
+        &mut self,
+        prepare: impl FnOnce(GitRepository) -> anyhow::Result<Prepared> + Send + 'static,
+        failure: Option<Failure>,
+        reviewing: Option<Reviewing>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(repo) = self.recovery_repository() else {
+            return false;
+        };
         let path = repo.path().to_owned();
         self.cancel_recovery_read();
         let generation = self.recovery.generation;
@@ -197,6 +246,11 @@ impl GitTurtle {
                     cx.notify();
                     return;
                 }
+                let refused_for_pause =
+                    matches!(&result, Err(error) if format!("{error:#}") == PAUSED_REFUSAL);
+                if refused_for_pause != this.integration_state.is_some() {
+                    this.read_pause_again(window, cx);
+                }
                 match result {
                     Ok(Prepared::Amend(plan)) => this.show_amend_form(plan, window, cx),
                     Ok(Prepared::Confirmation {
@@ -205,6 +259,9 @@ impl GitTurtle {
                         action,
                         command,
                     }) => {
+                        if let Some(reviewing) = reviewing {
+                            reviewing(window, cx);
+                        }
                         this.confirm_git_write(
                             title,
                             explanation,
@@ -621,10 +678,7 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let browser = cx.new(|cx| StashBrowser::new(owner, repo, window, cx));
         let opened = browser.clone();
-        #[cfg(test)]
-        {
-            self.recovery.browser = Some(browser.downgrade());
-        }
+        self.recovery.browser = Some(browser.downgrade());
         window.open_alert_dialog(cx, move |dialog, window, _| {
             dialog
                 .title(native_accessibility::dialog_title(
@@ -1251,6 +1305,18 @@ pub(crate) struct StashBrowser {
     error: Option<String>,
     preview_error: Option<String>,
     restore_index: bool,
+    /// Why Review restore… was refused, which the footer note beside it
+    /// says in place of its explanation until another stash is chosen.
+    restore_line: Option<String>,
+    /// Whether that note says the integration Review restore… was last
+    /// refused for has ended ([`PAUSE_ENDED`]).
+    pause_ended: bool,
+    /// Counts the refusals, each a fresh node, so each is announced once as
+    /// it appears, even in the words of the one before.
+    refusals: usize,
+    /// The next frame scrolls the stacked detail to the footer note: a
+    /// refusal or its end has just replaced it.
+    reveal_note: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 impl Drop for StashBrowser {
@@ -1335,6 +1401,10 @@ impl StashBrowser {
             error: None,
             preview_error: None,
             restore_index: false,
+            restore_line: None,
+            pause_ended: false,
+            refusals: 0,
+            reveal_note: Default::default(),
         };
         this.load_page(0, window, cx);
         this
@@ -1393,6 +1463,7 @@ impl StashBrowser {
         self.selected_file = None;
         self.loading = Some("Reading stashes…");
         self.error = None;
+        self.forget_restore_line();
         let repo = self.repository.clone();
         let response = self
             .metadata
@@ -1450,6 +1521,7 @@ impl StashBrowser {
         self.selected_file = None;
         self.loading = Some("Reading saved changes…");
         self.error = None;
+        self.forget_restore_line();
         let repo = self.repository.clone();
         let response = self
             .metadata
@@ -1579,6 +1651,12 @@ impl StashBrowser {
         self.editors[self.text_mode] = Some(editor);
     }
 
+    /// Review restore…: Stashes stays open, with its selection, while the
+    /// core prepares the restoration and reads the pause itself, never the
+    /// one the window read last, which a merge finished in a terminal can
+    /// have ended unseen. Its review opens in place of Stashes; a refusal
+    /// stays in Stashes, in the footer note beside Review restore…, and in
+    /// the window's error only once Stashes has closed.
     fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(snapshot) = &self.snapshot else {
             return;
@@ -1586,17 +1664,109 @@ impl StashBrowser {
         let stash = snapshot.stash.clone();
         let restore_index = self.restore_index;
         let repository = self.repository.path().to_owned();
-        let _ = self.owner.update(cx, |this, cx| {
-            if this.path.as_ref() != Some(&repository) || this.operation_busy.is_some() { return; }
-            window.close_dialog(cx);
-            this.read_recovery(move |repo| {
+        let browser = cx.entity().downgrade();
+        let shown = browser.clone();
+        let failure: Failure = Box::new(move |message, window, cx| {
+            match browser.upgrade().filter(|_| window.has_active_dialog(cx)) {
+                Some(browser) => browser.update(cx, |browser, cx| browser.refuse(message, cx)),
+                None => cx.defer_in(window, move |this, _, cx| {
+                    this.operation_error = Some(message);
+                    cx.notify();
+                }),
+            }
+        });
+        let reviewing: Reviewing = Box::new(move |window, cx| {
+            if shown.upgrade().is_some() && window.has_active_dialog(cx) {
+                window.close_dialog(cx);
+            }
+        });
+        let started = self.owner.update(cx, |this, cx| {
+            if this.path.as_ref() != Some(&repository) { return false; }
+            this.prepare_recovery(move |repo| {
                 let plan = repo.stash_apply_plan(&stash, restore_index)?;
                 let mut explanation = format!("Restore “{}” ({}) onto {} at {}.\n\n{}\n\nThe stash remains saved after restoration. Conflicts leave the applied work in place for review in Changes.", stash.name, short_oid(&stash.oid), plan.current.branch, short_oid(&plan.current.head),
                     if restore_index { "Restore the original staged state as well as working files. Git may refuse if that staged state cannot be recreated safely." } else { "Restore tracked changes into the working files without recreating the stash's staged state. Saved untracked files are restored when present." });
                 append_paths(&mut explanation, &plan.affected_paths);
                 Ok(Prepared::Confirmation { title: "Restore stash".into(), explanation, action: "Restore stash", command: RecoveryCommand::ApplyStash { plan }.into() })
-            }, None, window, cx);
+            }, Some(failure), Some(reviewing), window, cx)
         });
+        if started.unwrap_or(false) {
+            self.forget_restore_line();
+            cx.notify();
+        }
+    }
+
+    /// Says why Review restore… was refused in the footer note beside it,
+    /// a fresh line announced once.
+    fn refuse(&mut self, message: String, cx: &mut Context<Self>) {
+        self.restore_line = Some(message);
+        self.pause_ended = false;
+        self.refusals = self.refusals.wrapping_add(1);
+        self.reveal_note.set(true);
+        cx.notify();
+    }
+
+    /// The footer note says again what restoring does.
+    fn forget_restore_line(&mut self) {
+        self.restore_line = None;
+        self.pause_ended = false;
+    }
+
+    /// The footer note beside Review restore…: why it was refused, a line
+    /// announced at once as it appears; or, once the integration it was
+    /// refused for has ended, that it has, a status heard once speech
+    /// pauses; or else what restoring does. `stacked`, beneath the list in a
+    /// narrow window, where the detail can be about 60 px tall (18 pt in a
+    /// 461 × 490 window), the reason keeps two lines, the second ending in an
+    /// ellipsis where it needs more, with its whole text in its tooltip as in
+    /// its name: unclamped it took three lines there, more than the detail
+    /// shows.
+    fn restore_note(&self, stacked: bool, cx: &App) -> AnyElement {
+        let p = palette(cx);
+        if let Some(line) = &self.restore_line {
+            let whole = SharedString::from(line.clone());
+            return div()
+                .id(("stash-restore-refusal", self.refusals))
+                .debug_selector(|| "stash-restore-refusal".into())
+                .role(Role::Alert)
+                .aria_label(whole.clone())
+                .assertive()
+                .text_size(crate::appearance::ui_text(10.))
+                .text_color(rgb(p.warning))
+                .when(stacked, |note| {
+                    let tooltip = whole.clone();
+                    note.line_clamp(2)
+                        .text_ellipsis()
+                        .tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(tooltip.clone())
+                                .build(window, cx)
+                        })
+                })
+                .child(whole)
+                .into_any_element();
+        }
+        if self.pause_ended {
+            return native_accessibility::static_text(
+                div()
+                    .id(("stash-restore-ended", self.refusals))
+                    .debug_selector(|| "stash-restore-ended".into())
+                    .role(Role::Status)
+                    .aria_label(PAUSE_ENDED)
+                    .polite()
+                    .text_size(crate::appearance::ui_text(10.))
+                    .text_color(rgb(p.muted))
+                    .child(PAUSE_ENDED),
+                PAUSE_ENDED,
+            )
+            .into_any_element();
+        }
+        native_accessibility::text(
+            "stash-restore-note",
+            "Restoring keeps this stash saved. Drop it separately after checking the restored work.",
+        )
+        .text_size(crate::appearance::ui_text(10.))
+        .text_color(rgb(p.muted))
+        .into_any_element()
     }
 
     fn drop_stash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1830,6 +2000,57 @@ impl StashBrowser {
     }
 }
 
+/// For the stacked Stashes detail's actions, the row with Review restore…
+/// and the footer note beneath it: once `due`, when a refusal or its end has
+/// just replaced the note, scrolls the detail, `scroll`, by the least that
+/// shows the row and the note `margin` clear of its edges, or, where both do
+/// not fit, the whole note, the answer to the press, with what of the row the
+/// rest leaves above it: at 18 pt in a 461 × 490 window the detail is about
+/// 60 px tall. It scrolls after the frame the note is laid out in, as a focus
+/// reveal does for a control it has not drawn ([`crate::focus_reveal`]). A
+/// note the detail had scrolled below its fold, beneath the Review restore…
+/// just pressed, showed nothing.
+fn reveal_note(
+    due: std::rc::Rc<std::cell::Cell<bool>>,
+    scroll: ScrollHandle,
+    margin: Pixels,
+) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+    move |bounds, window, cx| {
+        let [row, note] = bounds[..] else {
+            return;
+        };
+        if !due.replace(false) {
+            return;
+        }
+        let viewport = scroll.bounds();
+        let bottom = note.bottom() + margin;
+        let top = if bottom - (row.top() - margin) <= viewport.size.height {
+            row.top() - margin
+        } else {
+            note.top() - margin
+        };
+        let delta = if bottom > viewport.bottom() {
+            viewport.bottom() - bottom
+        } else if top < viewport.top() {
+            viewport.top() - top
+        } else {
+            return;
+        };
+        let offset = scroll.offset();
+        let target = point(
+            offset.x,
+            (offset.y + delta).clamp(-scroll.max_offset().y, px(0.)),
+        );
+        if target != offset {
+            let scroll = scroll.clone();
+            window.defer(cx, move |window, _| {
+                scroll.set_offset(target);
+                window.refresh();
+            });
+        }
+    }
+}
+
 impl Render for StashBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
@@ -1940,16 +2161,85 @@ impl Render for StashBrowser {
             crate::workspace::dialog_refusal(&self.owner, Some(self.repository.path()), cx);
         let (refused, dimmed) = (busy || refused, busy || dimmed);
         let actions = self.snapshot.is_some().then(|| {
-            let row = div().debug_selector(|| "stash-actions".into()).flex().flex_wrap().items_center().gap_2().pt_1()
-                .when(!pinned, |row| row.on_children_prepainted(self.detail.controls(vec![Some(restore_index.clone()), None, Some(drop.clone()), Some(restore.clone())], room)))
-                .child(Checkbox::new("stash-restore-index").track_focus(&restore_index).label("Restore staged state").checked(self.restore_index).on_click(cx.listener(|this, checked, _, cx| { this.restore_index = *checked; cx.notify(); })))
+            let row = div()
+                .debug_selector(|| "stash-actions".into())
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .pt_1()
+                .when(!pinned, |row| {
+                    row.on_children_prepainted(self.detail.controls(
+                        vec![
+                            Some(restore_index.clone()),
+                            None,
+                            Some(drop.clone()),
+                            Some(restore.clone()),
+                        ],
+                        room,
+                    ))
+                })
+                .child(
+                    Checkbox::new("stash-restore-index")
+                        .track_focus(&restore_index)
+                        .label("Restore staged state")
+                        .checked(self.restore_index)
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            this.restore_index = *checked;
+                            cx.notify();
+                        })),
+                )
                 .child(div().flex_1())
-                .child(button("drop-saved-stash", "Drop…", "", false).track_focus(&drop).debug_selector(|| "drop-saved-stash".into()).map(|drop| crate::workspace::refusing(drop, || "drop-saved-stash".into(), refused, dimmed)).on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))))
-                .child(Button::new("restore-saved-stash").primary().small().label("Review restore…").track_focus(&restore).debug_selector(|| "restore-saved-stash".into()).map(|restore| crate::workspace::refusing(restore, || "restore-saved-stash".into(), refused, dimmed)).on_click(cx.listener(|this, _, window, cx| this.restore(window, cx))));
-            div().flex().flex_col().gap_2().flex_shrink_0()
+                .child(
+                    button("drop-saved-stash", "Drop…", "", false)
+                        .track_focus(&drop)
+                        .debug_selector(|| "drop-saved-stash".into())
+                        .map(|drop| {
+                            crate::workspace::refusing(
+                                drop,
+                                || "drop-saved-stash".into(),
+                                refused,
+                                dimmed,
+                            )
+                        })
+                        .on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))),
+                )
+                .child(
+                    Button::new("restore-saved-stash")
+                        .primary()
+                        .small()
+                        .label("Review restore…")
+                        .track_focus(&restore)
+                        .debug_selector(|| "restore-saved-stash".into())
+                        .map(|restore| {
+                            crate::workspace::refusing(
+                                restore,
+                                || "restore-saved-stash".into(),
+                                refused,
+                                dimmed,
+                            )
+                        })
+                        .on_click(cx.listener(|this, _, window, cx| this.restore(window, cx))),
+                );
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .flex_shrink_0()
+                .when(!pinned, |actions| {
+                    actions.on_children_prepainted(reveal_note(
+                        self.reveal_note.clone(),
+                        self.detail.scroll().clone(),
+                        room,
+                    ))
+                })
                 .child(row)
-                .child(native_accessibility::text("stash-restore-note", "Restoring keeps this stash saved. Drop it separately after checking the restored work.").text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)))
+                .child(self.restore_note(!pinned, cx))
         });
+        if pinned {
+            // The footer is always in view.
+            self.reveal_note.set(false);
+        }
         let (footer, inline) = if pinned {
             (actions, None)
         } else {
@@ -2509,6 +2799,234 @@ mod tests {
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
+    }
+
+    /// The fixture of Stashes' Review restore… regressions: a repository
+    /// with two stashes on `main`, "Index only" and the newest, "Layout
+    /// experiment", and a branch `side` whose merge pauses cleanly, as the
+    /// native review's `dlg` fixture has. Returns its fixture Git.
+    fn two_stashes(repository: &std::path::Path) -> impl Fn(&[&str]) + '_ {
+        let git = move |arguments: &[&str]| {
+            let identity = [
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+            ];
+            crate::views::tests::fixture_git(repository, &[&identity[..], arguments].concat())
+        };
+        git(&["reset", "-q", "--hard"]);
+        git(&["checkout", "-q", "-b", "side"]);
+        std::fs::write(repository.join("side.txt"), "side\n").unwrap();
+        git(&["add", "side.txt"]);
+        git(&["commit", "-q", "-m", "side"]);
+        git(&["checkout", "-q", "main"]);
+        for (name, text) in [("Index only", "first\n"), ("Layout experiment", "second\n")] {
+            std::fs::write(repository.join("notes.txt"), text).unwrap();
+            git(&["stash", "push", "-q", "-m", name]);
+        }
+        git
+    }
+
+    /// Lets a recovery action's preparation, which runs on the window's
+    /// operation executor, answer and draws its outcome.
+    fn recovery_lands(app: &Entity<GitTurtle>, cx: &mut gpui::VisualTestContext) {
+        app.read_with(cx, |app, _| app.operations.drain());
+        cx.executor().run_until_parked();
+        crate::views::tests::draw(cx);
+    }
+
+    /// Moves focus with Tab onto the open Stashes' Review restore…, which
+    /// the stacked detail scrolls into view, and presses it with the pointer.
+    /// Focus always moves, so a Review restore… that a refusal's note has
+    /// scrolled partly out of view is revealed again.
+    fn press_review_restore(browser: &Entity<StashBrowser>, cx: &mut gpui::VisualTestContext) {
+        for _ in 0..40 {
+            cx.simulate_keystrokes("tab");
+            crate::views::tests::draw(cx);
+            let focused = cx.update(|window, cx| browser.read(cx).detail.focused(window));
+            if focused == Some("restore-saved-stash".into()) {
+                let restore = cx
+                    .debug_bounds("restore-saved-stash")
+                    .expect("Review restore… is drawn");
+                cx.simulate_click(restore.center(), Modifiers::none());
+                return;
+            }
+        }
+        panic!("Tab never reached Review restore…");
+    }
+
+    /// Review restore… in Stashes reads the pause in the core rather than
+    /// refuse from the one the window read last. A merge aborted in a
+    /// terminal, unseen, no longer refuses it: Stashes gives way to the
+    /// Restore stash review, as before the window refused from its cache,
+    /// and the window reads its working state again. A merge that is paused
+    /// refuses it in place, in 461 × 490 and 1480 × 980 windows at 13 and
+    /// 18 pt: Stashes stays open with its stash selected, the footer note
+    /// beside Review restore… says why, whole in the detail's view and
+    /// beneath the control, announced at once as a fresh line on each
+    /// refusal and nowhere else, and once a read finds the merge ended the
+    /// note says so, a status heard once speech pauses. Refused from the
+    /// window's cache, Stashes closed and the window's error that said why
+    /// went with the quiet read that found the merge ended, within 0.3 s
+    /// natively, so nothing showed and the selection was lost.
+    #[gpui::test]
+    async fn review_restore_reads_the_pause_and_answers_in_stashes(cx: &mut gpui::TestAppContext) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let git = two_stashes(&repository);
+        let browser = |cx: &mut gpui::VisualTestContext| {
+            app.read_with(cx, |app, _| app.recovery.browser.clone())
+                .and_then(|browser| browser.upgrade())
+        };
+        let slack = px(0.5);
+        let inside = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            inner.left() >= outer.left() - slack
+                && inner.right() <= outer.right() + slack
+                && inner.top() >= outer.top() - slack
+                && inner.bottom() <= outer.bottom() + slack
+        };
+
+        // Aborted unseen: the core accepts and the review opens.
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        read_pause(&app, cx).await;
+        open_selected_stash(&app, cx).await;
+        git(&["merge", "--abort"]);
+        let stashes = browser(cx).expect("Stashes is open");
+        press_review_restore(&stashes, cx);
+        drop(stashes);
+        recovery_lands(&app, cx);
+        assert!(
+            cx.debug_bounds("operation-consequences").is_some()
+                && cx.debug_bounds("stash-browser").is_none(),
+            "the Restore stash review opens in place of Stashes"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None
+        );
+        quiet_reads_land(&app, cx);
+        assert!(
+            app.read_with(cx, |app, _| app.integration_state.is_none()),
+            "the window reads the merge ended"
+        );
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        crate::views::tests::draw(cx);
+
+        // Paused: refused in place, and the pause's end said there.
+        for (width, height) in [(461., 490.), (1480., 980.)] {
+            for interface in [13, 18] {
+                let at = format!("{interface} pt in {width} × {height}");
+                cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                // Unread: the core's refusal is the first the window hears
+                // of the pause.
+                git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+                open_selected_stash(&app, cx).await;
+                let stashes = browser(cx).expect("Stashes is open");
+                press_review_restore(&stashes, cx);
+                recovery_lands(&app, cx);
+                let refusals = stashes.read_with(cx, |stashes, _| stashes.refusals);
+                assert!(
+                    cx.update(|window, cx| window.has_active_dialog(cx))
+                        && cx.debug_bounds("operation-consequences").is_none(),
+                    "{at}: Stashes stays open"
+                );
+                assert_eq!(
+                    stashes.read_with(cx, |stashes, _| (
+                        stashes.selected,
+                        stashes.snapshot.is_some(),
+                        stashes.restore_line.clone()
+                    )),
+                    (Some(0), true, Some(PAUSED_REFUSAL.to_owned())),
+                    "{at}: the stash stays selected and refused"
+                );
+                let [line, restore, detail, browser_bounds] = [
+                    "stash-restore-refusal",
+                    "restore-saved-stash",
+                    "stash-detail-column",
+                    "stash-browser",
+                ]
+                .map(|name| {
+                    cx.debug_bounds(name)
+                        .unwrap_or_else(|| panic!("{at}: no {name}"))
+                });
+                assert!(
+                    inside(line, detail) && inside(line, browser_bounds),
+                    "{at}: the refusal {line:?} lies whole in the detail {detail:?}"
+                );
+                assert!(
+                    line.top() >= restore.bottom() && line.top() - restore.bottom() < px(24.),
+                    "{at}: the refusal {line:?} lies beneath Review restore… {restore:?}"
+                );
+                assert_eq!(
+                    crate::native_accessibility::written::announced(&format!(
+                        "stash-restore-refusal-{refusals}"
+                    )),
+                    Some(crate::native_accessibility::written::Announced::ASSERTIVE),
+                    "{at}: the refusal is announced at once"
+                );
+                assert_eq!(
+                    app.read_with(cx, |app, _| app.operation_error.clone()),
+                    None,
+                    "{at}: and nowhere else"
+                );
+                quiet_reads_land(&app, cx);
+                assert!(
+                    app.read_with(cx, |app, _| app.integration_state.is_some()),
+                    "{at}: the refusal has the window read the pause"
+                );
+                // Pressed again, a fresh line is announced once more.
+                press_review_restore(&stashes, cx);
+                recovery_lands(&app, cx);
+                assert_eq!(
+                    stashes.read_with(cx, |stashes, _| stashes.refusals),
+                    refusals + 1,
+                    "{at}: each refusal is a fresh line"
+                );
+                assert_eq!(
+                    crate::native_accessibility::written::announced(&format!(
+                        "stash-restore-refusal-{}",
+                        refusals + 1
+                    )),
+                    Some(crate::native_accessibility::written::Announced::ASSERTIVE),
+                    "{at}: announced again"
+                );
+                // The merge ends; the next read says so in the note.
+                git(&["merge", "--abort"]);
+                cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+                crate::views::tests::settle(&app, cx).await;
+                quiet_reads_land(&app, cx);
+                crate::views::tests::draw(cx);
+                assert!(
+                    cx.debug_bounds("stash-restore-refusal").is_none(),
+                    "{at}: the refusal goes"
+                );
+                let ended = cx
+                    .debug_bounds("stash-restore-ended")
+                    .unwrap_or_else(|| panic!("{at}: the note says the merge ended"));
+                let detail = cx.debug_bounds("stash-detail-column").unwrap();
+                assert!(inside(ended, detail), "{at}: {ended:?} in {detail:?}");
+                assert_eq!(
+                    crate::native_accessibility::written::announced(&format!(
+                        "stash-restore-ended-{}",
+                        refusals + 1
+                    ))
+                    .map(|announced| announced.live),
+                    Some(gpui::accesskit::Live::Polite),
+                    "{at}: a status, heard once speech pauses"
+                );
+                drop(stashes);
+                cx.update(|window, cx| window.close_all_dialogs(cx));
+                crate::views::tests::draw(cx);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        drop(fixture);
     }
 
     /// A recovery action refuses while an integration is paused from the

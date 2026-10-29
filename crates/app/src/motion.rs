@@ -2615,9 +2615,10 @@ mod tests {
     /// prepares nothing. A merge's Revert that a press still reaches while
     /// paused, as Enter could in a keyboard's menu built only as it opened,
     /// asks for no mainline and prepares nothing either, and reports the
-    /// core's refusal, as Review restore… in Stashes does without reading a
-    /// plan; it closed the menu and did nothing visible. The menus were
-    /// built again only as a write started or ended, so a cherry-pick that
+    /// core's refusal; it closed the menu and did nothing visible. Review
+    /// restore… in Stashes has the core read the pause and says why in
+    /// Stashes, which stays open, and nowhere else. The menus were built
+    /// again only as a write started or ended, so a cherry-pick that
     /// stopped on conflicts left those items offered until the menu was
     /// opened again, and a press read a plan that the core then refused.
     #[gpui::test]
@@ -2751,17 +2752,25 @@ mod tests {
         drop(held);
         app.update(cx, |app, _| app.operation_error = None);
 
+        // Review restore… has the core read the pause rather than refuse
+        // from the window's, and says why in Stashes, which stays open.
         crate::recovery::open_selected_stash(&app, cx).await;
         next_frame(cx);
-        let held = app.update(cx, |app, _| app.operations.hold());
         press(cx, "restore-saved-stash");
+        app.read_with(cx, |app, _| app.operations.drain());
         cx.executor().run_until_parked();
+        next_frame(cx);
         assert_eq!(
             quiet(cx),
-            (None, Some(crate::recovery::PAUSED_REFUSAL.into())),
-            "Review restore… reads no plan and says why"
+            (None, None),
+            "Review restore… says why in Stashes, not in the window"
         );
-        drop(held);
+        assert!(
+            dialog_open(cx) && cx.debug_bounds("stash-restore-refusal").is_some(),
+            "Stashes stays open with its refusal"
+        );
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        next_frame(cx);
 
         // The Changes Actions menu, opened while the merge is paused, offers
         // Amend and Undo in place once it is abandoned.
