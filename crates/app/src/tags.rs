@@ -315,7 +315,7 @@ impl GitTurtle {
                     .child(copy_feedback::copy_button(tag_mark, "Copy object ID", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(tag_copy.clone()), "tag object ID", oid.clone())))
                     .child(crate::workspace::dialog_refusing(owner.clone(), path.clone(), move |refused, dimmed| button("delete-local-tag", "Delete local tag…", "", false).debug_selector(|| "delete-local-tag".into()).map(|delete| crate::workspace::refusing(delete, || "delete-local-tag".into(), refused, dimmed)).on_click(move |_, window, cx| {
                         let _ = delete_owner.update(cx, |this, cx| {
-                            if this.path == delete_path && this.operation_busy.is_none() {
+                            if !this.dialog_refusal(delete_path.as_deref()).0 {
                                 window.close_dialog(cx);
                                 this.confirm_git_write(format!("Delete local tag '{}'", deletion.name), format!("Remove the local name '{}' pointing to {}. Its annotation and signature will no longer be reachable through this name.\n\nRemote tags, branches, the index and working files stay as they are. This action refuses if the tag has moved since you opened it.", deletion.name, deletion.oid), "Delete local tag", WriteCommand::Tag(Arc::new(TagCommand::Delete(deletion.clone()))), window, cx);
                             }
@@ -327,7 +327,7 @@ impl GitTurtle {
                     let remote = remote.clone(); let tag = tag.clone(); let owner = owner.clone(); let path = path.clone();
                     crate::workspace::dialog_refusing(owner.clone(), path.clone(), move |refused, dimmed| button(("push-tag-remote", index), format!("Push to {}…", remote.name), "", false).track_focus(&focus).debug_selector(move || format!("push-tag-remote-{index}")).map(|push| crate::workspace::refusing(push, || format!("push-tag-remote-{index}"), refused, dimmed)).on_click(move |_, window, cx| {
                         let _ = owner.update(cx, |this, cx| {
-                            if this.path == path && this.operation_busy.is_none() {
+                            if !this.dialog_refusal(path.as_deref()).0 {
                                 window.close_dialog(cx);
                                 let urls = if remote.push_urls.is_empty() { &remote.urls } else { &remote.push_urls };
                                 let destinations = urls.iter().map(|url| crate::workspace::display_remote_url(url)).collect::<Vec<_>>().join("\n");
@@ -467,9 +467,15 @@ impl TagBrowser {
             .take(101)
             .collect()
     }
+    /// Inspects `tag`, as its row or Enter in the filter asks, unless the
+    /// window refuses the dialog's actions, as the rows are announced
+    /// (`workspace::dialog_refusal`): a write runs, or Tags' repository or
+    /// the Repository page is no longer shown. It once checked only the
+    /// repository and the write, so a press off the Repository page closed
+    /// Tags for a read that then refused.
     fn activate(&self, tag: Tag, window: &mut Window, cx: &mut Context<Self>) {
         let _ = self.owner.update(cx, |this, cx| {
-            if this.path == self.path && this.operation_busy.is_none() {
+            if !this.dialog_refusal(self.path.as_deref()).0 {
                 window.close_dialog(cx);
                 this.inspect_tag(tag, window, cx);
             }
@@ -520,7 +526,7 @@ impl Render for TagBrowser {
             // Painted after the field, the canvas fits its placeholder in
             // whole words, where at 18 pt in a half tile it was cut mid-glyph.
             .child(div().flex().gap_2().child(div().relative().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true)).child(crate::workspace::placeholder_fit(self.query.clone(), &FILTER_FIT, FILTER_PLACEHOLDERS, FIELD_TEXT))).child(button("create-tag", "Create tag…", "plus", false).debug_selector(|| "create-tag".into()).when(!committed, |create| create.accessibility_label(NO_COMMIT_NAME).tooltip(NO_COMMIT_REASON)).map(|create| crate::workspace::refusing(create, || "create-tag".into(), refused || !committed, dimmed || !committed)).on_click(cx.listener(|this, _, window, cx| {
-                let _ = this.owner.update(cx, |owner, cx| { if owner.path == this.path && owner.operation_busy.is_none() { window.close_dialog(cx); owner.open_create_tag(window, cx); } });
+                let _ = this.owner.update(cx, |owner, cx| { if !owner.dialog_refusal(this.path.as_deref()).0 { window.close_dialog(cx); owner.open_create_tag(window, cx); } });
             }))))
             .when(!self.list.tags.is_empty(), |element| element.child(static_text("tag-list-summary", summary(self.list.tags.len())).ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("tags-list").debug_selector(|| "tags-list".into()).max_h(px(360.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap_1().children(matches.iter().zip(rows).enumerate().map(|(index, (tag, focus))| {
@@ -1335,6 +1341,101 @@ pub(crate) mod tests {
                 "tag-push-heading",
                 "tag-push-consequences",
             ],
+        );
+    }
+
+    /// Opens Settings, as its shortcut does over an open dialog, and
+    /// presses `control` where the last frame drew it before a frame shows
+    /// Settings: the press reaches the handler the Repository page's frame
+    /// gave the control, which the next frame dims.
+    fn press_as_settings_open(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        control: &'static str,
+    ) {
+        let position = rendered(cx, control).center();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.show_settings(window, cx));
+            let button = gpui::MouseButton::Left;
+            let modifiers = Modifiers::default();
+            window.dispatch_event(
+                gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                    button,
+                    position,
+                    modifiers,
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    button,
+                    position,
+                    modifiers,
+                    click_count: 1,
+                }),
+                cx,
+            );
+        });
+        draw(cx);
+    }
+
+    /// Off the Repository page Tags' actions are refused, as each is
+    /// announced (`workspace::dialog_refusal`), and their handlers refuse
+    /// with them: a tag's row pressed as Settings opens leaves Tags open and
+    /// reads nothing, and Delete local tag… leaves the tag's inspector open
+    /// and asks for no review. The handlers checked only the repository and
+    /// the write, so the row closed Tags for a read the page then refused,
+    /// and Delete closed the inspector and asked to review deleting the tag
+    /// over Settings.
+    #[gpui::test]
+    async fn tag_actions_refuse_off_the_repository_page(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        let dialog_open =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
+        let refused = |control: &str| crate::workspace::refusals::get(control);
+        let off_page = Some(crate::workspace::refusals::Refusal {
+            announced: true,
+            dimmed: true,
+        });
+
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        read_lands(&app, cx).await;
+        draw(cx);
+        press_as_settings_open(&app, cx, "tag-row-0");
+        assert!(dialog_open(cx), "the row leaves Tags open");
+        assert_eq!(refused("tag-row-0"), off_page, "the row is refused");
+        assert!(
+            app.read_with(cx, |app, _| app.tag_actions.task.is_none()
+                && app.operation_busy.is_none()),
+            "the row reads nothing"
+        );
+        cx.update(|window, cx| {
+            window.close_dialog(cx);
+            app.update(cx, |app, cx| app.show_history(window, cx));
+        });
+        draw(cx);
+
+        let tag = repo.tags().unwrap().tags[0].clone();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.inspect_tag(tag, window, cx)));
+        read_lands(&app, cx).await;
+        draw(cx);
+        press_as_settings_open(&app, cx, "delete-local-tag");
+        assert!(
+            cx.debug_bounds("operation-consequences").is_none(),
+            "Delete asks for no review"
+        );
+        assert!(
+            cx.debug_bounds("tag-inspector-title").is_some(),
+            "Delete leaves the inspector open"
+        );
+        assert_eq!(
+            refused("delete-local-tag"),
+            off_page,
+            "Delete local tag… is refused"
         );
     }
 
