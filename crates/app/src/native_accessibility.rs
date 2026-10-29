@@ -785,7 +785,11 @@ impl<E> PointerMenu<E> {
     }
 }
 
-/// The menu a [`PointerMenu`] opened, kept from frame to frame.
+/// The menu a [`PointerMenu`] opened, kept from frame to frame while it is
+/// open. Its dismissal lets it go: a closed menu that stayed here kept its
+/// subscriptions, so it was built again on every write's start and end and
+/// dismissed again on every resize, until its row was right-clicked again or
+/// stopped being drawn.
 #[derive(Default)]
 struct PointerMenuState {
     menu: Option<Entity<PopupMenu>>,
@@ -842,6 +846,15 @@ impl OpenPointerMenus {
             .0
             .retain(|(open, _)| open.entity_id() != menu);
     }
+}
+
+/// The right-click menus recorded open, for tests that hold one weakly to
+/// see that it is let go once it closes.
+#[cfg(test)]
+pub(crate) fn open_pointer_menus(cx: &App) -> Vec<WeakEntity<PopupMenu>> {
+    cx.try_global::<OpenPointerMenus>()
+        .map(|open| open.0.iter().map(|(menu, _)| menu.clone()).collect())
+        .unwrap_or_default()
 }
 
 impl<E: ParentElement + IntoElement + 'static> IntoElement for PointerMenu<E> {
@@ -1053,6 +1066,24 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                         if let Some(shared) = shared.upgrade() {
                             shared.borrow_mut().open = false;
                         }
+                        // Closed, the menu is let go, with this subscription
+                        // and its write and resize observers, once this
+                        // handler, which is that subscription, has returned.
+                        let shared = shared.clone();
+                        window.defer(cx, move |_, _| {
+                            let Some(shared) = shared.upgrade() else {
+                                return;
+                            };
+                            let mut state = shared.borrow_mut();
+                            if state
+                                .menu
+                                .as_ref()
+                                .is_some_and(|menu| menu.entity_id() == closed)
+                            {
+                                state.menu = None;
+                                state._dismiss = None;
+                            }
+                        });
                         window.refresh();
                     }
                 });

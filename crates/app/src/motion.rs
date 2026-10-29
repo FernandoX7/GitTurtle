@@ -3042,6 +3042,63 @@ mod tests {
         drop(fixture);
     }
 
+    /// A right-click menu, once closed, is let go with its observers, by
+    /// Escape or by a resize: a write that starts and ends after it builds
+    /// it again no more. Kept with its row, a closed menu was built again on
+    /// every write's start and end, and dismissed again on every resize,
+    /// until its row was right-clicked again or stopped being drawn.
+    #[gpui::test]
+    async fn a_closed_right_click_menu_is_let_go(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        for closing in ["Escape", "a resize"] {
+            right_click(cx, "working-row-4");
+            let menu = cx
+                .update(|_, cx| crate::native_accessibility::open_pointer_menus(cx))
+                .pop()
+                .unwrap_or_else(|| panic!("{closing}: the open menu"));
+            // How often the menu is built again, held weakly.
+            let built = std::rc::Rc::new(std::cell::Cell::new(0));
+            let _built = cx.update(|_, cx| {
+                let built = built.clone();
+                cx.observe(&menu.upgrade().expect("the menu"), move |_, _| {
+                    built.set(built.get() + 1)
+                })
+            });
+            if closing == "Escape" {
+                cx.simulate_keystrokes("escape");
+            } else {
+                let viewport = cx.update(|window, _| window.viewport_size());
+                cx.simulate_resize(size(viewport.width - px(40.), viewport.height - px(40.)));
+            }
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert_eq!(
+                offered(cx, "Delete untracked file…"),
+                None,
+                "{closing}: closed"
+            );
+            assert!(
+                menu.upgrade().is_none(),
+                "{closing}: the closed menu is let go"
+            );
+            built.set(0);
+            let held = held_write(&app, cx);
+            next_frame(cx);
+            release(&app, held, cx).await;
+            next_frame(cx);
+            assert_eq!(
+                built.get(),
+                0,
+                "{closing}: a write after it builds the closed menu again no more"
+            );
+            assert!(
+                cx.update(|_, cx| crate::native_accessibility::open_pointer_menus(cx))
+                    .is_empty(),
+                "{closing}: no menu is recorded open"
+            );
+        }
+    }
+
     /// The Settings page's identity fields and actions wait for a write's
     /// busy look too: they refuse at once, the fields read-only, and dim,
     /// with Save reading "Working…", only once the write has run 200 ms. The
