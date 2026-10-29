@@ -723,6 +723,29 @@ pub(super) fn dialog_help(
     )
 }
 
+/// [`dialog_help`] laid out by phrase, each " · "-separated phrase a
+/// wrapping item (`crate::phrase_runs`), drawn as `dialog-help-phrase-{index}`:
+/// where the line wraps, it breaks between phrases, so Quick Open's hint at
+/// 18 pt in a 461 px window no longer leaves "cancels" alone on its last
+/// line. On one line it reads as the text does.
+pub(super) fn dialog_help_by_phrase(text: String) -> Div {
+    let phrases = crate::phrase_runs(&text);
+    let escape = text
+        .split(" · ")
+        .find(|clause| clause.starts_with("Escape"))
+        .unwrap_or_default()
+        .to_owned();
+    div()
+        .debug_selector(move || format!("dialog-help-escape: {escape}"))
+        .flex()
+        .flex_wrap()
+        .children(phrases.into_iter().enumerate().map(|(index, phrase)| {
+            div()
+                .debug_selector(move || format!("dialog-help-phrase-{index}"))
+                .child(phrase)
+        }))
+}
+
 /// The dialog controls whose keys the status bar names, registered as their
 /// dialogs open. A control is held weakly, so a closed dialog's entry lapses
 /// with its view, and each registration drops the lapsed ones.

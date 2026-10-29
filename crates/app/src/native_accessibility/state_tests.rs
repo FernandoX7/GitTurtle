@@ -335,6 +335,47 @@ fn labels_named(cx: &mut VisualTestContext, screen: &str, expected: &[&str]) {
     }
 }
 
+/// The Stashes dialog reads its title, its "Saved work" header, the
+/// detail's prompt and, with a stash selected, the stash's name, identity,
+/// file prompt and restore note by their text: each was drawn as plain text
+/// AT-SPI reached with no name, the title named only the dialog.
+#[gpui::test]
+async fn the_stashes_lines_are_named(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, root) = window(cx, &history_script(1, 1)).await;
+    fixture_git(&root, &["config", "user.name", "Stash Fixture"]);
+    fixture_git(&root, &["config", "user.email", "stash@example.invalid"]);
+    std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
+    fixture_git(&root, &["stash", "push", "-m", "kept for later"]);
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
+    wait(cx, "the stash list", |cx| {
+        cx.debug_bounds("saved-stash-row-0").is_some()
+    });
+    labels_named(
+        cx,
+        "Stashes",
+        &[
+            "stashes-title",
+            "stash-list-heading",
+            "stash-detail-placeholder",
+        ],
+    );
+    let row = cx.debug_bounds("saved-stash-row-0").unwrap();
+    cx.simulate_click(row.center(), Modifiers::none());
+    wait(cx, "the stash's inspection", |cx| {
+        cx.debug_bounds("stash-detail-name").is_some()
+    });
+    labels_named(
+        cx,
+        "A selected stash",
+        &[
+            "stash-detail-name",
+            "stash-detail-identity",
+            "stash-file-prompt",
+            "stash-restore-note",
+        ],
+    );
+}
+
 /// History, Changes, Tags, the ignore form and Blame: every label each
 /// writes is named, Tags', the ignore form's and Blame's lines among them,
 /// which were labels named only by their label property.

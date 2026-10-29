@@ -36,15 +36,7 @@ fn phrases(
     text: impl Into<SharedString>,
 ) -> native_accessibility::StaticText<Stateful<Div>> {
     let text = text.into();
-    let parts: Vec<SharedString> = {
-        let mut parts: Vec<&str> = text.split(" · ").collect();
-        let last = parts.pop().unwrap_or_default().to_owned();
-        parts
-            .into_iter()
-            .map(|phrase| format!("{phrase} · ").into())
-            .chain([last.into()])
-            .collect()
-    };
+    let parts = crate::phrase_runs(&text);
     native_accessibility::static_text(div().id(id).debug_selector(move || id.into()), text)
         .flex()
         .flex_wrap()

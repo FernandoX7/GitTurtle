@@ -1601,6 +1601,55 @@ mod render_tests {
         draw(cx);
     }
 
+    /// At 18 pt in a 461 × 490 half tile Quick Open's hint wraps between its
+    /// phrases, each whole on one line: it left "cancels" alone on its last
+    /// line.
+    #[gpui::test]
+    async fn quick_open_wraps_its_hint_between_phrases(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        for name in ["notes.txt", "readme.txt"] {
+            std::fs::write(repo.path().join(name), "text\n").unwrap();
+        }
+        git(repo.path(), &["add", "--all"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add files"]);
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_quick_file(window, cx)));
+        // The hint counts its matches once Quick Open has read its paths, on
+        // the worker after a 120 ms pause for typing.
+        let landed = (0..20).any(|_| {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(150));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            draw(cx);
+            cx.debug_bounds("dialog-help-phrase-3").is_some()
+        });
+        assert!(landed, "the hint's four phrases are drawn");
+        let phrases: Vec<_> = (0..4)
+            .map(|index| {
+                cx.debug_bounds(format!("dialog-help-phrase-{index}").leak())
+                    .expect("a phrase")
+            })
+            .collect();
+        let line = phrases[0].size.height;
+        for (index, phrase) in phrases.iter().enumerate() {
+            assert!(
+                (phrase.size.height - line).abs() < px(0.5),
+                "phrase {index} {phrase:?} is one line of {line:?}: {phrases:?}"
+            );
+        }
+        assert!(
+            phrases[3].top() > phrases[0].top(),
+            "at 18 pt in a half tile the hint wraps: {phrases:?}"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A picker's highlighted row is the keyboard's cursor, so each picker
     /// marks it as the menus do: the `selected` fill and a 2 px leading
     /// marker of `accent`, at 3:1 or more against that fill and against the

@@ -1039,7 +1039,7 @@ impl Render for QuickForm {
                 // The count agrees with its noun: "1 match", "2 matches".
                 let help: String = if self.busy{"Searching local tracked paths…".into()}else{format!("{} · ↑/↓ select · {} opens · {}{}",crate::counted(count,"match","matches"),shortcuts::ENTER,shortcuts::DialogKeys::QuickOpen.escape_help(),self.page.as_ref().filter(|page|page.truncated).map_or("",|_|" · Limit reached; narrow the query"))};
                 let shown = help.clone();
-                div().debug_selector(move || format!("quick-open-help: {shown}")).child(shortcuts::dialog_help("quick-open-help", help).text_color(rgb(p.muted)))
+                div().debug_selector(move || format!("quick-open-help: {shown}")).child(crate::native_accessibility::static_text(shortcuts::dialog_help_by_phrase(help.clone()).id("quick-open-help"), help).text_color(rgb(p.muted)))
             })
             .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone())))
             .child(crate::native_accessibility::clips_children(div().id("quick-open-results").debug_selector(|| "quick-open-results".into()).role(Role::ListBox).aria_label("Matching tracked files").h(desired_height.min(available_height)).border_1().border_color(rgb(p.raised_edge())).overflow_hidden().when(count>0,|el|el.child(list)).when(count==0&&!self.busy,|el|el.child(crate::native_accessibility::text("quick-open-empty","No matching tracked files. Untracked files are available in Working Changes.").p_3()))))

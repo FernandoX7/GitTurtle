@@ -2127,6 +2127,19 @@ fn changed_files(count: usize) -> String {
 }
 /// `count` with the noun that agrees with it: `one` for exactly one, `many`
 /// otherwise, as in "1 match", "0 matches" and "2 matches".
+/// The " · "-separated phrases of `text`, each but the last ending in its
+/// separator, for a line laid out as one wrapping item per phrase: it breaks
+/// between two phrases, and inside one only where that phrase alone is wider
+/// than the line, so no word of a phrase is left alone on a line.
+fn phrase_runs(text: &str) -> Vec<SharedString> {
+    let mut parts: Vec<&str> = text.split(" · ").collect();
+    let last = parts.pop().unwrap_or_default().to_owned();
+    parts
+        .into_iter()
+        .map(|phrase| format!("{phrase} · ").into())
+        .chain([last.into()])
+        .collect()
+}
 fn counted(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }

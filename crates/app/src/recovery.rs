@@ -469,7 +469,10 @@ impl GitTurtle {
         let browser = cx.new(|cx| StashBrowser::new(owner, repo, window, cx));
         window.open_alert_dialog(cx, move |dialog, window, _| {
             dialog
-                .title("Stashes")
+                .title(native_accessibility::dialog_title(
+                    "stashes-title",
+                    "Stashes",
+                ))
                 .width(appearance::dialog_width(px(1060.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .button_props(DialogButtonProps::default().ok_text("Close"))
@@ -1427,11 +1430,10 @@ impl StashBrowser {
                 .into_any_element();
         }
         if self.preview_task.is_some() {
-            return div()
+            return native_accessibility::text("stash-file-reading", "Reading saved file…")
                 .p_4()
                 .text_size(crate::appearance::ui_text(12.))
                 .text_color(rgb(p.muted))
-                .child("Reading saved file…")
                 .into_any_element();
         }
         match self.content.as_deref() {
@@ -1536,12 +1538,14 @@ impl StashBrowser {
                 .text_color(rgb(p.muted))
                 .child(message.clone())
                 .into_any_element(),
-            _ => div()
-                .p_4()
-                .text_size(crate::appearance::ui_text(12.))
-                .text_color(rgb(p.muted))
-                .child("Select a saved file to inspect its exact comparison.")
-                .into_any_element(),
+            _ => native_accessibility::text(
+                "stash-file-prompt",
+                "Select a saved file to inspect its exact comparison.",
+            )
+            .p_4()
+            .text_size(crate::appearance::ui_text(12.))
+            .text_color(rgb(p.muted))
+            .into_any_element(),
         }
     }
 }
@@ -1644,7 +1648,7 @@ impl Render for StashBrowser {
                 .when(narrow && detail, |element| element.w_full().h(crate::appearance::ui_size(140.)))
                 .when(!detail, |element| element.w_full().flex_1())
                 .child(div().h(crate::appearance::ui_size(38.)).flex().items_center().px_2().gap_1().border_b_1().border_color(rgb(p.border))
-                    .child(div().flex_1().text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::SEMIBOLD).child("Saved work"))
+                    .child(native_accessibility::text("stash-list-heading", "Saved work").flex_1().text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::SEMIBOLD))
                     .child(button("refresh-stashes", "", "refresh", false).accessibility_label("Refresh saved stashes").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.load_page(0, window, cx)))))
                 .child(crate::native_accessibility::clips_children(div().id("stash-list-focus").debug_selector(|| "stash-list".into()).role(Role::ListBox).aria_label("Saved stashes").tab_stop(true).track_focus(&self.stash_focus).flex_1().min_h_0()
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -1672,12 +1676,12 @@ impl Render for StashBrowser {
             // around it, as at 18 pt in a 1000 × 680 window, where it kept
             // 30 px without one.
             .when(detail, |element| element.child(cue.list(div().on_children_prepainted(cue.observe(self.detail.observe())).id("stash-detail").debug_selector(|| "stash-detail".into()).flex_1().min_w_0().min_h_0().p(room).mx(-room).mt(-room).overflow_y_scroll().track_scroll(self.detail.scroll()).flex().flex_col().gap_2()
-                .children(self.loading.map(|loading| div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(loading)))
+                .children(self.loading.map(|loading| native_accessibility::text("stash-detail-loading", loading).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted))))
                 .children(self.error.as_ref().map(|error| form_error(error, cx)))
                 .when_some(snapshot, |element, snapshot| element
                     .child(div().flex().flex_col().gap_1()
-                        .child(div().truncate().text_size(crate::appearance::ui_text(14.)).font_weight(FontWeight::SEMIBOLD).child(snapshot.stash.name.clone()))
-                        .child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child(format!("{} · base {} · saved index {}", short_oid(&snapshot.stash.oid), short_oid(&snapshot.base_oid), short_oid(&snapshot.index_oid)))))
+                        .child(native_accessibility::text("stash-detail-name", snapshot.stash.name.clone()).truncate().text_size(crate::appearance::ui_text(14.)).font_weight(FontWeight::SEMIBOLD))
+                        .child(native_accessibility::text("stash-detail-identity", format!("{} · base {} · saved index {}", short_oid(&snapshot.stash.oid), short_oid(&snapshot.base_oid), short_oid(&snapshot.index_oid))).text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))))
                     .child(div().flex().flex_wrap().items_center().gap_1().on_children_prepainted(self.detail.controls(areas.iter().cloned().map(Some).collect(), room)).children([StashArea::Staged, StashArea::Unstaged, StashArea::Untracked].into_iter().zip(areas).map(|(area, focus)| {
                         button(("stash-area", area as usize), format!("{} ({})", area.label(), area.files(&snapshot).len()), "", self.area == area).track_focus(&focus).debug_selector(move || format!("stash-area-{}", area as usize)).on_click(cx.listener(move |this, _, _, cx| this.choose_area(area, cx)))
                     })))
@@ -1690,7 +1694,7 @@ impl Render for StashBrowser {
                             }
                         }))
                         .when(!self.files().is_empty(), |element| element.child(files))
-                        .when(self.files().is_empty(), |element| element.child(div().p_3().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("No saved files in this group."))))))
+                        .when(self.files().is_empty(), |element| element.child(native_accessibility::text("stash-files-empty", "No saved files in this group.").p_3().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))))))
                     .child(div().flex().items_center().gap_1().on_children_prepainted(self.detail.controls(mode_focus, room)).children(modes.into_iter().map(|(mode, label, focus)| {
                         button(("stash-text-mode", mode), label, "", self.text_mode == mode).track_focus(&focus).disabled(!matches!(self.content.as_deref(), Some(Content::Text { .. }))).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.ensure_editor(window, cx); cx.notify(); }))
                     })))
@@ -1700,13 +1704,13 @@ impl Render for StashBrowser {
                         .child(div().flex_1())
                         .child(button("drop-saved-stash", "Drop…", "", false).track_focus(&drop).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))))
                         .child(Button::new("restore-saved-stash").primary().small().label("Review restore…").track_focus(&restore).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.restore(window, cx)))))
-                    .child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("Restoring keeps this stash saved. Drop it separately after checking the restored work.")))
+                    .child(native_accessibility::text("stash-restore-note", "Restoring keeps this stash saved. Drop it separately after checking the restored work.").text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))))
                 // Where its loading line stood, at the detail's edge, and
                 // short enough for one line beside the stacked list at 18 pt
                 // in a 461 × 490 window: the centred prompt that named every
                 // group wrapped there, past the detail's room, and left
                 // "files." alone on its last line at 13 pt.
-                .when(self.snapshot.is_none() && self.loading.is_none() && self.error.is_none(), |element| element.child(div().debug_selector(|| "stash-detail-placeholder".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Choose a stash to inspect its files."))), "stash-detail-scrollbar").flex_1().min_w_0().min_h_0()))
+                .when(self.snapshot.is_none() && self.loading.is_none() && self.error.is_none(), |element| element.child(native_accessibility::text("stash-detail-placeholder", "Choose a stash to inspect its files.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "stash-detail-scrollbar").flex_1().min_w_0().min_h_0()))
     }
 }
 
