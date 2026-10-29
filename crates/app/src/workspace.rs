@@ -612,6 +612,10 @@ pub(crate) struct BusyLook {
     reveal: Option<Task<()>>,
 }
 
+/// Why a control a running write refuses is unavailable, in its tooltip once
+/// it looks busy and in the command palette's and the Linux Main Menu's row.
+pub(crate) const BUSY_REASON: &str = "Wait for the current Git operation to finish";
+
 /// `control` as a busy spell leaves it: while `refused`, its own handler or
 /// `write_from` refuses a press at once, and assistive technology hears it
 /// unavailable at once with it, while it takes the disabled look only where
@@ -631,6 +635,28 @@ pub(crate) fn refusing(
     control
         .disabled(dimmed)
         .accessibility_disabled(refused || dimmed)
+}
+
+/// [`refusing`], with `tooltip` as the control's tooltip at rest and, once
+/// it looks refused, `tooltip` followed by why ([`BUSY_REASON`]), as the
+/// header's Projects and History's Back to Projects say why they wait for a
+/// write; they looked refused and still read "Open Projects".
+pub(crate) fn refusing_with_reason(
+    control: Button,
+    key: impl Fn() -> String,
+    refused: bool,
+    dimmed: bool,
+    tooltip: impl Into<SharedString>,
+) -> Button {
+    let tooltip: SharedString = tooltip.into();
+    let tooltip: SharedString = if dimmed {
+        format!("{tooltip} · {BUSY_REASON}").into()
+    } else {
+        tooltip
+    };
+    #[cfg(test)]
+    refusals::record_tooltip(key(), tooltip.clone());
+    refusing(control, key, refused, dimmed).tooltip(tooltip)
 }
 
 /// `input`, which a busy spell leaves `refused`: it takes no edit and is
@@ -665,10 +691,15 @@ pub(crate) mod refusals {
 
     thread_local! {
         static LAST: RefCell<HashMap<String, Refusal>> = Default::default();
+        static TOOLTIPS: RefCell<HashMap<String, gpui_kit::SharedString>> = Default::default();
     }
 
     pub(crate) fn record(key: String, announced: bool, dimmed: bool) {
         LAST.with(|last| last.borrow_mut().insert(key, Refusal { announced, dimmed }));
+    }
+
+    pub(crate) fn record_tooltip(key: String, tooltip: gpui_kit::SharedString) {
+        TOOLTIPS.with(|last| last.borrow_mut().insert(key, tooltip));
     }
 
     /// What the control `key` was last built with.
@@ -676,9 +707,16 @@ pub(crate) mod refusals {
         LAST.with(|last| last.borrow().get(key).copied())
     }
 
+    /// The tooltip the control `key` was last built with
+    /// (`super::refusing_with_reason`).
+    pub(crate) fn tooltip(key: &str) -> Option<gpui_kit::SharedString> {
+        TOOLTIPS.with(|last| last.borrow().get(key).cloned())
+    }
+
     /// Forgets every control, so only those built after it are found.
     pub(crate) fn forget() {
         LAST.with(|last| last.borrow_mut().clear());
+        TOOLTIPS.with(|last| last.borrow_mut().clear());
     }
 }
 
@@ -2011,11 +2049,16 @@ impl GitTurtle {
         }
     }
 
+    /// Opens Working Changes. Switching pages only reads, so it stays
+    /// available while a write runs, as History does: the page then shows
+    /// the write's own busy look on its write controls. A write in the shown
+    /// repository reads the working state again when it ends, so the switch
+    /// asks for no read of its own then: on the serial executor it would only
+    /// wait behind the write, and every switch would queue another. The
+    /// switch once returned while any write ran, from the toggle drawn and
+    /// announced available, its shortcut and the palette alike.
     pub(super) fn show_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_inspections(window, cx);
-        if self.operation_busy.is_some() {
-            return;
-        }
         if self.repository.is_none() {
             self.show_projects(window, cx);
             return;
@@ -2035,7 +2078,11 @@ impl GitTurtle {
         self.sidebar = false;
         self.pane = Pane::Files;
         window.focus(&self.file_focus, cx);
-        self.refresh_worktree(window, cx);
+        let writing_here = self.operation_repository.is_some()
+            && self.operation_repository.as_ref() == self.path.as_ref();
+        if !writing_here {
+            self.refresh_worktree(window, cx);
+        }
         cx.notify();
     }
 
@@ -2646,10 +2693,15 @@ impl GitTurtle {
                     }
                     if refresh_history { this.refresh_after_write(path, window, cx); }
                     else if downloading_lfs {
-                        if succeeded && lfs_selection.as_ref().is_some_and(|(file, mode, generation)| this.mode == *mode && this.generation == *generation && this.selected_file.and_then(|index| this.files.get(index)) == Some(file)) {
+                        let same_view = lfs_selection.as_ref().is_some_and(|(file, mode, generation)| this.mode == *mode && this.generation == *generation && this.selected_file.and_then(|index| this.files.get(index)) == Some(file));
+                        if succeeded && same_view {
                             if this.mode == WorkspaceMode::Working {
                                 if let Some((index, area)) = this.working_selected { this.select_working(index, area, window, cx); }
                             } else if !this.reload_tracked_inspection(window, cx) && let Some(index) = this.selected_file { this.load_file(index, window, cx); }
+                        } else if !same_view && this.mode == WorkspaceMode::Working {
+                            // Changes, opened while the download ran, asked for no
+                            // read of its own (`show_working`).
+                            this.refresh_worktree(window, cx);
                         }
                     } else {
                         // Menus wait for this read as for a reload

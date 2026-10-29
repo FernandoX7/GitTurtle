@@ -346,10 +346,18 @@ impl CommandId {
         matches!(self, Self::FileHistory | Self::Blame)
     }
     fn reason(self, context: &Availability) -> Option<&'static str> {
+        // Going to History, Changes or Settings only reads, so it stays
+        // available while a write runs, as their shortcuts and the header's
+        // toggle do; the palette and the Linux Main Menu once refused them.
+        // Projects waits: every action it offers starts another operation.
         if context.busy
             && !matches!(
                 self,
-                Self::Activity
+                Self::History
+                    | Self::Changes
+                    | Self::Settings
+                    | Self::Appearance
+                    | Self::Activity
                     | Self::Help
                     | Self::About
                     | Self::Palette
@@ -361,7 +369,7 @@ impl CommandId {
                     | Self::MoveRepositoryTabRight
             )
         {
-            return Some("Wait for the current Git operation to finish");
+            return Some(crate::workspace::BUSY_REASON);
         }
         if (self.workspace()
             || matches!(
@@ -1194,6 +1202,20 @@ mod tests {
         context.busy = true;
         assert!(CommandId::Profiles.reason(&context).is_some());
         assert!(CommandId::Activity.reason(&context).is_none());
+        // Page navigation only reads, so a write leaves it available, while
+        // Projects, whose every action starts another operation, waits.
+        for page in [
+            CommandId::History,
+            CommandId::Changes,
+            CommandId::Settings,
+            CommandId::Appearance,
+        ] {
+            assert_eq!(page.reason(&context), None, "{page:?} during a write");
+        }
+        assert_eq!(
+            CommandId::Projects.reason(&context),
+            Some(crate::workspace::BUSY_REASON)
+        );
     }
     #[test]
     fn selection_is_bounded_and_enter_or_cancel_can_only_claim_once() {

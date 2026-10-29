@@ -189,17 +189,18 @@ impl GitTurtle {
         )
         .debug_selector(|| "page-back".into())
         .accessibility_label(back_label)
-        // History's Back opens Projects, which a running write refuses.
+        // History's Back opens Projects, which a running write refuses; once
+        // it looks refused, its tooltip says why.
         .map(|back| {
             let history = self.mode == WorkspaceMode::History;
-            crate::workspace::refusing(
+            crate::workspace::refusing_with_reason(
                 back,
                 || "page-back".into(),
                 self.operation_busy.is_some() && history,
                 self.operation_shown().is_some() && history,
+                format!("{back_label} · {}[", primary_label()),
             )
         })
-        .tooltip(format!("{back_label} · {}[", primary_label()))
         .when(labelled, |back| back.w_full())
         // The kit centres a Button's content: the shorter "Back" keeps the
         // leading edge "Projects" takes, and the rest of the slot trails it.
@@ -301,14 +302,16 @@ impl GitTurtle {
         button("projects", "", "folder", false)
             .debug_selector(|| "projects".into())
             .accessibility_label("Projects")
-            .tooltip("Open Projects")
-            // `show_projects` refuses while a write runs.
+            // `show_projects` refuses while a write runs, since every action
+            // Projects offers starts another operation; once the button looks
+            // refused, its tooltip says why.
             .map(|projects| {
-                crate::workspace::refusing(
+                crate::workspace::refusing_with_reason(
                     projects,
                     || "projects".into(),
                     self.operation_busy.is_some(),
                     self.operation_shown().is_some(),
+                    "Open Projects",
                 )
             })
             .on_click(cx.listener(|this, _, window, cx| this.show_projects(window, cx)))
