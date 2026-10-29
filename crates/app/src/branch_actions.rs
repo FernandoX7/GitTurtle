@@ -104,8 +104,15 @@ impl GitTurtle {
 
     /// Replaces the existing picker; its frequent switch actions remain first.
     /// `compact`, in the action bar's compact row, it is a 28 px control that
-    /// gives up its width, truncating the branch name, before its row wraps.
-    pub(super) fn render_branch_picker(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// gives up its width, truncating the branch name, before its row wraps,
+    /// and at most `most` wide where given: the room the ahead and behind
+    /// counts leave it (`GitTurtle::sync_fit`).
+    pub(super) fn render_branch_picker(
+        &self,
+        compact: bool,
+        most: Option<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let branch = self
             .work_status
             .as_ref()
@@ -164,7 +171,7 @@ impl GitTurtle {
             .h(crate::appearance::ui_size(if compact { 28. } else { 34. }))
             .when(compact, |button| button.flex_shrink(1.))
             .px_3()
-            .max_w(px(280.))
+            .max_w(most.map_or(px(280.), |most| most.min(px(280.))))
             .text_size(crate::appearance::ui_text(12.))
             .font_weight(FontWeight::MEDIUM)
             .label(label)

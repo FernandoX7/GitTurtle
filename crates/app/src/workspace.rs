@@ -3545,8 +3545,10 @@ impl GitTurtle {
         &self,
         compact: bool,
         edge_form: crate::empty_state::EdgeForm,
+        sync: crate::views::SyncFit,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let sync_form = sync.form;
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
         // A write in flight leaves the actions inert at once (`write_from`,
@@ -3566,15 +3568,7 @@ impl GitTurtle {
         let target = format!("{selected_remote}/{selected_branch}");
         let branch_empty = self.branch_name.read(cx).value().trim().is_empty();
         let detached = self.work_status.as_ref().is_none_or(|s| s.branch.is_none());
-        let branch_picker = self.render_branch_picker(compact, cx);
-        // A compact row's texts truncate rather than push the actions away.
-        let shrinking = |text: Div| {
-            if compact {
-                text.min_w_0().truncate()
-            } else {
-                text
-            }
-        };
+        let branch_picker = self.render_branch_picker(compact, sync.picker, cx);
         // A repository at an edge (detached HEAD, no remote, no commits yet
         // or no upstream) says so in the counts' place, and its next action, if any,
         // joins the actions (`empty_state`).
@@ -3639,60 +3633,64 @@ impl GitTurtle {
                     format!("Compared with local {upstream}. Fetch to update remote information.")
                 },
             );
-            // Truncated, the counts stay readable in the tooltip.
+            // The counts are always whole, in the form that fits
+            // (`GitTurtle::sync_fit`), and always the state's accessible
+            // name; the compact bar's tooltip leads with them too.
+            let summary = sync_summary(status);
             let tooltip = if compact {
-                format!("{} · {explanation}", sync_summary(status))
+                format!("{summary} · {explanation}")
             } else {
                 explanation
             };
-            div()
+            let count = |symbol: &'static str, value: u64, word: &'static str, color: u32| {
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap_1()
+                    .text_color(rgb(color))
+                    .child(icon(symbol, 12., color))
+                    .when(sync_form != crate::views::SyncForm::Icons, |el| {
+                        el.child(
+                            div()
+                                .debug_selector(move || format!("branch-{word}-count"))
+                                .child(if sync_form == crate::views::SyncForm::Words {
+                                    format!("{value} {word}")
+                                } else {
+                                    value.to_string()
+                                }),
+                        )
+                    })
+            };
+            let state = div()
                 .id("branch-sync-state")
+                .debug_selector(|| "branch-sync-state".into())
                 .flex()
+                .flex_shrink_0()
                 .items_center()
                 .gap_2()
                 .px_2()
                 .text_size(crate::appearance::ui_text(11.))
-                .when(compact, |el| el.min_w_0().overflow_hidden())
                 .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                 .when(status.upstream.is_some(), |el| {
-                    el.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .when(compact, |el| el.min_w_0())
-                            .text_color(rgb(if status.ahead > 0 { p.added } else { p.muted }))
-                            .child(icon(
-                                "push",
-                                12.,
-                                if status.ahead > 0 { p.added } else { p.muted },
-                            ))
-                            .child(shrinking(div()).child(format!("{} ahead", status.ahead))),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .when(compact, |el| el.min_w_0())
-                            .text_color(rgb(if status.behind > 0 {
-                                p.modified
-                            } else {
-                                p.muted
-                            }))
-                            .child(icon(
-                                "pull",
-                                12.,
-                                if status.behind > 0 {
-                                    p.modified
-                                } else {
-                                    p.muted
-                                },
-                            ))
-                            .child(shrinking(div()).child(format!("{} behind", status.behind))),
-                    )
-                })
-                .into_any_element()
+                    el.child(count(
+                        "push",
+                        status.ahead,
+                        "ahead",
+                        if status.ahead > 0 { p.added } else { p.muted },
+                    ))
+                    .child(count(
+                        "pull",
+                        status.behind,
+                        "behind",
+                        if status.behind > 0 {
+                            p.modified
+                        } else {
+                            p.muted
+                        },
+                    ))
+                });
+            crate::native_accessibility::static_text(state, summary).into_any_element()
         });
         let operation_state = self
             .work_status

@@ -3601,6 +3601,28 @@ impl Chrome {
     }
 }
 
+/// How the Git action bar draws the ahead and behind counts, whole, and the
+/// width the compact branch picker gives up to beside them
+/// (`GitTurtle::sync_fit`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SyncFit {
+    pub(crate) form: SyncForm,
+    /// The compact picker's most width, its label ending in an ellipsis,
+    /// where even the arrows alone would not fit beside its whole label.
+    pub(crate) picker: Option<Pixels>,
+}
+
+/// The form the ahead and behind counts take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum SyncForm {
+    /// Each arrow beside its count and word: "↑ 0 ahead".
+    Words,
+    /// Each arrow beside its count alone: "↑ 0".
+    Digits,
+    /// The arrows alone, the counts in the tooltip and accessible name.
+    Icons,
+}
+
 /// The text the full chrome lays out, other than its fixed labels.
 #[derive(Clone, Default, PartialEq)]
 struct ChromeText {
@@ -3609,6 +3631,10 @@ struct ChromeText {
     branch: String,
     ahead: String,
     behind: String,
+    /// The ahead and behind counts' digits alone, as the compact bar draws
+    /// them where their words would cut them ([`SyncForm::Digits`]).
+    ahead_count: String,
+    behind_count: String,
     operation: String,
     /// The repository edge's line and its action's label, if any
     /// (`empty_state::RepositoryEdge`).
@@ -3634,6 +3660,8 @@ struct ChromeWidths {
     branch: Pixels,
     ahead: Pixels,
     behind: Pixels,
+    ahead_count: Pixels,
+    behind_count: Pixels,
     edge: Pixels,
     edge_short: Pixels,
     edge_action: Pixels,
@@ -3668,6 +3696,8 @@ impl ChromeWidths {
             branch: medium(&text.branch),
             ahead: regular(&text.ahead, small),
             behind: regular(&text.behind, small),
+            ahead_count: regular(&text.ahead_count, small),
+            behind_count: regular(&text.behind_count, small),
             edge: regular(&text.edge, label),
             edge_short: regular(&text.edge_short, label),
             edge_action: regular(&text.edge_action, label),
@@ -4125,6 +4155,8 @@ impl GitTurtle {
             branch,
             ahead: status.map_or_else(String::new, |s| format!("{} ahead", s.ahead)),
             behind: status.map_or_else(String::new, |s| format!("{} behind", s.behind)),
+            ahead_count: status.map_or_else(String::new, |s| s.ahead.to_string()),
+            behind_count: status.map_or_else(String::new, |s| s.behind.to_string()),
             operation: status
                 .and_then(|s| s.operation.as_ref())
                 .map_or_else(String::new, |operation| format!("{operation} in progress")),
@@ -4341,22 +4373,84 @@ impl GitTurtle {
         widths: &ChromeWidths,
         window: &Window,
     ) -> bool {
+        let actions = 4. + if edge.action().is_some() { 1. } else { 0. };
+        window.pixel_snap(window.rem_size() * 0.5) * 2. + widths.edge_compact
+            <= self.compact_line_room(actions, widths, window)
+    }
+
+    /// The room the compact action bar's row leaves the line after the
+    /// branch picker: the row's `actions` 28 px controls keep their room,
+    /// and the picker its whole label (`render_git_actions`).
+    fn compact_line_room(&self, actions: f32, widths: &ChromeWidths, window: &Window) -> Pixels {
         let rem = window.rem_size();
         let snap = |length: Pixels| window.pixel_snap(length);
         let control = snap(appearance::ui_size(28.));
         let gap = snap(rem * 0.5);
-        let actions = 4. + if edge.action().is_some() { 1. } else { 0. };
         let room =
             self.full_actions_page(window) - snap(rem * 0.75) * 2. - (control + gap) * actions;
-        // A medium kit Button: `px_3`, the 16 px icon and the label `gap_2`
-        // apart, the caret after it, within its 280 px limit.
-        let picker = (snap(rem * 0.75) * 2.
-            + px(16.)
-            + snap(rem * 0.5) * 2.
-            + widths.compact_branch
-            + snap(rem))
-        .min(snap(px(280.)));
-        picker + gap + snap(rem * 0.5) * 2. + widths.edge_compact <= room
+        room - self.compact_picker(widths, window) - gap
+    }
+
+    /// The compact branch picker's width with its whole label: a medium kit
+    /// Button's `px_3`, the 16 px icon and the label `gap_2` apart, and the
+    /// caret after it, within its 280 px limit.
+    fn compact_picker(&self, widths: &ChromeWidths, window: &Window) -> Pixels {
+        let rem = window.rem_size();
+        let snap = |length: Pixels| window.pixel_snap(length);
+        (snap(rem * 0.75) * 2. + px(16.) + snap(rem * 0.5) * 2. + widths.compact_branch + snap(rem))
+            .min(snap(px(280.)))
+    }
+
+    /// How the Git action bar draws the ahead and behind counts. The full
+    /// bar, which wraps, draws their words; the compact bar, one row, the
+    /// richest form whole beside the branch picker's whole label, as "One
+    /// responsive order" lets a count's words go before the count: their
+    /// words, then their digits beside the arrows, then the arrows alone,
+    /// the counts in the state's tooltip and accessible name. Where even the
+    /// arrows would not fit, the picker gives up the room they need, its
+    /// label ending in an ellipsis and whole in its tooltip and name, since
+    /// the kit's Button does not shrink. At 18 pt in a 461 × 490 half tile
+    /// the words were cut to "↑ 0…", and to "↑ …" beside a longer branch
+    /// name.
+    pub(super) fn sync_fit(&self, compact: bool, window: &Window) -> SyncFit {
+        let words = SyncFit {
+            form: SyncForm::Words,
+            picker: None,
+        };
+        if !compact
+            || self.repository_edge().is_some()
+            || self
+                .work_status
+                .as_ref()
+                .is_none_or(|status| status.upstream.is_none())
+        {
+            return words;
+        }
+        let widths = self.chrome_widths(window);
+        let rem = window.rem_size();
+        let snap = |length: Pixels| window.pixel_snap(length);
+        // Fetch, Pull, Push and Targets: an edge stands in the counts' place.
+        let room = self.compact_line_room(4., &widths, window);
+        // The state's `px_2` box and each count's 12 px arrow, the two
+        // `gap_2` apart, and each count's text a `gap_1` after its arrow.
+        let arrows = snap(rem * 0.5) * 2. + px(12.) * 2. + snap(rem * 0.5);
+        let text = |ahead: Pixels, behind: Pixels| ahead + behind + snap(rem * 0.25) * 2.;
+        if arrows + text(widths.ahead, widths.behind) <= room {
+            return words;
+        }
+        if arrows + text(widths.ahead_count, widths.behind_count) <= room {
+            return SyncFit {
+                form: SyncForm::Digits,
+                picker: None,
+            };
+        }
+        SyncFit {
+            form: SyncForm::Icons,
+            picker: (arrows > room).then(|| {
+                (self.compact_picker(&widths, window) - (arrows - room))
+                    .max(snap(appearance::ui_size(28.)))
+            }),
+        }
     }
 
     /// The repository page's width beside the project pane, which the action
@@ -5487,6 +5581,7 @@ impl GitTurtle {
             .child(self.render_git_actions(
                 chrome.is_compact(),
                 self.edge_form(chrome.is_compact(), window),
+                self.sync_fit(chrome.is_compact(), window),
                 cx,
             ))
             .child(self.render_operation_state(cx))
@@ -8821,6 +8916,88 @@ pub(crate) mod tests {
         let lines = visible_diff_lines(&app, cx, 490.);
         assert!(lines >= 3., "{lines} diff lines");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The Git action bar draws the ahead and behind counts whole at 13 and
+    /// 18 pt in 461 and 1,480 px windows: their words where they fit beside
+    /// the branch picker's whole label, then their digits beside the arrows,
+    /// then the arrows alone, with the counts always the state's accessible
+    /// name and, in the compact bar, leading its tooltip. At 18 pt in a
+    /// 461 × 490 half tile they were cut to "↑ 0…", and to "↑ …" beside a
+    /// longer branch name.
+    #[gpui::test]
+    async fn the_sync_counts_stay_whole_in_every_form(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, &history_script(2, 3)).await;
+        track_a_local_origin(fixture.path(), &app, cx).await;
+        let mut seen = std::collections::BTreeMap::new();
+        let mut branch = "main".to_owned();
+        for renamed in ["main", "feature/counts"] {
+            if renamed != branch {
+                let repository = fixture.path().join("narrow");
+                fixture_git(&repository, &["branch", "-m", &branch, renamed]);
+                press_refresh(&app, cx).await;
+                branch = renamed.to_owned();
+            }
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                for (width, height) in [(461., 490.), (1480., 980.)] {
+                    cx.simulate_resize(size(px(width), px(height)));
+                    draw(cx);
+                    let at = format!("{branch} at {text} pt in {width} × {height}");
+                    let form = cx.update(|window, cx| {
+                        let app = app.read(cx);
+                        app.sync_fit(app.chrome(window, cx).is_compact(), window)
+                            .form
+                    });
+                    seen.entry((branch.clone(), text, width as u32))
+                        .or_insert(form);
+                    for (word, value) in [("ahead", 1), ("behind", 0)] {
+                        let drawn = cx.debug_bounds(format!("branch-{word}-count").leak());
+                        let said = match form {
+                            SyncForm::Words => Some(format!("{value} {word}")),
+                            SyncForm::Digits => Some(value.to_string()),
+                            SyncForm::Icons => None,
+                        };
+                        match (drawn, said) {
+                            (Some(drawn), Some(said)) => {
+                                let need = cx.update(|window, _| {
+                                    let weight = window.text_style().font_weight;
+                                    shaped_width(&said, appearance::ui_text(11.), weight, window)
+                                        .ceil()
+                                });
+                                assert!(
+                                    drawn.size.width >= need - px(0.5),
+                                    "{at}: {said:?} in {:?} of its {need:?}",
+                                    drawn.size.width
+                                );
+                            }
+                            (None, None) => {}
+                            (drawn, said) => panic!("{at}: {said:?} drawn at {drawn:?}"),
+                        }
+                    }
+                    let state = cx.debug_bounds("branch-sync-state").expect("the counts");
+                    let fetch = cx.debug_bounds("fetch").expect("Fetch");
+                    let same_row = state.top() < fetch.bottom() && fetch.top() < state.bottom();
+                    assert!(
+                        !same_row || state.right() <= fetch.left() + px(0.5),
+                        "{at}: the counts {state:?} run into Fetch {fetch:?} after {:?}",
+                        cx.debug_bounds("current-branch")
+                    );
+                    let name = crate::native_accessibility::written::get("branch-sync-state")
+                        .and_then(|written| written.node.value().map(str::to_owned));
+                    assert_eq!(name.as_deref(), Some("1 ahead, 0 behind"), "{at}");
+                }
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        let forms: std::collections::BTreeSet<_> = seen.values().copied().collect();
+        assert!(
+            forms.len() == 3,
+            "every form, the words wide and the arrows alone beside a long name: {seen:?}"
+        );
+        for ((_, _, width), form) in &seen {
+            assert!(*width < 1480 || *form == SyncForm::Words, "{seen:?}");
+        }
     }
 
     /// The chrome controls `ringed` looks for, in their Tab order.
