@@ -5,6 +5,8 @@ use gpui_kit::prelude::FluentBuilder;
 use std::time::Duration;
 
 const SEARCH_LABEL: &str = "Searching repository history…";
+/// How long typing must pause before a query is searched.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const MAX_RESULTS: usize = 10_000;
 const MAX_RESULT_BYTES: usize = 64 * 1024 * 1024;
 /// The narrowest the controls' summary is drawn beside its buttons, at the
@@ -270,7 +272,7 @@ impl GitTurtle {
             return;
         }
         let epoch = self.history_search.epoch;
-        let timer = cx.background_executor().timer(Duration::from_millis(250));
+        let timer = cx.background_executor().timer(SEARCH_DEBOUNCE);
         self.history_search.debounce = Some(cx.spawn_in(window, async move |this, cx| {
             timer.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -737,6 +739,23 @@ fn search_reply_current(
     requested_path: &Option<PathBuf>,
 ) -> bool {
     epoch == requested_epoch && generation == requested_generation && path == requested_path
+}
+
+/// Returns once the search a query change started has finished: past its
+/// debounce on the test clock, then each page read on the app's reader,
+/// a thread `run_until_parked` cannot wait for, has answered and landed.
+/// The test clock moves only by the debounce.
+#[cfg(test)]
+pub(crate) fn search_lands(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    cx.executor().advance_clock(SEARCH_DEBOUNCE);
+    for _ in 0..8 {
+        cx.run_until_parked();
+        if !app.read_with(cx, |app, _| app.history_search_pending()) {
+            return;
+        }
+        app.read_with(cx, |app, _| app.worker.wait_idle());
+    }
+    panic!("the search never finished");
 }
 
 #[cfg(test)]

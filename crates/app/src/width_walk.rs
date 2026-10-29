@@ -1010,14 +1010,11 @@ pub(crate) fn unwatch(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
             app.watch_through(local_refresh::Backend::Unavailable, window, cx)
         })
     });
-    // The subscription is made on the operation thread.
-    for _ in 0..400 {
-        frame(cx);
-        if cx.debug_bounds("local-refresh-warning").is_some() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    // The subscription is made on the operation thread, which
+    // `run_until_parked` cannot wait for: once it drains, the subscription
+    // has answered, and its reply lands as the next frame parks.
+    app.read_with(cx, |app, _| app.operations.drain());
+    frame(cx);
     assert!(
         cx.debug_bounds("local-refresh-warning").is_some(),
         "the status bar says that some changes need Refresh"
@@ -1068,16 +1065,9 @@ pub(crate) async fn open(
                     app.history_query_changed(window, cx);
                 })
             });
-            // Past its debounce, letting the reader answer.
-            for _ in 0..400 {
-                cx.executor()
-                    .advance_clock(std::time::Duration::from_millis(50));
-                frame(cx);
-                if app.read_with(cx, |app, _| app.history_search_no_match().is_some()) {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            // Past its debounce, once the reader has answered.
+            crate::history_search::search_lands(&app, cx);
+            frame(cx);
             assert!(
                 app.read_with(cx, |app, _| app.history_search_no_match().is_some()),
                 "the search finds nothing"

@@ -470,14 +470,23 @@ impl GitTurtle {
     }
 
     pub(super) fn open_stashes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_stash_browser(window, cx);
+    }
+
+    /// Opens Stashes, as [`Self::open_stashes`] does, and returns its
+    /// browser, which a test waits on for its reads (`StashBrowser::lands`).
+    pub(super) fn open_stash_browser(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<StashBrowser>> {
         if self.operation_busy.is_some() {
-            return;
+            return None;
         }
-        let Some(repo) = self.repository.clone() else {
-            return;
-        };
+        let repo = self.repository.clone()?;
         let owner = cx.entity().downgrade();
         let browser = cx.new(|cx| StashBrowser::new(owner, repo, window, cx));
+        let opened = browser.clone();
         window.open_alert_dialog(cx, move |dialog, window, _| {
             dialog
                 .title(native_accessibility::dialog_title(
@@ -496,6 +505,7 @@ impl GitTurtle {
                     move |content, _, _| content.min_h_0().child(browser.clone())
                 })
         });
+        Some(opened)
     }
 
     pub(super) fn finish_recovery_write(
@@ -987,7 +997,7 @@ impl StashArea {
 /// This transient inspector owns one bounded metadata executor and one
 /// replaceable preview worker. Closing it releases both and its preview cache;
 /// its replies never replace the main workspace's current comparison.
-struct StashBrowser {
+pub(crate) struct StashBrowser {
     owner: WeakEntity<GitTurtle>,
     repository: GitRepository,
     metadata: SerialExecutor,
@@ -1031,6 +1041,22 @@ impl Drop for StashBrowser {
 }
 
 impl StashBrowser {
+    /// Returns once every read the browser has started, the saved stashes
+    /// or a selected stash's inspection, has landed and been drawn. They run
+    /// on the browser's own thread, which `run_until_parked` cannot wait for:
+    /// once it drains, each has answered, which holds the test clock, and the
+    /// replies land as the test parks.
+    #[cfg(test)]
+    pub(crate) fn lands(browser: &Entity<Self>, cx: &mut VisualTestContext) {
+        browser.read_with(cx, |browser, _| browser.metadata.drain());
+        crate::views::tests::draw(cx);
+        assert!(
+            browser.read_with(cx, |browser, _| browser.metadata_task.is_none()
+                && browser.loading.is_none()),
+            "the Stashes read lands"
+        );
+    }
+
     fn new(
         owner: WeakEntity<GitTurtle>,
         repository: GitRepository,

@@ -537,22 +537,16 @@ pub(crate) mod tests {
         draw(cx);
     }
 
-    /// Draws, letting the reader threads answer, until `done` holds.
-    fn wait(
-        cx: &mut VisualTestContext,
-        what: &str,
-        mut done: impl FnMut(&mut VisualTestContext) -> bool,
-    ) {
-        for _ in 0..400 {
-            cx.executor()
-                .advance_clock(std::time::Duration::from_millis(50));
-            draw(cx);
-            if done(cx) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        panic!("{what} never happened");
+    /// Opens the GitHub panel and draws it once its local read has landed
+    /// (`GitTurtle::github_local_read_lands`): the panel shows Name
+    /// repository once that read finds no GitHub remote.
+    fn open_github(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        GitTurtle::github_local_read_lands(app, cx);
+        assert!(
+            cx.debug_bounds("github-choose-destination").is_some(),
+            "the panel's local read found no GitHub remote"
+        );
     }
 
     fn selector(name: String) -> &'static str {
@@ -1021,9 +1015,12 @@ pub(crate) mod tests {
     async fn a_search_with_no_match_offers_clear_search(cx: &mut TestAppContext) {
         let (_fixture, app, cx, _) = window(cx, &history_script(1, 1)).await;
         search_for_nothing(&app, cx);
-        wait(cx, "the search to finish", |cx| {
-            app.read_with(cx, |app, _| app.history_search_no_match().is_some())
-        });
+        crate::history_search::search_lands(&app, cx);
+        draw(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.history_search_no_match().is_some()),
+            "the search finds nothing"
+        );
         let line = app.read_with(cx, |app, _| app.history_search_no_match().unwrap());
         assert!(
             line.starts_with("No commits match · searched 1 commit in "),
@@ -1209,9 +1206,7 @@ pub(crate) mod tests {
                 app.change_file_filter(cx);
             })
         });
-        wait(cx, "the path filter", |cx| {
-            app.read_with(cx, |app, _| !app.file_paths.pending)
-        });
+        crate::path_filter::filters_land(&app, cx);
         check(
             cx,
             "files-no-match",
@@ -1220,9 +1215,11 @@ pub(crate) mod tests {
             "commit-inspector-files",
         );
         click(cx, "files-clear-filter");
-        wait(cx, "every file again", |cx| {
-            cx.debug_bounds("files-no-match").is_none()
-        });
+        crate::path_filter::filters_land(&app, cx);
+        assert!(
+            cx.debug_bounds("files-no-match").is_none(),
+            "every file is shown again"
+        );
         assert!(app.read_with(cx, |app, cx| app.file_filter.read(cx).value().is_empty()));
     }
 
@@ -1240,10 +1237,14 @@ pub(crate) mod tests {
         );
         cx.update(|window, cx| window.close_all_dialogs(cx));
         draw(cx);
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
-        wait(cx, "the stash list", |cx| {
-            cx.debug_bounds("stash-list-empty-line").is_some()
-        });
+        let stashes = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
+            .expect("Stashes opens");
+        crate::recovery::StashBrowser::lands(&stashes, cx);
+        assert!(
+            cx.debug_bounds("stash-list-empty-line").is_some(),
+            "the empty stash list is drawn"
+        );
         // Inside the list's visible part: at 18 pt in a 461 × 490 window the
         // line ran past it.
         check(
@@ -1306,10 +1307,7 @@ pub(crate) mod tests {
     #[gpui::test]
     async fn the_github_panel_without_a_remote_asks_for_a_destination(cx: &mut TestAppContext) {
         let (_fixture, app, cx, _) = window(cx, &history_script(1, 1)).await;
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
-        wait(cx, "the panel's local read", |cx| {
-            cx.debug_bounds("github-choose-destination").is_some()
-        });
+        open_github(&app, cx);
         // Follow-up: in the short half tile at 18 pt the control lies below
         // the panel's fold, and Tab does not ring it whole there.
         check_in(
@@ -1382,10 +1380,7 @@ pub(crate) mod tests {
     #[gpui::test]
     async fn name_repository_shows_the_field_it_focuses(cx: &mut TestAppContext) {
         let (_fixture, app, cx, _) = window(cx, &history_script(1, 1)).await;
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
-        wait(cx, "the panel's local read", |cx| {
-            cx.debug_bounds("github-choose-destination").is_some()
-        });
+        open_github(&app, cx);
         crate::views::CONTROL_ICONS.with(|icons| icons.borrow_mut().clear());
         cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
         cx.simulate_resize(size(px(461.), px(490.)));
@@ -1461,9 +1456,7 @@ pub(crate) mod tests {
                     app.filter_working_paths(window, cx);
                 })
             });
-            wait(cx, "the path filter", |cx| {
-                app.read_with(cx, |app, _| !app.working_paths.pending)
-            });
+            crate::path_filter::filters_land(&app, cx);
         };
         // What lies above the list, and the list's top.
         let above = |cx: &mut VisualTestContext| {
@@ -1518,9 +1511,7 @@ pub(crate) mod tests {
             );
 
             click(cx, "working-clear-filter");
-            wait(cx, "every file again", |cx| {
-                app.read_with(cx, |app, _| !app.working_paths.pending)
-            });
+            crate::path_filter::filters_land(&app, cx);
             let (query, focused) = cx.update(|window, cx| {
                 let app = app.read(cx);
                 (

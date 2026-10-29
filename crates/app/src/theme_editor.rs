@@ -2858,14 +2858,7 @@ pub(crate) mod tests {
     use super::*;
     use appearance::custom::{ReadabilityBackground, ReadabilityForeground, ReadabilityMeasure};
     use core::prelude::v1::test;
-    use std::{
-        cell::RefCell,
-        rc::Rc,
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
-    };
+    use std::{cell::RefCell, rc::Rc};
 
     fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
         // GitTurtle::new starts a real preferences worker; saves reply from it.
@@ -2945,16 +2938,50 @@ pub(crate) mod tests {
         }
     }
 
-    /// Wait for replies from the real preference writer thread.
-    fn wait_for(cx: &mut VisualTestContext, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
-        for _ in 0..500 {
+    /// Settle until `done` holds, letting the real preference writer thread
+    /// answer: each round drains the writer, which holds the test clock, and
+    /// settles to handle its replies. A reply may submit another job, as an
+    /// accepted import's read submits its save, which the next round drains.
+    fn wait_for(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        mut done: impl FnMut(&mut VisualTestContext) -> bool,
+    ) {
+        for round in 0..=WRITER_ROUNDS {
             settle(cx);
             if done(cx) {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            if round < WRITER_ROUNDS {
+                cx.read(|cx| app.read(cx).preferences_writer.drain());
+            }
         }
-        panic!("the preference writer did not answer");
+        panic!("the preference writer answered, but not as expected");
+    }
+
+    /// The writer jobs one wait follows: a save, or an import's read and the
+    /// save its reply submits, and the store's answer to either.
+    const WRITER_ROUNDS: usize = 4;
+
+    /// The alert slides in on a wall-clock animation, which a test opens at
+    /// rest with reduced motion ([`open_at_rest`]): `selector` is drawn in the
+    /// same place in two frames, so motion fails every run, not loaded ones.
+    fn assert_at_rest(cx: &mut VisualTestContext, selector: &str) {
+        let before = bounds(cx, selector.into());
+        draw_once(cx);
+        assert_eq!(
+            bounds(cx, selector.into()),
+            before,
+            "{selector} moved between frames"
+        );
+    }
+
+    /// [`open_app`] with reduced motion, so dialogs open at rest rather than
+    /// sliding in over wall-clock time, which a loaded host stretched.
+    fn open_at_rest(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        (app, cx)
     }
 
     fn form(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) -> Entity<ThemeForm> {
@@ -3051,19 +3078,23 @@ pub(crate) mod tests {
         observed
     }
 
-    /// Wait for the preference writer's reply without drawing a frame.
+    /// [`wait_for`] without drawing a frame: each round drains the writer
+    /// and parks to deliver its replies.
     fn wait_without_drawing(
         cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
         mut done: impl FnMut(&mut VisualTestContext) -> bool,
     ) {
-        for _ in 0..500 {
+        for round in 0..=WRITER_ROUNDS {
             cx.run_until_parked();
             if done(cx) {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            if round < WRITER_ROUNDS {
+                cx.read(|cx| app.read(cx).preferences_writer.drain());
+            }
         }
-        panic!("the preference writer did not answer");
+        panic!("the preference writer answered, but not as expected");
     }
 
     fn applied(cx: &mut VisualTestContext) -> Palette {
@@ -3075,15 +3106,7 @@ pub(crate) mod tests {
     /// runs after the pending save, and parking then delivers that save's
     /// reply to the window.
     fn drain_preference_writer(cx: &mut VisualTestContext, app: &Entity<GitTurtle>) {
-        let answered = Arc::new(AtomicBool::new(false));
-        let flag = answered.clone();
-        let _response = cx.read(|cx| {
-            app.read(cx).preferences_writer.submit(move || {
-                flag.store(true, Ordering::SeqCst);
-                Ok(())
-            })
-        });
-        wait_without_drawing(cx, |_| answered.load(Ordering::SeqCst));
+        cx.read(|cx| app.read(cx).preferences_writer.drain());
         cx.run_until_parked();
     }
 
@@ -3261,7 +3284,7 @@ pub(crate) mod tests {
         });
         settle(cx);
         click(cx, "theme-editor-save");
-        wait_for(cx, |cx| {
+        wait_for(cx, &app, |cx| {
             cx.read(|cx| app.read(cx).theme_editor.form.is_none())
         });
         let saved = Preferences::load();
@@ -3273,7 +3296,7 @@ pub(crate) mod tests {
             .clone();
         assert_eq!(theme.base, ThemeChoice::Nord);
         assert_eq!(theme.palette, draft);
-        wait_for(cx, |cx| {
+        wait_for(cx, &app, |cx| {
             cx.read(|cx| {
                 app.read(cx).settings.theme == ThemeSelection::Custom(theme.id)
                     && !app.read(cx).theme_editor.save_pending()
@@ -3316,7 +3339,9 @@ pub(crate) mod tests {
                 app.delete_custom_theme(theme.id, None, window, cx)
             })
         });
-        wait_for(cx, |cx| cx.read(|cx| app.read(cx).custom_themes.is_empty()));
+        wait_for(cx, &app, |cx| {
+            cx.read(|cx| app.read(cx).custom_themes.is_empty())
+        });
         assert_eq!(
             cx.read(|cx| app.read(cx).settings.theme),
             ThemeSelection::BuiltIn(ThemeChoice::Nord)
@@ -3608,7 +3633,7 @@ pub(crate) mod tests {
             "Return on Cancel closes the editor"
         );
         assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
-        wait_for(cx, |cx| {
+        wait_for(cx, &app, |cx| {
             cx.read(|cx| !app.read(cx).theme_editor.save_pending())
         });
         assert_eq!(applied(cx), before, "Cancel re-applied the saved selection");
@@ -3788,7 +3813,7 @@ pub(crate) mod tests {
     #[gpui::test]
     fn the_base_menu_keeps_its_rows_and_scrolls(cx: &mut TestAppContext) {
         use crate::views::tests::{assert_menu_keeps_its_rows, draw, menu_rows};
-        let (app, cx) = open_app(cx);
+        let (app, cx) = open_at_rest(cx);
         let mut labels = vec!["Light palettes"];
         labels.extend(
             ThemeChoice::ALL
@@ -3809,18 +3834,7 @@ pub(crate) mod tests {
         let open = |cx: &mut VisualTestContext, viewport: Size<Pixels>| {
             cx.simulate_resize(viewport);
             next_frame(cx);
-            // The alert slides in over real time; open the menu once it has
-            // settled.
-            let mut last = bounds(cx, "theme-editor-base".into());
-            for _ in 0..100 {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                draw_once(cx);
-                let now = bounds(cx, "theme-editor-base".into());
-                if now == last {
-                    break;
-                }
-                last = now;
-            }
+            assert_at_rest(cx, "theme-editor-base");
             click(cx, "theme-editor-base");
             draw(cx);
             menu_rows(cx, &labels)
@@ -3855,7 +3869,7 @@ pub(crate) mod tests {
     /// the footer stays on screen, stacked and wide.
     #[gpui::test]
     fn rows_keep_their_geometry_and_the_dialog_fills_the_window(cx: &mut TestAppContext) {
-        let (app, cx) = open_app(cx);
+        let (app, cx) = open_at_rest(cx);
         for (viewport, wide) in [
             (size(px(1000.), px(680.)), false),
             (size(px(1440.), px(900.)), true),
@@ -3868,17 +3882,7 @@ pub(crate) mod tests {
             let form = form(cx, &app);
             next_frame(cx);
             assert_eq!(cx.read(|cx| form.read(cx).wide), wide);
-            // The alert slides in over real time; measure once it has settled.
-            let mut last = bounds(cx, "theme-editor-save".into());
-            for _ in 0..100 {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                draw_once(cx);
-                let now = bounds(cx, "theme-editor-save".into());
-                if now == last {
-                    break;
-                }
-                last = now;
-            }
+            assert_at_rest(cx, "theme-editor-save");
             let row = appearance::ui_size(30.);
             for (index, group) in TokenGroup::ALL.into_iter().enumerate() {
                 let label = bounds(cx, format!("theme-group-{index}"));
@@ -4272,10 +4276,14 @@ pub(crate) mod tests {
     /// read-only app-data directory does natively, and settle on the error
     /// the refused save leaves beside Save.
     #[cfg(unix)]
-    fn refuse_a_save(cx: &mut VisualTestContext, form: &Entity<ThemeForm>) {
+    fn refuse_a_save(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+        form: &Entity<ThemeForm>,
+    ) {
         let refused = ReadOnlyPreferences::new();
         click(cx, "theme-editor-save");
-        wait_for(cx, |cx| {
+        wait_for(cx, app, |cx| {
             cx.read(|cx| {
                 let form = form.read(cx);
                 !form.pending && form.error.is_some()
@@ -4322,7 +4330,7 @@ pub(crate) mod tests {
             );
             assert!(settings::shown(cx, "theme-editor-error").is_none());
 
-            refuse_a_save(cx, &form);
+            refuse_a_save(cx, &app, &form);
 
             let shown = bounds(cx, "theme-editor-error".into());
             let grown = bounds(cx, "theme-editor-footer".into());
@@ -4414,7 +4422,7 @@ pub(crate) mod tests {
 
             for wrapped in [false, true] {
                 if wrapped {
-                    refuse_a_save(cx, &form);
+                    refuse_a_save(cx, &app, &form);
                     let shown = bounds(cx, "theme-editor-error".into());
                     assert!(
                         shown.size.height >= appearance::ui_text(12.) * 1.25 * 2.,
@@ -4537,7 +4545,7 @@ pub(crate) mod tests {
     /// the track goes again.
     #[gpui::test]
     fn the_side_column_shows_a_scrollbar_only_while_it_overflows(cx: &mut TestAppContext) {
-        let (app, cx) = open_app(cx);
+        let (app, cx) = open_at_rest(cx);
         cx.simulate_resize(size(px(1440.), px(900.)));
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
         settle(cx);
@@ -4564,12 +4572,12 @@ pub(crate) mod tests {
         for kind in TokenKind::ALL {
             gray.set(kind, 0x808080);
         }
-        // The alert slides in over real time; wait until it asks for no frame.
-        for _ in 0..100 {
+        // At rest (reduced motion), the alert asks for a frame only while the
+        // column lays its overflow out.
+        for _ in 0..3 {
             if next_frame(cx) == 0 {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert_eq!(
             next_frame(cx),
@@ -4827,7 +4835,7 @@ pub(crate) mod tests {
             !key_frame(cx, "enter", |window, cx| window.has_active_dialog(cx)),
             "Return on Delete theme closes the alert"
         );
-        wait_for(cx, |cx| {
+        wait_for(cx, &app, |cx| {
             cx.read(|cx| {
                 let app = app.read(cx);
                 app.custom_themes.is_empty() && !app.theme_editor.save_pending()
@@ -4874,7 +4882,7 @@ pub(crate) mod tests {
             );
             release.send(()).expect("the writer holds the job");
         }
-        wait_without_drawing(cx, |cx| {
+        wait_without_drawing(cx, &app, |cx| {
             cx.read(|cx| {
                 let app = app.read(cx);
                 app.custom_themes.is_empty() && !app.theme_editor.save_pending()
@@ -4931,15 +4939,27 @@ pub(crate) mod tests {
         cx: &mut VisualTestContext,
         app: &Entity<GitTurtle>,
     ) -> std::sync::mpsc::Sender<()> {
+        hold_preference_executor_reached(cx, app).0
+    }
+
+    /// [`hold_preference_executor`], and a receiver that answers once the
+    /// writer starts the hold: the executor is serialized, so every job
+    /// submitted before the hold has then answered.
+    fn hold_preference_executor_reached(
+        cx: &mut VisualTestContext,
+        app: &Entity<GitTurtle>,
+    ) -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) {
         let (release, wait) = std::sync::mpsc::channel::<()>();
+        let (started, reached) = std::sync::mpsc::channel::<()>();
         let _reply = cx.read(|cx| {
             app.read(cx).preferences_writer.submit(move || {
+                let _ = started.send(());
                 let _ = wait.recv();
                 Ok(())
             })
         });
         settle(cx);
-        release
+        (release, reached)
     }
 
     /// While `hold` occupies the preference executor, the transfer reports
@@ -5714,7 +5734,7 @@ pub(crate) mod tests {
         let _ = drawn(cx, &app);
         let changes_before = custom_palette_changes(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| {
+        wait_without_drawing(cx, &app, |cx| {
             cx.read(|cx| {
                 let app = app.read(cx);
                 !app.theme_editor.save_pending() && app.theme_editor.form.is_none()
@@ -7509,7 +7529,7 @@ pub(crate) mod tests {
         );
         let _ = drawn(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| !transfer_result(cx, &app).2);
+        wait_without_drawing(cx, &app, |cx| !transfer_result(cx, &app).2);
         let (notice, error, _) = transfer_result(cx, &app);
         assert_eq!(error, None);
         assert!(notice.is_some_and(|notice| notice.contains("Harbor")));
@@ -7543,7 +7563,7 @@ pub(crate) mod tests {
         );
         let _ = drawn(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| {
+        wait_without_drawing(cx, &app, |cx| {
             let (notice, error, pending) = transfer_result(cx, &app);
             !pending
                 && (notice.is_some() || error.is_some())
@@ -7577,7 +7597,7 @@ pub(crate) mod tests {
         );
         let _ = drawn(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| {
+        wait_without_drawing(cx, &app, |cx| {
             cx.read(|cx| {
                 let app = app.read(cx);
                 !app.theme_editor.save_pending() && app.custom_themes.len() == 1
@@ -8282,7 +8302,7 @@ pub(crate) mod tests {
         settle(cx);
         let page = page_renders(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| !transfer_result(cx, &app).2);
+        wait_without_drawing(cx, &app, |cx| !transfer_result(cx, &app).2);
         assert_eq!(
             page_renders(cx, &app),
             page + 1,
@@ -8313,10 +8333,15 @@ pub(crate) mod tests {
             move |_| Some(vec![chosen])
         });
         cx.run_until_parked();
-        let hold_save = hold_preference_executor(cx, &app);
+        let (hold_save, save_held) = hold_preference_executor_reached(cx, &app);
         let page = page_renders(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| !transfer_result(cx, &app).2);
+        // The read was queued before the hold that keeps its save waiting, so
+        // it has answered once the writer reaches that hold; draining instead
+        // would wait behind the hold.
+        save_held.recv().expect("the writer reaches the hold");
+        cx.run_until_parked();
+        assert!(!transfer_result(cx, &app).2, "the read answered");
         assert!(
             cx.read(|cx| app.read(cx).theme_editor.save_pending()),
             "the parsed document's save waits for the store"
@@ -8328,7 +8353,7 @@ pub(crate) mod tests {
         );
         let page = page_renders(cx, &app);
         drop(hold_save);
-        wait_without_drawing(cx, |cx| {
+        wait_without_drawing(cx, &app, |cx| {
             !cx.read(|cx| app.read(cx).theme_editor.save_pending())
         });
         assert_eq!(
@@ -8357,7 +8382,7 @@ pub(crate) mod tests {
         );
         assert!(cx.read(|cx| app.read(cx).theme_editor.save_pending()));
         drop(hold);
-        wait_for(cx, |cx| {
+        wait_for(cx, &app, |cx| {
             !cx.read(|cx| app.read(cx).theme_editor.save_pending())
         });
         assert!(
@@ -8385,7 +8410,7 @@ pub(crate) mod tests {
         settle(cx);
         let page = page_renders(cx, &app);
         drop(hold);
-        wait_without_drawing(cx, |cx| {
+        wait_without_drawing(cx, &app, |cx| {
             !cx.read(|cx| app.read(cx).theme_editor.save_pending())
         });
         assert_eq!(cx.read(|cx| app.read(cx).custom_themes.len()), rows - 1);

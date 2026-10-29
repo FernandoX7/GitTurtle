@@ -126,6 +126,18 @@ impl GitTurtle {
     /// Open the panel from the command palette, which has already returned
     /// focus to what it opened over, or from anywhere else: closing returns
     /// focus to what is focused now.
+    /// Returns once the panel's local read, which [`Self::open_github`]
+    /// starts once the dialog's frame is drawn, has landed and been drawn. It
+    /// runs on the app's operation executor, a thread `run_until_parked`
+    /// cannot wait for: once it drains the read has answered, which holds the
+    /// test clock, and the reply lands as the test parks.
+    #[cfg(test)]
+    pub(crate) fn github_local_read_lands(app: &Entity<Self>, cx: &mut VisualTestContext) {
+        crate::views::tests::draw(cx);
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::draw(cx);
+    }
+
     pub(super) fn open_github(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let previous = window.focused(cx);
         self.open_github_returning_to(previous, window, cx);

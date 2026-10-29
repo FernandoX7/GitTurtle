@@ -516,6 +516,10 @@ struct Queue {
     closed: bool,
     startup_error: Option<String>,
     active: Option<gitturtle_core::HistoryCancellation>,
+    /// Test-only: the reader thread holds a request it has not finished,
+    /// answered or skipped ([`Worker::wait_idle`]).
+    #[cfg(test)]
+    running: bool,
 }
 
 struct Cancellation {
@@ -576,6 +580,8 @@ impl Worker {
                 closed: false,
                 startup_error: None,
                 active: None,
+                #[cfg(test)]
+                running: false,
             }),
             Condvar::new(),
         ));
@@ -590,6 +596,12 @@ impl Worker {
                     let request = {
                         let (lock, ready) = &*worker_queue;
                         let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
+                        // The request taken last has answered or was skipped.
+                        #[cfg(test)]
+                        {
+                            state.running = false;
+                            ready.notify_all();
+                        }
                         while state.pending.is_none() && !state.closed {
                             state = ready.wait(state).unwrap_or_else(|error| error.into_inner());
                         }
@@ -598,6 +610,10 @@ impl Worker {
                         }
                         let request = state.pending.take().expect("pending request checked above");
                         state.active = Some(request.cancellation.clone());
+                        #[cfg(test)]
+                        {
+                            state.running = true;
+                        }
                         request
                     };
                     if request.reply.is_canceled() && !matches!(request.job, Job::ReleaseHistory) {
@@ -646,6 +662,19 @@ impl Worker {
         self.submissions.load(Ordering::Acquire)
     }
 
+    /// Test-only: blocks until the reader thread has answered or skipped
+    /// every request submitted so far, holding the test clock: it waits on
+    /// the reader's own thread, which `run_until_parked` cannot wait for,
+    /// and a GPUI test then parks to handle the reply on its own thread.
+    #[cfg(test)]
+    pub fn wait_idle(&self) {
+        let (lock, ready) = &*self.queue;
+        let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
+        while (state.pending.is_some() || state.running) && !state.closed {
+            state = ready.wait(state).unwrap_or_else(|error| error.into_inner());
+        }
+    }
+
     /// Invalidate mutable reads even when there is no replacement file to load.
     /// Active work stops at its next checkpoint; queued work is dropped now.
     pub fn cancel(&self) {
@@ -692,7 +721,9 @@ impl Worker {
             reply,
             cancellation: gitturtle_core::HistoryCancellation::default(),
         });
-        ready.notify_one();
+        // All: a test waiting for the reader to settle (`wait_idle`) waits
+        // on this condition too, and must not take the reader's wake-up.
+        ready.notify_all();
         receiver
     }
 }
@@ -832,7 +863,7 @@ impl Drop for Worker {
         }
         state.closed = true;
         state.pending = None;
-        ready.notify_one();
+        ready.notify_all();
     }
 }
 

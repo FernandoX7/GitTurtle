@@ -14,6 +14,7 @@
 //! of them it was drawn in, in the order GPUI wrote them.
 
 use crate::native_accessibility::{reachable, written};
+use crate::recovery::StashBrowser;
 use crate::views::tests::{draw, fixture_git, history_script, settle, styled_history_window};
 use crate::*;
 use core::prelude::v1::test;
@@ -49,22 +50,14 @@ async fn open_tags(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
     draw(cx);
 }
 
-/// Draws, letting the reader threads answer, until `done` holds.
-fn wait(
-    cx: &mut VisualTestContext,
-    what: &str,
-    mut done: impl FnMut(&mut VisualTestContext) -> bool,
-) {
-    for _ in 0..400 {
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(50));
-        draw(cx);
-        if done(cx) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    panic!("{what} never happened");
+/// Opens Stashes and returns its browser once its saved stashes have landed
+/// (`StashBrowser::lands`): they are read on the browser's own thread.
+fn open_stashes(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Entity<StashBrowser> {
+    let browser = cx
+        .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
+        .expect("Stashes opens");
+    StashBrowser::lands(&browser, cx);
+    browser
 }
 
 /// The sizes each frame is read at: the default size in a wide window, and
@@ -272,10 +265,11 @@ async fn empty_lists_and_panels_are_read_by_their_lines(cx: &mut TestAppContext)
     cx.update(|window, cx| window.close_all_dialogs(cx));
     draw(cx);
 
-    cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
-    wait(cx, "the stash list", |cx| {
-        cx.debug_bounds("stash-list-empty-line").is_some()
-    });
+    open_stashes(&app, cx);
+    assert!(
+        cx.debug_bounds("stash-list-empty-line").is_some(),
+        "the empty stash list is drawn"
+    );
     read(
         cx,
         "Stashes",
@@ -291,9 +285,11 @@ async fn empty_lists_and_panels_are_read_by_their_lines(cx: &mut TestAppContext)
     cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
     // Name repository is drawn once the local read finds no GitHub remote;
     // the line is there before it lands, saying no pull requests are shown.
-    wait(cx, "the panel's local read", |cx| {
-        cx.debug_bounds("github-choose-destination").is_some()
-    });
+    GitTurtle::github_local_read_lands(&app, cx);
+    assert!(
+        cx.debug_bounds("github-choose-destination").is_some(),
+        "the panel's local read found no GitHub remote"
+    );
     // Follow-up: in the short half tile at 18 pt the panel's list lies
     // below its fold, where AccessKit's filter rightly leaves the line out;
     // the tall one draws it.
@@ -346,10 +342,11 @@ async fn the_stashes_lines_are_named(cx: &mut TestAppContext) {
     fixture_git(&root, &["config", "user.email", "stash@example.invalid"]);
     std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
     fixture_git(&root, &["stash", "push", "-m", "kept for later"]);
-    cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
-    wait(cx, "the stash list", |cx| {
-        cx.debug_bounds("saved-stash-row-0").is_some()
-    });
+    let stashes = open_stashes(&app, cx);
+    assert!(
+        cx.debug_bounds("saved-stash-row-0").is_some(),
+        "the stash is listed"
+    );
     labels_named(
         cx,
         "Stashes",
@@ -361,9 +358,11 @@ async fn the_stashes_lines_are_named(cx: &mut TestAppContext) {
     );
     let row = cx.debug_bounds("saved-stash-row-0").unwrap();
     cx.simulate_click(row.center(), Modifiers::none());
-    wait(cx, "the stash's inspection", |cx| {
-        cx.debug_bounds("stash-detail-name").is_some()
-    });
+    StashBrowser::lands(&stashes, cx);
+    assert!(
+        cx.debug_bounds("stash-detail-name").is_some(),
+        "the stash's inspection is drawn"
+    );
     labels_named(
         cx,
         "A selected stash",
@@ -391,7 +390,8 @@ async fn every_label_of_these_screens_is_named(cx: &mut TestAppContext) {
             .expect("the commit changes notes.txt")
     });
     cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(file, window, cx)));
-    wait(cx, "Blame", |cx| cx.debug_bounds("blame-heading").is_some());
+    crate::blame::lands(&app, cx);
+    assert!(cx.debug_bounds("blame-heading").is_some(), "Blame is drawn");
     labels_named(
         cx,
         "Blame",
@@ -417,9 +417,11 @@ async fn every_label_of_these_screens_is_named(cx: &mut TestAppContext) {
             app.filter_working_paths(window, cx);
         })
     });
-    wait(cx, "the working filter", |cx| {
-        cx.debug_bounds("working-no-match").is_some()
-    });
+    crate::path_filter::filters_land(&app, cx);
+    assert!(
+        cx.debug_bounds("working-no-match").is_some(),
+        "the working filter matches nothing"
+    );
     labels_named(cx, "Changes", &["working-no-match-line"]);
 
     open_tags(&app, cx).await;
@@ -464,9 +466,7 @@ async fn a_working_filter_with_no_match_is_read_by_its_line(cx: &mut TestAppCont
             app.filter_working_paths(window, cx);
         })
     });
-    wait(cx, "the path filter", |cx| {
-        app.read_with(cx, |app, _| !app.working_paths.pending)
-    });
+    crate::path_filter::filters_land(&app, cx);
     read(
         cx,
         "A path filter with no match",
@@ -505,12 +505,17 @@ async fn dialog_hints_and_the_projects_page_are_read_by_their_lines(cx: &mut Tes
     cx.update(|window, cx| window.close_all_dialogs(cx));
     draw(cx);
 
-    cx.update(|window, cx| app.update(cx, |app, cx| app.open_quick_file(window, cx)));
-    wait(cx, "Quick Open's paths", |_| {
+    let quick = cx
+        .update(|window, cx| app.update(cx, |app, cx| app.open_quick_form(window, cx)))
+        .expect("Quick Open opens");
+    crate::revision_inspection::QuickForm::lands(&quick, cx);
+    draw(cx);
+    assert!(
         written::get("quick-open-help")
             .and_then(|line| line.node.value().map(|value| value.contains(" match")))
-            .unwrap_or(false)
-    });
+            .unwrap_or(false),
+        "Quick Open counts its paths"
+    );
     labels_named(
         cx,
         "Quick Open",

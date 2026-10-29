@@ -197,19 +197,26 @@ impl GitTurtle {
     }
 
     pub(super) fn open_quick_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_quick_form(window, cx);
+    }
+
+    /// Opens Quick Open, as [`Self::open_quick_file`] does, and returns its
+    /// form, which a test waits on for its paths (`QuickForm::lands`).
+    pub(super) fn open_quick_form(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<QuickForm>> {
         if self.page != AppPage::Repository
             || window.has_active_dialog(cx)
             || window.has_active_sheet(cx)
         {
-            return;
+            return None;
         }
-        let Some(repo) = self
+        let repo = self
             .repository
             .clone()
-            .filter(|_| self.operation_busy.is_none())
-        else {
-            return;
-        };
+            .filter(|_| self.operation_busy.is_none())?;
         let revision = self
             .selected_commit
             .and_then(|i| self.commits.get(i))
@@ -223,6 +230,7 @@ impl GitTurtle {
         let query_focus = form.read(cx).query.read(cx).focus_handle(cx);
         self.dialog_hints
             .register(&query_focus, shortcuts::DialogKeys::QuickOpen);
+        let opened = form.clone();
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let submit = form.clone();
             let cancel = form.clone();
@@ -286,6 +294,7 @@ impl GitTurtle {
         // waiting for that callback drops the beginning of an immediate query.
         query_focus.focus(window, cx);
         window.refresh();
+        Some(opened)
     }
 
     fn begin_revision_inspection(
@@ -852,7 +861,7 @@ pub(crate) async fn settle_quick_open(cx: &mut gpui::VisualTestContext) {
         .and_then(|form| form.upgrade())
         .expect("Quick Open is open");
     cx.executor()
-        .advance_clock(std::time::Duration::from_millis(150));
+        .advance_clock(QUICK_SEARCH_DELAY + std::time::Duration::from_millis(30));
     cx.executor().run_until_parked();
     if let Some(task) = form.update(cx, |form, _| form.task.take()) {
         task.await;
@@ -860,7 +869,10 @@ pub(crate) async fn settle_quick_open(cx: &mut gpui::VisualTestContext) {
     cx.executor().run_until_parked();
 }
 
-struct QuickForm {
+/// How long Quick Open waits for typing to pause before it lists paths.
+const QUICK_SEARCH_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
+
+pub(crate) struct QuickForm {
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
     query: Entity<InputState>,
@@ -883,6 +895,22 @@ struct QuickForm {
     return_focus: Option<FocusHandle>,
 }
 impl QuickForm {
+    /// Returns once the paths the form's query asks for have landed: past
+    /// the typing pause on the test clock, then once the form's reader, a
+    /// thread `run_until_parked` cannot wait for, has answered. The test
+    /// clock moves only by that pause.
+    #[cfg(test)]
+    pub(crate) fn lands(form: &Entity<Self>, cx: &mut VisualTestContext) {
+        cx.executor().advance_clock(QUICK_SEARCH_DELAY);
+        cx.run_until_parked();
+        form.read_with(cx, |form, _| form.worker.wait_idle());
+        cx.run_until_parked();
+        assert!(
+            form.read_with(cx, |form, _| !form.busy),
+            "Quick Open's paths land"
+        );
+    }
+
     fn new(
         owner: WeakEntity<GitTurtle>,
         repo: GitRepository,
@@ -956,9 +984,7 @@ impl QuickForm {
         self.busy = true;
         self.error = None;
         self.failure_asked = false;
-        let timer = cx
-            .background_executor()
-            .timer(std::time::Duration::from_millis(120));
+        let timer = cx.background_executor().timer(QUICK_SEARCH_DELAY);
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             timer.await;
             if this

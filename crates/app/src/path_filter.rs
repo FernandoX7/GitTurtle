@@ -38,6 +38,17 @@ impl State {
         self.executor
             .get_or_insert_with(|| SerialExecutor::new("gitturtle-path-filter"))
     }
+    /// Test-only: blocks until every filter job submitted so far, the
+    /// commit inspector's or Changes', has answered. The lane is a thread
+    /// `run_until_parked` cannot wait for; a GPUI test drains it, holding the
+    /// test clock, and then parks to land the answers.
+    #[cfg(test)]
+    pub(crate) fn drain(&self) {
+        if let Some(executor) = &self.executor {
+            executor.drain();
+        }
+    }
+
     pub fn reset(&mut self) {
         self.cancellation.fetch_add(1, Ordering::Relaxed);
         self.identity = None;
@@ -50,6 +61,29 @@ impl State {
         self.running = false;
         self.queued = false;
     }
+}
+
+/// Returns once the commit inspector's and Changes' path filters have
+/// answered their newest queries and the answers are drawn. Each round
+/// drains the filter lane, holding the test clock, and parks to land what
+/// it answered; a query typed while a job ran is submitted by that job's
+/// answer, so it takes one more round.
+#[cfg(test)]
+pub(crate) fn filters_land(
+    app: &gpui_kit::Entity<GitTurtle>,
+    cx: &mut gpui_kit::VisualTestContext,
+) {
+    for _ in 0..4 {
+        cx.run_until_parked();
+        if app.read_with(cx, |app, _| {
+            !app.file_paths.pending && !app.working_paths.pending
+        }) {
+            crate::views::tests::draw(cx);
+            return;
+        }
+        app.read_with(cx, |app, _| app.file_paths.drain());
+    }
+    panic!("the path filter never answered");
 }
 
 pub(super) fn checkpoint(cancellation: &AtomicU64, ticket: u64) -> Result<()> {

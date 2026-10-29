@@ -642,6 +642,21 @@ fn display_excerpt(source: &str, limit: usize) -> String {
     }
 }
 
+/// Returns once the attribution `open_blame` started has landed and been
+/// drawn. It is read on the app's reader, a thread `run_until_parked` cannot
+/// wait for, so the test waits for that thread, which holds the test clock,
+/// and then parks to handle the reply.
+#[cfg(test)]
+pub(crate) fn lands(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+    app.read_with(cx, |app, _| app.worker.wait_idle());
+    crate::views::tests::draw(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.blame.pending.is_none()
+            && app.blame.task.is_none()),
+        "the attribution lands"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Pending, State};
