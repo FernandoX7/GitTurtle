@@ -9,6 +9,7 @@ use gpui_kit::component::{
     checkbox::Checkbox,
     dialog::DialogButtonProps,
     menu::{PopupMenu, PopupMenuItem},
+    scroll::{Scrollbar, ScrollbarMode},
 };
 use gpui_kit::prelude::FluentBuilder;
 
@@ -1395,7 +1396,10 @@ impl StashBrowser {
             stash_scroll: UniformListScrollHandle::new(),
             detail: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
             file_scroll: UniformListScrollHandle::new(),
-            stash_focus: cx.focus_handle(),
+            // One Tab stop, with the arrow keys inside: a handle that is not
+            // one left the list out of the Tab order, whatever the element
+            // asked.
+            stash_focus: cx.focus_handle().tab_stop(true),
             file_focus: cx.focus_handle(),
             loading: None,
             error: None,
@@ -2058,9 +2062,10 @@ impl Render for StashBrowser {
         let narrow = window.viewport_size().width < px(800.);
         let height = (f32::from(window.viewport_size().height) - 230.).clamp(300., 620.);
         let busy = self.metadata_task.is_some();
+        let stashes = self.page.as_ref().map_or(0, |page| page.entries.len());
         let list = uniform_list(
             "saved-stashes",
-            self.page.as_ref().map_or(0, |page| page.entries.len()),
+            stashes,
             cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                 range
                     .map(|index| this.render_stash_row(index, cx))
@@ -2080,6 +2085,54 @@ impl Render for StashBrowser {
         )
         .size_full()
         .track_scroll(&self.file_scroll);
+        // The heading counts what the list holds: the page's stashes, or
+        // which of them it shows where Previous or More pages through more.
+        let heading = match &self.page {
+            Some(page) if page.entries.is_empty() => "Saved work".to_owned(),
+            Some(page) if self.offset == 0 && page.next_offset.is_none() => {
+                format!("Saved work · {stashes}")
+            }
+            Some(_) => format!("Saved work · {}–{}", self.offset + 1, self.offset + stashes),
+            None => "Saved work".to_owned(),
+        };
+        // The list draws the window's keyboard ring on its own edge, between
+        // the heading and the pager.
+        let list_ring = self.owner.upgrade().and_then(|owner| {
+            owner
+                .read(cx)
+                .focus_ring
+                .edge(&self.stash_focus, rgb(p.accent))
+        });
+        // While its rows overflow it, as the stacked list's one row does when
+        // two stashes are saved, the list shows its scrollbar, decided for
+        // its height in the frame it is drawn (`in_frame`): it once showed
+        // one stash with nothing saying that a second lay below it, under
+        // the pager.
+        let row_height = crate::appearance::ui_size(58.);
+        let stash_scroll = self.stash_scroll.clone();
+        let rows = crate::in_frame::in_frame(move |bounds, _, _| {
+            let cued = row_height * stashes as f32 > bounds.size.height + px(0.5);
+            div()
+                .size_full()
+                .relative()
+                .when(cued, |rows| rows.pr(Scrollbar::width()))
+                .child(list)
+                .when(cued, |rows| {
+                    rows.child(
+                        div()
+                            .debug_selector(|| "saved-stashes-scrollbar".into())
+                            .absolute()
+                            .inset_0()
+                            .child(
+                                Scrollbar::vertical(&stash_scroll)
+                                    .id("saved-stashes-scrollbar")
+                                    .mode(ScrollbarMode::Always),
+                            ),
+                    )
+                })
+                .into_any_element()
+        })
+        .named("saved-stashes");
         let snapshot = self.snapshot.clone();
         // Stacked in a narrow window, the saved-work panel is as tall as its
         // header, one 58 px row and its footer at the default size, scaled
@@ -2254,9 +2307,9 @@ impl Render for StashBrowser {
                 .when(narrow && detail, |element| element.w_full().h(crate::appearance::ui_size(140.)))
                 .when(!detail, |element| element.w_full().flex_1())
                 .child(div().h(crate::appearance::ui_size(38.)).flex().items_center().px_2().gap_1().border_b_1().border_color(rgb(p.border))
-                    .child(native_accessibility::text("stash-list-heading", "Saved work").flex_1().text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::SEMIBOLD))
+                    .child(native_accessibility::text("stash-list-heading", heading).flex_1().text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::SEMIBOLD))
                     .child(button("refresh-stashes", "", "refresh", false).accessibility_label("Refresh saved stashes").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.load_page(0, window, cx)))))
-                .child(crate::native_accessibility::clips_children(div().id("stash-list-focus").debug_selector(|| "stash-list".into()).role(Role::ListBox).aria_label("Saved stashes").tab_stop(true).track_focus(&self.stash_focus).flex_1().min_h_0()
+                .child(crate::native_accessibility::clips_children(div().id("stash-list-focus").debug_selector(|| "stash-list".into()).role(Role::ListBox).aria_label("Saved stashes").tab_stop(true).track_focus(&self.stash_focus).relative().flex_1().min_h_0().flex().flex_col()
                     .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         if let Some(index) = list_key_selection(event.keystroke.key.as_str(), this.selected, this.page.as_ref().map_or(0, |page| page.entries.len())) {
                             cx.stop_propagation();
@@ -2264,9 +2317,10 @@ impl Render for StashBrowser {
                             this.stash_scroll.scroll_to_item(index, ScrollStrategy::Center);
                         }
                     }))
-                    .when(self.page.as_ref().is_some_and(|page| !page.entries.is_empty()), |element| element.child(list))
-                    .when(self.page.as_ref().is_some_and(|page| page.entries.is_empty()), |element| element.child(div().px_3().py_2().child(EmptyState::new("stash-list-empty", "No saved stashes · Save one from the Actions menu in Changes").block(cx))))))
-                .child(div().h(crate::appearance::ui_size(36.)).flex().items_center().justify_between().px_2().border_t_1().border_color(rgb(p.border))
+                    .when(stashes > 0, |element| element.child(rows))
+                    .when(self.page.as_ref().is_some_and(|page| page.entries.is_empty()), |element| element.child(div().px_3().py_2().child(EmptyState::new("stash-list-empty", "No saved stashes · Save one from the Actions menu in Changes").block(cx))))
+                    .children(list_ring)))
+                .child(div().debug_selector(|| "stash-pager".into()).h(crate::appearance::ui_size(36.)).flex().items_center().justify_between().px_2().border_t_1().border_color(rgb(p.border))
                     .child(button("previous-stashes", "Previous", "", false).disabled(busy || self.offset == 0).on_click(cx.listener(|this, _, window, cx| this.load_page(this.offset.saturating_sub(STASH_PAGE_SIZE), window, cx))))
                     .child(button("next-stashes", "More", "", false).disabled(busy || self.page.as_ref().and_then(|page| page.next_offset).is_none()).on_click(cx.listener(|this, _, window, cx| { if let Some(offset) = this.page.as_ref().and_then(|page| page.next_offset) { this.load_page(offset, window, cx); } })))))
             // The detail scrolls where the window leaves it less than its
@@ -2799,6 +2853,126 @@ mod tests {
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
+    }
+
+    /// The saved-work list is one Tab stop, in 461 × 490 and 1480 × 980
+    /// windows at 13 and 18 pt: Tab reaches it, it draws its keyboard ring
+    /// whole on its own edge, and Down moves the selection to the second of
+    /// two stashes, which the list scrolls whole into its view, clear of the
+    /// Previous/More pager beneath it. Its heading counts the stashes
+    /// ("Saved work · 2"), and while its rows overflow it, as the stacked
+    /// list's one row does in a half tile, it shows its scrollbar. The list
+    /// was never a Tab stop, its focus handle not one, and the stacked list
+    /// showed one stash with nothing saying a second lay below it, under the
+    /// pager.
+    #[gpui::test]
+    async fn the_stash_list_is_one_stop_that_counts_and_cues_its_stashes(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        for (name, text) in [("Index only", "first\n"), ("Layout experiment", "second\n")] {
+            std::fs::write(repo.path().join("notes.txt"), text).unwrap();
+            git(
+                repo.path(),
+                &["stash", "push", "--include-untracked", "-m", name],
+            );
+        }
+        let (app, cx) = window(cx, &repo);
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
+            for _ in 0..400 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(50));
+                draw(cx);
+                if cx.debug_bounds(selector).is_some() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("{selector} never drawn");
+        };
+        let slack = px(0.5);
+        for (width, height) in [(461., 490.), (1480., 980.)] {
+            for interface in [13, 18] {
+                let at = format!("{interface} pt in {width} × {height}");
+                cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
+                landed(cx, "saved-stash-row-0");
+                let browser = app
+                    .read_with(cx, |app, _| app.recovery.browser.clone())
+                    .and_then(|browser| browser.upgrade())
+                    .expect("Stashes is open");
+                assert_eq!(
+                    crate::native_accessibility::written::get("stash-list-heading")
+                        .and_then(|heading| heading.node.value().map(str::to_owned)),
+                    Some("Saved work · 2".to_owned()),
+                    "{at}: the heading counts the stashes"
+                );
+                let list = cx.debug_bounds("stash-list").expect("the list");
+                let pager = cx.debug_bounds("stash-pager").expect("the pager");
+                let row = appearance::ui_size(58.);
+                let overflows = row * 2. > list.size.height + slack;
+                assert_eq!(
+                    overflows,
+                    width < 800.,
+                    "{at}: the stacked list holds one row, the list beside the detail both"
+                );
+                assert_eq!(
+                    cx.debug_bounds("saved-stashes-scrollbar").is_some(),
+                    overflows,
+                    "{at}: the scrollbar shows while the rows overflow {list:?}"
+                );
+                // Tab reaches the list.
+                let stop = browser.read_with(cx, |browser, _| browser.stash_focus.clone());
+                let mut reached = false;
+                for _ in 0..12 {
+                    cx.simulate_keystrokes("tab");
+                    draw(cx);
+                    if cx.update(|window, _| stop.is_focused(window)) {
+                        reached = true;
+                        break;
+                    }
+                }
+                assert!(reached, "{at}: Tab reaches the saved-work list");
+                let ring = crate::focus_ring::painted_outlines(cx, accent)
+                    .into_iter()
+                    .find(|outline| outline.bounds == list)
+                    .unwrap_or_else(|| panic!("{at}: the list {list:?} draws no ring"));
+                assert!(ring.whole, "{at}: the list's ring {ring:?} is whole");
+                // Down twice selects the second stash and shows it whole.
+                cx.simulate_keystrokes("down");
+                draw(cx);
+                cx.simulate_keystrokes("down");
+                draw(cx);
+                assert_eq!(
+                    browser.read_with(cx, |browser, _| browser.selected),
+                    Some(1),
+                    "{at}: Down reaches the second stash"
+                );
+                let second = cx
+                    .debug_bounds("saved-stash-row-1")
+                    .expect("the second stash's row");
+                assert!(
+                    second.top() >= list.top() - slack
+                        && second.bottom() <= list.bottom() + slack
+                        && second.bottom() <= pager.top() + slack,
+                    "{at}: the second stash {second:?} lies whole in the list {list:?}, above the pager {pager:?}"
+                );
+                assert!(
+                    cx.update(|window, _| stop.is_focused(window)),
+                    "{at}: the list keeps focus"
+                );
+                drop(browser);
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// The fixture of Stashes' Review restore… regressions: a repository
