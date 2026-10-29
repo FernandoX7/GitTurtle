@@ -7256,6 +7256,43 @@ pub(crate) mod tests {
         }
     }
 
+    /// The inspector's title keeps a file name whole where it fits beside
+    /// the message's scrollbar. The text kept a scaled 20 px clear of the
+    /// bar, which is 16 px wide at every interface size, so at 18 pt it gave
+    /// the bar 11.7 px more than it takes, and in a 461 × 490 window "Add
+    /// polyglot.png" broke before the file name's last letter, leaving "g"
+    /// alone on a line. In the test fonts, whose glyphs are wider, the same room
+    /// falls at 18 pt in a 468 × 490 window for "Add sketch.png": the title
+    /// now takes two lines, "sketch.png" whole on the second, where it took
+    /// three.
+    #[gpui::test]
+    async fn the_inspector_title_keeps_a_file_name_whole_beside_the_scrollbar(
+        cx: &mut TestAppContext,
+    ) {
+        let input = file_commits(&[("Add sketch.png", &[("sketch.png", b"sketch")])]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(468.), px(490.)));
+        draw(cx);
+        let title = cx
+            .debug_bounds("commit-message-piece-0")
+            .expect("the title is drawn");
+        // The title's lines, inside its `pt_2`, at its 1.35 line height.
+        let (line, top) = cx.update(|window, _| {
+            (
+                window.pixel_snap(appearance::ui_text(15.) * 1.35),
+                window.rem_size() * 0.5,
+            )
+        });
+        let lines = (title.size.height - top) / line;
+        assert!(
+            (lines - 2.).abs() < 0.05,
+            "the title {title:?} takes two lines of {line:?}, \"Add\" and \"sketch.png\" whole: {lines}"
+        );
+    }
+
     /// A document's two side headers keep one height, their first line as
     /// tall as the scaled 28 px open control, so Before and After align with
     /// or without it: an added PDF's After header, which offers the control,

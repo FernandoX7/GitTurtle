@@ -404,10 +404,21 @@ pub(super) fn summary(text: &str) -> String {
     }
 }
 
+/// The room a message piece keeps clear at its right for the viewport's
+/// scrollbar: the bar's own width, which is the same at every interface
+/// size, and a scaled 4 px between it and the text, 20 px at the default
+/// size. A scaled 20 px gave the bar 11.7 px more than it takes at 18 pt,
+/// and in a 461 × 490 window broke the title "Add polyglot.png" before the
+/// file name's last letter.
+fn scrollbar_reserve() -> Pixels {
+    Scrollbar::width() + appearance::ui_size(4.)
+}
+
 /// A piece of the inspector's message: static text read by its text, whose
 /// node reports the part the message's viewport draws, where the title ran
 /// past the viewport's foot at 18 pt in a 461 px window, over the Changed
-/// files heading below.
+/// files heading below. Its text keeps clear of the viewport's scrollbar
+/// ([`scrollbar_reserve`]).
 fn render_piece(piece: &Piece, index: usize, selection: &Selection, cx: &App) -> impl IntoElement {
     let colors = palette(cx);
     crate::native_accessibility::static_text(
@@ -419,7 +430,7 @@ fn render_piece(piece: &Piece, index: usize, selection: &Selection, cx: &App) ->
     .w_full()
     .min_w_0()
     .px_3()
-    .pr(appearance::ui_size(20.))
+    .pr(scrollbar_reserve())
     .when(index == 0, |row| row.pt_2())
     .when(piece.body_start && index > 0, |row| row.pt_3())
     .text_color(rgb(colors.text))
