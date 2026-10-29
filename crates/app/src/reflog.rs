@@ -360,11 +360,57 @@ impl ReflogBrowser {
         self.task = None;
         self.pending = false;
     }
-    /// As the loading row goes, focus its Cancel holds moves to the filter,
-    /// the first stop below it that every state of the browser draws.
+    /// As the loading row goes, focus its Cancel holds moves to the stop the
+    /// row's place leaves nearest: a selected entry's read stands in the
+    /// details below the list ([`Self::reading_entry`]), so the entry, the
+    /// list's stop above it; any other read stands above the list, below the
+    /// filter, the first stop below it that every state of the browser draws.
     fn leave_loading_row(&self, window: &mut Window, cx: &mut App) {
-        let filter = self.query.read(cx).focus_handle(cx);
-        self.cancel_read.release_to(&filter, window, cx);
+        let entry = self
+            .selected
+            .as_ref()
+            .filter(|_| self.commit.is_none())
+            .and_then(|entry| self.matches(cx).iter().take(100).position(|e| e == entry))
+            .map(|index| self.entries.focus(("reflog-entry", index), cx));
+        let to = entry.unwrap_or_else(|| self.query.read(cx).focus_handle(cx));
+        self.cancel_read.release_to(&to, window, cx);
+    }
+    /// Whether the read in progress is the selected entry's, whose commit
+    /// lands in the details below the list.
+    fn reading_entry(&self) -> bool {
+        self.pending && self.selected.is_some() && self.commit.is_none()
+    }
+    /// Up, Down, Home and End on the entry list select the entry they reach
+    /// and move focus, the list's one Tab stop, onto it, as History's list
+    /// and the Stashes list select with them; Space and Enter on the entry
+    /// select it as a click does.
+    fn entry_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.modifiers.modified() {
+            return;
+        }
+        let matches = self.matches(cx);
+        let count = matches.len().min(100);
+        let Some(current) = (0..count).find(|&index| {
+            self.entries
+                .focus(("reflog-entry", index), cx)
+                .is_focused(window)
+        }) else {
+            return;
+        };
+        let target = match event.keystroke.key.as_str() {
+            "up" => current.saturating_sub(1),
+            "down" => (current + 1).min(count - 1),
+            "home" => 0,
+            "end" => count - 1,
+            _ => return,
+        };
+        cx.stop_propagation();
+        let focus = self.entries.focus(("reflog-entry", target), cx);
+        window.focus(&focus, cx);
+        if self.selected.as_ref() != Some(&matches[target]) {
+            self.select(matches[target].clone(), window, cx);
+        }
+        cx.notify();
     }
     /// Whether the browser may act now: not while a write runs.
     fn current(&self, cx: &App) -> bool {
@@ -542,6 +588,60 @@ impl Render for ReflogBrowser {
         let entries: Vec<_> = (0..matches.len().min(100))
             .map(|index| self.entries.focus(("reflog-entry", index), cx))
             .collect();
+        // The entry list is one Tab stop: the entry the keyboard is on, else
+        // the selected entry, else the first. Tab from it reaches the selected
+        // entry's details next; every entry was a stop, so from a selected
+        // entry of a 40-entry log Copy commit ID took 41 presses.
+        let selected_entry = matches
+            .iter()
+            .take(100)
+            .position(|entry| self.selected.as_ref() == Some(entry));
+        let stop = entries
+            .iter()
+            .position(|focus| focus.is_focused(window))
+            .or(selected_entry)
+            .unwrap_or(0);
+        // A selected entry's read shows its loading row in the details, where
+        // its commit lands, and leaves Read log as it was, so selecting
+        // entries with the arrow keys never moves the list or dims a control
+        // above it; the row stood above the list, which moved down by its
+        // height until each read landed. Other reads keep it above the list.
+        let reading_entry = self.reading_entry();
+        let loading = self.pending.then(|| {
+            div()
+                .flex()
+                .gap_2()
+                .on_children_prepainted(
+                    self.content
+                        .controls(vec![None, Some(self.cancel_read.handle().clone())], room),
+                )
+                .child(
+                    label(
+                        "reflog-loading",
+                        if reading_entry {
+                            "Reading the selected commit…"
+                        } else {
+                            "Reading local reflog or selected commit…"
+                        },
+                    )
+                    .text_size(crate::appearance::ui_text(12.)),
+                )
+                .child(
+                    button("cancel-reflog-read", "Cancel", "", false)
+                        .track_focus(self.cancel_read.handle())
+                        .debug_selector(|| "cancel-reflog-read".into())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.cancel();
+                            this.leave_loading_row(window, cx);
+                            cx.notify();
+                        })),
+                )
+        });
+        let (loading_above, loading_below) = if reading_entry {
+            (None, loading)
+        } else {
+            (loading, None)
+        };
         let show_entry = self.entries.items(entries.clone(), room);
         let show_list = self.content.group(entries.clone(), room);
         // Past its height the entry list cues the rest with its scrollbar.
@@ -550,22 +650,23 @@ impl Render for ReflogBrowser {
             |focus: FocusHandle| div().on_children_prepainted(self.content.control(focus, room));
         let content = div().on_children_prepainted(self.content.observe()).id("reflog-browser-content").debug_selector(|| "reflog-browser-content".into()).flex().flex_col().gap_3().max_h(content_height).px(room).mx(-room).pb(room).overflow_y_scroll().track_scroll(self.content.scroll())
             .child(label("reflog-explanation", "Git records local reference movements here, including actions by other tools. HEAD belongs to this worktree; branch logs are shared. Entries expire, and unreachable objects may be pruned. This is not a permanent backup or a complete activity history.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
-            .child(div().flex().gap_2().on_children_prepainted(self.content.controls(vec![Some(scope), Some(read_log.clone())], room)).child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh", false).track_focus(&read_log).debug_selector(|| "refresh-reflog".into()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
+            .child(div().flex().gap_2().on_children_prepainted(self.content.controls(vec![Some(scope), Some(read_log.clone())], room)).child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh", false).track_focus(&read_log).debug_selector(|| "refresh-reflog".into()).disabled(self.pending && !reading_entry).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
             .when_some(self.page.as_ref(), |element, page| element.child(label("reflog-scope-summary", format!("{} · {} retained entries · newest first", page.reference, page.entries.len())).text_size(crate::appearance::ui_text(12.))).when(page.truncated, |element| element.child(label("reflog-limit", "Showing the newest 1,000 records within a 4 MiB tail. Older records are outside this bounded view.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
             // The filter stands in the ring's room, given back through its
             // margin, so revealing it shows its ring whole.
             .child(shown(filter).py(room).my(-room).child(Input::new(&self.query).aria_label("Filter loaded reflog entries").cleanable(true)))
-            .when(self.pending, |element| element.child(div().flex().gap_2().on_children_prepainted(self.content.controls(vec![None, Some(self.cancel_read.handle().clone())], room)).child(label("reflog-loading", "Reading local reflog or selected commit…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-reflog-read", "Cancel", "", false).track_focus(self.cancel_read.handle()).debug_selector(|| "cancel-reflog-read".into()).on_click(cx.listener(|this, _, window, cx| { this.cancel(); this.leave_loading_row(window, cx); cx.notify(); })))))
+            .children(loading_above)
             .children(self.error.as_ref().map(|error| label("reflog-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().on_children_prepainted(show_list).child(cue.list(div().on_children_prepainted(cue.observe(show_entry)).id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(list_height).p(room).m(-room).overflow_y_scroll().track_scroll(self.entries.scroll()).flex().flex_col().gap_1().children(matches.iter().take(100).zip(entries).enumerate().map(|(index, (entry, focus))| {
+            .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().on_children_prepainted(show_list).child(cue.list(div().on_children_prepainted(cue.observe(show_entry)).id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(list_height).p(room).m(-room).overflow_y_scroll().track_scroll(self.entries.scroll()).on_key_down(cx.listener(Self::entry_key)).flex().flex_col().gap_1().children(matches.iter().take(100).zip(entries).enumerate().map(|(index, (entry, focus))| {
                 let entry = entry.clone(); let text = format!("{} · {} · {} · {}", entry.selector, short_oid(&entry.oid), full_date(entry.timestamp), if entry.message.is_empty() { "Reference updated" } else { &entry.message });
-                entry_button(index, text, self.selected.as_ref() == Some(&entry), &self.cut_entries, cx.entity().downgrade(), p).track_focus(&focus).on_click(cx.listener(move |this, _, window, cx| this.select(entry.clone(), window, cx)))
+                entry_button(index, text, self.selected.as_ref() == Some(&entry), &self.cut_entries, cx.entity().downgrade(), p).track_focus(&focus).tab_stop(index == stop).on_click(cx.listener(move |this, _, window, cx| this.select(entry.clone(), window, cx)))
             })).when(matches.is_empty() && self.page.is_some() && !self.pending, |element| element.child(div().ml(TEXT_INSET).child(if self.page.as_ref().is_some_and(|page| page.entries.is_empty()) { EmptyState::new("reflog-empty", "No reflog records for this scope").tooltip("Reflog recording may be disabled, the branch may not exist, or older entries may have expired.") } else { EmptyState::new("reflog-empty", "No loaded entries match this filter") }.block(cx)))), "reflog-list-scrollbar")))
             .when(matches.len() > 100, |element| element.child(label("reflog-match-limit", "Showing 100 matches. Narrow the filter to find another retained entry.").text_size(crate::appearance::ui_text(12.))))
             .when_some(self.selected.as_ref(), |element, entry| {
                 let oid = entry.oid.clone(); let mark = copy_feedback::Mark::new("copy-reflog-oid", &entry.oid); let copy_mark = mark.clone();
                 element.child(label("reflog-selected-object", format!("{}\nCommit: {}\nPrevious: {}", entry.selector, entry.oid, entry.previous_oid)).text_size(crate::appearance::ui_text(12.)))
                     .child(shown(copy.clone()).flex().flex_col().child(copy_feedback::copy_button(mark, "Copy commit ID", "", cx).track_focus(&copy).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(copy_mark.clone()), "commit ID", oid.clone()))))
+                    .children(loading_below)
             })
             .when_some(self.commit.as_ref(), |element, commit| element
                 .child(label("reflog-commit-metadata", format!("{} · {}\n{} parent{} · {} against {}", commit.author, full_date(commit.timestamp), commit.parents.len(), if commit.parents.len() == 1 { "" } else { "s" }, crate::changed_files(self.changes.len()), if commit.parents.len() > 1 { "first parent" } else { "parent or empty tree" })).text_size(crate::appearance::ui_text(12.)))
@@ -774,6 +875,117 @@ mod tests {
             cx.update(|window, _| opener.is_focused(window)),
             "Escape returns focus to the opener"
         );
+    }
+
+    /// The entry list is one Tab stop, as History's list is: Tab from the
+    /// filter reaches the first entry, Space selects it as before, and Tab
+    /// from the selected entry reaches Copy commit ID next, Shift+Tab the
+    /// entry and then the filter; every entry was a stop, so from a selected
+    /// entry of a 40-entry log Copy commit ID took 41 presses. Down selects
+    /// the next entry and moves focus, its ring whole, onto it, and End the
+    /// last, shown inside the list, from where Tab again reaches Copy commit
+    /// ID. While a selected entry's commit is read, its loading row and
+    /// Cancel stand below the list, which stays where it was; the row stood
+    /// above the list and moved it down until each read landed.
+    #[gpui::test]
+    async fn the_entry_list_is_one_tab_stop_with_arrow_keys(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        let entry = |index: usize| Some(ElementId::from(("reflog-entry", index)));
+        let in_list = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| browser.read(cx).entries.focused(window))
+        };
+        let in_content = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| browser.read(cx).content.focused(window))
+        };
+        let filter_focused = |cx: &mut VisualTestContext| {
+            let filter = browser.read_with(cx, |this, cx| this.filter_focus(cx));
+            cx.update(|window, _| filter.is_focused(window))
+        };
+        let selected = |cx: &mut VisualTestContext| {
+            browser.read_with(cx, |this, _| {
+                let page = this.page.as_ref().expect("the log loaded");
+                this.selected
+                    .as_ref()
+                    .and_then(|chosen| page.entries.iter().position(|entry| entry == chosen))
+            })
+        };
+        let landed = async |cx: &mut VisualTestContext| {
+            let read = browser.update(cx, |this, _| this.task.take());
+            read.expect("the commit is read").await;
+            draw(cx);
+        };
+        let copy = Some(ElementId::from("copy-reflog-oid"));
+        assert!(filter_focused(cx), "the filter holds focus as it opens");
+
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(in_list(cx), entry(0), "Tab reaches the first entry");
+        // A focused Button acts on Space as the key comes up.
+        let keystroke = Keystroke::parse("space").unwrap();
+        cx.simulate_event(KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(KeyUpEvent { keystroke });
+        landed(cx).await;
+        assert_eq!(selected(cx), Some(0), "Space selects it");
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(in_content(cx), copy, "Tab from the selected entry");
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert_eq!(in_list(cx), entry(0), "Shift+Tab returns to the entry");
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        assert!(filter_focused(cx), "and then to the filter");
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(in_list(cx), entry(0), "the selected entry is the stop");
+
+        // Down, with the commit's read held as a slow read is.
+        let list = rendered(cx, "reflog-list");
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(in_list(cx), entry(1), "Down moves focus");
+        assert_eq!(selected(cx), Some(1), "and selects the entry");
+        crate::tags::tests::assert_rings_whole(cx, &["reflog-entry-1"]);
+        assert_eq!(rendered(cx, "reflog-list"), list, "the list stays put");
+        let loading = rendered(cx, "cancel-reflog-read");
+        assert!(
+            loading.top() >= list.bottom(),
+            "the entry's loading row {loading:?} stands below the list {list:?}"
+        );
+        // Its Cancel follows Copy commit ID, and focus it holds when the read
+        // lands returns to the entry, the stop above the row.
+        cx.simulate_keystrokes("tab tab");
+        draw(cx);
+        let cancel = browser.read_with(cx, |this, _| this.cancel_read.handle().clone());
+        assert!(
+            cx.update(|window, _| cancel.is_focused(window)),
+            "Tab reaches the entry's Cancel past Copy commit ID"
+        );
+        drop(held);
+        landed(cx).await;
+        assert!(cx.debug_bounds("cancel-reflog-read").is_none());
+        assert_eq!(in_list(cx), entry(1), "focus returns to the entry");
+
+        cx.simulate_keystrokes("end");
+        landed(cx).await;
+        assert_eq!(in_list(cx), entry(11), "End moves focus to the last entry");
+        assert_eq!(selected(cx), Some(11));
+        let list = rendered(cx, "reflog-list");
+        assert!(
+            shows_whole(list, rendered(cx, "reflog-entry-11")),
+            "the last entry is shown inside the list"
+        );
+        crate::tags::tests::assert_rings_whole(cx, &["reflog-entry-11"]);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(in_content(cx), copy, "Tab from the last entry");
     }
 
     /// In a 461 × 490 half tile, at 13 and 18 pt, every Tab stop of the

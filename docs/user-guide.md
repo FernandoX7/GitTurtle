@@ -166,6 +166,7 @@ Open **Help → Keyboard Shortcuts** on macOS or **Menu → Keyboard Shortcuts**
 | Enter | Open the highlighted file in Compare, from History or the file list |
 | Option-Up / Option-Down in the rebase sequence | Move the selected commit up / down |
 | P / R / S / F / D in the rebase sequence | Pick / Reword / Squash / Fixup / Drop |
+| Up / Down / Home / End in the reflog's entries | Select the previous / next / first / last entry; the list is one Tab stop, so Tab moves on to the selected entry's details |
 | Command-Option-Up / Command-Option-Down in the conflict viewer (Ctrl+Alt on Linux) | Previous / next unresolved block |
 | Command-B | Show or hide expanded repository navigation in History |
 | Command-? | Open Keyboard Shortcuts |
