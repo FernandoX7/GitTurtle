@@ -27,6 +27,11 @@ pub(super) struct State {
     pub pending: bool,
     pub error: Option<String>,
     task: Option<Task<()>>,
+    /// A query's job is in the lane and has not answered.
+    running: bool,
+    /// A query typed while a job ran waits for its answer; the newest
+    /// replaces any typed before it.
+    queued: bool,
 }
 impl State {
     pub(super) fn executor(&mut self) -> &SerialExecutor {
@@ -42,6 +47,8 @@ impl State {
         self.pending = false;
         self.error = None;
         self.task = None;
+        self.running = false;
+        self.queued = false;
     }
 }
 
@@ -163,9 +170,9 @@ impl GitTurtle {
             self.file_filter.read(cx).value().to_string()
         };
         let ticket = self.file_paths.cancellation.fetch_add(1, Ordering::Relaxed) + 1;
-        self.file_paths.task = None;
         self.file_paths.error = None;
         self.file_paths.pending = false;
+        self.file_paths.queued = false;
         if query.is_empty() {
             self.file_paths.visible = (0..self.files.len()).collect::<Vec<_>>().into();
             cx.notify();
@@ -198,6 +205,21 @@ impl GitTurtle {
             }
             self.file_paths.raw = Some(Arc::new(self.files.clone()));
         }
+        // The rows the last answer left stay drawn until this query's answer
+        // lands, so typing never shows an empty list or a false "No
+        // matches" in between; a fresh snapshot has none to keep and shows
+        // the pending state.
+        self.file_paths.pending = true;
+        // One job at a time: a query typed while one runs waits for its
+        // answer, replacing any that waited before it, and the running job,
+        // superseded, stops at its next checkpoint. However fast the typing,
+        // the lane's queue holds no more than that job, so a key is never
+        // refused as the lane being busy.
+        if self.file_paths.running {
+            self.file_paths.queued = true;
+            cx.notify();
+            return;
+        }
         let raw = self.file_paths.raw.clone();
         let index = self.file_paths.index.clone();
         let cancellation = Arc::clone(&self.file_paths.cancellation);
@@ -215,18 +237,33 @@ impl GitTurtle {
             let visible = matching(&index, &query, &cancellation, ticket)?;
             Ok((index, visible))
         });
-        // The rows the last answer left stay drawn until this query's answer
-        // lands, so typing never shows an empty list or a false "No
-        // matches" in between; a fresh snapshot has none to keep and shows
-        // the pending state.
-        self.file_paths.pending = true;
+        self.file_paths.running = true;
         self.file_paths.task = Some(cx.spawn(async move |this, cx| {
             let result = response.await;
             let _ = this.update(cx, |this, cx| {
-                this.land_file_filter(ticket, identity, result, cx)
+                this.answer_file_filter(ticket, identity, result, cx)
             });
         }));
         cx.notify();
+    }
+
+    /// The running job's answer frees the lane: a query that waited for it
+    /// runs now, the answer being for an older one; otherwise the answer
+    /// lands (`land_file_filter`).
+    fn answer_file_filter(
+        &mut self,
+        ticket: u64,
+        identity: Option<(usize, usize)>,
+        result: Answer,
+        cx: &mut Context<Self>,
+    ) {
+        self.file_paths.running = false;
+        self.file_paths.task = None;
+        if std::mem::take(&mut self.file_paths.queued) {
+            self.schedule_file_filter(cx);
+        } else {
+            self.land_file_filter(ticket, identity, result, cx);
+        }
     }
 
     /// Takes the filter's answer for the query `ticket` numbered, asked of
@@ -507,6 +544,97 @@ mod tests {
             app.read_with(cx, |app, cx| app.file_filter.read(cx).value().to_string()),
             "app/m"
         );
+    }
+
+    /// Twenty keys typed while the filter's worker is held coalesce: one
+    /// job runs and the newest query waits, so no key is refused as the
+    /// lane being busy, which once showed "Path filter unavailable" from
+    /// the ninth key, past the lane's queue of eight. Every frame keeps the
+    /// rows, and once the worker is released the answer is the last
+    /// query's.
+    #[gpui::test]
+    async fn twenty_keys_typed_while_the_worker_runs_coalesce_to_the_last_query(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::views::tests::{draw, history_window_from};
+        use std::sync::mpsc;
+
+        const PATHS: [&str; 4] = [
+            "src/app/views.rs",
+            "src/app/main.rs",
+            "docs/guides/getting-started.md",
+            "README.md",
+        ];
+        const QUERY: &str = "docs/guides/getting-";
+        assert_eq!(QUERY.chars().count(), 20);
+        let mut script = String::from(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 7\nfiles 4\n",
+        );
+        for path in PATHS {
+            script.push_str(&format!(
+                "M 100644 inline {path}\ndata {}\n{path}\n",
+                path.len()
+            ));
+        }
+        script.push_str("done\n");
+        let (_fixture, app, cx) = history_window_from(cx, &script).await;
+        let (release, wait) = mpsc::channel::<()>();
+        let held = app.update(cx, |app, _| {
+            app.file_paths.executor().submit_read(move || {
+                wait.recv()?;
+                Ok(())
+            })
+        });
+        cx.update(|window, cx| {
+            let filter = app.read(cx).file_filter.clone();
+            filter.update(cx, |input, cx| input.focus(window, cx));
+        });
+        draw(cx);
+        for (typed, key) in QUERY.chars().enumerate() {
+            cx.simulate_input(&key.to_string());
+            draw(cx);
+            let (pending, error, rows) = app.read_with(cx, |app, cx| {
+                (
+                    app.file_paths.pending,
+                    app.file_paths.error.clone(),
+                    app.filtered_file_indices(cx).len(),
+                )
+            });
+            let at = format!("key {} of {}", typed + 1, QUERY.len());
+            assert_eq!(error, None, "{at}: no key is refused");
+            assert!(pending, "{at}: the query pends");
+            assert_eq!(rows, PATHS.len(), "{at}: the rows stay");
+        }
+        release.send(()).unwrap();
+        held.await.unwrap().unwrap();
+        // The superseded job answers, then the waiting query runs.
+        for _ in 0..20 {
+            let drained = app.update(cx, |app, _| {
+                app.file_paths.executor().submit_read(|| Ok(()))
+            });
+            drained.await.unwrap().unwrap();
+            cx.executor().run_until_parked();
+            if !app.read_with(cx, |app, _| app.file_paths.pending) {
+                break;
+            }
+        }
+        draw(cx);
+        let (pending, error, rows, query, expected) = app.read_with(cx, |app, cx| {
+            (
+                app.file_paths.pending,
+                app.file_paths.error.clone(),
+                app.filtered_file_indices(cx).to_vec(),
+                app.file_filter.read(cx).value().to_string(),
+                app.files
+                    .iter()
+                    .position(|file| file.path() == std::path::Path::new(PATHS[2]))
+                    .unwrap(),
+            )
+        });
+        assert!(!pending, "the last query answered");
+        assert_eq!(error, None);
+        assert_eq!(query, QUERY);
+        assert_eq!(rows, vec![expected], "the last query's answer");
     }
 
     #[test]
