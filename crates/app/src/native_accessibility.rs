@@ -247,14 +247,17 @@ impl ListRow {
 /// opens or with the page that drew it, closes it as well, so it never
 /// reappears over another repository tab or mode.
 ///
-/// A menu whose items read the window's state follows writes and pauses as a
-/// right-click menu does ([`Self::following`], [`MenuInputs`]): built again
-/// in place, still focused, when a write starts or ends or an integration
-/// pauses or ends, its keyboard's cursor back on its first item that can
-/// act, or on none while every item is refused, since the kit's rebuild
-/// forgets which item held it. It read both once, as it opened, so one
-/// opened at rest offered Revert while a merge paused under it and one
-/// opened during a quick write kept its items disabled after the write.
+/// A menu whose items read the window's state follows writes and pauses as
+/// a right-click menu does ([`Self::following`], [`MenuInputs`]): built
+/// again in place, still focused, when a write starts or ends or an
+/// integration pauses or ends, its keyboard's cursor back on its first item
+/// that can act, or on none while every item is refused, since the kit's
+/// rebuild forgets which item held it; and closed, focus back on its list or
+/// tree, once its row no longer holds what it was opened on. It read both
+/// once, as it opened, so one opened at rest offered Revert while a merge
+/// paused under it and one opened during a quick write kept its items
+/// disabled after the write; built again for the row it opened on, it
+/// offered a commit's Revert once an Undo had taken that commit from the row.
 pub(super) struct KeyboardMenu {
     menu: Entity<PopupMenu>,
     row: RowPlace,
@@ -273,7 +276,7 @@ pub(super) struct KeyboardMenu {
     /// ([`Self::refuses_while_paused`]).
     paused: Option<fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>)>,
     _subscriptions: [Subscription; 2],
-    /// Builds a [`Self::following`] menu again as the window's state changes.
+    /// Keeps a [`Self::following`] menu with the window's state.
     _follows: Option<Subscription>,
 }
 
@@ -282,13 +285,16 @@ pub(super) struct KeyboardMenu {
 type BuildFrom = dyn Fn(PopupMenu, &GitTurtle) -> PopupMenu;
 
 impl KeyboardMenu {
-    /// Builds the row's menu with `build`, the builder its right-click menu
-    /// uses, focuses it, and calls `dismissed` once it closes. Its items are
-    /// no taller than the room below `row` where that holds about four rows
-    /// ([`MENU_FLOOR`]), and otherwise no taller than the larger of the room
-    /// below and the room above, where it goes when the room below is too
-    /// short for it. Opened beside a list's row ([`ListRow`]), it is drawn
-    /// where the list lays that row out in each frame.
+    /// Builds the row's menu once with `build`, the builder its right-click
+    /// menu uses, focuses it, and calls `dismissed` once it closes: a menu
+    /// whose items read nothing a write or a pause changes, as a changed
+    /// file's File history…, which a rebuild would only send the keyboard's
+    /// cursor back to the first item in. Its items are no taller than the
+    /// room below `row` where that holds about four rows ([`MENU_FLOOR`]),
+    /// and otherwise no taller than the larger of the room below and the room
+    /// above, where it goes when the room below is too short for it. Opened
+    /// beside a list's row ([`ListRow`]), it is drawn where the list lays
+    /// that row out in each frame.
     pub(super) fn open(
         row: impl Into<RowPlace>,
         focus: FocusHandle,
@@ -301,14 +307,21 @@ impl KeyboardMenu {
     }
 
     /// [`Self::open`] for a menu whose items read the window's state: from
-    /// `app`, the window being updated, as it opens, and from the window
-    /// itself after. It is built again in place, as [`Self::rebuild`]
+    /// `app` as it opens, while the window is being updated, and from the
+    /// window itself after. It is built again in place, as [`Self::rebuild`]
     /// builds it, when a write starts or ends or an integration pauses or
-    /// ends ([`MenuInputs`]).
+    /// ends ([`MenuInputs`]), and closes through `dismissed`, which returns
+    /// focus to its list or tree, as soon as `holds` finds that its row no
+    /// longer holds what the menu acts on, at the place the menu opened
+    /// beside: a write's quiet reload can take a commit from History's row
+    /// (an Undo or an Amend), and a branch deleted or renamed moves the
+    /// navigator's rows.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn following(
         row: impl Into<RowPlace>,
         focus: FocusHandle,
         build: impl Fn(PopupMenu, &GitTurtle) -> PopupMenu + 'static,
+        holds: impl Fn(&GitTurtle) -> bool + 'static,
         dismissed: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
         app: &GitTurtle,
         window: &mut Window,
@@ -324,16 +337,26 @@ impl KeyboardMenu {
             window,
             cx,
         );
+        // The window is being updated as the menu opens, so it reads `app`
+        // now and the window itself once the menu is open.
         let mut inputs = MenuInputs::of(app);
+        let mut gone = false;
         let (menu, focus, cap) = (this.menu.downgrade(), this.focus.clone(), this.cap);
         let owner = cx.entity();
         this._follows = Some(cx.observe_in(&owner, window, move |app, _, window, cx| {
-            let now = MenuInputs::of(app);
-            if now == inputs {
+            let Some(menu) = menu.upgrade().filter(|_| !gone) else {
+                return;
+            };
+            if !holds(app) {
+                // Closed as Escape closes it, its focus back on the list or
+                // tree it was opened from.
+                gone = true;
+                menu.update(cx, |_, cx| cx.emit(DismissEvent));
                 return;
             }
-            inputs = now;
-            if let Some(menu) = menu.upgrade() {
+            let now = MenuInputs::of(app);
+            if now != inputs {
+                inputs = now;
                 let app = &*app;
                 Self::build_again(&menu, focus.clone(), cap, |menu| build(menu, app), window, cx);
             }
@@ -412,6 +435,11 @@ impl KeyboardMenu {
 
     /// [`Self::rebuild`] for the open `menu`, in `focus`'s context and no
     /// taller than `cap`.
+    // TODO(F): keep the item the keyboard's cursor was on across a rebuild,
+    // through the vendored PopupMenu select-by-label. The kit's rebuild
+    // clears the selection and this puts the cursor back on the first item
+    // that can act, so Enter just after a write ends can choose another item
+    // than the one the person was on.
     fn build_again(
         menu: &Entity<PopupMenu>,
         focus: FocusHandle,
@@ -425,6 +453,12 @@ impl KeyboardMenu {
                 Self::finish(build(menu), focus, cap, window, cx)
             })
         });
+    }
+
+    /// The open menu, for tests that watch it built again.
+    #[cfg(test)]
+    pub(super) fn menu(&self) -> &Entity<PopupMenu> {
+        &self.menu
     }
 
     /// The menu of a row whose every item a paused merge, rebase,

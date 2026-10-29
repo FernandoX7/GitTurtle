@@ -4253,6 +4253,8 @@ impl GitTurtle {
                     app.operation_busy.is_some(),
                 )
             },
+            // Its file is kept by path as rows land (`follow_working_menu`).
+            |_: &GitTurtle| true,
             Self::dismiss_file_menu,
             self,
             window,

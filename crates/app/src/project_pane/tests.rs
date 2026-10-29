@@ -479,6 +479,55 @@ fn a_project_rows_keyboard_menu_follows_writes(cx: &mut TestAppContext) {
     }
 }
 
+/// A project row's keyboard menu closes, with focus back on the tree, once
+/// its row no longer holds its project, as one removed above it moves the
+/// rows up: built again for the place it opened beside, it would have acted
+/// on a project that is no longer there.
+#[gpui::test]
+async fn a_project_rows_keyboard_menu_closes_once_its_row_moves(cx: &mut TestAppContext) {
+    let (library, _, paths) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    cx.update(|_, cx| native_accessibility::bind_keys(cx));
+    // The last row, beta, a project, below alpha in the group.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.move_project_cursor(true, true, window, cx);
+            window.focus(&app.project_pane.focus, cx);
+        })
+    });
+    settle(cx);
+    cx.simulate_keystrokes("shift-f10");
+    settle(cx);
+    assert!(
+        cx.debug_bounds("menu-item: Open project · MenuItem")
+            .is_some(),
+        "beta's menu opened"
+    );
+    let alpha = paths[0].clone();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.edit_project_library(
+                |library| {
+                    library.forget_project(&alpha);
+                    Ok(())
+                },
+                window,
+                cx,
+            )
+        })
+    });
+    settle(cx);
+    assert!(
+        app.read_with(cx, |app, _| app.project_pane.keyboard_menu.is_none()),
+        "the menu closed once its row moved"
+    );
+    assert!(
+        cx.update(|window, cx| app.read(cx).project_pane.focus.is_focused(window)),
+        "focus is back on the tree"
+    );
+    settle_save(&app, cx).await;
+}
+
 /// A row's menu opens with the row's name, a label. Opened from the
 /// keyboard, it starts on the first action below the name, so Enter alone
 /// renames the group: the kit's first Down used to select the name, and

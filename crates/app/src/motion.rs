@@ -2999,7 +2999,9 @@ mod tests {
         git(&["commit", "-q", "-m", "side"]);
         git(&["checkout", "-q", "main"]);
         std::fs::write(repository.join("extra.txt"), "extra\n").unwrap();
-        refreshed(&app, cx).await;
+        // History takes in the side branch's commit now, above HEAD, rather
+        // than under an open menu, which its row moving would close.
+        refs_quietly_refreshed(&app, cx).await;
         let paused = |cx: &mut VisualTestContext| {
             app.read_with(cx, |app, _| app.integration_state.is_some())
         };
@@ -3101,6 +3103,231 @@ mod tests {
             );
             close_keyed_menu(&app, cx, &on);
         }
+        drop(fixture);
+    }
+
+    /// Lets every quiet read the window has asked for land: each runs on
+    /// the window's reader, a thread `run_until_parked` cannot wait for.
+    fn quiet_reads_land(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        for _ in 0..8 {
+            if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                return;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        panic!("a quiet read asked for never ran");
+    }
+
+    /// Reads the repository again as the local watcher does after a change
+    /// outside the app, its refs and History included, lets the read land
+    /// and draws the frame after it.
+    async fn refs_quietly_refreshed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        git: true,
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        quiet_reads_land(app, cx);
+        crate::views::tests::settle(app, cx).await;
+        next_frame(cx);
+    }
+
+    /// A commit's keyboard menu opened on HEAD while an Undo runs closes,
+    /// with focus back on History's list, once the write's quiet reload
+    /// takes that commit from the row it opened beside. Built again for the
+    /// row it opened on, it offered Revert and Cherry-pick of the commit
+    /// the Undo had left behind, over the row of the new HEAD.
+    #[gpui::test]
+    async fn a_keyboard_commit_menu_closes_once_a_write_takes_its_commit(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        fixture_git(&repository, &["reset", "-q", "--hard"]);
+        refreshed(&app, cx).await;
+        let head = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.work_status
+                    .as_ref()
+                    .and_then(|status| status.head.clone())
+                    .expect("HEAD")
+            })
+        };
+        let before = head(cx);
+        let repo = app.read_with(cx, |app, _| app.repository.clone().expect("the repository"));
+        let plan = repo
+            .recovery_plan(gitturtle_core::RecoveryKind::Undo, Some(&before), None)
+            .expect("an Undo plan");
+        let undo = gitturtle_core::WriteCommand::Recovery(std::sync::Arc::new(
+            gitturtle_core::RecoveryCommand::Undo { plan },
+        ));
+        // Shift-F10 on HEAD while the Undo runs.
+        let write = held(&app, cx, undo);
+        open_keyed_menu(&app, cx, KeyedRow::Commit, "shift-f10").await;
+        keyed_items(&app, cx, &COMMIT_ITEMS, false, "during the Undo");
+        release(&app, write, cx).await;
+        quiet_reads_land(&app, cx);
+        crate::views::tests::settle(&app, cx).await;
+        next_frame(cx);
+        let after = head(cx);
+        assert_ne!(after, before, "the Undo moved HEAD");
+        assert_eq!(
+            app.read_with(cx, |app, _| app
+                .visible
+                .first()
+                .and_then(|index| app.commits.get(*index))
+                .map(|commit| commit.oid.clone())),
+            Some(after),
+            "the row the menu opened beside holds the new HEAD"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.commit_menu.is_none()),
+            "the menu closed once its commit left the row"
+        );
+        assert_eq!(
+            offered(cx, "Revert this commit…"),
+            None,
+            "no Revert of the undone commit is offered"
+        );
+        assert!(
+            cx.update(|window, cx| app.read(cx).focus.is_focused(window)),
+            "focus is back on History's list"
+        );
+        drop(fixture);
+    }
+
+    /// A navigator branch's keyboard menu stays open through a quiet refresh
+    /// that changes nothing, and closes, with focus back on the tree, once
+    /// its branch is deleted or renamed outside the app and the refresh
+    /// moves the tree's rows: its row then holds another branch, which
+    /// Branch actions… would have acted on the old name of.
+    #[gpui::test]
+    async fn a_keyboard_branch_menu_closes_once_its_branch_goes(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let git = |arguments: &[&str]| fixture_git(&repository, arguments);
+        git(&["reset", "-q", "--hard"]);
+        git(&["branch", "doomed"]);
+        git(&["branch", "renamed"]);
+        refs_quietly_refreshed(&app, cx).await;
+        let row_of = |cx: &mut VisualTestContext, name: &str| {
+            app.read_with(cx, |app, _| {
+                app.nav_rows.iter().position(|row| {
+                    matches!(row, crate::NavRow::Branch(branch, _)
+                        if app.branches[*branch].name == name)
+                })
+            })
+        };
+        let item = ["Branch actions…"];
+        let changes: [(&str, &[&str]); 2] = [
+            ("doomed", &["branch", "-D", "doomed"]),
+            ("renamed", &["branch", "-m", "renamed", "zz-renamed"]),
+        ];
+        for (name, change) in changes {
+            let row = row_of(cx, name).unwrap_or_else(|| panic!("{name} in the navigator"));
+            open_keyed_menu(&app, cx, KeyedRow::Branch(row), "shift-f10").await;
+            keyed_items(&app, cx, &item, true, &format!("{name} at rest"));
+            refs_quietly_refreshed(&app, cx).await;
+            assert!(
+                app.read_with(cx, |app, _| app.nav_menu.is_some()),
+                "{name}: a refresh that changes nothing keeps the menu"
+            );
+            keyed_items(&app, cx, &item, true, &format!("{name} after that refresh"));
+            git(change);
+            refs_quietly_refreshed(&app, cx).await;
+            assert_eq!(row_of(cx, name), None, "{name} left the navigator");
+            assert!(
+                app.read_with(cx, |app, _| app.nav_menu.is_none()),
+                "{name}: the menu closed once its branch left the row"
+            );
+            assert_eq!(offered(cx, item[0]), None, "{name}: nothing is offered");
+            assert!(
+                cx.update(|window, cx| app.read(cx).nav_focus.is_focused(window)),
+                "{name}: focus is back on the tree"
+            );
+        }
+        drop(fixture);
+    }
+
+    /// A changed file's keyboard menu, whose File history… reads nothing a
+    /// write or a pause changes, is built once: a write's start and end leave
+    /// it as it was, and its keyboard's cursor with it. Following writes, it
+    /// was built again at each, its cursor sent back to the first item.
+    #[gpui::test]
+    async fn a_changed_files_keyboard_menu_is_built_once(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        fixture_git(&repository, &["reset", "-q", "--hard"]);
+        refreshed(&app, cx).await;
+        // HEAD's first changed file highlighted, as Back from Compare leaves
+        // it, its list focused.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.show_history(window, cx);
+                app.select_commit(0, window, cx);
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(!app.files.is_empty(), "the commit's changed files");
+                app.selected_file = Some(0);
+                app.pane = Pane::Files;
+                window.focus(&app.file_focus, cx);
+                cx.notify();
+            })
+        });
+        next_frame(cx);
+        cx.simulate_keystrokes("shift-f10");
+        next_frame(cx);
+        let menu = app.read_with(cx, |app, _| {
+            app.file_menu
+                .as_ref()
+                .expect("the changed file's menu")
+                .menu()
+                .clone()
+        });
+        assert_eq!(offered(cx, "File history…"), Some(true), "the menu opened");
+        // How often the menu is built again.
+        let built = std::rc::Rc::new(std::cell::Cell::new(0));
+        let _built = cx.update(|_, cx| {
+            let built = built.clone();
+            cx.observe(&menu, move |_, _| built.set(built.get() + 1))
+        });
+        let write = held_write(&app, cx);
+        next_frame(cx);
+        release(&app, write, cx).await;
+        next_frame(cx);
+        assert_eq!(built.get(), 0, "a write's start and end build it no more");
+        assert_eq!(
+            offered(cx, "File history…"),
+            Some(true),
+            "the menu stays open"
+        );
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
         drop(fixture);
     }
 

@@ -602,6 +602,15 @@ impl GitTurtle {
             indent,
         );
         let owner = cx.entity().downgrade();
+        // Its row still holds the group or project, at the place the menu
+        // opened beside.
+        let held = key.clone();
+        let holds = move |app: &GitTurtle| {
+            app.project_pane
+                .rows
+                .get(index)
+                .is_some_and(|row| row.key() == held)
+        };
         self.project_pane.keyboard_menu = Some(native_accessibility::KeyboardMenu::following(
             anchor,
             self.project_pane.focus.clone(),
@@ -610,6 +619,7 @@ impl GitTurtle {
             move |menu, app: &GitTurtle| {
                 row_menu(menu, &owner, &key, Some(app.menu_snapshot(&key)))
             },
+            holds,
             Self::dismiss_project_menu,
             self,
             window,

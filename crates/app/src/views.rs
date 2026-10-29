@@ -1100,7 +1100,9 @@ impl GitTurtle {
     /// Shift-F10, or on Linux the Menu key, in the navigator: opens the
     /// cursor row's menu below it, the one a right-click on a branch or a
     /// worktree opens, its actions unavailable while a write runs and
-    /// built again in place as one starts or ends.
+    /// built again in place as one starts or ends. It closes once the row
+    /// it opened beside no longer holds its branch or worktree, as one
+    /// deleted or renamed, or added above it, leaves the tree.
     pub(super) fn manage_navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.nav_menu.is_some() || window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return;
@@ -1110,10 +1112,12 @@ impl GitTurtle {
         };
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         type Build = Box<dyn Fn(PopupMenu, &GitTurtle) -> PopupMenu>;
-        let (depth, build): (usize, Build) = match self.nav_rows.get(index) {
+        type Holds = Box<dyn Fn(&GitTurtle) -> bool>;
+        let (depth, build, holds): (usize, Build, Holds) = match self.nav_rows.get(index) {
             Some(NavRow::Branch(branch, depth)) => {
                 let branch = &self.branches[*branch];
                 let (name, remote) = (branch.name.clone(), branch.remote);
+                let (held, shown) = (name.clone(), repository.clone());
                 (
                     *depth,
                     Box::new(move |menu, app: &GitTurtle| {
@@ -1126,10 +1130,18 @@ impl GitTurtle {
                             app.operation_busy.is_some(),
                         )
                     }),
+                    Box::new(move |app: &GitTurtle| {
+                        app.path == shown
+                            && matches!(app.nav_rows.get(index), Some(NavRow::Branch(branch, _))
+                            if app.branches.get(*branch).is_some_and(|branch| {
+                                branch.name == held && branch.remote == remote
+                            }))
+                    }),
                 )
             }
             Some(NavRow::Worktree(tree)) => {
                 let tree = self.worktrees[*tree].clone();
+                let (held, shown) = (tree.path.clone(), repository.clone());
                 (
                     0,
                     Box::new(move |menu, app: &GitTurtle| {
@@ -1143,6 +1155,11 @@ impl GitTurtle {
                             tree.clone(),
                             disabled,
                         )
+                    }),
+                    Box::new(move |app: &GitTurtle| {
+                        app.path == shown
+                            && matches!(app.nav_rows.get(index), Some(NavRow::Worktree(tree))
+                                if app.worktrees.get(*tree).is_some_and(|tree| tree.path == held))
                     }),
                 )
             }
@@ -1158,6 +1175,7 @@ impl GitTurtle {
             anchor,
             self.nav_focus.clone(),
             build,
+            holds,
             Self::dismiss_nav_menu,
             self,
             window,
@@ -2617,6 +2635,7 @@ impl GitTurtle {
         let Some(commit) = self.commits.get(index) else {
             return;
         };
+        let oid = commit.oid.clone();
         let commit = recovery::commit_target(commit);
         let inset = appearance::ui_size(appearance::PANE_INSET);
         let anchor = native_accessibility::KeyboardMenu::cursor_row(
@@ -2631,12 +2650,25 @@ impl GitTurtle {
         let shown = self.history_horizontal.bounds().right() - px(1.);
         let anchor = anchor.trailing(list.min(shown) - inset);
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
+        // The row it opened beside still holds the commit: an Undo or an
+        // Amend takes it from History as the write's quiet reload lands, and
+        // commits arriving above it move it down.
+        let shown = repository.clone();
+        let holds = move |app: &GitTurtle| {
+            app.path == shown
+                && app.visible.get(row) == Some(&index)
+                && app
+                    .commits
+                    .get(index)
+                    .is_some_and(|commit| commit.oid == oid)
+        };
         let build = Self::keyboard_commit_menu(owner, repository, commit);
         self.commit_menu = Some(
             native_accessibility::KeyboardMenu::following(
                 anchor,
                 self.focus.clone(),
                 build,
+                holds,
                 Self::dismiss_commit_menu,
                 self,
                 window,
@@ -2689,20 +2721,13 @@ impl GitTurtle {
             appearance::ui_size(appearance::PANE_INSET),
         );
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
-        self.file_menu = Some(native_accessibility::KeyboardMenu::following(
+        // Built once: File history… reads nothing a write or a pause
+        // changes, and a rebuild would only move the keyboard's cursor.
+        self.file_menu = Some(native_accessibility::KeyboardMenu::open(
             anchor,
             self.file_focus.clone(),
-            move |menu, _: &GitTurtle| {
-                changed_file_menu(
-                    menu,
-                    owner.clone(),
-                    repository.clone(),
-                    file.clone(),
-                    commit.clone(),
-                )
-            },
+            move |menu| changed_file_menu(menu, owner, repository, file, commit),
             Self::dismiss_file_menu,
-            self,
             window,
             cx,
         ));
