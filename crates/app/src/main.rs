@@ -377,6 +377,9 @@ struct GitTurtle {
     preferences_writer: SerialExecutor,
     operations: SerialExecutor,
     operation_busy: Option<&'static str>,
+    /// The look of the current busy spell, which waits a moment
+    /// (`workspace::BusyLook`).
+    busy_look: workspace::BusyLook,
     operation_repository: Option<PathBuf>,
     operation_outcomes: operations::RepositoryOutcomes,
     operation_error: Option<String>,
@@ -728,6 +731,7 @@ impl GitTurtle {
             preferences_writer: SerialExecutor::new("gitturtle-preferences"),
             operations: SerialExecutor::new("gitturtle-operations"),
             operation_busy: None,
+            busy_look: workspace::BusyLook::default(),
             operation_repository: None,
             operation_outcomes: operations::RepositoryOutcomes::default(),
             operation_error: None,

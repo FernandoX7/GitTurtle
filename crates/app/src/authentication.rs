@@ -127,6 +127,7 @@ impl GitTurtle {
             return div().into_any_element();
         };
         Button::new("cancel-git-operation")
+            .debug_selector(|| "cancel-git-operation".into())
             .secondary().small()
             .label(if control.is_cancelled() { "Cancelling…" } else { "Cancel operation" })
             .disabled(control.is_cancelled())

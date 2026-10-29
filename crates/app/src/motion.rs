@@ -135,6 +135,11 @@ impl GitTurtle {
     /// that it can travel when the rows the write produces arrive. Under
     /// reduced motion nothing departs.
     pub(super) fn depart_working_row(&mut self, position: usize, window: &Window, cx: &App) {
+        // A write in flight refuses another (`write_from`), whose row must
+        // not take the place of the row that write moves.
+        if self.operation_busy.is_some() {
+            return;
+        }
         self.working_travel = RowTravel::Idle;
         if cx.reduce_motion() {
             return;
@@ -872,6 +877,164 @@ mod tests {
             write_frames(&app, cx, "delta.txt", staged, &mut Vec::new()).await;
             write_frames(&app, cx, "alpha.txt", unstaged, &mut Vec::new()).await;
         }
+    }
+
+    /// Whether the last frame drew the busy look: the progress label,
+    /// Cancel, "Refreshing…", the tab's "· working", or Stage all or Unstage
+    /// all, which
+    /// stay available through the writes below, in the disabled colour.
+    fn looks_busy(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Vec<&'static str> {
+        let disabled =
+            cx.update(|_, cx| gpui_kit::component::Theme::global(cx).disabled_foreground());
+        let mut drawn = Vec::new();
+        if cx.debug_bounds("operation-progress").is_some() {
+            drawn.push("the progress label");
+        }
+        if cx.debug_bounds("cancel-git-operation").is_some() {
+            drawn.push("Cancel");
+        }
+        if cx.debug_bounds("working-refreshing").is_some() {
+            drawn.push("Refreshing…");
+        }
+        if app.read_with(cx, |app, _| {
+            app.repository_tabs
+                .tabs
+                .iter()
+                .any(|tab| app.tab_label(tab).0.ends_with(" · working"))
+        }) {
+            drawn.push("the tab's · working");
+        }
+        for (control, text) in [
+            ("Stage all", "stage-all/rest/text"),
+            ("Unstage all", "unstage-all/rest/text"),
+        ] {
+            if crate::appearance::drawn_color(text) == Some(disabled) {
+                drawn.push(control);
+            }
+        }
+        drawn
+    }
+
+    /// A row's Stage that lands with its rows within the busy look's delay
+    /// never looks busy: in every frame from the press to the landing no
+    /// progress label or Cancel is drawn, the tab does not read "· working"
+    /// and Stage all and Unstage all keep their resting colour, where the
+    /// write once dimmed every control for a frame. Acceptance does not
+    /// wait: another row's Stage pressed while the write runs is refused at
+    /// once, and its row does not take the travelling row's place. A write
+    /// still running when the delay ends looks busy then, and not a
+    /// millisecond before.
+    #[gpui::test]
+    async fn a_quick_write_never_looks_busy(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        let (_, palette) = crate::appearance::test_palettes().remove(0);
+        cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+        draw(cx);
+        let frame = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        };
+        frame(cx);
+        assert!(looks_busy(&app, cx).is_empty(), "at rest");
+
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]:
+        // delta's Stage, with the write held so its frames can be drawn.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        let delta = cx.debug_bounds("working-stage-4").expect("delta's Stage");
+        cx.simulate_click(delta.center(), Modifiers::default());
+        let mut seen = Vec::new();
+        frame(cx);
+        seen.push(("the press", looks_busy(&app, cx)));
+        assert!(app.read_with(cx, |app, _| app.operation_busy.is_some()));
+        // Epsilon's Stage looks available and is refused at once.
+        let epsilon = cx.debug_bounds("working-stage-5").expect("epsilon's Stage");
+        cx.simulate_click(epsilon.center(), Modifiers::default());
+        frame(cx);
+        seen.push(("a second press", looks_busy(&app, cx)));
+        app.read_with(cx, |app, _| match &app.working_travel {
+            RowTravel::Departed(departure) => {
+                assert_eq!(departure.path, Path::new("delta.txt"))
+            }
+            _ => panic!("delta's departure was replaced"),
+        });
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        for step in 0..8 {
+            frame(cx);
+            seen.push(("the write's outcome and reads", looks_busy(&app, cx)));
+            let tasks = app.update(cx, |app, _| {
+                [app.task.take(), app.status_task.take()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+            });
+            for task in tasks {
+                task.await;
+            }
+            cx.executor().run_until_parked();
+            frame(cx);
+            seen.push(("the status read", looks_busy(&app, cx)));
+            app.update(cx, |app, _| app.file_paths.executor().drain());
+            cx.executor().run_until_parked();
+            if flying(&app, cx).is_some() || step == 7 {
+                break;
+            }
+        }
+        assert_eq!(flying(&app, cx), Some(3), "delta travels to Staged");
+        frame(cx);
+        seen.push(("the rows' landing", looks_busy(&app, cx)));
+        let flashed: Vec<_> = seen
+            .iter()
+            .filter(|(_, drawn)| !drawn.is_empty())
+            .map(|(at, drawn)| format!("{at}: {}", drawn.join(", ")))
+            .collect();
+        assert!(flashed.is_empty(), "a quick write looked busy: {flashed:?}");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_paths.staged_count),
+            3,
+            "only delta was staged"
+        );
+        advance(cx, ROW_TRAVEL.as_millis() as u64);
+
+        // [Staged 3, alpha, beta, delta, Unstaged 3, epsilon, gamma, zeta]:
+        // epsilon's Stage, held past the delay.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        let epsilon = cx.debug_bounds("working-stage-5").expect("epsilon's Stage");
+        cx.simulate_click(epsilon.center(), Modifiers::default());
+        frame(cx);
+        assert!(looks_busy(&app, cx).is_empty(), "the press");
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY - Duration::from_millis(1));
+        cx.executor().run_until_parked();
+        frame(cx);
+        assert!(looks_busy(&app, cx).is_empty(), "a millisecond before");
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.executor().run_until_parked();
+        frame(cx);
+        assert_eq!(
+            looks_busy(&app, cx),
+            [
+                "the progress label",
+                "Cancel",
+                "the tab's · working",
+                "Stage all",
+                "Unstage all"
+            ],
+            "once the delay passed"
+        );
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        rows_arrived(&app, cx).await;
+        frame(cx);
+        assert!(looks_busy(&app, cx).is_empty(), "landed");
     }
 
     /// Under reduced motion the row is in its slot in the first frame the

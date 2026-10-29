@@ -1919,7 +1919,7 @@ impl GitTurtle {
         let (left_controls, right_controls, drag_region) = {
             #[cfg(target_os = "linux")]
             {
-                let busy = self.operation_busy.is_some();
+                let busy = self.operation_shown().is_some();
                 (
                     window_chrome::controls(window_chrome::Side::Left, busy, window, cx),
                     window_chrome::controls(window_chrome::Side::Right, busy, window, cx),
@@ -1982,7 +1982,7 @@ impl GitTurtle {
                             .map(|(index, tab)| {
                                 let selected = self.repository_tabs.active == Some(index);
                                 let pinned = self.tab_is_pinned(&tab.path);
-                                let busy = self.operation_busy.is_some()
+                                let busy = self.operation_shown().is_some()
                                     && self.operation_repository.as_ref() == Some(&tab.path);
                                 let name = self.project_name(&tab.path);
                                 let (label, pin) = self.tab_label(tab);
@@ -2084,8 +2084,8 @@ impl GitTurtle {
         } else {
             ""
         };
-        let busy =
-            self.operation_busy.is_some() && self.operation_repository.as_ref() == Some(&tab.path);
+        let busy = self.operation_shown().is_some()
+            && self.operation_repository.as_ref() == Some(&tab.path);
         let label = format!(
             "{pin}{}{}",
             self.project_name(&tab.path),

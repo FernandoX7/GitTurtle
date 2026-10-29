@@ -153,7 +153,8 @@ impl GitTurtle {
         )
         .debug_selector(|| "page-back".into())
         .accessibility_label(back_label)
-        .disabled(self.operation_busy.is_some() && self.mode == WorkspaceMode::History)
+        // History's Back opens Projects, which a running write refuses.
+        .disabled(self.operation_shown().is_some() && self.mode == WorkspaceMode::History)
         .tooltip(format!("{back_label} · {}[", primary_label()))
         .when(labelled, |back| back.w_full())
         // The kit centres a Button's content: the shorter "Back" keeps the
@@ -231,6 +232,7 @@ impl GitTurtle {
         );
         div()
             .id("operation-progress")
+            .debug_selector(|| "operation-progress".into())
             .role(Role::Status)
             .aria_label(description.clone())
             .tooltip(move |window, cx| Tooltip::new(description.clone()).build(window, cx))
@@ -258,7 +260,8 @@ impl GitTurtle {
             .debug_selector(|| "projects".into())
             .accessibility_label("Projects")
             .tooltip("Open Projects")
-            .disabled(self.operation_busy.is_some())
+            // `show_projects` refuses while a write runs.
+            .disabled(self.operation_shown().is_some())
             .on_click(cx.listener(|this, _, window, cx| this.show_projects(window, cx)))
     }
 
@@ -290,7 +293,7 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = palette(cx);
-        let busy = self.operation_busy.is_some();
+        let busy = self.operation_shown().is_some();
         let back_to_projects = self.back_label() == "Back to Projects";
         let ring = appearance::button_ring_room(cx);
         let history = self.mode != WorkspaceMode::Working;
@@ -399,7 +402,7 @@ impl GitTurtle {
                     .items_center()
                     .gap_2()
                     .children(
-                        self.operation_busy
+                        self.operation_shown()
                             .map(|label| self.render_operation_progress(label, cx)),
                     )
                     .when(busy, |trailing| {
@@ -443,7 +446,7 @@ impl GitTurtle {
             Chrome::Full { narrow } => narrow,
         };
         let p = palette(cx);
-        let busy = self.operation_busy.is_some();
+        let busy = self.operation_shown().is_some();
         let back_label = self.back_label();
         let back_to_projects = back_label == "Back to Projects";
         if self.page == AppPage::Settings {
@@ -585,7 +588,7 @@ impl GitTurtle {
                 header.child(div().flex_1())
             })
             .children(
-                self.operation_busy
+                self.operation_shown()
                     .map(|label| self.render_operation_progress(label, cx)),
             )
             .when(busy, |header| {
@@ -5507,6 +5510,8 @@ impl Render for GitTurtle {
             }
         }
         image_lifetime::after_draw(window, cx);
+        // Before anything reads it: whether a busy spell looks busy yet.
+        self.track_busy_look(cx);
         // A refused Toggle Sidebar is announced only from the narrow History
         // rail. Forget it once that is not drawn, so the node cannot reappear,
         // and be announced again, when the window narrows or History returns.
@@ -13532,6 +13537,10 @@ pub(crate) mod tests {
                     cx.notify()
                 })
             });
+            draw(cx);
+            // A write's busy look waits a moment.
+            cx.executor()
+                .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
             draw(cx);
         };
         let mut failures = Vec::new();

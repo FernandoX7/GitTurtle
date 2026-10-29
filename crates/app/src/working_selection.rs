@@ -655,8 +655,11 @@ impl GitTurtle {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (staged, unstaged) = self.selection_counts();
-        let unavailable = self.operation_busy.is_some()
-            || self.working_paths.pending
+        // A write in flight or rows being prepared leave Stage and Unstage
+        // inert at once (`apply_selected_files`), dimmed once the spell
+        // looks busy.
+        let unavailable = ((self.operation_busy.is_some() || self.working_paths.pending)
+            && self.busy_shown())
             || self.working_paths.error.is_some();
         let grouped = self.working_selection.grouped;
         let (stage, unstage) = (format!("Stage {unstaged}"), format!("Unstage {staged}"));

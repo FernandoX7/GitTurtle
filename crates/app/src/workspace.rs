@@ -364,6 +364,23 @@ pub(super) const DESCRIPTION_PLACEHOLDER: &str = "Explain why this change is nee
 /// The composer's texts below its title, whose wrapped lines the
 /// composer's rows count (`GitTurtle::composer_rows`).
 const LONG_TITLE_NOTE: &str = "A shorter title is easier to scan. This title is still valid.";
+/// How long a busy spell runs before it looks busy (`GitTurtle::busy_shown`).
+pub(crate) const BUSY_LOOK_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// The look of a busy spell: the progress label, Cancel, the tab's
+/// "· working", "Refreshing…" and the disabled styling of the controls a
+/// write or the reads after it make unavailable. It waits
+/// [`BUSY_LOOK_DELAY`], so a write that lands with its rows sooner never
+/// flashes it on controls the person did not touch. Acceptance does not
+/// wait: those controls refuse at once (`write_from`, `depart_working_row`
+/// and their own handlers).
+#[derive(Default)]
+pub(crate) struct BusyLook {
+    shown: bool,
+    /// Shows the look once the delay passes; dropping it cancels that.
+    reveal: Option<Task<()>>,
+}
+
 const UNSTAGED_HINT: &str = "Stage files to include in your commit";
 const STAGED_HINT: &str = "Only staged changes will be committed";
 const DRAFT_SAVE_NOTE: &str =
@@ -1894,6 +1911,45 @@ impl GitTurtle {
         self.write_from(command, label, None, window, cx);
     }
 
+    /// Whether the window is busy: a write in flight, a status read, or a
+    /// list's rows being prepared. A write's own read and rows follow it
+    /// without a gap, so its spell runs from the press to the rows' landing.
+    fn busy_spell(&self) -> bool {
+        self.operation_busy.is_some() || self.status_task.is_some() || self.working_paths.pending
+    }
+
+    /// Follows the busy spell as each frame is built: one that begins asks
+    /// for a frame [`BUSY_LOOK_DELAY`] later, which shows its look if it
+    /// still runs, and one that ends drops its look.
+    pub(super) fn track_busy_look(&mut self, cx: &mut Context<Self>) {
+        if !self.busy_spell() {
+            self.busy_look = BusyLook::default();
+            return;
+        }
+        if self.busy_look.shown || self.busy_look.reveal.is_some() {
+            return;
+        }
+        self.busy_look.reveal = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(BUSY_LOOK_DELAY).await;
+            let _ = this.update(cx, |this, cx| {
+                this.busy_look.shown = true;
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Whether the busy spell has lasted [`BUSY_LOOK_DELAY`], so what it
+    /// makes unavailable looks unavailable.
+    pub(super) fn busy_shown(&self) -> bool {
+        self.busy_look.shown && self.busy_spell()
+    }
+
+    /// The write in flight, once its spell looks busy: the progress label,
+    /// Cancel and the tab's "· working" wait for it.
+    pub(super) fn operation_shown(&self) -> Option<&'static str> {
+        self.operation_busy.filter(|_| self.busy_shown())
+    }
+
     /// Submits `command`, asked for from `origin`. Once Git reports success,
     /// while its repository is still the one shown, the control `origin`
     /// marks, if any, confirms it where it was touched
@@ -2279,6 +2335,9 @@ impl GitTurtle {
             .is_some_and(|p| !p.name.is_empty() && !p.email.is_empty());
         let busy = self.operation_busy.is_some();
         let refreshing = self.status_task.is_some();
+        // What a busy spell makes unavailable refuses at once but looks it
+        // only once the spell has lasted a moment (`BusyLook`).
+        let looks_busy = self.busy_shown();
         // A result is on screen: the status's own rows, or, while a newer
         // status's are prepared, the rows kept from before, which keep the
         // layout they had.
@@ -2345,8 +2404,10 @@ impl GitTurtle {
             .and_then(|s| s.branch.as_deref())
             .unwrap_or("detached HEAD");
         let summary_length = self.commit_title.read(cx).value().chars().count();
-        let commit_disabled = busy
-            || !status_ready
+        // The commit waits for a write in flight and for the rows it counts
+        // (`status_ready`), which its click refuses at once, and looks
+        // unavailable for them once the spell looks busy.
+        let commit_disabled = ((busy || !status_ready) && (looks_busy || !shown))
             || staged == 0
             || conflicted
             || !identity_ready
@@ -2494,13 +2555,18 @@ impl GitTurtle {
         let refresh = button("refresh-working", "", "refresh", false)
             .debug_selector(|| "refresh-working".into())
             .accessibility_label("Refresh working changes")
-            .tooltip(if refreshing {
+            .tooltip(if refreshing && looks_busy {
                 "Refresh working changes · Refreshing…"
             } else {
                 "Refresh working changes"
             })
-            .disabled(busy || refreshing)
-            .on_click(cx.listener(|this, _, window, cx| this.refresh_worktree(window, cx)));
+            .disabled((busy || refreshing) && looks_busy)
+            .on_click(cx.listener(|this, _, window, cx| {
+                // Refused at once, whatever it looks like yet.
+                if this.operation_busy.is_none() && this.status_task.is_none() {
+                    this.refresh_worktree(window, cx)
+                }
+            }));
         // Where the inspector is too short for these controls whole beside
         // the header, the list's floor and the composer's minimum, the
         // filter, Actions and Refresh share one row and the selection
@@ -2603,9 +2669,10 @@ impl GitTurtle {
                             .items_center()
                             .gap_2()
                             .when(forms.compact_actions, |el| el.gap_1())
-                            .when(refreshing && !forms.compact_actions, |el| {
+                            .when(refreshing && looks_busy && !forms.compact_actions, |el| {
                                 el.child(
                                     div()
+                                        .debug_selector(|| "working-refreshing".into())
                                         .text_size(crate::appearance::ui_text(10.))
                                         .text_color(rgb(p.muted))
                                         .child("Refreshing…"),
@@ -2817,6 +2884,10 @@ impl GitTurtle {
                         }
                         .disabled(commit_disabled)
                         .on_click(cx.listener(|this, _, window, cx| {
+                            // Refused at once, whatever it looks like yet.
+                            if this.working_paths.pending {
+                                return;
+                            }
                             let message = this.current_commit_draft(cx).message();
                             this.write(WriteCommand::Commit { message }, "Creating commit…", window, cx);
                         }))
@@ -2847,6 +2918,10 @@ impl GitTurtle {
     ) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
+        // A write in flight, or the rows the reads after it are preparing,
+        // leave these controls inert at once (`write_from`,
+        // `depart_working_row`) and dimmed once the spell looks busy.
+        let looks_busy = self.busy_shown();
         // The shown rows index the shown status, an earlier one while a
         // newer status's rows are prepared.
         match self.working_rows[position] {
@@ -2897,9 +2972,8 @@ impl GitTurtle {
                 );
                 let origin = mark.clone();
                 let confirming = copy_feedback::confirmed(&mark, cx);
-                let unavailable = busy
+                let unavailable = ((busy || self.working_paths.pending) && looks_busy)
                     || count == 0
-                    || self.working_paths.pending
                     || self.working_paths.error.is_some()
                     || !self.working_filter.read(cx).value().is_empty();
                 let control = if forms.section_action_label {
@@ -2984,6 +3058,11 @@ impl GitTurtle {
                                 control.text_color(rgb(p.control_label()))
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
+                                // Refused at once while the rows it counts
+                                // are prepared, whatever it looks like yet.
+                                if this.working_paths.pending {
+                                    return;
+                                }
                                 this.write_from(
                                     if staged {
                                         WriteCommand::UnstageAll
@@ -3198,7 +3277,7 @@ impl GitTurtle {
                             )
                             .debug_selector(move || format!("working-stage-{position}"))
                             .accessibility_label(stage_label)
-                            .disabled(busy)
+                            .disabled(busy && looks_busy)
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
                                     cx.stop_propagation();
@@ -3340,6 +3419,9 @@ impl GitTurtle {
     ) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_busy.is_some();
+        // A write in flight leaves the actions inert at once (`write_from`,
+        // `run_edge_action`) and dimmed once its spell looks busy.
+        let looks_busy = self.operation_shown().is_some();
         let branch = self
             .work_status
             .as_ref()
@@ -3388,9 +3470,9 @@ impl GitTurtle {
                 } else {
                     crate::ICON_INSET
                 });
-                appearance::keep_disabled_shape(control, busy, p.panel, Some(inset), cx)
+                appearance::keep_disabled_shape(control, looks_busy, p.panel, Some(inset), cx)
                     .debug_selector(move || action.id.into())
-                    .disabled(busy)
+                    .disabled(looks_busy)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run_edge_action(action, window, cx)
                     }))
@@ -3499,10 +3581,10 @@ impl GitTurtle {
         let actions = [("fetch", "Fetch"), ("pull", "Pull"), ("push", "Push")]
             .into_iter()
             .map(|(id, label)| {
-                let unavailable = busy
+                let unavailable = looks_busy
                     || remote.is_none()
                     || (id != "fetch" && (selected_branch.is_empty() || detached));
-                let tooltip = if busy {
+                let tooltip = if looks_busy {
                     self.operation_busy.unwrap_or_default().to_owned()
                 } else if remote.is_none() {
                     "No configured remote selected · Check Targets".to_owned()
@@ -3695,13 +3777,13 @@ impl GitTurtle {
                                 // Each reads Switched or Created where it was
                                 // touched once Git reports success, though the
                                 // name field it read has emptied.
-                                .child(copy_feedback::feedback_button(confirmations::branch_form("checkout-branch", &self.path), confirmations::SWITCH, "Switch", "Switch to the named local branch", cx).disabled(busy || branch_empty)
+                                .child(copy_feedback::feedback_button(confirmations::branch_form("checkout-branch", &self.path), confirmations::SWITCH, "Switch", "Switch to the named local branch", cx).disabled(looks_busy || branch_empty)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         let branch = this.branch_name.read(cx).value().trim().to_owned();
                                         let origin = confirmations::branch_form("checkout-branch", &this.path);
                                         this.write_from(WriteCommand::Checkout { branch }, "Switching branch…", Some(origin.into()), window, cx);
                                     })))
-                                .child(copy_feedback::feedback_button(confirmations::branch_form("create-branch", &self.path), confirmations::CREATE, "Create", "Create and switch to a branch from HEAD", cx).disabled(busy || branch_empty)
+                                .child(copy_feedback::feedback_button(confirmations::branch_form("create-branch", &self.path), confirmations::CREATE, "Create", "Create and switch to a branch from HEAD", cx).disabled(looks_busy || branch_empty)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         let name = this.branch_name.read(cx).value().trim().to_owned();
                                         let origin = confirmations::branch_form("create-branch", &this.path);

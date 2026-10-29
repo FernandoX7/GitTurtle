@@ -168,7 +168,7 @@ impl GitTurtle {
             .filter(|entry| entry.untracked)
             .cloned();
         working_actions_trigger(compact, tight.is_some())
-            .disabled(self.operation_busy.is_some())
+            .disabled(self.operation_shown().is_some())
             .app_menu(move |mut menu, _, _| {
                 if let Some(refresh) = tight {
                     menu = menu
@@ -295,7 +295,7 @@ impl GitTurtle {
         let commit = commit_target(commit);
         commit_actions_trigger(labelled)
             .ml_auto()
-            .disabled(self.operation_busy.is_some())
+            .disabled(self.operation_shown().is_some())
             .app_menu(move |menu, _, cx| {
                 Self::recovery_context_menu(menu, &owner, &repository, &commit, cx)
             })
