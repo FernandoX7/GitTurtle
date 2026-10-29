@@ -2796,23 +2796,31 @@ mod tests {
         drop(fixture);
     }
 
-    /// However a right-click menu closes, by Escape, a press outside it or
-    /// a resize, as a tiling compositor's re-tile does, focus returns to the
+    /// However a right-click menu closes, by Escape, a press outside it on
+    /// the Changes heading, which gives focus to the window's root, or a
+    /// resize, as a tiling compositor's re-tile does, focus returns to the
     /// list it was opened from, whose keys reach it again: Down moves the
-    /// selection and Shift-F10 opens the keyboard's menu. So it does after a
-    /// right-click on another row, or a third, or on the same row again,
-    /// closes the menu open there and opens the row's own. The resize's
-    /// dismissal skipped the menu's own Cancel and left focus on the menu,
-    /// which no frame drew, so Down, Space and Shift-F10 stopped reaching
-    /// the list; a menu opened by a right-click on another row returned
-    /// focus to the menu it closed, which no frame drew either. The app's
-    /// keys are bound here as the app binds them; a test window binds none
-    /// of them (`views::tests::init_app`).
+    /// selection and Shift-F10 opens the keyboard's menu. So it does after a right-click
+    /// on another row, or a third, or on the same row again, closes the menu
+    /// open there and opens the row's own, and when the menu's row goes, as
+    /// a quiet refresh takes away the row of a file deleted outside the app,
+    /// with no dismissal at all. The resize's dismissal skipped the menu's
+    /// own Cancel and left focus on the menu, which no frame drew, so Down,
+    /// Space and Shift-F10 stopped reaching the list; the press on the
+    /// heading left focus on the root, where nothing showed it; a menu
+    /// opened by a right-click on another row returned focus to the menu it
+    /// closed, which no frame drew either; and a menu that went with its row
+    /// left focus on its released handle, nothing focused. The app's keys are
+    /// bound here as the app binds them; a test window binds none of them
+    /// (`views::tests::init_app`).
     #[gpui::test]
     async fn a_right_click_menus_focus_returns_to_its_list_however_it_closes(
         cx: &mut TestAppContext,
     ) {
         let (_fixture, app, cx) = six_files(cx).await;
+        // Tall enough that every row is drawn, zeta's too, after the resize.
+        cx.simulate_resize(size(px(1480.), px(1300.)));
+        draw(cx);
         cx.update(|_, cx| {
             crate::shortcuts::bind_keys(cx);
             crate::native_accessibility::bind_keys(cx);
@@ -2833,17 +2841,24 @@ mod tests {
             cx.debug_bounds(format!("menu-item: {item} · MenuItem").leak())
                 .map(|drawn| f32::from(drawn.top() - pointer.y))
         };
-        let (delta_row, epsilon_row, gamma_row) =
-            ("working-row-4", "working-row-5", "working-row-6");
+        let (delta_row, epsilon_row, gamma_row, zeta_row) = (
+            "working-row-4",
+            "working-row-5",
+            "working-row-6",
+            "working-row-7",
+        );
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         // The rows each case right-clicks in turn, each while the menu the
-        // one before opened is still open, and how it closes the last.
-        let cases: [(&str, &[&'static str]); 6] = [
+        // one before opened is still open, and how it closes the last. Its
+        // row going takes zeta's, the last row, away, so it comes last.
+        let cases: [(&str, &[&'static str]); 7] = [
             ("Escape", &[delta_row]),
             ("a press outside", &[delta_row]),
             ("a resize", &[delta_row]),
             ("Escape", &[epsilon_row, delta_row]),
             ("Escape", &[epsilon_row, delta_row, gamma_row]),
             ("Escape", &[delta_row, delta_row]),
+            ("its row going", &[zeta_row]),
         ];
         let mut offset = None;
         for (closing, rows) in cases {
@@ -2868,7 +2883,8 @@ mod tests {
                 next_frame(cx);
                 next_frame(cx);
                 // The row's own menu, at its pointer.
-                let drawn = below(cx, pointer).expect("the row's menu opened");
+                let drawn = below(cx, pointer)
+                    .unwrap_or_else(|| panic!("{case}: {selector}'s menu opened"));
                 let offset = *offset.get_or_insert(drawn);
                 assert!(
                     (drawn - offset).abs() < 1.,
@@ -2879,15 +2895,29 @@ mod tests {
             match closing {
                 "Escape" => cx.simulate_keystrokes("escape"),
                 "a press outside" => {
-                    // On delta's row, before the pointer the menu opened at,
-                    // outside the menu's fill. The list's foot lies under the
-                    // menu's lower items in this window.
-                    let outside = point(row.left() + px(6.), row.bottom() - px(4.));
-                    cx.simulate_click(outside, Modifiers::default());
+                    // On the Changes heading above the list, which gives
+                    // focus to the window's root. A press on a row focused
+                    // the list itself, whatever the menu's dismissal did.
+                    let heading = cx
+                        .debug_bounds("working-header-label")
+                        .expect("the Changes heading");
+                    cx.simulate_click(heading.center(), Modifiers::default());
                 }
-                _ => {
+                "a resize" => {
                     let viewport = cx.update(|window, _| window.viewport_size());
                     cx.simulate_resize(size(viewport.width - px(80.), viewport.height - px(80.)));
+                }
+                _ => {
+                    // Deleted outside the app, its row goes with the quiet
+                    // refresh after it, and the menu with the row: no
+                    // dismissal comes.
+                    std::fs::remove_file(repository.join("zeta.txt")).unwrap();
+                    refreshed(&app, cx).await;
+                    assert_eq!(
+                        app.read_with(cx, |app, _| app.working_rows.len()),
+                        7,
+                        "{case}: zeta's row went"
+                    );
                 }
             }
             cx.executor().run_until_parked();

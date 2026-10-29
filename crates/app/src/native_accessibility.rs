@@ -799,16 +799,16 @@ struct PointerMenuState {
 
 type SharedPointerMenu = std::rc::Rc<std::cell::RefCell<PointerMenuState>>;
 
-/// The right-click menus open in the app's windows, each by its focus, with
-/// the focus it returns to as it closes ([`PointerMenu`]). A right-click on
-/// a row while another row's menu is open closes that menu as the press
-/// starts, but focus leaves it only once the press has been handled, as its
-/// dismissal arrives; the new menu read the focus it returns to meanwhile
-/// and took the closed menu's, which no frame draws, so the list's keys
-/// stopped reaching it. It takes the closed menu's own instead, as the
-/// kit's context menu takes an earlier menu's.
+/// The right-click menus open in the app's windows, with the focus each
+/// returns to as it closes ([`PointerMenu`]). A right-click on a row while
+/// another row's menu is open closes that menu as the press starts, but
+/// focus leaves it only once the press has been handled, as its dismissal
+/// arrives; the new menu read the focus it returns to meanwhile and took the
+/// closed menu's, which no frame draws, so the list's keys stopped reaching
+/// it. It takes the closed menu's own instead, as the kit's context menu
+/// takes an earlier menu's.
 #[derive(Default)]
-struct OpenPointerMenus(Vec<(WeakFocusHandle, Option<FocusHandle>)>);
+struct OpenPointerMenus(Vec<(WeakEntity<PopupMenu>, Option<FocusHandle>)>);
 
 impl Global for OpenPointerMenus {}
 
@@ -819,7 +819,7 @@ impl OpenPointerMenus {
         let holder = cx.try_global::<Self>().and_then(|open| {
             open.0.iter().find(|(menu, _)| {
                 menu.upgrade()
-                    .is_some_and(|menu| menu.contains_focused(window, cx))
+                    .is_some_and(|menu| menu.focus_handle(cx).contains_focused(window, cx))
             })
         });
         match holder {
@@ -830,17 +830,17 @@ impl OpenPointerMenus {
 
     /// Records `menu`, open, returning focus to `previous`; a menu that is
     /// gone is forgotten.
-    fn open(menu: &FocusHandle, previous: Option<FocusHandle>, cx: &mut App) {
+    fn open(menu: &Entity<PopupMenu>, previous: Option<FocusHandle>, cx: &mut App) {
         let open = &mut cx.default_global::<Self>().0;
         open.retain(|(menu, _)| menu.upgrade().is_some());
         open.push((menu.downgrade(), previous));
     }
 
-    /// Forgets `menu`, closed.
-    fn close(menu: &FocusHandle, cx: &mut App) {
+    /// Forgets `menu`, closed or released.
+    fn close(menu: EntityId, cx: &mut App) {
         cx.default_global::<Self>()
             .0
-            .retain(|(open, _)| open != menu);
+            .retain(|(open, _)| open.entity_id() != menu);
     }
 }
 
@@ -951,7 +951,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                 // Its dismissal, which no longer reaches this state, would
                 // have forgotten it.
                 if let Some(menu) = state.menu.take() {
-                    OpenPointerMenus::close(&menu.focus_handle(cx), cx);
+                    OpenPointerMenus::close(menu.entity_id(), cx);
                 }
                 state._dismiss = None;
                 state.open = true;
@@ -993,20 +993,51 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                     }
                     open(menu, window, cx)
                 });
-                OpenPointerMenus::open(&menu.focus_handle(cx), previous.clone(), cx);
+                OpenPointerMenus::open(&menu, previous.clone(), cx);
+                // A row that stops being drawn while its menu is open, as a
+                // quiet refresh takes a deleted file's row away, drops this
+                // state and the menu with it, and no dismissal comes: focus
+                // the menu holds as it goes returns where it was, as a
+                // dismissal returns it below. It stayed on the menu's
+                // released handle, where nothing was focused, so the list's
+                // keys stopped reaching it.
+                window
+                    .observe_release(&menu, cx, {
+                        let (previous, released) = (previous.clone(), menu.entity_id());
+                        move |menu, window, cx| {
+                            OpenPointerMenus::close(released, cx);
+                            if let Some(previous) = &previous
+                                && (menu.focus_handle(cx).contains_focused(window, cx)
+                                    || window.focused(cx).is_none())
+                            {
+                                window.focus(previous, cx);
+                            }
+                        }
+                    })
+                    .detach();
                 // However it closes, by Escape, an item, a press outside or a
                 // resize, focus the menu still holds returns where it was
                 // before it opened: a resize's dismissal, which skips the
                 // menu's own Cancel, left focus on the menu no frame draws,
-                // so the list's keys stopped reaching it. An item that moved
-                // focus on, to a dialog it opened, keeps it there.
+                // so the list's keys stopped reaching it. So does focus that
+                // a press outside gave to what holds that place, the
+                // window's root, which a press on the status bar or a
+                // heading focuses: nothing showed focus there and the list's
+                // keys reached nothing, where a press outside a keyboard's
+                // menu returns focus to its list. An item that moved focus
+                // on, to a dialog it opened, or a press on another list or
+                // control, keeps it there.
                 let dismiss = window.subscribe(&menu, cx, {
                     let shared = std::rc::Rc::downgrade(&shared);
                     move |menu, _: &gpui::DismissEvent, window, cx| {
                         let handle = menu.focus_handle(cx);
-                        OpenPointerMenus::close(&handle, cx);
+                        let closed = menu.entity_id();
+                        OpenPointerMenus::close(closed, cx);
                         if let Some(previous) = &previous
-                            && handle.contains_focused(window, cx)
+                            && (handle.contains_focused(window, cx)
+                                || window
+                                    .focused(cx)
+                                    .is_some_and(|focused| focused.contains(previous, window)))
                         {
                             window.focus(previous, cx);
                         }
