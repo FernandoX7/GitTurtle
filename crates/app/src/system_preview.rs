@@ -468,12 +468,13 @@ impl Answer {
             .debug_selector(move || key.clone())
             .map(|line| {
                 if self.failed {
-                    line.role(Role::Alert).assertive()
+                    line.alert(self.text.clone())
                 } else {
-                    line.role(Role::Status).polite()
+                    line.role(Role::Status)
+                        .polite()
+                        .aria_label(self.text.clone())
                 }
             })
-            .aria_label(self.text.clone())
             .w_full()
             .min_w_0()
             .text_size(appearance::ui_text(11.))

@@ -1000,9 +1000,7 @@ impl ProjectHub {
                 panel.child(
                     div()
                         .id("project-hub-error")
-                        .role(Role::Alert)
-                        .aria_label(error.clone())
-                        .assertive()
+                        .alert(error.clone())
                         .max_h(px(110.))
                         .overflow_y_scroll()
                         .flex_shrink_0()
@@ -1539,9 +1537,7 @@ impl Render for RenameProjectForm {
             .children(self.error.as_ref().map(|error| {
                 div()
                     .id("rename-project-error")
-                    .role(Role::Alert)
-                    .aria_label(error.clone())
-                    .assertive()
+                    .alert(error.clone())
                     .rounded(px(8.))
                     .border_1()
                     .border_color(colors.danger)

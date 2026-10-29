@@ -6429,15 +6429,13 @@ impl Render for GitTurtle {
                         .gap_3()
                         .bg(rgb(palette(cx).removed_background))
                         .text_color(rgb(palette(cx).removed))
-                        .child(
+                        .child(native_accessibility::recorded(
                             div()
                                 // A fresh node for each refusal, so the same
                                 // one again is announced again.
                                 .id(("operation-error-summary", self.error_refusals))
                                 .debug_selector(|| "operation-error-summary".into())
-                                .role(Role::Alert)
-                                .assertive()
-                                .aria_label(error.clone())
+                                .alert(error.clone())
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
@@ -6451,7 +6449,7 @@ impl Render for GitTurtle {
                                         .take(220)
                                         .collect::<String>(),
                                 ),
-                        )
+                        ))
                         .child(
                             button("operation-error-details", "Details…", "", false).on_click(
                                 cx.listener(|this, _, window, cx| {

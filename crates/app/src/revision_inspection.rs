@@ -818,9 +818,7 @@ fn failure_line(
         div()
             .id(id)
             .debug_selector(move || id.into())
-            .role(Role::Alert)
-            .aria_label(text.clone())
-            .assertive()
+            .alert(text.clone())
             .child(text.clone()),
         text,
     )

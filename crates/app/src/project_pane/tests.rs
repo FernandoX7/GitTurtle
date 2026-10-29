@@ -885,6 +885,16 @@ async fn a_failed_save_stays_visible_in_the_pane_until_retry_succeeds(cx: &mut T
         native_accessibility::written::announced("project-pane-error"),
         Some(native_accessibility::written::Announced::ASSERTIVE)
     );
+    // Its name, which AT-SPI announces, and its value, which macOS does.
+    let error = app.read_with(cx, |app, _| app.project_pane.error.clone());
+    let alert = native_accessibility::written::get("project-pane-error")
+        .expect("the failure's node")
+        .node;
+    assert_eq!(
+        (alert.label(), alert.value()),
+        (error.as_deref(), error.as_deref()),
+        "the failure is its node's name and value"
+    );
     let edited = app.read_with(cx, |app, _| {
         assert!(
             app.project_pane

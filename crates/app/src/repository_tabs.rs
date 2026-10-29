@@ -2279,7 +2279,7 @@ impl Render for LibraryView {
                 if let Some(path)=this.active.clone(){if let Some(entry)=this.session.library.iter_mut().find(|entry|entry.path.path()==path){entry.group=Some(name);}else{this.session.library.push(LibraryEntry{path:SavedPath::new(&path),pinned:false,group:Some(name)});}}
                 this.name.update(cx,|input,cx|input.set_value("",window,cx));this.error=None;cx.notify();
             }))))
-            .children(self.error.as_ref().map(|error|workspace_text("local-workspaces-error", error.clone()).role(Role::Alert).assertive().text_color(rgb(colors.removed))))
+            .children(self.error.as_ref().map(|error|workspace_text("local-workspaces-error", error.clone()).alert(error.clone()).text_color(rgb(colors.removed))))
             .child(crate::native_accessibility::clips_children(div().id("local-workspace-library").max_h(px(360.)).overflow_y_scroll().flex().flex_col().gap_2()
                 .children(self.session.groups.clone().into_iter().enumerate().map(|(index,group)|{
                     let count=self.session.library.iter().filter(|entry|entry.group.as_ref()==Some(&group)).count();let assign=group.clone();let open=group.clone();let remove=group.clone();

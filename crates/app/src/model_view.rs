@@ -794,18 +794,14 @@ fn render_side<T: 'static>(
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .role(if side.error.is_some() {
-                        Role::Alert
-                    } else {
-                        Role::Label
-                    })
-                    // An alert is named by its label, a label by its value.
+                    // An alert is named and valued by its text, a label
+                    // read by its value.
                     .map(|element| {
                         let read = bounded_accessible_text(format!("{label}: {message}"));
                         if side.error.is_some() {
-                            element.aria_label(read).assertive()
+                            element.alert(read)
                         } else {
-                            element.aria_value(read)
+                            element.role(Role::Label).aria_value(read)
                         }
                     })
                     .p_3()
@@ -985,9 +981,7 @@ fn render_side<T: 'static>(
             .child(
                 div()
                     .id(("model-render-error", index))
-                    .role(Role::Alert)
-                    .assertive()
-                    .aria_label(format!(
+                    .alert(format!(
                         "{label}: {error}. {} Fit or Reset to try another view.",
                         if first_frame {
                             "No completed view is available."

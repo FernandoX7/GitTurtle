@@ -413,9 +413,7 @@ fn page_picker(
                     .child(
                         div()
                             .id("pdf-page-validation")
-                            .role(Role::Alert)
-                            .aria_label(validation.read(cx).clone())
-                            .assertive()
+                            .alert(validation.read(cx).clone())
                             .child(validation.read(cx).clone()),
                     ),
             )

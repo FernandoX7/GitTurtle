@@ -935,12 +935,10 @@ impl GitTurtle {
                     .children(self.render_keyboard_menu(cx))),
             )
             .children(self.project_pane.error.as_ref().map(|error| {
-                div()
+                native_accessibility::recorded(div()
                     .id("project-pane-error")
                     .debug_selector(|| "project-pane-error".into())
-                    .role(Role::Alert)
-                    .aria_label(error.clone())
-                    .assertive()
+                    .alert(error.clone())
                     .flex_shrink_0()
                     .px_3()
                     .py_2()
@@ -976,7 +974,7 @@ impl GitTurtle {
                                         cx.notify();
                                     })),
                             ),
-                    )
+                    ))
             }))
             .into_any_element()
     }
@@ -1473,9 +1471,7 @@ impl Render for GroupForm {
             .children(self.error.as_ref().map(|error| {
                 div()
                     .id("project-group-error")
-                    .role(Role::Alert)
-                    .aria_label(error.clone())
-                    .assertive()
+                    .alert(error.clone())
                     .rounded(px(8.))
                     .border_1()
                     .border_color(rgb(colors.removed))

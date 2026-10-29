@@ -1673,6 +1673,22 @@ pub(crate) trait LiveRegion: StatefulInteractiveElement + Element {
         self.live_region(gpui::accesskit::Live::Assertive, false)
     }
 
+    /// An alert that says `text`, announced at once: a failure, a refusal
+    /// or invalid input, `text` its name and its value together. AccessKit's
+    /// adapters announce a live node as it is added by different
+    /// properties, AT-SPI (Orca) its name and macOS its value, so an alert
+    /// named alone could go unheard on macOS, as the narrow rail's refusal
+    /// and the copy announcement set both for. Every assertive alert is
+    /// written through this ([`refusal_line`] among them); tests read its
+    /// node through [`recorded`] and [`written::get`].
+    fn alert(self, text: impl Into<SharedString>) -> Self {
+        let text = text.into();
+        self.role(Role::Alert)
+            .aria_label(text.clone())
+            .aria_value(text)
+            .assertive()
+    }
+
     /// Announced once the assistive technology has finished what it is
     /// saying: a status, a count or a completion.
     fn polite(self) -> Self {
@@ -1726,10 +1742,7 @@ pub(crate) fn refusal_line(
         div()
             .id((id, opening))
             .debug_selector(move || id.to_owned())
-            .role(Role::Alert)
-            .aria_label(text.clone())
-            .aria_value(text.clone())
-            .assertive()
+            .alert(text.clone())
             .child(text),
     ))
     .into_any_element()
@@ -4085,5 +4098,35 @@ mod tests {
                  its {layout:?} outside the body's {body:?}"
             );
         }
+    }
+
+    /// An alert says its text as both its name and its value, announced at
+    /// once: AT-SPI announces a new live node's name and macOS its value,
+    /// so an alert named alone, as every one but the forms' refusal lines
+    /// and the narrow rail's refusal was, could go unheard on macOS.
+    #[gpui::test]
+    fn an_alert_is_named_and_valued_by_its_text(cx: &mut TestAppContext) {
+        struct Line;
+        impl Render for Line {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                written::draw_begins();
+                recorded(div().id("probe-alert").alert("Could not save"))
+            }
+        }
+        let (_, cx) = cx.add_window_view(|_, _| Line);
+        written::forget();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            written::announced("probe-alert"),
+            Some(written::Announced::ASSERTIVE)
+        );
+        let node = written::get("probe-alert")
+            .expect("the alert is recorded")
+            .node;
+        assert_eq!(node.role(), Role::Alert);
+        assert_eq!(
+            (node.label(), node.value()),
+            (Some("Could not save"), Some("Could not save"))
+        );
     }
 }

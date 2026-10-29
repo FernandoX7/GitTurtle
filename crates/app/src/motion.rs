@@ -2960,6 +2960,18 @@ mod tests {
                 crate::native_accessibility::written::Announced::ASSERTIVE,
                 "{when}, {press}: the refusal is announced at once"
             );
+            // Its name, which AT-SPI announces, and its value, which macOS
+            // does.
+            let written = crate::native_accessibility::written::get(&node)
+                .unwrap_or_else(|| panic!("{when}, {press}: the refusal's node"));
+            assert_eq!(
+                (written.node.label(), written.node.value()),
+                (
+                    Some(crate::recovery::PAUSED_REFUSAL),
+                    Some(crate::recovery::PAUSED_REFUSAL)
+                ),
+                "{when}, {press}: the refusal is its node's name and value"
+            );
             nodes.push(node);
             assert!(!dialog_open(cx), "{when}, {press}: asks nothing");
             keyed_items(
