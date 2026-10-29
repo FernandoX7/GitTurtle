@@ -2145,12 +2145,21 @@ impl GitTurtle {
         // The list's keyboard menu, open on the row as a write's status read
         // selects it again, keeps focus and returns it here as it closes:
         // focused away, it closed as each write ended rather than being
-        // built again ([`native_accessibility::KeyboardMenu`]).
-        if !self
-            .file_menu
-            .as_ref()
-            .is_some_and(|menu| menu.has_focus(window, cx))
+        // built again ([`native_accessibility::KeyboardMenu`]). Open on
+        // another row, as a read that finds the file staged moves the
+        // selection to the Staged group, it closes: kept focused, it stayed
+        // over a row the selection had left, its items for that row.
+        let menus_row = self.file_menu_row.as_ref().is_some_and(|followed| {
+            followed.target.area() == area
+                && crate::working_selection::same_path(&followed.target.entry.path, &entry.path)
+        });
+        if !(menus_row
+            && self
+                .file_menu
+                .as_ref()
+                .is_some_and(|menu| menu.has_focus(window, cx)))
         {
+            self.dismiss_file_menu(window, cx);
             window.focus(&self.file_focus, cx);
         }
         self.request(

@@ -4068,6 +4068,68 @@ mod tests {
         a_rebuilt_row_menu_follows_writes_with_its_new_items(cx, Opening::Keyboard).await;
     }
 
+    /// A working row's keyboard menu closes, focus on the list, as soon as a
+    /// status read moves the selection off its row, as one that finds gamma
+    /// staged outside the app moves it to gamma's Staged row; a read that
+    /// keeps the selection on its row leaves focus in the menu. The rows the
+    /// read brings are held here, so the menu's own row, which they take
+    /// away, cannot close it first: kept focused, it stayed over a row the
+    /// selection had left until they landed.
+    #[gpui::test]
+    async fn a_keyboard_menu_closes_as_the_selection_leaves_its_row(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        let menu_focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.read(cx)
+                    .file_menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.has_focus(window, cx))
+            })
+        };
+        let gamma = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                let index = app.working_selected.expect("a selection").0;
+                app.work_status.as_ref().expect("a status").entries[index]
+                    .path
+                    .clone()
+            })
+        };
+        open_row_menu(&app, cx, "gamma.txt", Opening::Keyboard);
+        let reread = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)))
+        };
+        // A read that leaves gamma unstaged selects its row again.
+        reread(cx);
+        crate::views::tests::settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        assert!(
+            menu_focused(cx),
+            "the read kept the selection on the menu's row"
+        );
+        let filter = app.update(cx, |app, _| app.file_paths.executor().hold());
+        fixture_git(&repository, &["add", "gamma.txt"]);
+        reread(cx);
+        crate::views::tests::settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_selected.map(|(_, area)| area)),
+            Some(ChangeArea::Staged),
+            "the selection moved to gamma's Staged row"
+        );
+        assert_eq!(gamma(cx), PathBuf::from("gamma.txt"));
+        assert!(
+            app.read_with(cx, |app, _| app.file_menu.is_none()),
+            "the menu closed as the selection left its row"
+        );
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus is on the list"
+        );
+        drop(filter);
+        crate::path_filter::filters_land(&app, cx);
+    }
+
     /// Shift-F10 in an open right-click menu, on a History commit, a
     /// navigator branch or a working row, opens no keyboard's menu beside
     /// it: one menu is open at a time, and the right-click menu, the row's
