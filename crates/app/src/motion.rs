@@ -788,25 +788,73 @@ mod tests {
         assert!(cx.debug_bounds("working-row-4").is_none());
     }
 
-    /// What one frame laid out: the list's bounds and the composer's.
+    /// Where one frame laid the list and the composer out, inside their
+    /// borders, and whether it drew the probe line above them
+    /// (`workspace::WorkingProbe`), under `at`.
     struct Frame {
         at: String,
+        line: bool,
         list: Bounds<Pixels>,
         composer: Bounds<Pixels>,
     }
 
-    /// Draws one frame, as the window draws one, and records what it laid
-    /// out under `at`.
-    fn one_frame(cx: &mut VisualTestContext, frames: &mut Vec<Frame>, at: String) {
+    /// The frames the window drew since the last call, as the probe recorded
+    /// them, under `at`.
+    fn recorded(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, at: &str) -> Vec<Frame> {
+        let drawn =
+            cx.read(|cx| std::mem::take(&mut *app.read(cx).working_probe.frames.borrow_mut()));
+        drawn
+            .into_iter()
+            .enumerate()
+            .map(|(again, frame)| {
+                let at = match again {
+                    0 => at.to_owned(),
+                    again => format!("{at}, drawn again ({again})"),
+                };
+                Frame {
+                    line: frame.line,
+                    list: frame.list.unwrap_or_else(|| panic!("{at}: the list")),
+                    composer: frame
+                        .composer
+                        .unwrap_or_else(|| panic!("{at}: the composer")),
+                    at,
+                }
+            })
+            .collect()
+    }
+
+    /// Draws one frame, as the window draws one, and records under `at` what
+    /// it laid out and what the frames its layout asks for, which a test
+    /// window draws at once, laid out, after the frames the window drew since
+    /// the last.
+    fn one_frame(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        frames: &mut Vec<Frame>,
+        at: String,
+    ) {
+        frames.extend(recorded(app, cx, &format!("before {at}")));
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
             window.draw(cx).clear(cx);
         });
-        frames.push(Frame {
-            at,
-            list: cx.debug_bounds("working-pane").expect("the list"),
-            composer: cx.debug_bounds("commit-composer").expect("the composer"),
+        frames.extend(recorded(app, cx, &at));
+    }
+
+    /// Where the list and the composer settle with the probe line drawn as
+    /// `line` says.
+    fn settled_under(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        line: workspace::ProbeLine,
+    ) -> (Bounds<Pixels>, Bounds<Pixels>) {
+        app.update(cx, |app, cx| {
+            app.working_probe.line.set(line);
+            cx.notify();
         });
+        draw(cx);
+        let settled = recorded(app, cx, "settled").pop().expect("a frame");
+        (settled.list, settled.composer)
     }
 
     /// A 1480 × 980 window in Changes with six edited files, alpha and beta
@@ -869,7 +917,7 @@ mod tests {
         // The rows wait for the frames before them to be drawn.
         let mut held = Some(app.update(cx, |app, _| app.file_paths.executor().hold()));
         cx.simulate_click(control.center(), Modifiers::default());
-        one_frame(cx, frames, format!("{what}: the press"));
+        one_frame(app, cx, frames, format!("{what}: the press"));
         let write = app
             .update(cx, |app, _| app.operation_task.take())
             .expect("the write");
@@ -880,8 +928,8 @@ mod tests {
                 cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
             }
             for step in 0..8 {
-                one_frame(cx, frames, format!("{what}: {read} {step}"));
-                one_frame(cx, frames, format!("{what}: {read} {step}, again"));
+                one_frame(app, cx, frames, format!("{what}: {read} {step}"));
+                one_frame(app, cx, frames, format!("{what}: {read} {step}, again"));
                 let tasks = app.update(cx, |app, _| {
                     [app.task.take(), app.status_task.take()]
                         .into_iter()
@@ -893,8 +941,13 @@ mod tests {
                 }
                 cx.executor().run_until_parked();
                 // The status is read; its rows are being prepared.
-                one_frame(cx, frames, format!("{what}: {read} {step}, read"));
-                one_frame(cx, frames, format!("{what}: {read} {step}, read again"));
+                one_frame(app, cx, frames, format!("{what}: {read} {step}, read"));
+                one_frame(
+                    app,
+                    cx,
+                    frames,
+                    format!("{what}: {read} {step}, read again"),
+                );
                 drop(held.take());
                 app.update(cx, |app, _| app.file_paths.executor().drain());
                 cx.executor().run_until_parked();
@@ -908,7 +961,7 @@ mod tests {
                 }
             }
             for frame in 0..12 {
-                one_frame(cx, frames, format!("{what}: {read}, frame {frame}"));
+                one_frame(app, cx, frames, format!("{what}: {read}, frame {frame}"));
                 cx.executor().advance_clock(Duration::from_millis(16));
                 cx.executor().run_until_parked();
             }
@@ -923,35 +976,64 @@ mod tests {
     /// arrives in, the one its rows land in and each frame of the flight.
     /// Its rows and headings keep their number, so the list keeps its height
     /// throughout, and the composer below it its place.
+    ///
+    /// A 21 px line drawn above the body in one frame while each write's
+    /// rows are prepared, as "Filtering working paths…" once was, lays the
+    /// list and the composer out in that frame as the body settles them with
+    /// the line, and in the next as it settles them without: both are sized
+    /// from the body's height in the frame they are drawn in
+    /// (`workspace::WorkingBody`). Sized from the frame before, the
+    /// composer grew the 23 px of a whole row less 21 px a frame after the
+    /// line came and was 23 px taller a frame after it left.
     #[gpui::test]
     async fn the_list_keeps_its_bounds_in_every_frame_of_a_write(cx: &mut TestAppContext) {
+        use workspace::ProbeLine;
         let (_fixture, app, cx) = six_files(cx).await;
         // At 18 pt a taller window keeps every row in view.
         for (text, height) in [(13, 980.), (18, 1300.)] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(1480.), px(height)));
             draw(cx);
+            // Settled with the line, where the body is 21 px shorter, and
+            // without it.
+            let lined = settled_under(&app, cx, ProbeLine::Steady);
+            let rest = settled_under(&app, cx, ProbeLine::Watch);
+            assert_ne!(lined, rest, "{text} pt: the line moves the list");
             let mut frames = Vec::new();
-            one_frame(cx, &mut frames, format!("{text} pt at rest"));
             let (staged, unstaged) = (ChangeArea::Staged, ChangeArea::Unstaged);
-            write_frames(&app, cx, "delta.txt", unstaged, &mut frames).await;
-            write_frames(&app, cx, "alpha.txt", staged, &mut frames).await;
-            let rest = (frames[0].list, frames[0].composer);
+            for (name, area) in [("delta.txt", unstaged), ("alpha.txt", staged)] {
+                let from = frames.len();
+                app.update(cx, |app, _| app.working_probe.line.set(ProbeLine::Once));
+                write_frames(&app, cx, name, area, &mut frames).await;
+                frames.extend(recorded(&app, cx, &format!("after {name}")));
+                let lines = frames[from..].iter().filter(|frame| frame.line).count();
+                assert_eq!(lines, 1, "{text} pt: {name}'s write draws the line once");
+            }
+            app.update(cx, |app, _| app.working_probe.line.set(ProbeLine::Off));
             let moved: Vec<_> = frames
                 .iter()
-                .filter(|frame| (frame.list, frame.composer) != rest)
+                .filter(|frame| {
+                    (frame.list, frame.composer) != if frame.line { lined } else { rest }
+                })
                 .map(|frame| {
                     format!(
-                        "{}: list {:?}, composer {:?}",
-                        frame.at, frame.list, frame.composer
+                        "{}{}: list {:?}, composer {:?}",
+                        frame.at,
+                        if frame.line { " under the line" } else { "" },
+                        frame.list,
+                        frame.composer
                     )
                 })
                 .collect();
             assert!(
                 moved.is_empty(),
-                "{text} pt: at rest list {:?}, composer {:?}; moved in {}",
+                "{text} pt, {} frames: at rest list {:?}, composer {:?}; under the line list \
+                 {:?}, composer {:?}; moved in {}",
+                frames.len(),
                 rest.0,
                 rest.1,
+                lined.0,
+                lined.1,
                 moved.join("; ")
             );
             // Back as it was for the next size.

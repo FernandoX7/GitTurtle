@@ -362,6 +362,12 @@ struct GitTurtle {
     /// (`views::tests::narrow_history_announces_the_refused_toggle`).
     #[cfg(test)]
     rail_announcement: std::cell::Cell<Option<(usize, &'static str)>>,
+    /// Test-only: a line drawn above the Working inspector's list/composer
+    /// body, as "Filtering working paths…" once was, and where each frame
+    /// lays the list and the composer out (`workspace::WorkingProbe`,
+    /// `motion::tests::the_list_keeps_its_bounds_in_every_frame_of_a_write`).
+    #[cfg(test)]
+    working_probe: workspace::WorkingProbe,
     /// Test-only: the palette every draw of this view saw. A Settings theme
     /// switch and a live-preview edit each cost exactly one draw, which
     /// already shows the new palette; see
@@ -724,6 +730,8 @@ impl GitTurtle {
             rail_navigation: Default::default(),
             #[cfg(test)]
             rail_announcement: Default::default(),
+            #[cfg(test)]
+            working_probe: Default::default(),
             project_pane: project_pane::State::new(cx),
             rename_project: None,
             draft_saver: commit_drafts::DraftSaver::default(),

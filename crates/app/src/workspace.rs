@@ -23,6 +23,230 @@ struct WorkingInspectorLayout {
     inspector: Pixels,
 }
 
+/// Whether the list/composer body, `height` tall, takes the short form, with
+/// the composer's tighter rhythm and heading. The form also shapes the
+/// controls above the body, so it is chosen before layout from the body's
+/// height as last laid out.
+fn short_body(height: Pixels) -> bool {
+    height < px(560.)
+}
+
+/// The Working inspector's list/composer body. It takes the height the
+/// controls above it leave, at least `min`, and builds its list and composer
+/// as it is prepainted, for the height it has in that frame
+/// (`GitTurtle::render_working_body`), as `uniform_list` builds its rows: a
+/// line that comes or goes above it moves nothing in it a frame late. Sized
+/// from the frame before, the composer was 23 px taller for one frame after
+/// "Filtering working paths…" left the controls.
+struct WorkingBody {
+    app: Entity<GitTurtle>,
+    min: Pixels,
+    parts: Option<WorkingBodyParts>,
+}
+
+/// What the body is built from that its height does not change, chosen as
+/// the inspector renders.
+struct WorkingBodyParts {
+    /// Where the body's size is recorded for what is chosen before layout.
+    layout: Entity<WorkingInspectorLayout>,
+    /// The file list, but for the height the body gives it.
+    pane: Stateful<Div>,
+    short: bool,
+    forms: WorkingForms,
+    fit: WorkingFit,
+    metrics: ComposerMetrics,
+    /// The composer's fields' rows but the description's field
+    /// (`GitTurtle::composer_rows`).
+    rows: Pixels,
+    /// The Description section's own rows
+    /// (`GitTurtle::description_section`).
+    section: Pixels,
+    /// The file list's least height.
+    floor: f32,
+    /// Whether the composer is drawn, not an operation's banner.
+    composer: bool,
+    /// Whether the list draws rows, which may overflow it.
+    listed: bool,
+    staged: usize,
+    busy: bool,
+    identity_ready: bool,
+    shown: bool,
+    conflicted: bool,
+    commit_disabled: bool,
+    commit_refused: bool,
+}
+
+impl IntoElement for WorkingBody {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for WorkingBody {
+    type RequestLayoutState = ();
+    /// The list and the composer, laid out in the body's bounds.
+    type PrepaintState = Option<AnyElement>;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        // `flex_1`, at least `min` tall.
+        let style = Style {
+            flex_grow: 1.,
+            flex_shrink: 1.,
+            flex_basis: relative(0.).into(),
+            min_size: Size {
+                width: Length::Auto,
+                height: self.min.into(),
+            },
+            ..Style::default()
+        };
+        (window.request_layout(style, None, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        let parts = self.parts.take()?;
+        let mut body = self.app.update(cx, |app, cx| {
+            app.render_working_body(parts, bounds.size, window, cx)
+        });
+        body.layout_as_root(
+            size(
+                AvailableSpace::Definite(bounds.size.width),
+                AvailableSpace::Definite(bounds.size.height),
+            ),
+            window,
+            cx,
+        );
+        body.prepaint_at(bounds.origin, window, cx);
+        Some(body)
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        body: &mut Option<AnyElement>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(body) = body {
+            body.paint(window, cx);
+        }
+    }
+}
+
+/// Test-only: a 21 px line drawn above the Working inspector's list/composer
+/// body, as "Filtering working paths…" was while a write's rows were
+/// prepared, and a record of where each frame the window draws lays the list
+/// and the composer out (`GitTurtle::working_probe`), so a test can check
+/// that nothing in the body is laid out for the height it had a frame
+/// before. A test window draws a frame that a layout asks for at once,
+/// inside the update that asked, so `debug_bounds` read after that update
+/// sees only the last of them.
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct WorkingProbe {
+    pub(super) line: std::cell::Cell<ProbeLine>,
+    /// A record of each frame drawn while the probe is not `Off`.
+    pub(super) frames: std::rc::Rc<RefCell<Vec<ProbeFrame>>>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) enum ProbeLine {
+    /// No line, no record.
+    #[default]
+    Off,
+    /// No line; each frame is recorded.
+    Watch,
+    /// The line in one frame, the first drawn while rows are prepared,
+    /// then `Watch`.
+    Once,
+    /// The line in every frame.
+    Steady,
+}
+
+/// Test-only: where one frame laid the list and the composer out, inside
+/// their borders, and whether it drew the probe line above them.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ProbeFrame {
+    pub(super) line: bool,
+    pub(super) list: Option<Bounds<Pixels>>,
+    pub(super) composer: Option<Bounds<Pixels>>,
+}
+
+#[cfg(test)]
+impl WorkingProbe {
+    /// Records a frame and says whether it draws the line, while rows are
+    /// prepared where `pending`.
+    fn frame(&self, pending: bool) -> bool {
+        let line = match self.line.get() {
+            ProbeLine::Off => return false,
+            ProbeLine::Watch => false,
+            ProbeLine::Steady => true,
+            ProbeLine::Once => {
+                if pending {
+                    self.line.set(ProbeLine::Watch);
+                }
+                pending
+            }
+        };
+        self.frames.borrow_mut().push(ProbeFrame {
+            line,
+            ..ProbeFrame::default()
+        });
+        line
+    }
+
+    /// A canvas over the list or, where `composer`, the composer, which
+    /// records their bounds in this frame's record.
+    fn recorder(&self, composer: bool) -> Option<impl IntoElement + use<>> {
+        let frames = self.frames.clone();
+        (self.line.get() != ProbeLine::Off).then(|| {
+            canvas(
+                move |bounds, _, _| {
+                    if let Some(frame) = frames.borrow_mut().last_mut() {
+                        let part = if composer {
+                            &mut frame.composer
+                        } else {
+                            &mut frame.list
+                        };
+                        *part = Some(bounds);
+                    }
+                },
+                |_, _, _, _| (),
+            )
+            .absolute()
+            .inset_0()
+        })
+    }
+}
+
 /// A Git write's outcome in the status line ([`GitTurtle::record_outcome`]),
 /// held while the control that asked confirms it. Window-lived and never
 /// retained by a tab: it is drawn only while its repository is shown, and
@@ -2358,19 +2582,16 @@ impl GitTurtle {
                 inspector: (window.viewport_size().height - px(200.)).max(px(160.)),
             }
         });
-        let available = f32::from(layout.read(cx).height);
-        let short = available < 560.;
+        // The short form also shapes the controls above the body, so it is
+        // chosen before layout from the body's height as last laid out; the
+        // list and the composer are sized from its height in this frame as
+        // it is prepainted (`WorkingBody`).
+        let short = short_body(layout.read(cx).height);
         let fitted_width = if pinned { width } else { layout.read(cx).width };
         let forms = self.working_forms(fitted_width, short, window, cx);
         // The measured body's height must not change the header height, which
         // would oscillate at a size threshold on successive layout passes.
         let header_height = WORKING_HEADER;
-        let normal_description = if self.settings.density == appearance::Density::Compact {
-            100.
-        } else {
-            128.
-        };
-        let description_height = ((available - 440.) * 0.5 + 64.).clamp(64., normal_description);
         let list_layout = layout.clone();
         let list_scroll = self.working_scroll.clone();
         let selected_row = self.actionable_working_rows().iter().position(
@@ -2479,12 +2700,6 @@ impl GitTurtle {
                         .block(cx),
                 )
         });
-        let branch = self
-            .work_status
-            .as_ref()
-            .and_then(|s| s.branch.as_deref())
-            .unwrap_or("detached HEAD");
-        let summary_length = self.commit_title.read(cx).value().chars().count();
         // The commit waits for a write in flight and for the rows it counts
         // (`status_ready`), which its click refuses at once, and looks
         // unavailable for them once the spell looks busy.
@@ -2526,88 +2741,8 @@ impl GitTurtle {
         // The fields' rows but the description's field, at the interface
         // size: the composer prefers room for them whole with that field.
         let rows = self.composer_rows(&metrics, fitted_width, identity_ready, shown, window, cx);
-        let description_height = description_height.max(f32::from(metrics.description_least()));
-        let composer_height = commit_composer_height(
-            available,
-            self.settings.density.file_row_height(),
-            (description_height + if short { 180. } else { 244. })
-                .max(f32::from(metrics.chrome() + rows) + description_height),
-        );
-        // The list keeps its floor beside the composer's minimum.
-        let composer_height = composer_height.min(available - floor).max(minimum);
-        // Where its rows overflow it, the list is a whole number of rows tall,
-        // so no row is cut through its text at the list's edge: the composer
-        // takes the remainder, or, without one, it stays below the list. At
-        // its floor the list is whole rows already.
-        let row = f32::from(window.pixel_snap(px(self.settings.density.file_row_height())));
-        let border = f32::from(window.pixel_snap(px(1.))) * 2.;
-        // What is left below the list's last whole row where it has `inner`
-        // inside its border, or nothing where its rows do not overflow it.
-        let leftover = |inner: f32| {
-            if total > 0
-                && !no_match
-                && inner > floor - border
-                && inner < row * self.working_rows.len() as f32
-            {
-                (inner - ((inner + 0.01) / row).floor() * row).max(0.)
-            } else {
-                0.
-            }
-        };
-        let remainder = leftover(available - if composer { composer_height } else { 0. } - border);
-        let composer_height = composer_height + if composer { remainder } else { 0. };
-        // The Description section, whole or absent: where the composer is too
-        // short for it, it leaves rather than show its label cut at the
-        // commit action, and its field leaves the Tab order with it.
-        let description = composer
-            .then(|| {
-                metrics.description_field(px(composer_height), rows, description_height, window)
-            })
-            .flatten();
-        // Its rows keep their rhythm down to the commit action, a scaled 4 px
-        // in a short composer and 0.5 rem in a taller one, rather than the
-        // height the composer's share leaves over gathering between the last
-        // field and the action. A taller composer with its Description
-        // section keeps its share and its description's field grows to take
-        // what its rows leave: the field is the composer's one row that reads
-        // better taller, and the action stays at the composer's foot. A short
-        // composer, or one whose section has left, is drawn no taller than its
-        // rows: what it does not use goes back to the list in whole rows, and
-        // what is left, less than a row, lies between the list's last row and
-        // the composer.
+        // The Description section's own rows, which leave with it.
         let section = self.description_section(&metrics, fitted_width, window);
-        let content = f32::from(metrics.content(rows, section, description));
-        let (drawn, description) = match description {
-            Some(field) if composer && !short => (
-                composer_height,
-                Some(field + (composer_height - content).max(0.)),
-            ),
-            _ if composer => (composer_height.min(content), description),
-            _ => (composer_height, description),
-        };
-        let below = if !composer {
-            remainder
-        } else if drawn < composer_height {
-            leftover(available - drawn - border)
-        } else {
-            0.
-        };
-        // A focused description that leaves hands its focus to the title, so
-        // focus never rests on a field that is not drawn.
-        if description.is_none()
-            && self
-                .commit_message
-                .read(cx)
-                .focus_handle(cx)
-                .is_focused(window)
-        {
-            let title = self.commit_title.read(cx).focus_handle(cx);
-            window.defer(cx, move |window, cx| window.focus(&title, cx));
-        }
-        // A description the composer cannot show still goes into the commit,
-        // so the commit action says so.
-        let hidden_description =
-            description.is_none() && !self.commit_message.read(cx).value().trim().is_empty();
         // A row that its Stage or Unstage moved travels to its slot above
         // the list, which keeps the slot empty until it lands (`motion`).
         let flight = self.working_flight(cx);
@@ -2779,73 +2914,79 @@ impl GitTurtle {
                     .into_any_element(),
             ]
         };
-        let inspector_layout = layout.clone();
-        div()
-            .size_full().min_h_0().relative().flex().flex_col().bg(rgb(p.panel))
-            // The inspector's own height, which no form of its rows changes,
-            // chooses the form.
-            .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
-                inspector_layout.update(cx, |layout, cx| {
-                    if layout.inspector != bounds.size.height {
-                        layout.inspector = bounds.size.height;
-                        cx.notify();
-                        window.defer(cx, |window, _| window.refresh());
-                    }
-                });
-            }).absolute().inset_0())
-            .children(controls)
-            .child(div().debug_selector(|| "working-body".into()).relative().flex_1().min_h(px(floor + if composer { minimum } else { 0. })).flex().flex_col()
-            .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
-                layout.update(cx, |layout, cx| {
-                    if layout.height != bounds.size.height || layout.width != bounds.size.width {
-                        layout.height = bounds.size.height;
-                        layout.width = bounds.size.width;
-                        cx.notify();
-                        // Refresh is ignored during paint. Defer it so the
-                        // cached workspace consumes the measured body height.
-                        window.defer(cx, |window, _| window.refresh());
-                    }
-                });
-            }).absolute().inset_0())
-            .child(native_accessibility::clips_children(
-                div().id("working-pane").debug_selector(|| "working-pane".into()).role(Role::ListBox).aria_label("Working tree files")
-                    .tab_stop(true).key_context("GitTurtleList").track_focus(&self.file_focus)
-                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| this.pointer_moved(event.position, cx)))
-                    .on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, window, cx| {
-                        this.copy_list_item(crate::views::ListCopy::WorkingPaths, window, cx)
-                    }))
-                    .on_action(cx.listener(move |this, _: &native_accessibility::RowActions, window, cx| {
-                        this.open_working_row_menu(forms.file_action, window, cx)
-                    }))
-                    .border_1().border_color(rgb(p.border)).when(self.focus_ring.shows(&self.file_focus), |pane| pane.border_color(rgb(p.accent)))
-                    // One pixel in from the inspector's divider, which the kit
-                    // paints over the inspector's first pixel: the list's own
-                    // left edge and focus ring stay whole beside it, as the
-                    // commit inspector's list does beside its own edge.
-                    .ml(px(1.))
-                    // Its floor, whatever else gives way, so its focus ring
-                    // surrounds a list that shows a file.
-                    .relative().flex_1().min_h(px(floor)).overflow_hidden()
-                    .when(below > 0., |el| {
-                        el.max_h(px(available - if composer { drawn } else { 0. } - below))
-                    })
-                    .when(total > 0 && !no_match, |el| el.child(list))
-                    .children(travelling.filter(|_| total > 0 && !no_match))
-                    .children(clean)
-                    .children(unmatched)
-                    .children(self.file_menu.as_ref().map(|menu| {
-                        menu.render("working-row-menu-overlay", Self::dismiss_file_menu, cx)
-                    }))
-                    .child(canvas(|_, _, _| (), move |bounds, _, window, cx| {
+        // The file list, but for the height the body gives it as it is
+        // prepainted (`render_working_body`).
+        let listed = total > 0 && !no_match;
+        let pane = div()
+            .id("working-pane")
+            .debug_selector(|| "working-pane".into())
+            .role(Role::ListBox)
+            .aria_label("Working tree files")
+            .tab_stop(true)
+            .key_context("GitTurtleList")
+            .track_focus(&self.file_focus)
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                this.pointer_moved(event.position, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &gpui_kit::component::input::Copy, window, cx| {
+                    this.copy_list_item(crate::views::ListCopy::WorkingPaths, window, cx)
+                }),
+            )
+            .on_action(cx.listener(
+                move |this, _: &native_accessibility::RowActions, window, cx| {
+                    this.open_working_row_menu(forms.file_action, window, cx)
+                },
+            ))
+            .border_1()
+            .border_color(rgb(p.border))
+            .when(self.focus_ring.shows(&self.file_focus), |pane| {
+                pane.border_color(rgb(p.accent))
+            })
+            // One pixel in from the inspector's divider, which the kit
+            // paints over the inspector's first pixel: the list's own
+            // left edge and focus ring stay whole beside it, as the
+            // commit inspector's list does beside its own edge.
+            .ml(px(1.))
+            // Its floor, whatever else gives way, so its focus ring
+            // surrounds a list that shows a file.
+            .relative()
+            .flex_1()
+            .min_h(px(floor))
+            .overflow_hidden()
+            .when(listed, |el| el.child(list))
+            .children(travelling.filter(|_| listed))
+            .children(clean)
+            .children(unmatched)
+            .children(
+                self.file_menu.as_ref().map(|menu| {
+                    menu.render("working-row-menu-overlay", Self::dismiss_file_menu, cx)
+                }),
+            )
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, cx| {
                         list_layout.update(cx, |layout, cx| {
                             if layout.list_size != Some(bounds.size) {
-                                // The list's height settles a frame after a
-                                // write's rows arrive, as the composer is
-                                // measured again: a confirming heading is
-                                // shown again in the height it now has.
-                                if layout.list_size.is_some() && let Some(heading) = confirming_heading {
-                                    reveal_heading(&list_scroll, bounds.size.height, reveal_row, row_count, selected_row, heading);
-                                } else if layout.list_size.is_some() && let Some(selected) = selected_row {
+                                // The list's height changes with the body's
+                                // and with the composer's share: a confirming
+                                // heading is shown again in the height it now
+                                // has.
+                                if layout.list_size.is_some()
+                                    && let Some(heading) = confirming_heading
+                                {
+                                    reveal_heading(
+                                        &list_scroll,
+                                        bounds.size.height,
+                                        reveal_row,
+                                        row_count,
+                                        selected_row,
+                                        heading,
+                                    );
+                                } else if layout.list_size.is_some()
+                                    && let Some(selected) = selected_row
+                                {
                                     list_scroll.scroll_to_item(selected, ScrollStrategy::Nearest);
                                 }
                                 layout.list_size = Some(bounds.size);
@@ -2853,151 +2994,647 @@ impl GitTurtle {
                                 window.defer(cx, |window, _| window.refresh());
                             }
                         });
-                    }).absolute().inset_0()),
-            ))
-            .when(composer, |el| el.child(
-                div().debug_selector(|| "commit-composer".into())
-                    .relative().flex_shrink_0().min_h_0().h(px(drawn)).flex().flex_col()
-                    // It ends at the body's foot, above the status bar: what
-                    // the list's whole rows leave, less than a row, lies
-                    // between the list's last row and the composer rather
-                    // than below the commit action.
-                    .mt_auto()
-                    .bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
-                    // The heading is pinned above the scrolling fields, as the
-                    // commit action is below them; where the body is short the
-                    // file list gives up the room for both, down to its floor.
-                    // In the tightest inspector the heading leaves
-                    // (`WorkingFit`).
-                    .when(fit.heading, |el| el.child(div().flex_shrink_0().flex().items_center().gap_2().px_3().pt_3()
-                        .when(short, |el| el.pt_2())
-                        .when(forms.heading_icon, |el| el.child(div().debug_selector(|| "commit-composer-icon".into()).child(icon("commit", 16., p.accent))))
-                        // Truncating, it keeps "Commit to" and cuts the branch.
-                        .child(div().id("commit-composer-heading").debug_selector(|| "commit-composer-heading".into()).flex_1().min_w_0().truncate().text_size(crate::appearance::ui_text(13.)).font_weight(FontWeight::SEMIBOLD)
-                            .tooltip({
-                                // Without its badge the heading names the count.
-                                let tooltip = if forms.heading_badge { format!("Commit to {branch}") } else { format!("Commit to {branch} · {staged} staged") };
-                                move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
-                            })
-                            .child(if short { format!("Commit to {branch}") } else { "Create a commit".into() }))
-                        .when(forms.heading_badge, |el| el.child(div().debug_selector(|| "commit-staged-count".into()).flex_shrink_0().px_1p5().py_0p5().rounded(px(4.))
-                            .bg(rgb(if staged > 0 { p.added_background } else { p.hover }))
-                            .text_size(crate::appearance::ui_text(10.)).font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(if staged > 0 { crate::appearance::labels(cx).added } else { crate::appearance::labels(cx).count }))
-                            .child(format!("{staged} staged"))))))
-                    .child(native_accessibility::clips_children(div().id("commit-composer-fields").debug_selector(|| "commit-composer-fields".into()).flex_1().min_h_0().overflow_y_scroll()
-                    // The gap that followed the heading leads the fields;
-                    // without the heading, the composer's own padding does.
-                    // The fields end a gap above the commit action, as they
-                    // keep it between themselves (`ComposerMetrics::gap`).
-                    .child(div().flex().flex_col().gap_2().px_3().pt_2().pb_2()
-                    .when(short, |el| el.gap(crate::appearance::ui_size(4.)).pt(crate::appearance::ui_size(4.)).pb(crate::appearance::ui_size(4.)))
-                    .when(!fit.heading, |el| if short { el.pt_2() } else { el.pt_3() })
-                    .when(!short, |el| el.child(div().flex().items_center().gap_1p5().min_w_0().text_size(crate::appearance::ui_text(11.))
-                        .text_color(rgb(p.muted)).child(icon("branch", 13., p.muted))
-                        .child(div().truncate().child(branch.to_owned()))))
-                    .child(div().debug_selector(|| "commit-title-label".into()).flex().items_center().gap_2().text_size(crate::appearance::ui_text(11.))
-                        .child(div().debug_selector(|| "commit-title-name".into()).flex_1().font_weight(FontWeight::MEDIUM).child("Title"))
-                        .child({
-                            let counter = div().id("commit-title-counter").debug_selector(|| "commit-title-counter".into())
-                                .text_color(rgb(if summary_length > 72 { p.warning } else { p.muted }));
-                            let whole = SharedString::from(title_counter(summary_length));
-                            if forms.counter_word {
-                                counter.child(whole).into_any_element()
-                            } else {
-                                // Without "suggested" the counter is read by its whole text.
-                                crate::views::note_compact_label("commit-title-counter", &whole);
-                                native_accessibility::static_text(counter, whole.clone())
-                                    .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
-                                    .child(format!("{summary_length}/72"))
-                                    .into_any_element()
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            );
+        #[cfg(test)]
+        let pane = pane.children(self.working_probe.recorder(false));
+        let inspector_layout = layout.clone();
+        #[cfg(test)]
+        let probe = self.working_probe.frame(self.working_paths.pending);
+        #[cfg(not(test))]
+        let probe = false;
+        div()
+            .size_full()
+            .min_h_0()
+            .relative()
+            .flex()
+            .flex_col()
+            .bg(rgb(p.panel))
+            // The inspector's own height, which no form of its rows changes,
+            // chooses the form.
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, cx| {
+                        inspector_layout.update(cx, |layout, cx| {
+                            if layout.inspector != bounds.size.height {
+                                layout.inspector = bounds.size.height;
+                                cx.notify();
+                                window.defer(cx, |window, _| window.refresh());
                             }
-                        }))
-                    .child(div().debug_selector(|| "commit-title".into()).child(Input::new(&self.commit_title).readonly(busy).aria_label("Commit title").text_size(crate::appearance::ui_text(12.))))
-                    .when(summary_length > 72, |el| el.child(
-                        div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child(LONG_TITLE_NOTE),
-                    ))
-                    // Its label, field and hint, whole or not at all
-                    // (`ComposerMetrics::description_field`).
-                    .when_some(description, |el, field| el
-                        .child(div().debug_selector(|| "commit-description-label".into()).flex().items_center().gap_1().text_size(crate::appearance::ui_text(11.))
-                            .child(div().debug_selector(|| "commit-description-name".into()).font_weight(FontWeight::MEDIUM).child("Description"))
-                            .when(forms.description_note, |el| el.child(div().debug_selector(|| "commit-description-optional".into()).text_color(rgb(p.muted)).child("· optional"))))
-                        // Tab and Shift-Tab move focus on and back, as on every
-                        // other stop, rather than indenting.
-                        .child(shortcuts::tab_leaves(Textarea::new(&self.commit_message).readonly(busy)
-                                .aria_label("Commit description, optional")
-                                .h(px(field))
-                                .text_size(crate::appearance::ui_text(12.)))
-                            .debug_selector(|| "commit-description".into()))
-                        .child(div().debug_selector(|| "commit-description-hint".into()).flex().items_center().gap_2().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))
-                            // Shrinking below its one line, it wraps as `description_section`
-                            // predicts rather than running past the column at 18 pt.
-                            .child(div().flex_1().min_w_0().child(if staged == 0 { UNSTAGED_HINT } else { STAGED_HINT }))))
-                    .when_some(self.draft_save_error.as_ref(), |el, error| el.child(
-                        div().flex().flex_col().gap_1().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.warning))
-                            .child(DRAFT_SAVE_NOTE)
-                            .child(button("retry-commit-draft", "Retry saving draft", "refresh", false)
-                                .tooltip(error.clone())
-                                .on_click(cx.listener(|this, _, window, cx| this.persist_commit_draft(window, cx)))),
-                    ))
-                    .when(!identity_ready && shown, |el| el.child(
-                        button("configure-identity", "Set your commit identity", "", false)
-                            .on_click(cx.listener(|this, _, window, cx| this.show_settings(window, cx))),
-                    ))
-                    .when(conflicted, |el| el.child(
-                        div().flex().items_center().gap_2().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))
-                            .child(icon("file-conflict", 15., p.warning))
-                            // Shrinking below its one line, it wraps as `composer_rows`
-                            // predicts rather than running past the column.
-                            .child(div().debug_selector(|| "commit-conflict-note".into()).flex_1().min_w_0().child(CONFLICT_NOTE)),
-                    )))))
-                    .child(div().flex_shrink_0().px_3().pb_3().when(short, |el| el.pb_2()).child({
-                        // Disabled, it rests on the composer's own `subtle`, so it
-                        // keeps its shape with an edge; it is as wide as the composer.
-                        let commit = crate::appearance::keep_disabled_shape(
-                            Button::new("commit-staged").debug_selector(|| "commit-staged".into()).primary().w_full().h(crate::appearance::ui_size(36.)),
-                            commit_disabled, p.subtle, None, cx)
-                            .icon(Icon::default().path("icons/commit.svg").size(px(16.)));
-                        let label = self.commit_action_label(cx);
-                        let detail = format!(
-                            "Commit staged changes to {branch}{}",
-                            if hidden_description { " · Includes the description, shown in a larger window" } else { "" }
-                        );
-                        // Where its label does not fit, it reads "Commit" and
-                        // keeps the label as its name and leading its tooltip.
-                        if forms.compact_commit {
-                            let tooltip = format!("{label} · {detail}");
-                            crate::views::compact_control_label(commit, "commit-staged", label)
-                                .label("Commit")
-                                .tooltip(tooltip)
-                        } else {
-                            commit.label(label).tooltip(detail)
-                        }
-                        .map(|commit| refusing(commit, || "commit-staged".into(), commit_refused, commit_disabled))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            // Refused at once, whatever it looks like yet.
-                            if this.working_paths.pending {
-                                return;
-                            }
-                            let message = this.current_commit_draft(cx).message();
-                            this.write(WriteCommand::Commit { message }, "Creating commit…", window, cx);
-                        }))
-                    }))
-                    // Painted after both fields, it fits their placeholders.
-                    .child(placeholder_fit(
-                        self.commit_title.clone(),
-                        &TITLE_FIT,
-                        &[TITLE_PLACEHOLDER, TITLE_SHORT_PLACEHOLDER],
-                        12.,
-                    ))
-                    .child(placeholder_fit(
-                        self.commit_message.clone(),
-                        &DESCRIPTION_FIT,
-                        &[DESCRIPTION_PLACEHOLDER],
-                        12.,
-                    )),
-            )))
+                        });
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .children(controls)
+            .when(probe, |el| {
+                el.child(
+                    div()
+                        .debug_selector(|| "working-probe-line".into())
+                        .flex_shrink_0()
+                        .h(px(21.)),
+                )
+            })
+            .child(WorkingBody {
+                app: cx.entity(),
+                min: px(floor + if composer { minimum } else { 0. }),
+                parts: Some(WorkingBodyParts {
+                    layout,
+                    pane,
+                    short,
+                    forms,
+                    fit,
+                    metrics,
+                    rows,
+                    section,
+                    floor,
+                    composer,
+                    listed,
+                    staged,
+                    busy,
+                    identity_ready,
+                    shown,
+                    conflicted,
+                    commit_disabled,
+                    commit_refused,
+                }),
+            })
+            .into_any_element()
+    }
+
+    /// The Working inspector's list and composer in a body `size` large, as
+    /// the body is prepainted (`WorkingBody`): the composer's share, the
+    /// list's whole rows, the description's field and what is left between
+    /// them, from the body's height in this frame.
+    fn render_working_body(
+        &self,
+        parts: WorkingBodyParts,
+        size: Size<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let WorkingBodyParts {
+            layout,
+            pane,
+            short,
+            forms,
+            fit,
+            metrics,
+            rows,
+            section,
+            floor,
+            composer,
+            listed,
+            staged,
+            busy,
+            identity_ready,
+            shown,
+            conflicted,
+            commit_disabled,
+            commit_refused,
+        } = parts;
+        // What is chosen before layout from the body's size, the short form
+        // and the rows' forms, is chosen again where this frame's size
+        // changes it. The height alone sizes only what is built here, so a
+        // body that grows or shrinks asks for no other frame.
+        layout.update(cx, |layout, cx| {
+            let changed =
+                short_body(layout.height) != short_body(size.height) || layout.width != size.width;
+            layout.height = size.height;
+            layout.width = size.width;
+            if changed {
+                cx.notify();
+                // Refresh is ignored while the window draws. Defer it so the
+                // workspace renders again in the new form.
+                window.defer(cx, |window, _| window.refresh());
+            }
+        });
+        let p = palette(cx);
+        let available = f32::from(size.height);
+        let minimum = f32::from(metrics.minimum());
+        let normal_description = if self.settings.density == appearance::Density::Compact {
+            100.
+        } else {
+            128.
+        };
+        let description_height = ((available - 440.) * 0.5 + 64.).clamp(64., normal_description);
+        let description_height = description_height.max(f32::from(metrics.description_least()));
+        let composer_height = commit_composer_height(
+            available,
+            self.settings.density.file_row_height(),
+            (description_height + if short { 180. } else { 244. })
+                .max(f32::from(metrics.chrome() + rows) + description_height),
+        );
+        // The list keeps its floor beside the composer's minimum.
+        let composer_height = composer_height.min(available - floor).max(minimum);
+        // Where its rows overflow it, the list is a whole number of rows tall,
+        // so no row is cut through its text at the list's edge: the composer
+        // takes the remainder, or, without one, it stays below the list. At
+        // its floor the list is whole rows already.
+        let row = f32::from(window.pixel_snap(px(self.settings.density.file_row_height())));
+        let border = f32::from(window.pixel_snap(px(1.))) * 2.;
+        // What is left below the list's last whole row where it has `inner`
+        // inside its border, or nothing where its rows do not overflow it.
+        let leftover = |inner: f32| {
+            if listed && inner > floor - border && inner < row * self.working_rows.len() as f32 {
+                (inner - ((inner + 0.01) / row).floor() * row).max(0.)
+            } else {
+                0.
+            }
+        };
+        let remainder = leftover(available - if composer { composer_height } else { 0. } - border);
+        let composer_height = composer_height + if composer { remainder } else { 0. };
+        // The Description section, whole or absent: where the composer is too
+        // short for it, it leaves rather than show its label cut at the
+        // commit action, and its field leaves the Tab order with it.
+        let description = composer
+            .then(|| {
+                metrics.description_field(px(composer_height), rows, description_height, window)
+            })
+            .flatten();
+        // Its rows keep their rhythm down to the commit action, a scaled 4 px
+        // in a short composer and 0.5 rem in a taller one, rather than the
+        // height the composer's share leaves over gathering between the last
+        // field and the action. A taller composer with its Description
+        // section keeps its share and its description's field grows to take
+        // what its rows leave: the field is the composer's one row that reads
+        // better taller, and the action stays at the composer's foot. A short
+        // composer, or one whose section has left, is drawn no taller than its
+        // rows: what it does not use goes back to the list in whole rows, and
+        // what is left, less than a row, lies between the list's last row and
+        // the composer.
+        let content = f32::from(metrics.content(rows, section, description));
+        let (drawn, description) = match description {
+            Some(field) if composer && !short => (
+                composer_height,
+                Some(field + (composer_height - content).max(0.)),
+            ),
+            _ if composer => (composer_height.min(content), description),
+            _ => (composer_height, description),
+        };
+        let below = if !composer {
+            remainder
+        } else if drawn < composer_height {
+            leftover(available - drawn - border)
+        } else {
+            0.
+        };
+        // A focused description that leaves hands its focus to the title, so
+        // focus never rests on a field that is not drawn.
+        if description.is_none()
+            && self
+                .commit_message
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        {
+            let title = self.commit_title.read(cx).focus_handle(cx);
+            window.defer(cx, move |window, cx| window.focus(&title, cx));
+        }
+        // A description the composer cannot show still goes into the commit,
+        // so the commit action says so.
+        let hidden_description =
+            description.is_none() && !self.commit_message.read(cx).value().trim().is_empty();
+        let branch = self
+            .work_status
+            .as_ref()
+            .and_then(|s| s.branch.as_deref())
+            .unwrap_or("detached HEAD");
+        let summary_length = self.commit_title.read(cx).value().chars().count();
+        #[cfg(test)]
+        let composer_probe = self.working_probe.recorder(true);
+        #[cfg(not(test))]
+        let composer_probe = None::<Empty>;
+        let pane = pane.when(below > 0., |el| {
+            el.max_h(px(available - if composer { drawn } else { 0. } - below))
+        });
+        div()
+            .debug_selector(|| "working-body".into())
+            .w(size.width)
+            .h(size.height)
+            .flex()
+            .flex_col()
+            .child(native_accessibility::clips_children(pane))
+            .when(composer, |el| {
+                el.child(
+                    div()
+                        .debug_selector(|| "commit-composer".into())
+                        .relative()
+                        .flex_shrink_0()
+                        .min_h_0()
+                        .h(px(drawn))
+                        .flex()
+                        .flex_col()
+                        // It ends at the body's foot, above the status bar: what
+                        // the list's whole rows leave, less than a row, lies
+                        // between the list's last row and the composer rather
+                        // than below the commit action.
+                        .mt_auto()
+                        .bg(rgb(p.subtle))
+                        .border_t_1()
+                        .border_color(rgb(p.border))
+                        .children(composer_probe)
+                        // The heading is pinned above the scrolling fields, as the
+                        // commit action is below them; where the body is short the
+                        // file list gives up the room for both, down to its floor.
+                        // In the tightest inspector the heading leaves
+                        // (`WorkingFit`).
+                        .when(fit.heading, |el| {
+                            el.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_3()
+                                    .pt_3()
+                                    .when(short, |el| el.pt_2())
+                                    .when(forms.heading_icon, |el| {
+                                        el.child(
+                                            div()
+                                                .debug_selector(|| "commit-composer-icon".into())
+                                                .child(icon("commit", 16., p.accent)),
+                                        )
+                                    })
+                                    // Truncating, it keeps "Commit to" and cuts the branch.
+                                    .child(
+                                        div()
+                                            .id("commit-composer-heading")
+                                            .debug_selector(|| "commit-composer-heading".into())
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_size(crate::appearance::ui_text(13.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .tooltip({
+                                                // Without its badge the heading names the count.
+                                                let tooltip = if forms.heading_badge {
+                                                    format!("Commit to {branch}")
+                                                } else {
+                                                    format!("Commit to {branch} · {staged} staged")
+                                                };
+                                                move |window, cx| {
+                                                    Tooltip::new(tooltip.clone()).build(window, cx)
+                                                }
+                                            })
+                                            .child(if short {
+                                                format!("Commit to {branch}")
+                                            } else {
+                                                "Create a commit".into()
+                                            }),
+                                    )
+                                    .when(forms.heading_badge, |el| {
+                                        el.child(
+                                            div()
+                                                .debug_selector(|| "commit-staged-count".into())
+                                                .flex_shrink_0()
+                                                .px_1p5()
+                                                .py_0p5()
+                                                .rounded(px(4.))
+                                                .bg(rgb(if staged > 0 {
+                                                    p.added_background
+                                                } else {
+                                                    p.hover
+                                                }))
+                                                .text_size(crate::appearance::ui_text(10.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(rgb(if staged > 0 {
+                                                    crate::appearance::labels(cx).added
+                                                } else {
+                                                    crate::appearance::labels(cx).count
+                                                }))
+                                                .child(format!("{staged} staged")),
+                                        )
+                                    }),
+                            )
+                        })
+                        .child(native_accessibility::clips_children(
+                            div()
+                                .id("commit-composer-fields")
+                                .debug_selector(|| "commit-composer-fields".into())
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                // The gap that followed the heading leads the fields;
+                                // without the heading, the composer's own padding does.
+                                // The fields end a gap above the commit action, as they
+                                // keep it between themselves (`ComposerMetrics::gap`).
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_2()
+                                        .px_3()
+                                        .pt_2()
+                                        .pb_2()
+                                        .when(short, |el| {
+                                            el.gap(crate::appearance::ui_size(4.))
+                                                .pt(crate::appearance::ui_size(4.))
+                                                .pb(crate::appearance::ui_size(4.))
+                                        })
+                                        .when(!fit.heading, |el| {
+                                            if short { el.pt_2() } else { el.pt_3() }
+                                        })
+                                        .when(!short, |el| {
+                                            el.child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_1p5()
+                                                    .min_w_0()
+                                                    .text_size(crate::appearance::ui_text(11.))
+                                                    .text_color(rgb(p.muted))
+                                                    .child(icon("branch", 13., p.muted))
+                                                    .child(
+                                                        div().truncate().child(branch.to_owned()),
+                                                    ),
+                                            )
+                                        })
+                                        .child(
+                                            div()
+                                                .debug_selector(|| "commit-title-label".into())
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .text_size(crate::appearance::ui_text(11.))
+                                                .child(
+                                                    div()
+                                                        .debug_selector(|| {
+                                                            "commit-title-name".into()
+                                                        })
+                                                        .flex_1()
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .child("Title"),
+                                                )
+                                                .child({
+                                                    let counter = div()
+                                                        .id("commit-title-counter")
+                                                        .debug_selector(|| {
+                                                            "commit-title-counter".into()
+                                                        })
+                                                        .text_color(rgb(if summary_length > 72 {
+                                                            p.warning
+                                                        } else {
+                                                            p.muted
+                                                        }));
+                                                    let whole = SharedString::from(title_counter(
+                                                        summary_length,
+                                                    ));
+                                                    if forms.counter_word {
+                                                        counter.child(whole).into_any_element()
+                                                    } else {
+                                                        // Without "suggested" the counter is read by its whole text.
+                                                        crate::views::note_compact_label(
+                                                            "commit-title-counter",
+                                                            &whole,
+                                                        );
+                                                        native_accessibility::static_text(
+                                                            counter,
+                                                            whole.clone(),
+                                                        )
+                                                        .tooltip(move |window, cx| {
+                                                            Tooltip::new(whole.clone())
+                                                                .build(window, cx)
+                                                        })
+                                                        .child(format!("{summary_length}/72"))
+                                                        .into_any_element()
+                                                    }
+                                                }),
+                                        )
+                                        .child(
+                                            div().debug_selector(|| "commit-title".into()).child(
+                                                Input::new(&self.commit_title)
+                                                    .readonly(busy)
+                                                    .aria_label("Commit title")
+                                                    .text_size(crate::appearance::ui_text(12.)),
+                                            ),
+                                        )
+                                        .when(summary_length > 72, |el| {
+                                            el.child(
+                                                div()
+                                                    .text_size(crate::appearance::ui_text(10.))
+                                                    .text_color(rgb(p.muted))
+                                                    .child(LONG_TITLE_NOTE),
+                                            )
+                                        })
+                                        // Its label, field and hint, whole or not at all
+                                        // (`ComposerMetrics::description_field`).
+                                        .when_some(description, |el, field| {
+                                            el.child(
+                                                div()
+                                                    .debug_selector(|| {
+                                                        "commit-description-label".into()
+                                                    })
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_1()
+                                                    .text_size(crate::appearance::ui_text(11.))
+                                                    .child(
+                                                        div()
+                                                            .debug_selector(|| {
+                                                                "commit-description-name".into()
+                                                            })
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .child("Description"),
+                                                    )
+                                                    .when(forms.description_note, |el| {
+                                                        el.child(
+                                                            div()
+                                                                .debug_selector(|| {
+                                                                    "commit-description-optional"
+                                                                        .into()
+                                                                })
+                                                                .text_color(rgb(p.muted))
+                                                                .child("· optional"),
+                                                        )
+                                                    }),
+                                            )
+                                            // Tab and Shift-Tab move focus on and back, as on every
+                                            // other stop, rather than indenting.
+                                            .child(
+                                                shortcuts::tab_leaves(
+                                                    Textarea::new(&self.commit_message)
+                                                        .readonly(busy)
+                                                        .aria_label("Commit description, optional")
+                                                        .h(px(field))
+                                                        .text_size(crate::appearance::ui_text(12.)),
+                                                )
+                                                .debug_selector(|| "commit-description".into()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .debug_selector(|| {
+                                                        "commit-description-hint".into()
+                                                    })
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .text_size(crate::appearance::ui_text(10.))
+                                                    .text_color(rgb(p.muted))
+                                                    // Shrinking below its one line, it wraps as `description_section`
+                                                    // predicts rather than running past the column at 18 pt.
+                                                    .child(div().flex_1().min_w_0().child(
+                                                        if staged == 0 {
+                                                            UNSTAGED_HINT
+                                                        } else {
+                                                            STAGED_HINT
+                                                        },
+                                                    )),
+                                            )
+                                        })
+                                        .when_some(self.draft_save_error.as_ref(), |el, error| {
+                                            el.child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap_1()
+                                                    .text_size(crate::appearance::ui_text(10.))
+                                                    .text_color(rgb(p.warning))
+                                                    .child(DRAFT_SAVE_NOTE)
+                                                    .child(
+                                                        button(
+                                                            "retry-commit-draft",
+                                                            "Retry saving draft",
+                                                            "refresh",
+                                                            false,
+                                                        )
+                                                        .tooltip(error.clone())
+                                                        .on_click(cx.listener(
+                                                            |this, _, window, cx| {
+                                                                this.persist_commit_draft(
+                                                                    window, cx,
+                                                                )
+                                                            },
+                                                        )),
+                                                    ),
+                                            )
+                                        })
+                                        .when(!identity_ready && shown, |el| {
+                                            el.child(
+                                                button(
+                                                    "configure-identity",
+                                                    "Set your commit identity",
+                                                    "",
+                                                    false,
+                                                )
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.show_settings(window, cx)
+                                                })),
+                                            )
+                                        })
+                                        .when(conflicted, |el| {
+                                            el.child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .text_size(crate::appearance::ui_text(11.))
+                                                    .text_color(rgb(p.warning))
+                                                    .child(icon("file-conflict", 15., p.warning))
+                                                    // Shrinking below its one line, it wraps as `composer_rows`
+                                                    // predicts rather than running past the column.
+                                                    .child(
+                                                        div()
+                                                            .debug_selector(|| {
+                                                                "commit-conflict-note".into()
+                                                            })
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .child(CONFLICT_NOTE),
+                                                    ),
+                                            )
+                                        }),
+                                ),
+                        ))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .px_3()
+                                .pb_3()
+                                .when(short, |el| el.pb_2())
+                                .child({
+                                    // Disabled, it rests on the composer's own `subtle`, so it
+                                    // keeps its shape with an edge; it is as wide as the composer.
+                                    let commit = crate::appearance::keep_disabled_shape(
+                                        Button::new("commit-staged")
+                                            .debug_selector(|| "commit-staged".into())
+                                            .primary()
+                                            .w_full()
+                                            .h(crate::appearance::ui_size(36.)),
+                                        commit_disabled,
+                                        p.subtle,
+                                        None,
+                                        cx,
+                                    )
+                                    .icon(Icon::default().path("icons/commit.svg").size(px(16.)));
+                                    let label = self.commit_action_label(cx);
+                                    let detail = format!(
+                                        "Commit staged changes to {branch}{}",
+                                        if hidden_description {
+                                            " · Includes the description, shown in a larger window"
+                                        } else {
+                                            ""
+                                        }
+                                    );
+                                    // Where its label does not fit, it reads "Commit" and
+                                    // keeps the label as its name and leading its tooltip.
+                                    if forms.compact_commit {
+                                        let tooltip = format!("{label} · {detail}");
+                                        crate::views::compact_control_label(
+                                            commit,
+                                            "commit-staged",
+                                            label,
+                                        )
+                                        .label("Commit")
+                                        .tooltip(tooltip)
+                                    } else {
+                                        commit.label(label).tooltip(detail)
+                                    }
+                                    .map(|commit| {
+                                        refusing(
+                                            commit,
+                                            || "commit-staged".into(),
+                                            commit_refused,
+                                            commit_disabled,
+                                        )
+                                    })
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| {
+                                            // Refused at once, whatever it looks like yet.
+                                            if this.working_paths.pending {
+                                                return;
+                                            }
+                                            let message = this.current_commit_draft(cx).message();
+                                            this.write(
+                                                WriteCommand::Commit { message },
+                                                "Creating commit…",
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    ))
+                                }),
+                        )
+                        // Painted after both fields, it fits their placeholders.
+                        .child(placeholder_fit(
+                            self.commit_title.clone(),
+                            &TITLE_FIT,
+                            &[TITLE_PLACEHOLDER, TITLE_SHORT_PLACEHOLDER],
+                            12.,
+                        ))
+                        .child(placeholder_fit(
+                            self.commit_message.clone(),
+                            &DESCRIPTION_FIT,
+                            &[DESCRIPTION_PLACEHOLDER],
+                            12.,
+                        )),
+                )
+            })
             .into_any_element()
     }
 
