@@ -598,6 +598,15 @@ enum HelpRow {
     Entry(HelpEntry),
 }
 
+/// How many shortcuts the help lists before a search narrows it.
+#[cfg(test)]
+pub(crate) fn listed_shortcuts() -> usize {
+    help_matches("")
+        .iter()
+        .filter(|row| matches!(row, HelpRow::Entry(_)))
+        .count()
+}
+
 fn help_matches(query: &str) -> Vec<HelpRow> {
     if query.len() > 4096 {
         return Vec::new();
@@ -690,18 +699,28 @@ impl DialogKeys {
     }
 }
 
-/// A dialog's inline help line, `text`, named for tests by the clause in it
-/// that says what Escape does (`dialog-help-escape: <clause>`, empty where
-/// the line has none), because GPUI's test scene does not expose glyphs.
-pub(super) fn dialog_help(text: String) -> Div {
+/// A dialog's inline help line, `text`, drawn with ID `id` as static text
+/// read by the whole line, and named for tests by the clause in it that says
+/// what Escape does (`dialog-help-escape: <clause>`, empty where the line
+/// has none), because GPUI's test scene does not expose glyphs. The line
+/// had no node, so the command palette's, Quick Open's and Keyboard
+/// Shortcuts' keys were never read.
+pub(super) fn dialog_help(
+    id: &'static str,
+    text: String,
+) -> native_accessibility::StaticText<Stateful<Div>> {
     let escape = text
         .split(" · ")
         .find(|clause| clause.starts_with("Escape"))
         .unwrap_or_default()
         .to_owned();
-    div()
-        .debug_selector(move || format!("dialog-help-escape: {escape}"))
-        .child(text)
+    native_accessibility::static_text(
+        div()
+            .id(id)
+            .debug_selector(move || format!("dialog-help-escape: {escape}"))
+            .child(text.clone()),
+        text,
+    )
 }
 
 /// The dialog controls whose keys the status bar names, registered as their
@@ -789,6 +808,19 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
     });
     focus.focus(window, cx);
     window.refresh();
+}
+
+/// The line above the shortcut list: how many shortcuts it holds and the
+/// platform's modifier keys.
+pub(crate) fn count_line(count: usize) -> String {
+    format!(
+        "{count} shortcuts · {}",
+        if cfg!(target_os = "macos") {
+            "⌘ Command  ⌥ Option  ⌃ Control  ⇧ Shift"
+        } else {
+            "Ctrl, Alt and Shift"
+        }
+    )
 }
 
 /// The shortcut list's height at the default interface size, where the
@@ -971,11 +1003,14 @@ impl Render for ShortcutHelpView {
                 cx.stop_propagation();
             }))
             .child(Input::new(&self.query).aria_label("Search keyboard shortcuts").cleanable(true))
-            .child(div().id("shortcut-help-count").role(Role::Status)
-                .a11y_synthetic_children(native_accessibility::polite)
-                .aria_label(format!("{count} matching shortcuts"))
-                .text_color(rgb(p.muted)).child(format!("{count} shortcuts · {}",
-                    if cfg!(target_os = "macos") { "⌘ Command  ⌥ Option  ⌃ Control  ⇧ Shift" } else { "Ctrl, Alt and Shift" })))
+            // A status read by the line it draws: it was named "61 matching
+            // shortcuts" while it drew "61 shortcuts · Ctrl, Alt and Shift".
+            .child({
+                let line = count_line(count);
+                native_accessibility::static_text(div().id("shortcut-help-count").role(Role::Status)
+                    .a11y_synthetic_children(native_accessibility::polite), line.clone())
+                    .text_color(rgb(p.muted)).child(line)
+            })
             .child(crate::native_accessibility::clips_children(div().id("shortcut-help-results").debug_selector(|| "shortcut-help-results".into()).role(Role::ListBox)
                 .aria_label("Keyboard shortcuts by group").h(height).min_h(appearance::ui_size(SHORTCUT_LIST_FLOOR)).overflow_hidden()
                 // Prepainted before the rows, so the scroll lands in the
@@ -992,9 +1027,9 @@ impl Render for ShortcutHelpView {
                 })
                 .rounded(px(7.)).border_1().border_color(rgb(p.raised_edge()))
                 .when(count > 0, |view| view.child(list))
-                .when(count == 0, |view| view.child(div().p_4().text_color(rgb(p.muted)).child(
+                .when(count == 0, |view| view.child(native_accessibility::text("shortcut-help-empty",
                     if self.query.read(cx).value().len() > 4096 { "Search is limited to 4,096 bytes." }
-                    else { "No shortcuts match. Try tabs, compare, editing or Ctrl." })))))
+                    else { "No shortcuts match. Try tabs, compare, editing or Ctrl." }).p_4().text_color(rgb(p.muted))))))
             .child(div().id("shortcut-help-selected").role(Role::Status)
                 .a11y_synthetic_children(native_accessibility::polite)
                 .aria_label(match self.rows.get(self.selected) {
@@ -1002,7 +1037,7 @@ impl Render for ShortcutHelpView {
                     _ => String::new(),
                 }).h(px(1.)).overflow_hidden())
             .child(div().text_size(appearance::ui_text(11.)).text_color(rgb(p.muted))
-                .child(dialog_help(format!("↑ / ↓ browse · {} · Shortcuts act in the focused view; text editing keeps its own keys.", DialogKeys::Shortcuts.escape_help()))))
+                .child(dialog_help("shortcut-help-keys", format!("↑ / ↓ browse · {} · Shortcuts act in the focused view; text editing keeps its own keys.", DialogKeys::Shortcuts.escape_help()))))
     }
 }
 

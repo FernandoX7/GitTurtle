@@ -436,3 +436,80 @@ async fn a_working_filter_with_no_match_is_read_by_its_line(cx: &mut TestAppCont
         &[],
     );
 }
+
+/// The command palette's, Quick Open's and Keyboard Shortcuts' lines and the
+/// Projects page's are static text, each named by what it draws: AT-SPI
+/// reached none of the palette's and Quick Open's key hints, Quick Open's
+/// "18 matches · …" line and note, Keyboard Shortcuts' key hint, the
+/// Projects page's "You can also open…" line, its feature notes or its
+/// breadcrumb. Keyboard Shortcuts' count is a status named by the line it
+/// draws, where it was named "61 matching shortcuts" beside "61 shortcuts ·
+/// Ctrl, Alt and Shift". A styled dialog title is named by its value alone,
+/// with no label property for macOS to read as a second title.
+#[gpui::test]
+async fn dialog_hints_and_the_projects_page_are_read_by_their_lines(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, _root) = window(cx, &history_script(2, 3)).await;
+    let no_second_title = |title: &str| {
+        let node = written::get(title).unwrap_or_else(|| panic!("{title} is written"));
+        assert_eq!(node.node.label(), None, "{title} has no label property");
+    };
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_command_palette(window, cx)));
+    draw(cx);
+    labels_named(
+        cx,
+        "Command palette",
+        &["command-palette-scope", "command-palette-help"],
+    );
+    cx.update(|window, cx| window.close_all_dialogs(cx));
+    draw(cx);
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_quick_file(window, cx)));
+    wait(cx, "Quick Open's paths", |_| {
+        written::get("quick-open-help")
+            .and_then(|line| line.node.value().map(|value| value.contains(" match")))
+            .unwrap_or(false)
+    });
+    labels_named(
+        cx,
+        "Quick Open",
+        &["quick-open-title", "quick-open-help", "quick-open-note"],
+    );
+    no_second_title("quick-open-title");
+    cx.update(|window, cx| window.close_all_dialogs(cx));
+    draw(cx);
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+    draw(cx);
+    labels_named(
+        cx,
+        "Keyboard Shortcuts",
+        &["keyboard-shortcuts-title", "shortcut-help-keys"],
+    );
+    no_second_title("keyboard-shortcuts-title");
+    let count = written::get("shortcut-help-count").expect("the count is written");
+    assert_eq!(count.node.role(), Role::Status);
+    assert_eq!(
+        count.node.label(),
+        Some(crate::shortcuts::count_line(crate::shortcuts::listed_shortcuts()).as_str()),
+        "the count is named by the line it draws"
+    );
+    cx.update(|window, cx| window.close_all_dialogs(cx));
+    draw(cx);
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+    draw(cx);
+    labels_named(
+        cx,
+        "Projects",
+        &[
+            "project-hub-app",
+            "project-hub-page",
+            "hub-open-recent-hint",
+            "hub-open-feature-clock-title",
+            "hub-open-feature-clock-detail",
+            "hub-open-feature-changes-title",
+            "hub-open-feature-changes-detail",
+        ],
+    );
+}

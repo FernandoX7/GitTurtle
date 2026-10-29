@@ -765,10 +765,12 @@ impl ProjectHub {
                             })),
                     )
                     .child(
-                        div()
-                            .text_size(crate::appearance::ui_text(11.))
-                            .text_color(colors.muted_foreground)
-                            .child("You can also open any project from the recent list."),
+                        hub_text(
+                            "hub-open-recent-hint",
+                            "You can also open any project from the recent list.",
+                        )
+                        .text_size(crate::appearance::ui_text(11.))
+                        .text_color(colors.muted_foreground),
                     )
                     .child(
                         div()
@@ -792,6 +794,7 @@ impl ProjectHub {
                                     ),
                                 ]
                                 .map(|(symbol, title, detail)| {
+                                    let id = format!("hub-open-feature-{symbol}");
                                     div()
                                         .flex()
                                         .items_start()
@@ -805,17 +808,15 @@ impl ProjectHub {
                                                 .flex_col()
                                                 .gap_1()
                                                 .child(
-                                                    div()
+                                                    hub_text(format!("{id}-title"), title)
                                                         .text_size(crate::appearance::ui_text(12.))
-                                                        .font_weight(FontWeight::MEDIUM)
-                                                        .child(title),
+                                                        .font_weight(FontWeight::MEDIUM),
                                                 )
                                                 .child(
-                                                    div()
+                                                    hub_text(format!("{id}-detail"), detail)
                                                         .text_size(crate::appearance::ui_text(11.))
                                                         .line_height(relative(1.5))
-                                                        .text_color(colors.muted_foreground)
-                                                        .child(detail),
+                                                        .text_color(colors.muted_foreground),
                                                 ),
                                         )
                                 }),
@@ -1027,11 +1028,11 @@ impl Render for ProjectHub {
                         )
                     })
                     .child(crate::app_icon(32.))
+                    // The breadcrumb: the app, then the page.
                     .child(
-                        div()
+                        hub_text("project-hub-app", "GitTurtle")
                             .text_size(crate::appearance::ui_text(16.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("GitTurtle"),
+                            .font_weight(FontWeight::SEMIBOLD),
                     )
                     .child(
                         div()
@@ -1040,10 +1041,9 @@ impl Render for ProjectHub {
                             .bg(colors.border),
                     )
                     .child(
-                        div()
+                        hub_text("project-hub-page", "Projects")
                             .text_size(crate::appearance::ui_text(12.))
-                            .text_color(colors.muted_foreground)
-                            .child("Projects"),
+                            .text_color(colors.muted_foreground),
                     )
                     .child(div().flex_1()),
             )

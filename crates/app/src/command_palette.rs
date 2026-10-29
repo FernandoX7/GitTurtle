@@ -1115,31 +1115,38 @@ impl Render for Palette {
                     .rounded(px(6.))
                     .when(count > 0, |element| element.child(list))
                     .when(count == 0, |element| {
-                        element.child(div().p_4().text_color(rgb(p.muted)).child(
-                            if self.query.read(cx).value().len() > 4096 {
-                                "The search is too long. Use up to 4,096 bytes."
-                            } else {
-                                "No matching commands. Try profiles, compare, branches, or themes."
-                            },
-                        ))
+                        element.child(
+                            native_accessibility::text(
+                                "command-palette-empty",
+                                if self.query.read(cx).value().len() > 4096 {
+                                    "The search is too long. Use up to 4,096 bytes."
+                                } else {
+                                    "No matching commands. Try profiles, compare, branches, or themes."
+                                },
+                            )
+                            .p_4()
+                            .text_color(rgb(p.muted)),
+                        )
                     }),
             ))
             .child(
-                shortcuts::dialog_help(reason.map(str::to_owned).unwrap_or_else(|| {
-                    format!(
-                        "↑ / ↓ select · {} opens · {}",
-                        shortcuts::ENTER,
-                        shortcuts::DialogKeys::Palette.escape_help()
-                    )
-                }))
+                shortcuts::dialog_help(
+                    "command-palette-help",
+                    reason.map(str::to_owned).unwrap_or_else(|| {
+                        format!(
+                            "↑ / ↓ select · {} opens · {}",
+                            shortcuts::ENTER,
+                            shortcuts::DialogKeys::Palette.escape_help()
+                        )
+                    }),
+                )
                 .text_size(crate::appearance::ui_text(11.))
                 .text_color(rgb(p.muted)),
             )
-            .children(
-                self.error
-                    .as_ref()
-                    .map(|error| div().text_color(rgb(p.warning)).child(error.clone())),
-            )
+            .children(self.error.as_ref().map(|error| {
+                native_accessibility::text("command-palette-error", error.clone())
+                    .text_color(rgb(p.warning))
+            }))
     }
 }
 

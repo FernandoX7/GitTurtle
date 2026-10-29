@@ -864,11 +864,13 @@ pub(crate) fn text(
 }
 
 /// A dialog's styled title drawing `text`: a label read by its value, as
-/// static text is, that also keeps `text` as its label property, which the
-/// toolkit's dialog reads from a `Stateful<Div>` title to name itself
-/// (`gpui-base`'s `dialog_label`), so it stays that element rather than
-/// [`StaticText`]. Each title was a label named only by its label property,
-/// which named the dialog and left the title itself without a name.
+/// static text is, from which the toolkit's dialog also takes its name: it
+/// reads a `Stateful<Div>` title as AccessKit's adapters read a label
+/// (`gpui-base`'s `dialog_label`), so the title stays that element rather
+/// than [`StaticText`]. Each title was a label named only by its label
+/// property, which named the dialog and left the title itself without a
+/// name; then it kept both, which macOS reports as the title's `AXTitle`
+/// and `AXValue`, so VoiceOver could read it twice.
 pub(crate) fn dialog_title(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
@@ -879,7 +881,6 @@ pub(crate) fn dialog_title(
         .id(id)
         .debug_selector(move || selector.to_string())
         .role(Role::Label)
-        .aria_label(text.clone())
         .aria_value(text.clone())
         .child(text);
     #[cfg(test)]

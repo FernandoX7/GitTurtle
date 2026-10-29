@@ -791,7 +791,7 @@ impl Render for CompareForm {
             .child(div().text_color(rgb(p.muted)).child("Type a local revision, or choose a matching branch/tag for the most recently edited field. Names resolve when you press Compare. A merge-base comparison shows the changes leading to After."))
             .children(choices.into_iter().enumerate().map(|(i,name)|button(("revision-choice",i),name.clone(),"",false).disabled(self.busy).on_click(cx.listener(move |this,_,window,cx|{let input=if this.selected_side==0{&this.before}else{&this.after};input.update(cx,|input,cx|input.set_value(name.clone(),window,cx));}))))
             .when(self.busy,|el|el.child(div().child("Resolving local revisions and changed files… Cancel closes this read.")))
-            .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone())))))
+            .children(self.error.as_ref().map(|error|crate::native_accessibility::text("quick-open-error",error.clone()).text_color(rgb(p.removed))))))
     }
 }
 
@@ -1039,11 +1039,11 @@ impl Render for QuickForm {
                 // The count agrees with its noun: "1 match", "2 matches".
                 let help: String = if self.busy{"Searching local tracked paths…".into()}else{format!("{} · ↑/↓ select · {} opens · {}{}",crate::counted(count,"match","matches"),shortcuts::ENTER,shortcuts::DialogKeys::QuickOpen.escape_help(),self.page.as_ref().filter(|page|page.truncated).map_or("",|_|" · Limit reached; narrow the query"))};
                 let shown = help.clone();
-                div().debug_selector(move || format!("quick-open-help: {shown}")).child(shortcuts::dialog_help(help).text_color(rgb(p.muted)))
+                div().debug_selector(move || format!("quick-open-help: {shown}")).child(shortcuts::dialog_help("quick-open-help", help).text_color(rgb(p.muted)))
             })
             .children(self.error.as_ref().map(|error|div().text_color(rgb(p.removed)).child(error.clone())))
-            .child(crate::native_accessibility::clips_children(div().id("quick-open-results").debug_selector(|| "quick-open-results".into()).role(Role::ListBox).aria_label("Matching tracked files").h(desired_height.min(available_height)).border_1().border_color(rgb(p.raised_edge())).overflow_hidden().when(count>0,|el|el.child(list)).when(count==0&&!self.busy,|el|el.child(div().p_3().child("No matching tracked files. Untracked files are available in Working Changes.")))))
-            .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("File History and Blame are available after opening. Worktree reads show raw current bytes; a chosen revision is pinned to its resolved commit."))))
+            .child(crate::native_accessibility::clips_children(div().id("quick-open-results").debug_selector(|| "quick-open-results".into()).role(Role::ListBox).aria_label("Matching tracked files").h(desired_height.min(available_height)).border_1().border_color(rgb(p.raised_edge())).overflow_hidden().when(count>0,|el|el.child(list)).when(count==0&&!self.busy,|el|el.child(crate::native_accessibility::text("quick-open-empty","No matching tracked files. Untracked files are available in Working Changes.").p_3()))))
+            .child(crate::native_accessibility::text("quick-open-note","File History and Blame are available after opening. Worktree reads show raw current bytes; a chosen revision is pinned to its resolved commit.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))))
     }
 }
 
