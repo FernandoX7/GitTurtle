@@ -716,11 +716,20 @@ impl GitTurtle {
                 crate::appearance::ui_size(STAGE_MIN),
             )
         });
+        // The image is drawn where the room beneath the captions, less the
+        // band, holds at least a pixel of it (its notes take lines only where
+        // it keeps its minimum). Where it holds less, the band reaches the
+        // column's foot without a rule of its own, which would double the
+        // footer's rule there, with a sliver of the image between them.
+        let image_shown = laid_out
+            .below
+            .is_none_or(|below| below - band_height >= px(1.));
         let band = banded.then(|| {
             div()
                 .debug_selector(|| "image-open-notes".into())
                 .flex()
                 .flex_shrink_0()
+                .when(!image_shown, |band| band.flex_1())
                 // Where the captions leave less than one line and its rule,
                 // the band still stays inside the room.
                 .when_some(laid_out.below, |band, below| {
@@ -744,8 +753,9 @@ impl GitTurtle {
                                     let clamp = (natural[i] > band_lines).then_some(band_lines);
                                     half.debug_selector(move || format!("image-side-note-{i}"))
                                         .bg(rgb(p.panel))
-                                        .border_b_1()
-                                        .border_color(rgb(p.border))
+                                        .when(image_shown, |half| {
+                                            half.border_b_1().border_color(rgb(p.border))
+                                        })
                                         .when(band_padded, |half| half.py_1())
                                         .child(answer.short_line(clamp, cx))
                                 })
@@ -921,7 +931,7 @@ impl GitTurtle {
                                 })
                             })
                             .children(band)
-                            .child(
+                            .children(image_shown.then(|| {
                                 div()
                                     .id("image-canvas-area")
                                     .debug_selector(|| "image-canvas-area".into())
@@ -947,8 +957,8 @@ impl GitTurtle {
                                         } else {
                                             area.child(self.image_canvas(None, cx))
                                         }
-                                    }),
-                            )
+                                    })
+                            }))
                             .children(comparison_note(
                                 "image-source-scale",
                                 scale_notice,

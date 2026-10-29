@@ -6960,6 +6960,108 @@ pub(crate) mod tests {
         }
     }
 
+    /// Beneath a refusal's band the image is drawn only where it has at least
+    /// a pixel of room, and where it has less the band reaches the footer
+    /// with no rule of its own: once a 1 × 0.5 px sliver of the image lay
+    /// between the band's rule and the footer's at 13 pt, and at 18 pt the
+    /// two rules made one 2 px rule. Walked in half-pixel steps through the
+    /// heights of a 461 px window where the band's foot meets the image's
+    /// last pixels, at 13 and 18 pt.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_refusal_band_leaves_no_image_sliver_or_second_rule(cx: &mut TestAppContext) {
+        use crate::system_preview::{
+            NotOpened,
+            tests::{png, queue},
+        };
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let slack = px(0.5);
+        let surface = cx.update(|_, cx| {
+            gpui_kit::Background::from(gpui_kit::Hsla::from(rgb(palette(cx).panel)))
+        });
+        for (text, heights) in [(13, 470..=530), (18, 500..=580)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(980.)));
+            draw(cx);
+            queue(Err(NotOpened::Failed(SVG_REFUSAL.into())));
+            let control = bounds("image-system-preview-1", cx);
+            cx.simulate_click(control.center(), Modifiers::default());
+            cx.run_until_parked();
+            let (mut drawn, mut left) = (false, false);
+            for half_pixels in heights.clone().step_by(1).map(|h| h * 2) {
+                for height in [half_pixels as f32 / 2., (half_pixels + 1) as f32 / 2.] {
+                    cx.simulate_resize(size(px(461.), px(height)));
+                    draw(cx);
+                    let at = format!("{text} pt in 461 × {height}");
+                    let band = bounds("image-side-note-1", cx);
+                    let footer = bounds("compare-footer", cx);
+                    // The band's half as painted: its surface, then any rule,
+                    // which GPUI paints as a quad of its own over the half.
+                    let (painted, rule) = cx.update(|window, _| {
+                        let scale = window.scale_factor();
+                        let over_band = |quad: &&gpui_kit::Quad| {
+                            (quad.bounds.left().as_f32() / scale - band.left().as_f32()).abs() < 0.5
+                                && (quad.bounds.top().as_f32() / scale - band.top().as_f32()).abs()
+                                    < 0.5
+                        };
+                        let quads = window.painted_quads();
+                        (
+                            quads
+                                .iter()
+                                .filter(over_band)
+                                .any(|quad| quad.background == surface),
+                            quads
+                                .iter()
+                                .filter(over_band)
+                                .map(|quad| quad.border_widths.bottom.as_f32())
+                                .fold(0., f32::max),
+                        )
+                    });
+                    assert!(painted, "{at}: the band's half {band:?} has its surface");
+                    match cx.debug_bounds("image-canvas-area") {
+                        Some(image) => {
+                            drawn = true;
+                            assert!(
+                                image.size.height >= px(1.) - px(0.01),
+                                "{at}: no sliver of the image {image:?}"
+                            );
+                            assert!(rule > 0., "{at}: the band's rule parts it from the image");
+                        }
+                        None => {
+                            left = true;
+                            assert_eq!(rule, 0., "{at}: no second rule above the footer's");
+                            assert!(
+                                (band.bottom() - footer.top()).abs() <= slack,
+                                "{at}: the band {band:?} reaches the footer {footer:?}"
+                            );
+                        }
+                    }
+                }
+            }
+            assert!(
+                drawn && left,
+                "{text} pt: the walk crosses the image's last pixel"
+            );
+            app.update(cx, |app, cx| {
+                app.preview_showing = crate::system_preview::Showing::next();
+                cx.notify();
+            });
+            draw(cx);
+        }
+    }
+
     /// A changed image's notes beneath it, the scale notice and the
     /// interaction guidance, wrap to a second line where the column leaves the
     /// image its usable minimum beneath them: at 13 pt in a 640 × 680 window
