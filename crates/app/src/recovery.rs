@@ -13,6 +13,10 @@ use gpui_kit::prelude::FluentBuilder;
 
 const PREPARING: &str = "Preparing recovery action…";
 const STASH_PAGE_SIZE: usize = 40;
+/// The least height a saved file's comparison keeps in the Stashes detail,
+/// at the default interface size, where the window leaves the detail less
+/// than its inspection and it scrolls: about six lines of a patch.
+const STASH_CONTENT_FLOOR: f32 = 120.;
 type Failure = Box<dyn FnOnce(String, &mut Window, &mut Context<GitTurtle>)>;
 
 #[derive(Default)]
@@ -468,8 +472,15 @@ impl GitTurtle {
                 .title("Stashes")
                 .width(appearance::dialog_width(px(1060.), window))
                 .max_h(appearance::dialog_max_height(window))
-                .child(browser.clone())
                 .button_props(DialogButtonProps::default().ok_text("Close"))
+                // In the dialog's content rather than its scrolling body,
+                // whose scroller lays the browser out at the height it asks
+                // for and cut its lines mid-line where the cap left less:
+                // here the browser gives up what the cap takes.
+                .content({
+                    let browser = browser.clone();
+                    move |content, _, _| content.min_h_0().child(browser.clone())
+                })
         });
     }
 
@@ -987,6 +998,8 @@ struct StashBrowser {
     decoration: Option<crate::editor_find::PatchDecorations>,
     patch_view: Option<Entity<diff_view::DiffView>>,
     stash_scroll: UniformListScrollHandle,
+    /// The detail's scroll, back at its top for each stash it inspects.
+    detail_scroll: ScrollHandle,
     file_scroll: UniformListScrollHandle,
     stash_focus: FocusHandle,
     file_focus: FocusHandle,
@@ -1031,6 +1044,7 @@ impl StashBrowser {
             decoration: None,
             patch_view: None,
             stash_scroll: UniformListScrollHandle::new(),
+            detail_scroll: ScrollHandle::new(),
             file_scroll: UniformListScrollHandle::new(),
             stash_focus: cx.focus_handle(),
             file_focus: cx.focus_handle(),
@@ -1091,6 +1105,7 @@ impl StashBrowser {
         let generation = self.generation;
         self.clear_preview();
         self.snapshot = None;
+        self.detail_scroll.set_offset(Point::default());
         self.selected = None;
         self.selected_file = None;
         self.loading = Some("Reading stashes…");
@@ -1147,6 +1162,7 @@ impl StashBrowser {
         let generation = self.generation;
         self.clear_preview();
         self.snapshot = None;
+        self.detail_scroll.set_offset(Point::default());
         self.selected = Some(index);
         self.selected_file = None;
         self.loading = Some("Reading saved changes…");
@@ -1565,10 +1581,21 @@ impl Render for StashBrowser {
         // at 18 pt in a 461 × 490 window, short of a row and of the empty
         // line, which ran past the list's visible bottom. That line takes
         // the rows' own inset, where its 1 rem padding started it past
-        // their text and outgrew the list.
-        div().h(px(height)).flex().gap_3().when(narrow, |element| element.flex_col())
-            .child(div().w(px(255.)).min_w_0().flex_shrink_0().h_full().flex().flex_col().border_1().border_color(rgb(p.border)).rounded(px(7.)).overflow_hidden()
-                .when(narrow, |element| element.w_full().h(crate::appearance::ui_size(140.)))
+        // their text and outgrew the list. With no stash saved there is
+        // nothing to inspect: no detail is drawn and the list takes the
+        // browser's room. The browser asks for `height` and gives up what
+        // the dialog's height cap takes.
+        let detail = self.error.is_some()
+            || !self
+                .page
+                .as_ref()
+                .is_some_and(|page| page.entries.is_empty());
+        let room = appearance::button_ring_room(cx);
+        let cue = crate::tags::ScrollCue::new(&self.detail_scroll, room);
+        div().debug_selector(|| "stash-browser".into()).h(px(height)).min_h_0().flex().gap_3().when(narrow, |element| element.flex_col())
+            .child(div().debug_selector(|| "stash-list-panel".into()).w(px(255.)).min_w_0().flex_shrink_0().h_full().flex().flex_col().border_1().border_color(rgb(p.border)).rounded(px(7.)).overflow_hidden()
+                .when(narrow && detail, |element| element.w_full().h(crate::appearance::ui_size(140.)))
+                .when(!detail, |element| element.w_full().flex_1())
                 .child(div().h(crate::appearance::ui_size(38.)).flex().items_center().px_2().gap_1().border_b_1().border_color(rgb(p.border))
                     .child(div().flex_1().text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::SEMIBOLD).child("Saved work"))
                     .child(button("refresh-stashes", "", "refresh", false).accessibility_label("Refresh saved stashes").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.load_page(0, window, cx)))))
@@ -1585,7 +1612,15 @@ impl Render for StashBrowser {
                 .child(div().h(crate::appearance::ui_size(36.)).flex().items_center().justify_between().px_2().border_t_1().border_color(rgb(p.border))
                     .child(button("previous-stashes", "Previous", "", false).disabled(busy || self.offset == 0).on_click(cx.listener(|this, _, window, cx| this.load_page(this.offset.saturating_sub(STASH_PAGE_SIZE), window, cx))))
                     .child(button("next-stashes", "More", "", false).disabled(busy || self.page.as_ref().and_then(|page| page.next_offset).is_none()).on_click(cx.listener(|this, _, window, cx| { if let Some(offset) = this.page.as_ref().and_then(|page| page.next_offset) { this.load_page(offset, window, cx); } })))))
-            .child(div().flex_1().min_w_0().min_h_0().flex().flex_col().gap_2()
+            // The detail scrolls where the window leaves it less than its
+            // inspection, as below the stacked list in a short window, and
+            // cues the rest with its scrollbar, as the dialogs' lists do. It
+            // keeps the room of its controls' rings inside its clip and
+            // gives it back, so nothing moves. The comparison keeps a floor
+            // of its own rather than give its height up to the controls
+            // around it, as at 18 pt in a 1000 × 680 window, where it kept
+            // 30 px without one.
+            .when(detail, |element| element.child(cue.list(div().on_children_prepainted(cue.observe(|_, _, _| {})).id("stash-detail").debug_selector(|| "stash-detail".into()).flex_1().min_w_0().min_h_0().p(room).m(-room).overflow_y_scroll().track_scroll(&self.detail_scroll).flex().flex_col().gap_2()
                 .children(self.loading.map(|loading| div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(loading)))
                 .children(self.error.as_ref().map(|error| form_error(error, cx)))
                 .when_some(snapshot, |element, snapshot| element
@@ -1608,14 +1643,19 @@ impl Render for StashBrowser {
                     .child(div().flex().items_center().gap_1().children(["Diff", "Before", "After", "Diagrams"].into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, label)| {
                         button(("stash-text-mode", mode), label, "", self.text_mode == mode).disabled(!matches!(self.content.as_deref(), Some(Content::Text { .. }))).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.ensure_editor(window, cx); cx.notify(); }))
                     })))
-                    .child(div().flex_1().min_h_0().border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden().child(frame.child(self.render_content(width, window, cx))))
+                    .child(div().flex_1().min_h(crate::appearance::ui_size(STASH_CONTENT_FLOOR)).border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden().child(frame.child(self.render_content(width, window, cx))))
                     .child(div().flex().flex_wrap().items_center().gap_2().pt_1()
                         .child(Checkbox::new("stash-restore-index").label("Restore staged state").checked(self.restore_index).on_click(cx.listener(|this, checked, _, cx| { this.restore_index = *checked; cx.notify(); })))
                         .child(div().flex_1())
                         .child(button("drop-saved-stash", "Drop…", "", false).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))))
                         .child(Button::new("restore-saved-stash").primary().small().label("Review restore…").disabled(busy).on_click(cx.listener(|this, _, window, cx| this.restore(window, cx)))))
                     .child(div().text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)).child("Restoring keeps this stash saved. Drop it separately after checking the restored work.")))
-                .when(self.snapshot.is_none() && self.loading.is_none() && self.error.is_none(), |element| element.child(div().flex_1().flex().items_center().justify_center().p_5().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child(div().min_w_0().text_center().child("Choose a stash to inspect its staged, unstaged and untracked files.")))))
+                // Where its loading line stood, at the detail's edge, and
+                // short enough for one line beside the stacked list at 18 pt
+                // in a 461 × 490 window: the centred prompt that named every
+                // group wrapped there, past the detail's room, and left
+                // "files." alone on its last line at 13 pt.
+                .when(self.snapshot.is_none() && self.loading.is_none() && self.error.is_none(), |element| element.child(div().debug_selector(|| "stash-detail-placeholder".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)).child("Choose a stash to inspect its files."))), "stash-detail-scrollbar").flex_1().min_w_0().min_h_0()))
     }
 }
 
@@ -1746,12 +1786,22 @@ mod tests {
 
     /// Stacked in a 461 × 490 window, the Stashes dialog's saved-work list
     /// shows its first stash whole at 13 and 18 pt: its unscaled height left
-    /// the list 35.6 px at 18 pt, short of an 80 px row.
+    /// the list 35.6 px at 18 pt, short of an 80 px row. Every line the
+    /// dialog draws lies whole inside its clip, and inside its pane, the
+    /// list's or the detail's, where the browser holds it, and the detail's
+    /// prompt is one whole line: at 18 pt the dialog's scrolling body cut
+    /// "Choose a stash… / unstaged and untracked files." mid-line, as the
+    /// browser asked for more height than the dialog's cap left it, and at
+    /// 13 pt the prompt left "files." alone on its last line.
     #[gpui::test]
     async fn a_narrow_stash_list_keeps_its_first_row_whole(cx: &mut gpui_kit::TestAppContext) {
+        use crate::empty_state::tests::{marked_runs, text_mark};
         use crate::views::tests::{draw, fixture_git, history_script, styled_history_window};
         let (_fixture, app, cx) =
-            styled_history_window(cx, history_script(1, 1).as_bytes(), |root| root).await;
+            styled_history_window(cx, history_script(1, 1).as_bytes(), |root| {
+                root.text_bg(text_mark())
+            })
+            .await;
         let root = app.read_with(cx, |app, _| app.path.clone().unwrap());
         fixture_git(&root, &["config", "user.name", "Stash Fixture"]);
         fixture_git(&root, &["config", "user.email", "stash@example.invalid"]);
@@ -1771,14 +1821,66 @@ mod tests {
             cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
             cx.simulate_resize(size(px(461.), px(490.)));
             draw(cx);
+            let at = format!("{interface} pt in 461 × 490");
             let list = cx.debug_bounds("stash-list").expect("the saved-work list");
             let row = cx
                 .debug_bounds("saved-stash-row-0")
                 .expect("the saved stash's row");
             let slack = px(0.5);
+            let inside = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+                inner.left() >= outer.left() - slack
+                    && inner.right() <= outer.right() + slack
+                    && inner.top() >= outer.top() - slack
+                    && inner.bottom() <= outer.bottom() + slack
+            };
             assert!(
                 row.top() >= list.top() - slack && row.bottom() <= list.bottom() + slack,
-                "{interface} pt: the row {row:?} is cut by the list {list:?}"
+                "{at}: the row {row:?} is cut by the list {list:?}"
+            );
+            let [browser, panel, detail, prompt] = [
+                "stash-browser",
+                "stash-list-panel",
+                "stash-detail",
+                "stash-detail-placeholder",
+            ]
+            .map(|name| {
+                cx.debug_bounds(name)
+                    .unwrap_or_else(|| panic!("{at}: no {name}"))
+            });
+            let viewport = cx.update(|window, _| window.viewport_size());
+            let runs = marked_runs(cx, Bounds::new(Point::default(), viewport));
+            for run in &runs {
+                assert!(
+                    !run.cut,
+                    "{at}: the line {:?} crosses its clip {:?}",
+                    run.drawn, run.clip
+                );
+                assert!(
+                    !browser.contains(&run.drawn.center())
+                        || inside(run.drawn, panel)
+                        || inside(run.drawn, detail),
+                    "{at}: the line {:?} leaves its pane, the list {panel:?} or the detail {detail:?}",
+                    run.drawn
+                );
+            }
+            // The browser ends above the dialog's last line, Close in its
+            // footer, rather than past the fold of a body that scrolls it.
+            let footer = runs
+                .iter()
+                .map(|run| run.drawn)
+                .max_by(|a, b| a.top().partial_cmp(&b.top()).unwrap())
+                .unwrap();
+            assert!(
+                browser.bottom() <= footer.top(),
+                "{at}: the browser {browser:?} ends past the footer's line {footer:?}"
+            );
+            let lines = runs
+                .iter()
+                .filter(|run| prompt.contains(&run.drawn.center()))
+                .count();
+            assert!(
+                lines == 1 && inside(prompt, detail),
+                "{at}: the prompt {prompt:?} is {lines} drawn lines in the detail {detail:?}"
             );
         }
     }

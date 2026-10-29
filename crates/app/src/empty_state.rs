@@ -482,7 +482,7 @@ impl GitTurtle {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::focus_ring::painted_outlines_where;
     use crate::views::tests::{draw, fixture_git, history_script, settle, styled_history_window};
@@ -491,7 +491,7 @@ mod tests {
 
     /// Behind every text run, so a test finds the runs a clip cuts, as the
     /// width walk marks them: a hue nothing in the app paints, almost clear.
-    fn text_mark() -> Hsla {
+    pub(crate) fn text_mark() -> Hsla {
         hsla(0.234, 0.987, 0.456, 0.004)
     }
 
@@ -559,10 +559,19 @@ mod tests {
         Box::leak(name.into_boxed_str())
     }
 
-    /// The marked text runs whose middle lies in `within` and that cross a
-    /// side of their clip, other than those an open dialog's overlay, the
-    /// last fill that spans the window, covers.
-    fn cut_runs(cx: &mut VisualTestContext, within: Bounds<Pixels>) -> Vec<String> {
+    /// A marked text run as the last frame drew it, in logical pixels.
+    pub(crate) struct Run {
+        pub(crate) drawn: Bounds<Pixels>,
+        /// The clip it is drawn in.
+        pub(crate) clip: Bounds<Pixels>,
+        /// Whether it crosses a side of that clip.
+        pub(crate) cut: bool,
+    }
+
+    /// The marked text runs whose middle lies in `within`, other than those
+    /// an open dialog's overlay, the last fill that spans the window,
+    /// covers. A run wholly outside its clip is not drawn.
+    pub(crate) fn marked_runs(cx: &mut VisualTestContext, within: Bounds<Pixels>) -> Vec<Run> {
         let mark = gpui_kit::Background::from(text_mark());
         let (scale, viewport, quads) = cx.update(|window, _| {
             (
@@ -572,6 +581,12 @@ mod tests {
             )
         });
         let logical = |value: ScaledPixels| px(value.0 / scale);
+        let bounds = |bounds: Bounds<ScaledPixels>| {
+            Bounds::from_corners(
+                point(logical(bounds.left()), logical(bounds.top())),
+                point(logical(bounds.right()), logical(bounds.bottom())),
+            )
+        };
         let slack = ScaledPixels(0.5);
         let overlay = cx
             .update(|window, cx| window.has_active_dialog(cx))
@@ -590,18 +605,28 @@ mod tests {
             .iter()
             .filter(|quad| quad.background == mark)
             .filter(|quad| overlay.is_none_or(|overlay| quad.order > overlay))
-            .filter_map(|quad| {
+            .map(|quad| {
                 let (drawn, clip) = (quad.bounds, quad.content_mask.bounds);
-                let middle = point(
-                    logical(drawn.left() + drawn.size.width / 2.),
-                    logical(drawn.top() + drawn.size.height / 2.),
-                );
-                let cut = drawn.left() < clip.left() - slack
-                    || drawn.right() > clip.right() + slack
-                    || drawn.top() < clip.top() - slack
-                    || drawn.bottom() > clip.bottom() + slack;
-                (within.contains(&middle) && cut).then(|| format!("{drawn:?} in {clip:?}"))
+                Run {
+                    drawn: bounds(drawn),
+                    clip: bounds(clip),
+                    cut: drawn.left() < clip.left() - slack
+                        || drawn.right() > clip.right() + slack
+                        || drawn.top() < clip.top() - slack
+                        || drawn.bottom() > clip.bottom() + slack,
+                }
             })
+            .filter(|run| within.contains(&run.drawn.center()))
+            .collect()
+    }
+
+    /// The marked text runs whose middle lies in `within` and that cross a
+    /// side of their clip, other than those an open dialog's overlay covers.
+    pub(crate) fn cut_runs(cx: &mut VisualTestContext, within: Bounds<Pixels>) -> Vec<String> {
+        marked_runs(cx, within)
+            .into_iter()
+            .filter(|run| run.cut)
+            .map(|run| format!("{:?} in {:?}", run.drawn, run.clip))
             .collect()
     }
 
@@ -1229,7 +1254,11 @@ mod tests {
             "stash-list",
         );
         // It starts where the rows' text does, their `px_3` in from the
-        // list's side, rather than a rem in.
+        // list's side, rather than a rem in. With nothing to inspect the
+        // dialog draws no detail, whose prompt to choose a stash was cut
+        // mid-line at 18 pt in a 461 × 490 window: the list takes the
+        // browser's room, and every line the dialog draws lies whole inside
+        // its clip and, in the browser, inside the list.
         for interface in SIZES {
             cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
             cx.simulate_resize(size(px(461.), px(490.)));
@@ -1244,6 +1273,31 @@ mod tests {
                 "{interface} pt: the line {line:?} starts {:?} in from the list {list:?}",
                 line.left() - list.left()
             );
+            let (browser, panel) = (
+                cx.debug_bounds("stash-browser").unwrap(),
+                cx.debug_bounds("stash-list-panel").unwrap(),
+            );
+            assert!(
+                cx.debug_bounds("stash-detail").is_none() && panel == browser,
+                "{interface} pt: the list {panel:?} takes the browser {browser:?}, beside no detail"
+            );
+            let viewport = cx.update(|window, _| window.viewport_size());
+            let runs = marked_runs(cx, Bounds::new(Point::default(), viewport));
+            assert!(!runs.is_empty(), "{interface} pt: the dialog's lines");
+            for run in runs {
+                let slack = px(0.5);
+                assert!(
+                    !run.cut
+                        && (!browser.contains(&run.drawn.center())
+                            || run.drawn.left() >= panel.left() - slack
+                                && run.drawn.right() <= panel.right() + slack
+                                && run.drawn.top() >= panel.top() - slack
+                                && run.drawn.bottom() <= panel.bottom() + slack),
+                    "{interface} pt: the line {:?} leaves its clip {:?} or the list {panel:?}",
+                    run.drawn,
+                    run.clip
+                );
+            }
         }
     }
 
