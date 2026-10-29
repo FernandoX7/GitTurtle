@@ -2594,6 +2594,208 @@ mod tests {
         drop(fixture);
     }
 
+    /// Refreshes the working state, as the local watcher would after a
+    /// change outside the app, and draws the frame after it.
+    async fn refreshed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(app, cx).await;
+        next_frame(cx);
+    }
+
+    /// A commit's Revert and Cherry-pick refuse while a merge, rebase,
+    /// cherry-pick or revert is paused, as its menu says
+    /// (`GitTurtle::commit_menu_state`). A History commit's right-click menu
+    /// open as a merge pauses is built again in place, its items disabled,
+    /// and available again once the merge is abandoned; a press on one
+    /// prepares nothing. Enter on a merge's Revert in a keyboard's menu,
+    /// which was built as it opened at rest and is not built again, asks for
+    /// no mainline and prepares nothing either, and reports the core's
+    /// refusal, as Review restore… in Stashes does without reading a plan;
+    /// it closed the menu and did nothing visible. The menus were built
+    /// again only as a write
+    /// started or ended, so a cherry-pick that stopped on conflicts left
+    /// those items offered until the menu was opened again, and a press read
+    /// a plan that the core then refused.
+    #[gpui::test]
+    async fn commit_actions_refuse_while_an_integration_is_paused(cx: &mut TestAppContext) {
+        const REVERT: &str = "Revert this commit…";
+        const CHERRY_PICK: &str = "Cherry-pick this commit…";
+        // main ends in a merge, whose Revert asks for a mainline first. It
+        // is in History from the start; the commits made below come into it
+        // only as History reads them again.
+        let mut script = history_script(40, 3);
+        script.truncate(script.len() - "done\n".len());
+        for (reference, message, change) in [
+            (
+                "topic",
+                "topic",
+                "from refs/heads/main\nM 100644 inline topic.txt\ndata 6\ntopic\n",
+            ),
+            ("main", "merge topic", "merge refs/heads/topic\n"),
+        ] {
+            script.push_str(&format!(
+                "commit refs/heads/{reference}\ncommitter Fixture <fixture@example.invalid> 1700000100 +0000\ndata {}\n{message}\n{change}",
+                message.len(),
+            ));
+        }
+        script.push_str("done\n");
+        let (fixture, app, cx) = history_window_from(cx, script).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+            // The Stashes dialog then opens where it rests: its slide runs
+            // on the clock on the wall, and Review restore… moved about
+            // 56 px in the 100 ms after it was drawn, so a press under load
+            // missed it.
+            cx.set_reduce_motion(true);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        fixture_git(&repository, &["reset", "-q", "--hard"]);
+        let identity = [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+        ];
+        let git =
+            |arguments: &[&str]| fixture_git(&repository, &[&identity[..], arguments].concat());
+        // A saved stash, and a side branch to merge without its commit.
+        std::fs::write(repository.join("notes.txt"), "stashed\n").unwrap();
+        git(&["stash", "push", "-q", "-m", "kept"]);
+        git(&["checkout", "-q", "-b", "side"]);
+        std::fs::write(repository.join("side.txt"), "side\n").unwrap();
+        git(&["add", "side.txt"]);
+        git(&["commit", "-q", "-m", "side"]);
+        git(&["checkout", "-q", "main"]);
+        let pause = || git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        let paused = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.integration_state.is_some())
+        };
+        // Nothing prepared, nothing asked and nothing reported.
+        let quiet = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                (app.operation_busy, app.operation_error.clone())
+            })
+        };
+        refreshed(&app, cx).await;
+
+        right_click(cx, "history-row-0");
+        assert_eq!(offered(cx, REVERT), Some(true), "Revert at rest");
+        assert_eq!(offered(cx, CHERRY_PICK), Some(true), "Cherry-pick at rest");
+        pause();
+        refreshed(&app, cx).await;
+        assert!(paused(cx), "the merge paused");
+        for item in [REVERT, CHERRY_PICK] {
+            assert_eq!(
+                offered(cx, item),
+                Some(false),
+                "{item} once the merge pauses"
+            );
+        }
+        let held = app.update(cx, |app, _| app.operations.hold());
+        let revert = cx
+            .debug_bounds(format!("menu-item: {REVERT} · MenuItem disabled").leak())
+            .expect("Revert drawn");
+        cx.simulate_click(revert.center(), Modifiers::default());
+        cx.executor().run_until_parked();
+        assert_eq!(
+            quiet(cx),
+            (None, None),
+            "a press on Revert prepares nothing"
+        );
+        assert!(!dialog_open(cx), "a press on Revert asks nothing");
+        drop(held);
+        git(&["merge", "--abort"]);
+        refreshed(&app, cx).await;
+        assert!(!paused(cx), "the merge was abandoned");
+        if offered(cx, REVERT).is_none() {
+            // The press closed the menu.
+            right_click(cx, "history-row-0");
+        }
+        for item in [REVERT, CHERRY_PICK] {
+            assert_eq!(offered(cx, item), Some(true), "{item} once the merge ends");
+        }
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+
+        // A keyboard's menu, opened at rest.
+        // A keyboard's menu on a merge, opened at rest.
+        let merge = app.read_with(cx, |app, _| {
+            app.commits
+                .iter()
+                .position(|commit| commit.parents.len() > 1)
+                .expect("main's merge")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.select_commit(merge, window, cx);
+                app.pane = Pane::History;
+                window.focus(&app.focus, cx);
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        cx.simulate_keystrokes("shift-f10");
+        next_frame(cx);
+        assert_eq!(
+            offered(cx, REVERT),
+            Some(true),
+            "the keyboard's menu at rest"
+        );
+        pause();
+        refreshed(&app, cx).await;
+        assert!(paused(cx), "the merge paused again");
+        let held = app.update(cx, |app, _| app.operations.hold());
+        // Its cursor starts on Revert, still offered.
+        assert_eq!(
+            offered(cx, REVERT),
+            Some(true),
+            "the keyboard's menu paused"
+        );
+        cx.simulate_keystrokes("enter");
+        cx.executor().run_until_parked();
+        assert_eq!(
+            quiet(cx),
+            (None, Some(crate::recovery::PAUSED_REFUSAL.into())),
+            "Enter on Revert prepares nothing and says why"
+        );
+        assert!(!dialog_open(cx), "Enter on Revert asks nothing");
+        drop(held);
+        app.update(cx, |app, _| app.operation_error = None);
+
+        crate::recovery::open_selected_stash(&app, cx).await;
+        next_frame(cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        press(cx, "restore-saved-stash");
+        cx.executor().run_until_parked();
+        assert_eq!(
+            quiet(cx),
+            (None, Some(crate::recovery::PAUSED_REFUSAL.into())),
+            "Review restore… reads no plan and says why"
+        );
+        drop(held);
+
+        // The Changes Actions menu, opened while the merge is paused, offers
+        // Amend and Undo in place once it is abandoned.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        next_frame(cx);
+        press(cx, "working-recovery-menu");
+        let last_commit = ["Amend last commit…", "Undo last local commit…"];
+        for item in last_commit {
+            assert_eq!(offered(cx, item), Some(false), "{item} while paused");
+        }
+        git(&["merge", "--abort"]);
+        refreshed(&app, cx).await;
+        assert!(!paused(cx), "the merge was abandoned again");
+        for item in last_commit {
+            assert_eq!(offered(cx, item), Some(true), "{item} once the merge ends");
+        }
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+        drop(fixture);
+    }
+
     /// However a right-click menu closes, by Escape, a press outside it or
     /// a resize, as a tiling compositor's re-tile does, focus returns to the
     /// list it was opened from, whose keys reach it again: Down moves the

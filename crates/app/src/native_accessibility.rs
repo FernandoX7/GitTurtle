@@ -543,10 +543,35 @@ pub(crate) struct AppDropdown {
     writes: Option<WeakEntity<crate::GitTurtle>>,
 }
 
+/// What a menu that follows writes reads as it is built
+/// ([`AppDropdown::follows_writes`], [`PointerMenu::follows_writes`]):
+/// whether a write runs, and whether a merge, rebase, cherry-pick or revert
+/// is paused, which disables a commit's Revert, Cherry-pick, Amend and Undo
+/// (`GitTurtle::commit_menu_state`) and the Changes Actions menu's Save
+/// changes to stash…, Amend and Undo. The menu is built again when either
+/// changes; built again only for the write, a menu open as a cherry-pick
+/// stopped on conflicts offered those items once the write had ended, until
+/// it was opened again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct MenuInputs {
+    writing: bool,
+    paused: bool,
+}
+
+impl MenuInputs {
+    fn of(app: &crate::GitTurtle) -> Self {
+        Self {
+            writing: app.operation_busy.is_some(),
+            paused: app.integration_state.is_some(),
+        }
+    }
+}
+
 impl AppDropdown {
     /// Builds the open menu again, in place, when a write in `app` starts or
-    /// ends: a menu opened while a write ran, its items the write refuses
-    /// disabled, kept them disabled after a quick write had ended.
+    /// ends, or an integration pauses or ends ([`MenuInputs`]): a menu
+    /// opened while a write ran, its items the write refuses disabled, kept
+    /// them disabled after a quick write had ended.
     pub(crate) fn follows_writes(mut self, app: WeakEntity<crate::GitTurtle>) -> Self {
         self.writes = Some(app);
         self
@@ -669,12 +694,12 @@ impl RenderOnce for AppDropdown {
                 let keyboard = window.last_input_was_keyboard();
                 let menu = open(menu, keyboard, window, cx);
                 if let Some(app) = writes.as_ref().and_then(WeakEntity::upgrade) {
-                    let mut busy = app.read(cx).operation_busy.is_some();
+                    let mut inputs = MenuInputs::of(app.read(cx));
                     let open = open.clone();
                     cx.observe_in(&app, window, move |menu, app, window, cx| {
-                        let now = app.read(cx).operation_busy.is_some();
-                        if now != busy {
-                            busy = now;
+                        let now = MenuInputs::of(app.read(cx));
+                        if now != inputs {
+                            inputs = now;
                             menu.rebuild(window, cx, |menu, window, cx| {
                                 open(menu, keyboard, window, cx)
                             });
@@ -744,8 +769,9 @@ pub(crate) struct PointerMenu<E> {
 
 impl<E> PointerMenu<E> {
     /// Builds the open menu again, in place, when a write in `app` starts or
-    /// ends, as [`AppDropdown::follows_writes`] does a button's: the menu
-    /// read the write as it opened and kept its items so.
+    /// ends, or an integration pauses or ends ([`MenuInputs`]), as
+    /// [`AppDropdown::follows_writes`] does a button's: the menu read them as
+    /// it opened and kept its items so.
     pub(crate) fn follows_writes(mut self, app: WeakEntity<crate::GitTurtle>) -> Self {
         self.writes = Some(app);
         self
@@ -954,12 +980,12 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                     })
                     .detach();
                     if let Some(app) = writes.as_ref().and_then(WeakEntity::upgrade) {
-                        let mut busy = app.read(cx).operation_busy.is_some();
+                        let mut inputs = MenuInputs::of(app.read(cx));
                         let open = open.clone();
                         cx.observe_in(&app, window, move |menu, app, window, cx| {
-                            let now = app.read(cx).operation_busy.is_some();
-                            if now != busy {
-                                busy = now;
+                            let now = MenuInputs::of(app.read(cx));
+                            if now != inputs {
+                                inputs = now;
                                 menu.rebuild(window, cx, |menu, window, cx| open(menu, window, cx));
                             }
                         })

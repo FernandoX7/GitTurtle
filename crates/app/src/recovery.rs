@@ -12,6 +12,10 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 
 const PREPARING: &str = "Preparing recovery action…";
+/// Why a recovery action refuses while an integration is paused, in the
+/// words of the core's plans (`GitTurtle::read_recovery`).
+pub(super) const PAUSED_REFUSAL: &str =
+    "Finish the current operation and resolve conflicts before starting another recovery action";
 const STASH_PAGE_SIZE: usize = 40;
 /// The least height a saved file's comparison keeps in the Stashes detail,
 /// at the default interface size, where the window leaves the detail less
@@ -61,6 +65,31 @@ impl GitTurtle {
         }
     }
 
+    /// Reports that a recovery action refuses while an integration is
+    /// paused, in the core's words and the way its refusal arrives, once the
+    /// caller's update has ended: a form that asked, `failure`, closes and
+    /// reopens with it, and otherwise the window's error shows it.
+    fn refuse_while_paused(
+        &mut self,
+        failure: Option<Failure>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let message = PAUSED_REFUSAL.to_owned();
+        cx.defer_in(window, move |this, window, cx| {
+            match failure {
+                Some(failure) => failure(message, window, cx),
+                None => this.operation_error = Some(message),
+            }
+            cx.notify();
+        });
+    }
+
+    /// Prepares a recovery action with `prepare` on the operation executor,
+    /// then asks to confirm it, or reports why it cannot run through
+    /// `failure`, the form that asked, or else the window's error. Returns
+    /// whether that outcome follows; false, with nothing reported, while a
+    /// write runs, off the repository page or without a repository.
     fn read_recovery(
         &mut self,
         prepare: impl FnOnce(GitRepository) -> anyhow::Result<Prepared> + Send + 'static,
@@ -74,6 +103,13 @@ impl GitTurtle {
         let Some(repo) = self.repository.clone() else {
             return false;
         };
+        if self.integration_state.is_some() {
+            // Every recovery plan refuses while a merge, rebase, cherry-pick
+            // or revert is paused (the core's `recovery_head`), as the menus
+            // show. Refused here without a read.
+            self.refuse_while_paused(failure, window, cx);
+            return true;
+        }
         let path = repo.path().to_owned();
         self.cancel_recovery_read();
         let generation = self.recovery.generation;
@@ -161,7 +197,6 @@ impl GitTurtle {
             .work_status
             .as_ref()
             .is_some_and(|status| !status.entries.is_empty());
-        let paused = self.integration_state.is_some();
         let ignore_entry = self
             .working_selected
             .and_then(|(index, area)| {
@@ -177,9 +212,16 @@ impl GitTurtle {
                 // each is disabled then from the moment the write starts,
                 // though the trigger opens the menu until the write looks
                 // busy: an assistive technology heard each one available.
-                let busy = owner
-                    .upgrade()
-                    .is_none_or(|owner| owner.read(cx).operation_busy.is_some());
+                // A paused integration, read here too, disables Save changes
+                // to stash…, Amend and Undo, as the menu is built again when
+                // one pauses or ends (`native_accessibility::MenuInputs`).
+                let (busy, paused) = owner.upgrade().map_or((true, true), |owner| {
+                    let owner = owner.read(cx);
+                    (
+                        owner.operation_busy.is_some(),
+                        owner.integration_state.is_some(),
+                    )
+                });
                 if let Some(refresh) = tight {
                     menu = menu
                         .item(
@@ -356,6 +398,13 @@ impl GitTurtle {
         (disabled, current)
     }
 
+    /// A commit menu's Revert, Cherry-pick, Amend or Undo. Each refuses while
+    /// an integration is paused, as the menu shows it disabled
+    /// ([`Self::commit_menu_state`]), before a merge's mainline is asked for,
+    /// and says why in the window's error, as Review restore… does: a
+    /// keyboard's menu, built as it opened and not built again, still offers
+    /// it once a merge pauses under it, and Enter there closed the menu and
+    /// did nothing visible.
     fn choose_commit_recovery(
         &mut self,
         kind: RecoveryKind,
@@ -363,6 +412,10 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.integration_state.is_some() {
+            self.refuse_while_paused(None, window, cx);
+            return;
+        }
         if matches!(kind, RecoveryKind::Revert | RecoveryKind::CherryPick)
             && commit.parents.len() > 1
         {
