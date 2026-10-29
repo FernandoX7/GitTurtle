@@ -369,12 +369,12 @@ impl GitTurtle {
         self.image_comparison.pan = [0.; 2];
     }
     /// Sets the overlay's opacity or the wipe's width, for a test.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn set_image_amount(&mut self, amount: f32) {
         self.image_comparison.amount = amount;
     }
     /// How far the images are panned, for a test.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn image_pan(&self) -> [f32; 2] {
         self.image_comparison.pan
     }

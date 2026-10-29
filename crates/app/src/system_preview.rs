@@ -887,7 +887,7 @@ impl SideHeader {
 }
 
 /// The state of the side header `name` that `view` draws, for a test.
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn side_header(
     view: EntityId,
     name: &'static str,
