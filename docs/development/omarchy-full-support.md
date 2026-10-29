@@ -459,7 +459,7 @@ cover current upstream x86-64 Omarchy.
           (decided: a short reason-first line, capped at two lines when a taller band would
           take the image's 96 px minimum); its surface spans both halves while its text wraps
           in After's; a sub-pixel image sliver and a doubled rule at its foot; the 100 px cap cuts
-          a line at 640 × 680; the inspector title breaks "Add polyglot.pn / g" at 18 pt; before
+          a line at 640 × 680; the inspector title breaks before the file name's last letter at 18 pt; before
           any click at 461 × 490 the image gets 60–83 px (the give-way of the side dimensions).
         - Dialogs: Keyboard Shortcuts at 13 pt in 461 × 490 ends 14 px over the status bar (cap
           dialogs at the bar's top); at 18 pt the Reflog opens with its focused filter below the
