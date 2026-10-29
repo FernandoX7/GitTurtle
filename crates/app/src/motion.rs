@@ -1299,6 +1299,18 @@ mod tests {
             states(&dialog, true, false),
             "Activity opened as it starts"
         );
+        // Browse reflog… looks available and is refused, and Activity stays
+        // open: it closed with no Reflog to follow it.
+        let reflog = cx
+            .debug_bounds("activity-reflog")
+            .expect("Activity's Browse reflog…");
+        cx.simulate_click(reflog.center(), Modifiers::default());
+        frame(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Activity stays open"
+        );
+        assert!(cx.debug_bounds("activity-reflog").is_some());
 
         cx.executor()
             .advance_clock(crate::workspace::BUSY_LOOK_DELAY);

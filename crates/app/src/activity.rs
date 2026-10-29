@@ -352,7 +352,12 @@ impl Render for ActivityBrowser {
                     // Refused at once while a write runs, before it looks so.
                     if app.operation_busy.is_some() { return; }
                     window.close_dialog(cx);app.refresh_worktree(window,cx);});}}))
-                .child(crate::workspace::refusing(button("activity-reflog","Browse reflog…","",false),||"activity-reflog".into(),app.operation_busy.is_some()||app.repository.is_none(),app.operation_shown().is_some()||app.repository.is_none()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{window.close_dialog(cx);app.open_reflog_browser(window,cx);});}})))
+                .child(crate::workspace::refusing(button("activity-reflog","Browse reflog…","",false).debug_selector(||"activity-reflog".into()),||"activity-reflog".into(),app.operation_busy.is_some()||app.repository.is_none(),app.operation_shown().is_some()||app.repository.is_none()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{
+                    // Refused at once while a write runs, before it looks so,
+                    // and Activity stays open: `open_reflog_browser` refuses
+                    // then, and closing first left neither dialog.
+                    if app.operation_busy.is_some() { return; }
+                    window.close_dialog(cx);app.open_reflog_browser(window,cx);});}})))
             .children(error.map(|error|div().text_color(rgb(p.warning)).child(error)))
             .child(crate::native_accessibility::clips_children(div().id("activity-entries").h(list_height).flex_shrink_0().overflow_y_scroll().flex().flex_col().gap_2()
                 .children(entries.into_iter().rev().map(|entry|{
