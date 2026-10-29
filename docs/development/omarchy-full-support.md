@@ -523,6 +523,19 @@ cover current upstream x86-64 Omarchy.
           brief); wall-clock waits remain in `empty_state.rs`, `state_tests.rs`, `width_walk.rs`
           and the theme editor (`SerialExecutor::drain()` for `drain_preference_writer`).
         - macOS later: VoiceOver on dialog titles (now value only) and the dialog's own label.
+        - From the native review of `gitturtle-7abe8b2` (frames `tools/qa/r*-{a79b83c,7abe8b2}/`,
+          sheets 59–66): Escape on the tracking-branch review leaves 23 of 30 frame children
+          "Unknown object" on AT-SPI (pre-existing; Confirm leaves none); a capped menu lights two
+          rows after one wheel notch (`9c24a9a`); keyboard row menus end 7.0 px above the status bar
+          where DESIGN.md asks 8, and a raised row menu covers its own row by 5.5 px (place it wholly
+          above the cursor row; say so in DESIGN.md); at 18 pt in 461 px the key hints cut a fresh
+          outcome ("Up to date with ori…": drop or shorten the hints while an outcome is fresh,
+          and walk it in `width_walk`); the ahead/behind counts are cut to "↑ 0…"; the Stashes
+          actions fall below the fold at 1000 × 680 18 pt (decided: pin them as the detail's
+          footer at 1000 × 680 and larger, keep the comparison at its placeholder height until a
+          file is chosen); a scroll stop cuts Review restore… in the 67 px detail at 461 × 490;
+          taste: with no stash the 219 px list holds one line above a disabled Previous/More, the
+          tracking-branch tooltip covers the path line, the author tooltip repeats a whole label.
         Owner decision, 2026-10-28: Linux reaches feature parity with macOS where possible; macOS is
         checked later on a Mac. The gaps (README "Linux gaps", `docs/file-previews.md`,
         `docs/linux.md`), each a separate change with a dated research note on the dependency
