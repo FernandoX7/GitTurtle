@@ -1,0 +1,595 @@
+== png-L13-zoom
+  6660805 L4 n=32 frames p50 2 p95 15 (2-15) draws p50 2 p95 15 (2-15) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 32} | CPU p50 12.6 p95 91.1 max 92.0 | 1st req p50 5.506 p95 7.387 max 7.843
+     draw n=47 p50 5.203 p95 7.533 max 7.829 launch p50s [4.942]-[6.348] | +amb p50 5.203 p95 7.533 p99 7.829 max 7.829 over-tick 0 | <3GHz 7/32
+  81db2e3 L4 n=32 frames p50 2 p95 15 (2-16) draws p50 2 p95 15 (2-16) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 32} | CPU p50 14.2 p95 93.1 max 101.4 | 1st req p50 5.738 p95 8.363 max 8.423
+     draw n=47 p50 5.375 p95 7.506 max 7.878 launch p50s [5.175]-[6.614] | +amb p50 5.375 p95 7.688 p99 9.066 max 9.066 over-tick 1 | <3GHz 14/32
+    delta draw_p50 +0.172 [-0.505, 1.257]
+    delta draw_amb_p95 +0.155 [-1.602, 2.188]
+    delta draw_amb_p99 +1.237 [-1.379, 1.881]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +1.593 [-0.752, 3.099]
+== png-L13-drag
+  6660805 L4 n=24 frames p50 128 p95 132 (116-132) draws p50 18 p95 19 (17-20) presents p50 109 woken p50 1 max 1 motions p50 40 cfg {0: 24} | CPU p50 137.1 p95 151.0 max 154.7 | 1st req p50 5.154 p95 8.329 max 9.007
+     draw n=377 p50 5.174 p95 7.428 max 8.243 launch p50s [5.057]-[5.319] | +amb p50 5.191 p95 7.757 p99 9.720 max 11.015 over-tick 13 | <3GHz 11/24
+  81db2e3 L4 n=24 frames p50 126 p95 133 (98-134) draws p50 18 p95 19 (16-20) presents p50 108 woken p50 1 max 1 motions p50 40 cfg {0: 24} | CPU p50 138.0 p95 150.7 max 156.1 | 1st req p50 5.743 p95 7.663 max 7.772
+     draw n=372 p50 5.335 p95 7.561 max 8.172 launch p50s [5.204]-[5.488] | +amb p50 5.350 p95 8.048 p99 9.258 max 10.829 over-tick 12 | <3GHz 9/24
+    delta draw_p50 +0.161 [0.007, 0.305]
+    delta draw_amb_p95 +0.291 [-0.845, 1.095]
+    delta draw_amb_p99 -0.462 [-2.57, 1.349]
+    delta frames_p50 -2 [-11.0, 6.0]
+    delta draws_p50 +0 [-1.0, 0.0]
+    delta cpu_p50 +0.93 [-7.877, 8.682]
+== png-L13-wheel
+  6660805 L4 n=40 frames p50 1 p95 1 (1-1) draws p50 1 p95 1 (1-1) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 40} | CPU p50 5.7 p95 8.4 max 10.1 | 1st req p50 5.164 p95 7.735 max 9.395
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 14/40
+  81db2e3 L4 n=40 frames p50 1 p95 1 (1-1) draws p50 1 p95 1 (1-1) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 40} | CPU p50 6.0 p95 9.3 max 10.0 | 1st req p50 5.506 p95 8.596 max 9.404
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 16/40
+    delta draw_p50 +0 None
+    delta draw_amb_p95 +0 None
+    delta draw_amb_p99 +0 None
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +0.305 [-0.164, 2.164]
+== png-L13-mode
+  6660805 L4 n=8 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 8} | CPU p50 13.5 p95 16.2 max 16.2 | 1st req p50 5.427 p95 9.777 max 9.777
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 5/8
+  81db2e3 L4 n=8 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 8} | CPU p50 11.6 p95 16.1 max 16.1 | 1st req p50 5.393 p95 7.741 max 7.741
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 5/8
+    delta draw_p50 +0 None
+    delta draw_amb_p95 +0 None
+    delta draw_amb_p99 +0 None
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 -1.914 [-4.203, 2.144]
+== png-L13-drag-overlay
+  6660805 L4 n=8 frames p50 127 p95 132 (114-132) draws p50 18 p95 18 (17-18) presents p50 109 woken p50 1 max 1 motions p50 40 cfg {0: 8} | CPU p50 143.2 p95 147.1 max 147.1 | 1st req p50 5.264 p95 6.894 max 6.894
+     draw n=117 p50 5.454 p95 7.703 max 8.322 launch p50s [5.252]-[5.951] | +amb p50 5.622 p95 8.787 p99 9.608 max 10.078 over-tick 9 | <3GHz 2/8
+  81db2e3 L4 n=8 frames p50 127 p95 133 (116-133) draws p50 17 p95 18 (16-18) presents p50 109 woken p50 1 max 1 motions p50 40 cfg {0: 8} | CPU p50 138.7 p95 164.8 max 164.8 | 1st req p50 5.759 p95 9.088 max 9.088
+     draw n=109 p50 5.533 p95 7.900 max 8.318 launch p50s [5.392]-[5.976] | +amb p50 5.669 p95 9.040 p99 10.095 max 10.585 over-tick 14 | <3GHz 3/8
+    delta draw_p50 +0.079 [-0.418, 0.484]
+    delta draw_amb_p95 +0.253 [-0.814, 2.055]
+    delta draw_amb_p99 +0.487 [-1.036, 1.893]
+    delta frames_p50 +0 [-9.0, 13.0]
+    delta draws_p50 -1 [-2.0, 1.0]
+    delta cpu_p50 -4.439 [-11.509, 10.888]
+== png-L13-resize
+  6660805 L4 n=24 frames p50 1 p95 3 (1-3) draws p50 1 p95 3 (1-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 24} | CPU p50 18.7 p95 33.8 max 36.4 | 1st req p50 18.665 p95 25.725 max 27.354
+     draw n=22 p50 5.089 p95 6.715 max 7.234 launch p50s [5.037]-[6.125] | +amb p50 5.089 p95 8.345 p99 9.028 max 9.028 over-tick 2 | <3GHz 6/24
+  81db2e3 L4 n=24 frames p50 1 p95 3 (1-3) draws p50 1 p95 3 (1-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 24} | CPU p50 17.3 p95 35.8 max 38.0 | 1st req p50 18.701 p95 23.344 max 26.553
+     draw n=23 p50 5.265 p95 7.562 max 8.202 launch p50s [5.265]-[5.796] | +amb p50 5.265 p95 8.202 p99 10.472 max 10.472 over-tick 1 | <3GHz 6/24
+    delta draw_p50 +0.176 [-0.752, 0.606]
+    delta draw_amb_p95 -0.143 [-2.059, 4.319]
+    delta draw_amb_p99 +1.444 [-2.059, 3.757]
+    delta frames_p50 +0 [-2.0, 2.0]
+    delta draws_p50 +0 [-2.0, 2.0]
+    delta cpu_p50 -1.388 [-10.453, 14.524]
+== png-L13-idle
+  6660805 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 1/8
+  81db2e3 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 2/8
+== png-L13-all
+  6660805 L4 n=136 frames p50 2 p95 131 (1-132) draws p50 2 p95 19 (1-20) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 112, 1: 24} | CPU p50 13.2 p95 145.8 max 154.7 | 1st req p50 5.712 p95 20.670 max 27.354
+     draw n=563 p50 5.226 p95 7.428 max 8.322 launch p50s [5.196]-[5.294] | +amb p50 5.264 p95 8.070 p99 9.608 max 11.015 over-tick 24 | <3GHz 45/136
+  81db2e3 L4 n=136 frames p50 2 p95 131 (1-134) draws p50 2 p95 18 (1-20) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 112, 1: 24} | CPU p50 14.2 p95 146.1 max 164.8 | 1st req p50 6.023 p95 20.691 max 26.553
+     draw n=551 p50 5.373 p95 7.639 max 8.318 launch p50s [5.289]-[5.417] | +amb p50 5.401 p95 8.318 p99 9.804 max 10.829 over-tick 28 | <3GHz 53/136
+    delta draw_p50 +0.147 [0.033, 0.222]
+    delta draw_amb_p95 +0.248 [-0.604, 0.978]
+    delta draw_amb_p99 +0.196 [-1.342, 1.179]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +1.043 [-1.177, 3.023]
+== png-L18-zoom
+  6660805 L4 n=32 frames p50 2 p95 16 (2-17) draws p50 2 p95 16 (2-17) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 32} | CPU p50 10.9 p95 83.6 max 84.0 | 1st req p50 4.522 p95 7.088 max 8.333
+     draw n=52 p50 4.383 p95 6.107 max 7.992 launch p50s [3.992]-[5.41] | +amb p50 4.383 p95 6.107 p99 7.992 max 7.992 over-tick 0 | <3GHz 13/32
+  81db2e3 L4 n=32 frames p50 2 p95 16 (2-16) draws p50 2 p95 16 (2-16) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 32} | CPU p50 10.6 p95 80.1 max 82.8 | 1st req p50 4.462 p95 7.172 max 7.695
+     draw n=52 p50 4.304 p95 6.077 max 7.143 launch p50s [4.073]-[4.496] | +amb p50 4.304 p95 6.077 p99 7.143 max 7.143 over-tick 0 | <3GHz 15/32
+    delta draw_p50 -0.079 [-1.142, 0.367]
+    delta draw_amb_p95 -0.03 [-2.593, 1.584]
+    delta draw_amb_p99 -0.849 [-2.092, 1.584]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 -0.281 [-2.179, 1.816]
+== png-L18-drag
+  6660805 L4 n=24 frames p50 130 p95 134 (110-134) draws p50 19 p95 20 (18-20) presents p50 111 woken p50 1 max 1 motions p50 40 cfg {0: 24} | CPU p50 121.4 p95 132.3 max 136.3 | 1st req p50 4.689 p95 7.901 max 9.062
+     draw n=404 p50 4.244 p95 6.323 max 8.283 launch p50s [4.215]-[4.305] | +amb p50 4.247 p95 6.605 p99 8.283 max 9.688 over-tick 4 | <3GHz 9/24
+  81db2e3 L4 n=24 frames p50 128 p95 133 (118-135) draws p50 19 p95 20 (18-20) presents p50 109 woken p50 1 max 1 motions p50 40 cfg {0: 24} | CPU p50 127.0 p95 135.6 max 137.5 | 1st req p50 4.781 p95 6.765 max 7.145
+     draw n=412 p50 4.433 p95 6.633 max 7.997 launch p50s [4.373]-[4.468] | +amb p50 4.441 p95 6.754 p99 7.832 max 10.983 over-tick 3 | <3GHz 8/24
+    delta draw_p50 +0.189 [0.105, 0.28]
+    delta draw_amb_p95 +0.149 [-0.912, 1.052]
+    delta draw_amb_p99 -0.451 [-2.095, 1.465]
+    delta frames_p50 -2 [-6.0, 9.0]
+    delta draws_p50 +0 [0.0, 1.0]
+    delta cpu_p50 +5.673 [0.872, 9.512]
+== png-L18-wheel
+  6660805 L4 n=40 frames p50 1 p95 1 (1-1) draws p50 1 p95 1 (1-1) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 40} | CPU p50 5.0 p95 8.2 max 9.2 | 1st req p50 4.443 p95 7.646 max 8.540
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 17/40
+  81db2e3 L4 n=40 frames p50 1 p95 1 (1-1) draws p50 1 p95 1 (1-1) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 40} | CPU p50 5.0 p95 8.5 max 12.6 | 1st req p50 4.456 p95 7.782 max 11.869
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 18/40
+    delta draw_p50 +0 None
+    delta draw_amb_p95 +0 None
+    delta draw_amb_p99 +0 None
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 -0.024 [-0.994, 2.048]
+== png-L18-mode
+  6660805 L4 n=8 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 8} | CPU p50 9.1 p95 15.7 max 15.7 | 1st req p50 4.114 p95 8.228 max 8.228
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 1/8
+  81db2e3 L4 n=8 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 8} | CPU p50 10.6 p95 13.0 max 13.0 | 1st req p50 4.474 p95 6.173 max 6.173
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 3/8
+    delta draw_p50 +0 None
+    delta draw_amb_p95 +0 None
+    delta draw_amb_p99 +0 None
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +1.454 [-2.147, 3.779]
+== png-L18-drag-overlay
+  6660805 L4 n=8 frames p50 130 p95 134 (123-134) draws p50 19 p95 20 (18-20) presents p50 111 woken p50 1 max 1 motions p50 40 cfg {0: 8} | CPU p50 118.1 p95 120.9 max 120.9 | 1st req p50 4.092 p95 5.648 max 5.648
+     draw n=136 p50 4.125 p95 6.365 max 8.088 launch p50s [4.048]-[4.27] | +amb p50 4.126 p95 6.399 p99 8.088 max 10.417 over-tick 1 | <3GHz 1/8
+  81db2e3 L4 n=8 frames p50 128 p95 132 (125-132) draws p50 19 p95 20 (18-20) presents p50 109 woken p50 1 max 1 motions p50 40 cfg {0: 8} | CPU p50 119.3 p95 128.8 max 128.8 | 1st req p50 5.679 p95 7.199 max 7.199
+     draw n=134 p50 4.269 p95 6.189 max 8.024 launch p50s [4.158]-[4.501] | +amb p50 4.269 p95 6.189 p99 7.284 max 8.024 over-tick 0 | <3GHz 0/8
+    delta draw_p50 +0.144 [-0.063, 0.485]
+    delta draw_amb_p95 -0.21 [-1.612, 1.124]
+    delta draw_amb_p99 -0.804 [-3.497, 1.38]
+    delta frames_p50 -2 [-5.0, 7.0]
+    delta draws_p50 +0 [-1.0, 1.0]
+    delta cpu_p50 +1.18 [-5.002, 8.798]
+== png-L18-resize
+  6660805 L4 n=24 frames p50 1 p95 3 (1-3) draws p50 1 p95 3 (1-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 24} | CPU p50 19.3 p95 36.7 max 39.4 | 1st req p50 18.503 p95 26.342 max 26.717
+     draw n=22 p50 4.273 p95 6.960 max 7.503 launch p50s [4.148]-[4.388] | +amb p50 4.273 p95 8.447 p99 8.495 max 8.495 over-tick 2 | <3GHz 4/24
+  81db2e3 L4 n=24 frames p50 1 p95 3 (1-3) draws p50 1 p95 3 (1-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 24} | CPU p50 20.0 p95 34.9 max 37.2 | 1st req p50 18.306 p95 27.774 max 29.865
+     draw n=24 p50 4.417 p95 6.839 max 7.214 launch p50s [4.211]-[5.662] | +amb p50 4.417 p95 6.839 p99 7.214 max 7.214 over-tick 0 | <3GHz 11/24
+    delta draw_p50 +0.144 [-0.355, 0.954]
+    delta draw_amb_p95 -1.608 [-3.634, 1.491]
+    delta draw_amb_p99 -1.281 [-3.142, 1.313]
+    delta frames_p50 +0 [-2.0, 2.0]
+    delta draws_p50 +0 [-2.0, 2.0]
+    delta cpu_p50 +0.671 [-11.343, 11.271]
+== png-L18-idle
+  6660805 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 2/8
+  81db2e3 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 3/8
+== png-L18-all
+  6660805 L4 n=136 frames p50 2 p95 133 (1-134) draws p50 2 p95 20 (1-20) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 112, 1: 24} | CPU p50 11.6 p95 124.8 max 136.3 | 1st req p50 4.980 p95 20.688 max 26.717
+     draw n=614 p50 4.227 p95 6.327 max 8.283 launch p50s [4.213]-[4.286] | +amb p50 4.241 p95 6.541 p99 8.447 max 10.417 over-tick 7 | <3GHz 45/136
+  81db2e3 L4 n=136 frames p50 2 p95 131 (1-135) draws p50 2 p95 20 (1-20) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 112, 1: 24} | CPU p50 11.9 p95 130.4 max 137.5 | 1st req p50 5.334 p95 20.716 max 29.865
+     draw n=622 p50 4.383 p95 6.476 max 8.024 launch p50s [4.341]-[4.456] | +amb p50 4.383 p95 6.633 p99 7.773 max 10.983 over-tick 3 | <3GHz 55/136
+    delta draw_p50 +0.156 [0.074, 0.241]
+    delta draw_amb_p95 +0.092 [-0.912, 0.823]
+    delta draw_amb_p99 -0.674 [-2.173, 0.398]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +0.365 [-2.78, 2.159]
+== png-S18-zoom
+  6660805 L4 n=32 frames p50 5 p95 5 (5-5) draws p50 5 p95 5 (5-5) presents p50 0 woken p50 3 max 3 motions p50 1 cfg {0: 32} | CPU p50 15.1 p95 17.7 max 18.3 | 1st req p50 2.612 p95 3.556 max 4.896
+     draw n=12 p50 2.428 p95 3.549 max 3.549 launch p50s [2.242]-[3.308] | +amb p50 2.428 p95 3.549 p99 3.549 max 3.549 over-tick 0 | <3GHz 13/32
+  81db2e3 L4 n=32 frames p50 5 p95 5 (5-5) draws p50 5 p95 5 (5-5) presents p50 0 woken p50 2 max 3 motions p50 1 cfg {0: 32} | CPU p50 16.8 p95 20.4 max 21.6 | 1st req p50 2.865 p95 4.184 max 4.427
+     draw n=20 p50 2.790 p95 4.884 max 4.884 launch p50s [2.79]-[3.684] | +amb p50 2.790 p95 4.884 p99 4.884 max 4.884 over-tick 0 | <3GHz 10/32
+    delta draw_p50 +0.362 [-0.518, 1.069]
+    delta draw_amb_p95 +1.335 [-0.188, 2.395]
+    delta draw_amb_p99 +1.335 [-0.161, 2.395]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +1.687 [0.42, 2.73]
+== png-S18-mode
+  6660805 L4 n=8 frames p50 5 p95 5 (5-5) draws p50 5 p95 5 (5-5) presents p50 0 woken p50 2 max 3 motions p50 1 cfg {0: 8} | CPU p50 14.7 p95 16.5 max 16.5 | 1st req p50 2.671 p95 3.869 max 3.869
+     draw n=5 p50 2.210 p95 2.590 max 2.590 launch p50s [2.097]-[2.59] | +amb p50 2.210 p95 2.590 p99 2.590 max 2.590 over-tick 0 | <3GHz 3/8
+  81db2e3 L4 n=8 frames p50 5 p95 5 (5-5) draws p50 5 p95 5 (5-5) presents p50 0 woken p50 2 max 3 motions p50 1 cfg {0: 8} | CPU p50 15.6 p95 17.6 max 17.6 | 1st req p50 2.786 p95 3.665 max 3.665
+     draw n=4 p50 2.509 p95 2.804 max 2.804 launch p50s [2.217]-[2.804] | +amb p50 2.509 p95 2.804 p99 2.804 max 2.804 over-tick 0 | <3GHz 3/8
+    delta draw_p50 +0.299 [-0.308, 0.594]
+    delta draw_amb_p95 +0.214 [-0.081, 0.698]
+    delta draw_amb_p99 +0.214 [-0.081, 0.698]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +0.892 [-0.832, 2.629]
+== png-S18-resize
+  6660805 L4 n=24 frames p50 2 p95 3 (2-3) draws p50 2 p95 3 (2-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 24} | CPU p50 10.9 p95 13.3 max 16.1 | 1st req p50 21.570 p95 29.451 max 37.633
+     draw n=36 p50 2.272 p95 2.836 max 3.050 launch p50s [2.171]-[2.339] | +amb p50 2.272 p95 2.836 p99 3.050 max 3.050 over-tick 0 | <3GHz 8/24
+  81db2e3 L4 n=24 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 24} | CPU p50 10.5 p95 13.9 max 14.2 | 1st req p50 24.299 p95 33.785 max 36.378
+     draw n=24 p50 2.509 p95 2.989 max 3.619 launch p50s [2.509]-[2.643] | +amb p50 2.509 p95 2.989 p99 3.619 max 3.619 over-tick 0 | <3GHz 8/24
+    delta draw_p50 +0.237 [0.053, 0.462]
+    delta draw_amb_p95 +0.153 [-0.172, 0.971]
+    delta draw_amb_p99 +0.569 [-0.172, 0.838]
+    delta frames_p50 +0 [-1.0, 0.0]
+    delta draws_p50 +0 [-1.0, 0.0]
+    delta cpu_p50 -0.366 [-1.165, 1.393]
+== png-S18-idle
+  6660805 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 1/8
+  81db2e3 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 6/8
+== png-S18-all
+  6660805 L4 n=64 frames p50 5 p95 5 (2-5) draws p50 5 p95 5 (2-5) presents p50 0 woken p50 2 max 3 motions p50 1 cfg {0: 40, 1: 24} | CPU p50 14.2 p95 16.9 max 18.3 | 1st req p50 3.179 p95 28.706 max 37.633
+     draw n=53 p50 2.298 p95 3.273 max 3.549 launch p50s [2.231]-[2.339] | +amb p50 2.298 p95 3.273 p99 3.549 max 3.549 over-tick 0 | <3GHz 24/64
+  81db2e3 L4 n=64 frames p50 5 p95 5 (2-5) draws p50 5 p95 5 (2-5) presents p50 0 woken p50 2 max 3 motions p50 1 cfg {0: 40, 1: 24} | CPU p50 15.6 p95 19.5 max 21.6 | 1st req p50 3.472 p95 31.451 max 36.378
+     draw n=48 p50 2.643 p95 3.619 max 4.884 launch p50s [2.582]-[2.688] | +amb p50 2.643 p95 3.619 p99 4.884 max 4.884 over-tick 0 | <3GHz 21/64
+    delta draw_p50 +0.345 [0.138, 0.537]
+    delta draw_amb_p95 +0.346 [-0.161, 2.048]
+    delta draw_amb_p99 +1.335 [-0.006, 1.834]
+    delta frames_p50 +0 [-3.0, 0.0]
+    delta draws_p50 +0 [-3.0, 2.0]
+    delta cpu_p50 +1.421 [-0.143, 2.624]
+== add-L13-zoom
+  6660805 L4 n=32 frames p50 2 p95 15 (2-16) draws p50 2 p95 15 (2-16) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 32} | CPU p50 12.8 p95 93.4 max 105.3 | 1st req p50 5.529 p95 8.682 max 9.595
+     draw n=44 p50 5.079 p95 7.667 max 8.213 launch p50s [4.984]-[6.053] | +amb p50 5.094 p95 9.047 p99 9.584 max 9.584 over-tick 4 | <3GHz 12/32
+  81db2e3 L4 n=32 frames p50 2 p95 15 (2-15) draws p50 2 p95 15 (2-15) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 32} | CPU p50 12.3 p95 92.0 max 93.2 | 1st req p50 5.158 p95 7.583 max 9.017
+     draw n=41 p50 5.627 p95 7.420 max 7.808 launch p50s [5.578]-[5.874] | +amb p50 5.874 p95 9.163 p99 10.935 max 10.935 over-tick 4 | <3GHz 10/32
+    delta draw_p50 +0.548 [-0.368, 1.447]
+    delta draw_amb_p95 +0.116 [-2.25, 3.062]
+    delta draw_amb_p99 +1.351 [-1.776, 2.722]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 -0.488 [-2.472, 2.042]
+== add-L13-drag
+  6660805 L4 n=24 frames p50 128 p95 132 (111-136) draws p50 19 p95 20 (18-20) presents p50 109 woken p50 1 max 1 motions p50 40 cfg {0: 24} | CPU p50 134.8 p95 146.8 max 148.0 | 1st req p50 5.056 p95 8.902 max 9.823
+     draw n=398 p50 5.034 p95 7.321 max 8.323 launch p50s [4.966]-[5.361] | +amb p50 5.039 p95 7.488 p99 8.395 max 10.134 over-tick 5 | <3GHz 7/24
+  81db2e3 L4 n=24 frames p50 126 p95 132 (113-132) draws p50 18 p95 19 (17-20) presents p50 108 woken p50 1 max 1 motions p50 40 cfg {0: 24} | CPU p50 138.9 p95 150.4 max 153.1 | 1st req p50 5.242 p95 8.378 max 8.611
+     draw n=385 p50 5.131 p95 7.421 max 8.310 launch p50s [5.054]-[5.279] | +amb p50 5.153 p95 7.877 p99 9.166 max 11.383 over-tick 11 | <3GHz 7/24
+    delta draw_p50 +0.097 [-0.078, 0.258]
+    delta draw_amb_p95 +0.389 [-0.461, 1.191]
+    delta draw_amb_p99 +0.771 [-1.254, 3.065]
+    delta frames_p50 -2 [-8.0, 3.0]
+    delta draws_p50 -1 [-1.0, 1.0]
+    delta cpu_p50 +4.085 [-3.377, 8.13]
+== add-L13-wheel
+  6660805 L4 n=40 frames p50 1 p95 1 (1-1) draws p50 1 p95 1 (1-1) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 40} | CPU p50 5.7 p95 8.4 max 9.3 | 1st req p50 5.255 p95 7.956 max 8.826
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 16/40
+  81db2e3 L4 n=40 frames p50 1 p95 1 (1-1) draws p50 1 p95 1 (1-1) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 40} | CPU p50 5.7 p95 9.8 max 11.6 | 1st req p50 5.143 p95 9.218 max 10.761
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 12/40
+    delta draw_p50 +0 None
+    delta draw_amb_p95 +0 None
+    delta draw_amb_p99 +0 None
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 -0.049 [-1.333, 0.469]
+== add-L13-mode
+  6660805 L4 n=8 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 8} | CPU p50 11.0 p95 16.9 max 16.9 | 1st req p50 5.119 p95 5.681 max 5.681
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 1/8
+  81db2e3 L4 n=8 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 8} | CPU p50 13.0 p95 15.6 max 15.6 | 1st req p50 5.404 p95 8.005 max 8.005
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 4/8
+    delta draw_p50 +0 None
+    delta draw_amb_p95 +0 None
+    delta draw_amb_p99 +0 None
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +2.008 [-0.249, 3.707]
+== add-L13-drag-overlay
+  6660805 L4 n=8 frames p50 127 p95 133 (125-133) draws p50 18 p95 19 (17-19) presents p50 110 woken p50 1 max 1 motions p50 40 cfg {0: 8} | CPU p50 140.2 p95 147.5 max 147.5 | 1st req p50 5.544 p95 8.088 max 8.088
+     draw n=126 p50 5.227 p95 7.546 max 8.226 launch p50s [5.17]-[6.027] | +amb p50 5.259 p95 7.780 p99 9.286 max 9.631 over-tick 4 | <3GHz 0/8
+  81db2e3 L4 n=8 frames p50 128 p95 132 (112-132) draws p50 18 p95 20 (18-20) presents p50 110 woken p50 1 max 1 motions p50 40 cfg {0: 8} | CPU p50 138.3 p95 141.7 max 141.7 | 1st req p50 5.495 p95 7.367 max 7.367
+     draw n=128 p50 5.188 p95 7.147 max 8.100 launch p50s [5.07]-[5.539] | +amb p50 5.200 p95 7.537 p99 9.286 max 9.327 over-tick 4 | <3GHz 5/8
+    delta draw_p50 -0.039 [-0.637, 0.21]
+    delta draw_amb_p95 -0.243 [-2.012, 1.362]
+    delta draw_amb_p99 +0.0 [-1.988, 1.558]
+    delta frames_p50 +1 [-15.0, 5.0]
+    delta draws_p50 +0 [-1.0, 1.0]
+    delta cpu_p50 -1.938 [-10.365, 9.378]
+== add-L13-resize
+  6660805 L4 n=24 frames p50 1 p95 3 (1-3) draws p50 1 p95 3 (1-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 24} | CPU p50 17.7 p95 32.5 max 38.6 | 1st req p50 18.692 p95 24.595 max 24.661
+     draw n=23 p50 5.003 p95 7.172 max 7.583 launch p50s [4.884]-[5.207] | +amb p50 5.003 p95 7.583 p99 9.320 max 9.320 over-tick 1 | <3GHz 7/24
+  81db2e3 L4 n=24 frames p50 1 p95 3 (1-3) draws p50 1 p95 3 (1-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 24} | CPU p50 19.9 p95 37.7 max 40.4 | 1st req p50 19.255 p95 30.057 max 30.824
+     draw n=22 p50 5.269 p95 7.684 max 8.054 launch p50s [5.091]-[6.281] | +amb p50 5.269 p95 8.917 p99 9.856 max 9.856 over-tick 2 | <3GHz 9/24
+    delta draw_p50 +0.266 [-0.007, 1.349]
+    delta draw_amb_p95 +1.334 [-2.212, 4.745]
+    delta draw_amb_p99 +0.536 [-2.198, 3.806]
+    delta frames_p50 +0 [-2.0, 2.0]
+    delta draws_p50 +0 [-2.0, 2.0]
+    delta cpu_p50 +2.131 [-9.073, 14.006]
+== add-L13-idle
+  6660805 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 1/8
+  81db2e3 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 2/8
+== add-L13-all
+  6660805 L4 n=136 frames p50 2 p95 131 (1-136) draws p50 2 p95 19 (1-20) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 112, 1: 24} | CPU p50 12.8 p95 143.3 max 148.0 | 1st req p50 5.756 p95 20.727 max 24.661
+     draw n=591 p50 5.089 p95 7.348 max 8.323 launch p50s [5.032]-[5.221] | +amb p50 5.097 p95 7.719 p99 9.177 max 10.134 over-tick 14 | <3GHz 43/136
+  81db2e3 L4 n=136 frames p50 2 p95 130 (1-132) draws p50 2 p95 19 (1-20) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 112, 1: 24} | CPU p50 13.4 p95 141.7 max 153.1 | 1st req p50 5.615 p95 22.507 max 30.824
+     draw n=576 p50 5.169 p95 7.420 max 8.310 launch p50s [5.14]-[5.295] | +amb p50 5.197 p95 8.048 p99 9.327 max 11.383 over-tick 21 | <3GHz 47/136
+    delta draw_p50 +0.08 [-0.02, 0.203]
+    delta draw_amb_p95 +0.329 [-0.511, 0.922]
+    delta draw_amb_p99 +0.15 [-0.562, 2.284]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +0.609 [-2.184, 3.068]
+== add-L18-zoom
+  6660805 L4 n=32 frames p50 2 p95 16 (2-16) draws p50 2 p95 16 (2-16) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 32} | CPU p50 10.8 p95 77.5 max 81.3 | 1st req p50 4.187 p95 6.780 max 6.928
+     draw n=51 p50 4.235 p95 5.629 max 7.009 launch p50s [4.177]-[5.164] | +amb p50 4.235 p95 5.629 p99 7.009 max 7.009 over-tick 0 | <3GHz 15/32
+  81db2e3 L4 n=32 frames p50 2 p95 16 (2-16) draws p50 2 p95 16 (2-16) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 32} | CPU p50 9.9 p95 80.1 max 89.0 | 1st req p50 4.230 p95 6.263 max 6.995
+     draw n=50 p50 4.374 p95 6.774 max 7.912 launch p50s [4.216]-[5.504] | +amb p50 4.374 p95 6.774 p99 7.912 max 7.912 over-tick 0 | <3GHz 11/32
+    delta draw_p50 +0.139 [-0.705, 1.231]
+    delta draw_amb_p95 +1.145 [-0.812, 2.395]
+    delta draw_amb_p99 +0.903 [-0.812, 2.283]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 -0.941 [-2.287, 1.628]
+== add-L18-drag
+  6660805 L4 n=24 frames p50 130 p95 134 (118-135) draws p50 19 p95 20 (18-20) presents p50 111 woken p50 1 max 1 motions p50 40 cfg {0: 24} | CPU p50 117.3 p95 126.5 max 133.1 | 1st req p50 4.589 p95 6.073 max 6.768
+     draw n=413 p50 4.131 p95 5.947 max 7.905 launch p50s [4.099]-[4.158] | +amb p50 4.131 p95 5.947 p99 7.356 max 7.905 over-tick 0 | <3GHz 5/24
+  81db2e3 L4 n=24 frames p50 128 p95 133 (120-134) draws p50 19 p95 20 (18-20) presents p50 109 woken p50 1 max 1 motions p50 40 cfg {0: 24} | CPU p50 120.1 p95 135.1 max 139.7 | 1st req p50 4.748 p95 6.373 max 7.035
+     draw n=405 p50 4.273 p95 6.855 max 8.145 launch p50s [4.15]-[4.585] | +amb p50 4.276 p95 6.902 p99 7.716 max 8.653 over-tick 1 | <3GHz 8/24
+    delta draw_p50 +0.142 [0.066, 0.346]
+    delta draw_amb_p95 +0.955 [-0.108, 1.75]
+    delta draw_amb_p99 +0.36 [-0.398, 1.223]
+    delta frames_p50 -2 [-4.0, 1.0]
+    delta draws_p50 +0 [-1.0, 0.0]
+    delta cpu_p50 +2.798 [-2.548, 8.98]
+== add-L18-wheel
+  6660805 L4 n=40 frames p50 1 p95 1 (1-1) draws p50 1 p95 1 (1-1) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 40} | CPU p50 4.7 p95 7.4 max 8.1 | 1st req p50 4.255 p95 6.942 max 7.225
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 13/40
+  81db2e3 L4 n=40 frames p50 1 p95 1 (1-1) draws p50 1 p95 1 (1-1) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 40} | CPU p50 5.5 p95 7.9 max 8.4 | 1st req p50 4.958 p95 7.103 max 7.790
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 18/40
+    delta draw_p50 +0 None
+    delta draw_amb_p95 +0 None
+    delta draw_amb_p99 +0 None
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +0.745 [-0.154, 1.15]
+== add-L18-mode
+  6660805 L4 n=8 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 8} | CPU p50 8.9 p95 13.1 max 13.1 | 1st req p50 4.146 p95 5.764 max 5.764
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 2/8
+  81db2e3 L4 n=8 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 8} | CPU p50 9.4 p95 11.6 max 11.6 | 1st req p50 4.257 p95 6.012 max 6.012
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 3/8
+    delta draw_p50 +0 None
+    delta draw_amb_p95 +0 None
+    delta draw_amb_p99 +0 None
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +0.474 [-1.964, 2.561]
+== add-L18-drag-overlay
+  6660805 L4 n=8 frames p50 130 p95 134 (124-134) draws p50 19 p95 20 (18-20) presents p50 110 woken p50 1 max 1 motions p50 40 cfg {0: 8} | CPU p50 114.2 p95 121.4 max 121.4 | 1st req p50 4.019 p95 5.453 max 5.453
+     draw n=138 p50 4.051 p95 5.976 max 7.899 launch p50s [3.919]-[4.255] | +amb p50 4.051 p95 5.976 p99 6.345 max 7.899 over-tick 0 | <3GHz 3/8
+  81db2e3 L4 n=8 frames p50 131 p95 134 (120-134) draws p50 19 p95 20 (18-20) presents p50 113 woken p50 1 max 1 motions p50 40 cfg {0: 8} | CPU p50 116.8 p95 121.5 max 121.5 | 1st req p50 4.129 p95 5.810 max 5.810
+     draw n=137 p50 4.051 p95 6.101 max 7.303 launch p50s [4.035]-[4.066] | +amb p50 4.051 p95 6.101 p99 6.824 max 7.303 over-tick 0 | <3GHz 2/8
+    delta draw_p50 +0.0 [-0.223, 0.128]
+    delta draw_amb_p95 +0.125 [-1.003, 0.942]
+    delta draw_amb_p99 +0.479 [-1.535, 1.327]
+    delta frames_p50 +1 [-8.0, 7.0]
+    delta draws_p50 +0 [-1.0, 1.0]
+    delta cpu_p50 +2.507 [-4.625, 6.779]
+== add-L18-resize
+  6660805 L4 n=24 frames p50 1 p95 3 (1-3) draws p50 1 p95 3 (1-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 24} | CPU p50 19.6 p95 29.4 max 34.8 | 1st req p50 17.458 p95 23.933 max 27.631
+     draw n=24 p50 4.164 p95 5.276 max 5.806 launch p50s [3.989]-[4.397] | +amb p50 4.164 p95 5.276 p99 5.806 max 5.806 over-tick 0 | <3GHz 10/24
+  81db2e3 L4 n=24 frames p50 1 p95 3 (1-3) draws p50 1 p95 3 (1-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 24} | CPU p50 16.2 p95 30.4 max 33.1 | 1st req p50 17.827 p95 23.482 max 24.212
+     draw n=24 p50 4.143 p95 5.666 max 7.678 launch p50s [4.104]-[5.633] | +amb p50 4.143 p95 5.666 p99 7.678 max 7.678 over-tick 0 | <3GHz 9/24
+    delta draw_p50 -0.021 [-0.297, 0.652]
+    delta draw_amb_p95 +0.39 [-0.906, 2.459]
+    delta draw_amb_p99 +1.872 [-0.617, 2.459]
+    delta frames_p50 +0 [-2.0, 2.0]
+    delta draws_p50 +0 [-2.0, 2.0]
+    delta cpu_p50 -3.415 [-9.357, 10.299]
+== add-L18-idle
+  6660805 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.2 max 0.2 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 1/8
+  81db2e3 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 2/8
+== add-L18-all
+  6660805 L4 n=136 frames p50 2 p95 133 (1-135) draws p50 2 p95 20 (1-20) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 112, 1: 24} | CPU p50 11.5 p95 121.5 max 133.1 | 1st req p50 4.589 p95 20.245 max 27.631
+     draw n=626 p50 4.128 p95 5.850 max 7.905 launch p50s [4.117]-[4.144] | +amb p50 4.128 p95 5.850 p99 7.273 max 7.905 over-tick 0 | <3GHz 48/136
+  81db2e3 L4 n=136 frames p50 2 p95 132 (1-134) draws p50 2 p95 19 (1-20) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 112, 1: 24} | CPU p50 11.2 p95 125.4 max 139.7 | 1st req p50 4.917 p95 20.173 max 24.212
+     draw n=616 p50 4.242 p95 6.707 max 8.145 launch p50s [4.143]-[4.584] | +amb p50 4.247 p95 6.774 p99 7.707 max 8.653 over-tick 1 | <3GHz 51/136
+    delta draw_p50 +0.114 [0.044, 0.239]
+    delta draw_amb_p95 +0.924 [0.039, 1.548]
+    delta draw_amb_p99 +0.434 [-0.435, 1.101]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 -0.278 [-2.425, 2.534]
+== add-S18-zoom
+  6660805 L4 n=32 frames p50 5 p95 5 (5-6) draws p50 5 p95 5 (5-6) presents p50 0 woken p50 2 max 4 motions p50 1 cfg {0: 32} | CPU p50 15.3 p95 18.6 max 18.9 | 1st req p50 2.628 p95 4.243 max 4.779
+     draw n=16 p50 2.353 p95 4.655 max 4.655 launch p50s [2.325]-[2.884] | +amb p50 2.353 p95 4.655 p99 4.655 max 4.655 over-tick 0 | <3GHz 12/32
+  81db2e3 L4 n=32 frames p50 5 p95 5 (5-5) draws p50 5 p95 5 (5-5) presents p50 0 woken p50 2 max 3 motions p50 1 cfg {0: 32} | CPU p50 15.3 p95 19.2 max 20.5 | 1st req p50 2.730 p95 3.566 max 4.315
+     draw n=21 p50 2.510 p95 3.648 max 4.743 launch p50s [2.335]-[2.609] | +amb p50 2.510 p95 3.648 p99 4.743 max 4.743 over-tick 0 | <3GHz 11/32
+    delta draw_p50 +0.157 [-0.544, 0.318]
+    delta draw_amb_p95 -1.007 [-1.784, 1.228]
+    delta draw_amb_p99 +0.088 [-1.439, 1.678]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 -0.012 [-1.133, 1.378]
+== add-S18-mode
+  6660805 L4 n=8 frames p50 5 p95 5 (5-5) draws p50 5 p95 5 (5-5) presents p50 0 woken p50 2 max 3 motions p50 1 cfg {0: 8} | CPU p50 14.6 p95 17.0 max 17.0 | 1st req p50 2.532 p95 3.676 max 3.676
+     draw n=4 p50 2.104 p95 2.315 max 2.315 launch p50s [2.104]-[2.315] | +amb p50 2.104 p95 2.315 p99 2.315 max 2.315 over-tick 0 | <3GHz 1/8
+  81db2e3 L4 n=8 frames p50 5 p95 5 (5-5) draws p50 5 p95 5 (5-5) presents p50 0 woken p50 2 max 3 motions p50 1 cfg {0: 8} | CPU p50 15.7 p95 18.4 max 18.4 | 1st req p50 2.658 p95 3.488 max 3.488
+     draw n=4 p50 2.641 p95 2.885 max 2.885 launch p50s [2.77]-[2.885] | +amb p50 2.641 p95 2.885 p99 2.885 max 2.885 over-tick 0 | <3GHz 4/8
+    delta draw_p50 +0.537 [0.028, 0.781]
+    delta draw_amb_p95 +0.57 [0.326, 0.781]
+    delta draw_amb_p99 +0.57 [0.326, 0.781]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +1.118 [-0.914, 2.041]
+== add-S18-resize
+  6660805 L4 n=24 frames p50 2 p95 3 (2-3) draws p50 2 p95 3 (2-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 24} | CPU p50 10.9 p95 13.7 max 14.7 | 1st req p50 23.798 p95 38.413 max 39.053
+     draw n=36 p50 2.310 p95 3.296 max 3.623 launch p50s [2.196]-[2.438] | +amb p50 2.310 p95 3.296 p99 3.623 max 3.623 over-tick 0 | <3GHz 5/24
+  81db2e3 L4 n=24 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 24} | CPU p50 10.2 p95 16.8 max 17.7 | 1st req p50 21.655 p95 30.155 max 35.530
+     draw n=24 p50 2.326 p95 3.063 max 4.732 launch p50s [2.303]-[2.54] | +amb p50 2.326 p95 3.063 p99 4.732 max 4.732 over-tick 0 | <3GHz 11/24
+    delta draw_p50 +0.016 [-0.112, 0.223]
+    delta draw_amb_p95 -0.233 [-1.029, 2.12]
+    delta draw_amb_p99 +1.109 [-1.029, 2.107]
+    delta frames_p50 +0 [-1.0, 0.0]
+    delta draws_p50 +0 [-1.0, 0.0]
+    delta cpu_p50 -0.772 [-1.411, 0.616]
+== add-S18-idle
+  6660805 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 4/8
+  81db2e3 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 3/8
+== add-S18-all
+  6660805 L4 n=64 frames p50 5 p95 5 (2-6) draws p50 5 p95 5 (2-6) presents p50 0 woken p50 2 max 4 motions p50 1 cfg {0: 40, 1: 24} | CPU p50 14.0 p95 17.8 max 18.9 | 1st req p50 3.321 p95 36.034 max 39.053
+     draw n=56 p50 2.325 p95 3.623 max 4.655 launch p50s [2.196]-[2.438] | +amb p50 2.325 p95 3.623 p99 4.655 max 4.655 over-tick 0 | <3GHz 18/64
+  81db2e3 L4 n=64 frames p50 5 p95 5 (2-5) draws p50 5 p95 5 (2-5) presents p50 0 woken p50 2 max 3 motions p50 1 cfg {0: 40, 1: 24} | CPU p50 14.4 p95 17.7 max 20.5 | 1st req p50 3.460 p95 29.306 max 35.530
+     draw n=49 p50 2.402 p95 3.648 max 4.743 launch p50s [2.316]-[2.51] | +amb p50 2.402 p95 3.648 p99 4.743 max 4.743 over-tick 0 | <3GHz 26/64
+    delta draw_p50 +0.077 [-0.052, 0.249]
+    delta draw_amb_p95 +0.025 [-1.439, 1.678]
+    delta draw_amb_p99 +0.088 [-1.385, 1.447]
+    delta frames_p50 +0 [-3.0, 2.0]
+    delta draws_p50 +0 [-3.0, 0.0]
+    delta cpu_p50 +0.486 [-0.584, 1.522]
+== gif-L13-zoom
+  6660805 L4 n=16 frames p50 2 p95 16 (2-16) draws p50 2 p95 16 (2-16) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 16} | CPU p50 12.6 p95 95.1 max 95.1 | 1st req p50 5.034 p95 7.843 max 7.843
+     draw n=97 p50 5.010 p95 7.008 max 7.962 launch p50s [4.855]-[5.168] | +amb p50 5.010 p95 7.008 p99 7.962 max 7.962 over-tick 0 | <3GHz 3/16
+  81db2e3 L4 n=16 frames p50 2 p95 16 (2-16) draws p50 2 p95 16 (2-16) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 16} | CPU p50 14.3 p95 92.3 max 92.3 | 1st req p50 5.154 p95 8.053 max 8.053
+     draw n=91 p50 5.102 p95 7.375 max 7.983 launch p50s [4.953]-[5.32] | +amb p50 5.131 p95 7.932 p99 9.744 max 9.744 over-tick 3 | <3GHz 4/16
+    delta draw_p50 +0.092 [-0.112, 0.373]
+    delta draw_amb_p95 +0.924 [-0.432, 1.994]
+    delta draw_amb_p99 +1.782 [0.021, 2.699]
+    delta frames_p50 +0 [-13.0, 13.0]
+    delta draws_p50 +0 [-13.0, 13.0]
+    delta cpu_p50 +1.734 [-74.996, 76.209]
+== gif-L13-play
+  6660805 L4 n=12 frames p50 317 p95 325 (311-325) draws p50 317 p95 325 (311-325) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 12} | CPU p50 1763.7 p95 1819.4 max 1819.4 | 1st req p50 4.844 p95 7.953 max 7.953
+     draw n=3767 p50 4.833 p95 6.988 max 8.317 launch p50s [4.782]-[4.902] | +amb p50 4.836 p95 7.054 p99 8.055 max 11.550 over-tick 24 | <3GHz 3/12
+  81db2e3 L4 n=12 frames p50 314 p95 318 (304-318) draws p50 314 p95 318 (304-318) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 12} | CPU p50 1773.7 p95 1830.5 max 1830.5 | 1st req p50 5.152 p95 10.682 max 10.682
+     draw n=3710 p50 4.971 p95 7.163 max 8.332 launch p50s [4.887]-[5.119] | +amb p50 4.976 p95 7.259 p99 8.213 max 10.085 over-tick 28 | <3GHz 4/12
+    delta draw_p50 +0.138 [0.051, 0.239]
+    delta draw_amb_p95 +0.205 [-0.068, 0.53]
+    delta draw_amb_p99 +0.158 [-0.338, 0.486]
+    delta frames_p50 -3 [-10.0, 1.0]
+    delta draws_p50 -3 [-11.0, 1.0]
+    delta cpu_p50 +10.022 [-10.108, 62.582]
+== gif-L13-pause
+  6660805 L4 n=12 frames p50 4 p95 5 (4-5) draws p50 4 p95 5 (4-5) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 12} | CPU p50 25.0 p95 31.9 max 31.9 | 1st req p50 7.095 p95 12.367 max 12.367
+     draw n=53 p50 4.778 p95 6.990 max 7.184 launch p50s [4.652]-[5.169] | +amb p50 4.778 p95 6.990 p99 7.184 max 7.184 over-tick 0 | <3GHz 4/12
+  81db2e3 L4 n=12 frames p50 4 p95 4 (4-4) draws p50 4 p95 4 (4-4) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 12} | CPU p50 25.9 p95 32.6 max 32.6 | 1st req p50 12.035 p95 13.645 max 13.645
+     draw n=48 p50 5.217 p95 7.078 max 7.814 launch p50s [4.861]-[5.837] | +amb p50 5.217 p95 7.078 p99 7.814 max 7.814 over-tick 0 | <3GHz 5/12
+    delta draw_p50 +0.439 [-0.01, 1.291]
+    delta draw_amb_p95 +0.088 [-0.358, 1.386]
+    delta draw_amb_p99 +0.63 [-0.229, 0.873]
+    delta frames_p50 +0 [-1.0, 0.0]
+    delta draws_p50 +0 [-1.0, 0.0]
+    delta cpu_p50 +0.889 [-4.767, 5.583]
+== gif-L13-resize
+  6660805 L4 n=16 frames p50 1 p95 3 (1-3) draws p50 1 p95 3 (1-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 16} | CPU p50 15.4 p95 36.7 max 36.7 | 1st req p50 18.053 p95 29.339 max 29.339
+     draw n=16 p50 5.070 p95 7.960 max 7.960 launch p50s [4.898]-[6.649] | +amb p50 5.070 p95 7.960 p99 7.960 max 7.960 over-tick 0 | <3GHz 5/16
+  81db2e3 L4 n=16 frames p50 1 p95 3 (1-3) draws p50 1 p95 3 (1-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 16} | CPU p50 21.2 p95 38.5 max 38.5 | 1st req p50 18.617 p95 29.574 max 29.574
+     draw n=16 p50 4.975 p95 8.292 max 8.292 launch p50s [4.904]-[5.106] | +amb p50 4.975 p95 8.292 p99 8.292 max 8.292 over-tick 0 | <3GHz 5/16
+    delta draw_p50 -0.095 [-1.731, 0.205]
+    delta draw_amb_p95 +0.332 [-2.877, 1.581]
+    delta draw_amb_p99 +0.332 [-2.877, 1.581]
+    delta frames_p50 +0 [-2.0, 2.0]
+    delta draws_p50 +0 [-2.0, 2.0]
+    delta cpu_p50 +5.753 [-12.377, 13.625]
+== gif-L13-idle
+  6660805 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 2/8
+  81db2e3 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 1/8
+== gif-L13-all
+  6660805 L4 n=56 frames p50 4 p95 321 (1-325) draws p50 4 p95 321 (1-325) presents p50 0 woken p50 0 max 2 motions p50 0 cfg {0: 40, 1: 16} | CPU p50 28.1 p95 1782.1 max 1819.4 | 1st req p50 6.761 p95 24.164 max 29.339
+     draw n=3933 p50 4.840 p95 6.990 max 8.317 launch p50s [4.797]-[4.902] | +amb p50 4.844 p95 7.053 p99 8.026 max 11.550 over-tick 24 | <3GHz 15/56
+  81db2e3 L4 n=56 frames p50 4 p95 318 (1-318) draws p50 4 p95 318 (1-318) presents p50 0 woken p50 0 max 2 motions p50 0 cfg {0: 40, 1: 16} | CPU p50 26.7 p95 1795.9 max 1830.5 | 1st req p50 8.605 p95 24.555 max 29.574
+     draw n=3865 p50 4.978 p95 7.163 max 8.332 launch p50s [4.9]-[5.121] | +amb p50 4.984 p95 7.268 p99 8.237 max 10.085 over-tick 31 | <3GHz 18/56
+    delta draw_p50 +0.138 [0.059, 0.243]
+    delta draw_amb_p95 +0.215 [-0.031, 0.53]
+    delta draw_amb_p99 +0.211 [-0.25, 0.504]
+    delta frames_p50 +0 [-2.0, 1.0]
+    delta draws_p50 +0 [-2.0, 1.0]
+    delta cpu_p50 -1.443 [-9.872, 7.33]
+== gif-L18-zoom
+  6660805 L4 n=16 frames p50 2 p95 17 (2-17) draws p50 2 p95 17 (2-17) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 16} | CPU p50 13.1 p95 83.2 max 83.2 | 1st req p50 3.965 p95 5.663 max 5.663
+     draw n=104 p50 4.142 p95 6.080 max 7.691 launch p50s [4.115]-[4.172] | +amb p50 4.142 p95 6.080 p99 6.420 max 7.691 over-tick 0 | <3GHz 6/16
+  81db2e3 L4 n=16 frames p50 2 p95 16 (2-16) draws p50 2 p95 16 (2-16) presents p50 0 woken p50 1 max 2 motions p50 0 cfg {0: 16} | CPU p50 11.1 p95 85.4 max 85.4 | 1st req p50 4.192 p95 7.614 max 7.614
+     draw n=102 p50 4.156 p95 6.590 max 7.809 launch p50s [4.036]-[4.679] | +amb p50 4.156 p95 6.590 p99 7.774 max 7.809 over-tick 0 | <3GHz 6/16
+    delta draw_p50 +0.014 [-0.156, 0.418]
+    delta draw_amb_p95 +0.51 [-0.941, 1.913]
+    delta draw_amb_p99 +1.354 [-1.101, 1.734]
+    delta frames_p50 +0 [-14.0, 14.0]
+    delta draws_p50 +0 [-14.0, 14.0]
+    delta cpu_p50 -2.025 [-64.348, 67.335]
+== gif-L18-play
+  6660805 L4 n=12 frames p50 354 p95 365 (349-365) draws p50 354 p95 365 (349-365) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 12} | CPU p50 1563.9 p95 1604.0 max 1604.0 | 1st req p50 3.943 p95 5.660 max 5.660
+     draw n=4231 p50 3.857 p95 5.510 max 8.169 launch p50s [3.802]-[3.884] | +amb p50 3.857 p95 5.522 p99 6.661 max 10.421 over-tick 5 | <3GHz 5/12
+  81db2e3 L4 n=12 frames p50 351 p95 354 (344-354) draws p50 351 p95 354 (344-354) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 12} | CPU p50 1602.0 p95 1650.5 max 1650.5 | 1st req p50 4.126 p95 5.643 max 5.643
+     draw n=4172 p50 3.998 p95 5.759 max 7.836 launch p50s [3.93]-[4.075] | +amb p50 3.999 p95 5.786 p99 6.863 max 12.276 over-tick 5 | <3GHz 3/12
+    delta draw_p50 +0.141 [0.081, 0.212]
+    delta draw_amb_p95 +0.264 [0.021, 0.451]
+    delta draw_amb_p99 +0.202 [-0.129, 0.541]
+    delta frames_p50 -3 [-10.0, 2.0]
+    delta draws_p50 -3 [-10.0, 2.0]
+    delta cpu_p50 +38.162 [6.857, 63.535]
+== gif-L18-pause
+  6660805 L4 n=12 frames p50 5 p95 5 (4-5) draws p50 5 p95 5 (4-5) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 12} | CPU p50 21.2 p95 23.3 max 23.3 | 1st req p50 9.063 p95 13.023 max 13.023
+     draw n=55 p50 3.847 p95 4.733 max 5.598 launch p50s [3.759]-[3.941] | +amb p50 3.847 p95 4.733 p99 5.598 max 5.598 over-tick 0 | <3GHz 2/12
+  81db2e3 L4 n=12 frames p50 4 p95 5 (4-5) draws p50 4 p95 5 (4-5) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 12} | CPU p50 22.0 p95 27.8 max 27.8 | 1st req p50 9.948 p95 15.017 max 15.017
+     draw n=54 p50 4.028 p95 5.615 max 6.869 launch p50s [3.83]-[4.206] | +amb p50 4.028 p95 5.615 p99 6.869 max 6.869 over-tick 0 | <3GHz 2/12
+    delta draw_p50 +0.181 [-0.039, 0.423]
+    delta draw_amb_p95 +0.882 [-0.396, 2.244]
+    delta draw_amb_p99 +1.271 [-0.396, 2.222]
+    delta frames_p50 -1 [-1.0, 1.0]
+    delta draws_p50 -1 [-1.0, 1.0]
+    delta cpu_p50 +0.768 [-0.834, 3.582]
+== gif-L18-resize
+  6660805 L4 n=16 frames p50 1 p95 3 (1-3) draws p50 1 p95 3 (1-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 16} | CPU p50 16.1 p95 32.5 max 32.5 | 1st req p50 17.622 p95 23.988 max 23.988
+     draw n=16 p50 3.991 p95 5.585 max 5.585 launch p50s [3.8]-[3.991] | +amb p50 3.991 p95 5.585 p99 5.585 max 5.585 over-tick 0 | <3GHz 5/16
+  81db2e3 L4 n=16 frames p50 1 p95 3 (1-3) draws p50 1 p95 3 (1-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 16} | CPU p50 20.7 p95 32.5 max 32.5 | 1st req p50 18.063 p95 26.791 max 26.791
+     draw n=16 p50 4.042 p95 7.698 max 7.698 launch p50s [3.924]-[4.116] | +amb p50 4.042 p95 7.698 p99 7.698 max 7.698 over-tick 0 | <3GHz 8/16
+    delta draw_p50 +0.051 [-0.669, 0.761]
+    delta draw_amb_p95 +2.113 [0.293, 2.897]
+    delta draw_amb_p99 +2.113 [0.293, 2.897]
+    delta frames_p50 +0 [-2.0, 2.0]
+    delta draws_p50 +0 [-2.0, 2.0]
+    delta cpu_p50 +4.645 [-8.093, 10.492]
+== gif-L18-idle
+  6660805 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 1/8
+  81db2e3 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 3/8
+== gif-L18-all
+  6660805 L4 n=56 frames p50 4 p95 359 (1-365) draws p50 4 p95 359 (1-365) presents p50 0 woken p50 0 max 2 motions p50 0 cfg {0: 40, 1: 16} | CPU p50 22.2 p95 1577.9 max 1604.0 | 1st req p50 5.529 p95 22.724 max 23.988
+     draw n=4406 p50 3.863 p95 5.541 max 8.169 launch p50s [3.812]-[3.886] | +amb p50 3.864 p95 5.550 p99 6.657 max 10.421 over-tick 5 | <3GHz 18/56
+  81db2e3 L4 n=56 frames p50 4 p95 352 (1-354) draws p50 4 p95 352 (1-354) presents p50 0 woken p50 0 max 2 motions p50 0 cfg {0: 40, 1: 16} | CPU p50 23.7 p95 1619.9 max 1650.5 | 1st req p50 6.040 p95 20.859 max 26.791
+     draw n=4344 p50 4.004 p95 5.788 max 7.836 launch p50s [3.933]-[4.084] | +amb p50 4.005 p95 5.806 p99 6.939 max 12.276 over-tick 5 | <3GHz 19/56
+    delta draw_p50 +0.141 [0.083, 0.208]
+    delta draw_amb_p95 +0.256 [0.014, 0.445]
+    delta draw_amb_p99 +0.282 [-0.099, 0.637]
+    delta frames_p50 +0 [-2.0, 2.0]
+    delta draws_p50 +0 [-2.0, 2.0]
+    delta cpu_p50 +1.473 [-8.752, 7.363]
+== gif-S18-play
+  6660805 L4 n=12 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 12} | CPU p50 5.5 p95 9.3 max 9.3 | 1st req p50 2.390 p95 5.116 max 5.116
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 3/12
+  81db2e3 L4 n=12 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 12} | CPU p50 6.7 p95 8.0 max 8.0 | 1st req p50 2.607 p95 3.590 max 3.590
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 5/12
+    delta draw_p50 +0 None
+    delta draw_amb_p95 +0 None
+    delta draw_amb_p99 +0 None
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +1.137 [0.295, 1.538]
+== gif-S18-pause
+  6660805 L4 n=12 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 12} | CPU p50 5.6 p95 8.4 max 8.4 | 1st req p50 2.456 p95 4.107 max 4.107
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 4/12
+  81db2e3 L4 n=12 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 12} | CPU p50 6.8 p95 8.0 max 8.0 | 1st req p50 2.702 p95 3.897 max 3.897
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 5/12
+    delta draw_p50 +0 None
+    delta draw_amb_p95 +0 None
+    delta draw_amb_p99 +0 None
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +1.154 [-0.714, 1.766]
+== gif-S18-resize
+  6660805 L4 n=16 frames p50 2 p95 3 (2-3) draws p50 2 p95 3 (2-3) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 16} | CPU p50 13.1 p95 15.8 max 15.8 | 1st req p50 20.645 p95 35.536 max 35.536
+     draw n=24 p50 2.386 p95 2.986 max 3.049 launch p50s [2.374]-[2.453] | +amb p50 2.386 p95 2.986 p99 3.049 max 3.049 over-tick 0 | <3GHz 7/16
+  81db2e3 L4 n=16 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {1: 16} | CPU p50 12.6 p95 19.5 max 19.5 | 1st req p50 23.752 p95 35.641 max 35.641
+     draw n=16 p50 2.518 p95 2.865 max 2.865 launch p50s [2.416]-[2.539] | +amb p50 2.518 p95 2.865 p99 2.865 max 2.865 over-tick 0 | <3GHz 4/16
+    delta draw_p50 +0.132 [-0.009, 0.293]
+    delta draw_amb_p95 -0.121 [-0.452, 0.31]
+    delta draw_amb_p99 -0.184 [-0.46, 0.226]
+    delta frames_p50 +0 [-1.0, 0.0]
+    delta draws_p50 +0 [-1.0, 0.0]
+    delta cpu_p50 -0.554 [-4.053, 1.803]
+== gif-S18-idle
+  6660805 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 4/8
+  81db2e3 L4 n=8 frames p50 0 p95 0 (0-0) draws p50 0 p95 0 (0-0) presents p50 0 woken p50 0 max 0 motions p50 0 cfg {0: 8} | CPU p50 0.1 p95 0.1 max 0.1 | 1st req p50 - p95 - max -
+     draw n=0 p50 - p95 - max - launch p50s []-[] | +amb p50 - p95 - p99 - max - over-tick 0 | <3GHz 4/8
+== gif-S18-all
+  6660805 L4 n=40 frames p50 2 p95 3 (2-3) draws p50 2 p95 3 (2-3) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 24, 1: 16} | CPU p50 6.8 p95 14.6 max 15.8 | 1st req p50 3.166 p95 27.919 max 35.536
+     draw n=24 p50 2.386 p95 2.986 max 3.049 launch p50s [2.374]-[2.453] | +amb p50 2.386 p95 2.986 p99 3.049 max 3.049 over-tick 0 | <3GHz 14/40
+  81db2e3 L4 n=40 frames p50 2 p95 2 (2-2) draws p50 2 p95 2 (2-2) presents p50 0 woken p50 1 max 1 motions p50 0 cfg {0: 24, 1: 16} | CPU p50 7.3 p95 16.7 max 19.5 | 1st req p50 3.374 p95 31.752 max 35.641
+     draw n=16 p50 2.518 p95 2.865 max 2.865 launch p50s [2.416]-[2.539] | +amb p50 2.518 p95 2.865 p99 2.865 max 2.865 over-tick 0 | <3GHz 14/40
+    delta draw_p50 +0.132 [-0.009, 0.298]
+    delta draw_amb_p95 -0.121 [-0.452, 0.31]
+    delta draw_amb_p99 -0.184 [-0.46, 0.226]
+    delta frames_p50 +0 [0.0, 0.0]
+    delta draws_p50 +0 [0.0, 0.0]
+    delta cpu_p50 +0.572 [-4.288, 3.512]
