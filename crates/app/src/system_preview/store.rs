@@ -48,6 +48,20 @@ pub(super) const MAX_BYTES: u64 = 128 * 1024 * 1024;
 const STAGING_AGE: Duration = Duration::from_secs(60 * 60);
 /// The most entries a cleanup inspects, so a flooded folder stays bounded.
 const MAX_SCANNED: usize = 1024;
+
+/// The refusal of captured bytes larger than [`MAX_INPUT_BYTES`], typed so
+/// the line beneath the control can say so in its own words
+/// ([`super::Category::TooLarge`]); its sentence is the refusal's.
+#[derive(Debug)]
+pub(super) struct TooLarge;
+
+impl std::fmt::Display for TooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The captured file exceeds the 32 MiB limit for opening it in another app.")
+    }
+}
+
+impl std::error::Error for TooLarge {}
 const SESSION: &str = "session-";
 const STAGING: &str = ".staging-";
 
@@ -122,10 +136,7 @@ impl Store {
     /// Writes `bytes` as a new private copy typed by `kind`, first removing
     /// this session's oldest copies to stay within its bounds.
     pub(super) fn write(&self, bytes: &[u8], kind: Kind) -> Result<Copy> {
-        ensure!(
-            bytes.len() <= MAX_INPUT_BYTES,
-            "The captured file exceeds the 32 MiB limit for opening it in another app."
-        );
+        ensure!(bytes.len() <= MAX_INPUT_BYTES, TooLarge);
         let length = bytes.len() as u64;
         let mut session = self
             .session
@@ -505,11 +516,16 @@ mod tests {
         assert!(!present(&large) && present(&whole));
         assert_eq!(session_copies(&session), (1, 100));
         store.close();
-        assert!(
-            store
-                .write(&vec![b'a'; MAX_INPUT_BYTES + 1], Kind::Text)
-                .is_err()
+        // Larger than the limit, the refusal is typed and says why.
+        let Err(refused) = store.write(&vec![b'a'; MAX_INPUT_BYTES + 1], Kind::Text) else {
+            panic!("a copy over the limit is refused");
+        };
+        assert!(refused.is::<TooLarge>(), "{refused:#}");
+        assert_eq!(
+            format!("{refused:#}"),
+            "The captured file exceeds the 32 MiB limit for opening it in another app."
         );
+        assert_eq!(MAX_INPUT_BYTES, 32 << 20, "the sentence names the limit");
     }
 
     #[test]

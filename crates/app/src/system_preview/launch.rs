@@ -13,7 +13,7 @@
 //! application for that type. A portal that answered, refused or was
 //! cancelled is never followed by a second attempt, so nothing opens twice or
 //! after the user said no.
-use super::{NotOpened, passive::Kind, store::Copy};
+use super::{Category, Failure, NotOpened, passive::Kind, store::Copy};
 use crate::rich_preview::ExternalPreviewSlot;
 use ashpd::{
     PortalError,
@@ -276,8 +276,8 @@ async fn off_thread(
     executor: &BackgroundExecutor,
     wait: Duration,
     tool: &'static str,
-    check: impl FnOnce() -> Result<(), String> + Send + 'static,
-) -> Result<(), String> {
+    check: impl FnOnce() -> Result<(), Failure> + Send + 'static,
+) -> Result<(), Failure> {
     let (sender, checked) = oneshot::channel();
     std::thread::spawn(move || {
         let _ = sender.send(check());
@@ -287,9 +287,9 @@ async fn off_thread(
     futures::pin_mut!(checked, waited);
     futures::select! {
         checked = checked => checked.unwrap_or_else(|_| {
-            Err(format!("{tool}'s answer was lost, so nothing was opened."))
+            Err(format!("{tool}'s answer was lost, so nothing was opened.").into())
         }),
-        () = waited => Err(format!("{tool} did not answer in time, so nothing was opened.")),
+        () = waited => Err(format!("{tool} did not answer in time, so nothing was opened.").into()),
     }
 }
 
@@ -309,7 +309,7 @@ pub(super) fn gio_agrees(
     directory: &Path,
     mut environment: Vec<(OsString, OsString)>,
     wait: Duration,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     environment.push(("GIO_USE_VFS".into(), "local".into()));
     let arguments = [
         "info".into(),
@@ -324,10 +324,13 @@ pub(super) fn gio_agrees(
         .unwrap_or_default()
         .trim();
     if !kind.media_types().contains(&content_type) {
-        return Err(format!(
-            "The desktop would open this copy as {} rather than as {}, so nothing was opened.",
-            shown(content_type),
-            kind.description()
+        let (seen, shown) = shown(content_type);
+        return Err(Failure::new(
+            Category::SeenAs(seen),
+            format!(
+                "The desktop would open this copy as {shown} rather than as {}, so nothing was opened.",
+                kind.description()
+            ),
         ));
     }
     Ok(())
@@ -347,7 +350,7 @@ pub(super) fn xdg_open_agrees(
     directory: &Path,
     environment: Vec<(OsString, OsString)>,
     wait: Duration,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let filetype = [
         "query".into(),
         "filetype".into(),
@@ -364,10 +367,13 @@ pub(super) fn xdg_open_agrees(
     let first = answer.lines().next().unwrap_or_default();
     let media_type = first.split(';').next().unwrap_or_default().trim();
     if !kind.media_types().contains(&media_type) {
-        return Err(format!(
-            "xdg-open would open this copy as {} rather than as {}, so nothing was opened; the desktop portal (xdg-desktop-portal) opens it by its type.",
-            shown(media_type),
-            kind.description()
+        let (seen, shown) = shown(media_type);
+        return Err(Failure::new(
+            Category::SeenAs(seen),
+            format!(
+                "xdg-open would open this copy as {shown} rather than as {}, so nothing was opened; the desktop portal (xdg-desktop-portal) opens it by its type.",
+                kind.description()
+            ),
         ));
     }
     let default = ["query".into(), "default".into(), media_type.into()];
@@ -379,29 +385,31 @@ pub(super) fn xdg_open_agrees(
         .trim()
         .ends_with(".desktop")
     {
-        return Err(format!(
-            "No default application is set for {media_type}, so nothing was opened."
+        return Err(Failure::new(
+            Category::NoDefaultApplication(media_type.into()),
+            format!("No default application is set for {media_type}, so nothing was opened."),
         ));
     }
     Ok(())
 }
 
-/// A sniffer's answer as the line beneath the control may show it: the
-/// types a polyglot is most often taken for by name, then as reported.
-fn shown(media_type: &str) -> String {
+/// A sniffer's answer as a refusal names it, short and then in its whole
+/// sentence: the types a polyglot is most often taken for by name, with the
+/// type as reported beside it in the sentence, and others as reported.
+fn shown(media_type: &str) -> (String, String) {
     let shown: String = media_type
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || "/.+-_".contains(*c))
         .take(96)
         .collect();
     let named = match shown.as_str() {
-        "" => return "an unknown type".into(),
+        "" => return ("an unknown type".into(), "an unknown type".into()),
         "image/svg+xml" => "an SVG document",
         "text/html" => "an HTML document",
         "application/xhtml+xml" => "an XHTML document",
-        _ => return shown,
+        _ => return (shown.clone(), shown),
     };
-    format!("{named} ({shown})")
+    (named.into(), format!("{named} ({shown})"))
 }
 
 /// What `tool` prints for `arguments`, read up to [`MAX_ANSWER`] bytes once
@@ -667,10 +675,10 @@ mod tests {
     /// be executed yet: a child that another test thread forked while the
     /// script was open for writing keeps it busy (`ETXTBSY`) until that child
     /// executes its own program. Only programs written by the tests meet it.
-    fn past_busy<T>(mut attempt: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+    fn past_busy<T>(mut attempt: impl FnMut() -> Result<T, Failure>) -> Result<T, Failure> {
         for _ in 0..200 {
             match attempt() {
-                Err(error) if error.contains("os error 26") => {
+                Err(error) if error.sentence().contains("os error 26") => {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 result => return result,
@@ -714,7 +722,8 @@ mod tests {
     /// xdg-open types the copy with xdg-mime, which sniffs content: a
     /// polyglot that a sniffer types as something else, an untyped copy and
     /// a type with no default application (which xdg-open would hand on to
-    /// mailcap or a browser) all open nothing.
+    /// mailcap or a browser) all open nothing, each refusal with its
+    /// category.
     #[test]
     fn xdg_open_runs_only_when_xdg_mime_agrees_with_the_content() {
         let folder = tempfile::tempdir().unwrap();
@@ -745,16 +754,32 @@ mod tests {
             &[("TYPE", "application/x-iso9660-image"), player],
         );
         let refused = disk.unwrap_err();
-        assert!(refused.contains("as application/x-iso9660-image rather than as a PNG image"));
-        let untyped = check(Kind::Pdf, &[("TYPE", "application/octet-stream"), player]);
-        assert!(untyped.unwrap_err().contains("application/octet-stream"));
         assert!(
-            check(Kind::Png, &[("TYPE", "<b>")])
-                .unwrap_err()
-                .contains(" as b rather")
+            refused
+                .sentence()
+                .contains("as application/x-iso9660-image rather than as a PNG image")
         );
+        assert_eq!(
+            refused.category,
+            Category::SeenAs("application/x-iso9660-image".into())
+        );
+        let untyped = check(Kind::Pdf, &[("TYPE", "application/octet-stream"), player]);
+        let untyped = untyped.unwrap_err();
+        assert!(untyped.sentence().contains("application/octet-stream"));
+        assert_eq!(
+            untyped.category,
+            Category::SeenAs("application/octet-stream".into())
+        );
+        let markup = check(Kind::Png, &[("TYPE", "<b>")]).unwrap_err();
+        assert!(markup.sentence().contains(" as b rather"));
+        assert_eq!(markup.category, Category::SeenAs("b".into()));
         let unhandled = check(Kind::Png, &[("TYPE", "image/png"), ("DEFAULT", "")]);
-        assert!(unhandled.unwrap_err().starts_with("No default application"));
+        let unhandled = unhandled.unwrap_err();
+        assert!(unhandled.sentence().starts_with("No default application"));
+        assert_eq!(
+            unhandled.category,
+            Category::NoDefaultApplication("image/png".into())
+        );
         let start = Instant::now();
         let slow = [("TYPE", "image/png"), player, ("SLEEP", "10")];
         let environment = answers(&record, &slow);
@@ -766,7 +791,9 @@ mod tests {
             environment,
             Duration::from_millis(300),
         );
-        assert!(late.unwrap_err().contains("did not answer in time"));
+        let late = late.unwrap_err();
+        assert!(late.sentence().contains("did not answer in time"));
+        assert_eq!(late.category, Category::Other);
         assert!(
             start.elapsed() < Duration::from_secs(5),
             "the group was killed"
@@ -814,7 +841,8 @@ mod tests {
 
     /// The portal types a copy as GIO does, which sniffs the content when a
     /// suffix has several claimants: the copy goes on only when GIO's answer
-    /// is one of the kind's media types.
+    /// is one of the kind's media types, and a refusal names what GIO saw in
+    /// its category, an SVG document by name, as well as in its sentence.
     #[test]
     fn the_portal_gets_the_copy_only_when_gio_agrees_with_the_content() {
         let folder = tempfile::tempdir().unwrap();
@@ -838,18 +866,25 @@ mod tests {
         );
         let svg = check(Kind::Png, &[("TYPE", "image/svg+xml")], wait).unwrap_err();
         assert_eq!(
-            svg,
+            svg.sentence(),
             "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened."
         );
+        assert_eq!(svg.category, Category::SeenAs("an SVG document".into()));
         let php = check(Kind::Pdf, &[("TYPE", "application/x-php")], wait).unwrap_err();
-        assert!(php.contains(" as application/x-php rather than as a PDF document"));
+        assert!(
+            php.sentence()
+                .contains(" as application/x-php rather than as a PDF document")
+        );
+        assert_eq!(php.category, Category::SeenAs("application/x-php".into()));
         assert_eq!(check(Kind::Text, &[("TYPE", "text/plain")], wait), Ok(()));
         let untyped = check(Kind::Png, &[], wait).unwrap_err();
-        assert!(untyped.contains(" as an unknown type "));
+        assert!(untyped.sentence().contains(" as an unknown type "));
+        assert_eq!(untyped.category, Category::SeenAs("an unknown type".into()));
         let start = Instant::now();
         let slow = [("TYPE", "image/png"), ("SLEEP", "10")];
         let late = check(Kind::Png, &slow, Duration::from_millis(300)).unwrap_err();
-        assert!(late.contains("did not answer in time"));
+        assert!(late.sentence().contains("did not answer in time"));
+        assert_eq!(late.category, Category::Other);
         assert!(
             start.elapsed() < Duration::from_secs(5),
             "the wait is bounded"
@@ -907,7 +942,11 @@ mod tests {
                 "{name}: GIO says {typed}, the check says {verdict:?}"
             );
             if let Err(refusal) = verdict {
-                assert!(refusal.contains(&typed), "{name}: {refusal}");
+                assert!(refusal.sentence().contains(&typed), "{name}: {refusal:?}");
+                assert!(
+                    matches!(&refusal.category, Category::SeenAs(_)),
+                    "{name}: {refusal:?}"
+                );
             }
             if name == "plain" {
                 assert_eq!(typed, "image/png");

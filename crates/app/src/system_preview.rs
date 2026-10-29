@@ -22,7 +22,8 @@
 //! closed application chooser, whether or not it offered an application), a
 //! muted "Nothing opened.". Beneath an image side's caption the line is short and
 //! leads with the reason ([`Answer::short_line`]), the whole answer in its tooltip
-//! and name. The line stays while that comparison is shown and goes when
+//! and name; the short line is written from the failure's typed [`Category`],
+//! never from its sentence. The line stays while that comparison is shown and goes when
 //! another is ([`Showing`]); nothing reaches the window-wide notice.
 
 use crate::copy_feedback::{self, Action, Mark};
@@ -158,19 +159,117 @@ pub(crate) enum NotOpened {
     /// The portal reports the request cancelled: the person closed its
     /// application chooser, with or without an application to offer.
     Dismissed,
-    /// Nothing could be opened, for this reason, a sentence.
-    Failed(String),
+    /// Nothing could be opened, for this reason.
+    Failed(Failure),
+}
+
+impl From<Failure> for NotOpened {
+    fn from(failure: Failure) -> Self {
+        Self::Failed(failure)
+    }
 }
 
 impl From<String> for NotOpened {
     fn from(reason: String) -> Self {
-        Self::Failed(reason)
+        Self::Failed(reason.into())
     }
 }
 
 impl From<&str> for NotOpened {
     fn from(reason: &str) -> Self {
         Self::Failed(reason.into())
+    }
+}
+
+/// What kind of failure stopped a click, as the code that refused it
+/// classifies it. The short line beneath the control is written from this
+/// alone ([`Category::short_line`]), never from the failure's sentence.
+///
+/// Only Linux's launcher and copy store refuse with a category of their own,
+/// so other builds, tests aside, have `Other` alone rather than variants
+/// nothing constructs: macOS's Quick Look reports every failure as `Other`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Category {
+    /// A desktop type sniffer (GIO for the portal, `xdg-mime` for
+    /// `xdg-open`) types the copy as something other than the kind it was
+    /// offered as. Holds the type as the launcher names it: "an SVG document"
+    /// or "an unknown type", or a media type cleaned to at most 96 of its own
+    /// characters ("application/x-php").
+    #[cfg(any(target_os = "linux", test))]
+    SeenAs(String),
+    /// The copy's media type, one its kind may be, has no default
+    /// application.
+    #[cfg(any(target_os = "linux", test))]
+    NoDefaultApplication(String),
+    /// The captured bytes exceed the private copy's size limit
+    /// ([`gitturtle_preview::MAX_INPUT_BYTES`]), so no copy was written.
+    #[cfg(any(target_os = "linux", test))]
+    TooLarge,
+    /// Anything else, such as a missing program, the portal's answer or the
+    /// private copy's store.
+    Other,
+}
+
+/// Why a click opened nothing: its [`Category`] and the sentence that says
+/// so, which the line's tooltip, accessible name and announcement carry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Failure {
+    pub(crate) category: Category,
+    sentence: String,
+}
+
+impl Failure {
+    pub(crate) fn new(category: Category, sentence: impl Into<String>) -> Self {
+        Self {
+            category,
+            sentence: sentence.into(),
+        }
+    }
+
+    pub(crate) fn sentence(&self) -> &str {
+        &self.sentence
+    }
+}
+
+/// A failure of no category of its own.
+impl From<String> for Failure {
+    fn from(sentence: String) -> Self {
+        Self::new(Category::Other, sentence)
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(sentence: &str) -> Self {
+        Self::new(Category::Other, sentence)
+    }
+}
+
+/// The short line for a failure whose category has no line of its own.
+pub(crate) const NOT_OPENED: &str = "Could not open this copy";
+
+impl Category {
+    /// What a short line shows: the reason first, in a few words that a
+    /// side's half of a narrow column holds in two lines ("Seen as an SVG
+    /// document, so not opened"). The side is the heading or caption above
+    /// the line. A category without a line of its own fails closed to
+    /// [`NOT_OPENED`], leaving its words to the whole sentence.
+    fn short_line(&self) -> String {
+        #[cfg(any(target_os = "linux", test))]
+        match self {
+            Self::SeenAs(seen) => return format!("Seen as {seen}, so not opened"),
+            Self::NoDefaultApplication(media_type) => {
+                return format!("No default app for {media_type}");
+            }
+            Self::TooLarge => {
+                return format!(
+                    "Over {} MiB, so not opened",
+                    gitturtle_preview::MAX_INPUT_BYTES >> 20
+                );
+            }
+            // `Other`, and any category added without a line here.
+            _ => {}
+        }
+        NOT_OPENED.into()
     }
 }
 
@@ -295,29 +394,9 @@ struct Note {
     /// The whole answer, which the line's tooltip, accessible name and
     /// announcement carry: "Could not open After. …" or "Nothing opened.".
     text: SharedString,
-    /// What a short line shows: the reason first ([`brief`]).
+    /// What a short line shows: the reason first
+    /// ([`Category::short_line`]).
     brief: SharedString,
-}
-
-/// What a short line beneath an image side's caption shows for a failure:
-/// its reason first, in a few words a side's half of a narrow column holds
-/// in two lines. A copy the desktop would type as something else reads
-/// "Seen as an SVG document, so not opened" in place of the launcher's
-/// sentence, whose reason comes after "The desktop would open this copy as";
-/// every other reason already leads with itself ("No default application is
-/// set for image/png, so nothing was opened."), and keeps its own words. The
-/// side the line belongs to is the caption above it.
-fn brief(reason: &str) -> String {
-    let reason = reason.trim_end_matches('.');
-    if let Some((_, rest)) = reason.split_once(" would open this copy as ")
-        && let Some((seen, _)) = rest.split_once(" rather than as ")
-    {
-        // "an SVG document (image/svg+xml)": the type's name, without the
-        // media type the tooltip keeps.
-        let seen = seen.split_once(" (").map_or(seen, |(name, _)| name);
-        return format!("Seen as {seen}, so not opened");
-    }
-    format!("{reason}.")
 }
 
 /// Why the last click on an open control in its showing opened nothing, as
@@ -331,7 +410,8 @@ pub(crate) struct Answer {
 }
 
 impl Answer {
-    /// What the short line shows ([`brief`]), or "Nothing opened.".
+    /// What the short line shows ([`Category::short_line`]), or "Nothing
+    /// opened.".
     pub(crate) fn brief(&self) -> &str {
         &self.brief
     }
@@ -465,14 +545,14 @@ impl Target {
                 return;
             }
             Err(NotOpened::Dismissed) => (false, DISMISSED.into(), DISMISSED.into()),
-            Err(NotOpened::Failed(reason)) => (
+            Err(NotOpened::Failed(failure)) => (
                 true,
                 format!(
                     "Could not open {}. {}.",
                     self.side,
-                    reason.trim_end_matches('.')
+                    failure.sentence().trim_end_matches('.')
                 ),
-                brief(&reason),
+                failure.category.short_line(),
             ),
         };
         let notes = cx.default_global::<Notes>();
@@ -616,10 +696,23 @@ impl crate::GitTurtle {
                     .spawn(launch::open(copy, kind, slot, executor))
                     .await
             }
-            Ok(Err(error)) => Err(format!("{error:#}").into()),
+            Ok(Err(error)) => Err(copy_refused(&error).into()),
             Err(_) => Err("The copy stopped before it was written.".into()),
         })
     }
+}
+
+/// Why the private copy was not written, in its category: the store's size
+/// limit is `TooLarge` and anything else `Other`. The sentence is the
+/// store's own.
+#[cfg(target_os = "linux")]
+fn copy_refused(error: &anyhow::Error) -> Failure {
+    let category = if error.is::<store::TooLarge>() {
+        Category::TooLarge
+    } else {
+        Category::Other
+    };
+    Failure::new(category, format!("{error:#}"))
 }
 
 #[cfg(test)]
@@ -676,42 +769,122 @@ pub(crate) mod tests {
         png
     }
 
-    /// A failure's short line leads with its reason. The launcher's sentence
-    /// for a copy the desktop would type as something else puts its reason
-    /// after "The desktop would open this copy as", which a band in a 461 px
-    /// window's half never reached ("Could not / open After." at 18 pt), so
-    /// the line reads "Seen as …, so not opened"; every other reason keeps
-    /// its own words, which already lead with it.
-    #[::core::prelude::v1::test]
-    fn a_failure_line_leads_with_its_reason() {
-        assert_eq!(
-            brief(
-                "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened."
+    /// The refusal the launcher reports when GIO types a copy offered as
+    /// `kind` ("a PNG image") as an SVG document, with its category.
+    pub(crate) fn seen_as_svg(kind: &str) -> NotOpened {
+        NotOpened::Failed(Failure::new(
+            Category::SeenAs("an SVG document".into()),
+            format!(
+                "The desktop would open this copy as an SVG document (image/svg+xml) rather than as {kind}, so nothing was opened."
             ),
-            "Seen as an SVG document, so not opened"
-        );
-        assert_eq!(
-            brief(
-                "xdg-open would open this copy as application/x-php rather than as a PDF document, so nothing was opened; the desktop portal (xdg-desktop-portal) opens it by its type."
-            ),
-            "Seen as application/x-php, so not opened"
-        );
-        assert_eq!(
-            brief(
-                "The desktop would open this copy as an unknown type rather than as a PNG image, so nothing was opened."
-            ),
-            "Seen as an unknown type, so not opened"
-        );
-        for reason in [
-            "No default application is set for image/png, so nothing was opened.",
-            "This needs gio (GLib) to check what the desktop would open the copy as, and it is not installed.",
-        ] {
-            assert_eq!(brief(reason), reason);
+        ))
+    }
+
+    /// After's open control, whose clicks a test answers itself.
+    fn after_control() -> Target {
+        Target {
+            opener: Opener::new(WeakEntity::new_invalid(), Showing::next()),
+            mark: Mark::new(("image-system-preview", 1usize), "captured"),
+            side: "After",
+            bytes: Arc::from(&b"captured"[..]),
+            offer: Offer {
+                #[cfg(target_os = "linux")]
+                kind: passive::Kind::Png,
+            },
+            #[cfg(not(target_os = "linux"))]
+            name: "captured".into(),
         }
+    }
+
+    /// The short line `outcome` draws beneath `target`, and its whole answer.
+    fn answered_lines(
+        target: &Target,
+        outcome: Result<(), NotOpened>,
+        cx: &mut gpui_kit::VisualTestContext,
+    ) -> (String, String) {
+        cx.update(|window, cx| target.clone().answer(outcome, window, cx));
+        cx.update(|_, cx| {
+            let answer = target.answered(cx).expect("the click's answer");
+            (answer.brief.to_string(), answer.text.to_string())
+        })
+    }
+
+    /// A failure's short line is written from its category and leads with
+    /// its reason, never from words found in its sentence: the line once
+    /// found "Seen as …" after "would open this copy as" in the launcher's
+    /// sentence, which a band in a 461 px window's half never reached
+    /// ("Could not / open After." at 18 pt). A copy the desktop would type
+    /// as something else reads "Seen as …, so not opened" whatever its
+    /// sentence says, a type without a default application names that type,
+    /// and any other failure, the launcher's refusal sentence without its
+    /// category among them, fails closed to the generic line. The whole
+    /// answer keeps the sentence, after the side.
+    #[gpui::test]
+    fn a_failure_line_is_written_from_its_category(cx: &mut gpui_kit::TestAppContext) {
+        let (_app, cx) = crate::copy_feedback::tests::history(cx, Vec::new());
+        let target = after_control();
+        let refusal = "The desktop would open this copy as an SVG document (image/svg+xml) rather than as a PNG image, so nothing was opened.";
+        let cases = [
+            (
+                Failure::new(Category::SeenAs("an SVG document".into()), "Refused."),
+                "Seen as an SVG document, so not opened",
+            ),
+            (
+                Failure::new(Category::SeenAs("application/x-php".into()), refusal),
+                "Seen as application/x-php, so not opened",
+            ),
+            (
+                Failure::new(
+                    Category::NoDefaultApplication("image/png".into()),
+                    "No default application is set for image/png, so nothing was opened.",
+                ),
+                "No default app for image/png",
+            ),
+            (
+                Failure::new(
+                    Category::TooLarge,
+                    "The captured file exceeds the 32 MiB limit for opening it in another app.",
+                ),
+                "Over 32 MiB, so not opened",
+            ),
+            (Failure::from(refusal), NOT_OPENED),
+            (
+                Failure::from("The desktop portal refused it: denied."),
+                NOT_OPENED,
+            ),
+        ];
+        for (failure, short) in cases {
+            let sentence = failure.sentence().trim_end_matches('.').to_owned();
+            let (brief, whole) = answered_lines(&target, Err(NotOpened::Failed(failure)), cx);
+            assert_eq!(brief, short);
+            assert_eq!(whole, format!("Could not open After. {sentence}."));
+        }
+        let (brief, whole) = answered_lines(&target, Err(NotOpened::Dismissed), cx);
+        assert_eq!((brief.as_str(), whole.as_str()), (DISMISSED, DISMISSED));
+    }
+
+    /// The private copy's size limit is the one refusal before the launcher
+    /// with a category of its own; every other way the copy can fail stays
+    /// `Other`. Each keeps the store's sentence for the whole answer.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_copy_size_limit_has_its_own_category() {
+        let folder = tempfile::tempdir().unwrap();
+        let store = store::Store::new(folder.path().join("captured-copies"));
+        let large = vec![b'a'; gitturtle_preview::MAX_INPUT_BYTES + 1];
+        let Err(error) = store.write(&large, passive::Kind::Text) else {
+            panic!("a copy over the limit is refused");
+        };
+        let refused = copy_refused(&error);
+        assert_eq!(refused.category, Category::TooLarge);
         assert_eq!(
-            brief("The desktop portal refused it: denied"),
-            "The desktop portal refused it: denied."
+            refused.sentence(),
+            "The captured file exceeds the 32 MiB limit for opening it in another app."
         );
+        let other = copy_refused(&anyhow::anyhow!("The user cache folder is unavailable."));
+        assert_eq!(other.category, Category::Other);
+        assert_eq!(other.sentence(), "The user cache folder is unavailable.");
+        store.close();
     }
 
     /// The short line beneath an image side's caption shows its reason first
@@ -738,7 +911,7 @@ pub(crate) mod tests {
         cx.update(|window, cx| {
             target
                 .clone()
-                .answer(Err(NotOpened::Failed(reason.into())), window, cx)
+                .answer(Err(seen_as_svg("a PNG image")), window, cx)
         });
         let mut written = None;
         let viewport = cx.update(|window, _| window.viewport_size());

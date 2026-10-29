@@ -6890,7 +6890,7 @@ pub(crate) mod tests {
     async fn image_captions_keep_their_controls_in_view_and_still(cx: &mut TestAppContext) {
         use crate::system_preview::{
             DISMISSED, NotOpened,
-            tests::{latest_note, png, queue},
+            tests::{latest_note, png, queue, seen_as_svg},
         };
         let (before, after) = (png(Some(b"before")), png(Some(b"after")));
         let input = file_commits(&[
@@ -7015,7 +7015,7 @@ pub(crate) mod tests {
             let rest = still(cx);
             for (outcome, expected) in [
                 (
-                    Err(NotOpened::Failed(refusal.into())),
+                    Err(seen_as_svg("a PNG image")),
                     (format!("Could not open After. {refusal}"), true),
                 ),
                 (Err(NotOpened::Dismissed), (DISMISSED.to_owned(), false)),
@@ -7062,10 +7062,7 @@ pub(crate) mod tests {
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn a_refused_open_takes_its_own_room_and_covers_no_note(cx: &mut TestAppContext) {
-        use crate::system_preview::{
-            NotOpened,
-            tests::{latest_note, png, queue},
-        };
+        use crate::system_preview::tests::{latest_note, png, queue, seen_as_svg};
         let input = file_commits(&[("add", &[("polyglot.png", &png(Some(b"after")))])]);
         let (_fixture, app, cx) = history_window_from(cx, &input).await;
         cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
@@ -7089,7 +7086,7 @@ pub(crate) mod tests {
             draw(cx);
             let at = format!("{text} pt in {width} × {height}");
             let names = ["image-side-name-0", "image-side-name-1"].map(|name| bounds(name, cx));
-            queue(Err(NotOpened::Failed(refusal.into())));
+            queue(Err(seen_as_svg("a PNG image")));
             let control = bounds("image-system-preview-1", cx);
             cx.simulate_click(control.center(), Modifiers::default());
             cx.run_until_parked();
@@ -7169,16 +7166,16 @@ pub(crate) mod tests {
     }
 
     /// After a click on After's Open in default app that opens nothing, with
-    /// `reason`, at `text` pt in a `width` × `height` window: After's caption,
+    /// `failure`, at `text` pt in a `width` × `height` window: After's caption,
     /// the band's half, its line, the image and the line's height, the
     /// lines it shows and the room beneath the captions.
     #[cfg(target_os = "linux")]
     fn refused(
         cx: &mut VisualTestContext,
-        reason: &str,
+        failure: crate::system_preview::NotOpened,
         (text, width, height): (u8, f32, f32),
     ) -> RefusedBand {
-        use crate::system_preview::{NotOpened, tests::queue};
+        use crate::system_preview::tests::queue;
         let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
             cx.debug_bounds(selector)
                 .unwrap_or_else(|| panic!("{selector} is drawn at {text} pt in {width} × {height}"))
@@ -7186,7 +7183,7 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
         cx.simulate_resize(size(px(width), px(height)));
         draw(cx);
-        queue(Err(NotOpened::Failed(reason.into())));
+        queue(Err(failure));
         let control = bounds("image-system-preview-1", cx);
         cx.simulate_click(control.center(), Modifiers::default());
         cx.run_until_parked();
@@ -7261,7 +7258,11 @@ pub(crate) mod tests {
             (18, 1480., 980.),
         ] {
             let at = format!("{} pt in {} × {}", size.0, size.1, size.2);
-            let refused = refused(cx, SVG_REFUSAL, size);
+            let refused = refused(
+                cx,
+                crate::system_preview::tests::seen_as_svg("a PNG image"),
+                size,
+            );
             assert_eq!(
                 cx.read(latest_note),
                 Some((format!("Could not open After. {SVG_REFUSAL}"), true)),
@@ -7348,9 +7349,10 @@ pub(crate) mod tests {
 
     /// A band ends at a whole line: at 13 pt in a 640 × 680 window the
     /// scaled 100 px it was capped at cut its last line ("nothing was
-    /// opened.") through its glyphs. A reason longer than that, where the
-    /// image keeps its minimum beneath it, now shows every line, whole, and
-    /// at 13 pt in 461 × 640, where it would not, two whole lines.
+    /// opened.") through its glyphs. A short line longer than that, naming
+    /// the longest type a sniffer's answer is shown as, where the image
+    /// keeps its minimum beneath it, now shows every line, whole, and at
+    /// 13 pt in 461 × 640, where it would not, two whole lines.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn a_refusal_band_ends_at_a_whole_line(cx: &mut TestAppContext) {
@@ -7365,7 +7367,15 @@ pub(crate) mod tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
         settle(&app, cx).await;
         let slack = px(0.5);
-        let long = "Text opens only through the desktop portal, which is not running here; xdg-open would choose an application from what the text contains, not its type.";
+        let seen = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.glossary+xml.part";
+        let long = || {
+            crate::system_preview::NotOpened::Failed(crate::system_preview::Failure::new(
+                crate::system_preview::Category::SeenAs(seen.into()),
+                format!(
+                    "xdg-open would open this copy as {seen} rather than as a PNG image, so nothing was opened; the desktop portal (xdg-desktop-portal) opens it by its type."
+                ),
+            ))
+        };
         for (size, shown) in [((13, 640., 680.), None), ((13, 461., 640.), Some(2.))] {
             let at = format!("{} pt in {} × {}", size.0, size.1, size.2);
             let RefusedBand {
@@ -7375,7 +7385,7 @@ pub(crate) mod tests {
                 line_height,
                 lines,
                 ..
-            } = refused(cx, long, size);
+            } = refused(cx, long(), size);
             assert!(
                 (lines - lines.round()).abs() * line_height <= slack,
                 "{at}: the line {line:?} ends at a whole line of {line_height:?}"
@@ -7411,10 +7421,7 @@ pub(crate) mod tests {
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn a_refusal_band_leaves_no_image_sliver_or_second_rule(cx: &mut TestAppContext) {
-        use crate::system_preview::{
-            NotOpened,
-            tests::{png, queue},
-        };
+        use crate::system_preview::tests::{png, queue, seen_as_svg};
         let (before, after) = (png(Some(b"before")), png(Some(b"after")));
         let input = file_commits(&[
             ("add", &[("image.png", &before)]),
@@ -7436,7 +7443,7 @@ pub(crate) mod tests {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(461.), px(980.)));
             draw(cx);
-            queue(Err(NotOpened::Failed(SVG_REFUSAL.into())));
+            queue(Err(seen_as_svg("a PNG image")));
             let control = bounds("image-system-preview-1", cx);
             cx.simulate_click(control.center(), Modifiers::default());
             cx.run_until_parked();
@@ -7825,7 +7832,7 @@ pub(crate) mod tests {
             },
             system_preview::{
                 DISMISSED, NotOpened, OPENED,
-                tests::{latest_note, queue},
+                tests::{latest_note, queue, seen_as_svg},
             },
         };
         let pdf = "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n";
@@ -7892,7 +7899,7 @@ pub(crate) mod tests {
             });
             assert_ne!(warning, accent, "{theme:?}: unlike a confirmation");
 
-            queue(Err(NotOpened::Failed(refusal.into())));
+            queue(Err(seen_as_svg("a PDF document")));
             click(cx);
             let control = cx.debug_bounds("system-preview-1").unwrap();
             let line = cx
@@ -7930,7 +7937,7 @@ pub(crate) mod tests {
             assert_eq!(notice(cx), (None, false));
         }
 
-        queue(Err(NotOpened::Failed(refusal.into())));
+        queue(Err(seen_as_svg("a PDF document")));
         click(cx);
         assert!(cx.debug_bounds("system-preview-1/note").is_some());
         let shown = app.read_with(cx, |app, _| app.content.clone());
