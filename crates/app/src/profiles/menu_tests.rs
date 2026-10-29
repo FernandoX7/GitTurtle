@@ -221,6 +221,71 @@ async fn the_profile_menu_keeps_a_long_identity_inside_a_narrow_window(cx: &mut 
     cx.simulate_keystrokes("escape");
 }
 
+/// At 461 × 490, at 13 and 18 pt, a profile menu of twelve saved profiles
+/// is taller than its room above the status bar. Its rows keep the height
+/// and spacing the menu's rows have where they fit, with three profiles in
+/// 1280 × 800, and it ends after its last whole row, scrolling the rest
+/// with its scrollbar shown. A capped menu once squeezed its rows instead.
+#[gpui::test]
+async fn a_long_profile_menu_keeps_its_rows_and_scrolls(cx: &mut TestAppContext) {
+    use crate::views::tests::{assert_menu_keeps_its_rows, draw, menu_rows};
+    let (_fixture, app, cx) = history_window(cx).await;
+    cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+    let saved: Vec<_> = (1..=12)
+        .map(|n| {
+            definition(
+                &format!("p{n}"),
+                &format!("Profile {n:02}"),
+                &format!("p{n:02}@example.invalid"),
+            )
+        })
+        .collect();
+    let mut labels = vec![
+        "Current: GitTurtle QA <qa@example.invalid>".to_string(),
+        "Saved Git profiles".into(),
+    ];
+    labels.extend(
+        saved
+            .iter()
+            .map(|it| format!("{} · {}", it.label, it.email)),
+    );
+    labels.extend(["New profile…".into(), "Manage profiles…".into()]);
+    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+    for text in [13, 18] {
+        cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+        let at = format!("{text} pt in 1280 × 800");
+        cx.simulate_resize(size(px(1280.), px(800.)));
+        let mut store = Store::default();
+        store.definitions = saved[..3].to_vec();
+        use_store(&app, cx, store).await;
+        draw(cx);
+        open_menu(&app, cx).await;
+        draw(cx);
+        let uncapped = menu_rows(cx, &labels);
+        assert_eq!(uncapped.len(), 7, "{at}: {uncapped:?}");
+        let (_, folded) = assert_menu_keeps_its_rows(cx, &at, &uncapped, &uncapped);
+        assert!(!folded, "{at}: every row fits");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+
+        let at = format!("{text} pt in 461 × 490");
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let mut store = Store::default();
+        store.definitions = saved.clone();
+        use_store(&app, cx, store).await;
+        draw(cx);
+        open_menu(&app, cx).await;
+        draw(cx);
+        let rows = menu_rows(cx, &labels);
+        assert_eq!(rows.len(), labels.len(), "{at}: {rows:?}");
+        let (surface, folded) = assert_menu_keeps_its_rows(cx, &at, &rows, &uncapped);
+        assert!(folded, "{at}: rows lie past the menu's fold at {surface:?}");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+    }
+    cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+}
+
 /// The identity line leaves out what Git has not set rather than drawing
 /// empty brackets.
 #[test]

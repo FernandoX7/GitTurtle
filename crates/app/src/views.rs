@@ -11280,6 +11280,310 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The open menu's rows labelled `labels`, in order, where the last frame
+    /// drew them, inside or past the menu's fold: an item's whatever its
+    /// state, or a label's.
+    pub(crate) fn menu_rows(
+        cx: &mut VisualTestContext,
+        labels: &[&str],
+    ) -> Vec<(String, Bounds<Pixels>)> {
+        const ROLES: [&str; 5] = [
+            "MenuItem",
+            "MenuItem disabled",
+            "MenuItemCheckBox True",
+            "MenuItemCheckBox False",
+            "Label",
+        ];
+        labels
+            .iter()
+            .filter_map(|label| {
+                ROLES
+                    .iter()
+                    .find_map(|role| {
+                        let selector = format!("menu-item: {label} · {role}");
+                        cx.debug_bounds(Box::leak(selector.into_boxed_str()))
+                    })
+                    .map(|row| (label.to_string(), row))
+            })
+            .collect()
+    }
+
+    /// Asserts that the open menu, whose rows are `rows` (`at` names the
+    /// case), keeps them as the same menu draws them where they fit,
+    /// `uncapped`: each row both draw is as tall as there, and each two rows
+    /// that follow one another in both are as far apart, the gap between
+    /// groups included. The menu ends 8 px or more above the status bar and
+    /// cuts no row at its foot; with rows past that fold it always shows its
+    /// scrollbar, track and thumb, beside its rows rather than over them, and
+    /// with none it draws no scrollbar. Returns the menu's surface and
+    /// whether rows lie past its fold.
+    pub(crate) fn assert_menu_keeps_its_rows(
+        cx: &mut VisualTestContext,
+        at: &str,
+        rows: &[(String, Bounds<Pixels>)],
+        uncapped: &[(String, Bounds<Pixels>)],
+    ) -> (Bounds<Pixels>, bool) {
+        let near = |a: Pixels, b: Pixels| (a - b).abs() < px(0.01);
+        let surface = menu_surface(cx, rows[0].1);
+        let status = crate::theme_editor::tests::status_bar_top(cx);
+        assert!(
+            surface.bottom() <= status - px(8.) + px(0.25),
+            "{at}: the menu {surface:?} ends 8 px above the status bar at {status:?}"
+        );
+        let reference = |label: &str| uncapped.iter().position(|(name, _)| name == label);
+        for (label, row) in rows {
+            if let Some(ix) = reference(label) {
+                let fits = uncapped[ix].1;
+                assert!(
+                    near(row.size.height, fits.size.height),
+                    "{at}: {label:?} is {row:?}, {fits:?} where the menu fits"
+                );
+            }
+            assert!(
+                row.bottom() <= surface.bottom() + px(0.01)
+                    || row.top() >= surface.bottom() - px(0.01),
+                "{at}: the menu {surface:?} cuts {label:?} at {row:?}"
+            );
+        }
+        for pair in rows.windows(2) {
+            let ((above, first), (below, second)) = (&pair[0], &pair[1]);
+            if let (Some(i), Some(j)) = (reference(above), reference(below))
+                && j == i + 1
+            {
+                let fits = uncapped[j].1.top() - uncapped[i].1.top();
+                assert!(
+                    near(second.top() - first.top(), fits),
+                    "{at}: {below:?} at {second:?} lies {:?} below {above:?} at {first:?}, \
+                     {fits:?} where the menu fits",
+                    second.top() - first.top()
+                );
+            }
+        }
+        let folded = rows
+            .iter()
+            .any(|(_, row)| row.top() >= surface.bottom() - px(0.01));
+        let scrollbar = cx.debug_bounds("popup-menu-scrollbar");
+        if !folded {
+            assert!(
+                scrollbar.is_none(),
+                "{at}: a menu whose rows fit draws no scrollbar"
+            );
+            return (surface, folded);
+        }
+        assert!(scrollbar.is_some(), "{at}: the menu has its scrollbar");
+        // The scrollbar as the last frame painted it: the opaque fills other
+        // than the menu's own in the track along its right edge, its thumb
+        // narrower than the track.
+        let width = gpui_kit::base::Scrollbar::width();
+        let track = surface.right() - width;
+        let bar: Vec<Bounds<Pixels>> = cx.update(|window, cx| {
+            let fill = Background::from(gpui_kit::component::Theme::global(cx).popover);
+            let scale = window.scale_factor();
+            let logical = |value: gpui_kit::ScaledPixels| px(value.as_f32() / scale);
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background != fill && !quad.background.is_transparent())
+                .map(|quad| {
+                    Bounds::from_corners(
+                        point(logical(quad.bounds.left()), logical(quad.bounds.top())),
+                        point(logical(quad.bounds.right()), logical(quad.bounds.bottom())),
+                    )
+                })
+                .filter(|quad| {
+                    quad.left() >= track - px(0.01)
+                        && quad.right() <= surface.right() + px(0.01)
+                        && quad.top() >= surface.top() - px(0.01)
+                        && quad.bottom() <= surface.bottom() + px(0.01)
+                })
+                .collect()
+        });
+        assert!(
+            bar.iter().any(|quad| quad.size.width < width - px(0.01)),
+            "{at}: the menu shows its scrollbar's thumb while rows lie past its fold: {bar:?}"
+        );
+        for quad in &bar {
+            for (label, row) in rows {
+                assert!(
+                    row.right() <= quad.left() + px(0.01),
+                    "{at}: the scrollbar's {quad:?} covers {label:?} at {row:?}"
+                );
+            }
+        }
+        (surface, folded)
+    }
+
+    /// The Working Actions menu, opened with a click in a window of `window`.
+    fn open_working_actions(cx: &mut VisualTestContext, window: Size<Pixels>) {
+        cx.simulate_resize(window);
+        draw(cx);
+        let trigger = cx
+            .debug_bounds("working-recovery-menu")
+            .expect("the Actions button");
+        cx.simulate_click(trigger.center(), Modifiers::default());
+        draw(cx);
+    }
+
+    /// At 461 × 490, at 13 and 18 pt, the Working Actions menu is shorter
+    /// than its rows. Each row keeps the height and spacing it has where the
+    /// menu fits, at 1280 × 800, and the menu ends after its last whole row,
+    /// above the status bar, scrolling the rest with its scrollbar shown; Up
+    /// brings its last row whole into view. Capped at the room above the
+    /// bar, the menu once squeezed its rows, 24.5 px apart instead of 27.5
+    /// at 13 pt, and at 18 pt cut its last row with no scrollbar.
+    #[gpui::test]
+    async fn a_capped_working_actions_menu_keeps_its_rows_and_scrolls(cx: &mut TestAppContext) {
+        const SHARED: [&str; 5] = [
+            "Ignore selected untracked file…",
+            "Save changes to stash…",
+            "Browse stashes…",
+            "Amend last commit…",
+            "Undo last local commit…",
+        ];
+        // In an inspector too short for its selection controls, the menu
+        // leads with them, and at 18 pt with Refresh.
+        const LEADING: [&str; 4] = [
+            "Directories",
+            "Stage 0 selected",
+            "Unstage 0 selected",
+            "Refresh working changes",
+        ];
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|window, cx| {
+            appearance::ThemeChoice::Midnight.apply(Some(window), cx);
+            app.update(cx, |app, cx| app.show_working(window, cx));
+        });
+        settle(&app, cx).await;
+        let top = |rows: &[(String, Bounds<Pixels>)], label: &str| {
+            rows.iter()
+                .find(|(name, _)| name == label)
+                .map(|(_, row)| row.top())
+                .unwrap_or_else(|| panic!("{label:?} in {rows:?}"))
+        };
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let at = format!("{text} pt in 1280 × 800");
+            open_working_actions(cx, size(px(1280.), px(800.)));
+            let uncapped = menu_rows(cx, &SHARED);
+            assert_eq!(uncapped.len(), SHARED.len(), "{at}: {uncapped:?}");
+            let (surface, folded) = assert_menu_keeps_its_rows(cx, &at, &uncapped, &uncapped);
+            assert!(!folded, "{at}: every row fits");
+            // A wheel over a menu whose rows fit moves none of them.
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: surface.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-40.))),
+                ..Default::default()
+            });
+            draw(cx);
+            assert_eq!(menu_rows(cx, &SHARED), uncapped, "{at}: after a wheel");
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+
+            let at = format!("{text} pt in 461 × 490");
+            open_working_actions(cx, size(px(461.), px(490.)));
+            let rows = menu_rows(cx, &[&LEADING[..], &SHARED[..]].concat());
+            let lead = rows.len() - SHARED.len();
+            assert!(
+                lead >= 3,
+                "{at}: the menu leads with the selection controls {rows:?}"
+            );
+            let (surface, folded) = assert_menu_keeps_its_rows(cx, &at, &rows, &uncapped);
+            assert!(folded, "{at}: rows lie past the menu's fold at {surface:?}");
+            // The leading rows lie as far apart as Ignore… and Save…, and the
+            // last of them as far above Ignore… as Browse… lies above Amend….
+            let item = top(&uncapped, SHARED[1]) - top(&uncapped, SHARED[0]);
+            let group = top(&uncapped, SHARED[3]) - top(&uncapped, SHARED[2]);
+            for pair in rows[..lead].windows(2) {
+                let apart = top(&rows, &pair[1].0) - top(&rows, &pair[0].0);
+                assert_eq!(apart, item, "{at}: {pair:?}");
+            }
+            let apart = top(&rows, SHARED[0]) - top(&rows, &rows[lead - 1].0);
+            assert_eq!(
+                apart,
+                group,
+                "{at}: {:?} and {:?}",
+                rows[lead - 1],
+                rows[lead]
+            );
+            cx.simulate_keystrokes("up");
+            draw(cx);
+            let last = menu_rows(cx, &[SHARED[4]])[0].1;
+            assert!(
+                last.top() >= surface.top() - px(0.01)
+                    && last.bottom() <= surface.bottom() + px(0.01),
+                "{at}: Up brings {:?} at {last:?} whole into the menu {surface:?}",
+                SHARED[4]
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// At 461 × 490 the Linux Main Menu fits above the status bar at 13 pt
+    /// and is taller than the room there at 18 pt. Either way its rows keep
+    /// the height and spacing they have in 1280 × 800, and at 18 pt it ends
+    /// after its last whole row, scrolling the rest with its scrollbar shown.
+    /// A capped menu once squeezed its rows.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_capped_main_menu_keeps_its_rows(cx: &mut TestAppContext) {
+        use crate::command_palette::{COMMANDS, CommandId};
+        let labels: Vec<&str> = [
+            CommandId::Open,
+            CommandId::Projects,
+            CommandId::History,
+            CommandId::Changes,
+            CommandId::QuickOpen,
+            CommandId::Compare,
+            CommandId::Editor,
+            CommandId::Terminal,
+            CommandId::Reveal,
+            CommandId::Palette,
+            CommandId::Activity,
+            CommandId::Settings,
+            CommandId::Help,
+            CommandId::About,
+        ]
+        .into_iter()
+        .map(|id| COMMANDS.iter().find(|spec| spec.id == id).unwrap().label)
+        .collect();
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+        settle(&app, cx).await;
+        let open = |cx: &mut VisualTestContext, viewport: Size<Pixels>| {
+            cx.simulate_resize(viewport);
+            draw(cx);
+            let trigger = cx.debug_bounds("main-menu").expect("the Main Menu button");
+            cx.simulate_click(trigger.center(), Modifiers::default());
+            draw(cx);
+            menu_rows(cx, &labels)
+        };
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let at = format!("{text} pt in 1280 × 800");
+            let uncapped = open(cx, size(px(1280.), px(800.)));
+            assert_eq!(uncapped.len(), labels.len(), "{at}: {uncapped:?}");
+            let (_, folded) = assert_menu_keeps_its_rows(cx, &at, &uncapped, &uncapped);
+            assert!(!folded, "{at}: every row fits");
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+
+            let at = format!("{text} pt in 461 × 490");
+            let rows = open(cx, size(px(461.), px(490.)));
+            assert_eq!(rows.len(), labels.len(), "{at}: {rows:?}");
+            let (surface, folded) = assert_menu_keeps_its_rows(cx, &at, &rows, &uncapped);
+            assert_eq!(
+                folded,
+                text == 18,
+                "{at}: rows past the fold at {surface:?}"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Shift-F10 and the Menu key open the Working Changes cursor row's
     /// menu, the one a right-click opens, below the row: Ignore and Discard
     /// beside the row's Stage control, and at 18 pt in a 461 × 490 window,

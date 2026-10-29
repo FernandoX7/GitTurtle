@@ -789,6 +789,47 @@ text, and the current identity and the saved profile on one line as tall as a
 short row's. Remove this part of the patch when upstream keeps a menu inside its
 window and its rows on one line, and that test passes without it.
 
+The capped-menu patch modifies `src/menu/popup_menu.rs`. Upstream caps a
+scrollable menu's items column (`max_h` with `scrollable`) but leaves its rows
+free to shrink, as flex items are, so a menu shorter than its rows squeezed
+every row and the gaps between them until they fit or reached their text's
+height, and then cut its last row; nothing scrolled, and its scrollbar, in the
+theme's default mode, showed only while scrolling. Every row now keeps its
+height (`flex_shrink_0`). A menu whose rows run past its cap ends after its last
+whole row with the padding an uncapped menu keeps below its last row, or at the
+next row's top where the gap between rows is narrower, so no sliver of that row
+shows; it never ends after a separator or a heading whose rows lie below
+(`Fold`, `fold_rows`). Before its first layout the fold comes from the heights
+the kit draws its entries at, each length snapped to device pixels as GPUI's
+layout snaps it (`estimated_fold`), and each layout measures it from the rows'
+bounds the column's scroll handle records (`measured_fold`); a menu whose
+measured fold differs from the one it drew is drawn again (the Working Actions
+menu's estimate matches its layout at 13 and 18 pt, so it draws once). While
+rows lie past the fold the column keeps a gutter of the scrollbar's width at
+their right and the scrollbar, in a test build named `popup-menu-scrollbar`, is
+always visible there, as a scrolling list's is; a menu whose rows fit draws
+none and keeps its width. The
+menu's own bounds now come from a canvas on its surface rather than inside the
+scrolling column: upstream's canvas moved with the scroll offset and, as tall
+as the column, made a menu whose rows fit scroll by the column's padding.
+
+The consumers are every menu the app opens through
+`native_accessibility::open_menu` (`crates/app/src/native_accessibility.rs`),
+which caps each at the room above the status bar: the Working Actions menu,
+the profile menu, the theme editor's Base menu and the Linux Main Menu among
+them.
+`cargo test --locked -p gitturtle a_capped_working_actions_menu_keeps_its_rows_and_scrolls`
+opens the Working Actions menu at 13 and 18 pt in 1280 × 800, where it fits and
+a wheel moves none of its rows, and in 461 × 490, where each row keeps its
+height and its spacing from the row before it, the menu ends 8 px or more
+above the status bar after a whole row, cuts none, and shows its scrollbar
+beside its rows, and Up brings its last row whole into view;
+`a_long_profile_menu_keeps_its_rows_and_scrolls`,
+`the_base_menu_keeps_its_rows_and_scrolls` and, on Linux,
+`a_capped_main_menu_keeps_its_rows` read the same of those menus. Remove this
+part of the patch when upstream keeps a capped menu's rows whole and those
+tests pass without it.
+
 The dialog-kind patch modifies `src/dialog/dialog.rs` and
 `src/dialog/alert_dialog.rs`, with the base patch's `DialogKind`. Upstream
 AlertDialog always hosts the base `AlertDialog`, so every modal opened through

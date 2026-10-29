@@ -3780,6 +3780,75 @@ pub(crate) mod tests {
         );
     }
 
+    /// At 461 × 490, at 13 and 18 pt, the Base menu's twenty palettes and
+    /// their two headings are taller than the room above the status bar. Its
+    /// rows keep the height and spacing they have where the menu fits, in
+    /// 1440 × 1400, and it ends after its last whole palette, scrolling the
+    /// rest with its scrollbar shown. A capped menu once squeezed its rows.
+    #[gpui::test]
+    fn the_base_menu_keeps_its_rows_and_scrolls(cx: &mut TestAppContext) {
+        use crate::views::tests::{assert_menu_keeps_its_rows, draw, menu_rows};
+        let (app, cx) = open_app(cx);
+        let mut labels = vec!["Light palettes"];
+        labels.extend(
+            ThemeChoice::ALL
+                .iter()
+                .filter(|it| it.is_light())
+                .map(|it| it.label()),
+        );
+        labels.push("Dark palettes");
+        labels.extend(
+            ThemeChoice::ALL
+                .iter()
+                .filter(|it| !it.is_light())
+                .map(|it| it.label()),
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
+        settle(cx);
+        form(cx, &app);
+        let open = |cx: &mut VisualTestContext, viewport: Size<Pixels>| {
+            cx.simulate_resize(viewport);
+            next_frame(cx);
+            // The alert slides in over real time; open the menu once it has
+            // settled.
+            let mut last = bounds(cx, "theme-editor-base".into());
+            for _ in 0..100 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                draw_once(cx);
+                let now = bounds(cx, "theme-editor-base".into());
+                if now == last {
+                    break;
+                }
+                last = now;
+            }
+            click(cx, "theme-editor-base");
+            draw(cx);
+            menu_rows(cx, &labels)
+        };
+        let close = |cx: &mut VisualTestContext| {
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(menu_rows(cx, &labels).is_empty(), "Escape closed the menu");
+        };
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let at = format!("{text} pt in 1440 × 1400");
+            let uncapped = open(cx, size(px(1440.), px(1400.)));
+            assert_eq!(uncapped.len(), labels.len(), "{at}: {uncapped:?}");
+            let (_, folded) = assert_menu_keeps_its_rows(cx, &at, &uncapped, &uncapped);
+            assert!(!folded, "{at}: every row fits");
+            close(cx);
+
+            let at = format!("{text} pt in 461 × 490");
+            let rows = open(cx, size(px(461.), px(490.)));
+            assert_eq!(rows.len(), labels.len(), "{at}: {rows:?}");
+            let (surface, folded) = assert_menu_keeps_its_rows(cx, &at, &rows, &uncapped);
+            assert!(folded, "{at}: rows lie past the menu's fold at {surface:?}");
+            close(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Rows and group labels keep their height inside the height-capped scroll
     /// column, Name matches the Base button, the hex field is seven characters
     /// wide, and the alert uses the window height down to its bottom margin so

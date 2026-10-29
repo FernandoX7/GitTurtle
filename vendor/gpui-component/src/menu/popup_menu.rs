@@ -2,7 +2,7 @@ use crate::ThemeStyled as _;
 use crate::actions::{Cancel, Confirm, SelectDown, SelectUp};
 use crate::actions::{SelectLeft, SelectRight};
 use crate::menu::menu_item::{Entry, MenuItemElement};
-use crate::scroll::ScrollableElement;
+use crate::scroll::{Scrollbar, ScrollbarMode};
 use crate::{ActiveTheme, ElementExt, Icon, IconName, Sizable as _, h_flex, v_flex};
 use crate::{Side, Size, kbd::Kbd};
 use gpui::{
@@ -37,6 +37,58 @@ fn menu_row_text(text: SharedString) -> gpui::Div {
         .truncate()
         .debug_selector(move || format!("menu-row-text: {shown}"))
         .child(text)
+}
+
+/// GitTurtle patch: how a scrollable menu's rows meet its cap
+/// ([`PopupMenu::max_h`]).
+///
+/// Upstream capped the items column but let its rows shrink, as flex items
+/// do, so a capped menu squeezed every row, its gaps with them, until its
+/// rows fit or reached their text's height, and cut its last row with no
+/// scrollbar. Each row now keeps its height (`flex_shrink_0`), and a menu
+/// whose rows run past its cap ends after the last whole row above it, with
+/// the padding an uncapped menu keeps below its last row, and scrolls the
+/// rest with an always-visible scrollbar in a gutter beside its rows, as a
+/// scrolling list cues its overflow.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Fold {
+    /// Every row fits under the cap: the menu is as tall as its rows and
+    /// draws no scrollbar.
+    Fits,
+    /// The rows run past the cap: the items column is this tall and scrolls.
+    At(Pixels),
+}
+
+/// GitTurtle patch: the [`Fold`] of a menu whose rows lie at `rows`, each
+/// row's top and bottom below the top of the items column and whether the
+/// menu may end after it ([`PopupMenuItem::ends_fold`]), in a column that
+/// keeps `padding` below its last row and is no taller than `cap`. The fold
+/// lies that padding below the last row that may end it, or at the next
+/// row's top where the gap between rows is narrower, so no sliver of that
+/// row shows; where no row that may end it fits, the column takes the whole
+/// cap.
+fn fold_rows(
+    rows: impl IntoIterator<Item = (Pixels, Pixels, bool)>,
+    padding: Pixels,
+    cap: Pixels,
+) -> Fold {
+    // The last row the menu may end after: its end with the padding, and
+    // the top of the row that follows it.
+    let mut fold: Option<(Pixels, Option<Pixels>)> = None;
+    for (top, bottom, ends_fold) in rows {
+        if let Some((_, next @ None)) = &mut fold {
+            *next = Some(top);
+        }
+        if bottom + padding > cap {
+            return Fold::At(
+                fold.map_or(cap, |(end, next)| next.map_or(end, |next| end.min(next))),
+            );
+        }
+        if ends_fold {
+            fold = Some((bottom + padding, None));
+        }
+    }
+    Fold::Fits
 }
 
 pub fn init(cx: &mut App) {
@@ -325,6 +377,13 @@ impl PopupMenuItem {
         matches!(self, PopupMenuItem::Separator)
     }
 
+    /// GitTurtle patch: whether a scrolling menu may end after this entry
+    /// ([`Fold`]): after a row that offers something, not after a separator
+    /// or a heading whose rows lie below the fold.
+    fn ends_fold(&self) -> bool {
+        !matches!(self, PopupMenuItem::Separator | PopupMenuItem::Label(_))
+    }
+
     fn has_left_icon(&self, check_side: Side) -> bool {
         match self {
             PopupMenuItem::Item { icon, checked, .. } => {
@@ -406,6 +465,9 @@ pub struct PopupMenu {
     /// The parent menu of this menu, if this is a submenu
     parent_menu: Option<WeakEntity<Self>>,
     scrollable: bool,
+    /// GitTurtle patch: where a scrollable menu's items met its cap when it
+    /// was last laid out, or `None` before its first layout.
+    fold: Option<Fold>,
     external_link_icon: bool,
     scroll_handle: ScrollHandle,
     // This will update on render
@@ -443,6 +505,7 @@ impl PopupMenu {
             check_side: Side::Left,
             bounds: Bounds::default(),
             scrollable: false,
+            fold: None,
             scroll_handle: ScrollHandle::default(),
             external_link_icon: true,
             size: Size::default(),
@@ -1285,6 +1348,74 @@ impl PopupMenu {
         self.max_width.unwrap_or(px(500.)).min(room)
     }
 
+    /// The height of an item's row at the menu's size.
+    fn item_height(&self) -> Pixels {
+        match self.size {
+            Size::Small => px(20.),
+            _ => px(26.),
+        }
+    }
+
+    /// The entries the items column draws: every entry but a closing
+    /// separator.
+    fn drawn_items(&self) -> impl Iterator<Item = &PopupMenuItem> {
+        let count = self.menu_items.len();
+        self.menu_items
+            .iter()
+            .enumerate()
+            .filter(move |(ix, item)| !(*ix + 1 == count && item.is_separator()))
+            .map(|(_, item)| item)
+    }
+
+    /// GitTurtle patch: the [`Fold`] under `cap` before the menu has been
+    /// laid out, from the heights its entries are drawn at: an item's fixed
+    /// row, a separator's rule and margins, and a label or element counted
+    /// as an item's row. The first layout corrects it where a row differs
+    /// ([`PopupMenu::measured_fold`]), so the first frame of a capped menu
+    /// usually draws as every later one does.
+    fn estimated_fold(&self, cap: Pixels, window: &Window) -> Fold {
+        // The items column's `p_1` and `gap_y_0p5`, and the `my_0p5` around
+        // a separator's 2 px rule, each snapped to device pixels as GPUI's
+        // layout snaps them.
+        let rem = window.rem_size();
+        let (padding, gap) = (
+            window.pixel_snap(rem * 0.25),
+            window.pixel_snap(rem * 0.125),
+        );
+        let margin = gap;
+        let item = self.item_height();
+        let mut next = padding;
+        let rows = self.drawn_items().map(|entry| {
+            let (margin, height) = if entry.is_separator() {
+                (margin, px(2.))
+            } else {
+                (Pixels::ZERO, item)
+            };
+            let top = next + margin;
+            next = top + height + margin + gap;
+            (top, top + height, entry.ends_fold())
+        });
+        fold_rows(rows, padding, cap)
+    }
+
+    /// GitTurtle patch: the [`Fold`] under `cap` as this frame laid the
+    /// items column out, read from its scroll handle, which records each
+    /// row's bounds before scrolling them; its `rows` first children are the
+    /// drawn entries.
+    fn measured_fold(&self, rows: usize, cap: Pixels, window: &Window) -> Fold {
+        let top = self.scroll_handle.bounds().top();
+        let padding = window.pixel_snap(window.rem_size() * 0.25);
+        let rows = self
+            .drawn_items()
+            .take(rows)
+            .enumerate()
+            .filter_map(|(ix, entry)| {
+                let row = self.scroll_handle.bounds_for_item(ix)?;
+                Some((row.top() - top, row.bottom() - top, entry.ends_fold()))
+            });
+        fold_rows(rows, padding, cap)
+    }
+
     /// Calculate the anchor corner and left offset for child submenu
     fn update_submenu_menu_anchor(&mut self, window: &Window) {
         let bounds = self.bounds;
@@ -1326,13 +1457,17 @@ impl PopupMenu {
         let is_submenu = matches!(item, PopupMenuItem::Submenu { .. });
         let group_name = format!("{}:item-{}", cx.entity().entity_id(), ix);
 
-        let (item_height, radius) = match self.size {
-            Size::Small => (px(20.), options.radius.half()),
-            _ => (px(26.), options.radius),
+        let item_height = self.item_height();
+        let radius = match self.size {
+            Size::Small => options.radius.half(),
+            _ => options.radius,
         };
 
         let this = MenuItemElement::new(ix, &group_name)
             .relative()
+            // GitTurtle patch: a row keeps its height in a menu capped
+            // shorter than its rows, which scrolls them instead ([`Fold`]).
+            .flex_shrink_0()
             .text_sm()
             .py_0()
             .px(INNER_PADDING)
@@ -1603,6 +1738,17 @@ impl Render for PopupMenu {
             let window_half_height = window.window_bounds().get_bounds().size.height * 0.5;
             window_half_height.min(px(450.))
         });
+        // GitTurtle patch: where a scrollable menu's rows meet its cap, as
+        // its last layout measured it, or estimated before the first.
+        let fold = self.scrollable.then(|| {
+            self.fold
+                .unwrap_or_else(|| self.estimated_fold(max_height, window))
+        });
+        let column = match fold {
+            Some(Fold::At(height)) => Some(height),
+            _ => None,
+        };
+        let rows = self.drawn_items().count();
 
         let has_left_icon = self
             .menu_items
@@ -1641,10 +1787,14 @@ impl Render for PopupMenu {
                     .when_some(self.min_width, |this, min_width| this.min_w(min_width))
                     .max_w(max_width)
                     .when(self.scrollable, |this| {
-                        this.max_h(max_height)
+                        this.max_h(column.unwrap_or(max_height))
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll_handle)
                     })
+                    // GitTurtle patch: while the rows overflow, they keep a
+                    // gutter at their right where the scrollbar's track
+                    // runs, so its thumb covers no row.
+                    .when(column.is_some(), |this| this.pr(Scrollbar::width()))
                     .children(
                         self.menu_items
                             .iter()
@@ -1652,12 +1802,45 @@ impl Render for PopupMenu {
                             // Ignore last separator
                             .filter(|(ix, item)| !(*ix + 1 == items_count && item.is_separator()))
                             .map(|(ix, item)| self.render_item(ix, item, options, window, cx)),
-                    )
-                    .on_prepaint(move |bounds, _, cx| view.update(cx, |r, _| r.bounds = bounds)),
+                    ),
             )
-            .when(self.scrollable, |this| {
+            // GitTurtle patch: the menu's bounds are taken from the surface,
+            // the items column's own bounds before scrolling. Upstream took
+            // them from a child of the scrolling column, which moved with
+            // its offset and, being as tall as the column, made a menu whose
+            // rows fit scroll by the column's padding. Each layout also
+            // measures the fold, and a menu whose rows met its cap otherwise
+            // than this frame drew is drawn again.
+            .on_prepaint(move |bounds, window, cx| {
+                view.update(cx, |menu, cx| {
+                    menu.bounds = bounds;
+                    if menu.scrollable {
+                        let measured = menu.measured_fold(rows, max_height, window);
+                        menu.fold = Some(measured);
+                        if Some(measured) != fold {
+                            cx.notify();
+                        }
+                    }
+                })
+            })
+            .when(column.is_some(), |this| {
                 // TODO: When the menu is limited by `overflow_y_scroll`, the sub-menu will cannot be displayed.
-                this.vertical_scrollbar(&self.scroll_handle)
+                // GitTurtle patch: the scrollbar of a menu whose rows
+                // overflow stays visible, as a scrolling list's does, rather
+                // than showing only while it scrolls; a menu whose rows fit
+                // draws none.
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .debug_selector(|| "popup-menu-scrollbar".to_string())
+                        .child(
+                            Scrollbar::vertical(&self.scroll_handle)
+                                .id("popup-menu-scrollbar")
+                                .mode(ScrollbarMode::Always)
+                                .viewport_from_layout(),
+                        ),
+                )
             })
     }
 }
