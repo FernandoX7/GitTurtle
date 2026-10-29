@@ -2637,7 +2637,7 @@ impl GitTurtle {
             "T" => ("file-type", colors.modified, "Type"),
             _ => ("file-modified", colors.modified, "Modified"),
         };
-        div()
+        let row = div()
             .id(("file", index))
             .when(active, |row| {
                 row.debug_selector(|| "selected-changed-file".into())
@@ -2718,7 +2718,11 @@ impl GitTurtle {
                         .child(label),
                 )
             })
-            .on_click(cx.listener(move |this, _, window, cx| this.select_file(index, window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.select_file(index, window, cx)));
+        // The list draws part of the row its foot cuts, and AT-SPI reported
+        // that row whole past the list and the window's foot; its node
+        // reports the part of it the list draws, as History's rows do.
+        native_accessibility::clips_children(row)
             .app_context_menu(move |menu, _, _| {
                 changed_file_menu(
                     menu,
@@ -14265,6 +14269,76 @@ pub(crate) mod tests {
             }
             assert!(rows > 2, "{at}: rows render");
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Each rendered row of the inspector's Changed files list reports the
+    /// part of itself the list draws, inside the list's own node and the
+    /// window. The list renders the row its foot cuts, and AT-SPI reported
+    /// that row whole past the list (a list at y 782–928 with a row at
+    /// 872–960, at 13 pt in a 461 px window) and, at 18 pt, past the foot of
+    /// a 980 px window.
+    #[gpui::test]
+    async fn changed_file_rows_report_the_part_the_list_draws(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window_from(cx, &files_script(3, 30)).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle(&app, cx).await;
+        let row_height = app.read_with(cx, |app, _| px(app.settings.density.file_row_height()));
+        let mut cut = 0;
+        for (text, width, height) in [
+            (13, 461., 980.),
+            (18, 461., 980.),
+            (13, 461., 490.),
+            (18, 461., 490.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            crate::native_accessibility::forget_clipping_nodes();
+            draw(cx);
+            let at = format!("{text} pt at {width} × {height}");
+            let window = node_bounds(
+                cx,
+                Bounds::new(point(px(0.), px(0.)), size(px(width), px(height))),
+            );
+            let list = crate::native_accessibility::clipping_node("files-pane")
+                .unwrap_or_else(|| panic!("{at}: the list is a clipping node"))
+                .bounds()
+                .expect("bounds");
+            let inside = |row: gpui::accesskit::Rect, outer: gpui::accesskit::Rect| {
+                row.x0 >= outer.x0 - 0.01
+                    && row.y0 >= outer.y0 - 0.01
+                    && row.x1 <= outer.x1 + 0.01
+                    && row.y1 <= outer.y1 + 0.01
+            };
+            let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+            let mut rows = 0;
+            for index in 0..30 {
+                let Some(node) =
+                    crate::native_accessibility::written::get(&format!("file-{index}"))
+                else {
+                    continue;
+                };
+                rows += 1;
+                let node = node.node;
+                assert!(
+                    node.clips_children(),
+                    "{at}: row {index} clips what it holds"
+                );
+                assert_eq!(node.role(), Role::ListBoxOption, "{at}: row {index}");
+                let bounds = node.bounds().expect("bounds");
+                assert!(
+                    inside(bounds, list) && inside(bounds, window),
+                    "{at}: row {index} reports {bounds:?}, outside the list's {list:?} or the \
+                     window"
+                );
+                if bounds.y1 - bounds.y0 < f64::from(f32::from(row_height)) * scale - 0.5 {
+                    cut += 1;
+                }
+            }
+            assert!(rows > 1, "{at}: the rows write nodes that clip");
+        }
+        assert!(cut > 0, "the list cuts a row at some size");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
