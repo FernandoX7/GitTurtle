@@ -117,6 +117,7 @@ impl GitTurtle {
         self.dialog_hints
             .register(&sequence, shortcuts::DialogKeys::RebaseSequence);
         let review_owner = cx.entity().downgrade();
+        let review_path = self.path.clone();
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let close = draft.clone();
             let cancel = draft.clone();
@@ -148,23 +149,49 @@ impl GitTurtle {
                                     button_close.update(cx, |form, cx| form.close(window, cx))
                                 }),
                         )
-                        .child(
-                            button(
-                                "review-previous-rewrite",
-                                "Review last rewritten series…",
-                                "",
-                                false,
-                            )
-                            .on_click({
+                        // A write refuses the rewritten series' review at
+                        // once, and assistive technology hears it unavailable
+                        // at once, while it dims only once the write looks
+                        // busy (`workspace::BusyLook`); it closed this dialog
+                        // before its review refused, silently. The dialog is
+                        // built in the window's render, so the control reads
+                        // the window's state as it lays out.
+                        .child(crate::workspace::dialog_refusing(
+                            review_owner.clone(),
+                            review_path.clone(),
+                            {
                                 let owner = review_owner.clone();
-                                move |_, window, cx| {
-                                    let _ = owner.update(cx, |owner, cx| {
-                                        window.close_dialog(cx);
-                                        owner.open_rewrite_review(window, cx);
-                                    });
+                                let path = review_path.clone();
+                                move |refused, dimmed| {
+                                    button(
+                                        "review-previous-rewrite",
+                                        "Review last rewritten series…",
+                                        "",
+                                        false,
+                                    )
+                                    .debug_selector(|| "review-previous-rewrite".into())
+                                    .map(|review| {
+                                        crate::workspace::refusing(
+                                            review,
+                                            || "review-previous-rewrite".into(),
+                                            refused,
+                                            dimmed,
+                                        )
+                                    })
+                                    .on_click(move |_, window, cx| {
+                                        let _ = owner.update(cx, |owner, cx| {
+                                            // Refused before the dialog closes.
+                                            if owner.dialog_refusal(path.as_deref()).0 {
+                                                return;
+                                            }
+                                            window.close_dialog(cx);
+                                            owner.open_rewrite_review(window, cx);
+                                        });
+                                    })
+                                    .into_any_element()
                                 }
-                            }),
-                        ),
+                            },
+                        )),
                 )
                 .on_ok(move |_, window, cx| {
                     close.update(cx, |form, cx| form.close(window, cx));
@@ -363,8 +390,16 @@ impl RebaseForm {
         }
     }
 
+    /// Whether a write refuses the form's Load commits and Review rebase…,
+    /// and whether they look it ([`crate::workspace::dialog_refusal`]).
+    fn refusal(&self, cx: &App) -> (bool, bool) {
+        crate::workspace::dialog_refusal(&self.owner, self.path.as_deref(), cx)
+    }
+
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pending || self.closed {
+        // Refused at once while a write runs, before anything changes: it
+        // set the form's error, announced and drawn available.
+        if self.pending || self.closed || self.refusal(cx).0 {
             return;
         }
         let base = self.base.read(cx).value().trim().to_owned();
@@ -436,7 +471,8 @@ impl RebaseForm {
     }
 
     fn review(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.closed {
+        // Refused at once while a write runs, before anything changes.
+        if self.closed || self.refusal(cx).0 {
             return;
         }
         let Some(plan) = self.plan.clone() else {
@@ -575,6 +611,19 @@ impl Render for RebaseForm {
             .plan
             .as_ref()
             .is_some_and(|plan| plan.base_revision != self.base.read(cx).value().trim());
+        // A write refuses Load commits and Review rebase… at once, and
+        // assistive technology hears them unavailable at once, while they dim
+        // only once it looks busy (`workspace::BusyLook`); each refused a
+        // press silently, announced and drawn available.
+        let (refused, dimmed) = self.refusal(cx);
+        let refusing = |control: Button, key: &'static str, unavailable: bool| {
+            crate::workspace::refusing(
+                control,
+                || key.into(),
+                unavailable || refused,
+                unavailable || dimmed,
+            )
+        };
         let list = uniform_list(
             "rebase-sequence",
             self.steps.len(),
@@ -608,7 +657,7 @@ impl Render for RebaseForm {
             .child(div().flex().flex_col().gap_3()
             .child(label("rebase-base-explanation", "Base stays unchanged. Review up to 100 commits after it on the current branch. Merge-preserving and root rewrites are unsupported.").text_size(crate::appearance::ui_text(12.)))
             .child(div().flex().gap_2().items_center().child(div().flex_1().child(Input::new(&self.base).aria_label("Exclusive base revision")))
-                .child(button("load-rebase-commits", if self.pending { "Loading…" } else { "Load commits" }, "", false).debug_selector(|| "load-rebase-commits".into()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.load(window, cx)))))
+                .child(refusing(button("load-rebase-commits", if self.pending { "Loading…" } else { "Load commits" }, "", false).debug_selector(|| "load-rebase-commits".into()), "load-rebase-commits", self.pending).on_click(cx.listener(|this, _, window, cx| this.load(window, cx)))))
             .when_some(self.plan.as_ref(), |element, plan| element
                 .child(label("rebase-resolved-base", format!("{} · {} commits · base {} · branch tip {}", plan.branch, plan.commits.len(), &plan.base[..10], &plan.head[..10])).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
                 .child(div().flex().flex_wrap().gap_1().children([RebaseAction::Pick, RebaseAction::Reword, RebaseAction::Squash, RebaseAction::Fixup, RebaseAction::Drop].into_iter().map(|action| {
@@ -630,7 +679,7 @@ impl Render for RebaseForm {
                 .when(!plan.known_published_refs.is_empty(), |element| element
                     .child(label("rebase-published-warning", format!("History rewrite warning: these commits are known to {}. Other people may depend on their IDs.", plan.known_published_refs.join(", "))).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))
                     .child(button("acknowledge-rebase-published", if self.acknowledged { "Acknowledged: rewrite known shared commits" } else { "I understand these commits may be shared" }, "", self.acknowledged).toggled(self.acknowledged).on_click(cx.listener(|this, _, _, cx| { this.acknowledged = !this.acknowledged; cx.notify(); }))))
-                .child(button("review-interactive-rebase", "Review rebase…", "", true).disabled(self.pending || issue.is_some() || changed_base || (!plan.known_published_refs.is_empty() && !self.acknowledged)).on_click(cx.listener(|this, _, window, cx| this.review(window, cx)))))
+                .child(refusing(button("review-interactive-rebase", "Review rebase…", "", true).debug_selector(|| "review-interactive-rebase".into()), "review-interactive-rebase", self.pending || issue.is_some() || changed_base || (!plan.known_published_refs.is_empty() && !self.acknowledged)).on_click(cx.listener(|this, _, window, cx| this.review(window, cx)))))
             .when(changed_base, |element| element.child(label("rebase-base-changed", "Base edited: load commits again to update the sequence.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .children(issue.map(|issue| label("rebase-invalid-plan", issue).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .children(self.error.as_ref().map(|error| label("rebase-form-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))))
@@ -700,8 +749,16 @@ impl MessageForm {
         close_rebase_dialog(&self.owner, Some(&self.expected.root), window, cx);
     }
 
+    /// Whether a write refuses Review Continue…, and whether it looks it
+    /// ([`crate::workspace::dialog_refusal`]).
+    fn refusal(&self, cx: &App) -> (bool, bool) {
+        crate::workspace::dialog_refusal(&self.owner, Some(self.expected.root.as_path()), cx)
+    }
+
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.closed {
+        // Refused at once while a write runs, before anything changes: an
+        // invalid message set its error first.
+        if self.closed || self.refusal(cx).0 {
             return;
         }
         let message = self
@@ -781,7 +838,9 @@ impl Render for MessageForm {
             .child(label("rebase-draft-save-status", durable_status).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
             .when(self.editor.is_none(), |element| element.child(label("rebase-no-message", "No message is pending. Continue will replay the next planned step and pause if a message or conflict needs attention.").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| label("rebase-message-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
-            .child(button("review-rebase-continue", "Review Continue…", "", true).on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))))))
+            // A write refuses it at once, announced unavailable at once, and
+            // it dims only once the write looks busy (`workspace::BusyLook`).
+            .child({ let (refused, dimmed) = self.refusal(cx); crate::workspace::refusing(button("review-rebase-continue", "Review Continue…", "", true).debug_selector(|| "review-rebase-continue".into()), || "review-rebase-continue".into(), refused, dimmed) }.on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))))))
     }
 }
 
@@ -791,6 +850,34 @@ impl Render for MessageForm {
 pub(crate) fn rebase_message(app: &GitTurtle, cx: &App) -> Option<Entity<TextareaState>> {
     let form = app.interactive_rebase.message.as_ref()?;
     form.read(cx).editor.clone()
+}
+
+/// Opens `app`'s rebase form and loads its commits, for tests in other
+/// modules: the plan is read on the app's operation executor, a thread
+/// `run_until_parked` cannot wait for, so its read is awaited.
+#[cfg(test)]
+pub(crate) async fn open_loaded(app: &Entity<GitTurtle>, cx: &mut gpui::VisualTestContext) {
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_interactive_rebase(None, window, cx)));
+    let form = app.read_with(cx, |app, _| {
+        app.interactive_rebase.draft.clone().expect("the form")
+    });
+    cx.update(|window, cx| form.update(cx, |form, cx| form.load(window, cx)));
+    let read = app.update(cx, |app, _| app.interactive_rebase.task.take());
+    read.expect("the plan is read").await;
+    cx.executor().run_until_parked();
+    form.read_with(cx, |form, _| {
+        assert!(form.plan.is_some(), "the plan loaded: {:?}", form.error)
+    });
+}
+
+/// Whether `app`'s rebase form shows an error or waits for a read, as a
+/// refused press must not leave it.
+#[cfg(test)]
+pub(crate) fn form_changed(app: &GitTurtle, cx: &App) -> bool {
+    app.interactive_rebase.draft.as_ref().is_some_and(|form| {
+        let form = form.read(cx);
+        form.error.is_some() || form.pending || form.closed
+    })
 }
 
 #[cfg(test)]

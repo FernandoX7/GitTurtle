@@ -336,15 +336,7 @@ impl WorktreeManager {
     /// any write started. Its own Create and Remove close the dialog before
     /// their review submits, so a write it sees is never its own.
     fn refusal(&self, cx: &App) -> (bool, bool) {
-        self.owner.upgrade().map_or((true, true), |owner| {
-            let owner = owner.read(cx);
-            let elsewhere = owner.path.as_deref() != Some(self.repo.path())
-                || owner.page != AppPage::Repository;
-            (
-                elsewhere || owner.operation_busy.is_some(),
-                elsewhere || owner.operation_shown().is_some(),
-            )
-        })
+        crate::workspace::dialog_refusal(&self.owner, Some(self.repo.path()), cx)
     }
     /// Whether the dialog may act now ([`Self::refusal`]).
     fn current(&self, cx: &App) -> bool {

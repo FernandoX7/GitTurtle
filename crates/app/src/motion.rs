@@ -2339,6 +2339,151 @@ mod tests {
         drop(fixture);
     }
 
+    /// With `keys` drawn at rest in the open dialog `at`, a write starts:
+    /// each is announced unavailable at once with its resting look, a press
+    /// on each while it still looks available leaves the dialog `unchanged`,
+    /// and each dims once the write has run 200 ms. Then the write ends.
+    async fn refused_then_dimmed(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        at: &str,
+        keys: &[&'static str],
+        unchanged: impl Fn(&Entity<GitTurtle>, &mut VisualTestContext) -> Result<(), String>,
+    ) {
+        let states = |announced, dimmed| {
+            keys.iter()
+                .map(|key| (*key, Some(Refusal { announced, dimmed })))
+                .collect::<Vec<_>>()
+        };
+        crate::workspace::refusals::forget();
+        next_frame(cx);
+        assert_eq!(refusals_of(keys), states(false, false), "{at} at rest");
+        let held = held_write(app, cx);
+        assert_eq!(
+            refusals_of(keys),
+            states(true, false),
+            "{at} as the write starts"
+        );
+        for key in keys {
+            press(cx, key);
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            if let Err(change) = unchanged(app, cx) {
+                panic!("{at}: {key} pressed while the write runs {change}");
+            }
+        }
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            refusals_of(keys),
+            states(true, true),
+            "{at} once the write looks busy"
+        );
+        release(app, held, cx).await;
+    }
+
+    /// Tags, its tag inspector, Stashes and the rebase dialogs, open as a
+    /// write starts, wait for its busy look as the Worktrees and Reflog
+    /// dialogs do: Create tag…, a tag's row, Delete local tag…, Push to…,
+    /// Drop…, Review restore…, Load commits, Review rebase… and Review last
+    /// rewritten series… are announced unavailable at once, pressed while
+    /// they still look available change nothing, and dim once the write has
+    /// run 200 ms. Each refused a press silently while it was announced and
+    /// drawn available; Load commits set the form's error and Review last
+    /// rewritten series… closed the dialog before its review refused.
+    #[gpui::test]
+    async fn tags_stashes_and_rebase_dim_only_once_a_write_looks_busy(cx: &mut TestAppContext) {
+        use crate::tags::tests::{add_remotes, git, read_lands, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        add_remotes(fixture.path(), &repo, 1);
+        std::fs::write(repo.path().join("notes.txt"), "edited\n").unwrap();
+        git(
+            repo.path(),
+            &["stash", "push", "--include-untracked", "-m", "kept"],
+        );
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let drawn = |selector: &'static str| {
+            move |_: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+                if dialog_open(cx) && cx.debug_bounds(selector).is_some() {
+                    Ok(())
+                } else {
+                    Err(format!("closed the dialog drawing {selector}"))
+                }
+            }
+        };
+
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+        read_lands(&app, cx).await;
+        draw(cx);
+        refused_then_dimmed(
+            &app,
+            cx,
+            "Tags",
+            &["create-tag", "tag-row-0"],
+            drawn("tags-list"),
+        )
+        .await;
+        close_dialog(cx);
+
+        let tag = repo.tags().unwrap().tags[0].clone();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.inspect_tag(tag, window, cx)));
+        read_lands(&app, cx).await;
+        draw(cx);
+        refused_then_dimmed(
+            &app,
+            cx,
+            "the tag inspector",
+            &["delete-local-tag", "push-tag-remote-0"],
+            drawn("tag-remote-list"),
+        )
+        .await;
+        close_dialog(cx);
+
+        crate::recovery::open_selected_stash(&app, cx).await;
+        draw(cx);
+        refused_then_dimmed(
+            &app,
+            cx,
+            "Stashes",
+            &["drop-saved-stash", "restore-saved-stash"],
+            drawn("stash-browser"),
+        )
+        .await;
+        close_dialog(cx);
+
+        crate::interactive_rebase::open_loaded(&app, cx).await;
+        draw(cx);
+        let form = drawn("rebase-list-focus");
+        refused_then_dimmed(
+            &app,
+            cx,
+            "the rebase form",
+            &[
+                "load-rebase-commits",
+                "review-interactive-rebase",
+                "review-previous-rewrite",
+            ],
+            move |app, cx| {
+                form(app, cx)?;
+                if app.read_with(cx, |app, cx| {
+                    crate::interactive_rebase::form_changed(app, cx)
+                }) {
+                    Err("changed the form".into())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .await;
+        close_dialog(cx);
+        drop(fixture);
+    }
+
     /// The Settings page's identity fields and actions wait for a write's
     /// busy look too: they refuse at once, the fields read-only, and dim,
     /// with Save reading "Working…", only once the write has run 200 ms. The

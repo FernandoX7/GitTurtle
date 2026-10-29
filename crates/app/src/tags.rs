@@ -250,7 +250,7 @@ impl GitTurtle {
         cx.notify();
         true
     }
-    fn inspect_tag(&mut self, tag: Tag, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn inspect_tag(&mut self, tag: Tag, window: &mut Window, cx: &mut Context<Self>) {
         self.read_tag_action(
             move |repo| Ok((repo.tag_details(&tag)?, repo.remote_configs()?)),
             |result, this, window, cx| match result {
@@ -299,6 +299,12 @@ impl GitTurtle {
             let reveal = list.items(pushes.clone(), room);
             // Past its height the list cues the rest with its scrollbar.
             let cue = ScrollCue::new(list.scroll(), room);
+            // A write refuses Delete and Push at once, and assistive
+            // technology hears them unavailable at once, while they dim only
+            // once it looks busy (`workspace::BusyLook`); each refused a
+            // press silently, announced and drawn available. This dialog is
+            // built in the window's render, so each reads the window's
+            // state as it lays out (`workspace::dialog_refusing`).
             let content = div().flex().flex_col().gap_3().pb(room)
                 .child(static_text("tag-target-identity", format!("{} · {} {}", if tag.annotated { "Annotated tag" } else { "Lightweight tag" }, tag.target_kind, tag.target_oid)).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
                 .child(static_text("tag-object-identity", format!("Tag object: {}", tag.oid)).text_size(crate::appearance::ui_text(11.)))
@@ -307,19 +313,19 @@ impl GitTurtle {
                 .when_some(details.annotation_unavailable.as_ref(), |element, message| element.child(static_text("tag-annotation-unavailable", message.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
                 .child(div().flex().gap_2()
                     .child(copy_feedback::copy_button(tag_mark, "Copy object ID", "", cx).on_click(move |_, window, cx| copy_feedback::copy(window, cx, Some(tag_copy.clone()), "tag object ID", oid.clone())))
-                    .child(button("delete-local-tag", "Delete local tag…", "", false).on_click(move |_, window, cx| {
+                    .child(crate::workspace::dialog_refusing(owner.clone(), path.clone(), move |refused, dimmed| button("delete-local-tag", "Delete local tag…", "", false).debug_selector(|| "delete-local-tag".into()).map(|delete| crate::workspace::refusing(delete, || "delete-local-tag".into(), refused, dimmed)).on_click(move |_, window, cx| {
                         let _ = delete_owner.update(cx, |this, cx| {
                             if this.path == delete_path && this.operation_busy.is_none() {
                                 window.close_dialog(cx);
                                 this.confirm_git_write(format!("Delete local tag '{}'", deletion.name), format!("Remove the local name '{}' pointing to {}. Its annotation and signature will no longer be reachable through this name.\n\nRemote tags, branches, the index and working files stay as they are. This action refuses if the tag has moved since you opened it.", deletion.name, deletion.oid), "Delete local tag", WriteCommand::Tag(Arc::new(TagCommand::Delete(deletion.clone()))), window, cx);
                             }
                         });
-                    })))
+                    }).into_any_element())))
                 .child(static_text("tag-push-heading", "Push this tag").text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM))
                 .child(static_text("tag-push-consequences", "Choose one remote, then review. No other tags or branches are pushed. Existing remote tags are never replaced.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
                 .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("tag-remote-list").debug_selector(|| "tag-remote-list".into()).max_h(px(160.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(list.scroll()).flex().flex_col().gap_1().children(remotes.iter().zip(pushes).enumerate().map(|(index, (remote, focus))| {
                     let remote = remote.clone(); let tag = tag.clone(); let owner = owner.clone(); let path = path.clone();
-                    button(("push-tag-remote", index), format!("Push to {}…", remote.name), "", false).track_focus(&focus).debug_selector(move || format!("push-tag-remote-{index}")).on_click(move |_, window, cx| {
+                    crate::workspace::dialog_refusing(owner.clone(), path.clone(), move |refused, dimmed| button(("push-tag-remote", index), format!("Push to {}…", remote.name), "", false).track_focus(&focus).debug_selector(move || format!("push-tag-remote-{index}")).map(|push| crate::workspace::refusing(push, || format!("push-tag-remote-{index}"), refused, dimmed)).on_click(move |_, window, cx| {
                         let _ = owner.update(cx, |this, cx| {
                             if this.path == path && this.operation_busy.is_none() {
                                 window.close_dialog(cx);
@@ -328,7 +334,7 @@ impl GitTurtle {
                                 this.confirm_git_write(format!("Push tag '{}'", tag.name), format!("Send only '{}' ({}) to remote '{}':\n{}\n\nThis explicit network action creates the named remote tag. It does not push branches, additional tags, or overwrite an existing remote tag.", tag.name, tag.oid, remote.name, destinations), "Push named tag", WriteCommand::Tag(Arc::new(TagCommand::Push { tag: tag.clone(), remote: Arc::new(remote.clone()) })), window, cx);
                             }
                         });
-                    })
+                    }).into_any_element())
                 })).when(remotes.is_empty(), |element| element.child(static_text("tag-remotes-empty", "No remotes configured. Add a remote from the branch menu to push a tag.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "tag-remote-scrollbar"));
             dialog.title(native_accessibility::dialog_title("tag-inspector-title", details.tag.name.clone())).width(appearance::dialog_width(px(640.), window)).max_h(appearance::dialog_max_height(window)).gap(DIALOG_FOOTER_GAP - room).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
         });
@@ -503,16 +509,23 @@ impl Render for TagBrowser {
         let reveal = self.rows.items(rows.clone(), room);
         // Past its height the list cues the rest with its scrollbar.
         let cue = ScrollCue::new(self.rows.scroll(), room);
+        // A write refuses Create tag… and the rows, which open a tag, at
+        // once, and assistive technology hears them unavailable at once,
+        // while they dim only once it looks busy (`workspace::BusyLook`);
+        // each refused a press silently, announced and drawn available.
+        let (refused, dimmed) =
+            crate::workspace::dialog_refusal(&self.owner, self.path.as_deref(), cx);
+        let committed = self.committed;
         div().flex().flex_col().gap_3().py(room)
             // Painted after the field, the canvas fits its placeholder in
             // whole words, where at 18 pt in a half tile it was cut mid-glyph.
-            .child(div().flex().gap_2().child(div().relative().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true)).child(crate::workspace::placeholder_fit(self.query.clone(), &FILTER_FIT, FILTER_PLACEHOLDERS, FIELD_TEXT))).child(button("create-tag", "Create tag…", "plus", false).debug_selector(|| "create-tag".into()).when(!self.committed, |create| create.disabled(true).accessibility_label(NO_COMMIT_NAME).tooltip(NO_COMMIT_REASON)).on_click(cx.listener(|this, _, window, cx| {
+            .child(div().flex().gap_2().child(div().relative().flex_1().child(Input::new(&self.query).aria_label("Filter local tags").cleanable(true)).child(crate::workspace::placeholder_fit(self.query.clone(), &FILTER_FIT, FILTER_PLACEHOLDERS, FIELD_TEXT))).child(button("create-tag", "Create tag…", "plus", false).debug_selector(|| "create-tag".into()).when(!committed, |create| create.accessibility_label(NO_COMMIT_NAME).tooltip(NO_COMMIT_REASON)).map(|create| crate::workspace::refusing(create, || "create-tag".into(), refused || !committed, dimmed || !committed)).on_click(cx.listener(|this, _, window, cx| {
                 let _ = this.owner.update(cx, |owner, cx| { if owner.path == this.path && owner.operation_busy.is_none() { window.close_dialog(cx); owner.open_create_tag(window, cx); } });
             }))))
             .when(!self.list.tags.is_empty(), |element| element.child(static_text("tag-list-summary", summary(self.list.tags.len())).ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("tags-list").debug_selector(|| "tags-list".into()).max_h(px(360.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap_1().children(matches.iter().zip(rows).enumerate().map(|(index, (tag, focus))| {
                 let tag = (*tag).clone(); let label = format!("{} · {} · {}", tag.name, if tag.annotated { "Annotated" } else { "Lightweight" }, short_oid(&tag.target_oid));
-                Button::new(("tag-row", index)).track_focus(&focus).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).pl(TEXT_INSET).child(row_text(format!("tag-row-text-{index}"), label.clone())).accessibility_label(label).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
+                Button::new(("tag-row", index)).track_focus(&focus).debug_selector(move || format!("tag-row-{index}")).ghost().w_full().h(crate::appearance::ui_size(34.)).pl(TEXT_INSET).child(row_text(format!("tag-row-text-{index}"), label.clone())).accessibility_label(label).map(|row| crate::workspace::refusing(row, || format!("tag-row-{index}"), refused, dimmed)).on_click(cx.listener(move |this, _, window, cx| this.activate(tag.clone(), window, cx)))
             })).when(matches.is_empty(), |element| element.child(div().py_3().ml(TEXT_INSET).child(EmptyState::new("tag-list-empty", if !self.committed { NO_COMMIT_LINE } else if self.list.tags.is_empty() { "No local tags yet · Create tag… names a commit" } else { "No tags match this filter" }).block(cx)))), "tags-scrollbar"))
             .when(matches.len() > 100, |element| element.child(static_text("tag-list-match-limit", "Showing 100 matches. Narrow the filter to find another tag.").ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))))
             .when(self.list.truncated, |element| element.child(static_text("tag-list-load-limit", "Loaded the first 10,000 local tags by name. Additional tags are outside this bounded browser.").ml(TEXT_INSET).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))

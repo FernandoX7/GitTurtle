@@ -25,6 +25,9 @@ pub(super) struct State {
     task: Option<Task<()>>,
     amend: Option<Entity<AmendForm>>,
     stash: Option<Entity<StashForm>>,
+    /// The Stashes dialog opened last, for tests.
+    #[cfg(test)]
+    browser: Option<WeakEntity<StashBrowser>>,
 }
 
 pub(super) struct CommitTarget {
@@ -487,6 +490,10 @@ impl GitTurtle {
         let owner = cx.entity().downgrade();
         let browser = cx.new(|cx| StashBrowser::new(owner, repo, window, cx));
         let opened = browser.clone();
+        #[cfg(test)]
+        {
+            self.recovery.browser = Some(browser.downgrade());
+        }
         window.open_alert_dialog(cx, move |dialog, window, _| {
             dialog
                 .title(native_accessibility::dialog_title(
@@ -1038,6 +1045,29 @@ impl Drop for StashBrowser {
     fn drop(&mut self) {
         crate::model_view::pause(self.content.as_deref());
     }
+}
+
+/// Opens `app`'s Stashes, reads its list, selects its newest stash and reads
+/// it, for tests in other modules. The reads run on the browser's own
+/// executor, a thread `run_until_parked` cannot wait for, so each is awaited
+/// rather than waited for in wall-clock time.
+#[cfg(test)]
+pub(crate) async fn open_selected_stash(app: &Entity<GitTurtle>, cx: &mut gpui::VisualTestContext) {
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
+    let browser = app
+        .read_with(cx, |app, _| app.recovery.browser.clone())
+        .and_then(|browser| browser.upgrade())
+        .expect("the Stashes dialog opens");
+    let read = browser.update(cx, |this, _| this.metadata_task.take());
+    read.expect("the list is read").await;
+    cx.update(|window, cx| browser.update(cx, |this, cx| this.select_stash(0, window, cx)));
+    let read = browser.update(cx, |this, _| this.metadata_task.take());
+    read.expect("the stash is read").await;
+    cx.executor().run_until_parked();
+    assert!(
+        browser.read_with(cx, |this, _| this.snapshot.is_some()),
+        "the stash was inspected"
+    );
 }
 
 impl StashBrowser {
@@ -1689,13 +1719,21 @@ impl Render for StashBrowser {
         // at 18 pt in 461 × 490), they scroll with the rest, revealed with
         // their rings as the keyboard reaches them.
         let pinned = !narrow;
+        // A write refuses Drop… and Review restore… at once, and assistive
+        // technology hears them unavailable at once, while they dim only
+        // once it looks busy (`workspace::BusyLook`); each refused a press
+        // silently, announced and drawn available. The browser's own read
+        // leaves them unavailable at once.
+        let (refused, dimmed) =
+            crate::workspace::dialog_refusal(&self.owner, Some(self.repository.path()), cx);
+        let (refused, dimmed) = (busy || refused, busy || dimmed);
         let actions = self.snapshot.is_some().then(|| {
             let row = div().debug_selector(|| "stash-actions".into()).flex().flex_wrap().items_center().gap_2().pt_1()
                 .when(!pinned, |row| row.on_children_prepainted(self.detail.controls(vec![Some(restore_index.clone()), None, Some(drop.clone()), Some(restore.clone())], room)))
                 .child(Checkbox::new("stash-restore-index").track_focus(&restore_index).label("Restore staged state").checked(self.restore_index).on_click(cx.listener(|this, checked, _, cx| { this.restore_index = *checked; cx.notify(); })))
                 .child(div().flex_1())
-                .child(button("drop-saved-stash", "Drop…", "", false).track_focus(&drop).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))))
-                .child(Button::new("restore-saved-stash").primary().small().label("Review restore…").track_focus(&restore).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.restore(window, cx))));
+                .child(button("drop-saved-stash", "Drop…", "", false).track_focus(&drop).debug_selector(|| "drop-saved-stash".into()).map(|drop| crate::workspace::refusing(drop, || "drop-saved-stash".into(), refused, dimmed)).on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))))
+                .child(Button::new("restore-saved-stash").primary().small().label("Review restore…").track_focus(&restore).debug_selector(|| "restore-saved-stash".into()).map(|restore| crate::workspace::refusing(restore, || "restore-saved-stash".into(), refused, dimmed)).on_click(cx.listener(|this, _, window, cx| this.restore(window, cx))));
             div().flex().flex_col().gap_2().flex_shrink_0()
                 .child(row)
                 .child(native_accessibility::text("stash-restore-note", "Restoring keeps this stash saved. Drop it separately after checking the restored work.").text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)))

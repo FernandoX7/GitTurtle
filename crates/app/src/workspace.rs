@@ -2258,6 +2258,64 @@ impl GitTurtle {
         self.operation_busy.filter(|_| self.busy_shown())
     }
 
+    /// Whether a dialog's actions on the repository at `path` are refused
+    /// now, and whether they look it: refused while that repository is no
+    /// longer the one shown or a write runs, and dimmed for a write only
+    /// once it looks busy ([`BusyLook`]), as everywhere else. A dialog's
+    /// own review closes it before its write submits, so a write it sees is
+    /// never its own.
+    pub(crate) fn dialog_refusal(&self, path: Option<&std::path::Path>) -> (bool, bool) {
+        let elsewhere = self.path.as_deref() != path || self.page != AppPage::Repository;
+        (
+            elsewhere || self.operation_busy.is_some(),
+            elsewhere || self.operation_shown().is_some(),
+        )
+    }
+}
+
+/// [`GitTurtle::dialog_refusal`] for a dialog that holds its window's
+/// `owner`, refused and dimmed once that window is gone.
+pub(crate) fn dialog_refusal(
+    owner: &WeakEntity<GitTurtle>,
+    path: Option<&std::path::Path>,
+    cx: &App,
+) -> (bool, bool) {
+    owner
+        .upgrade()
+        .map_or((true, true), |owner| owner.read(cx).dialog_refusal(path))
+}
+
+/// A control of a dialog the window builds in its own render, as the kit's
+/// alert dialogs are, given `owner`'s [`dialog_refusal`] for `path` once it
+/// lays out: the window cannot be read while it renders.
+pub(crate) fn dialog_refusing(
+    owner: WeakEntity<GitTurtle>,
+    path: Option<std::path::PathBuf>,
+    build: impl FnOnce(bool, bool) -> AnyElement + 'static,
+) -> DialogRefusing {
+    DialogRefusing {
+        owner,
+        path,
+        build: Box::new(build),
+    }
+}
+
+/// See [`dialog_refusing`].
+#[derive(IntoElement)]
+pub(crate) struct DialogRefusing {
+    owner: WeakEntity<GitTurtle>,
+    path: Option<std::path::PathBuf>,
+    build: Box<dyn FnOnce(bool, bool) -> AnyElement>,
+}
+
+impl RenderOnce for DialogRefusing {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let (refused, dimmed) = dialog_refusal(&self.owner, self.path.as_deref(), cx);
+        (self.build)(refused, dimmed)
+    }
+}
+
+impl GitTurtle {
     /// Submits `command`, asked for from `origin`. Once Git reports success,
     /// while its repository is still the one shown, the control `origin`
     /// marks, if any, confirms it where it was touched
