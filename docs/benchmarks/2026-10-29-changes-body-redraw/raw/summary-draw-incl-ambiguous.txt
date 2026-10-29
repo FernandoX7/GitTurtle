@@ -1,0 +1,21 @@
+Write-window draws, paced and ambiguous starts (done dispatch to frame request, gap <= two ticks):
+ six-13 ea58f87 n=2573 p50 2.724 p95 5.305 p99 8.034 max 15.482 over-one-tick 12
+ six-13 12b7043 n=2592 p50 2.695 p95 5.232 p99 7.739 max 9.508 over-one-tick 11
+   delta p50 -0.029 [-0.100, +0.042]
+   delta p95 -0.073 [-0.574, +0.287]
+   delta p99 -0.295 [-0.778, +0.205]
+ six-18 ea58f87 n=2614 p50 2.371 p95 4.857 p99 7.650 max 16.245 over-one-tick 8
+ six-18 12b7043 n=2649 p50 2.314 p95 4.865 p99 7.829 max 11.074 over-one-tick 7
+   delta p50 -0.057 [-0.128, +0.016]
+   delta p95 +0.008 [-0.368, +0.350]
+   delta p99 +0.179 [-0.457, +0.568]
+ many-13 ea58f87 n=2584 p50 2.689 p95 5.274 p99 9.402 max 16.289 over-one-tick 63
+ many-13 12b7043 n=2577 p50 2.641 p95 5.242 p99 9.403 max 16.631 over-one-tick 59
+   delta p50 -0.048 [-0.110, +0.022]
+   delta p95 -0.032 [-0.508, +0.411]
+   delta p99 +0.001 [-0.693, +0.754]
+ many-18 ea58f87 n=2633 p50 2.350 p95 4.929 p99 9.087 max 16.319 over-one-tick 48
+ many-18 12b7043 n=2632 p50 2.305 p95 4.885 p99 8.883 max 11.165 over-one-tick 51
+   delta p50 -0.045 [-0.117, +0.019]
+   delta p95 -0.044 [-0.373, +0.556]
+   delta p99 -0.204 [-0.889, +0.418]
