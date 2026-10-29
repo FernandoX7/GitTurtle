@@ -442,6 +442,14 @@ cover current upstream x86-64 Omarchy.
           and the trees no Menu key; "Up to date" and tracking-branch creation still use the
           window notice.
         Found by the native reviews of 2026-10-28 night (frames `.local/item8-2026-10-27/tools/qa/{t2,f2,d2,g2,q3d,q3c,q3g,q4*,prg,prm}-{00f0add,91fb95e}/` and `{pre,prf,sp2*}-{91fb95e,7342c3e}/`; [validation entries](../validation.md#october-28-night-the-header-gives-way-by-icons-historys-search-is-named-by-its-label-and-rows-report-what-is-drawn)):
+        - Regressions (fix first): at 18 pt in 461 × 490 the Stashes dialog cuts its "Choose a
+          stash…" line mid-line (`dd922c9` with `cb7fa2e`); the keyboard commit menu ends 2 px above
+          the status bar instead of 8 (`71ab8a4`).
+        - Accessibility: Stashes' title, header and placeholder, the palette's title and hint, Quick
+          Open's and Keyboard Shortcuts' hints and Projects' line are still unnamed on the bus; the
+          inspector title reports bounds past its frame; the shortened Shortcuts list shows no
+          scrollbar; Projects opens with no visible focus; in icon form the selected navigation
+          mode is shown only by a 1.40:1 fill; the commit menu's edge lands on the graph lane.
         - Feedback: Stage all's "✓ Staged" is drawn in the disabled colour (3.19:1) while it
           confirms on an emptied group; the new-commit cue and Latest's dot stay through Pull and
           Push once the commit is on top, and the dot sits 1.5 px from Latest's arrow at 18 pt;
