@@ -229,9 +229,10 @@ pub struct WriteOutcome {
     pub commit_oid: Option<String>,
     /// A Fetch or Pull that brought nothing new, decided by reading refs
     /// before and after Git ran rather than from its output: a Fetch left
-    /// every ref as it was, and a Pull left HEAD on the same commit. False for
-    /// every other write, and whenever either read fails, so it never claims
-    /// that nothing changed without having seen it.
+    /// every ref, and the commits FETCH_HEAD lists that no ref names, as they
+    /// were, and a Pull left HEAD on the same commit. False for every other
+    /// write, and whenever either read fails, so it never claims that nothing
+    /// changed without having seen it.
     pub up_to_date: bool,
 }
 
@@ -839,10 +840,13 @@ impl GitRepository {
     /// new, read passively, so the network write holds 32 bytes rather than
     /// the state itself. For a Fetch: every ref with its commit, since
     /// configured refspecs and followed tags can update refs outside the
-    /// remote's own namespace. For a Pull: the commit HEAD names. `None` for
-    /// other writes and whenever a read fails, which leaves `up_to_date`
-    /// false, as on an unborn branch, whose successful Pull always brings
-    /// commits.
+    /// remote's own namespace, and the commits FETCH_HEAD lists that no ref
+    /// names, which is all a fetch that stores no ref (a remote without
+    /// `remote.<name>.fetch`, or a refspec without a destination) leaves
+    /// behind. For a Pull: the commit HEAD names. `None` for other writes and
+    /// whenever a read fails, which leaves `up_to_date` false: on an unborn
+    /// branch, whose successful Pull always brings commits, or where
+    /// FETCH_HEAD cannot be read safely.
     fn sync_snapshot(&self, operation: &WriteCommand) -> Option<[u8; 32]> {
         let mut digest = Sha256::new();
         match operation {
@@ -859,11 +863,30 @@ impl GitRepository {
                 // fetch creates `refs/remotes/<remote>/HEAD` where a remote
                 // was added rather than cloned (`followRemoteHEAD`), which
                 // brings nothing new.
-                for record in records
+                let records: Vec<_> = records
                     .split(|byte| *byte == b'\n')
                     .filter_map(|record| record.strip_prefix(b"\0"))
-                {
+                    .collect();
+                for record in &records {
                     digest.update(record);
+                    digest.update(b"\n");
+                }
+                // FETCH_HEAD also lists what the last fetch or pull stored in
+                // refs, and which lines are for merging follows the current
+                // branch, so only the commits no ref names count: those a
+                // fetch brought without storing them.
+                let named: std::collections::HashSet<&[u8]> = records
+                    .iter()
+                    .filter_map(|record| record.split(|byte| *byte == b' ').next())
+                    .collect();
+                let mut unnamed = self.fetched_commits()?;
+                unnamed.retain(|oid| !named.contains(oid.as_bytes()));
+                unnamed.sort_unstable();
+                unnamed.dedup();
+                // No ref record holds a NUL, so the commits start after one.
+                digest.update(b"\0");
+                for oid in unnamed {
+                    digest.update(oid);
                     digest.update(b"\n");
                 }
             }
@@ -873,6 +896,38 @@ impl GitRepository {
             _ => return None,
         }
         Some(digest.finalize().into())
+    }
+
+    /// The object IDs FETCH_HEAD lists, each line's first field, none where
+    /// there is no FETCH_HEAD yet, or `None` where it cannot be read safely
+    /// or holds a line without an object ID. Git names its place
+    /// (`rev-parse --git-path`, a worktree's own), and it is read beneath
+    /// that directory without following a symbolic link, only as a regular
+    /// file within [`MAX_BLOB_BYTES`] (`read_worktree_file`).
+    fn fetched_commits(&self) -> Option<Vec<String>> {
+        let location = run_git(&self.path, &["rev-parse", "--git-path", "FETCH_HEAD"]).ok()?;
+        let location = self.path.join(path_from_bytes(trim_line(&location)));
+        let (directory, name) = (location.parent()?, location.file_name()?);
+        let bytes = match read_worktree_file(directory, Path::new(name), "100644") {
+            // A symbolic link's stored target: Git writes through the link.
+            Ok((mode, _)) if mode == "120000" => return None,
+            Ok((_, bytes)) => bytes,
+            Err(_) => {
+                let missing = location
+                    .symlink_metadata()
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+                return missing.then(Vec::new);
+            }
+        };
+        bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let oid = std::str::from_utf8(line.split(|byte| *byte == b'\t').next()?).ok()?;
+                validate_oid(oid).ok()?;
+                Some(oid.to_owned())
+            })
+            .collect()
     }
 
     pub fn init(destination: impl AsRef<Path>, initial_branch: &str) -> Result<Self> {

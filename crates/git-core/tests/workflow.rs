@@ -541,6 +541,12 @@ fn fetch_and_pull_report_whether_they_brought_anything_new() {
     assert!(git(&copy, &["for-each-ref", "refs/remotes/origin/feature"]).contains("feature"));
     assert!(cloned.execute(&pull).unwrap().up_to_date);
     assert_eq!(head(), three);
+    // The Pull left FETCH_HEAD listing main alone and this Fetch lists both
+    // branches again, all of them stored in refs: nothing new.
+    let fetch_head = copy.join(".git/FETCH_HEAD");
+    let after_pull = fs::read_to_string(&fetch_head).unwrap();
+    assert!(cloned.execute(&fetch).unwrap().up_to_date);
+    assert_ne!(fs::read_to_string(&fetch_head).unwrap(), after_pull);
 
     // A local commit ahead of the remote: Git has nothing to pull.
     fs::write(copy.join("local.txt"), "local").unwrap();
@@ -553,6 +559,66 @@ fn fetch_and_pull_report_whether_they_brought_anything_new() {
     assert!(!local.up_to_date, "only Fetch and Pull report it");
     assert!(cloned.execute(&pull).unwrap().up_to_date);
     assert_eq!(Some(head()), local.commit_oid);
+}
+
+/// A remote with no `remote.<name>.fetch` refspec stores nothing in refs:
+/// Git's Fetch brings the remote's HEAD into FETCH_HEAD alone, so the
+/// commits FETCH_HEAD lists decide whether it brought anything new. A
+/// FETCH_HEAD that is a symbolic link is never followed, and the Fetch then
+/// reads as new rather than up to date.
+#[test]
+fn a_fetch_that_stores_no_ref_reports_new_commits_from_fetch_head() {
+    let f = Fixture::new();
+    f.write("file.txt", "one");
+    let one = f.commit("one");
+    let remote = bare_remote(&f, "origin");
+    let repo = f.repo();
+    repo.execute(&push("origin", "main")).unwrap();
+    let plain = f.temp.path().join("plain");
+    let fetcher = GitRepository::init(&plain, "main").unwrap();
+    git(
+        &plain,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&plain, &["config", "--unset-all", "remote.origin.fetch"]);
+    let fetch = WriteCommand::Fetch {
+        remote: "origin".into(),
+    };
+    let refs = || git(&plain, &["for-each-ref"]);
+    let fetch_head = plain.join(".git/FETCH_HEAD");
+    let listed = || fs::read_to_string(&fetch_head).unwrap();
+
+    // The first Fetch brings `one`, which no ref names.
+    let fetched = fetcher.execute(&fetch).unwrap();
+    assert!(!fetched.up_to_date, "{fetched:?}");
+    assert_eq!(refs(), "");
+    assert!(listed().starts_with(&one), "{}", listed());
+    assert!(fetcher.execute(&fetch).unwrap().up_to_date);
+
+    // A new commit arrives in FETCH_HEAD alone, while the refs stay empty.
+    f.write("file.txt", "two");
+    let two = f.commit("two");
+    repo.execute(&push("origin", "main")).unwrap();
+    let fetched = fetcher.execute(&fetch).unwrap();
+    assert!(!fetched.up_to_date, "{fetched:?}");
+    assert_eq!(refs(), "");
+    assert!(listed().starts_with(&two), "{}", listed());
+    git(&plain, &["cat-file", "-e", &format!("{two}^{{commit}}")]);
+    assert!(fetcher.execute(&fetch).unwrap().up_to_date);
+
+    #[cfg(unix)]
+    {
+        // Git writes through the link, so its target, unchanged by a Fetch
+        // that brings nothing, cannot say that nothing arrived.
+        let target = f.temp.path().join("fetch-head-target");
+        fs::rename(&fetch_head, &target).unwrap();
+        std::os::unix::fs::symlink(&target, &fetch_head).unwrap();
+        let fetched = fetcher.execute(&fetch).unwrap();
+        assert!(!fetched.up_to_date, "{fetched:?}");
+        let link = fs::symlink_metadata(&fetch_head).unwrap();
+        assert!(link.file_type().is_symlink());
+        assert!(fs::read_to_string(&target).unwrap().starts_with(&two));
+    }
 }
 
 fn bare_remote(f: &Fixture, name: &str) -> PathBuf {
