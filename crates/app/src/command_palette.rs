@@ -1445,6 +1445,60 @@ mod render_tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// At 18 pt in a 461 × 490 window, where the dialog's height cap gives
+    /// the list less than its full height, a search that leaves one shortcut
+    /// ("command palette") shows that entry whole below its group's heading,
+    /// its key chip too, and the count above the list reads "1 shortcut",
+    /// drawn and named alike. The list kept room for one row, which the
+    /// heading took: the selected entry's chip was cut at the list's foot,
+    /// and the count read "1 shortcuts".
+    #[gpui::test]
+    async fn a_search_for_one_shortcut_shows_it_whole_and_counts_one(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::tags::tests::{draw, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+        draw(cx);
+        draw(cx);
+        cx.simulate_input("command palette");
+        // The list's height lands in its first frame; the scroll that keeps
+        // the entry in view, in the next.
+        draw(cx);
+        draw(cx);
+        let list = cx.debug_bounds("shortcut-help-results").expect("the list");
+        let full = crate::shortcuts::list_height();
+        assert!(
+            list.size.height < full,
+            "the cap gives the list less than its {full:?}: {list:?}"
+        );
+        // Inside the list's 1 px border.
+        let (top, bottom) = (list.top() + px(1.), list.bottom() - px(1.));
+        for part in ["shortcut-help-row-1", "shortcut-help-key-1"] {
+            let bounds = cx.debug_bounds(part).unwrap_or_else(|| panic!("{part}"));
+            assert!(
+                bounds.top() >= top - px(0.5) && bounds.bottom() <= bottom + px(0.5),
+                "{part} {bounds:?} whole in the list's {top:?}..{bottom:?}"
+            );
+        }
+        let count = written::get("shortcut-help-count").expect("the count is written");
+        assert_eq!(
+            count.node.label(),
+            Some(crate::shortcuts::count_line(1).as_str())
+        );
+        assert!(
+            crate::shortcuts::count_line(1).starts_with("1 shortcut · "),
+            "{}",
+            crate::shortcuts::count_line(1)
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The palette is a menu of commands, so in every palette it floats on
     /// the surface the menus do, `Palette::raised`, with their fitted edge,
     /// `Palette::raised_edge`, rather than on the page background (the

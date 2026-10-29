@@ -860,11 +860,14 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
     window.refresh();
 }
 
-/// The line above the shortcut list: how many shortcuts it holds and the
-/// platform's modifier keys.
+/// The line above the shortcut list: how many shortcuts it holds, the count
+/// agreeing with its noun ("1 shortcuts" once read for a search that left
+/// one), and the platform's modifier keys. The list's status draws it and is
+/// named by it.
 pub(crate) fn count_line(count: usize) -> String {
     format!(
-        "{count} shortcuts · {}",
+        "{} · {}",
+        crate::counted(count, "shortcut", "shortcuts"),
         if cfg!(target_os = "macos") {
             "⌘ Command  ⌥ Option  ⌃ Control  ⇧ Shift"
         } else {
@@ -908,7 +911,15 @@ impl ShortcutHelpView {
             if matches!(event, InputEvent::Change) {
                 this.rows = help_matches(&this.query.read(cx).value());
                 this.selected = 1.min(this.rows.len().saturating_sub(1));
-                this.scroll.scroll_to_item(0, ScrollStrategy::Top);
+                // The list starts at its top, unless the selected entry
+                // would not then lie whole in it: it ends at the list's foot
+                // instead, with as much of its group's heading as fits above
+                // it. Started at the heading, a list the dialog's height cap
+                // had given less than both, as at 18 pt in a 461 × 490
+                // window, cut the one entry "command palette" leaves, its
+                // key chip at the list's foot.
+                this.scroll
+                    .scroll_to_item_strict(this.selected, ScrollStrategy::Bottom);
                 cx.notify();
             }
         });
