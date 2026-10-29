@@ -594,6 +594,32 @@ impl GitTurtle {
         let details = [old, new].map(side_details);
         // The captions share the column equally.
         let caption_width = width / if source { 1. } else { 2. };
+        // Each caption keeps its side's dimensions beneath its name where the
+        // image keeps its usable minimum beneath the captions; otherwise they
+        // give way to it, as labels do before content, their words staying in
+        // the name's accessible name and its tooltip. Decided from the room
+        // beneath the toolbar and each caption's first line, neither of which
+        // the dimensions change, so the choice never feeds back.
+        let dimensions = laid_out.beneath.is_none_or(|beneath| {
+            let size = crate::appearance::ui_text(11.);
+            let line = window
+                .text_style()
+                .line_height
+                .to_pixels(size.into(), window.rem_size());
+            let room = caption_width - window.rem_size() * 1.5;
+            let captions = [0, 1]
+                .into_iter()
+                .filter(|index| !source || *index == 1)
+                .map(|index| {
+                    let lines = wrapped_lines(&details[index], size, room, window);
+                    // The caption's `py_2` either side, its first line and
+                    // its dimensions' lines.
+                    window.rem_size() + laid_out.heads[index] + line * lines.min(64) as f32
+                })
+                .fold(px(0.), Pixels::max);
+            // The captions' rule beneath them.
+            beneath - captions - px(1.) >= crate::appearance::ui_size(STAGE_MIN)
+        });
         let opener =
             crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing);
         // The line saying why a click opened nothing scrolls inside the room
@@ -764,141 +790,183 @@ impl GitTurtle {
                     .child(zooms)
                     .when(!source, |element| element.child(adjust)),
             )
-            .child(
+            // Beneath the toolbar, the room the column leaves the captions and
+            // the image, measured as laid out.
+            .child({
+                let room = measured.clone();
                 div()
-                    .flex()
-                    .border_b_1()
-                    .border_color(rgb(p.border))
-                    .children(
-                        [old, new]
-                            .into_iter()
-                            .enumerate()
-                            .filter(|(index, _)| !source || *index == 1)
-                            .map(|(i, _)| {
-                                let (name, details) = (names[i], details[i].clone());
-                                // The side's caption: its name, then the
-                                // control that opens it, as a document's
-                                // header has them, and its details beneath.
-                                // The name's line is as tall as the scaled
-                                // 28 px control and the caption keeps to its
-                                // top, so both sides' names and details line
-                                // up whether or not a side offers the
-                                // control, and the control stays on the first
-                                // line wherever the name leaves it room.
-                                let control = controls[i].take();
-                                div()
-                                    .debug_selector(move || format!("image-side-caption-{i}"))
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .px_3()
-                                    .py_2()
-                                    .text_size(crate::appearance::ui_text(11.))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_wrap()
-                                            .items_center()
-                                            .content_start()
-                                            .gap_2()
-                                            .child(
-                                                native_accessibility::static_text(
-                                                    div()
-                                                        .id(("image-side-description", i))
-                                                        .debug_selector(move || {
-                                                            format!("image-side-name-{i}")
-                                                        }),
-                                                    format!("{name}: {details}"),
-                                                )
-                                                .min_h(crate::appearance::ui_size(28.))
-                                                .flex()
-                                                .items_center()
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .child(name),
-                                            )
-                                            .children(control),
-                                    )
-                                    .child(
-                                        div()
-                                            .debug_selector(move || {
-                                                format!("image-side-details-{i}")
-                                            })
-                                            .min_w_0()
-                                            .text_color(rgb(p.muted))
-                                            .child(details),
-                                    )
-                            }),
-                    ),
-            )
-            // Beneath the captions, the room the column leaves them, measured
-            // as laid out: the band saying why a click opened nothing takes
-            // its own lines there, beneath its side's caption, so the
-            // captions stay put and the image, then its notes, give way to it;
-            // the notes follow the image.
-            .child(
-                div()
-                    .debug_selector(|| "image-stage-room".into())
+                    .debug_selector(|| "image-captions-and-stage".into())
                     .flex_1()
                     .min_h_0()
                     .flex()
                     .flex_col()
                     .on_prepaint(move |bounds, _, cx| {
-                        measured.update(cx, |room, cx| {
-                            if room.below != Some(bounds.size.height) {
-                                room.below = Some(bounds.size.height);
+                        room.update(cx, |room, cx| {
+                            if room.beneath != Some(bounds.size.height) {
+                                room.beneath = Some(bounds.size.height);
                                 cx.notify();
                             }
                         })
                     })
-                    .children(band)
                     .child(
                         div()
-                            .id("image-canvas-area")
-                            .debug_selector(|| "image-canvas-area".into())
-                            .relative()
+                            .flex()
+                            .border_b_1()
+                            .border_color(rgb(p.border))
+                            .children(
+                                [old, new]
+                                    .into_iter()
+                                    .enumerate()
+                                    .filter(|(index, _)| !source || *index == 1)
+                                    .map(|(i, _)| {
+                                        let (name, details) = (names[i], details[i].clone());
+                                        // The side's caption: its name, then the
+                                        // control that opens it, as a document's
+                                        // header has them, and its details beneath
+                                        // where the image keeps its room. The name's
+                                        // line is as tall as the scaled 28 px control
+                                        // and the caption keeps to its top, so both
+                                        // sides' names and details line up whether or
+                                        // not a side offers the control, and the
+                                        // control stays on the first line wherever
+                                        // the name leaves it room.
+                                        let control = controls[i].take();
+                                        let room = measured.clone();
+                                        let hidden = (!dimensions).then(|| details.clone());
+                                        div()
+                                            .debug_selector(move || {
+                                                format!("image-side-caption-{i}")
+                                            })
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .px_3()
+                                            .py_2()
+                                            .text_size(crate::appearance::ui_text(11.))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_wrap()
+                                                    .items_center()
+                                                    .content_start()
+                                                    .gap_2()
+                                                    .on_prepaint(move |bounds, _, cx| {
+                                                        room.update(cx, |room, cx| {
+                                                            if room.heads[i] != bounds.size.height {
+                                                                room.heads[i] = bounds.size.height;
+                                                                cx.notify();
+                                                            }
+                                                        })
+                                                    })
+                                                    .child(
+                                                        native_accessibility::static_text(
+                                                            div()
+                                                                .id(("image-side-description", i))
+                                                                .debug_selector(move || {
+                                                                    format!("image-side-name-{i}")
+                                                                }),
+                                                            format!("{name}: {details}"),
+                                                        )
+                                                        .min_h(crate::appearance::ui_size(28.))
+                                                        .flex()
+                                                        .items_center()
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .when_some(hidden, |name, details| {
+                                                            name.tooltip(move |window, cx| {
+                                                        gpui_kit::component::tooltip::Tooltip::new(
+                                                            details.clone(),
+                                                        )
+                                                        .build(window, cx)
+                                                    })
+                                                        })
+                                                        .child(name),
+                                                    )
+                                                    .children(control),
+                                            )
+                                            .when(dimensions, |caption| {
+                                                caption.child(
+                                                    div()
+                                                        .debug_selector(move || {
+                                                            format!("image-side-details-{i}")
+                                                        })
+                                                        .min_w_0()
+                                                        .text_color(rgb(p.muted))
+                                                        .child(details),
+                                                )
+                                            })
+                                    }),
+                            ),
+                    )
+                    // Beneath the captions, the room the column leaves them, measured
+                    // as laid out: the band saying why a click opened nothing takes
+                    // its own lines there, beneath its side's caption, so the
+                    // captions stay put and the image, then its notes, give way to it;
+                    // the notes follow the image.
+                    .child(
+                        div()
+                            .debug_selector(|| "image-stage-room".into())
                             .flex_1()
                             .min_h_0()
                             .flex()
-                            .when(described, |area| {
-                                area.role(Role::Image)
-                                    .aria_label(if source {
-                                        "Source image"
-                                    } else {
-                                        "Before and After images"
-                                    })
-                                    .aria_description(description)
+                            .flex_col()
+                            .on_prepaint(move |bounds, _, cx| {
+                                measured.update(cx, |room, cx| {
+                                    if room.below != Some(bounds.size.height) {
+                                        room.below = Some(bounds.size.height);
+                                        cx.notify();
+                                    }
+                                })
                             })
-                            .map(|area| {
-                                if source {
-                                    area.child(self.image_canvas(Some(1), cx))
-                                } else if state.mode == Mode::SideBySide {
-                                    area.child(self.image_canvas(Some(0), cx))
-                                        .child(self.image_canvas(Some(1), cx))
-                                } else {
-                                    area.child(self.image_canvas(None, cx))
-                                }
-                            }),
+                            .children(band)
+                            .child(
+                                div()
+                                    .id("image-canvas-area")
+                                    .debug_selector(|| "image-canvas-area".into())
+                                    .relative()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .flex()
+                                    .when(described, |area| {
+                                        area.role(Role::Image)
+                                            .aria_label(if source {
+                                                "Source image"
+                                            } else {
+                                                "Before and After images"
+                                            })
+                                            .aria_description(description)
+                                    })
+                                    .map(|area| {
+                                        if source {
+                                            area.child(self.image_canvas(Some(1), cx))
+                                        } else if state.mode == Mode::SideBySide {
+                                            area.child(self.image_canvas(Some(0), cx))
+                                                .child(self.image_canvas(Some(1), cx))
+                                        } else {
+                                            area.child(self.image_canvas(None, cx))
+                                        }
+                                    }),
+                            )
+                            .children(comparison_note(
+                                "image-source-scale",
+                                scale_notice,
+                                note_lines,
+                                &SCALE_LINE,
+                                width,
+                                window,
+                                &p,
+                            ))
+                            .children(comparison_note(
+                                "image-interaction-guidance",
+                                guidance.into(),
+                                note_lines,
+                                &GUIDANCE_LINE,
+                                width,
+                                window,
+                                &p,
+                            )),
                     )
-                    .children(comparison_note(
-                        "image-source-scale",
-                        scale_notice,
-                        note_lines,
-                        &SCALE_LINE,
-                        width,
-                        window,
-                        &p,
-                    ))
-                    .children(comparison_note(
-                        "image-interaction-guidance",
-                        guidance.into(),
-                        note_lines,
-                        &GUIDANCE_LINE,
-                        width,
-                        window,
-                        &p,
-                    )),
-            )
+            })
             .into_any_element()
     }
     fn image_canvas(&self, side: Option<usize>, cx: &mut Context<Self>) -> AnyElement {
@@ -1162,13 +1230,21 @@ fn mode_tooltip(mode: Mode) -> &'static str {
 /// image 64 px tall inside the 16 px margins [`layout`] keeps on each side.
 const STAGE_MIN: f32 = 96.;
 
-/// The room beneath an image comparison's captions as last laid out, which
-/// decides how much of it the line saying why a click opened nothing and the
-/// comparison's notes take. It belongs to the window's layout, so it outlives
-/// one file's comparison and the next starts from it; before the first
-/// layout the notes take one line each and the line its scaled 100 px.
+/// The room an image comparison's captions and image share as last laid out,
+/// which decides whether the captions keep each side's dimensions and how
+/// much of the room beneath them the line saying why a click opened nothing
+/// and the comparison's notes take. It belongs to the window's layout, so it
+/// outlives one file's comparison and the next starts from it; before the
+/// first layout the captions keep their dimensions, the notes take one line
+/// each and the line its scaled 100 px.
 #[derive(Clone, Copy, Default)]
 struct Room {
+    /// The height beneath the toolbar, which the captions, the band, the
+    /// image and its notes share; the column sets it whatever they hold.
+    beneath: Option<Pixels>,
+    /// Each side caption's first line, its name and open control, which the
+    /// caption's width alone decides, never whether its dimensions follow.
+    heads: [Pixels; 2],
     /// The height beneath the captions, which the band, the image and its
     /// notes share; the column sets it whatever they hold.
     below: Option<Pixels>,

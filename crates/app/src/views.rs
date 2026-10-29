@@ -6826,6 +6826,101 @@ pub(crate) mod tests {
         }
     }
 
+    /// A changed image's captions give way before the image beneath them, as
+    /// labels give way before content: each side's dimensions stay beneath
+    /// its name only where the image keeps its usable minimum, a scaled
+    /// 96 px, below the captions, and otherwise leave, their words staying in
+    /// the name's accessible name and tooltip. In a 461 × 490 window, before
+    /// any click, the image had 83 px at 13 pt and 60 at 18 pt beneath a
+    /// line of dimensions (two at 18 pt). The test fonts' glyphs are wider
+    /// than the interface font's, so in a 461 px window the toolbar's menus
+    /// take two rows and Before's control wraps below its name, and that room
+    /// falls at 461 × 560 at 13 pt and 461 × 590 at 18 pt: there the image now
+    /// keeps at least 96 px. At every height of a 461 px window from 490 to
+    /// 980, the dimensions are drawn only above an image that keeps it, and
+    /// neither side's name moves when they leave; a full window keeps them.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn image_dimensions_give_way_before_the_image(cx: &mut TestAppContext) {
+        use crate::system_preview::tests::png;
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let slack = px(0.5);
+        let details = ["image-side-details-0", "image-side-details-1"];
+        let names = ["image-side-name-0", "image-side-name-1"];
+        let mut gave_way = [false; 2];
+        for (index, text) in [13, 18].into_iter().enumerate() {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let minimum = cx.update(|_, _| appearance::ui_size(96.));
+            for height in (490..=980).step_by(10) {
+                cx.simulate_resize(size(px(461.), px(height as f32)));
+                draw(cx);
+                let at = format!("{text} pt in 461 × {height}");
+                let image = bounds("image-canvas-area", cx);
+                let drawn = details.map(|selector| cx.debug_bounds(selector).is_some());
+                assert_eq!(drawn[0], drawn[1], "{at}: both sides keep or leave them");
+                if drawn[0] {
+                    assert!(
+                        image.size.height >= minimum - slack,
+                        "{at}: the dimensions stay only above an image {image:?} that keeps its minimum"
+                    );
+                } else {
+                    gave_way[index] = true;
+                }
+            }
+            // Where the test fonts reproduce the 461 × 490 window's room, the
+            // image keeps at least 96 px (the scaled minimum at 13 pt), and
+            // the names stay where they were with the dimensions beneath them.
+            let tall = if text == 13 { 560. } else { 590. };
+            cx.simulate_resize(size(px(461.), px(980.)));
+            draw(cx);
+            let kept =
+                names.map(|name| bounds(name, cx).top() - bounds("preview-content", cx).top());
+            cx.simulate_resize(size(px(461.), px(tall)));
+            draw(cx);
+            let at = format!("{text} pt in 461 × {tall}");
+            let image = bounds("image-canvas-area", cx);
+            assert!(
+                image.size.height >= px(96.) - slack,
+                "{at}: the image {image:?} keeps at least 96 px"
+            );
+            for detail in details {
+                assert!(cx.debug_bounds(detail).is_none(), "{at}: {detail} gave way");
+            }
+            assert_eq!(
+                names.map(|name| bounds(name, cx).top() - bounds("preview-content", cx).top()),
+                kept,
+                "{at}: neither name moves"
+            );
+        }
+        assert_eq!(
+            gave_way, [true; 2],
+            "the narrow window's dimensions give way"
+        );
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(1480.), px(980.)));
+            draw(cx);
+            for detail in details {
+                assert!(
+                    cx.debug_bounds(detail).is_some(),
+                    "{text} pt in 1480 × 980: {detail} stays"
+                );
+            }
+        }
+    }
+
     /// A document's two side headers keep one height, their first line as
     /// tall as the scaled 28 px open control, so Before and After align with
     /// or without it: an added PDF's After header, which offers the control,
