@@ -7952,6 +7952,529 @@ pub(crate) mod tests {
         }
     }
 
+    /// Rebuilds the image comparison's sides with `edit`'s changes, as a
+    /// worker's answer carrying them would arrive.
+    fn edit_image_sides(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        edit: impl Fn(usize, &mut crate::worker::ImageSide),
+    ) {
+        app.update(cx, |app, cx| {
+            let Some(Content::Images { old, new }) = app.content.as_deref() else {
+                panic!("an image comparison is shown");
+            };
+            let mut sides = [old, new].map(|side| crate::worker::ImageSide {
+                animation: side.animation.clone(),
+                captured: side.captured.clone(),
+                system_preview: side.system_preview,
+                literal_source: side.literal_source.clone(),
+                image: side.image.clone(),
+                render: side.render.clone(),
+                message: side.message.clone(),
+                bytes: side.bytes,
+                lfs_pointer: side.lfs_pointer.clone(),
+            });
+            for (index, side) in sides.iter_mut().enumerate() {
+                edit(index, side);
+            }
+            app.images = sides.each_ref().map(|side| side.render.clone());
+            let [old, new] = sides;
+            app.content = Some(Arc::new(Content::Images {
+                old: Box::new(old),
+                new: Box::new(new),
+            }));
+            cx.notify();
+        });
+    }
+
+    /// Shows the first tracked file `query` finds as a source, as Quick Open
+    /// does, once its read lands.
+    async fn show_source(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, query: &str) {
+        use gitturtle_core::{HistoryCancellation, PathScope};
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let repo = app.repository.clone().expect("a repository");
+                let paths = repo
+                    .search_tracked_paths(
+                        &PathScope::Revision("HEAD".into()),
+                        query,
+                        &HistoryCancellation::default(),
+                    )
+                    .expect("tracked paths");
+                let entry = paths.entries.first().expect("the file").clone();
+                app.show_tracked_file(paths.scope.clone(), entry, window, cx);
+            })
+        });
+        settle(app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.is_quick_source()),
+            "a source is shown"
+        );
+    }
+
+    /// Whether hovering `selector` shows a tooltip; the pointer then leaves.
+    fn shows_tooltip(cx: &mut VisualTestContext, selector: &'static str) -> bool {
+        let popover =
+            cx.read(|cx| Background::from(gpui_kit::component::Theme::global(cx).tokens.popover));
+        let popups = move |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == popover)
+                    .count()
+            })
+        };
+        let control = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"));
+        let before = popups(cx);
+        cx.simulate_mouse_move(control.center(), None, Modifiers::default());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        draw(cx);
+        let shown = popups(cx) > before;
+        cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        draw(cx);
+        shown
+    }
+
+    /// What an assistive technology reaches of an image side's caption and
+    /// of its reason in the image's room, through AccessKit's filter and, on
+    /// Linux, the AT-SPI adapter: each name with its role. The image's area,
+    /// which GPUI writes itself, is added as it was named where it carries
+    /// the words that gave way, holding the lines drawn in it.
+    fn image_sides_read(
+        cx: &mut VisualTestContext,
+        at: &str,
+        sides: &[usize],
+    ) -> Vec<(gpui::accesskit::Role, String)> {
+        use crate::native_accessibility::{reachable, written};
+        use gpui::accesskit::{Node, Role};
+        written::forget();
+        COMPACT_LABELS.with(|labels| labels.borrow_mut().remove("image-canvas-area-name"));
+        draw(cx);
+        let area =
+            COMPACT_LABELS.with(|labels| labels.borrow().get("image-canvas-area-name").cloned());
+        let mut tree = written::Assembly::default();
+        for &side in sides {
+            tree = tree.written(&format!("image-side-description-{side}"), None);
+        }
+        if let Some(area) = &area {
+            let role = if area.ends_with("image") || area.ends_with("images") {
+                Role::Image
+            } else {
+                Role::Group
+            };
+            let mut node = Node::new(role);
+            node.set_label(area.to_string());
+            tree = tree.node("image-canvas-area", node, None);
+        }
+        for &side in sides {
+            let line = format!("image-side-empty-{side}");
+            if let Some(written) = written::get(&line) {
+                tree = tree.node(
+                    &line,
+                    written.node,
+                    area.as_ref().map(|_| "image-canvas-area"),
+                );
+            }
+        }
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let scale = f64::from(cx.update(|window, _| window.scale_factor()));
+        let update = tree.tree(
+            gpui::accesskit::Rect {
+                x0: 0.,
+                y0: 0.,
+                x1: f64::from(f32::from(viewport.width)) * scale,
+                y1: f64::from(f32::from(viewport.height)) * scale,
+            },
+            None,
+        );
+        let mut filtered: Vec<(Role, String)> = reachable(update.clone())
+            .into_iter()
+            .filter(|node| node.role != Role::Window)
+            .filter_map(|node| Some((node.role, node.name?)))
+            .collect();
+        #[cfg(target_os = "linux")]
+        {
+            use crate::native_accessibility::atspi_state_tests::reached;
+            let mut served: Vec<String> = reached(update)
+                .into_iter()
+                .map(|node| node.name)
+                .filter(|name| !name.is_empty())
+                .collect();
+            let mut names: Vec<String> = filtered.iter().map(|(_, name)| name.clone()).collect();
+            served.sort();
+            names.sort();
+            assert_eq!(
+                served, names,
+                "{at}: the AT-SPI adapter reads what the filter does"
+            );
+        }
+        filtered.sort_by(|a, b| a.1.cmp(&b.1));
+        filtered
+    }
+
+    /// A side without an image says so whatever the room: an added image's
+    /// Before reads "No image on this side", and a side whose image could
+    /// not be shown reads why, which can be a long error. Once each side's
+    /// dimensions gave way to the image, that line went with them, beneath
+    /// the name where it stood, so in a 461 × 490 window at 13 pt Before said
+    /// nothing on screen though a 640 × 680 one still drew it.
+    ///
+    /// Side by side, and across a source image's room, it stands where the
+    /// side's image would be, in that side's room of the image's area, inside
+    /// the preview, at 13 and 18 pt in 461 × 490 and 640 × 680 windows: whole
+    /// where the room holds it, and otherwise on the whole lines it holds,
+    /// the last ending in an ellipsis with the whole line in its tooltip. It
+    /// is static text read by its whole line, once: the caption neither
+    /// draws it nor repeats it in the name's accessible name, and where the
+    /// notes have given way the area is named for the images it draws ("After
+    /// image", or, a source image without one, "Source details"), never for a
+    /// side without one.
+    ///
+    /// Overlaid, where Before has no room of its own, it stays beneath
+    /// Before's name, inside the preview: whole where After's dimensions
+    /// stay, and on one line ending in an ellipsis where they give way, with
+    /// the whole line in the name's tooltip and accessible name where that
+    /// cuts it. A long reason of about a hundred characters once wrapped to
+    /// five lines at 18 pt in a 461 × 490 window and ran past the footer and
+    /// the preview's clip. After's dimensions give way only where that frees
+    /// room: beside a one-line reason as tall as they are, they stay.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn an_image_less_side_says_so_whatever_the_room(cx: &mut TestAppContext) {
+        use crate::system_preview::tests::png;
+        use gpui::accesskit::Role;
+        let input = file_commits(&[("add", &[("polyglot.png", &png(Some(b"after")))])]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let absent = "No image on this side";
+        let failure = "Could not read the image: Format error decoding Png: Corrupt deflate stream: invalid distance too far back";
+        let slack = px(0.5);
+        let sizes = [
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 640., 680.),
+            (18, 640., 680.),
+            (13, 1061., 490.),
+            (18, 1480., 490.),
+        ];
+        let inside_preview = |part: Bounds<Pixels>, cx: &mut VisualTestContext| {
+            let content = bounds("preview-content", cx);
+            part.top() >= content.top() - slack
+                && part.bottom() <= content.bottom() + slack
+                && part.left() >= content.left() - slack
+                && part.right() <= content.right() + slack
+        };
+        // The lines `text` wraps to `width` wide at the captions' size, and
+        // one line's height.
+        let wraps = |text: &str, width: Pixels, cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                let size = appearance::ui_text(11.);
+                (
+                    crate::image_compare::wrapped_lines(text, size, width, window),
+                    crate::image_compare::text_line(size, window),
+                )
+            })
+        };
+        let caption_text = |caption: &'static str, cx: &mut VisualTestContext| {
+            let rem = cx.update(|window, _| window.rem_size());
+            bounds(caption, cx).size.width - rem * 1.5
+        };
+        // Checks side `side`'s reason `text` in its room of the image's
+        // area, `half` its half side by side; says whether it was cut.
+        let said_in_its_place = |side: usize,
+                                 text: &str,
+                                 half: bool,
+                                 at: &str,
+                                 cx: &mut VisualTestContext| {
+            let (line_id, details_id) = match side {
+                0 => ("image-side-empty-0", "image-side-details-0"),
+                _ => ("image-side-empty-1", "image-side-details-1"),
+            };
+            let area = bounds("image-canvas-area", cx);
+            let said = bounds(line_id, cx);
+            let (left, right) = match (half, side) {
+                (false, _) => (area.left(), area.right()),
+                (true, 0) => (area.left(), area.center().x),
+                (true, _) => (area.center().x, area.right()),
+            };
+            assert!(
+                said.left() >= left - slack
+                    && said.right() <= right + slack
+                    && said.top() >= area.top() - slack
+                    && said.bottom() <= area.bottom() + slack
+                    && inside_preview(said, cx),
+                "{at}: the line {said:?} stands in its side's room of the image's area {area:?}, inside the preview"
+            );
+            let rem = cx.update(|window, _| window.rem_size());
+            // Its room, less its padding, which the drawn line can pass by
+            // its snapping to a device pixel.
+            let room = ((right - left) - rem * 1.5).max(said.size.width);
+            let (lines, line) = wraps(text, room, cx);
+            let shown = (said.size.height / line).round() as usize;
+            assert!(
+                (said.size.height - line * shown as f32).abs() <= slack && shown >= 1,
+                "{at}: the line {said:?} ends at a whole line of {line:?}"
+            );
+            let cut = shown < lines;
+            if cut {
+                // Cut only where one more line would not fit its room.
+                assert!(
+                    said.size.height + line > area.size.height - rem + slack,
+                    "{at}: the line {said:?} shows {shown} of its {lines} lines though {area:?} holds more"
+                );
+            } else {
+                assert_eq!(
+                    shown, lines,
+                    "{at}: the line shows all of its {lines} lines"
+                );
+            }
+            assert!(
+                cx.debug_bounds(details_id).is_none(),
+                "{at}: the caption does not repeat it"
+            );
+            let read =
+                crate::native_accessibility::written::get(&format!("image-side-empty-{side}"))
+                    .unwrap_or_else(|| panic!("{at}: the line is a node"));
+            assert_eq!(
+                read.node.role(),
+                Role::Label,
+                "{at}: the line is static text"
+            );
+            assert_eq!(
+                read.node.value(),
+                Some(text),
+                "{at}: read by its whole line"
+            );
+            let named = crate::native_accessibility::written::get(&format!(
+                "image-side-description-{side}"
+            ))
+            .and_then(|written| written.node.value().map(str::to_owned))
+            .unwrap_or_default();
+            assert!(
+                !named.contains(text),
+                "{at}: the name {named:?} leaves out what the line reads"
+            );
+            cut
+        };
+        let mut met = std::collections::BTreeSet::new();
+
+        // Side by side and overlaid, with Before saying it has no image and
+        // then why its image could not be shown.
+        for message in [None, Some(failure)] {
+            edit_image_sides(&app, cx, |side, image| {
+                if side == 0 {
+                    image.message = message.map(str::to_owned);
+                }
+            });
+            let text = message.unwrap_or(absent);
+            for overlaid in [false, true] {
+                app.update(cx, |app, cx| {
+                    app.set_image_mode(if overlaid {
+                        crate::image_compare::Mode::Overlay
+                    } else {
+                        crate::image_compare::Mode::SideBySide
+                    });
+                    cx.notify();
+                });
+                for (font, width, height) in sizes {
+                    cx.update(|window, cx| appearance::apply_text_sizes(font, 12, window, cx));
+                    cx.simulate_resize(size(px(width), px(height)));
+                    draw(cx);
+                    let mode = if overlaid { "overlaid" } else { "side by side" };
+                    let at = format!("{mode}, {text:?}, at {font} pt in {width} × {height}");
+                    if !overlaid {
+                        crate::native_accessibility::written::forget();
+                        draw(cx);
+                        let cut = said_in_its_place(0, text, true, &at, cx);
+                        if cut {
+                            met.insert("cut in its place");
+                            assert!(
+                                shows_tooltip(cx, "image-side-empty-0"),
+                                "{at}: a cut line shows its whole line in its tooltip"
+                            );
+                        }
+                        assert!(
+                            !shows_tooltip(cx, "image-side-name-0"),
+                            "{at}: the name has no tooltip repeating the line"
+                        );
+                        // Read once, as the line, with the area named for the
+                        // one image it draws where the notes gave way.
+                        let read = image_sides_read(cx, &at, &[0, 1]);
+                        let saying: Vec<_> = read
+                            .iter()
+                            .filter(|(_, name)| name.contains(text))
+                            .collect();
+                        assert_eq!(
+                            saying,
+                            vec![&(Role::Label, text.to_owned())],
+                            "{at}: the reason is read once, as its line: {read:?}"
+                        );
+                        assert!(
+                            read.contains(&(Role::Label, "Before".to_owned())),
+                            "{at}: Before's name is read: {read:?}"
+                        );
+                        if let Some((role, _)) = read
+                            .iter()
+                            .find(|(role, _)| matches!(role, Role::Image | Role::Group))
+                        {
+                            met.insert("area named");
+                            assert!(
+                                read.contains(&(*role, "After image".to_owned())),
+                                "{at}: the area is named for the image it draws: {read:?}"
+                            );
+                        }
+                        continue;
+                    }
+                    let line = bounds("image-side-details-0", cx);
+                    assert!(
+                        inside_preview(line, cx),
+                        "{at}: Before's line {line:?} lies in the preview"
+                    );
+                    assert!(
+                        cx.debug_bounds("image-side-empty-0").is_none(),
+                        "{at}: said once"
+                    );
+                    let room = caption_text("image-side-caption-0", cx).max(line.size.width);
+                    let (lines, one) = wraps(text, room, cx);
+                    let shown = (line.size.height / one).round() as usize;
+                    let named =
+                        crate::native_accessibility::written::get("image-side-description-0")
+                            .and_then(|written| written.node.value().map(str::to_owned));
+                    assert_eq!(
+                        named,
+                        Some(format!("Before: {text}")),
+                        "{at}: the name reads the reason whole"
+                    );
+                    let dimensions = cx.debug_bounds("image-side-details-1").is_some();
+                    if dimensions {
+                        assert_eq!(
+                            shown, lines,
+                            "{at}: beside the dimensions, Before's line {line:?} is whole"
+                        );
+                        met.insert("kept whole");
+                    } else {
+                        assert_eq!(
+                            shown, 1,
+                            "{at}: with the dimensions given way, Before's line {line:?} takes one line"
+                        );
+                        // After's dimensions gave way only where that frees
+                        // room: drawn, either they or Before's reason would
+                        // take more than that one line.
+                        let after =
+                            crate::native_accessibility::written::get("image-side-description-1")
+                                .and_then(|written| written.node.value().map(str::to_owned))
+                                .unwrap_or_default();
+                        let dimensions = after.strip_prefix("After: ").unwrap_or(&after).to_owned();
+                        let (after_lines, _) =
+                            wraps(&dimensions, caption_text("image-side-caption-1", cx), cx);
+                        assert!(
+                            lines.max(after_lines) > 1,
+                            "{at}: After's dimensions ({after_lines} lines) gave way beside Before's {lines}-line reason, freeing no room"
+                        );
+                        met.insert("dimensions gave way");
+                        if lines > 1 {
+                            met.insert("kept cut");
+                            assert!(
+                                shows_tooltip(cx, "image-side-name-0"),
+                                "{at}: the cut reason is whole in the name's tooltip"
+                            );
+                        }
+                    }
+                    if message.is_none() && lines == 1 && width > 1000. {
+                        // Beside a reason on one line, as tall as they are,
+                        // giving way would free no room.
+                        assert!(
+                            dimensions,
+                            "{at}: After's dimensions stay where giving way frees nothing"
+                        );
+                        met.insert("dimensions stay");
+                    }
+                }
+            }
+        }
+
+        // A source image says why it could not be shown across its room.
+        app.update(cx, |app, cx| {
+            app.set_image_mode(crate::image_compare::Mode::SideBySide);
+            cx.notify();
+        });
+        show_source(&app, cx, "polyglot").await;
+        for (font, width, height) in sizes {
+            cx.update(|window, cx| appearance::apply_text_sizes(font, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            assert!(
+                cx.debug_bounds("image-side-empties").is_none(),
+                "source at {font} pt in {width} × {height}: with its image, no room says it has none"
+            );
+        }
+        edit_image_sides(&app, cx, |side, image| {
+            if side == 1 {
+                image.image = None;
+                image.render = None;
+                image.message = Some(failure.to_owned());
+            }
+        });
+        for (font, width, height) in sizes {
+            cx.update(|window, cx| appearance::apply_text_sizes(font, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            crate::native_accessibility::written::forget();
+            draw(cx);
+            let at = format!("source, {failure:?}, at {font} pt in {width} × {height}");
+            if said_in_its_place(1, failure, false, &at, cx) {
+                met.insert("source cut");
+                assert!(
+                    shows_tooltip(cx, "image-side-empty-1"),
+                    "{at}: a cut line shows its whole line in its tooltip"
+                );
+            }
+            let read = image_sides_read(cx, &at, &[1]);
+            assert!(
+                read.contains(&(Role::Label, "Source".to_owned())),
+                "{at}: the caption reads its name alone: {read:?}"
+            );
+            if let Some((role, name)) = read
+                .iter()
+                .find(|(role, _)| matches!(role, Role::Image | Role::Group))
+            {
+                met.insert("source area named");
+                assert_eq!(
+                    (role, name.as_str()),
+                    (&Role::Group, "Source details"),
+                    "{at}: with no image drawn, the area is not an image: {read:?}"
+                );
+            }
+        }
+        assert_eq!(
+            met.into_iter().collect::<Vec<_>>(),
+            [
+                "area named",
+                "cut in its place",
+                "dimensions gave way",
+                "dimensions stay",
+                "kept cut",
+                "kept whole",
+                "source area named",
+                "source cut",
+            ],
+            "the walk meets every case"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Every frame lays out `region` as the frame it settles in: the frames
     /// `step` draws, as the probe recorded them ([`crate::in_frame::probe`]),
     /// all equal the last of two more draws. Frames before `from`, a part

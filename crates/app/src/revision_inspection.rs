@@ -351,7 +351,7 @@ impl GitTurtle {
         cx.notify();
     }
 
-    fn show_tracked_file(
+    pub(super) fn show_tracked_file(
         &mut self,
         scope: PathScope,
         entry: TrackedPath,

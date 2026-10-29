@@ -349,7 +349,7 @@ impl GitTurtle {
         self.image_comparison.drag = None;
     }
     /// Shows the comparison in `mode`, from the start of its pan.
-    fn set_image_mode(&mut self, mode: Mode) {
+    pub(super) fn set_image_mode(&mut self, mode: Mode) {
         self.image_comparison.mode = mode;
         self.image_comparison.pan = [0.; 2];
         self.end_image_drag();
@@ -597,6 +597,22 @@ impl GitTurtle {
             ["Before", "After"]
         };
         let details = [old, new].map(side_details);
+        // A side without an image says why where its image would be, in its
+        // half side by side or across a source image's room; overlaid or
+        // wiped, where it has no room of its own, beneath its name whatever
+        // the room. Only the dimensions are a label that gives way.
+        let own_room = source || state.mode == Mode::SideBySide;
+        // The sides drawn: a source image shows only its own.
+        let drawn = move |index: usize| !source || index == 1;
+        let kinds = [old, new].map(|side| {
+            if side.image.is_some() {
+                Details::Dimensions
+            } else if own_room {
+                Details::InItsPlace
+            } else {
+                Details::Kept
+            }
+        });
         let stage_min = crate::appearance::ui_size(STAGE_MIN);
         let opener =
             crate::system_preview::Opener::new(cx.entity().downgrade(), self.preview_showing);
@@ -665,10 +681,16 @@ impl GitTurtle {
         } else {
             vec![self.image_canvas(None, cx)]
         };
-        let image_label = if source {
-            "Source image"
-        } else {
-            "Before and After images"
+        // What the image's area is named where it carries the words that gave
+        // way: the images it draws, never one a side does not have; with
+        // none, it is named as the band is.
+        let pictured = [old, new].map(|side| side.image.is_some());
+        let image_label = match (source, pictured) {
+            (true, [_, true]) => Some("Source image"),
+            (false, [true, true]) => Some("Before and After images"),
+            (false, [true, false]) => Some("Before image"),
+            (false, [false, true]) => Some("After image"),
+            _ => None,
         };
         // What the band is named where the image is not drawn: the band and
         // the words that gave way, never an image.
@@ -716,13 +738,41 @@ impl GitTurtle {
                 (guidance, &GUIDANCE_LINE),
             ]
             .map(|(text, cache)| one_line_width(text, cache, note_size, window) > note_room);
-            let captions = |dimensions: bool, cx: &App| {
-                side_captions(names, &details, dimensions, source, &controls, &p, cx)
+            // Overlaid or wiped, a side without an image keeps why beneath its
+            // name: whole beside the dimensions, and on one line ending in an
+            // ellipsis where they give way, cut there where it wraps to more.
+            let caption_text = caption_width - window.rem_size() * 1.5;
+            let kept_wraps = [0, 1].map(|i| {
+                kinds[i] == Details::Kept
+                    && wrapped_lines(
+                        &details[i],
+                        crate::appearance::ui_text(11.),
+                        caption_text,
+                        window,
+                    ) > 1
+            });
+            let captions = Captions {
+                names,
+                details: &details,
+                kinds,
+                source,
+                controls: &controls,
+                kept_wraps,
             };
             let fit = Beneath {
                 room: bounds.size.height,
-                names: crate::in_frame::measured_height(captions(false, cx), width, window, cx),
-                dimensions: crate::in_frame::measured_height(captions(true, cx), width, window, cx),
+                names: crate::in_frame::measured_height(
+                    captions.build(false, [false; 2], &p, cx),
+                    width,
+                    window,
+                    cx,
+                ),
+                dimensions: crate::in_frame::measured_height(
+                    captions.build(true, [false; 2], &p, cx),
+                    width,
+                    window,
+                    cx,
+                ),
                 footer: footer_room,
                 notes: (note_line + note_pad) * 2.,
                 band,
@@ -742,6 +792,64 @@ impl GitTurtle {
                 note_pad,
                 stage_min,
             );
+            // An image-less side's reason, where its image would be: whole
+            // where the image's room holds it, otherwise on the whole lines
+            // it holds, the last ending in an ellipsis with the whole line in
+            // its tooltip. It is static text read by that whole line, so the
+            // side's name leaves it out; where the room holds no line, the
+            // name keeps it, in its accessible name and tooltip.
+            let area =
+                fit.below - fit.band_height - notes_height(wraps, note_lines, note_line, note_pad);
+            let empty_lines = ((area - window.rem_size()) / band_lines.line)
+                .floor()
+                .clamp(0., 64.) as usize;
+            let said = [0, 1].map(|i| {
+                fit.image_shown && empty_lines > 0 && drawn(i) && kinds[i] == Details::InItsPlace
+            });
+            let empties = said.contains(&true).then(|| {
+                div()
+                    .debug_selector(|| "image-side-empties".into())
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .children([0, 1].into_iter().filter(|i| drawn(*i)).map(|i| {
+                        let empty = said[i].then(|| {
+                            let text = details[i].clone();
+                            let cut =
+                                wrapped_lines(&text, band_size, caption_text, window) > empty_lines;
+                            let whole = text.clone();
+                            native_accessibility::static_text(
+                                div()
+                                    .id(("image-side-empty", i))
+                                    .debug_selector(move || format!("image-side-empty-{i}")),
+                                text.clone(),
+                            )
+                            .min_w_0()
+                            .text_center()
+                            .text_size(band_size)
+                            .text_color(rgb(p.muted))
+                            .line_clamp(empty_lines)
+                            .text_ellipsis()
+                            .when(cut, |line| {
+                                line.tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(whole.clone())
+                                        .build(window, cx)
+                                })
+                            })
+                            .child(text)
+                        });
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .px_3()
+                            .py_2()
+                            .children(empty)
+                    }))
+            });
             // The words of the notes and the footer that gave way, which the
             // accessible description of the image keeps, or of the band where
             // the image is not drawn. The footer gives way only where its
@@ -839,10 +947,15 @@ impl GitTurtle {
                     .child(crate::in_frame::probed(band, "image-open-notes"))
             });
             let canvas = fit.image_shown.then(|| {
-                // Only the image drawn in this frame records its description
-                // for tests.
+                // Only the image drawn in this frame records its name and
+                // description for tests.
+                let name = image_label.unwrap_or(details_label);
                 if described {
                     crate::views::note_compact_label("image-canvas-area", &description);
+                    crate::views::note_compact_label(
+                        "image-canvas-area-name",
+                        &SharedString::from(name),
+                    );
                 }
                 crate::in_frame::probed(
                     div()
@@ -853,11 +966,16 @@ impl GitTurtle {
                         .min_h_0()
                         .flex()
                         .when(described, |area| {
-                            area.role(Role::Image)
-                                .aria_label(image_label)
-                                .aria_description(description)
+                            area.role(if image_label.is_some() {
+                                Role::Image
+                            } else {
+                                Role::Group
+                            })
+                            .aria_label(name)
+                            .aria_description(description)
                         })
-                        .children(canvases),
+                        .children(canvases)
+                        .children(empties),
                     "image-canvas-area",
                 )
             });
@@ -866,7 +984,7 @@ impl GitTurtle {
                 .size_full()
                 .flex()
                 .flex_col()
-                .child(captions(fit.dimensions, cx))
+                .child(captions.build(fit.dimensions, said, &p, cx))
                 // Beneath the captions: the band saying why a click opened
                 // nothing takes its own lines there, beneath its side's
                 // caption, so the captions stay put and the image, then its
@@ -1208,94 +1326,138 @@ pub(crate) const STAGE_MIN: f32 = 96.;
 
 /// The side captions' row an image comparison draws beneath its toolbar, over
 /// the row's rule: each side's name, then the control that opens it, as a
-/// document's header has them, and its `dimensions` beneath where they stay.
+/// document's header has them, and its details beneath where they stay.
 /// The name's line is as tall as the scaled 28 px control and the caption
 /// keeps to its top, so both sides' names and details line up whether or not
 /// a side offers the control, and the control stays on the first line
-/// wherever the name leaves it room. Where the dimensions give way, their
-/// words stay in the name's accessible name and its tooltip.
-fn side_captions(
+/// wherever the name leaves it room.
+struct Captions<'a> {
     names: [&'static str; 2],
-    details: &[String; 2],
-    dimensions: bool,
+    details: &'a [String; 2],
+    kinds: [Details; 2],
     source: bool,
-    controls: &[Option<(crate::system_preview::Target, crate::system_preview::Form)>; 2],
-    p: &crate::appearance::Palette,
-    cx: &App,
-) -> Div {
-    div()
-        .flex()
-        .border_b_1()
-        .border_color(rgb(p.border))
-        .children(
-            [0, 1]
-                .into_iter()
-                .filter(|index| !source || *index == 1)
-                .map(|i| {
-                    let (name, details) = (names[i], details[i].clone());
-                    // On Linux the control names itself; Quick Look's takes a
-                    // name with its side.
-                    let control = controls[i].as_ref().map(|(target, form)| {
-                        let control = target.button(*form, cx);
-                        if cfg!(target_os = "macos") {
-                            control.accessibility_label(format!(
-                                "{name}: open captured image in System preview"
-                            ))
+    controls: &'a [Option<(crate::system_preview::Target, crate::system_preview::Form)>; 2],
+    /// Whether each side's [`Details::Kept`] line wraps past one line.
+    kept_wraps: [bool; 2],
+}
+
+impl Captions<'_> {
+    /// The row, with each side's `dimensions` beneath its name where they
+    /// stay, and otherwise their words in the name's accessible name and its
+    /// tooltip. A side without an image draws why beneath its name only
+    /// where it is [`Details::Kept`]: whole beside the dimensions, and on one
+    /// line ending in an ellipsis where they give way, its words in the
+    /// name's accessible name and, where that line is cut, its tooltip.
+    /// Where the side's line is `said` in the image's room, which reads it
+    /// as static text, the name leaves it out; otherwise the name keeps it,
+    /// in its accessible name and tooltip.
+    fn build(
+        &self,
+        dimensions: bool,
+        said: [bool; 2],
+        p: &crate::appearance::Palette,
+        cx: &App,
+    ) -> Div {
+        div()
+            .flex()
+            .border_b_1()
+            .border_color(rgb(p.border))
+            .children(
+                [0, 1]
+                    .into_iter()
+                    .filter(|index| !self.source || *index == 1)
+                    .map(|i| {
+                        let (name, details) = (self.names[i], self.details[i].clone());
+                        // On Linux the control names itself; Quick Look's
+                        // takes a name with its side.
+                        let control = self.controls[i].as_ref().map(|(target, form)| {
+                            let control = target.button(*form, cx);
+                            if cfg!(target_os = "macos") {
+                                control.accessibility_label(format!(
+                                    "{name}: open captured image in System preview"
+                                ))
+                            } else {
+                                control
+                            }
+                        });
+                        let kept = self.kinds[i] == Details::Kept;
+                        let (drawn, cut) = match self.kinds[i] {
+                            Details::Dimensions => (dimensions, false),
+                            Details::InItsPlace => (false, false),
+                            Details::Kept => (true, !dimensions && self.kept_wraps[i]),
+                        };
+                        let hidden = ((!drawn && !said[i]) || cut).then(|| details.clone());
+                        let read = if said[i] {
+                            name.to_owned()
                         } else {
-                            control
-                        }
-                    });
-                    let hidden = (!dimensions).then(|| details.clone());
-                    div()
-                        .debug_selector(move || format!("image-side-caption-{i}"))
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .px_3()
-                        .py_2()
-                        .text_size(crate::appearance::ui_text(11.))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .items_center()
-                                .content_start()
-                                .gap_2()
-                                .child(
-                                    native_accessibility::static_text(
-                                        div()
-                                            .id(("image-side-description", i))
-                                            .debug_selector(move || format!("image-side-name-{i}")),
-                                        format!("{name}: {details}"),
-                                    )
-                                    .min_h(crate::appearance::ui_size(28.))
-                                    .flex()
-                                    .items_center()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .when_some(hidden, |name, details| {
-                                        name.tooltip(move |window, cx| {
-                                            gpui_kit::component::tooltip::Tooltip::new(
-                                                details.clone(),
-                                            )
-                                            .build(window, cx)
-                                        })
-                                    })
-                                    .child(name),
-                                )
-                                .children(control),
-                        )
-                        .when(dimensions, |caption| {
-                            caption.child(
+                            format!("{name}: {details}")
+                        };
+                        div()
+                            .debug_selector(move || format!("image-side-caption-{i}"))
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .px_3()
+                            .py_2()
+                            .text_size(crate::appearance::ui_text(11.))
+                            .child(
                                 div()
-                                    .debug_selector(move || format!("image-side-details-{i}"))
-                                    .min_w_0()
-                                    .text_color(rgb(p.muted))
-                                    .child(details),
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .content_start()
+                                    .gap_2()
+                                    .child(
+                                        native_accessibility::static_text(
+                                            div().id(("image-side-description", i)).debug_selector(
+                                                move || format!("image-side-name-{i}"),
+                                            ),
+                                            read,
+                                        )
+                                        .min_h(crate::appearance::ui_size(28.))
+                                        .flex()
+                                        .items_center()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .when_some(hidden, |name, details| {
+                                            name.tooltip(move |window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new(
+                                                    details.clone(),
+                                                )
+                                                .build(window, cx)
+                                            })
+                                        })
+                                        .child(name),
+                                    )
+                                    .children(control),
                             )
-                        })
-                }),
-        )
+                            .when(drawn, |caption| {
+                                caption.child(
+                                    div()
+                                        .debug_selector(move || format!("image-side-details-{i}"))
+                                        .min_w_0()
+                                        .text_color(rgb(p.muted))
+                                        .when(kept && !dimensions, |line| line.truncate())
+                                        .child(details),
+                                )
+                            })
+                    }),
+            )
+    }
+}
+
+/// What the line beneath a side's name says, and where it is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Details {
+    /// The image's dimensions: a label, which gives way before the image.
+    Dimensions,
+    /// Why the side has no image, said where its image would be (its half
+    /// side by side, or a source image's room), not beneath its name.
+    InItsPlace,
+    /// Why the side has no image, beneath its name whatever the room, where
+    /// the image has no room of its own for the side (Overlay, Wipe): whole
+    /// beside the dimensions, and on one line where they give way.
+    Kept,
 }
 
 /// The room beneath an image comparison's toolbar in the frame being drawn,
@@ -1307,9 +1469,10 @@ struct Beneath {
     /// its notes and Compare's footer share.
     room: Pixels,
     /// The captions' height, their rule included, with each side's name
-    /// alone.
+    /// alone, but for a reason kept beneath it on one line.
     names: Pixels,
-    /// The captions' height with each side's dimensions beneath its name.
+    /// The captions' height with each side's dimensions beneath its name,
+    /// and a reason kept there whole.
     dimensions: Pixels,
     /// Compare's footer's height, where the comparison draws one.
     footer: Option<Pixels>,
@@ -1360,8 +1523,11 @@ impl Beneath {
         };
         let footer = self.footer.unwrap_or(px(0.));
         // The dimensions stay where the image keeps its minimum beneath the
-        // captions with the footer drawn and the notes on a line each.
-        let dimensions = self.room - footer - self.dimensions - self.notes >= self.stage;
+        // captions with the footer drawn and the notes on a line each, and
+        // where giving way would free no room, as where a side's reason
+        // beneath its name is as tall as they are.
+        let dimensions = self.dimensions <= self.names
+            || self.room - footer - self.dimensions - self.notes >= self.stage;
         let captions = if dimensions {
             self.dimensions
         } else {
@@ -1449,16 +1615,23 @@ fn note_lines(
     pad: Pixels,
     stage: Pixels,
 ) -> usize {
-    let height = |lines: usize| {
-        wraps
-            .iter()
-            .map(|&wraps| line * if wraps { lines as f32 } else { 1. } + pad)
-            .sum::<Pixels>()
-    };
     (1..=most)
         .rev()
-        .find(|&lines| room - height(lines) >= stage)
+        .find(|&lines| room - notes_height(wraps, lines, line, pad) >= stage)
         .unwrap_or(0)
+}
+
+/// The height both notes take on up to `lines` lines each, a note that
+/// `wraps` taking them all and another one, each line `line` tall and each
+/// note adding `pad`; none where they take no lines.
+fn notes_height(wraps: [bool; 2], lines: usize, line: Pixels, pad: Pixels) -> Pixels {
+    if lines == 0 {
+        return px(0.);
+    }
+    wraps
+        .iter()
+        .map(|&wraps| line * if wraps { lines as f32 } else { 1. } + pad)
+        .sum()
 }
 
 /// `text` laid out on one line at `size`, again only when it, the font or the
@@ -1663,6 +1836,24 @@ mod tests {
         // Where even the capped band leaves the image less, it goes.
         let fit = beneath(284. - 14., four).fit();
         assert!(!fit.footer, "{fit:?}");
+    }
+    /// The dimensions give way only where that frees room: overlaid, a side
+    /// without an image keeps why beneath its name, as tall as the other
+    /// side's dimensions, and hiding them left the captions as tall and the
+    /// image no more room.
+    #[test]
+    fn dimensions_stay_where_giving_way_frees_nothing() {
+        let beneath = |names: f32| Beneath {
+            room: px(150.),
+            names: px(names),
+            dimensions: px(70.),
+            footer: Some(px(24.)),
+            notes: px(44.),
+            band: None,
+            stage: px(96.),
+        };
+        assert!(beneath(70.).fit().dimensions);
+        assert!(!beneath(69.).fit().dimensions);
     }
     #[test]
     fn thumbnail_reduction_preserves_original_resize_and_absent_sides() {
