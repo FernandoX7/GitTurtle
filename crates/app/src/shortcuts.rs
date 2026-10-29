@@ -1026,7 +1026,18 @@ impl Render for ShortcutHelpView {
                     }
                 })
                 .rounded(px(7.)).border_1().border_color(rgb(p.raised_edge()))
-                .when(count > 0, |view| view.child(list))
+                // The list shows its scroll while it holds more than it
+                // draws, as the message and the Reflog's lists do: given up
+                // to a few rows, as three of 61 at 18 pt in a 461 × 490
+                // window, it showed no sign of the rest. The bar hides while
+                // every row fits, and its thumb stands clear of the key chips,
+                // which keep the rows' 12 px inset.
+                .relative()
+                .when(count > 0, |view| view.child(list).child(
+                    gpui_kit::base::Scrollbar::vertical(&self.scroll)
+                        .id("shortcut-help-scrollbar")
+                        .mode(gpui_kit::base::ScrollbarMode::Always),
+                ))
                 .when(count == 0, |view| view.child(native_accessibility::text("shortcut-help-empty",
                     if self.query.read(cx).value().len() > 4096 { "Search is limited to 4,096 bytes." }
                     else { "No shortcuts match. Try tabs, compare, editing or Ctrl." }).p_4().text_color(rgb(p.muted))))))

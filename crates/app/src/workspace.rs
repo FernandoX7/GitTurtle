@@ -1422,12 +1422,15 @@ impl GitTurtle {
         self.capture_page_return_focus(window, cx);
         self.page = AppPage::Projects;
         self.page_origin = AppPage::Repository;
-        window.focus(&self.app_focus, cx);
         self.hub.update(cx, |hub, cx| {
             hub.set_busy(false, cx);
             hub.set_error(None, cx);
             hub.set_can_go_back(self.repository.is_some(), cx);
         });
+        // Focus opens on the selected action tab, with its ring, inside the
+        // page so the application's keys still reach the window's handlers.
+        self.hub
+            .update(cx, |hub, cx| hub.focus_selected_mode(window, cx));
         self.repaint_page(window, cx);
     }
 

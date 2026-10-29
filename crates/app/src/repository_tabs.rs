@@ -1289,9 +1289,12 @@ impl GitTurtle {
             } else {
                 self.page = AppPage::Projects;
                 self.page_return_focus = None;
-                self.app_focus.focus(window, cx);
                 self.hub
                     .update(cx, |hub, cx| hub.set_can_go_back(false, cx));
+                // The visible Projects page takes focus on its selected
+                // action tab, drawn with its ring.
+                self.hub
+                    .update(cx, |hub, cx| hub.focus_selected_mode(window, cx));
             }
         } else if self
             .repository_tabs
@@ -4415,9 +4418,14 @@ mod tests {
                 app.close_repository_tab(0, window, cx);
                 assert!(app.page == AppPage::Projects);
                 assert!(app.page_return_focus.is_none());
-                assert!(app.app_focus.is_focused(window));
             });
             window.draw(cx).clear(cx);
+            // Focus is on the page's selected action tab, drawn with its
+            // ring, inside the window's own handlers.
+            app.update(cx, |app, cx| {
+                assert!(app.hub.read(cx).selected_mode_focused(window));
+                assert!(app.app_focus.contains_focused(window, cx));
+            });
             window.dispatch_action(Box::new(ShowSettings), cx);
         });
         window_cx.executor().run_until_parked();

@@ -724,8 +724,27 @@ impl GitTurtle {
                         let control = if form.labelled_modes {
                             button(name, name, "", selected)
                         } else {
+                            // As glyphs, the selected mode was told apart
+                            // only by its fill, 1.40:1 against the panel in
+                            // Midnight; a 2 px accent bar under its glyph,
+                            // 3:1 or more against that fill in every
+                            // palette, marks it as a row's leading marker
+                            // marks the selected row.
                             compact_control_name(button(name, "", symbol, selected), selector, name)
                                 .tooltip(name)
+                                .when(selected, |control| {
+                                    control.relative().child(
+                                        div()
+                                            .debug_selector(|| "nav-mode-selected-bar".into())
+                                            .absolute()
+                                            .left(crate::appearance::ui_size(crate::ICON_INSET))
+                                            .right(crate::appearance::ui_size(crate::ICON_INSET))
+                                            .bottom(crate::appearance::ui_size(2.))
+                                            .h(px(2.))
+                                            .rounded(px(1.))
+                                            .bg(rgb(colors.accent)),
+                                    )
+                                })
                         };
                         control
                             .debug_selector(move || selector.into())
@@ -11002,6 +11021,90 @@ pub(crate) mod tests {
                     );
                 }
                 _ => {}
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// As glyphs, the selected navigation mode draws a 2 px accent bar under
+    /// its glyph, inside its toggle, at 3:1 or more against the toggle's
+    /// `selected` fill in Midnight and Daylight; it was told apart only by
+    /// that fill, 1.40:1 against the panel in Midnight. The bar follows the
+    /// selection, and no other mode draws one.
+    #[gpui::test]
+    async fn the_selected_mode_glyph_draws_an_accent_bar(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        let panels = app.read_with(cx, |app, _| app.history_panels.clone());
+        cx.update(|window, cx| {
+            appearance::apply_text_sizes(18, 12, window, cx);
+            panels.update(cx, |panels, cx| {
+                panels.resize_panel(0, px(180.), window, cx)
+            });
+        });
+        draw(cx);
+        for (theme, mode, selector) in [
+            (
+                appearance::ThemeChoice::Midnight,
+                NavMode::Local,
+                "nav-mode-local",
+            ),
+            (
+                appearance::ThemeChoice::Daylight,
+                NavMode::Local,
+                "nav-mode-local",
+            ),
+            (
+                appearance::ThemeChoice::Midnight,
+                NavMode::Worktrees,
+                "nav-mode-worktrees",
+            ),
+            (
+                appearance::ThemeChoice::Daylight,
+                NavMode::Remote,
+                "nav-mode-remote",
+            ),
+        ] {
+            let at = format!("{} with {selector} selected", theme.label());
+            cx.update(|window, cx| theme.apply(Some(window), cx));
+            app.update(cx, |app, cx| {
+                app.nav_mode = mode;
+                cx.notify();
+            });
+            draw(cx);
+            let form = cx.update(|window, cx| app.read(cx).sidebar_form(window, cx));
+            assert!(!form.labelled_modes, "{at}: the modes are glyphs");
+            let toggle = cx.debug_bounds(selector).expect("the toggle is drawn");
+            let bar = cx
+                .debug_bounds("nav-mode-selected-bar")
+                .unwrap_or_else(|| panic!("{at}: the selected glyph draws its bar"));
+            assert!(
+                toggle.contains(&bar.origin) && toggle.contains(&bar.bottom_right()),
+                "{at}: the bar {bar:?} lies inside its toggle {toggle:?}"
+            );
+            assert!(bar.size.height >= px(2.), "{at}: {bar:?} is 2 px tall");
+            let p = cx.update(|_, cx| palette(cx));
+            let (fills, _) = appearance::painted_row(cx, bar);
+            let accent = Background::from(Hsla::from(rgb(p.accent)));
+            assert_eq!(fills, [accent], "{at}: the bar paints the accent");
+            let selected = Background::from(Hsla::from(rgb(p.selected)));
+            assert!(
+                appearance::painted_row(cx, toggle).0.contains(&selected),
+                "{at}: the toggle keeps its selected fill"
+            );
+            let ratio = appearance::custom::contrast(p.accent, p.selected);
+            assert!(
+                ratio >= 3.,
+                "{at}: the bar #{:06x} on the fill #{:06x} reads {ratio:.2}:1",
+                p.accent,
+                p.selected
+            );
+            for (_, _, _, other) in NAV_MODES.into_iter().filter(|mode| mode.3 != selector) {
+                let other = cx.debug_bounds(other).expect("the toggle is drawn");
+                assert!(
+                    !other.intersects(&bar),
+                    "{at}: the bar marks only the selected mode"
+                );
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));

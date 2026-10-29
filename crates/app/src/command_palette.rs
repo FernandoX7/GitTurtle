@@ -1295,6 +1295,9 @@ mod render_tests {
         panel_edges: Vec<Hsla>,
         list_edges: Vec<Hsla>,
         row_fills: Vec<Background>,
+        /// What the list paints in its scrollbar's track at its trailing
+        /// edge, no wider than the track: the track and the thumb.
+        scroll_fills: Vec<Background>,
     }
 
     fn painted(cx: &mut VisualTestContext) -> Painted {
@@ -1355,6 +1358,11 @@ mod render_tests {
                     && drawn.right() <= list.right()
                     && drawn.bottom() <= list.bottom()
             };
+            // Inside the list's 1 px edge.
+            let track = list.right() - px(1.) - gpui_kit::base::Scrollbar::width();
+            let in_track = |drawn: Bounds<Pixels>| {
+                drawn.left() >= track && drawn.size.width <= gpui_kit::base::Scrollbar::width()
+            };
             // Quads are listed in paint order; the page beneath the dialog
             // comes before the panel.
             let above = quads
@@ -1371,12 +1379,69 @@ mod render_tests {
                 row_fills: quads[above..]
                     .iter()
                     .filter(|quad| {
-                        inside(logical(quad.bounds, scale)) && !quad.background.is_transparent()
+                        let drawn = logical(quad.bounds, scale);
+                        inside(drawn) && !in_track(drawn) && !quad.background.is_transparent()
+                    })
+                    .map(|quad| quad.background)
+                    .collect(),
+                scroll_fills: quads[above..]
+                    .iter()
+                    .filter(|quad| {
+                        let drawn = logical(quad.bounds, scale);
+                        inside(drawn) && in_track(drawn) && !quad.background.is_transparent()
                     })
                     .map(|quad| quad.background)
                     .collect(),
             }
         })
+    }
+
+    /// Keyboard Shortcuts' list shows its scrollbar while it holds more rows
+    /// than it draws: given up to a few rows, as at 18 pt in a 461 × 490
+    /// window, where it drew three of 61 with no sign of the rest, and in a
+    /// full window, where it draws ten. A search that leaves rows enough to
+    /// fit shows none.
+    #[gpui::test]
+    async fn the_shortcut_list_shows_its_scroll_while_it_holds_more(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for (text, width, height) in [(18, 461., 490.), (13, 1200., 800.)] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+            // The list's height lands in its first frame; the scrollbar
+            // reads it in the next.
+            draw(cx);
+            draw(cx);
+            let painted = painted_popup(cx, "keyboard-shortcuts-view", "shortcut-help-results");
+            assert!(
+                !painted.scroll_fills.is_empty(),
+                "{at}: the list shows its scroll"
+            );
+            if text == 13 {
+                cx.simulate_input("command palette");
+                draw(cx);
+                draw(cx);
+                let rows = cx.debug_bounds("shortcut-help-row-1");
+                assert!(rows.is_some(), "{at}: the search leaves its entry");
+                let painted = painted_popup(cx, "keyboard-shortcuts-view", "shortcut-help-results");
+                assert_eq!(
+                    painted.scroll_fills,
+                    Vec::<Background>::new(),
+                    "{at}: every row fits, so no scrollbar"
+                );
+            }
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                !cx.update(|window, cx| window.has_active_dialog(cx)),
+                "{at}"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// The palette is a menu of commands, so in every palette it floats on

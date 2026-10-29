@@ -412,6 +412,12 @@ async fn the_ring_room_at_list_and_dialog_edges_moves_nothing(cx: &mut TestAppCo
         interface_size(cx, interface);
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
         views::tests::settle(&app, cx).await;
+        // Projects opens with its selected action tab focused, and a ring of
+        // no width paints none of that tab's ring quads; the room is
+        // measured with focus on the window's root, where nothing draws one.
+        let root = app.read_with(cx, |app, _| app.app_focus.clone());
+        cx.update(|window, cx| window.focus(&root, cx));
+        draw(cx, 2);
         assert_room_moves_nothing(
             cx,
             &app,

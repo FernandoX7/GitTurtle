@@ -67,6 +67,9 @@ pub struct ProjectHub {
     /// onto.
     body: FocusReveal,
     action_tabs_focus: FocusHandle,
+    /// The Open, Clone and Create tabs' own focus, so the page can open
+    /// with focus on the selected one ([`Self::focus_selected_mode`]).
+    mode_focus: [FocusHandle; 3],
     parent_field_focus: FocusHandle,
     submit_focus: FocusHandle,
     subscriptions: Vec<Subscription>,
@@ -118,6 +121,7 @@ impl ProjectHub {
             recent_scroll: UniformListScrollHandle::new(),
             body: FocusReveal::new(Trigger::AnyFocus),
             action_tabs_focus: cx.focus_handle(),
+            mode_focus: [cx.focus_handle(), cx.focus_handle(), cx.focus_handle()],
             parent_field_focus: cx.focus_handle(),
             submit_focus: cx.focus_handle(),
             subscriptions: Vec::new(),
@@ -268,6 +272,31 @@ impl ProjectHub {
                 .update(cx, |input, cx| input.set_value(name.clone(), window, cx));
             self.suggested_name = Some(name);
         }
+    }
+
+    /// Focuses the selected action tab, Open, Clone or Create, whose ring
+    /// the next frame draws, scrolled into view with the rest of the hub's
+    /// focus reveals. The page opened with focus on the window's root, which
+    /// draws nothing, so nothing showed where the keyboard stood until a Tab
+    /// landed on the tab strip's Menu.
+    pub(crate) fn focus_selected_mode(&self, window: &mut Window, cx: &mut App) {
+        let index = match self.mode {
+            ProjectMode::Open => 0,
+            ProjectMode::Clone => 1,
+            ProjectMode::Create => 2,
+        };
+        window.focus(&self.mode_focus[index], cx);
+    }
+
+    /// Whether the selected action tab holds focus.
+    #[cfg(test)]
+    pub(crate) fn selected_mode_focused(&self, window: &Window) -> bool {
+        self.mode_focus[match self.mode {
+            ProjectMode::Open => 0,
+            ProjectMode::Clone => 1,
+            ProjectMode::Create => 2,
+        }]
+        .is_focused(window)
     }
 
     fn change_mode(&mut self, mode: ProjectMode, window: &mut Window, cx: &mut Context<Self>) {
@@ -664,11 +693,16 @@ impl ProjectHub {
                     .p_1()
                     .children(
                         [
-                            (ProjectMode::Open, "Open", "folder"),
-                            (ProjectMode::Clone, "Clone", "remote"),
-                            (ProjectMode::Create, "Create", "branch-add"),
+                            (ProjectMode::Open, "Open", "folder", &self.mode_focus[0]),
+                            (ProjectMode::Clone, "Clone", "remote", &self.mode_focus[1]),
+                            (
+                                ProjectMode::Create,
+                                "Create",
+                                "branch-add",
+                                &self.mode_focus[2],
+                            ),
                         ]
-                        .map(|(mode, label, symbol)| {
+                        .map(|(mode, label, symbol, focus)| {
                             // The shared helper's look, as History's segments:
                             // unselected, transparent at rest with the palette's
                             // hover and pressed fills, so a press steps to almost
@@ -679,6 +713,7 @@ impl ProjectHub {
                             let unavailable = self.unavailable();
                             let selected = self.mode == mode && !unavailable;
                             Button::new(label)
+                                .track_focus(focus)
                                 .role(Role::Tab)
                                 .map(|button| {
                                     if unavailable {
@@ -1522,6 +1557,60 @@ mod tests {
     use super::*;
     use core::prelude::v1::test;
     use std::{cell::RefCell, rc::Rc};
+
+    /// Projects opens with focus on its selected action tab, whose ring the
+    /// first frame draws whole, at 13 pt in a full window and 18 pt in a
+    /// 461 × 490 half tile, and the application's keys still reach the
+    /// window. It opened with focus on the window's root, which draws
+    /// nothing, so the page showed no focus until a Tab landed on Menu.
+    #[gpui::test]
+    async fn projects_open_with_the_selected_action_tab_focused_and_ringed(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        crate::focus_ring::sweep::prepare(&app, cx);
+        for (text, width, height) in [(13, 1280., 800.), (18, 461., 490.)] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| crate::appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+            crate::tags::tests::draw(cx);
+            cx.update(|window, cx| {
+                let app = app.read(cx);
+                assert!(app.page == crate::AppPage::Projects, "{at}");
+                assert!(
+                    app.hub.read(cx).selected_mode_focused(window),
+                    "{at}: the selected action tab holds focus"
+                );
+                assert!(
+                    app.app_focus.contains_focused(window, cx),
+                    "{at}: inside the window's handlers"
+                );
+            });
+            let tab = crate::tags::tests::rendered(cx, "project-mode-Open");
+            let ring = cx.read(|cx| Theme::global(cx).button_focus_ring);
+            let around = tab.dilate(ring.gap + ring.width);
+            let painted = cx.update(|window, _| {
+                let scale = window.scale_factor();
+                window.painted_quads().into_iter().any(|quad| {
+                    let near = |device: gpui_kit::ScaledPixels, logical: Pixels| {
+                        (device.as_f32() - logical.as_f32() * scale).abs() <= 1.
+                    };
+                    quad.border_widths.top.as_f32() > 0.
+                        && !quad.border_color.is_transparent()
+                        && near(quad.bounds.left(), around.left())
+                        && near(quad.bounds.top(), around.top())
+                        && near(quad.bounds.right(), around.right())
+                        && near(quad.bounds.bottom(), around.bottom())
+                })
+            });
+            assert!(painted, "{at}: the tab {tab:?} draws its ring {around:?}");
+            crate::tags::tests::assert_rings_whole(cx, &["project-mode-Open"]);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+            crate::tags::tests::draw(cx);
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
 
     #[gpui::test]
     fn keyboard_focus_reveals_project_fields_and_submit_at_small_window(cx: &mut TestAppContext) {
