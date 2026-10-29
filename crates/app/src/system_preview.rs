@@ -151,13 +151,18 @@ pub(crate) const OPENED: &str = "Opened a read-only copy of the captured bytes."
 /// whether the person closed an application chooser or closed one that
 /// offered no application ("No Apps available"), so the line names no
 /// cause: "the application chooser was closed" once hid the second.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const DISMISSED: &str = "Nothing opened.";
 
 /// Why a click opened nothing.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum NotOpened {
     /// The portal reports the request cancelled: the person closed its
-    /// application chooser, with or without an application to offer.
+    /// application chooser, with or without an application to offer. Only
+    /// the Linux launcher has a portal to cancel, so other builds leave it
+    /// out outside tests, as they do the failure categories only Linux
+    /// constructs ([`Category`]).
+    #[cfg(any(target_os = "linux", test))]
     Dismissed,
     /// Nothing could be opened, for this reason.
     Failed(Failure),
@@ -544,6 +549,7 @@ impl Target {
                 copy_feedback::confirm(window, cx, Some(self.mark), OPENED);
                 return;
             }
+            #[cfg(any(target_os = "linux", test))]
             Err(NotOpened::Dismissed) => (false, DISMISSED.into(), DISMISSED.into()),
             Err(NotOpened::Failed(failure)) => (
                 true,
