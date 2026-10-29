@@ -1571,7 +1571,7 @@ impl GitTurtle {
             // keep a nearby stale width, and Subject takes the leftover, so
             // the columns would land somewhere else after navigation is
             // hidden and shown again. An unchanged width lays nothing out.
-            .on_prepaint(move |bounds, _, cx| {
+            .on_prepaint(move |bounds, window, cx| {
                 let _ = view.update(cx, |this, cx| {
                     let width = f32::from(bounds.size.width);
                     if this.history_width != width {
@@ -1579,6 +1579,14 @@ impl GitTurtle {
                         HISTORY_WIDTHS.with(|count| count.set(count.get() + 1));
                         this.history_width = width;
                         cx.notify();
+                        // A notify during a draw only marks the view for
+                        // whichever frame something else asks for: after a
+                        // single resize the table kept the old width's
+                        // columns until the next input. Ask for the next
+                        // frame, which lays the columns out for this width;
+                        // that frame measures the same width and asks for
+                        // nothing, so an idle window draws no more.
+                        window.request_animation_frame();
                     }
                 });
             })
@@ -13241,6 +13249,103 @@ pub(crate) mod tests {
                     "no layout for an unchanged width {at}"
                 );
             }
+        }
+    }
+
+    /// Delivers only the frames the window asks for, as a platform's frame
+    /// source does: the test platform draws a dirty window as each update
+    /// ends, and each frame asked for with `on_next_frame`, as
+    /// `request_animation_frame` asks, is delivered until none is left.
+    /// Returns how many were delivered, and fails past `limit`: an idle
+    /// window that keeps asking for frames redraws for ever.
+    fn requested_frames(cx: &mut VisualTestContext, limit: usize) -> usize {
+        let mut delivered = 0;
+        loop {
+            cx.executor().run_until_parked();
+            if cx.update(|window, cx| window.simulate_next_frame(cx)) == 0 {
+                return delivered;
+            }
+            delivered += 1;
+            assert!(
+                delivered <= limit,
+                "the window still asks for a frame after {delivered}"
+            );
+        }
+    }
+
+    /// What [`history_geometry`] reads: [`history_columns`], then the commit
+    /// list's and the inspector's bounds.
+    type HistoryGeometry = (
+        (f32, Vec<(Pixels, Pixels)>),
+        Option<Bounds<Pixels>>,
+        Option<Bounds<Pixels>>,
+    );
+
+    /// History's column headers, the width it recorded, and the commit list
+    /// and inspector, the commit's or the empty one, as the last frame drew
+    /// them.
+    fn history_geometry(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> HistoryGeometry {
+        (
+            history_columns(app, cx),
+            cx.debug_bounds("history-pane"),
+            cx.debug_bounds("commit-inspector")
+                .or_else(|| cx.debug_bounds("empty-state")),
+        )
+    }
+
+    /// One resize, and only the frames it causes, lay History out for the
+    /// new width: natively, after a single resize with no further input,
+    /// the table kept the old width's columns for 2.5 s, until something
+    /// else redrew, because History measures its width while drawing and a
+    /// notify during a draw asks for no frame. Each resize below, wider and
+    /// narrower, settles in the frames it asks for to the columns, list and
+    /// inspector that further forced frames keep, and once settled the
+    /// window asks for no frame at all, so an idle window draws nothing.
+    /// With a commit selected, the list's probe reveals it after the
+    /// viewport changes and asks for a frame of its own; without one, only
+    /// History's new width can.
+    #[gpui::test]
+    async fn one_resize_lays_history_out_for_its_new_width(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        draw(cx);
+        requested_frames(cx, 4);
+        for (selected, width, height) in [
+            (true, 1000., 800.),
+            (true, 1480., 800.),
+            (false, 1480., 800.),
+            (false, 1000., 800.),
+            (false, 1480., 800.),
+            (false, 1213., 700.),
+        ] {
+            if !selected && app.read_with(cx, |app, _| app.selected_commit.is_some()) {
+                app.update(cx, |app, cx| {
+                    app.selected_commit = None;
+                    app.files.clear();
+                    cx.notify();
+                });
+                draw(cx);
+                requested_frames(cx, 4);
+                continue;
+            }
+            let at = format!("after one resize to {width} × {height}, selected {selected}");
+            let before = app.read_with(cx, |app, _| app.history_width);
+            cx.simulate_resize(size(px(width), px(height)));
+            requested_frames(cx, 4);
+            let shown = history_geometry(&app, cx);
+            assert_ne!(shown.0.0, before, "{at}: History took the new width");
+            assert_eq!(
+                cx.update(|window, cx| window.simulate_next_frame(cx)),
+                0,
+                "{at}: settled, the window asks for nothing"
+            );
+            draw(cx);
+            assert_eq!(
+                history_geometry(&app, cx),
+                shown,
+                "{at}: the frames the resize asked for laid History out"
+            );
+            assert_eq!(requested_frames(cx, 0), 0, "{at}: still idle");
         }
     }
 
