@@ -8415,6 +8415,87 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Compare's footer gives way to the image's captions where they alone do
+    /// not fit above it, and the captions keep its words. It stayed wherever
+    /// giving way drew no pixel of the image, and ran past the preview's foot
+    /// there: at 18 pt in a 461 × 490 window, zoomed, it was drawn wholly
+    /// beneath the preview's 454 px foot, at 456 to 489, beneath captions
+    /// the clip cut. Down a 461 px window at 13 and 18 pt, to the height where
+    /// the captions leave the preview, a drawn footer lies whole in the
+    /// preview beneath both captions, and where it has given way with neither
+    /// the image nor a click's band drawn, the captions' group is described by
+    /// its line. The walk meets a drawn footer, one that gave way to the
+    /// image, and one that gave way to the captions alone.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn compare_s_footer_gives_way_to_the_image_captions(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::system_preview::tests::png;
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let slack = px(0.5);
+        let mut met = std::collections::BTreeSet::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for height in (200..=980).rev().step_by(3) {
+                cx.simulate_resize(size(px(461.), px(height as f32)));
+                draw(cx);
+                written::forget();
+                draw(cx);
+                let at = format!("{text} pt in 461 × {height}");
+                let content = cx.debug_bounds("preview-content").expect("the preview");
+                let captions = [0, 1].map(|index| {
+                    cx.debug_bounds(format!("image-side-caption-{index}").leak())
+                        .expect("both captions")
+                });
+                if captions[0].top() >= content.bottom() {
+                    break;
+                }
+                let image = cx.debug_bounds("image-canvas-area");
+                match cx.debug_bounds("compare-footer") {
+                    Some(footer) => {
+                        met.insert((text, "drawn"));
+                        assert!(
+                            footer.bottom() <= content.bottom() + slack
+                                && captions
+                                    .iter()
+                                    .all(|caption| footer.top() >= caption.bottom() - slack),
+                            "{at}: the footer {footer:?} lies whole in the preview {content:?} beneath the captions {captions:?}"
+                        );
+                    }
+                    None if image.is_some() => {
+                        met.insert((text, "gave way to the image"));
+                    }
+                    None => {
+                        met.insert((text, "gave way to the captions"));
+                        let description = written::get("image-captions")
+                            .and_then(|written| written.node.description().map(str::to_owned))
+                            .unwrap_or_default();
+                        assert!(
+                            description.contains("Modified") && description.contains("100644"),
+                            "{at}: the captions keep the footer's words: {description:?}"
+                        );
+                    }
+                }
+            }
+        }
+        for text in [13, 18] {
+            for step in ["drawn", "gave way to the image", "gave way to the captions"] {
+                assert!(
+                    met.contains(&(text, step)),
+                    "{text} pt: the walk meets a footer {step}"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A changed image's captions give way before the image beneath them, as
     /// labels give way before content: each side's dimensions stay beneath
     /// its name only where the image keeps its usable minimum, a scaled

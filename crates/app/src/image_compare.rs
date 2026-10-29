@@ -870,8 +870,9 @@ impl GitTurtle {
             // it is drawn, otherwise the band, and otherwise the captions,
             // which every layout draws, so they always reach a drawn node.
             // The notes give way wherever a line each would leave the image
-            // less than its minimum, drawn or not; the footer only where its
-            // room goes to the image or the band.
+            // less than its minimum, drawn or not, and so does the footer,
+            // its room going to the image, the band or, where they alone do
+            // not fit above it, the captions.
             let mut left = Vec::new();
             if note_lines == 0 {
                 left.extend([scale_notice.clone(), guidance.to_owned()]);
@@ -1571,11 +1572,12 @@ impl Beneath {
     /// side's dimensions, whose words stay in the name's tooltip and
     /// accessible name. Compare's footer, whose whole line the image's
     /// accessible description keeps, goes next, before the notes leave the
-    /// image, and only where its room goes to the image or a click's band,
-    /// so its words always reach a drawn node. The band saying why a click
-    /// opened nothing shows every line where the image keeps its minimum
-    /// beneath it and otherwise two; the dimensions do not count it, so a
-    /// click's answer never moves the captions.
+    /// image; its room goes to the image or a click's band, or to the
+    /// captions where they alone do not fit above it, and its words to the
+    /// drawn node among them ([`GitTurtle::render_image_comparison`]). The
+    /// band saying why a click opened nothing shows every line where the
+    /// image keeps its minimum beneath it and otherwise two; the dimensions
+    /// do not count it, so a click's answer never moves the captions.
     fn fit(self) -> Fit {
         let band = |below: Pixels| {
             self.band.map_or((0, false, px(0.)), |(band, most)| {
@@ -1599,18 +1601,20 @@ impl Beneath {
         let without = self.room - captions;
         // The footer gives way where the image, beneath the captions, any
         // band at its two-line cap and the notes on a line each, would keep
-        // less than its minimum with the footer drawn, and only where its
-        // room goes to what is drawn beneath the captions, the image or a
-        // click's band, which keeps its words; with neither, it stays. A band
-        // that shows more than two lines does so only above an image that
-        // keeps its minimum, so it never pushes the footer out.
+        // less than its minimum with the footer drawn. Its room goes to what
+        // is drawn beneath the captions, the image or a click's band, whose
+        // node keeps its words, and where the captions alone do not fit
+        // above it, to the captions, which name the sides and hold their
+        // open controls and then keep its words. It once stayed there, where
+        // giving way drew no image, and ran past the preview's foot beneath
+        // captions cut by the clip. A band that shows more than two lines
+        // does so only above an image that keeps its minimum, so it never
+        // pushes the footer out.
         let footer = self.footer.is_some() && {
             let capped = self
                 .band
                 .map_or(px(0.), |(band, most)| band.height(most.min(2), true));
-            let short = with_footer - capped - self.notes < self.stage;
-            let gains = self.band.is_some() || without - band(without).2 >= px(1.);
-            !(short && gains)
+            with_footer - capped - self.notes >= self.stage
         };
         let below = if footer { with_footer } else { without };
         let (band_lines, band_padded, band_height) = band(below);
@@ -1803,7 +1807,8 @@ mod tests {
     /// the name's tooltip), then Compare's footer (its line in the image's
     /// description), then the notes. Captions 40 px tall, 70 with their
     /// dimensions, a 24 px footer, notes 22 px each on one line, a 96 px
-    /// minimum. A footer that giving way would not draw the image stays.
+    /// minimum. Where the captions alone do not fit above the footer, it
+    /// gives way to them.
     #[test]
     fn labels_beneath_an_image_give_way_in_one_order() {
         let beneath = |room: f32, band| Beneath {
@@ -1855,10 +1860,13 @@ mod tests {
             kept = now;
         }
         // Where even without the footer no pixel of the image is left and no
-        // band is shown, giving way would draw nothing: the footer stays,
-        // its words on screen.
-        let fit = beneath(40.5, None).fit();
-        assert!(!fit.image_shown && fit.footer, "{fit:?}");
+        // band is shown, the captions alone do not fit above the footer,
+        // which gives way to them; it once stayed there and ran past the
+        // room's foot.
+        for room in [40.5, 30., 20.] {
+            let fit = beneath(room, None).fit();
+            assert!(!fit.image_shown && !fit.footer, "{room}: {fit:?}");
+        }
         // A band at two 14 px lines and its 8 px padding and rule, 37 px:
         // the footer gives its room to a click's answer even where that
         // leaves the image none, and to the image where it leaves a pixel.
