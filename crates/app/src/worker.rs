@@ -665,14 +665,31 @@ impl Worker {
     /// Test-only: blocks until the reader thread has answered or skipped
     /// every request submitted so far, holding the test clock: it waits on
     /// the reader's own thread, which `run_until_parked` cannot wait for,
-    /// and a GPUI test then parks to handle the reply on its own thread.
+    /// and a GPUI test then parks to handle the reply on its own thread. A
+    /// read that has not answered within `operations::test_wait` fails the
+    /// test at the caller's line.
     #[cfg(test)]
+    #[track_caller]
     pub fn wait_idle(&self) {
+        self.wait_idle_within(crate::operations::test_wait());
+    }
+
+    /// [`wait_idle`](Self::wait_idle), failing after `limit`.
+    #[cfg(test)]
+    #[track_caller]
+    pub fn wait_idle_within(&self, limit: Duration) {
         let (lock, ready) = &*self.queue;
-        let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
-        while (state.pending.is_some() || state.running) && !state.closed {
-            state = ready.wait(state).unwrap_or_else(|error| error.into_inner());
-        }
+        let state = lock.lock().unwrap_or_else(|error| error.into_inner());
+        let (state, waited) = ready
+            .wait_timeout_while(state, limit, |state| {
+                (state.pending.is_some() || state.running) && !state.closed
+            })
+            .unwrap_or_else(|error| error.into_inner());
+        drop(state);
+        assert!(
+            !waited.timed_out(),
+            "the repository reader did not answer or skip its requests within {limit:?}: a read never answered or is still held"
+        );
     }
 
     /// Invalidate mutable reads even when there is no replacement file to load.
@@ -2286,6 +2303,23 @@ mod tests {
             "third"
         );
         assert!(started_rx.try_recv().is_err());
+    }
+
+    /// Waiting for the reader to go idle while a read never answers fails
+    /// rather than waiting for good.
+    #[test]
+    #[should_panic(expected = "the repository reader did not answer or skip its requests")]
+    fn waiting_for_a_read_that_never_answers_fails_rather_than_hangs() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (_release, held) = mpsc::channel::<()>();
+        let worker = Worker::with_executor(move |_, _, _| {
+            started_tx.send(())?;
+            let _ = held.recv();
+            Ok(notice("late"))
+        });
+        let _reply = worker.submit(open_job("held"));
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.wait_idle_within(Duration::from_millis(50));
     }
 
     #[test]

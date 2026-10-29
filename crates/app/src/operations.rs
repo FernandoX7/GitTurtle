@@ -10,6 +10,32 @@ use std::{
 
 type Operation = Box<dyn FnOnce(bool) + Send>;
 
+/// How long a test waits on a thread of the app's own, an executor answering
+/// ([`SerialExecutor::drain`]) or the repository reader going idle
+/// (`Worker::wait_idle`), before it fails rather than hangs: a job that never
+/// answers, or one the test itself holds, once stopped the test for good.
+/// [`TEST_WAIT_FLOOR`], or longer where `GITTURTLE_TEST_WAIT_SECS` asks for
+/// more, as a slow or heavily loaded host may; never shorter.
+#[cfg(test)]
+pub(crate) fn test_wait() -> std::time::Duration {
+    test_wait_from(std::env::var("GITTURTLE_TEST_WAIT_SECS").ok().as_deref())
+}
+
+/// The shortest [`test_wait`]: the variable can only raise it, so a run
+/// cannot turn a slow answer into a failure.
+#[cfg(test)]
+const TEST_WAIT_FLOOR: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// [`test_wait`] for the variable's value, if set: whole seconds above the
+/// floor raise it; anything else leaves the floor.
+#[cfg(test)]
+fn test_wait_from(seconds: Option<&str>) -> std::time::Duration {
+    seconds
+        .and_then(|seconds| seconds.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .map_or(TEST_WAIT_FLOOR, |asked| asked.max(TEST_WAIT_FLOOR))
+}
+
 /// Keep outcome ownership tied to the last successfully resolved worktree,
 /// rather than the requested path (which may be an alias or fail to open).
 #[derive(Default)]
@@ -60,6 +86,9 @@ impl RepositoryOutcomes {
 
 pub struct SerialExecutor {
     sender: mpsc::SyncSender<Operation>,
+    /// The thread's name, which a test's failed wait reports.
+    #[cfg(test)]
+    name: String,
 }
 
 /// Keeps a [`SerialExecutor`] held until it drops ([`SerialExecutor::hold`]).
@@ -85,7 +114,11 @@ impl SerialExecutor {
                     operation(true);
                 }
             });
-        Self { sender }
+        Self {
+            sender,
+            #[cfg(test)]
+            name: name.into(),
+        }
     }
 
     pub fn submit<T: Send + 'static>(
@@ -116,16 +149,54 @@ impl SerialExecutor {
     /// Block until every job submitted before this call has answered. The
     /// queue is FIFO, so a marker queued now runs after all of them.
     /// `run_until_parked` cannot wait for this thread, so a GPUI test drains
-    /// first and then settles to handle the replies on its own thread.
+    /// first and then settles to handle the replies on its own thread. A job
+    /// that has not answered within [`test_wait`], such as one the test
+    /// itself holds, fails the test at the caller's line.
     #[cfg(test)]
+    #[track_caller]
     pub fn drain(&self) {
+        self.drain_within(test_wait());
+    }
+
+    /// [`drain`](Self::drain), failing after `limit` rather than
+    /// [`test_wait`]. The queue is bounded, so a queue that a held job keeps
+    /// full takes no marker either: the wait for room counts too.
+    #[cfg(test)]
+    #[track_caller]
+    pub fn drain_within(&self, limit: std::time::Duration) {
+        let deadline = std::time::Instant::now() + limit;
         let (done, drained) = mpsc::channel();
-        self.sender
-            .send(Box::new(move |_| {
-                let _ = done.send(());
-            }))
-            .expect("the executor accepts the marker");
-        drained.recv().expect("the executor ran the marker");
+        let mut marker: Operation = Box::new(move |_| {
+            let _ = done.send(());
+        });
+        loop {
+            match self.sender.try_send(marker) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Full(refused)) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the {} executor's queue stayed full for {limit:?}: a job ahead of the drain never answered or is still held",
+                        self.name
+                    );
+                    marker = refused;
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    panic!("the {} executor stopped before the drain", self.name)
+                }
+            }
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match drained.recv_timeout(left) {
+            Ok(()) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                "the {} executor did not reach the drain within {limit:?}: a job ahead of it never answered or is still held",
+                self.name
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the {} executor stopped before the drain", self.name)
+            }
+        }
     }
 
     /// Holds this executor's thread until the returned guard drops, as a
@@ -413,5 +484,58 @@ mod tests {
                 .unwrap(),
             42
         );
+    }
+
+    /// A drain behind a job that never answers fails, naming the executor,
+    /// rather than waiting for good: a theme editor test once drained the
+    /// preference writer while a job of its own still held it.
+    #[test]
+    #[should_panic(expected = "the drain-held-test executor did not reach the drain")]
+    fn a_drain_behind_a_held_job_fails_rather_than_hangs() {
+        let executor = SerialExecutor::new("drain-held-test");
+        let _held = executor.hold();
+        executor.drain_within(std::time::Duration::from_millis(50));
+    }
+
+    /// The queue is bounded, so a drain behind a held job and a full queue
+    /// finds no room for its marker; that wait fails too, as it did when the
+    /// theme editor's full-executor import stayed pending.
+    #[test]
+    #[should_panic(expected = "the drain-full-test executor's queue stayed full")]
+    fn a_drain_behind_a_full_held_queue_fails_rather_than_hangs() {
+        let executor = SerialExecutor::new("drain-full-test");
+        // The held job is running, off the queue, before its eight slots
+        // are taken.
+        let (started, running) = mpsc::channel();
+        let (_release, held) = mpsc::channel::<()>();
+        let _running = executor.submit(move || {
+            started.send(()).unwrap();
+            let _ = held.recv();
+            Ok(())
+        });
+        running.recv().unwrap();
+        let _queued: Vec<_> = (0..8).map(|_| executor.submit(|| Ok(()))).collect();
+        executor.drain_within(std::time::Duration::from_millis(50));
+    }
+
+    /// `GITTURTLE_TEST_WAIT_SECS` raises the waits' bound on a slow host
+    /// and never lowers it; a value that is not whole seconds leaves it.
+    #[test]
+    fn the_test_wait_variable_only_raises_the_bound() {
+        let floor = std::time::Duration::from_secs(30);
+        assert_eq!(test_wait_from(None), floor);
+        assert_eq!(
+            test_wait_from(Some("120")),
+            std::time::Duration::from_secs(120)
+        );
+        assert_eq!(
+            test_wait_from(Some(" 45 ")),
+            std::time::Duration::from_secs(45)
+        );
+        assert_eq!(test_wait_from(Some("5")), floor, "never lower");
+        assert_eq!(test_wait_from(Some("0")), floor);
+        assert_eq!(test_wait_from(Some("1.5")), floor);
+        assert_eq!(test_wait_from(Some("-1")), floor);
+        assert_eq!(test_wait_from(Some("")), floor);
     }
 }
