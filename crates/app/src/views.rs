@@ -2276,8 +2276,9 @@ impl GitTurtle {
         if commit.parents.is_empty() {
             parents = parents.child("Root commit · empty-tree comparison");
         }
+        let name: SharedString = commit_message::summary(&commit.author).into();
         let [author, date] = selection.metadata([
-            commit_message::summary(&commit.author).into(),
+            name.clone(),
             format!(
                 "{} · {}",
                 full_date(commit.timestamp),
@@ -2297,6 +2298,10 @@ impl GitTurtle {
                 .debug_selector(|| "commit-metadata".into())
                 .role(Role::Group)
                 .aria_label("Commit author and comparison parents")
+                // The list's width, as the message's pieces take: sized by
+                // its content, the group could lay out wider than the
+                // inspector, whose edge then cut its lines.
+                .w_full()
                 .min_w_0()
                 .px_3()
                 .pt_3()
@@ -2305,7 +2310,7 @@ impl GitTurtle {
                 .gap_2()
                 .text_size(appearance::ui_text(11.))
                 .text_color(rgb(colors.muted))
-                .child(div().child(author))
+                .child(author_line(name, author))
                 .child(date)
                 .child(parents),
         )
@@ -4413,6 +4418,27 @@ pub(crate) fn ellipsis_start<E: Styled>(element: E) -> E {
         .whitespace_nowrap()
         .text_ellipsis_start()
         .pr(px(ELLIPSIS_SLACK))
+}
+
+/// The selected commit's author as one line of the inspector's metadata:
+/// whole, or ending in an ellipsis inside its box ([`ellipsis_end`]) where
+/// a narrow inspector or a large interface size leaves less room than the
+/// name, rather than cut by its box, as "GitTurtle QA" was at 18 pt. Its
+/// tooltip and, as a label's value, its accessible name are the whole name.
+fn author_line(name: SharedString, text: impl IntoElement) -> Stateful<Div> {
+    let tooltip = name.clone();
+    ellipsis_end(
+        div()
+            .id("commit-author")
+            .debug_selector(|| "commit-author".into())
+            .min_w_0()
+            // AccessKit adapters read a label's text from its value.
+            .role(Role::Label)
+            .aria_label(name.clone())
+            .aria_value(name)
+            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)),
+    )
+    .child(text)
 }
 
 /// The labelled text-mode group's width for `names`: its `p_0p5` either
@@ -10871,6 +10897,108 @@ pub(crate) mod tests {
             }
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The selected commit's author is one line in the inspector, whole or
+    /// ending in an ellipsis inside its box, with the whole name in its
+    /// tooltip and accessible name: "GitTurtle QA" was cut by its box at 18
+    /// pt. A name longer than the inspector, at 13 and 18 pt in a 461 × 490
+    /// window and at 18 pt in a 1480 × 800 one, keeps one line, lies inside
+    /// the metadata's edge, and every run of it ends inside its box and its
+    /// clip; hovering it shows its tooltip, and its node is a label whose
+    /// value, the name adapters announce, is the whole name.
+    #[gpui::test]
+    async fn the_inspector_ends_a_long_author_inside_its_box(cx: &mut TestAppContext) {
+        use gpui::Element as _;
+        use gpui_kit::component::Theme;
+        /// gpui-base's tooltip show delay.
+        const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+        const AUTHOR: &str = "GitTurtle QA Reviewer, whose name runs past a narrow inspector";
+        let script = format!(
+            "commit refs/heads/main\nauthor {AUTHOR} <qa@example.invalid> 1700000000 +0000\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 13\nfixture notes\nM 100644 inline notes.txt\ndata 6\nnotes\n\ndone\n"
+        );
+        let (_fixture, _app, cx) = styled_history_window(cx, script.as_bytes(), |root| {
+            root.text_bg(crate::width_walk::text_mark())
+        })
+        .await;
+        cx.update(|_, cx| {
+            crate::appearance::ThemeChoice::Midnight.apply(None, cx);
+            cx.set_reduce_motion(true);
+        });
+        let popover = cx.read(|cx| Background::from(Theme::global(cx).tokens.popover));
+        let popups = move |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == popover)
+                    .count()
+            })
+        };
+        let mark = Background::from(crate::width_walk::text_mark());
+        for (text, width, height) in [(18, 461., 490.), (18, 1480., 800.), (13, 461., 490.)] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            draw(cx);
+            let author = cx
+                .debug_bounds("commit-author")
+                .unwrap_or_else(|| panic!("{at}: the author drawn"));
+            let metadata = cx.debug_bounds("commit-metadata").unwrap();
+            let inspector = cx.debug_bounds("commit-inspector").unwrap();
+            assert!(
+                author.right() <= metadata.right() && metadata.right() <= inspector.right(),
+                "{at}: {author:?} inside {metadata:?} inside {inspector:?}"
+            );
+            assert!(
+                author.size.height < appearance::ui_text(11.) * 2.,
+                "{at}: one line, not {author:?}"
+            );
+            let (scale, quads) =
+                cx.update(|window, _| (window.scale_factor(), window.painted_quads()));
+            let logical = |value: gpui_kit::ScaledPixels| px(value.0 / scale);
+            let runs: Vec<(Pixels, Pixels)> = quads
+                .iter()
+                .filter(|quad| quad.background == mark)
+                .filter(|quad| {
+                    let middle = point(
+                        logical(quad.bounds.left() + quad.bounds.size.width / 2.),
+                        logical(quad.bounds.top() + quad.bounds.size.height / 2.),
+                    );
+                    author.contains(&middle)
+                })
+                .map(|quad| {
+                    (
+                        logical(quad.bounds.right()),
+                        logical(quad.content_mask.bounds.right()),
+                    )
+                })
+                .collect();
+            assert!(!runs.is_empty(), "{at}: the author's text painted");
+            for (right, clip) in runs {
+                assert!(
+                    right <= author.right() + px(0.5) && right <= clip + px(0.5),
+                    "{at}: a run ends at {right:?}, its box at {:?}, its clip at {clip:?}",
+                    author.right()
+                );
+            }
+            let resting = popups(cx);
+            cx.simulate_mouse_move(author.center(), None, Modifiers::default());
+            cx.executor().advance_clock(SHOW_DELAY);
+            draw(cx);
+            assert_eq!(popups(cx), resting + 1, "{at}: the author's tooltip");
+            cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+            cx.executor().advance_clock(SHOW_DELAY);
+            draw(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        let line = author_line(AUTHOR.into(), div()).into_element();
+        let mut node = gpui::accesskit::Node::new(line.a11y_role().expect("a role"));
+        line.write_a11y_info(&mut node);
+        assert_eq!(node.role(), gpui::accesskit::Role::Label);
+        assert_eq!(node.value(), Some(AUTHOR), "the name adapters announce");
+        assert_eq!(node.label(), Some(AUTHOR));
     }
 
     /// With "README.md" staged first, as the native review's fixture has,
