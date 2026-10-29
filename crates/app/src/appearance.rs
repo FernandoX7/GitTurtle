@@ -816,6 +816,33 @@ impl Palette {
             .unwrap_or(f64::from(base) / 100.)
     }
 
+    /// The 1 px edge of a dialog's panel (the kit's `Theme::dialog_edge`):
+    /// `border`, unless it misses [`POPUP_EDGE`] against the dialog's
+    /// surface, `canvas`, or a page surface its backdrop dims
+    /// ([`Self::dialog_backdrop`]), as Braden's did against its dialog
+    /// (1.28:1). Then it takes the first of 256 even steps toward black in a
+    /// light palette or white in a dark one, the text's side as for the
+    /// popup edge, that clears it on all of them.
+    pub fn dialog_edge(self) -> u32 {
+        let alpha = self.dialog_backdrop();
+        let surfaces = [
+            self.canvas,
+            backdrop_over(self.canvas, alpha),
+            backdrop_over(self.panel, alpha),
+            backdrop_over(self.subtle, alpha),
+        ];
+        let clears = |edge| {
+            surfaces
+                .iter()
+                .all(|&surface| custom::contrast(edge, surface) >= POPUP_EDGE)
+        };
+        if clears(self.border) {
+            return self.border;
+        }
+        let extreme = if self.is_light() { 0x000000 } else { 0xffffff };
+        toward_extreme_in(256, self.border, extreme, clears)
+    }
+
     /// The edge of an outline drawn on a picker's selected row, such as a
     /// Keyboard Shortcuts key chip: [`Self::raised_edge`], the edge it takes
     /// on a resting row, unless that misses [`POPUP_EDGE`] against `selected`,
@@ -2073,6 +2100,7 @@ impl Palette {
         theme.colors.list_even = rgb(palette.subtle).into();
         theme.colors.popover = rgb(palette.raised()).into();
         theme.popover_edge = Some(rgb(palette.raised_edge()).into());
+        theme.dialog_edge = Some(rgb(palette.dialog_edge()).into());
         theme.disabled_label = Some(palette.disabled_label().into());
         theme.colors.popover_foreground = rgb(palette.text).into();
         theme.colors.sidebar = rgb(palette.panel).into();
@@ -3077,6 +3105,82 @@ mod tests {
         cx.update(|_, cx| Theme::global_mut(cx).dialog_edge = Some(edge));
         crate::tags::tests::draw(cx);
         assert_eq!(painted_dialog_edge(cx), vec![edge], "set: the dialog edge");
+    }
+
+    /// In every palette a dialog's edge holds the popup edge's 1.4:1 against
+    /// the dialog's surface and against every page surface its backdrop
+    /// dims, keeping `border` where that already does and otherwise taking
+    /// the least step toward the text side that does. Braden's `border` stood
+    /// 1.28:1 off its dialog. Every applied palette draws its dialog in that
+    /// edge.
+    #[gpui::test]
+    fn every_dialog_edge_holds_against_the_dialog_and_the_dimmed_page(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let mut failures = Vec::new();
+        for (name, palette) in test_palettes() {
+            let edge = palette.dialog_edge();
+            let alpha = palette.dialog_backdrop();
+            let surfaces = [
+                ("dialog", palette.canvas),
+                ("dimmed canvas", backdrop_over(palette.canvas, alpha)),
+                ("dimmed panel", backdrop_over(palette.panel, alpha)),
+                ("dimmed subtle", backdrop_over(palette.subtle, alpha)),
+            ];
+            let least = |color: u32| {
+                surfaces
+                    .iter()
+                    .map(|&(_, surface)| contrast(color, surface))
+                    .fold(f64::INFINITY, f64::min)
+            };
+            for (surface, color) in surfaces {
+                let ratio = contrast(edge, color);
+                if ratio < POPUP_EDGE {
+                    failures.push(format!(
+                        "{name}: #{edge:06x} on the {surface} #{color:06x} {ratio:.3}:1"
+                    ));
+                }
+            }
+            if least(palette.border) >= POPUP_EDGE {
+                if edge != palette.border {
+                    failures.push(format!("{name}: #{edge:06x} where the border clears"));
+                }
+            } else {
+                // The edge is a step from the border toward the text side,
+                // and the step before it, one 256th nearer the border,
+                // misses the rule: it moves no further than it must.
+                let extreme = if palette.is_light() {
+                    0x000000
+                } else {
+                    0xffffff
+                };
+                let nth = |n: u32| {
+                    [16, 8, 0].into_iter().fold(0, |color, shift| {
+                        let from = (palette.border >> shift) & 0xff;
+                        let to = (extreme >> shift) & 0xff;
+                        color | (((from * (256 - n) + to * n) / 256) << shift)
+                    })
+                };
+                match (1..=256).find(|&n| nth(n) == edge) {
+                    Some(n) if least(nth(n - 1)) < POPUP_EDGE => {}
+                    _ => failures.push(format!("{name}: #{edge:06x} is not the least step")),
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+        let braden = ThemeChoice::Daylight.palette();
+        assert_ne!(braden.dialog_edge(), braden.border, "Braden's edge moves");
+
+        let cx = dialog_probe(cx);
+        for (name, palette) in test_palettes() {
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            crate::tags::tests::draw(cx);
+            assert_eq!(
+                painted_dialog_edge(cx),
+                vec![Hsla::from(rgb(palette.dialog_edge()))],
+                "{name}: the dialog draws its edge"
+            );
+        }
     }
 
     /// Hovering an enabled unchecked Switch visibly lifts its track in every
