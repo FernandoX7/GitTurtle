@@ -19,7 +19,10 @@
 //! History with both, where the outcome yields only to the warning. The
 //! window is resized from width to width as a person or a tiling window
 //! manager resizes it, so the inspector is drawn at the size its panel
-//! group rescales it to, not only its saved width.
+//! group rescales it to, not only its saved width; History and Working
+//! Changes are walked again with the inspector saved at its widest, 480 px,
+//! wider than every narrower window allows it, so it gives way to the
+//! content column's minimum (DESIGN.md, "One responsive order").
 //!
 //! The test text system paints no glyphs, so the walk marks what it checks
 //! with fills a test can find among the painted quads, each with the content
@@ -801,20 +804,46 @@ async fn walk(page: Page, text: u8, cx: &mut TestAppContext) {
 
 /// [`walk`] on History with the navigation dragged to its 180 px minimum.
 async fn walk_narrowest_navigation(text: u8, cx: &mut TestAppContext) {
-    walk_with(Page::History, text, &[], true, None, false, cx).await;
+    walk_with(
+        Page::History,
+        text,
+        &[],
+        Saved::NarrowestNavigation,
+        None,
+        false,
+        cx,
+    )
+    .await;
 }
 
 /// [`walk`] with the repository's local watch unable to start, as when the
 /// host's inotify instances are exhausted: the status bar's warning, its
 /// Refresh and Details… stay whole beside the hints, which give way whole.
 async fn walk_with_watch_warning(page: Page, text: u8, cx: &mut TestAppContext) {
-    walk_with(page, text, &[], false, None, true, cx).await;
+    walk_with(page, text, &[], Saved::Defaults, None, true, cx).await;
+}
+
+/// [`walk`] with the inspector dragged to its widest, 480 px, and that
+/// width saved.
+async fn walk_widest_inspector(page: Page, text: u8, cx: &mut TestAppContext) {
+    walk_with(page, text, &[], Saved::WidestInspector, None, false, cx).await;
+}
+
+/// The widths a walk starts from, as a drag saved them.
+#[derive(Clone, Copy, PartialEq)]
+enum Saved {
+    /// Each panel's default width.
+    Defaults,
+    /// The navigation at its 180 px minimum.
+    NarrowestNavigation,
+    /// The inspector at its 480 px maximum.
+    WidestInspector,
 }
 
 /// [`walk`], once the Git commands `edge` have moved the fixture to another
 /// repository edge, as a detached HEAD or a branch with no upstream.
 async fn walk_at_edge(page: Page, text: u8, edge: &[&[&str]], cx: &mut TestAppContext) {
-    walk_with(page, text, edge, false, None, false, cx).await;
+    walk_with(page, text, edge, Saved::Defaults, None, false, cx).await;
 }
 
 /// The Fetch outcome the outcome walks keep fresh in the status line.
@@ -828,7 +857,7 @@ async fn walk_with_outcome(text: u8, unwatched: bool, cx: &mut TestAppContext) {
         Page::History,
         text,
         &[],
-        false,
+        Saved::Defaults,
         Some(FETCH_OUTCOME),
         unwatched,
         cx,
@@ -836,14 +865,14 @@ async fn walk_with_outcome(text: u8, unwatched: bool, cx: &mut TestAppContext) {
     .await;
 }
 
-/// [`walk_at_edge`], with the navigation dragged to its 180 px minimum
-/// where `narrowest`, `outcome` recorded as a write's fresh outcome, and
-/// the status bar's local watch warning where `unwatched`.
+/// [`walk_at_edge`], from the widths `saved`, with `outcome` recorded as a
+/// write's fresh outcome, and the status bar's local watch warning where
+/// `unwatched`.
 async fn walk_with(
     page: Page,
     text: u8,
     edge: &[&[&str]],
-    narrowest: bool,
+    saved: Saved,
     outcome: Option<&str>,
     unwatched: bool,
     cx: &mut TestAppContext,
@@ -856,7 +885,7 @@ async fn walk_with(
         });
         frame(cx);
     }
-    if narrowest {
+    if saved == Saved::NarrowestNavigation {
         cx.simulate_resize(size(px(1480.), px(980.)));
         crate::views::tests::draw(cx);
         let panels = app.read_with(cx, |app, _| app.history_panels.clone());
@@ -870,6 +899,30 @@ async fn walk_with(
             .debug_bounds("history-sidebar")
             .map(|bounds| bounds.size.width);
         assert_eq!(drawn, Some(px(180.)), "the navigation at its minimum");
+    }
+    if saved == Saved::WidestInspector {
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        crate::views::tests::draw(cx);
+        let panels = app.read_with(cx, |app, _| app.content_panels.clone());
+        cx.update(|window, cx| {
+            panels.update(cx, |panels, cx| {
+                panels.resize_panel(1, px(480.), window, cx)
+            });
+            // As the drag's end saves it.
+            app.update(cx, |app, cx| {
+                app.settings.inspector_width = f32::from(panels.read(cx).sizes()[1]);
+                app.save_preferences(window, cx);
+            });
+        });
+        crate::views::tests::draw(cx);
+        let (drawn, kept) = app.read_with(cx, |app, cx| {
+            (
+                app.content_panels.read(cx).sizes().get(1).copied(),
+                app.settings.inspector_width,
+            )
+        });
+        assert_eq!(drawn, Some(px(480.)), "the inspector at its widest");
+        assert_eq!(kept, 480., "its width saved");
     }
     if !edge.is_empty() {
         let root = app.read_with(cx, |app, _| {
@@ -1175,6 +1228,30 @@ async fn working_changes_keep_their_text_whole_at_13_pt(cx: &mut TestAppContext)
 #[gpui::test]
 async fn working_changes_keep_their_text_whole_at_18_pt(cx: &mut TestAppContext) {
     walk(Page::Working, 18, cx).await;
+}
+
+#[gpui::test]
+async fn history_gives_way_from_the_widest_saved_inspector_at_13_pt(cx: &mut TestAppContext) {
+    walk_widest_inspector(Page::History, 13, cx).await;
+}
+
+#[gpui::test]
+async fn history_gives_way_from_the_widest_saved_inspector_at_18_pt(cx: &mut TestAppContext) {
+    walk_widest_inspector(Page::History, 18, cx).await;
+}
+
+#[gpui::test]
+async fn working_changes_give_way_from_the_widest_saved_inspector_at_13_pt(
+    cx: &mut TestAppContext,
+) {
+    walk_widest_inspector(Page::Working, 13, cx).await;
+}
+
+#[gpui::test]
+async fn working_changes_give_way_from_the_widest_saved_inspector_at_18_pt(
+    cx: &mut TestAppContext,
+) {
+    walk_widest_inspector(Page::Working, 18, cx).await;
 }
 
 /// Detaching HEAD, as `git checkout --detach` does.

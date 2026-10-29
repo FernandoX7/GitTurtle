@@ -115,15 +115,25 @@ impl Toolbar {
         let icon = appearance::ui_size(16. + 6.);
         let copied = icon + label(&COPIED_LABEL, copy_feedback::COPIED);
         let rem = window.rem_size();
+        // The inspector and each control as the layout draws them, on whole
+        // device pixels: the inspector's edges at the nearest, a control's
+        // width rounded up. At 18 pt in a 455.4 px inspector, Copy message,
+        // Hash and Actions fitted the row by 0.05 px unrounded, and Actions
+        // wrapped below Hash once Copy message and Hash were drawn 178.5 and
+        // 118.5 px wide.
+        let scale = window.scale_factor();
+        let drawn = |width: Pixels| px((f32::from(width) * scale).ceil() / scale);
+        let width = px((f32::from(width) * scale).round() / scale);
         let room = width - px(1.) - rem * 1.5;
         let gap = rem * 0.25;
         let padding = appearance::ui_size(2. * 10.);
         let square = appearance::ui_size(28.);
-        let copy = padding + (icon + copy_label).max(copied);
-        let hash = padding + (icon + hash_label).max(copied);
-        let actions =
+        let copy = drawn(padding + (icon + copy_label).max(copied));
+        let hash = drawn(padding + (icon + hash_label).max(copied));
+        let actions = drawn(
             (padding + label(&ACTIONS_LABEL, "Actions") + appearance::ui_size(6.) + rem * 0.875)
-                .ceil();
+                .ceil(),
+        );
         // The rows `controls` wrap to.
         let rows = |controls: &[Pixels]| {
             let mut rows = 1.;

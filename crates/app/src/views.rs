@@ -5459,6 +5459,22 @@ impl GitTurtle {
         }
     }
 
+    /// `width` within the bounds a drag gives the inspector in this window
+    /// at the interface size (`inspector_range`), for the repository page
+    /// whichever page shows: the width a drag's end writes. Restores and
+    /// narrower windows draw a saved width within the range without
+    /// writing it.
+    pub(super) fn bounded_inspector_width(&self, width: f32, window: &Window) -> f32 {
+        let mut page = window.viewport_size().width;
+        if self.settings.project_pane {
+            page -= self.project_pane_width(window);
+        }
+        let narrow = page < appearance::ui_size(SIDEBAR_FIT_WIDTH);
+        let columns = ColumnMinimums::new(page, appearance::ui_size(44.), narrow);
+        let range = Self::inspector_range(page, &columns);
+        f32::from(px(width).min(range.end).max(range.start))
+    }
+
     fn render_repository(
         &self,
         chrome: Chrome,
@@ -5600,7 +5616,10 @@ impl GitTurtle {
                 move |panels, window, cx| {
                     if let Some(width) = panels.read(cx).sizes().get(1).copied() {
                         let _ = owner.update(cx, |this, cx| {
-                            this.settings.inspector_width = f32::from(width);
+                            // Only a drag writes the width, within the
+                            // bounds it has at this moment.
+                            this.settings.inspector_width =
+                                this.bounded_inspector_width(f32::from(width), window);
                             this.save_preferences(window, cx);
                         });
                     }
@@ -10719,6 +10738,95 @@ pub(crate) mod tests {
                 "{at}: {actions:?} beside {refresh:?} in {header:?}"
             );
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A restore never writes the inspector's width: restored at 18 pt from a
+    /// preference of 300 px, below the 388 px a drag allows there, the width
+    /// the user chose stays 300 px, and the panel's range draws it within
+    /// the window.
+    #[gpui::test]
+    async fn a_restored_inspector_width_is_kept_as_chosen(cx: &mut TestAppContext) {
+        use crate::{Preferences, activity, recovery_drafts, repository_tabs};
+        use std::{cell::RefCell, rc::Rc};
+        // The app's background executors answer on their own threads.
+        cx.executor().allow_parking();
+        init_app(cx);
+        let mut preferences = Preferences::default();
+        preferences.settings.interface_text_size = 18;
+        preferences.settings.inspector_width = 300.;
+        let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
+        let observed = captured.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let app = cx.new(|cx| {
+                GitTurtle::new(
+                    None,
+                    preferences,
+                    repository_tabs::Session::default(),
+                    activity::State::default(),
+                    recovery_drafts::State::default(),
+                    window,
+                    cx,
+                )
+            });
+            *captured.borrow_mut() = Some(app.clone());
+            gpui_kit::component::Root::new(app, window, cx)
+        });
+        let view = observed.borrow_mut().take().unwrap();
+        let restored = cx.update(|_, cx| view.read(cx).settings.inspector_width);
+        assert_eq!(restored, 300., "the width chosen, unwritten");
+        cx.update(|window, cx| {
+            view.update(cx, |app, _| app._display_preferences_task = None);
+            appearance::apply_text_sizes(13, 12, window, cx);
+        });
+    }
+
+    /// Showing a tab in a window narrower than its saved inspector draws the
+    /// inspector narrower without writing its width: a tab saved at 480 px
+    /// and shown in a 461 × 490 half tile at 18 pt draws it 156.5 px wide,
+    /// and a save made there, as a theme change makes one, still writes
+    /// 480 px, so the tab shown again in a 1,480 × 980 window draws it
+    /// 480 px wide. Only a drag writes the width, within its bounds then.
+    #[gpui::test]
+    async fn a_narrow_window_draws_the_saved_inspector_narrower_and_keeps_it(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::{Preferences, repository_tabs};
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(2, 40)).await;
+        let saved = repository_tabs::Bookmark {
+            inspector_width: Some(480.),
+            ..Default::default()
+        };
+        // Shows the tab `saved` names in this window, as switching to it
+        // does: its widths restored and its panels laid out afresh.
+        let show = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    app.restore_tab_widths(&saved);
+                    app.content_panels = cx.new(|_| ResizableState::default());
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            cx.debug_bounds("commit-inspector").unwrap().size.width
+        };
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let narrow = show(cx);
+        assert_eq!(narrow, px(156.5), "pinned in the half tile");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.save_preferences(window, cx)));
+        let written = app.read_with(cx, |app, _| app.preferences_writer.submit_read(|| Ok(())));
+        written.await.unwrap().unwrap();
+        cx.executor().run_until_parked();
+        let kept = cx.read(|cx| app.read(cx).settings.inspector_width);
+        assert_eq!(kept, 480., "the width chosen, unwritten");
+        assert_eq!(
+            Preferences::load().settings.inspector_width,
+            480.,
+            "the preferences hold the width chosen"
+        );
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        assert_eq!(show(cx), px(480.), "shown wide again");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

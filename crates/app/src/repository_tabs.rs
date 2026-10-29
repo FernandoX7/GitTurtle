@@ -1422,7 +1422,9 @@ impl GitTurtle {
                 .push(cx.observe(panels, |_, _, cx| cx.notify()));
         }
     }
-    fn restore_tab_widths(&mut self, saved: &Bookmark) {
+    /// Restores a tab's saved widths as they were chosen: the panels draw
+    /// them within the window, which never writes them.
+    pub(super) fn restore_tab_widths(&mut self, saved: &Bookmark) {
         if let Some(width) = saved.navigation_width {
             self.settings.navigation_width = width;
         }

@@ -108,11 +108,21 @@ message does not fit a row of its own, both are compact 28 px icon squares on
 one row. `Toolbar::within` measures them, with History's and Compare's
 Actions, at the width the inspector is drawn at (`drawn_inspector_width`): the
 panel group's size within the inspector's range, which a window resize
-rescales and only a drag saves, rather than the saved width, so no control
-wraps below the row it was fitted to, and where the window fixes the
-inspector's width the reserved rows match what they draw. The range ends where
-the content column's minimum leaves no more room, so the inspector never runs
-past the window. Working Changes lays its inspector out at the same width.
+rescales and a drag sets, rather than the saved width, so no control wraps
+below the row it was fitted to, and where the window fixes the inspector's
+width the reserved rows match what they draw. It measures on whole device
+pixels, as the layout draws them: the inspector's edges at the nearest and
+each control's width rounded up, since at 18 pt Actions once wrapped below
+Hash in a 455.4 px inspector its unrounded widths fitted by 0.05 px. The range
+ends where the content column's minimum leaves no more room, so the inspector
+never runs past the window. Working Changes lays its inspector out at the same
+width. Only a drag writes the inspector's width, within that range at the
+window's width and interface size then (`bounded_inspector_width`). A restore
+at startup or of a tab, a narrower window and a larger interface size draw a
+saved width within the range without writing it, so a half tile or a tab shown
+there never overwrites the width chosen in a wider window; the store's own
+280–480 px bounds still apply when it loads. The width walk starts History and
+Working Changes from the widest saved width as well.
 Native platform quality remains a separate validation requirement.
 
 The pieces and the selectable metadata lines (author, date and short hash, or a
