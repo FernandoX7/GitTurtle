@@ -798,6 +798,57 @@ async fn a_tracking_branch_confirms_on_the_picker_or_in_the_status_line(cx: &mut
     assert!(branches.iter().any(|b| !b.remote && b.name == "kept"));
 }
 
+/// The tracking-branch review closed with Escape leaves every node of the
+/// page it covered on the AT-SPI bus, as confirming it does: the page is
+/// hidden while the review is open, and AT-SPI listed 23 of the window's 30
+/// children after Escape that answered "Unknown object", which stayed
+/// unknown: the page's nodes that changed or appeared beneath the review,
+/// here those a window that grows beneath it draws. Closing it announces
+/// nothing, and nothing is created.
+#[cfg(target_os = "linux")]
+#[gpui::test]
+async fn the_tracking_branch_review_closed_with_escape_leaves_the_page_on_the_bus(
+    cx: &mut TestAppContext,
+) {
+    use crate::native_accessibility::atspi_state_tests::closed_with_escape;
+    let (fixture, app, cx) = with_remote(cx).await;
+    let worktree = fixture.path().join("narrow");
+    fixture_git(
+        &worktree,
+        &["push", "--quiet", "origin", "main:refs/heads/feature"],
+    );
+    crate::focus_ring::sweep::prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    let repo = app.read_with(cx, |app, _| app.repository.clone().unwrap());
+    let plan = repo
+        .tracking_branch_plan("feature", "refs/remotes/origin/feature", true)
+        .unwrap();
+    let title = "Create tracking branch feature";
+    let open = move |app: &mut GitTurtle, window: &mut Window, cx: &mut Context<GitTurtle>| {
+        let command = gitturtle_core::WriteCommand::Branch(
+            gitturtle_core::BranchCommand::CreateTracking { plan }.into(),
+        );
+        app.confirm_git_write(
+            title.into(),
+            String::new(),
+            "Create and switch",
+            command,
+            window,
+            cx,
+        )
+    };
+    let grow = |cx: &mut VisualTestContext| cx.simulate_resize(size(px(1280.), px(800.)));
+    let escaped = closed_with_escape(&app, cx, title, open, grow).await;
+    assert_eq!(escaped.unknown, Vec::<String>::new());
+    assert_eq!(escaped.announced, Vec::<String>::new());
+    let (on_the_bus, drawn) = escaped.shown;
+    assert_eq!(on_the_bus, drawn, "the window's objects after Escape");
+    let (on_the_bus, drawn) = escaped.covered;
+    assert_eq!(on_the_bus, drawn, "the window's objects under the review");
+    let branches = repo.branches().unwrap();
+    assert!(!branches.iter().any(|b| !b.remote && b.name == "feature"));
+}
+
 /// The status line keeps a write's outcome for as long as the control that
 /// asked confirms it, over the refresh that follows the write: once a row's
 /// Stage has read the working tree again, which writes Changes' working

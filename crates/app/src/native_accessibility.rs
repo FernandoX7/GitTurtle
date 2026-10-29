@@ -1098,6 +1098,23 @@ pub(crate) mod written {
             self
         }
 
+        /// Every node the wrappers wrote, in the order they wrote them,
+        /// each under the wrapper it was drawn in. Those drawn in none are
+        /// the page and, while one is open, what the dialog layer drew
+        /// beside it: these go under `dialog`, a node the caller adds for
+        /// the dialog's own, when given.
+        pub(crate) fn everything(mut self, dialog: Option<&str>) -> Self {
+            let mut written: Vec<(String, Written)> =
+                NODES.with(|nodes| nodes.borrow().clone().into_iter().collect());
+            written.sort_by_key(|(_, written)| written.order);
+            for (id, Written { node, parent, .. }) in written {
+                let parent =
+                    parent.or_else(|| dialog.filter(|_| id != "gitturtle-page").map(str::to_owned));
+                self.nodes.push((id, node, parent));
+            }
+            self
+        }
+
         /// Whether a node `key` was added.
         pub(crate) fn has(&self, key: &str) -> bool {
             self.nodes.iter().any(|(added, ..)| added == key)
@@ -1117,19 +1134,21 @@ pub(crate) mod written {
 
         /// The tree: a window root at `window` holding the nodes, in the
         /// order they were added, with focus on `focus`, the root if `None`.
+        /// A node's ID comes from its key, as GPUI's comes from its
+        /// element's, so the trees of successive frames update one another.
         pub(crate) fn tree(
             self,
             window: gpui::accesskit::Rect,
             focus: Option<&str>,
         ) -> gpui::accesskit::TreeUpdate {
             use gpui::accesskit::{Node, NodeId, Role, Tree, TreeId, TreeUpdate};
+            use std::hash::{Hash, Hasher};
             let id = |key: &str| {
-                let index = self
-                    .nodes
-                    .iter()
-                    .position(|(added, ..)| added == key)
-                    .unwrap_or_else(|| panic!("no node {key} was added"));
-                NodeId(index as u64 + 1)
+                assert!(self.has(key), "no node {key} was added");
+                let mut hasher = std::hash::DefaultHasher::new();
+                key.hash(&mut hasher);
+                // Never the root's 0.
+                NodeId((hasher.finish() >> 1) + 1)
             };
             let children = |parent: Option<&str>| {
                 self.nodes

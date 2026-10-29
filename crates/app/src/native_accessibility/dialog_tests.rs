@@ -536,3 +536,54 @@ async fn a_plain_text_dialog_title_is_read_by_its_text(cx: &mut TestAppContext) 
     cx.update(|window, cx| window.close_dialog(cx));
     views::tests::draw(cx);
 }
+
+/// A dialog closed with Escape leaves every node of the page it covered on
+/// the AT-SPI bus: the page is hidden while any dialog is open, and the
+/// adapter put none of what it held back once it was shown, so a page node
+/// that changed or appeared beneath the dialog, here one a window that
+/// grows beneath it draws, answered "Unknown object" for good. Closing it
+/// announces nothing. The tracking-branch review has its own test beside
+/// its confirmation.
+#[cfg(target_os = "linux")]
+#[gpui::test]
+async fn a_dialog_closed_with_escape_leaves_the_page_on_the_bus(cx: &mut TestAppContext) {
+    use crate::native_accessibility::atspi_state_tests::closed_with_escape;
+    type Open = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    crate::focus_ring::sweep::prepare(&app, cx);
+    let dialogs: [(&str, Open); 3] = [
+        ("Local reflog and recovery", |app, window, cx| {
+            app.open_reflog_browser(window, cx);
+        }),
+        ("Stashes", |app, window, cx| app.open_stashes(window, cx)),
+        // A reviewed write's last step, which the discard review and every
+        // Git write share; Escape runs nothing.
+        ("Stage every file", |app, window, cx| {
+            app.confirm_git_write(
+                "Stage every file".into(),
+                "Stage every working change.".into(),
+                "Stage all",
+                gitturtle_core::WriteCommand::StageAll,
+                window,
+                cx,
+            )
+        }),
+    ];
+    for (surface, open) in dialogs {
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let grow = |cx: &mut VisualTestContext| cx.simulate_resize(size(px(1280.), px(800.)));
+        let escaped = closed_with_escape(&app, cx, surface, open, grow).await;
+        assert_eq!(escaped.unknown, Vec::<String>::new(), "{surface}");
+        assert_eq!(escaped.announced, Vec::<String>::new(), "{surface}");
+        let (on_the_bus, drawn) = escaped.shown;
+        assert_eq!(
+            on_the_bus, drawn,
+            "{surface}: the window's objects after Escape"
+        );
+        let (on_the_bus, drawn) = escaped.covered;
+        assert_eq!(
+            on_the_bus, drawn,
+            "{surface}: the window's objects under it"
+        );
+    }
+}

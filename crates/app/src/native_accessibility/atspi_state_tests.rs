@@ -15,9 +15,11 @@ use accesskit_atspi_common::{
 use accesskit_atspi_common::{
     CoordType, NodeId, Rect, Role as AtspiRole, State, StateSet, WindowBounds,
 };
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::gpui::accesskit::{
     ActionHandler, ActionRequest, Live, Node, NodeId as LocalNodeId, Role, Tree, TreeId, TreeUpdate,
 };
+use gpui_kit::gpui::{Bounds, Context, Entity, VisualTestContext, Window, point, px};
 
 struct IgnoreCallbacks;
 
@@ -253,6 +255,88 @@ impl Bus {
     pub(crate) fn announced(&self) -> Vec<String> {
         std::mem::take(&mut *self.registry.announced.lock().unwrap())
     }
+}
+
+/// What a window's adapter did around a dialog that Escape closed.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Escaped {
+    /// Every node an AT-SPI client reaches in the window after Escape that
+    /// is not on the bus ([`Bus::unknown`]).
+    pub unknown: Vec<String>,
+    /// What closing the dialog announced.
+    pub announced: Vec<String>,
+    /// How many objects were on the bus while the dialog was open, and how
+    /// many an adapter started on that frame puts there.
+    pub covered: (usize, usize),
+    /// The same after Escape.
+    pub shown: (usize, usize),
+}
+
+/// Opens `surface`, a dialog, with `open` over the page from History's list,
+/// as `focus_ring::sweep::open_dialog` does, changes the page beneath it
+/// with `beneath`, and closes it with Escape. The window's adapter sees the
+/// frame before the dialog, the frame it lands in, the frame after
+/// `beneath` and the frame after Escape, as GPUI's Linux backend feeds it.
+pub(crate) async fn closed_with_escape<O: crate::focus_ring::sweep::Opened>(
+    app: &Entity<crate::GitTurtle>,
+    cx: &mut VisualTestContext,
+    surface: &str,
+    open: impl FnOnce(&mut crate::GitTurtle, &mut Window, &mut Context<crate::GitTurtle>) -> O,
+    beneath: impl FnOnce(&mut VisualTestContext),
+) -> Escaped {
+    let list = app.read_with(cx, |app, _| app.focus.clone());
+    cx.update(|window, cx| window.focus(&list, cx));
+    let mut bus = Bus::new(next_frame(cx));
+    assert_eq!(bus.unknown(), Vec::<String>::new(), "{surface}: before");
+    crate::focus_ring::sweep::open_dialog(app, cx, surface, open).await;
+    bus.update(next_frame(cx));
+    beneath(cx);
+    let frame = next_frame(cx);
+    bus.update(frame.clone());
+    let covered = (bus.objects(), Bus::new(frame).objects());
+    bus.announced();
+    cx.simulate_keystrokes("escape");
+    let frame = next_frame(cx);
+    bus.update(frame.clone());
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "{surface} closes with Escape"
+    );
+    Escaped {
+        unknown: bus.unknown(),
+        announced: bus.announced(),
+        covered,
+        shown: (bus.objects(), Bus::new(frame).objects()),
+    }
+}
+
+/// The window's tree as its next frame writes it: every node the app's
+/// wrappers write, the page among them, and, while a dialog is open, a
+/// modal dialog node holding what the dialog layer drew beside the page.
+/// Successive frames keep each node's ID, as GPUI's do, so a [`Bus`] fed
+/// them updates what it holds as the adapter does on a real window.
+pub(crate) fn next_frame(cx: &mut VisualTestContext) -> TreeUpdate {
+    super::written::forget();
+    crate::views::tests::draw(cx);
+    let mut tree = super::written::Assembly::default();
+    let open = cx.update(|window, cx| window.has_active_dialog(cx));
+    if open {
+        let mut dialog = Node::new(Role::Dialog);
+        dialog.set_modal();
+        tree = tree.node("dialog", dialog, None);
+    }
+    let tree = tree.everything(open.then_some("dialog"));
+    let size = cx.update(|window, _| window.viewport_size());
+    let window = Bounds::new(point(px(0.), px(0.)), size);
+    tree.tree(
+        gpui_kit::gpui::accesskit::Rect {
+            x0: 0.,
+            y0: 0.,
+            x1: f64::from(f32::from(window.right())),
+            y1: f64::from(f32::from(window.bottom())),
+        },
+        None,
+    )
 }
 
 /// A page that a modal dialog hides is a generic container, which the
