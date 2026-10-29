@@ -479,7 +479,7 @@ impl Panel {
             .child(label("github-reply-context", format!("{} · #{} · {} · captured head {}",target.account,target.pull.number,target.pull.repository.label(),target.pull.head.sha)).text_color(rgb(p.muted)))
             .when(!valid,|element|element.child(label("github-reply-unavailable","Original context is unavailable on this page. Refresh or return to its conversation before sending. Your exact draft remains local.").text_color(rgb(p.warning))))
             .child(Textarea::new(&self.conversations.input).h(appearance::ui_size(100.)).aria_label("Reply to captured GitHub conversation, saved locally").disabled(self.pending))
-            .when_some(self.error.as_ref(),|element,error|element.child(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().child(label("github-reply-error",error.clone()).role(Role::Alert).text_color(rgb(p.warning)))))
+            .when_some(self.error.as_ref(),|element,error|element.child(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().child(label("github-reply-error",error.clone()).role(Role::Status).text_color(rgb(p.warning)))))
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(button("github-review-reply","Review reply…","",true).disabled(self.pending||!valid).on_click(cx.listener(|this,_,window,cx|this.review_reply(window,cx))))
                 .child(button("github-close-reply","Save and close reply","",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|{this.save_reply(window,cx);this.conversations.active=None;this.confirm=None;this.focus_visible_section(window,cx);cx.notify();})))
@@ -999,6 +999,13 @@ mod tests {
         assert!(
             outcome.top() >= viewport.top() && outcome.bottom() <= viewport.bottom(),
             "reply refusal {outcome:?} stays visible beside its draft in {viewport:?}"
+        );
+        // A status, no alert: the window's alert says it, and Orca presents an alert's line
+        // again as the body scrolls it into view.
+        assert_eq!(
+            crate::native_accessibility::written::get("github-reply-error")
+                .map(|line| line.node.role()),
+            Some(Role::Status)
         );
         // Exercise actual asynchronous refresh failures with a moved provider head.
         // A failed single-thread read invalidates only its exact context; a failed

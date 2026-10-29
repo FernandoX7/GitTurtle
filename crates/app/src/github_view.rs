@@ -1069,11 +1069,14 @@ impl Panel {
     /// panel opens with them and whenever they change: its notice politely
     /// (`copy_feedback::announce`), and its failure and refused input at once
     /// (`copy_feedback::alert`), both leaving a control reading Copied as it is. The lines
-    /// are a status and alerts but no live regions: an adapter announces a live region only
-    /// while AccessKit's filter keeps its node, which it does not once another child lies
-    /// between the node and the body's edge, and again each time the body scrolls it back. At
-    /// 18 pt in a 461 × 490 window the notice lies below the fold, under the banner whose Move
-    /// fixture head changes it, and a failure lands wherever the body has scrolled.
+    /// are statuses, no live regions: an adapter announces a live region only while
+    /// AccessKit's filter keeps its node, which it does not once another child lies between
+    /// the node and the body's edge, and again each time the body scrolls it back. At 18 pt in
+    /// a 461 × 490 window the notice lies below the fold, under the banner whose Move fixture
+    /// head changes it, and a failure lands wherever the body has scrolled. Nor are they
+    /// alerts: AT-SPI reports a line's `showing` change as the body scrolls it in or out
+    /// (vendored adapter), and Orca presents an alert, a notification there, as it becomes
+    /// showing, so a failure the window's alert said could be said again from its line.
     fn announce(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let shown = Heard {
             notice: self.notice.clone(),
@@ -1251,8 +1254,8 @@ impl Render for Panel {
                     .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
                     .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.run(false,|_|SecureStore.remove(),|result,this,_,_|match result{Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx)))))))
             .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).text_color(rgb(p.muted))))
-            .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Alert).text_color(rgb(p.warning))))
-            .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Alert).text_color(rgb(p.warning))))
+            .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
+            .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
             .when(pending,|element|element.child(self.part("busy",div(),cx).flex().items_center().gap_2().pl(text_inset())
                 .child(label("github-busy",if self.writing{"Sending the captured review…"}else{"Loading your requested PR context…"}).role(Role::Status).live_region(gpui::accesskit::Live::Polite, true))
                 .child(button("github-cancel","Cancel","",false).track_focus(self.cancel_request.handle()).debug_selector(||"github-cancel".into()).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
@@ -2249,7 +2252,7 @@ mod tests {
             assert!(
                 found
                     .iter()
-                    .any(|node| node.role == Role::Alert && node.name.as_deref() == Some(FAILURE)),
+                    .any(|node| node.role == Role::Status && node.name.as_deref() == Some(FAILURE)),
                 "{at}: the failure's line is in reach"
             );
             crate::tags::tests::draw(cx);
@@ -2390,7 +2393,9 @@ mod tests {
     /// their own. A failure the body draws is announced once, from the window's alert alone,
     /// and drawing the panel again says nothing more. A failure landing while the body has
     /// scrolled far past its line, which AccessKit's filter leaves out, was never announced.
-    /// A copy button keeps reading Copied for its 1.5 s through an alert.
+    /// A copy button keeps reading Copied for its 1.5 s through an alert. The lines are
+    /// statuses rather than alerts: AT-SPI reports a line becoming showing as the body
+    /// scrolls it into view, and Orca presents an alert, a notification there, when it does.
     #[gpui::test]
     async fn the_window_alerts_the_panels_failures(cx: &mut TestAppContext) {
         use crate::copy_feedback::{
@@ -2435,10 +2440,32 @@ mod tests {
             None,
             "the failure's line is no live region of its own"
         );
+        assert_eq!(
+            written::get("github-error").map(|line| line.node.role()),
+            Some(Role::Status),
+            "the failure's line is a status, no alert"
+        );
         #[cfg(target_os = "linux")]
         {
-            use crate::native_accessibility::atspi_state_tests::next_frame;
-            bus.update(next_frame(cx));
+            use crate::native_accessibility::atspi_state_tests::{next_frame, reached};
+            use accesskit_atspi_common::Role as AtspiRole;
+            let frame = next_frame(cx);
+            let roles: Vec<AtspiRole> = reached(frame.clone())
+                .into_iter()
+                .filter(|node| node.name == FAILURE)
+                .map(|node| node.role)
+                .collect();
+            assert!(
+                roles.contains(&AtspiRole::StatusBar)
+                    && roles
+                        .iter()
+                        .filter(|role| **role == AtspiRole::Notification)
+                        .count()
+                        <= 1,
+                "the failure's line is a status bar on AT-SPI, and only the window's alert a \
+                 notification, which Orca presents as it becomes showing: {roles:?}"
+            );
+            bus.update(frame);
             assert_eq!(
                 bus.announced(),
                 vec![FAILURE.to_owned()],
@@ -2475,6 +2502,11 @@ mod tests {
             "the window's alert says the refused input"
         );
         assert_eq!(written::announced("github-draft-validation"), None);
+        assert_eq!(
+            written::get("github-draft-validation").map(|line| line.node.role()),
+            Some(Role::Status),
+            "the refused input's line is a status, no alert"
+        );
         escape(cx);
         cx.update(|_, cx| {
             panel.update(cx, |panel, _| {
