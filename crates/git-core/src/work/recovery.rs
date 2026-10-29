@@ -400,6 +400,7 @@ impl GitRepository {
                 message
             },
             commit_oid,
+            up_to_date: false,
         })
     }
 

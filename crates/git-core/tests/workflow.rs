@@ -460,6 +460,101 @@ fn clone_fetch_fast_forward_pull_and_non_force_push_use_local_remote() {
     assert_eq!(git(&remote, &["log", "-1", "--format=%s"]), "clone three");
 }
 
+/// Fetch and Pull say whether they brought anything new from the refs before
+/// and after Git ran: a Fetch from any ref it updated, a Pull from whether
+/// HEAD moved, so a Pull after a Fetch that already brought the commits still
+/// reports what it fast-forwarded.
+#[test]
+fn fetch_and_pull_report_whether_they_brought_anything_new() {
+    let f = Fixture::new();
+    f.write("file.txt", "one");
+    f.commit("one");
+    let remote = bare_remote(&f, "origin");
+    let repo = f.repo();
+    repo.execute(&push("origin", "main")).unwrap();
+    let copy = f.temp.path().join("clone");
+    let cloned = GitRepository::clone_repository(remote.to_str().unwrap(), &copy).unwrap();
+    for (key, value) in [
+        ("user.name", "Clone Author"),
+        ("user.email", "clone@example.invalid"),
+        ("commit.gpgsign", "false"),
+        ("core.hooksPath", ".git/hooks"),
+    ] {
+        git(&copy, &["config", key, value]);
+    }
+    let fetch = WriteCommand::Fetch {
+        remote: "origin".into(),
+    };
+    let pull = WriteCommand::Pull {
+        remote: "origin".into(),
+        branch: "main".into(),
+    };
+    // A remote added and pushed to rather than cloned has no
+    // `refs/remotes/origin/HEAD`, which Git's fetch then creates
+    // (`remote.origin.followRemoteHEAD`): an alias of a branch it already
+    // has, so nothing new.
+    let aliases = || git(&f.root, &["for-each-ref", "refs/remotes/origin/HEAD"]);
+    assert_eq!(aliases(), "");
+    assert!(repo.execute(&fetch).unwrap().up_to_date);
+    let refs = || {
+        git(
+            &copy,
+            &["for-each-ref", "--format=%(objectname) %(refname)"],
+        )
+    };
+    let head = || git(&copy, &["rev-parse", "HEAD"]);
+
+    // Nothing new on the remote: both are up to date and change no ref.
+    let before = refs();
+    assert!(cloned.execute(&fetch).unwrap().up_to_date);
+    assert!(cloned.execute(&pull).unwrap().up_to_date);
+    assert_eq!(refs(), before);
+
+    // A new commit on main: Fetch brings it, and the Pull after it, whose own
+    // fetch brings nothing more, still fast-forwards HEAD.
+    f.write("file.txt", "two");
+    let two = f.commit("two");
+    repo.execute(&push("origin", "main")).unwrap();
+    let fetched = cloned.execute(&fetch).unwrap();
+    assert!(!fetched.up_to_date, "{fetched:?}");
+    assert_eq!(git(&copy, &["rev-parse", "refs/remotes/origin/main"]), two);
+    assert!(cloned.execute(&fetch).unwrap().up_to_date);
+    let pulled = cloned.execute(&pull).unwrap();
+    assert!(!pulled.up_to_date, "{pulled:?}");
+    assert_eq!(head(), two);
+    assert!(cloned.execute(&pull).unwrap().up_to_date);
+
+    // A Pull straight from the remote, with no Fetch first, also moves HEAD.
+    f.write("file.txt", "three");
+    let three = f.commit("three");
+    repo.execute(&push("origin", "main")).unwrap();
+    assert!(!cloned.execute(&pull).unwrap().up_to_date);
+    assert_eq!(head(), three);
+
+    // A new branch elsewhere on the remote is new to a Fetch, while a Pull
+    // of main, which HEAD already contains, brings nothing new.
+    f.git(&["switch", "--create", "feature"]);
+    f.write("feature.txt", "feature");
+    f.commit("feature");
+    repo.execute(&push("origin", "feature")).unwrap();
+    assert!(!cloned.execute(&fetch).unwrap().up_to_date);
+    assert!(git(&copy, &["for-each-ref", "refs/remotes/origin/feature"]).contains("feature"));
+    assert!(cloned.execute(&pull).unwrap().up_to_date);
+    assert_eq!(head(), three);
+
+    // A local commit ahead of the remote: Git has nothing to pull.
+    fs::write(copy.join("local.txt"), "local").unwrap();
+    cloned.execute(&WriteCommand::StageAll).unwrap();
+    let local = cloned
+        .execute(&WriteCommand::Commit {
+            message: "local".into(),
+        })
+        .unwrap();
+    assert!(!local.up_to_date, "only Fetch and Pull report it");
+    assert!(cloned.execute(&pull).unwrap().up_to_date);
+    assert_eq!(Some(head()), local.commit_oid);
+}
+
 fn bare_remote(f: &Fixture, name: &str) -> PathBuf {
     let remote = f.temp.path().join(format!("{name}.git"));
     git(

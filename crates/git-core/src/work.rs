@@ -227,6 +227,12 @@ pub enum WriteCommand {
 pub struct WriteOutcome {
     pub message: String,
     pub commit_oid: Option<String>,
+    /// A Fetch or Pull that brought nothing new, decided by reading refs
+    /// before and after Git ran rather than from its output: a Fetch left
+    /// every ref as it was, and a Pull left HEAD on the same commit. False for
+    /// every other write, and whenever either read fails, so it never claims
+    /// that nothing changed without having seen it.
+    pub up_to_date: bool,
 }
 
 impl GitRepository {
@@ -597,6 +603,7 @@ impl GitRepository {
             }
             .into(),
             commit_oid: None,
+            up_to_date: false,
         })
     }
 
@@ -800,7 +807,12 @@ impl GitRepository {
                 return self.execute_profile(&plan);
             }
         }
+        let before = self.sync_snapshot(operation);
         let output = checked_write_output(command, input, timeout)?;
+        // Read after the write only once Git reported success; a failed read
+        // leaves `up_to_date` false rather than turning the write into a
+        // failure.
+        let up_to_date = before.is_some() && before == self.sync_snapshot(operation);
         let message = format!("{}{}", text(&output.stdout), text(&output.stderr))
             .trim()
             .to_owned();
@@ -819,7 +831,44 @@ impl GitRepository {
                 message
             },
             commit_oid,
+            up_to_date,
         })
+    }
+
+    /// The refs that decide whether `operation` brought anything new, read
+    /// passively: for a Fetch every ref with its commit, since configured
+    /// refspecs and followed tags can update refs outside the remote's own
+    /// namespace, and for a Pull the commit HEAD names. `None` for other
+    /// writes, and when the read fails, as on an unborn branch, whose
+    /// successful Pull always brings commits.
+    fn sync_snapshot(&self, operation: &WriteCommand) -> Option<Vec<u8>> {
+        match operation {
+            WriteCommand::Fetch { .. } => {
+                let records = run_git(
+                    &self.path,
+                    &[
+                        "for-each-ref",
+                        "--format=%(symref)%00%(objectname) %(refname)",
+                    ],
+                )
+                .ok()?;
+                // A symbolic ref names a ref compared here itself, and Git's
+                // fetch creates `refs/remotes/<remote>/HEAD` where a remote
+                // was added rather than cloned (`followRemoteHEAD`), which
+                // brings nothing new.
+                Some(
+                    records
+                        .split(|byte| *byte == b'\n')
+                        .filter_map(|record| record.strip_prefix(b"\0"))
+                        .collect::<Vec<_>>()
+                        .join(&b'\n'),
+                )
+            }
+            WriteCommand::Pull { .. } => {
+                run_git(&self.path, &["rev-parse", "--verify", "HEAD"]).ok()
+            }
+            _ => None,
+        }
     }
 
     pub fn init(destination: impl AsRef<Path>, initial_branch: &str) -> Result<Self> {

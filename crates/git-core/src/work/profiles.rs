@@ -249,6 +249,7 @@ impl GitRepository {
         Ok(WriteOutcome {
             message: format!("Profile applied. {suffix}"),
             commit_oid: None,
+            up_to_date: false,
         })
     }
 }

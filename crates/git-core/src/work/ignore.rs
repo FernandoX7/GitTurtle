@@ -149,6 +149,7 @@ impl GitRepository {
                 plan.path.display()
             ),
             commit_oid: None,
+            up_to_date: false,
         })
     }
 }

@@ -260,6 +260,7 @@ impl GitRepository {
         Ok(WriteOutcome {
             message,
             commit_oid: None,
+            up_to_date: false,
         })
     }
 

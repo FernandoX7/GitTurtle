@@ -245,6 +245,7 @@ impl GitRepository {
                 format!("{message}\n{}", diagnostic.trim())
             },
             commit_oid: None,
+            up_to_date: false,
         })
     }
 }

@@ -226,6 +226,7 @@ impl GitRepository {
                 plan.size
             ),
             commit_oid: None,
+            up_to_date: false,
         })
     }
 }

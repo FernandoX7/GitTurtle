@@ -418,6 +418,7 @@ impl GitRepository {
                 text(&output.stderr)
             ),
             commit_oid: None,
+            up_to_date: false,
         })
     }
 }

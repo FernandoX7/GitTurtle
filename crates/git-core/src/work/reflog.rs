@@ -169,6 +169,7 @@ impl GitRepository {
                 plan.branch, plan.entry.oid
             ),
             commit_oid: None,
+            up_to_date: false,
         })
     }
 }

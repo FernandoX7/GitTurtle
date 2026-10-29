@@ -938,7 +938,7 @@ impl GitRepository {
                     "Unable to save the resolution; inspect the working file before retrying",
                 )?;
                 if matches!(resolution, ConflictResolution::Save { .. }) {
-                    return Ok(WriteOutcome { message: "Saved the conflict draft. The file remains unresolved in the index until you explicitly stage it.".into(), commit_oid: expected.head.clone() });
+                    return Ok(WriteOutcome { message: "Saved the conflict draft. The file remains unresolved in the index until you explicitly stage it.".into(), commit_oid: expected.head.clone(), up_to_date: false });
                 }
             }
             ConflictResolution::Current | ConflictResolution::Incoming => {
@@ -1022,6 +1022,7 @@ pub(super) fn integration_outcome(repo: &GitRepository, output: Output) -> Resul
             message
         },
         commit_oid: repo.current_head()?,
+        up_to_date: false,
     })
 }
 

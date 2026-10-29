@@ -429,7 +429,7 @@ impl GitRepository {
                 .open(private.join(MESSAGE_MARKER))?;
             marker.write_all(head.as_bytes())?;
             drop(editor);
-            return Ok(WriteOutcome { message: "Rebase paused for commit-message review. Choose Continue to edit the message in GitTurtle. The operation can also be aborted or resumed after restarting.".into(), commit_oid: self.status()?.head });
+            return Ok(WriteOutcome { message: "Rebase paused for commit-message review. Choose Continue to edit the message in GitTurtle. The operation can also be aborted or resumed after restarting.".into(), commit_oid: self.status()?.head, up_to_date: false });
         }
         ensure!(
             result.status.success(),
