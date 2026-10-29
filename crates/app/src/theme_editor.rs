@@ -4644,10 +4644,15 @@ pub(crate) mod tests {
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_theme_editor(None, window, cx)));
         // The slide-in's clock starts in the draw that first lays the alert
         // out, so that draw shows it at the start of its travel however slow
-        // the host is. A frame count could not tell: the editor's first
-        // layout asks for a frame of its own.
-        draw_once(cx);
-        let opening = bounds(cx, "theme-editor-save".into());
+        // the host is. In a test build that draw is the one GPUI makes of the
+        // dirty window as the update that opens the editor ends, not a draw
+        // after it: read from a later draw, a host slower than the slide
+        // between the two, as one running the whole suite at once, found the
+        // alert at rest already. A frame count could not tell: the editor's
+        // first layout asks for a frame of its own.
+        let opening = cx
+            .debug_bounds("theme-editor-save")
+            .expect("the update that opens the editor draws its alert");
         std::thread::sleep(
             *gpui_kit::component::dialog::ANIMATION_DURATION + std::time::Duration::from_millis(50),
         );
