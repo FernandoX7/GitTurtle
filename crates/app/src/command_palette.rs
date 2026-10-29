@@ -1,5 +1,6 @@
 //! A bounded registry of native workflows. Highlighting a command is inert;
 //! activation rechecks the current context before invoking its existing handler.
+use crate::native_accessibility::LiveRegion as _;
 use crate::shortcuts::ShortcutId;
 use crate::*;
 use gpui_kit::{
@@ -1064,7 +1065,7 @@ impl Render for Palette {
                 div()
                     .id("command-palette-current-result")
                     .role(Role::Status)
-                    .a11y_synthetic_children(native_accessibility::polite)
+                    .polite()
                     .aria_label(
                         self.results
                             .get(self.selection.index)

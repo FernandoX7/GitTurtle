@@ -6,6 +6,7 @@ use crate::github::{
     drafts::{self, Draft},
     transport::{CredentialStore, GhTransport, SecureStore},
 };
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use futures::FutureExt;
 use gitturtle_core::{HistoryCancellation, OperationControl};
@@ -1185,11 +1186,11 @@ impl Render for Panel {
                     .child(button("github-connect","Connect GitHub CLI account","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx))))
                     .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
                     .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.run(false,|_|SecureStore.remove(),|result,this,_,_|match result{Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx)))))))
-            .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted))))
-            .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
-            .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Alert).a11y_synthetic_children(native_accessibility::assertive).text_color(rgb(p.warning))))
+            .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).polite().text_color(rgb(p.muted))))
+            .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Alert).assertive().text_color(rgb(p.warning))))
+            .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Alert).assertive().text_color(rgb(p.warning))))
             .when(pending,|element|element.child(self.part("busy",div(),cx).flex().items_center().gap_2().pl(text_inset())
-                .child(label("github-busy",if self.writing{"Sending the captured review…"}else{"Loading your requested PR context…"}).role(Role::Status).a11y_synthetic_children(|builder|{native_accessibility::polite(builder);builder.parent_node().set_busy();}))
+                .child(label("github-busy",if self.writing{"Sending the captured review…"}else{"Loading your requested PR context…"}).role(Role::Status).live_region(gpui::accesskit::Live::Polite, true))
                 .child(button("github-cancel","Cancel","",false).track_focus(self.cancel_request.handle()).debug_selector(||"github-cancel".into()).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
                     if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(if this.writing{"Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."}else{"Cancellation requested. Your review draft is retained."}.into());cx.notify();})))))
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
@@ -1266,7 +1267,7 @@ impl Render for Panel {
                 // panel's text inset; otherwise on a line of its own below it, wrapping, so its
                 // remedy stays readable and the button stays inside the panel (at 18 pt a failed
                 // save's status pushed the button past the panel's right edge).
-                .child(self.part("submit",div(),cx).flex().flex_wrap_reverse().items_center().gap_2().child(label("github-draft-status",self.save_status.clone()).debug_selector(||"github-draft-status".into()).min_w_0().mx(text_inset()).role(Role::Status).a11y_synthetic_children(native_accessibility::polite).text_color(rgb(p.muted)))
+                .child(self.part("submit",div(),cx).flex().flex_wrap_reverse().items_center().gap_2().child(label("github-draft-status",self.save_status.clone()).debug_selector(||"github-draft-status".into()).min_w_0().mx(text_inset()).role(Role::Status).polite().text_color(rgb(p.muted)))
                     .child(button("github-review-submit","Review submission…","",true).debug_selector(||"github-review-submit".into()).ml_auto().disabled(pending).on_click(cx.listener(|this,_,window,cx|this.review_submission(window,cx))))))
             .child(self.render_reply_composer(cx))
             .when_some(self.confirm.as_ref(),|element,confirmation|element.child(div().debug_selector(||"github-confirmation".into()).on_children_prepainted(self.reveal_on_focus(self.conversations.confirm_focus.clone())).track_focus(&self.conversations.confirm_focus).tab_stop(true).p_3().border_1().border_color(rgb(p.accent)).rounded(px(7.)).flex().flex_col().gap_2()

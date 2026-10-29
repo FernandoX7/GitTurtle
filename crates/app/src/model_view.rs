@@ -1,5 +1,6 @@
 //! Native retained-geometry comparison. A single active render and one replaceable
 //! pending pair bound CPU preparation; idle/hidden viewers request no frames.
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use futures::channel::oneshot;
 use gitturtle_preview::model3d::{self, ModelBounds, ModelCamera, ModelScene, ModelStandardView};
@@ -782,9 +783,7 @@ fn render_side<T: 'static>(
                     .map(|element| {
                         let read = bounded_accessible_text(format!("{label}: {message}"));
                         if side.error.is_some() {
-                            element
-                                .aria_label(read)
-                                .a11y_synthetic_children(native_accessibility::assertive)
+                            element.aria_label(read).assertive()
                         } else {
                             element.aria_value(read)
                         }
@@ -965,7 +964,7 @@ fn render_side<T: 'static>(
                 div()
                     .id(("model-render-error", index))
                     .role(Role::Alert)
-                    .a11y_synthetic_children(native_accessibility::assertive)
+                    .assertive()
                     .aria_label(format!(
                         "{label}: {error}. {} Fit or Reset to try another view.",
                         if first_frame {
@@ -1012,12 +1011,7 @@ fn render_side<T: 'static>(
                             "3D view ready"
                         }
                     ))
-                    .a11y_synthetic_children(move |builder| {
-                        builder.parent_node().set_live(gpui::accesskit::Live::Off);
-                        if pending {
-                            builder.parent_node().set_busy();
-                        }
-                    })
+                    .live_region(gpui::accesskit::Live::Off, pending)
                     .absolute()
                     .top_1()
                     .left_2()

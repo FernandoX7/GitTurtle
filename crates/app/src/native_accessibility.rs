@@ -686,18 +686,51 @@ pub(crate) trait AppContextMenu: gpui_kit::component::menu::ContextMenuExt + Siz
 
 impl<E: gpui_kit::component::menu::ContextMenuExt> AppContextMenu for E {}
 
-pub(super) fn polite(builder: &mut A11ySubtreeBuilder<'_>) {
-    builder
-        .parent_node()
-        .set_live(gpui::accesskit::Live::Polite);
-    builder.parent_node().set_live_atomic();
+/// An element with an ID whose node is a live region: an assistive
+/// technology announces what it says when it changes, at once for a failure
+/// or a refusal ([`assertive`](LiveRegion::assertive)), after what it is
+/// saying for a status ([`polite`](LiveRegion::polite)), and not at all
+/// where continuous progress would repeat itself (`Live::Off`). A live
+/// region is read as a whole, so a changed word repeats its line rather than
+/// the word alone.
+///
+/// GPUI writes these properties through the node's synthetic children,
+/// which it builds only while an assistive technology is active, and never
+/// in a test window; tests read what the element asked for from
+/// `written::announced` instead, keyed by its element ID as it was built.
+pub(crate) trait LiveRegion: StatefulInteractiveElement + Element {
+    /// Announced at once, interrupting: a failure, a refusal or invalid
+    /// input.
+    fn assertive(self) -> Self {
+        self.live_region(gpui::accesskit::Live::Assertive, false)
+    }
+
+    /// Announced once the assistive technology has finished what it is
+    /// saying: a status, a count or a completion.
+    fn polite(self) -> Self {
+        self.live_region(gpui::accesskit::Live::Polite, false)
+    }
+
+    /// Announced as `live` says, read as a whole unless it is off, and
+    /// `busy` while what it reports is still under way.
+    fn live_region(self, live: gpui::accesskit::Live, busy: bool) -> Self {
+        let atomic = live != gpui::accesskit::Live::Off;
+        #[cfg(test)]
+        written::live(&self, written::Announced { live, atomic, busy });
+        self.a11y_synthetic_children(move |builder| {
+            let node = builder.parent_node();
+            node.set_live(live);
+            if atomic {
+                node.set_live_atomic();
+            }
+            if busy {
+                node.set_busy();
+            }
+        })
+    }
 }
-pub(super) fn assertive(builder: &mut A11ySubtreeBuilder<'_>) {
-    builder
-        .parent_node()
-        .set_live(gpui::accesskit::Live::Assertive);
-    builder.parent_node().set_live_atomic();
-}
+
+impl<E: StatefulInteractiveElement + Element> LiveRegion for E {}
 
 /// `element`, a container that scrolls or clips what it holds, as the
 /// accessibility node AccessKit expects of one: it clips its children, and its
@@ -1216,8 +1249,42 @@ pub(crate) mod written {
         pub order: u64,
     }
 
+    /// What a [`LiveRegion`] asked its node to announce: how, whether as a
+    /// whole, and whether what it reports is still under way.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) struct Announced {
+        pub live: gpui::accesskit::Live,
+        pub atomic: bool,
+        pub busy: bool,
+    }
+
+    impl Announced {
+        /// A failure's or a refusal's line, announced at once as a whole.
+        pub(crate) const ASSERTIVE: Self = Self {
+            live: gpui::accesskit::Live::Assertive,
+            atomic: true,
+            busy: false,
+        };
+
+        /// Writes these properties on `node`, as GPUI's synthetic children
+        /// write them on the element's own.
+        fn write(self, node: &mut gpui::accesskit::Node) {
+            node.set_live(self.live);
+            if self.atomic {
+                node.set_live_atomic();
+            }
+            if self.busy {
+                node.set_busy();
+            }
+        }
+    }
+
     thread_local! {
         static NODES: RefCell<HashMap<String, Written>> = Default::default();
+        /// What each live region asked for as it was last built, by
+        /// element ID: GPUI writes it only while an assistive technology
+        /// is active.
+        static LIVE: RefCell<HashMap<String, Announced>> = Default::default();
         /// The wrappers prepainting, innermost last.
         static OPEN: RefCell<Vec<String>> = Default::default();
         /// The next node's [`Written::order`].
@@ -1237,6 +1304,9 @@ pub(crate) mod written {
         element.write_a11y_info(&mut node);
         if let Some(bounds) = bounds {
             node.set_bounds(bounds);
+        }
+        if let Some(announced) = announced(&id) {
+            announced.write(&mut node);
         }
         let parent = OPEN.with(|open| open.borrow().last().cloned());
         let order = NEXT.with(|next| next.replace(next.get() + 1));
@@ -1320,10 +1390,41 @@ pub(crate) mod written {
         false
     }
 
-    /// Forgets every node [`get`] would return, so that what a test reads
-    /// after its next draw comes from that draw.
+    /// Records what the live region `element` asks its node to announce, as
+    /// it is built: GPUI writes it only while an assistive technology is
+    /// active.
+    pub(super) fn live<E: Element>(element: &E, announced: Announced) {
+        if let Some(id) = element.id() {
+            LIVE.with(|live| live.borrow_mut().insert(id.to_string(), announced));
+        }
+    }
+
+    /// What the live region with element ID `id` asked its node to
+    /// announce as it was built in the window's latest draw ([`draw_begins`])
+    /// or, for an element built outside one, since [`forget`]; `None` for an
+    /// element that is not one.
+    pub(crate) fn announced(id: &str) -> Option<Announced> {
+        LIVE.with(|live| live.borrow().get(id).copied())
+    }
+
+    /// A window's draw begins: what [`announced`] returns, and what [`open`]
+    /// copies onto the nodes it records, comes from this draw's builds from
+    /// now on, so an element drawn again without a live region is no longer
+    /// one. The app's window calls it as its root view renders, before
+    /// anything else in the window is built. Recorded nodes stay until
+    /// [`forget`], as a cached view's wrappers are drawn again without
+    /// prepainting; a live region in a cached view is therefore not
+    /// announced after a draw that did not build it again.
+    pub(crate) fn draw_begins() {
+        LIVE.with(|live| live.borrow_mut().clear());
+    }
+
+    /// Forgets every node [`get`] would return and every live region
+    /// [`announced`] would, so that what a test reads after its next draw
+    /// comes from that draw.
     pub(crate) fn forget() {
         NODES.with(|nodes| nodes.borrow_mut().clear());
+        LIVE.with(|live| live.borrow_mut().clear());
     }
 
     /// A window's tree as GPUI builds it, assembled for a test from the
@@ -1816,5 +1917,51 @@ mod tests {
         assert_eq!(next_cursor(&rows, Some(99), false, false), Some(0));
         assert_eq!(next_cursor(&rows, None, true, false), Some(0));
         assert_eq!(next_cursor(&[], None, true, false), None);
+    }
+
+    /// A line drawn as an assertive live region and drawn again without
+    /// one is no longer one: neither what it asks to announce nor the node
+    /// its wrapper records keeps the earlier draw's flags, as each window
+    /// draw starts the live regions afresh.
+    #[gpui::test]
+    fn a_line_drawn_again_without_a_live_region_announces_nothing(cx: &mut TestAppContext) {
+        struct Line(std::rc::Rc<std::cell::Cell<bool>>);
+        impl Render for Line {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                written::draw_begins();
+                let line = text("probe-line", "Could not save").role(Role::Alert);
+                if self.0.get() {
+                    line.assertive().into_any_element()
+                } else {
+                    line.into_any_element()
+                }
+            }
+        }
+        let live = std::rc::Rc::new(std::cell::Cell::new(true));
+        let shown = live.clone();
+        let (view, cx) = cx.add_window_view(move |_, _| Line(shown));
+        let draw = |cx: &mut VisualTestContext| {
+            view.update(cx, |_, cx| cx.notify());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        written::forget();
+        draw(cx);
+        assert_eq!(
+            written::announced("probe-line"),
+            Some(written::Announced::ASSERTIVE)
+        );
+        let node = written::get("probe-line")
+            .expect("the line is recorded")
+            .node;
+        assert_eq!(node.live(), Some(gpui::accesskit::Live::Assertive));
+
+        live.set(false);
+        draw(cx);
+        assert_eq!(written::announced("probe-line"), None);
+        let node = written::get("probe-line")
+            .expect("the line is recorded")
+            .node;
+        assert_eq!(node.live(), None, "no earlier flag reaches the node");
+        assert!(!node.is_live_atomic());
     }
 }

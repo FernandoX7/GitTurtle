@@ -1,5 +1,6 @@
 //! On-demand captured-byte PDF navigation. Native references remain on one
 //! serialized render lane; each side retains at most four pages / 16 MiB.
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use gpui_kit::base::ElementExt;
 use gpui_kit::component::dialog::DialogFooter;
@@ -414,7 +415,7 @@ fn page_picker(
                             .id("pdf-page-validation")
                             .role(Role::Alert)
                             .aria_label(validation.read(cx).clone())
-                            .a11y_synthetic_children(native_accessibility::assertive)
+                            .assertive()
                             .child(validation.read(cx).clone()),
                     ),
             )
@@ -534,7 +535,7 @@ pub(super) fn render_comparison<T: 'static>(
                 let mut state = target.state.lock().unwrap_or_else(|e|e.into_inner()); state.zoom=if action==0 {1.}else{(state.zoom * if action<0 {0.8}else{1.25}).clamp(0.25,4.)}; drop(state); window.refresh(); cx.notify();
             })));
         }
-        header = header.child(div().id(("pdf-position-status",index)).role(Role::Status).aria_label(format!("{label}: page {} of {}, {:.0} percent zoom",page+1,document.count,zoom*100.)).a11y_synthetic_children(native_accessibility::polite).text_size(appearance::ui_text(10.)).child(format!("{:.0}%",zoom*100.)));
+        header = header.child(div().id(("pdf-position-status",index)).role(Role::Status).aria_label(format!("{label}: page {} of {}, {:.0} percent zoom",page+1,document.count,zoom*100.)).polite().text_size(appearance::ui_text(10.)).child(format!("{:.0}%",zoom*100.)));
         if let Some(other)=&other.pdf && document.linked.load(Ordering::Relaxed) && other.count!=document.count {
             header=header.child(div().text_size(appearance::ui_text(10.)).child(format!("Different page counts: {} / {}. Each side stops at its last page.",document.count,other.count)));
         }

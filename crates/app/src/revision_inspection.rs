@@ -1,4 +1,5 @@
 //! Revision and path inspections reuse the workspace preview and retained views.
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use gitturtle_core::{ComparisonMode, PathScope, RevisionComparison, TrackedPath, TrackedPaths};
 use gpui_kit::component::{WindowExt, dialog::DialogFooter};
@@ -819,7 +820,7 @@ fn failure_line(
             .debug_selector(move || id.into())
             .role(Role::Alert)
             .aria_label(text.clone())
-            .a11y_synthetic_children(crate::native_accessibility::assertive)
+            .assertive()
             .child(text.clone()),
         text,
     )
@@ -839,7 +840,7 @@ fn typing_failure_line(
             .debug_selector(move || id.into())
             .role(Role::Status)
             .aria_label(text.clone())
-            .a11y_synthetic_children(crate::native_accessibility::polite)
+            .polite()
             .child(text.clone()),
         text,
     )

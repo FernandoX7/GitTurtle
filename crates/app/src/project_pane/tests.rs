@@ -761,6 +761,13 @@ async fn a_failed_save_stays_visible_in_the_pane_until_retry_succeeds(cx: &mut T
     cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_group(group, window, cx)));
     settle_save(&app, cx).await;
     assert!(cx.debug_bounds("project-pane-error").is_some());
+    // The failure interrupts: it is announced at once, as a whole.
+    native_accessibility::written::forget();
+    settle(cx);
+    assert_eq!(
+        native_accessibility::written::announced("project-pane-error"),
+        Some(native_accessibility::written::Announced::ASSERTIVE)
+    );
     let edited = app.read_with(cx, |app, _| {
         assert!(
             app.project_pane
@@ -801,6 +808,12 @@ async fn a_failed_save_stays_visible_in_the_pane_until_retry_succeeds(cx: &mut T
     cx.update(|window, cx| app.update(cx, |app, cx| app.retry_project_library_save(window, cx)));
     settle_save(&app, cx).await;
     assert!(cx.debug_bounds("project-pane-error").is_none());
+    // Each draw of the window starts its live regions afresh, so the
+    // failure drawn earlier is no longer announced.
+    assert_eq!(
+        native_accessibility::written::announced("project-pane-error"),
+        None
+    );
     app.read_with(cx, |app, _| {
         assert!(app.project_pane.error.is_none());
         assert_eq!(app.project_library, merged);

@@ -1,5 +1,6 @@
 //! The app-owned bindings are also the source for menu, palette and help labels.
 //! Toolkit text-editing bindings keep their own focused input contexts.
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use gpui_kit::base::ElementExt as _;
 use gpui_kit::component::kbd::Kbd;
@@ -1057,7 +1058,7 @@ impl Render for ShortcutHelpView {
             .child({
                 let line = count_line(count);
                 native_accessibility::static_text(div().id("shortcut-help-count").role(Role::Status)
-                    .a11y_synthetic_children(native_accessibility::polite), line.clone())
+                    .polite(), line.clone())
                     .text_color(rgb(p.muted)).child(line)
             })
             .child(crate::native_accessibility::clips_children(div().id("shortcut-help-results").debug_selector(|| "shortcut-help-results".into()).role(Role::ListBox)
@@ -1095,7 +1096,7 @@ impl Render for ShortcutHelpView {
                     if self.query.read(cx).value().len() > 4096 { "Search is limited to 4,096 bytes." }
                     else { "No shortcuts match. Try tabs, compare, editing or Ctrl." }).p_4().text_color(rgb(p.muted))))))
             .child(div().id("shortcut-help-selected").role(Role::Status)
-                .a11y_synthetic_children(native_accessibility::polite)
+                .polite()
                 .aria_label(match self.rows.get(self.selected) {
                     Some(HelpRow::Entry(entry)) => format!("{}: {}", entry.label, entry.key),
                     _ => String::new(),

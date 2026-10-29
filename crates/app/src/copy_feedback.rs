@@ -38,6 +38,7 @@
 //! A text selection copied with the edit command (the editors, Split's
 //! sides, the commit message's selectable text) stays silent, as native text
 //! fields are: it is the standard Copy, not a copy action.
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use gpui_kit::prelude::FluentBuilder;
 use std::{
@@ -396,7 +397,7 @@ pub(crate) fn announcement(window: &Window, cx: &App) -> Option<Stateful<Div>> {
             .id(("copy-announcement", latest.generation))
             .debug_selector(|| "copy-announcement".into())
             .role(Role::Status)
-            .a11y_synthetic_children(native_accessibility::polite)
+            .polite()
             .aria_label(latest.announcement.clone())
             .aria_value(latest.announcement.clone())
             .absolute()

@@ -1,5 +1,6 @@
 //! Worker-prepared CommonMark/GFM blocks, painted by a bounded native list.
 //! Source remains the only text used for copying and staging.
+use crate::native_accessibility::LiveRegion as _;
 use crate::{appearance::CodeFont, *};
 use markdown::mdast::Node;
 use std::ops::Range;
@@ -1475,7 +1476,7 @@ impl Render for View {
                             .id(("markdown-notice", side))
                             .role(Role::Status)
                             .aria_label(notice.clone())
-                            .a11y_synthetic_children(native_accessibility::polite)
+                            .polite()
                             .text_size(appearance::ui_text(11.))
                             .child(notice.clone()),
                     );

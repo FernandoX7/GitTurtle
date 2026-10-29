@@ -1,3 +1,4 @@
+use crate::native_accessibility::LiveRegion as _;
 use crate::{
     GitTurtle,
     focus_reveal::{FocusReveal, Trigger},
@@ -555,7 +556,7 @@ impl ProjectHub {
                         hub_text("recent-projects-count", if searching { format!("{} of {}", self.filtered.len(), self.recent.len()) } else { self.recent.len().to_string() })
                             .role(Role::Status)
                             .aria_label(if searching { format!("{} matching projects out of {} recent projects", self.filtered.len(), self.recent.len()) } else { format!("{} recent projects", self.recent.len()) })
-                            .a11y_synthetic_children(crate::native_accessibility::polite)
+                            .polite()
                             .px_2().py_0p5().rounded(px(6.))
                             .bg(colors.secondary).text_size(crate::appearance::ui_text(11.))
                             .text_color(colors.muted_foreground),
@@ -1001,7 +1002,7 @@ impl ProjectHub {
                         .id("project-hub-error")
                         .role(Role::Alert)
                         .aria_label(error.clone())
-                        .a11y_synthetic_children(crate::native_accessibility::assertive)
+                        .assertive()
                         .max_h(px(110.))
                         .overflow_y_scroll()
                         .flex_shrink_0()
@@ -1540,7 +1541,7 @@ impl Render for RenameProjectForm {
                     .id("rename-project-error")
                     .role(Role::Alert)
                     .aria_label(error.clone())
-                    .a11y_synthetic_children(crate::native_accessibility::assertive)
+                    .assertive()
                     .rounded(px(8.))
                     .border_1()
                     .border_color(colors.danger)

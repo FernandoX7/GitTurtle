@@ -26,6 +26,7 @@
 //! another is ([`Showing`]); nothing reaches the window-wide notice.
 
 use crate::copy_feedback::{self, Action, Mark};
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use anyhow::Result;
 use gpui_kit::prelude::FluentBuilder;
@@ -352,11 +353,9 @@ impl Answer {
             .debug_selector(move || key.clone())
             .map(|line| {
                 if self.failed {
-                    line.role(Role::Alert)
-                        .a11y_synthetic_children(native_accessibility::assertive)
+                    line.role(Role::Alert).assertive()
                 } else {
-                    line.role(Role::Status)
-                        .a11y_synthetic_children(native_accessibility::polite)
+                    line.role(Role::Status).polite()
                 }
             })
             .aria_label(self.text.clone())
@@ -749,14 +748,23 @@ pub(crate) mod tests {
             let element = answer.short_line(Some(2), cx).into_element();
             let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
             element.write_a11y_info(&mut node);
-            written = Some(node);
+            // Read as it is built: the window's next draw starts its live
+            // regions afresh, and this line is drawn outside it.
+            let id = gpui::Element::id(&element).expect("the line's ID");
+            let announced = crate::native_accessibility::written::announced(&id.to_string());
+            written = Some((announced, node));
             div()
         });
-        let node = written.expect("the line was built");
+        let (announced, node) = written.expect("the line was built");
         assert_eq!(node.role(), gpui::accesskit::Role::Alert);
         assert_eq!(
             node.label(),
             Some(format!("Could not open After. {reason}").as_str())
+        );
+        // A failure interrupts: it is announced at once, as a whole.
+        assert_eq!(
+            announced,
+            Some(crate::native_accessibility::written::Announced::ASSERTIVE)
         );
     }
 

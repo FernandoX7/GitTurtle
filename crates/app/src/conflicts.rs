@@ -1,4 +1,5 @@
 use crate::appearance::CodeFont;
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use gitturtle_core::{
     ConflictBlockChoice, ConflictContent, ConflictPreview, ConflictResolution, IntegrationCommand,
@@ -698,17 +699,17 @@ impl Render for ConflictView {
                 .child(button("external-conflict-editor", "Open in editor", "", false).tooltip("Open the working file with its default application. Refresh after saving, then stage the resolved file.")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::OpenEditor)))))
             .when(self.presentation.result.is_some(), |element| element.child(div().px_3().py_2().flex().flex_col().gap_2().border_b_1().border_color(rgb(p.border))
-                .child(div().id("conflict-block-status").role(Role::Status).a11y_synthetic_children(native_accessibility::polite).aria_label(status.clone()).text_size(crate::appearance::ui_text(12.)).child(status))
+                .child(div().id("conflict-block-status").role(Role::Status).polite().aria_label(status.clone()).text_size(crate::appearance::ui_text(12.)).child(status))
                 .child(div().flex().flex_wrap().gap_2().items_center()
                     .child(button("previous-conflict-block", "Previous", "", false).accessibility_label("Previous conflict block").tooltip(format!("Previous conflict · {}", shortcuts::key_label(PREVIOUS_BLOCK))).disabled(blocked || self.block_selected == 0).on_click(cx.listener(|this, _, window, cx| this.select_block(true, window, cx))))
                     .child(button("next-conflict-block", "Next", "", false).accessibility_label("Next conflict block").tooltip(format!("Next conflict · {}", shortcuts::key_label(NEXT_BLOCK))).disabled(blocked || self.block_selected + 1 >= self.blocks.len()).on_click(cx.listener(|this, _, window, cx| this.select_block(false, window, cx))))
                     .child(button("accept-current-block", "Accept current", "", false).accessibility_label(format!("Accept current block from {current} into the result draft")).tooltip(format!("Use only this block from {current} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Current, window, cx))))
                     .child(button("accept-incoming-block", "Accept incoming", "", false).accessibility_label(format!("Accept incoming block from {incoming} into the result draft")).tooltip(format!("Use only this block from {incoming} in the result draft")).disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Incoming, window, cx))))
                     .child(button("accept-both-block", "Accept both", "", false).accessibility_label("Accept both versions of this block, current then incoming, into the result draft").tooltip("Keep current, then incoming, for this block; review ordering in the result draft").disabled(blocked).on_click(cx.listener(|this, _, window, cx| this.accept_block(ConflictBlockChoice::Both, window, cx)))))
-                .children(self.block_issue.as_ref().map(|issue| div().id("conflict-block-issue").role(Role::Alert).aria_label(issue.clone()).a11y_synthetic_children(native_accessibility::assertive).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.clone())))))
+                .children(self.block_issue.as_ref().map(|issue| div().id("conflict-block-issue").role(Role::Alert).aria_label(issue.clone()).assertive().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.clone())))))
             .child(div().flex_1().min_h(px(100.)).flex().children(if self.base { vec![self.render_side(0, cx)] } else { vec![self.render_side(1, cx), self.render_side(2, cx)] }))
             .child(div().px_3().py_2().flex().flex_col().gap_2().bg(rgb(p.subtle)).border_t_1().border_color(rgb(p.border))
-                .child(div().id("conflict-draft-storage-status").role(Role::Status).aria_label(self.durable_status.clone()).a11y_synthetic_children(native_accessibility::polite).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(self.durable_status.clone()))
+                .child(div().id("conflict-draft-storage-status").role(Role::Status).aria_label(self.durable_status.clone()).polite().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child(self.durable_status.clone()))
                 .when_some(self.durable_saved.clone(), |element, (valid, text)| {
                     let copy = text.clone();
                     // Keyed by this file's draft.
@@ -733,7 +734,7 @@ impl Render for ConflictView {
                 .children(self.resolution.as_ref().map(|editor| div().capture_action(cx.listener(Self::check_paste))
                     .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Result draft · block choices and manual edits stay here until you explicitly save"))
                     .child(resolution_textarea(editor, cx))))
-                .children(self.draft_error.map(|issue| div().id("conflict-draft-error").role(Role::Alert).aria_label(issue.explanation()).a11y_synthetic_children(native_accessibility::assertive).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.explanation())))
+                .children(self.draft_error.map(|issue| div().id("conflict-draft-error").role(Role::Alert).aria_label(issue.explanation()).assertive().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning)).child(issue.explanation())))
                 .child(div().flex().flex_wrap().items_center().gap_2()
                     .child(button("mark-conflict-resolved", "Stage edited file…", "", false).disabled(cannot_stage_working).tooltip("Stage the saved working file. Refresh after external editing.").on_click(cx.listener(|_, _, _, cx| cx.emit(ConflictEvent::Resolve(ConflictResolution::MarkResolved)))))
                     .children(self.resolution.as_ref().map(|_| button("save-conflict-draft", "Save draft…", "", false).on_click(cx.listener(|this, _, _, cx| {

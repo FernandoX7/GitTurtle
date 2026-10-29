@@ -1,3 +1,4 @@
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use columns::ColumnId;
 use gpui_kit::base::ElementExt;
@@ -244,9 +245,7 @@ impl GitTurtle {
             .role(Role::Status)
             .aria_label(description.clone())
             .tooltip(move |window, cx| Tooltip::new(description.clone()).build(window, cx))
-            .a11y_synthetic_children(|builder| {
-                builder.parent_node().set_live(gpui::accesskit::Live::Off)
-            })
+            .live_region(gpui::accesskit::Live::Off, false)
             .max_w(appearance::ui_size(180.))
             .truncate()
             .text_size(appearance::ui_text(11.))
@@ -706,7 +705,7 @@ impl GitTurtle {
                             .id(("history-navigation-unavailable", refusal))
                             .debug_selector(|| "history-navigation-unavailable".into())
                             .role(Role::Status)
-                            .a11y_synthetic_children(native_accessibility::polite)
+                            .polite()
                             .aria_label(message)
                             .aria_value(message)
                             .absolute()
@@ -1370,7 +1369,7 @@ impl GitTurtle {
                 .id("history-update-status")
                 .debug_selector(|| "history-update-status".into())
                 .role(Role::Status)
-                .a11y_synthetic_children(native_accessibility::polite)
+                .polite()
                 .aria_label(cue.label.clone());
             if drawn {
                 node.flex_shrink_0()
@@ -5932,6 +5931,9 @@ impl Render for GitTurtle {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         self.draws.push(appearance::palette(cx));
+        // Everything the window holds, its dialogs included, is built below.
+        #[cfg(test)]
+        native_accessibility::written::draw_begins();
         static TRACE_LAYOUT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *TRACE_LAYOUT.get_or_init(|| std::env::var_os("GITTURTLE_TRACE").is_some()) {
             let layout = (
@@ -6094,7 +6096,7 @@ impl Render for GitTurtle {
                                 .id("operation-error-summary")
                                 .debug_selector(|| "operation-error-summary".into())
                                 .role(Role::Alert)
-                                .a11y_synthetic_children(native_accessibility::assertive)
+                                .assertive()
                                 .aria_label(error.clone())
                                 .flex_1()
                                 .min_w_0()
@@ -6150,7 +6152,7 @@ impl Render for GitTurtle {
                                     .id("operation-notice-summary")
                                     .debug_selector(|| "operation-notice-summary".into())
                                     .role(Role::Status)
-                                    .a11y_synthetic_children(native_accessibility::polite)
+                                    .polite()
                                     .aria_label(notice.clone())
                                     .flex_1()
                                     .min_w_0()

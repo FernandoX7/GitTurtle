@@ -3,6 +3,7 @@
 //! bindings, opens a project on activation, and edits groups through the
 //! serialized preference writer. It never touches a repository.
 
+use crate::native_accessibility::LiveRegion as _;
 use crate::{
     AppContextMenu, AppMenu, AppPage, GitTurtle, button, icon, native_accessibility,
     preferences::Preferences,
@@ -925,7 +926,7 @@ impl GitTurtle {
                     .debug_selector(|| "project-pane-error".into())
                     .role(Role::Alert)
                     .aria_label(error.clone())
-                    .a11y_synthetic_children(native_accessibility::assertive)
+                    .assertive()
                     .flex_shrink_0()
                     .px_3()
                     .py_2()
@@ -1458,7 +1459,7 @@ impl Render for GroupForm {
                     .id("project-group-error")
                     .role(Role::Alert)
                     .aria_label(error.clone())
-                    .a11y_synthetic_children(native_accessibility::assertive)
+                    .assertive()
                     .rounded(px(8.))
                     .border_1()
                     .border_color(rgb(colors.removed))
