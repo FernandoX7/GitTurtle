@@ -6,14 +6,17 @@
 //! of them, while an enabled read-only text input stays read-only.
 //!
 //! [`reached`] walks a tree through the same adapter, for the tests of what an
-//! AT-SPI client finds in it.
+//! AT-SPI client finds in it, and a [`Bus`] feeds the adapter a window's
+//! frames and keeps the objects it puts on the bus.
 
-use accesskit_atspi_common::{Adapter, AdapterCallback, AppContext, Event, InterfaceSet};
+use accesskit_atspi_common::{
+    Adapter, AdapterCallback, AppContext, Event, InterfaceSet, ObjectEvent,
+};
 use accesskit_atspi_common::{
     CoordType, NodeId, Rect, Role as AtspiRole, State, StateSet, WindowBounds,
 };
 use gpui_kit::gpui::accesskit::{
-    ActionHandler, ActionRequest, Node, NodeId as LocalNodeId, Role, Tree, TreeId, TreeUpdate,
+    ActionHandler, ActionRequest, Live, Node, NodeId as LocalNodeId, Role, Tree, TreeId, TreeUpdate,
 };
 
 struct IgnoreCallbacks;
@@ -148,5 +151,211 @@ fn disabled_controls_are_neither_enabled_sensitive_nor_read_only() {
     assert!(
         read_only.contains(State::ReadOnly) && !read_only.intersects(usable),
         "an enabled read-only text input stays read-only: {read_only:?}"
+    );
+}
+
+/// What `accesskit_unix` does on the bus for one window: the objects it
+/// keeps there, each node's interfaces as the adapter registers and
+/// unregisters them (a path with none answers every AT-SPI call with
+/// "Unknown object"), and the announcements it makes.
+#[derive(Clone, Default)]
+struct Registry {
+    objects: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u128, InterfaceSet>>>,
+    announced: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl AdapterCallback for Registry {
+    fn register_interfaces(&self, _: &Adapter, id: NodeId, interfaces: InterfaceSet) {
+        let mut objects = self.objects.lock().unwrap();
+        let object = objects.entry(id.into()).or_insert(InterfaceSet::empty());
+        *object = *object | interfaces;
+    }
+
+    fn unregister_interfaces(&self, _: &Adapter, id: NodeId, interfaces: InterfaceSet) {
+        let mut objects = self.objects.lock().unwrap();
+        if let Some(object) = objects.get_mut(&id.into()) {
+            *object = *object ^ (*object & interfaces);
+            if *object == InterfaceSet::empty() {
+                objects.remove(&id.into());
+            }
+        }
+    }
+
+    fn emit_event(&self, _: &Adapter, event: Event) {
+        if let Event::Object {
+            event: ObjectEvent::Announcement(text, _),
+            ..
+        } = event
+        {
+            self.announced.lock().unwrap().push(text);
+        }
+    }
+}
+
+/// A window's AT-SPI adapter fed its tree frame by frame, as GPUI's Linux
+/// backend feeds `accesskit_unix` one `TreeUpdate` per drawn frame, with
+/// the objects it keeps on the bus.
+pub(crate) struct Bus {
+    adapter: Adapter,
+    registry: Registry,
+}
+
+impl Bus {
+    /// The adapter as it starts on a window whose tree is `update`.
+    pub(crate) fn new(update: TreeUpdate) -> Self {
+        let registry = Registry::default();
+        let adapter = Adapter::new(
+            &AppContext::new(None),
+            registry.clone(),
+            update,
+            true,
+            WindowBounds::default(),
+            IgnoreCallbacks,
+        );
+        Self { adapter, registry }
+    }
+
+    /// The next frame's tree.
+    pub(crate) fn update(&mut self, update: TreeUpdate) {
+        self.adapter.update(update);
+    }
+
+    /// Every node an AT-SPI client reaches from the window, child by child,
+    /// whose object is not on the bus, as "role name": a client walking the
+    /// window finds it among its parent's children, and every call it then
+    /// makes on it answers "Unknown object".
+    pub(crate) fn unknown(&self) -> Vec<String> {
+        let objects = self.registry.objects.lock().unwrap();
+        let mut unknown = Vec::new();
+        let mut pending = vec![self.adapter.root_id()];
+        while let Some(id) = pending.pop() {
+            let node = self.adapter.platform_node(id);
+            if !objects.contains_key(&id.into()) {
+                let role = node.role().unwrap();
+                unknown.push(format!("{role:?} {:?}", node.name().unwrap()));
+            }
+            let children = node.child_count().unwrap() as usize;
+            pending.extend(
+                (0..children)
+                    .rev()
+                    .filter_map(|index| node.child_at_index(index).unwrap()),
+            );
+        }
+        unknown
+    }
+
+    /// How many objects are on the bus.
+    pub(crate) fn objects(&self) -> usize {
+        self.registry.objects.lock().unwrap().len()
+    }
+
+    /// What was announced since the last call.
+    pub(crate) fn announced(&self) -> Vec<String> {
+        std::mem::take(&mut *self.registry.announced.lock().unwrap())
+    }
+}
+
+/// A page that a modal dialog hides is a generic container, which the
+/// filter passes over while it is shown (`beneath_modal`): hiding it takes
+/// everything it holds off the bus, and showing it again puts back
+/// everything it holds, including the nodes that changed or appeared while
+/// it was hidden. The adapter acted only on a node that is itself included,
+/// so a control that changed beneath a dialog left the bus for good, and a
+/// line that appeared there never reached it: after the tracking-branch
+/// review closed with Escape, 23 of the 30 children AT-SPI listed for the
+/// window answered "Unknown object". Nothing on the page is new, so a live
+/// region it holds, such as a conflict's position, is not announced again.
+#[test]
+fn a_page_shown_again_after_a_dialog_puts_everything_it_holds_on_the_bus() {
+    let named = |role: Role, name: &str| {
+        let mut node = Node::new(role);
+        node.set_label(name);
+        node
+    };
+    let [
+        root,
+        page,
+        picker,
+        fetch,
+        list,
+        row,
+        status,
+        block,
+        dialog,
+        confirm,
+    ] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(LocalNodeId);
+    let frame = |covered: bool, fetch_name: &str, with_status: bool| {
+        let mut window = Node::new(Role::Window);
+        window.set_children(if covered {
+            vec![page, dialog]
+        } else {
+            vec![page]
+        });
+        let mut page_node = Node::new(Role::GenericContainer);
+        if covered {
+            page_node.set_hidden();
+        }
+        let mut held = vec![picker, fetch, list, block];
+        if with_status {
+            held.push(status);
+        }
+        page_node.set_children(held);
+        let mut list_node = named(Role::ListBox, "History");
+        list_node.set_children(vec![row]);
+        let mut nodes = vec![
+            (root, window),
+            (page, page_node),
+            (picker, named(Role::Button, "Current branch")),
+            (fetch, named(Role::Button, fetch_name)),
+            (list, list_node),
+            (row, named(Role::ListBoxOption, "Commit")),
+            (block, {
+                let mut status = named(Role::Status, "Conflict block 1 of 3");
+                status.set_live(Live::Polite);
+                status
+            }),
+        ];
+        if with_status {
+            let mut line = Node::new(Role::Label);
+            line.set_value("Fetched origin");
+            nodes.push((status, line));
+        }
+        if covered {
+            let mut dialog_node = named(Role::AlertDialog, "Create tracking branch feature");
+            dialog_node.set_modal();
+            dialog_node.set_children(vec![confirm]);
+            nodes.push((dialog, dialog_node));
+            nodes.push((confirm, named(Role::Button, "Create and switch")));
+        }
+        TreeUpdate {
+            nodes,
+            tree: Some(Tree::new(root)),
+            tree_id: TreeId::ROOT,
+            // The dialog takes focus from its opener and gives it back.
+            focus: if covered { confirm } else { picker },
+        }
+    };
+
+    let mut bus = Bus::new(frame(false, "Fetch", false));
+    assert_eq!(bus.unknown(), Vec::<String>::new());
+    // The dialog opens over a control that changes as it does, and a line
+    // appears on the page beneath it.
+    bus.update(frame(true, "Fetch from origin", false));
+    bus.update(frame(true, "Fetch from origin", true));
+    assert_eq!(bus.unknown(), Vec::<String>::new());
+    let hidden = bus.objects();
+    bus.announced();
+    // Escape closes it; nothing on the page changes.
+    bus.update(frame(false, "Fetch from origin", true));
+    assert_eq!(
+        bus.unknown(),
+        Vec::<String>::new(),
+        "every node AT-SPI reaches after Escape is on the bus"
+    );
+    assert_eq!(bus.objects(), 7, "the window and the page's six nodes");
+    assert_eq!(bus.announced(), Vec::<String>::new());
+    assert_eq!(
+        hidden, 3,
+        "only the window and the dialog were on the bus while the page was hidden"
     );
 }

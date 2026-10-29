@@ -118,6 +118,24 @@ impl<'a> AdapterChangeHandler<'a> {
         self.remove_node(node);
     }
 
+    // GitTurtle patch (GITTURTLE-PATCH.md): puts back on the bus everything
+    // an excluded node holds once it is no longer hidden. Nothing in it was
+    // added: it was covered, so a live region it holds is not announced
+    // again. A node added in this update keeps its own registration, and a
+    // node whose own change includes it again is still added, and
+    // announced, by `node_updated`.
+    fn show_children(&mut self, node: &Node) {
+        for child in node.filtered_children(&filter) {
+            let id = child.id();
+            if !self.added_nodes.contains(&id) {
+                self.adapter
+                    .register_interfaces(id, NodeWrapper(&child).interfaces());
+                self.adapter.emit_cache_added(id);
+            }
+            self.show_children(&child);
+        }
+    }
+
     fn emit_text_change_if_needed_parent(&mut self, old_node: &Node, new_node: &Node) {
         if !new_node.supports_text_ranges() || !old_node.supports_text_ranges() {
             return;
@@ -301,6 +319,17 @@ impl TreeChangeHandler for AdapterChangeHandler<'_> {
                 } else {
                     self.remove_node(old_node);
                 }
+            } else if filter_new == FilterResult::ExcludeSubtree {
+                // GitTurtle patch: a node passed over, such as a generic
+                // container, that is now hidden takes what it holds off the
+                // bus, as an included node's subtree leaves it.
+                for child in old_node.filtered_children(&filter) {
+                    self.remove_subtree(&child);
+                }
+            } else {
+                // GitTurtle patch: and once shown again it puts it back,
+                // including what changed or appeared while it was hidden.
+                self.show_children(new_node);
             }
         } else if filter_new == FilterResult::Include {
             let old_wrapper = NodeWrapper(old_node);
