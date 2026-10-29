@@ -4,11 +4,22 @@
 //! that gives way before content does, or a line that shows the whole lines
 //! its room holds. Chosen from the height a frame before laid out, such a
 //! choice is a frame late: the first frame after a resize, or after an answer
-//! arrives, draws the old choice and asks for another. [`InFrame`] takes the
-//! room its parent leaves it, as `flex_1` does, and builds what it holds as
-//! it is prepainted, for its bounds in that frame, as `uniform_list` builds
-//! its rows and the Working inspector's body does (`workspace::WorkingBody`).
-//! Nothing it holds asks for another frame to catch up.
+//! arrives, draws the old choice and asks for another. [`InFrame`] builds
+//! what it holds as it is prepainted, for its bounds in that frame, as
+//! `uniform_list` builds its rows and the Working inspector's body does
+//! (`workspace::WorkingBody`). Nothing it holds asks for another frame to
+//! catch up.
+//!
+//! What it holds is built only once its bounds are known, so it cannot size
+//! its parent: an [`InFrame`] reports no size of its own and takes only the
+//! room its parent leaves it, a share of the parent's free height as a
+//! `flex_1` child with a zero minimum. Its parent must give it a set height:
+//! a fixed height, `size_full` or a flex share of a parent that has one. A
+//! parent whose height comes from its content gives it none, where a `flex_1`
+//! div would have grown to what it holds, and so does a parent whose other
+//! children take all of its height, as a narrow document side's wrapped
+//! header controls can; from inside, the two look alike, so nothing checks
+//! for the first.
 
 use crate::*;
 
@@ -25,6 +36,7 @@ pub(crate) struct InFrame {
 
 /// An element that takes the room its parent leaves it, at least none, and
 /// holds what `build` makes for its bounds in each frame, laid out there.
+/// Its parent must give it a set height, as the module's notes say.
 pub(crate) fn in_frame(
     build: impl FnOnce(Bounds<Pixels>, &mut Window, &mut App) -> AnyElement + 'static,
 ) -> InFrame {
@@ -82,7 +94,8 @@ impl Element for InFrame {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        // `flex_1`, as small as nothing.
+        // `flex_1`, as small as nothing, and no size of its own: what it holds
+        // is built only once its bounds are known.
         let style = Style {
             flex_grow: 1.,
             flex_shrink: 1.,
