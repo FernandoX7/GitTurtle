@@ -14,20 +14,16 @@ const CREDENTIAL_GUIDANCE: &str = if cfg!(target_os = "macos") {
     "Requested by the Git operation you started. Your configured credential helper may save this response. GitTurtle does not save it."
 };
 
-/// One string supplies the prompt's visible guidance and its accessible label.
-fn guidance(confirmation: bool) -> Stateful<Div> {
+/// One string supplies the prompt's visible guidance and the static text it
+/// is read as.
+fn guidance(confirmation: bool) -> native_accessibility::StaticText<Stateful<Div>> {
     let text = if confirmation {
         HOST_GUIDANCE
     } else {
         CREDENTIAL_GUIDANCE
     };
-    div()
-        .id("git-authentication-guidance")
-        .debug_selector(|| "git-authentication-guidance".into())
-        .role(Role::Label)
-        .aria_label(text)
+    native_accessibility::text("git-authentication-guidance", text)
         .text_size(crate::appearance::ui_text(12.))
-        .child(text)
 }
 
 #[derive(Default)]
@@ -184,12 +180,11 @@ impl GitTurtle {
                 .flex_col()
                 .gap_3()
                 .child(
-                    div()
-                        .id("git-authentication-message")
-                        .role(Role::Label)
-                        .aria_label(prompt.message.clone())
-                        .text_size(crate::appearance::ui_text(13.))
-                        .child(prompt.message.clone()),
+                    native_accessibility::text(
+                        "git-authentication-message",
+                        prompt.message.clone(),
+                    )
+                    .text_size(crate::appearance::ui_text(13.)),
                 )
                 .child(guidance(confirmation));
             let body = if confirmation {
@@ -350,15 +345,16 @@ mod tests {
         let element = guidance(false);
         let mut node = gpui::accesskit::Node::new(element.a11y_role().unwrap());
         element.write_a11y_info(&mut node);
-        let (text, label) = (CREDENTIAL_GUIDANCE, node.label().unwrap_or_default());
-        assert_eq!(label, text);
+        // A label is named by its value.
+        let (text, name) = (CREDENTIAL_GUIDANCE, node.value().unwrap_or_default());
+        assert_eq!(name, text);
         if cfg!(target_os = "macos") {
             assert_eq!(text, MACOS_CREDENTIAL_GUIDANCE);
         } else {
             assert_eq!(text, OTHER_CREDENTIAL_GUIDANCE);
-            assert_eq!(label, OTHER_CREDENTIAL_GUIDANCE);
+            assert_eq!(name, OTHER_CREDENTIAL_GUIDANCE);
             assert!(!text.contains("Keychain"), "visible guidance: {text}");
-            assert!(!label.contains("Keychain"), "accessible label: {label}");
+            assert!(!name.contains("Keychain"), "accessible name: {name}");
         }
 
         cx.update(|window, cx| {

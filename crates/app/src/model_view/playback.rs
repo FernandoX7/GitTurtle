@@ -240,7 +240,7 @@ pub(super) fn clip_control<T: 'static>(
                 div()
                     .id(("model-pose-time", index))
                     .role(Role::Label)
-                    .aria_label(format!(
+                    .aria_value(format!(
                         "{label} displayed pose: {:.2} of {:.2} seconds",
                         sampled.seconds, duration
                     ))
@@ -344,7 +344,7 @@ pub(super) fn controls<T: 'static>(
             div()
                 .id("model-comparison-time")
                 .role(Role::Label)
-                .aria_label(format!(
+                .aria_value(format!(
                     "Comparison time {:.2} of {:.2} seconds",
                     seconds, total
                 ))

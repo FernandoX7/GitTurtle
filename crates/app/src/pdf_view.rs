@@ -306,13 +306,14 @@ fn read_page_text(
     let height = (window.viewport_size().height * 0.6).min(px(640.));
     window.open_alert_dialog(cx, move |dialog, window, _| {
         let return_focus = return_focus.clone();
-        let mut body = div().flex().flex_col().gap_2().child(
-            div()
-                .id("pdf-text-explanation")
-                .role(Role::Label)
-                .aria_label(page.text_notice.clone())
-                .child(page.text_notice.clone()),
-        );
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(native_accessibility::text(
+                "pdf-text-explanation",
+                page.text_notice.clone(),
+            ));
         if let Some(editor) = &editor {
             body = body.child(
                 div().h(height).child(

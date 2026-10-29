@@ -6,14 +6,7 @@ use gpui_kit::{
     prelude::FluentBuilder,
 };
 
-fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
-    let value = value.into();
-    div()
-        .id(id)
-        .role(Role::Label)
-        .aria_label(value.clone())
-        .child(value)
-}
+use crate::native_accessibility::text as label;
 
 pub(super) fn preview_targets(
     content: &Content,
@@ -132,7 +125,10 @@ impl GitTurtle {
             let submit = form.clone();
             let cancel = form.clone();
             dialog
-                .title(label("lfs-download-title", "Download an LFS preview"))
+                .title(native_accessibility::dialog_title(
+                    "lfs-download-title",
+                    "Download an LFS preview",
+                ))
                 .width(appearance::dialog_width(px(650.), window))
                 .child(form.clone())
                 .button_props(

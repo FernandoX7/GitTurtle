@@ -1034,10 +1034,15 @@ impl View {
                     } else {
                         Role::Label
                     })
-                    .aria_label(prose.text.clone())
                     .child(StyledText::new(prose.text.clone()).with_highlights(spans));
+                // A heading is named by its label, a label by its value, as
+                // AccessKit's adapters read each.
                 if block.heading > 0 {
-                    text = text.aria_level(block.heading as usize);
+                    text = text
+                        .aria_label(prose.text.clone())
+                        .aria_level(block.heading as usize);
+                } else {
+                    text = text.aria_value(prose.text.clone());
                 }
                 row = row.child(text);
                 if !prose.links.is_empty() {
@@ -1069,7 +1074,7 @@ impl View {
             Kind::Code(language, source) => {
                 row = row
                     .role(Role::Label)
-                    .aria_label(format!(
+                    .aria_value(format!(
                         "{language} code, source line {}.\n{source}",
                         block.line
                     ))
@@ -1085,7 +1090,7 @@ impl View {
             Kind::Table(cells, header) => {
                 row = row
                     .role(Role::Label)
-                    .aria_label(format!(
+                    .aria_value(format!(
                         "Table {}, {}",
                         if *header { "column headings" } else { "row" },
                         cells.join("; ")
@@ -1170,13 +1175,13 @@ impl View {
             Kind::Rule => {
                 row = row
                     .role(Role::Label)
-                    .aria_label("Section break")
+                    .aria_value("Section break")
                     .child(div().w_full().h(px(1.)).bg(rgb(colors.border)));
             }
             Kind::Notice(message) => {
                 row = row
                     .role(Role::Label)
-                    .aria_label(message.clone())
+                    .aria_value(message.clone())
                     .text_color(rgb(colors.muted))
                     .child(message.clone());
             }

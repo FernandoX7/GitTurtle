@@ -8,14 +8,7 @@ use gpui_kit::{
 
 const PREPARING: &str = "Preparing ignore rule…";
 
-fn static_text(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
-    let value = value.into();
-    div()
-        .id(id)
-        .role(Role::Label)
-        .aria_label(value.clone())
-        .child(value)
-}
+use crate::native_accessibility::text as static_text;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -55,7 +48,7 @@ impl GitTurtle {
             let submit = form.clone();
             let cancel = form.clone();
             dialog
-                .title(static_text(
+                .title(native_accessibility::dialog_title(
                     "ignore-dialog-title",
                     "Ignore untracked content",
                 ))

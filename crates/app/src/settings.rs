@@ -739,14 +739,14 @@ impl GitTurtle {
                             })),
                     )
                     .child(
-                        div()
-                            .id(("text-size-value", usize::from(code)))
-                            .role(Role::Label)
-                            .aria_label(format!("{label}, {value} points"))
-                            .min_w(appearance::ui_size(42.))
-                            .text_center()
-                            .text_size(appearance::ui_text(12.))
-                            .child(format!("{value} pt")),
+                        native_accessibility::static_text(
+                            div().id(("text-size-value", usize::from(code))),
+                            format!("{label}, {value} points"),
+                        )
+                        .min_w(appearance::ui_size(42.))
+                        .text_center()
+                        .text_size(appearance::ui_text(12.))
+                        .child(format!("{value} pt")),
                     )
                     .child(
                         Button::new(("text-size-increase", usize::from(code)))
@@ -1413,17 +1413,18 @@ impl GitTurtle {
         {
             let reason = appearance::omarchy::card(cx)?.reason?;
             Some(
-                div()
-                    .id("settings-theme-omarchy-reason")
-                    .debug_selector(|| "settings-theme-omarchy-reason".into())
-                    .role(Role::Label)
-                    .aria_label(reason.clone())
-                    .text_size(appearance::ui_text(12.))
-                    .text_color(rgb(p.muted))
-                    .line_clamp(2)
-                    .text_ellipsis()
-                    .child(reason)
-                    .into_any_element(),
+                native_accessibility::static_text(
+                    div()
+                        .id("settings-theme-omarchy-reason")
+                        .debug_selector(|| "settings-theme-omarchy-reason".into()),
+                    reason.clone(),
+                )
+                .text_size(appearance::ui_text(12.))
+                .text_color(rgb(p.muted))
+                .line_clamp(2)
+                .text_ellipsis()
+                .child(reason)
+                .into_any_element(),
             )
         }
         #[cfg(not(target_os = "linux"))]
@@ -1662,11 +1663,12 @@ impl GitTurtle {
             // shortened where it is built (`folder_picker::failure`), so a cut
             // there drops the quoted error, not the guidance.
             .children(self.theme_editor.notice().map(|notice| {
-                div()
-                    .id("custom-themes-notice")
-                    .debug_selector(|| "custom-themes-notice".into())
-                    .role(Role::Label)
-                    .aria_label(notice.to_owned())
+                native_accessibility::static_text(
+                    div()
+                        .id("custom-themes-notice")
+                        .debug_selector(|| "custom-themes-notice".into()),
+                    notice.to_owned(),
+                )
                     .text_size(appearance::ui_text(12.))
                     .text_color(rgb(p.muted))
                     .line_clamp(2)
@@ -1679,18 +1681,19 @@ impl GitTurtle {
                 // muted (`folder_picker::styled_message`). The selector names
                 // the colors and where the muted run starts, for tests.
                 let detail = folder_picker::detail_start(error);
-                div()
-                    .id("custom-themes-error")
-                    .debug_selector(move || match detail {
-                        Some(start) => format!(
-                            "custom-themes-error-{:06x}-{start}-{:06x}",
-                            p.warning, p.muted
-                        ),
-                        None => format!("custom-themes-error-{:06x}", p.warning),
-                    })
-                    .role(Role::Label)
-                    .aria_label(error.to_owned())
-                    .text_size(appearance::ui_text(12.))
+                native_accessibility::static_text(
+                    div()
+                        .id("custom-themes-error")
+                        .debug_selector(move || match detail {
+                            Some(start) => format!(
+                                "custom-themes-error-{:06x}-{start}-{:06x}",
+                                p.warning, p.muted
+                            ),
+                            None => format!("custom-themes-error-{:06x}", p.warning),
+                        }),
+                    error.to_owned(),
+                )
+                .text_size(appearance::ui_text(12.))
                     .text_color(rgb(p.warning))
                     .line_clamp(2)
                     .when(!error.contains('\n'), |el| el.text_ellipsis())
@@ -2065,17 +2068,17 @@ impl GitTurtle {
                     if warnings == 1 { "" } else { "s" }
                 );
                 row.child(
-                    div()
-                        .id(("custom-theme-warnings", id as usize))
-                        .role(Role::Label)
-                        .aria_label(format!("{}: {text}", theme.name))
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .text_size(appearance::ui_text(11.))
-                        .text_color(rgb(p.muted))
-                        .child(crate::theme_editor::warning_glyph(p))
-                        .child(warnings.to_string()),
+                    native_accessibility::static_text(
+                        div().id(("custom-theme-warnings", id as usize)),
+                        format!("{}: {text}", theme.name),
+                    )
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_size(appearance::ui_text(11.))
+                    .text_color(rgb(p.muted))
+                    .child(crate::theme_editor::warning_glyph(p))
+                    .child(warnings.to_string()),
                 )
             })
             .child(
@@ -2455,10 +2458,10 @@ impl GitTurtle {
                 .flex_col()
                 .gap_4()
                 .child(
-                    div()
-                        .id("settings-repository-identity")
-                        .role(Role::Label)
-                        .aria_label(format!("Repository {repository_identity}"))
+                    native_accessibility::static_text(
+                        div().id("settings-repository-identity"),
+                        format!("Repository {repository_identity}"),
+                    )
                         .tooltip(move |window, cx| {
                             Tooltip::new(repository_identity.clone()).build(window, cx)
                         })
@@ -4261,45 +4264,47 @@ fn steady_setting_description(
     let p = palette(cx);
     let description = description.into();
     let label = format!("{title}. {description}");
-    div()
-        .id(title)
-        .role(Role::Label)
-        // Tests read the accessible name here; other builds skip it.
-        .debug_selector(|| format!("setting-description: {label}"))
-        .aria_label(label)
-        .flex_1()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_size(crate::appearance::ui_text(12.))
-                .font_weight(FontWeight::MEDIUM)
-                .child(title),
-        )
-        .child(
-            div()
-                .grid()
-                .grid_cols(1)
-                .text_size(crate::appearance::ui_text(11.))
-                .line_height(relative(1.5))
-                .text_color(rgb(p.muted))
-                .child(div().row_start(1).col_start(1).child(description.clone()))
-                .children(
-                    reserve
-                        .iter()
-                        .filter(|text| **text != description)
-                        .map(|text| {
-                            div()
-                                .row_start(1)
-                                .col_start(1)
-                                .invisible()
-                                .child(text.clone())
-                        }),
-                ),
-        )
-        .into_any_element()
+    let selector = label.clone();
+    native_accessibility::static_text(
+        div()
+            .id(title)
+            // Tests read the accessible name here; other builds skip it.
+            .debug_selector(move || format!("setting-description: {selector}")),
+        label,
+    )
+    .flex_1()
+    .min_w_0()
+    .flex()
+    .flex_col()
+    .gap_1()
+    .child(
+        div()
+            .text_size(crate::appearance::ui_text(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .child(title),
+    )
+    .child(
+        div()
+            .grid()
+            .grid_cols(1)
+            .text_size(crate::appearance::ui_text(11.))
+            .line_height(relative(1.5))
+            .text_color(rgb(p.muted))
+            .child(div().row_start(1).col_start(1).child(description.clone()))
+            .children(
+                reserve
+                    .iter()
+                    .filter(|text| **text != description)
+                    .map(|text| {
+                        div()
+                            .row_start(1)
+                            .col_start(1)
+                            .invisible()
+                            .child(text.clone())
+                    }),
+            ),
+    )
+    .into_any_element()
 }
 
 fn settings_field(

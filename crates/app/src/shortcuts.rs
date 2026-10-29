@@ -750,12 +750,11 @@ pub(super) fn open_help(hints: &mut DialogHints, window: &mut Window, cx: &mut C
         let room = appearance::button_ring_room(cx);
         dialog
             .title(
-                div()
-                    .id("keyboard-shortcuts-title")
-                    .role(Role::Label)
-                    .aria_label("Keyboard Shortcuts")
-                    .mb(-room)
-                    .child("Keyboard Shortcuts"),
+                native_accessibility::dialog_title(
+                    "keyboard-shortcuts-title",
+                    "Keyboard Shortcuts",
+                )
+                .mb(-room),
             )
             .width(appearance::dialog_width(appearance::ui_size(650.), window))
             .bg(rgb(surface.raised()))

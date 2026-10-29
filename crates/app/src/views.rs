@@ -174,12 +174,12 @@ impl GitTurtle {
 
     /// The header's repository identity, named with its path for assistive
     /// technology and in its tooltip.
-    fn repository_heading(&self) -> Stateful<Div> {
-        div()
-            .id("repository-heading")
-            .debug_selector(|| "repository-heading".into())
-            .role(Role::Label)
-            .aria_label(format!(
+    fn repository_heading(&self) -> native_accessibility::StaticText<Stateful<Div>> {
+        native_accessibility::static_text(
+            div()
+                .id("repository-heading")
+                .debug_selector(|| "repository-heading".into()),
+            format!(
                 "Repository {}. {}",
                 self.repository
                     .as_ref()
@@ -189,15 +189,16 @@ impl GitTurtle {
                     .as_ref()
                     .map(|path| path.display().to_string())
                     .unwrap_or_default(),
-            ))
-            .tooltip({
-                let identity = self
-                    .path
-                    .as_ref()
-                    .map(|path| format!("{}\n{}", self.project_name(path), path.display()))
-                    .unwrap_or_else(|| "GitTurtle".into());
-                move |window, cx| Tooltip::new(identity.clone()).build(window, cx)
-            })
+            ),
+        )
+        .tooltip({
+            let identity = self
+                .path
+                .as_ref()
+                .map(|path| format!("{}\n{}", self.project_name(path), path.display()))
+                .unwrap_or_else(|| "GitTurtle".into());
+            move |window, cx| Tooltip::new(identity.clone()).build(window, cx)
+        })
     }
 
     /// The Changes mode's name with its working-file count, as its tab and

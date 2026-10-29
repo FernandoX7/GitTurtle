@@ -116,15 +116,12 @@ fn entry_button(
         })
 }
 
-fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
-    let value = value.into();
-    div()
-        .id(id)
-        .debug_selector(|| id.into())
-        .role(Role::Label)
-        .aria_label(value.clone())
-        .ml(TEXT_INSET)
-        .child(value)
+/// [`native_accessibility::text`] at the dialog's text inset.
+fn label(
+    id: &'static str,
+    value: impl Into<SharedString>,
+) -> native_accessibility::StaticText<Stateful<Div>> {
+    native_accessibility::text(id, value).ml(TEXT_INSET)
 }
 
 impl GitTurtle {
@@ -182,7 +179,10 @@ impl ReflogBrowser {
             // keeps the focus ring's room inside them below its last control.
             // The footer's gap gives the room back, so the footer stays put.
             dialog
-                .title(label("reflog-title", "Local reflog and recovery"))
+                .title(
+                    native_accessibility::dialog_title("reflog-title", "Local reflog and recovery")
+                        .ml(TEXT_INSET),
+                )
                 .width(appearance::dialog_width(px(740.), window))
                 .gap(DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                 .child(browser.clone())
@@ -470,7 +470,7 @@ impl Render for ReflogBrowser {
                 // Whole rows of one line each, so the list's bound cuts no
                 // row; past that bound its scrollbar, in a gutter of its own,
                 // cues the rest.
-                .child(div().relative().flex_shrink_0().child(native_accessibility::clips_children(div().id("reflog-commit-files").debug_selector(|| "reflog-commit-files".into()).max_h(file_row * files_shown as f32).overflow_y_scroll().track_scroll(&self.files_scroll).flex().flex_col().when(files_scroll, |list| list.pr(Scrollbar::width())).children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); div().id(("reflog-commit-file", index)).debug_selector(move || format!("reflog-commit-file-{index}")).role(Role::Label).aria_label(text.clone()).ml(TEXT_INSET).flex_shrink_0().h(file_row).text_size(crate::appearance::ui_text(FILE_ROW_TEXT)).line_height(file_row).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text) })))).when(files_scroll, |list| list.child(Scrollbar::vertical(&self.files_scroll).id("reflog-files-scrollbar").mode(ScrollbarMode::Always))))
+                .child(div().relative().flex_shrink_0().child(native_accessibility::clips_children(div().id("reflog-commit-files").debug_selector(|| "reflog-commit-files".into()).max_h(file_row * files_shown as f32).overflow_y_scroll().track_scroll(&self.files_scroll).flex().flex_col().when(files_scroll, |list| list.pr(Scrollbar::width())).children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); native_accessibility::static_text(div().id(("reflog-commit-file", index)).debug_selector(move || format!("reflog-commit-file-{index}")), text.clone()).ml(TEXT_INSET).flex_shrink_0().h(file_row).text_size(crate::appearance::ui_text(FILE_ROW_TEXT)).line_height(file_row).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text) })))).when(files_scroll, |list| list.child(Scrollbar::vertical(&self.files_scroll).id("reflog-files-scrollbar").mode(ScrollbarMode::Always))))
                 .when(self.changes.len() > 100, |element| element.child(label("reflog-file-limit", "Showing the first 100 changed paths.").text_size(crate::appearance::ui_text(12.))))
                 .child(label("reflog-recovery-name-label", "Create a new branch at this commit to keep it reachable").text_size(crate::appearance::ui_text(12.)))
                 .child(Input::new(&self.name).aria_label("New recovery branch name"))

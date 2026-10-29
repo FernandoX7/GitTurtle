@@ -1089,10 +1089,7 @@ impl Render for Palette {
                     .cleanable(true),
             )
             .child(
-                div()
-                    .id("command-palette-scope")
-                    .role(Role::Label)
-                    .aria_label(scope.clone())
+                native_accessibility::static_text(div().id("command-palette-scope"), scope.clone())
                     .tooltip({
                         let scope = scope.clone();
                         move |window, cx| Tooltip::new(scope.clone()).build(window, cx)

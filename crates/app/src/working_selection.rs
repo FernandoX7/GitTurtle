@@ -733,12 +733,11 @@ impl GitTurtle {
             // the new ones land, and the line would move them down.
             .when(self.working_filter_waiting(), |el| {
                 el.child(
-                    div()
-                        .id("working-filter-pending")
-                        .debug_selector(|| "working-filter-pending".into())
-                        .role(Role::Label)
-                        .text_size(crate::appearance::ui_text(11.))
-                        .child("Filtering working paths…"),
+                    native_accessibility::text(
+                        "working-filter-pending",
+                        "Filtering working paths…",
+                    )
+                    .text_size(crate::appearance::ui_text(11.)),
                 )
             })
             .when(
@@ -748,22 +747,19 @@ impl GitTurtle {
                     && !self.working_filter.read(cx).value().is_empty(),
                 |el| {
                     el.child(
-                        div()
-                            .id("working-filter-empty")
-                            .role(Role::Label)
-                            .text_size(crate::appearance::ui_text(11.))
-                            .child("No working paths match this filter"),
+                        native_accessibility::text(
+                            "working-filter-empty",
+                            "No working paths match this filter",
+                        )
+                        .text_size(crate::appearance::ui_text(11.)),
                     )
                 },
             )
             .when_some(self.working_paths.error.clone(), |el, error| {
                 el.child(
-                    div()
-                        .id("working-filter-error")
-                        .role(Role::Label)
+                    native_accessibility::text("working-filter-error", error)
                         .text_size(crate::appearance::ui_text(11.))
-                        .text_color(rgb(palette(cx).warning))
-                        .child(error),
+                        .text_color(rgb(palette(cx).warning)),
                 )
             })
             .into_any_element()

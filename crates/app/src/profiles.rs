@@ -28,14 +28,7 @@ pub(super) const COMPACT_ROW_CONTROL: f32 = 28.;
 /// The profile's icon, the person artwork, which only the profile draws.
 const PROFILE_ICON: &str = "icons/user.svg";
 
-fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
-    let value = value.into();
-    div()
-        .id(id)
-        .role(Role::Label)
-        .aria_label(value.clone())
-        .child(value)
-}
+use crate::native_accessibility::text as label;
 
 /// The profile menu's first line: the identity Git authors with now, after
 /// "Current:", so it is not read as one of the saved profiles below it. A

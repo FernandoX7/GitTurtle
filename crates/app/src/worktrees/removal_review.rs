@@ -64,10 +64,7 @@ fn effect_group(
         .child(div().font_weight(FontWeight::MEDIUM).child(heading))
         .children(rows.take(EFFECT_ROWS).enumerate().map(|(index, row)| {
             let tooltip = row.clone();
-            div()
-                .id((id, index))
-                .role(Role::Label)
-                .aria_label(row.clone())
+            native_accessibility::static_text(div().id((id, index)), row.clone())
                 .min_w_0()
                 .truncate()
                 .text_color(rgb(colors.muted))
@@ -76,16 +73,17 @@ fn effect_group(
         }))
         .when(count > EFFECT_ROWS, |element| {
             element.child(
-                div()
-                    .id((id, EFFECT_ROWS))
-                    .debug_selector(move || format!("{id}-overflow"))
-                    .role(Role::Label)
-                    .aria_label(format!(
+                native_accessibility::static_text(
+                    div()
+                        .id((id, EFFECT_ROWS))
+                        .debug_selector(move || format!("{id}-overflow")),
+                    format!(
                         "{} additional files will also be deleted",
                         count - EFFECT_ROWS
-                    ))
-                    .text_color(rgb(colors.muted))
-                    .child(format!("… and {} more files", count - EFFECT_ROWS)),
+                    ),
+                )
+                .text_color(rgb(colors.muted))
+                .child(format!("… and {} more files", count - EFFECT_ROWS)),
             )
         })
 }
@@ -183,7 +181,7 @@ impl GitTurtle {
             let body_height = (window.viewport_size().height * 0.8 - appearance::ui_size(118.)).max(px(160.));
             dialog
                 .kind(DialogKind::Alert)
-                .title(label("worktree-force-title", "Force remove worktree?"))
+                .title(native_accessibility::dialog_title("worktree-force-title", "Force remove worktree?"))
                 .width(appearance::dialog_width(px(720.), window))
                 .child(
                     div()

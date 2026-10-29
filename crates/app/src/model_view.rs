@@ -704,7 +704,7 @@ fn render_side<T: 'static>(
         div()
             .id(("model-source-label", index))
             .role(Role::Label)
-            .aria_label(source_label.clone())
+            .aria_value(source_label.clone())
             .font_weight(FontWeight::SEMIBOLD)
             .child(source_label),
     );
@@ -778,9 +778,16 @@ fn render_side<T: 'static>(
                     } else {
                         Role::Label
                     })
-                    .aria_label(bounded_accessible_text(format!("{label}: {message}")))
-                    .when(side.error.is_some(), |element| {
-                        element.a11y_synthetic_children(native_accessibility::assertive)
+                    // An alert is named by its label, a label by its value.
+                    .map(|element| {
+                        let read = bounded_accessible_text(format!("{label}: {message}"));
+                        if side.error.is_some() {
+                            element
+                                .aria_label(read)
+                                .a11y_synthetic_children(native_accessibility::assertive)
+                        } else {
+                            element.aria_value(read)
+                        }
                     })
                     .p_3()
                     .when(side.error.is_some(), |element| {
@@ -1049,7 +1056,7 @@ fn render_side<T: 'static>(
             div()
                 .id(("model-details", index))
                 .role(Role::Label)
-                .aria_label(bounded_accessible_text(format!(
+                .aria_value(bounded_accessible_text(format!(
                     "{label} model details: {details}"
                 )))
                 .max_h(px(48.))
@@ -1061,7 +1068,7 @@ fn render_side<T: 'static>(
                     div()
                         .id(("model-summary", index))
                         .role(Role::Label)
-                        .aria_label(format!(
+                        .aria_value(format!(
                             "{label}: {} · {summary}",
                             document.scene.appearance_label()
                         ))

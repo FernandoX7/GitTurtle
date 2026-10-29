@@ -33,15 +33,7 @@ impl RemovalMode {
     }
 }
 
-fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
-    let value = value.into();
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .role(Role::Label)
-        .aria_label(value.clone())
-        .child(value)
-}
+use crate::native_accessibility::text as label;
 
 impl GitTurtle {
     pub(super) fn open_worktree_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -102,7 +94,10 @@ impl GitTurtle {
             // the room back, so nothing in the dialog moves.
             let room = appearance::button_ring_room(cx);
             dialog
-                .title(label("worktree-manager-title", "Worktrees").mb(-room))
+                .title(
+                    native_accessibility::dialog_title("worktree-manager-title", "Worktrees")
+                        .mb(-room),
+                )
                 .width(appearance::dialog_width(px(700.), window))
                 .gap(crate::tags::DIALOG_FOOTER_GAP - room)
                 .child(manager.clone())
@@ -144,7 +139,7 @@ impl GitTurtle {
         window.open_alert_dialog(cx, move |dialog, window, _| {
             let open_owner = owner.clone(); let open_path = plan.destination.clone();
             let finder = plan.destination.clone(); let editor_owner = owner.clone(); let editor_path = plan.destination.clone();
-            dialog.title(label("worktree-created-title", "Worktree created"))
+            dialog.title(native_accessibility::dialog_title("worktree-created-title", "Worktree created"))
                 .width(appearance::dialog_width(px(600.), window)).child(div().flex().flex_col().gap_3()
                     .child(label("worktree-created-target", format!("{}\n{}", plan.branch, plan.destination.display())).text_size(crate::appearance::ui_text(13.)))
                     .child(label("worktree-created-context", "Each worktree keeps its own working files, index, HEAD, and GitTurtle commit draft. Branches and objects are shared.").text_size(crate::appearance::ui_text(12.)))

@@ -19,21 +19,22 @@ mod review;
 use crate::github::review::UiTransport;
 use review::Section;
 
-fn label(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
-    let text = text.into();
-    div()
-        .id(id)
-        .role(Role::Label)
-        .aria_label(text.clone())
-        .child(text)
-        .text_size(crate::appearance::ui_text(12.))
+/// [`native_accessibility::text`] at the panel's 12 pt.
+fn label(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+) -> native_accessibility::StaticText<Stateful<Div>> {
+    native_accessibility::text(id, text).text_size(crate::appearance::ui_text(12.))
 }
 /// A [`label`] of " · "-separated phrases that keeps each phrase whole: a line
 /// breaks after a separator, between two phrases, and inside a phrase only
 /// where that phrase alone is wider than the line. Each phrase draws as
 /// `{id}-{index}`, the separator ending the phrase before it; on one line
 /// they read as the text does, and the accessible name is the whole text.
-fn phrases(id: &'static str, text: impl Into<SharedString>) -> Stateful<Div> {
+fn phrases(
+    id: &'static str,
+    text: impl Into<SharedString>,
+) -> native_accessibility::StaticText<Stateful<Div>> {
     let text = text.into();
     let parts: Vec<SharedString> = {
         let mut parts: Vec<&str> = text.split(" · ").collect();
@@ -44,11 +45,7 @@ fn phrases(id: &'static str, text: impl Into<SharedString>) -> Stateful<Div> {
             .chain([last.into()])
             .collect()
     };
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .role(Role::Label)
-        .aria_label(text)
+    native_accessibility::static_text(div().id(id).debug_selector(move || id.into()), text)
         .flex()
         .flex_wrap()
         .text_size(crate::appearance::ui_text(12.))
@@ -196,13 +193,8 @@ impl GitTurtle {
             dialog
                 // In the dialog title's own style, at the panel's text inset.
                 .title(
-                    div()
-                        .id("github-title")
-                        .debug_selector(|| "github-title".into())
-                        .role(Role::Label)
-                        .aria_label("GitHub pull requests")
-                        .ml(text_inset())
-                        .child("GitHub pull requests"),
+                    native_accessibility::dialog_title("github-title", "GitHub pull requests")
+                        .ml(text_inset()),
                 )
                 .on_ok(|_, _, _| false)
                 .width(appearance::dialog_width(px(1100.), window))
@@ -1198,7 +1190,7 @@ impl Render for Panel {
                         // selected row keeps the selected surface under both lines.
                         div().id(("github-pr-card",pull.number)).flex_shrink_0().pb_1().rounded(px(7.)).when(selected,|row|row.bg(rgb(p.selected))).flex().flex_col()
                             .child(crate::button_frame(("github-pr",number),&name,"",selected).key_context("GitTurtleGithubButton").debug_selector(move||format!("github-pr-{number}")).w_full().accessibility_label(name.clone()).tooltip(name.clone()).child(row_text(format!("github-pr-title-{number}"),name)).disabled(pending).on_click(cx.listener(move|this,_,window,cx|this.inspect(pull.clone(),window,cx))))
-                            .child(div().id(("github-pr-context",number)).flex().role(Role::Label).aria_label(context.clone()).mx(text_inset()).text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).child(row_text(format!("github-pr-context-{number}"),context)))
+                            .child(native_accessibility::static_text(div().id(("github-pr-context",number)),context.clone()).flex().mx(text_inset()).text_size(appearance::ui_text(12.)).text_color(rgb(p.muted)).tooltip({let context=context.clone();move|window,cx|Tooltip::new(context.clone()).build(window,cx)}).child(row_text(format!("github-pr-context-{number}"),context)))
                     }))
                     // One line with the next step: a repository with no GitHub remote names
                     // the destination first, and one with a destination reads its PRs with

@@ -683,7 +683,9 @@ impl<E: Element> Element for BeneathModal<E> {
 }
 
 /// `element`, which draws text or stands for it, as static text that an
-/// assistive technology reads as `text`: a label whose text is its value.
+/// assistive technology reads as `text`: a label whose text is its value, or,
+/// where the caller gives it a role of its own (a heading, a status, an
+/// alert), that node named by `text` as its label property.
 ///
 /// AccessKit names a label (`Role::Label`) by its value and never by its
 /// label property: the AT-SPI and Windows adapters announce the value as the
@@ -774,13 +776,21 @@ impl<E: Element> Element for StaticText<E> {
             .paint(id, inspector, bounds, layout, prepaint, window, cx);
     }
 
+    /// A label, unless the caller gave the text a role of its own, as a
+    /// heading, a status or an alert takes.
     fn a11y_role(&self) -> Option<Role> {
-        Some(Role::Label)
+        Some(self.inner.a11y_role().unwrap_or(Role::Label))
     }
 
+    /// The text as a label's value, or as the name of the role the caller
+    /// gave it, which adapters read from the label property.
     fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
         self.inner.write_a11y_info(node);
-        node.set_value(self.text.to_string());
+        if node.role() == Role::Label {
+            node.set_value(self.text.to_string());
+        } else if node.label().is_none() {
+            node.set_label(self.text.to_string());
+        }
     }
 
     fn a11y_synthetic_children(
@@ -790,6 +800,71 @@ impl<E: Element> Element for StaticText<E> {
     ) {
         self.inner.a11y_synthetic_children(prepaint, builder);
     }
+}
+
+// Static text styles, holds children and takes a tooltip as the element it
+// wraps does, so a call site styles the text after naming it.
+impl<E: Styled> Styled for StaticText<E> {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.inner.style()
+    }
+}
+
+impl<E: ParentElement> ParentElement for StaticText<E> {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.inner.extend(elements);
+    }
+}
+
+impl<E: InteractiveElement> InteractiveElement for StaticText<E> {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.inner.interactivity()
+    }
+}
+
+impl<E: StatefulInteractiveElement> StatefulInteractiveElement for StaticText<E> {}
+
+/// `text` drawn in a `div` with ID `id`, which is also its debug selector,
+/// as static text read by `text`: the shape of every label that draws what
+/// it says, such as Tags', Blame's and the ignore form's lines, each of which
+/// was a label named only by its label property and so read without a name.
+pub(crate) fn text(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+) -> StaticText<Stateful<Div>> {
+    let (id, text) = (id.into(), text.into());
+    let selector = id.clone();
+    static_text(
+        div()
+            .id(id)
+            .debug_selector(move || selector.to_string())
+            .child(text.clone()),
+        text,
+    )
+}
+
+/// A dialog's styled title drawing `text`: a label read by its value, as
+/// static text is, that also keeps `text` as its label property, which the
+/// toolkit's dialog reads from a `Stateful<Div>` title to name itself
+/// (`gpui-base`'s `dialog_label`), so it stays that element rather than
+/// [`StaticText`]. Each title was a label named only by its label property,
+/// which named the dialog and left the title itself without a name.
+pub(crate) fn dialog_title(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let (id, text) = (id.into(), text.into());
+    let selector = id.clone();
+    let title = div()
+        .id(id)
+        .debug_selector(move || selector.to_string())
+        .role(Role::Label)
+        .aria_label(text.clone())
+        .aria_value(text.clone())
+        .child(text);
+    #[cfg(test)]
+    written::built(&title);
+    title
 }
 
 /// `bounds` in the physical window pixels of AccessKit's bounds, at `scale`.
@@ -858,6 +933,48 @@ pub(crate) mod written {
         });
         OPEN.with(|open| open.borrow_mut().push(id.clone()));
         Some(id)
+    }
+
+    /// Records the node an element GPUI writes itself, such as a dialog's
+    /// title, as it is built: without bounds or the wrapper around it.
+    pub(super) fn built<E: Element>(element: &E) {
+        let (Some(id), Some(role)) = (element.id(), element.a11y_role()) else {
+            return;
+        };
+        let mut node = gpui::accesskit::Node::new(role);
+        element.write_a11y_info(&mut node);
+        let order = NEXT.with(|next| next.replace(next.get() + 1));
+        NODES.with(|nodes| {
+            nodes.borrow_mut().insert(
+                id.to_string(),
+                Written {
+                    node,
+                    parent: None,
+                    order,
+                },
+            )
+        });
+    }
+
+    /// Every label recorded since [`forget`], by element ID, with the name
+    /// AccessKit's adapters give it: its value.
+    pub(crate) fn labels() -> Vec<(String, Option<String>)> {
+        NODES.with(|nodes| {
+            let mut labels: Vec<(u64, String, Option<String>)> = nodes
+                .borrow()
+                .iter()
+                .filter(|(_, written)| written.node.role() == Role::Label)
+                .map(|(id, written)| {
+                    (
+                        written.order,
+                        id.clone(),
+                        written.node.value().map(str::to_owned),
+                    )
+                })
+                .collect();
+            labels.sort();
+            labels.into_iter().map(|(_, id, name)| (id, name)).collect()
+        })
     }
 
     /// Ends what [`open`] began, once the element has prepainted.

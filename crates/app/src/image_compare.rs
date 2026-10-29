@@ -803,18 +803,19 @@ impl GitTurtle {
                                             .content_start()
                                             .gap_2()
                                             .child(
-                                                div()
-                                                    .id(("image-side-description", i))
-                                                    .debug_selector(move || {
-                                                        format!("image-side-name-{i}")
-                                                    })
-                                                    .role(Role::Label)
-                                                    .aria_label(format!("{name}: {details}"))
-                                                    .min_h(crate::appearance::ui_size(28.))
-                                                    .flex()
-                                                    .items_center()
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .child(name),
+                                                native_accessibility::static_text(
+                                                    div()
+                                                        .id(("image-side-description", i))
+                                                        .debug_selector(move || {
+                                                            format!("image-side-name-{i}")
+                                                        }),
+                                                    format!("{name}: {details}"),
+                                                )
+                                                .min_h(crate::appearance::ui_size(28.))
+                                                .flex()
+                                                .items_center()
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(name),
                                             )
                                             .children(control),
                                     )
@@ -1227,7 +1228,7 @@ fn comparison_note(
     width: Pixels,
     window: &Window,
     p: &crate::appearance::Palette,
-) -> Option<Stateful<Div>> {
+) -> Option<native_accessibility::StaticText<Stateful<Div>>> {
     if lines == 0 {
         return None;
     }
@@ -1237,33 +1238,32 @@ fn comparison_note(
         || (lines > 1 && wrapped_lines(&text, size, room, window) <= lines);
     let tooltip = text.clone();
     Some(
-        div()
-            .id(id)
-            .debug_selector(move || id.into())
-            .role(Role::Label)
-            .aria_label(text.clone())
-            .flex_shrink_0()
-            .px_3()
-            .py_1()
-            .text_size(size)
-            .text_color(rgb(p.muted))
-            .when(!whole, |note| {
-                note.tooltip(move |window, cx| {
-                    gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
-                })
+        native_accessibility::static_text(
+            div().id(id).debug_selector(move || id.into()),
+            text.clone(),
+        )
+        .flex_shrink_0()
+        .px_3()
+        .py_1()
+        .text_size(size)
+        .text_color(rgb(p.muted))
+        .when(!whole, |note| {
+            note.tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
             })
-            .child(
-                div()
-                    .min_w_0()
-                    .map(|line| {
-                        if lines == 1 {
-                            line.truncate()
-                        } else {
-                            line.line_clamp(lines).text_ellipsis()
-                        }
-                    })
-                    .child(text),
-            ),
+        })
+        .child(
+            div()
+                .min_w_0()
+                .map(|line| {
+                    if lines == 1 {
+                        line.truncate()
+                    } else {
+                        line.line_clamp(lines).text_ellipsis()
+                    }
+                })
+                .child(text),
+        ),
     )
 }
 

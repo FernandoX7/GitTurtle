@@ -26,14 +26,7 @@ pub(super) struct State {
     message: Option<Entity<MessageForm>>,
 }
 
-fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
-    let value = value.into();
-    div()
-        .id(id)
-        .role(Role::Label)
-        .aria_label(value.clone())
-        .child(value)
-}
+use crate::native_accessibility::text as label;
 
 fn close_rebase_dialog(
     owner: &WeakEntity<GitTurtle>,
@@ -133,8 +126,11 @@ impl GitTurtle {
             // it back, so the footer stays put.
             dialog
                 .title(
-                    label("interactive-rebase-title", "Edit local commits")
-                        .debug_selector(|| "interactive-rebase-title".into()),
+                    native_accessibility::dialog_title(
+                        "interactive-rebase-title",
+                        "Edit local commits",
+                    )
+                    .debug_selector(|| "interactive-rebase-title".into()),
                 )
                 .width(appearance::dialog_width(px(720.), window))
                 .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
@@ -270,7 +266,10 @@ impl GitTurtle {
                         let cancel = form.clone();
                         let button_close = form.clone();
                         dialog
-                            .title(label("rebase-message-title", "Continue rebase"))
+                            .title(native_accessibility::dialog_title(
+                                "rebase-message-title",
+                                "Continue rebase",
+                            ))
                             .width(appearance::dialog_width(px(640.), window))
                             .child(form.clone())
                             .footer(DialogFooter::new().child(

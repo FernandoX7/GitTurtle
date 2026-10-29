@@ -492,9 +492,11 @@ impl Render for AboutDetails {
             .gap_2()
             .text_size(appearance::ui_text(12.))
             .child(
-                div().id("about-gitturtle-version").role(Role::Label)
-                    .aria_label(build_info::summary())
-                    .child(format!("Version {} · Preview", build_info::VERSION)),
+                native_accessibility::static_text(
+                    div().id("about-gitturtle-version"),
+                    build_info::summary(),
+                )
+                .child(format!("Version {} · Preview", build_info::VERSION)),
             )
             .child(
                 div().text_color(rgb(palette(cx).muted))

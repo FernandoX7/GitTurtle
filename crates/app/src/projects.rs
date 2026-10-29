@@ -890,42 +890,42 @@ impl ProjectHub {
                         let display = destination.display().to_string();
                         let tooltip = display.clone();
                         panel.child(
-                            div()
-                                .id("hub-destination-preview")
-                                .role(Role::Label)
-                                .aria_label(format!("New repository folder: {display}"))
-                                .tooltip(move |window, cx| {
-                                    Tooltip::new(tooltip.clone()).build(window, cx)
-                                })
-                                .min_w_0()
-                                .rounded(px(8.))
-                                .bg(colors.background)
-                                .px_3()
-                                .py_2()
-                                .flex()
-                                .items_start()
-                                .gap_2()
-                                .child(hub_icon("folder", 14., colors.muted_foreground))
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .flex_1()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_1()
-                                        .child(
-                                            div()
-                                                .text_size(crate::appearance::ui_text(10.))
-                                                .text_color(colors.muted_foreground)
-                                                .child("New repository folder"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(crate::appearance::ui_text(11.))
-                                                .truncate()
-                                                .child(display),
-                                        ),
-                                ),
+                            crate::native_accessibility::static_text(
+                                div().id("hub-destination-preview"),
+                                format!("New repository folder: {display}"),
+                            )
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(tooltip.clone()).build(window, cx)
+                            })
+                            .min_w_0()
+                            .rounded(px(8.))
+                            .bg(colors.background)
+                            .px_3()
+                            .py_2()
+                            .flex()
+                            .items_start()
+                            .gap_2()
+                            .child(hub_icon("folder", 14., colors.muted_foreground))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(crate::appearance::ui_text(10.))
+                                            .text_color(colors.muted_foreground)
+                                            .child("New repository folder"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(crate::appearance::ui_text(11.))
+                                            .truncate()
+                                            .child(display),
+                                    ),
+                            ),
                         )
                     })
                     .child(
@@ -1129,13 +1129,14 @@ fn hub_icon(name: &str, dimension: f32, color: Hsla) -> Svg {
         .flex_shrink_0()
 }
 
-fn hub_text(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
+/// `text` as static text, with no debug selector of its own: a field's
+/// caption takes the field's name as its ID, which the field's selector is.
+fn hub_text(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+) -> crate::native_accessibility::StaticText<Stateful<Div>> {
     let text = text.into();
-    div()
-        .id(id)
-        .role(Role::Label)
-        .aria_label(text.clone())
-        .child(text)
+    crate::native_accessibility::static_text(div().id(id).child(text.clone()), text)
 }
 
 /// Decide what a submitted rename means. Empty input, or the folder name

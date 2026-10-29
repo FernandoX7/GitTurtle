@@ -282,8 +282,10 @@ async fn empty_lists_and_panels_are_read_by_their_lines(cx: &mut TestAppContext)
     draw(cx);
 
     cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+    // Name repository is drawn once the local read finds no GitHub remote;
+    // the line is there before it lands, saying no pull requests are shown.
     wait(cx, "the panel's local read", |cx| {
-        cx.debug_bounds("github-list-empty-line").is_some()
+        cx.debug_bounds("github-choose-destination").is_some()
     });
     // Follow-up: in the short half tile at 18 pt the panel's list lies
     // below its fold, where AccessKit's filter rightly leaves the line out;
@@ -297,5 +299,106 @@ async fn empty_lists_and_panels_are_read_by_their_lines(cx: &mut TestAppContext)
         )],
         &["branch-edge"],
         &[SIZES[0], (18, 461., 980.)],
+    );
+}
+
+/// Every label the frame writes on `screen`, each named, and among them the
+/// labels `expected`, each by the element ID it was written with: a label
+/// named only by its label property is written as no static text, so it is
+/// missing here, as an assistive technology reached it without a name.
+fn labels_named(cx: &mut VisualTestContext, screen: &str, expected: &[&str]) {
+    written::forget();
+    draw(cx);
+    let labels = written::labels();
+    let unnamed: Vec<&str> = labels
+        .iter()
+        .filter(|(_, name)| name.as_deref().is_none_or(str::is_empty))
+        .map(|(id, _)| id.as_str())
+        .collect();
+    assert!(
+        unnamed.is_empty(),
+        "{screen}: labels without a name: {unnamed:?}"
+    );
+    for id in expected {
+        assert!(
+            labels.iter().any(|(written, _)| written == id),
+            "{screen}: {id} is not read as static text among {:?}",
+            labels.iter().map(|(id, _)| id).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// History, Changes, Tags, the ignore form and Blame: every label each
+/// writes is named, Tags', the ignore form's and Blame's lines among them,
+/// which were labels named only by their label property.
+#[gpui::test]
+async fn every_label_of_these_screens_is_named(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, root) = window(cx, &history_script(2, 3)).await;
+    labels_named(cx, "History", &["repository-heading"]);
+
+    let file = app.read_with(cx, |app, _| {
+        app.files
+            .iter()
+            .position(|file| file.path() == std::path::Path::new("notes.txt"))
+            .expect("the commit changes notes.txt")
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(file, window, cx)));
+    wait(cx, "Blame", |cx| cx.debug_bounds("blame-heading").is_some());
+    labels_named(
+        cx,
+        "Blame",
+        &[
+            "blame-heading",
+            "blame-source-scope",
+            "blame-lineage-limit",
+            "blame-selected-summary",
+            "blame-selected-details",
+        ],
+    );
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+    settle(&app, cx).await;
+
+    std::fs::write(root.join("scratch.txt"), "scratch\n").unwrap();
+    refresh(&app, cx).await;
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    settle(&app, cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.working_filter
+                .update(cx, |input, cx| input.set_value("no-such-path", window, cx));
+            app.filter_working_paths(window, cx);
+        })
+    });
+    wait(cx, "the working filter", |cx| {
+        cx.debug_bounds("working-filter-empty").is_some()
+    });
+    labels_named(cx, "Changes", &["working-filter-empty"]);
+
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)));
+    wait(cx, "the Tags list", |cx| {
+        cx.debug_bounds("tag-list-empty-line").is_some()
+    });
+    labels_named(cx, "Tags", &["tags-dialog-title", "tag-list-empty-line"]);
+    cx.update(|window, cx| window.close_all_dialogs(cx));
+    draw(cx);
+
+    let untracked = app.read_with(cx, |app, _| {
+        app.work_status
+            .as_ref()
+            .and_then(|status| status.entries.iter().find(|entry| entry.untracked).cloned())
+            .expect("scratch.txt is untracked")
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.open_ignore(untracked, window, cx)));
+    draw(cx);
+    labels_named(
+        cx,
+        "Ignore",
+        &[
+            "ignore-dialog-title",
+            "ignore-selected-path",
+            "ignore-destination-label",
+            "ignore-destination-help",
+            "ignore-tracked-explanation",
+        ],
     );
 }

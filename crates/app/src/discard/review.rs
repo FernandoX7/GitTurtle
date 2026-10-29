@@ -8,15 +8,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use std::{cell::Cell, rc::Rc};
 
-fn label(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
-    let value = value.into();
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .role(Role::Label)
-        .aria_label(value.clone())
-        .child(value)
-}
+use crate::native_accessibility::text as label;
 
 fn path_field(
     id: &'static str,
@@ -110,7 +102,7 @@ impl GitTurtle {
                 .child(label("discard-revalidation", "If this file or Git state changes, the action stops so you can review it again.").text_color(rgb(colors.muted)));
             dialog
                 .kind(DialogKind::Alert)
-                .title(label("discard-title", title))
+                .title(native_accessibility::dialog_title("discard-title", title))
                 .width(appearance::dialog_width(px(620.), window))
                 .child(
                     div()

@@ -74,15 +74,16 @@ impl GitTurtle {
                 .title(title.clone())
                 .width(appearance::dialog_width(px(520.), window))
                 .child(
-                    div()
-                        .id("operation-consequences")
-                        .debug_selector(|| "operation-consequences".to_string())
-                        .role(Role::Label)
-                        .aria_label(explanation.clone())
-                        .max_h(px(360.))
-                        .overflow_y_scroll()
-                        .text_size(crate::appearance::ui_text(13.))
-                        .child(explanation.clone()),
+                    native_accessibility::static_text(
+                        div()
+                            .id("operation-consequences")
+                            .debug_selector(|| "operation-consequences".to_string()),
+                        explanation.clone(),
+                    )
+                    .max_h(px(360.))
+                    .overflow_y_scroll()
+                    .text_size(crate::appearance::ui_text(13.))
+                    .child(explanation.clone()),
                 )
                 .button_props(
                     DialogButtonProps::default()

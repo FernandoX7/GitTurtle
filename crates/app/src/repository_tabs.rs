@@ -2236,14 +2236,7 @@ impl LibraryView {
         format!("{name} · {}", path.display())
     }
 }
-fn workspace_text(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
-    let text = text.into();
-    div()
-        .id(id)
-        .role(Role::Label)
-        .aria_label(text.clone())
-        .child(text)
-}
+use crate::native_accessibility::text as workspace_text;
 
 impl Render for LibraryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4924,12 +4917,13 @@ mod tests {
         let text = workspace_text("repository-description", description).truncate();
         let mut node = gpui::accesskit::Node::new(text.a11y_role().expect("named text role"));
         text.write_a11y_info(&mut node);
+        // A label is named by its value.
         assert_eq!(node.role(), Role::Label);
-        assert_eq!(node.label(), Some(description));
+        assert_eq!(node.value(), Some(description));
         let other = workspace_text("other-repository", "/projects/two/same-name");
         let mut other_node = gpui::accesskit::Node::new(other.a11y_role().unwrap());
         other.write_a11y_info(&mut other_node);
-        assert_ne!(node.label(), other_node.label());
+        assert_ne!(node.value(), other_node.value());
     }
 
     fn session(paths: &[&str], active: usize) -> Session {

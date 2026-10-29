@@ -1049,13 +1049,10 @@ impl GitTurtle {
             dialog
                 .kind(DialogKind::Alert)
                 .title(title.clone())
-                .child(
-                    div()
-                        .id("delete-theme-consequences")
-                        .role(Role::Label)
-                        .aria_label(explanation.clone())
-                        .child(explanation.clone()),
-                )
+                .child(native_accessibility::text(
+                    "delete-theme-consequences",
+                    explanation.clone(),
+                ))
                 .footer(
                     div()
                         .w_full()
@@ -2203,16 +2200,17 @@ impl ThemeForm {
             )
             .child(div().flex_1())
             .children(self.error.clone().map(|error| {
-                div()
-                    .id("theme-editor-error")
-                    .debug_selector(|| "theme-editor-error".into())
-                    .role(Role::Label)
-                    .aria_label(error.clone())
-                    .min_w_0()
-                    .max_w(px(420.))
-                    .text_size(appearance::ui_text(12.))
-                    .text_color(rgb(p.warning))
-                    .child(error)
+                native_accessibility::static_text(
+                    div()
+                        .id("theme-editor-error")
+                        .debug_selector(|| "theme-editor-error".into()),
+                    error.clone(),
+                )
+                .min_w_0()
+                .max_w(px(420.))
+                .text_size(appearance::ui_text(12.))
+                .text_color(rgb(p.warning))
+                .child(error)
             }))
             .when(self.pending, |footer| {
                 footer.child(
@@ -2286,14 +2284,15 @@ impl ThemeForm {
                         ),
                     )
                     .children(self.name_error.clone().map(|error| {
-                        div()
-                            .id("theme-editor-name-error")
-                            .debug_selector(|| "theme-editor-name-error".into())
-                            .role(Role::Label)
-                            .aria_label(error.clone())
-                            .text_size(appearance::ui_text(11.))
-                            .text_color(rgb(p.warning))
-                            .child(error)
+                        native_accessibility::static_text(
+                            div()
+                                .id("theme-editor-name-error")
+                                .debug_selector(|| "theme-editor-name-error".into()),
+                            error.clone(),
+                        )
+                        .text_size(appearance::ui_text(11.))
+                        .text_color(rgb(p.warning))
+                        .child(error)
                     })),
             )
             .child(
@@ -2363,14 +2362,14 @@ impl ThemeForm {
                 .items_center()
                 .gap_2()
                 .child(
-                    div()
-                        .id("theme-editor-base-question-text")
-                        .flex_1()
-                        .min_w_0()
-                        .role(Role::Label)
-                        .aria_label(question.clone())
-                        .text_size(appearance::ui_text(12.))
-                        .child(question),
+                    native_accessibility::static_text(
+                        div().id("theme-editor-base-question-text"),
+                        question.clone(),
+                    )
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(appearance::ui_text(12.))
+                    .child(question),
                 )
                 .child(
                     div().track_focus(&self.keep_focus).child(
@@ -2437,21 +2436,19 @@ impl ThemeForm {
                     .child(kind.description()),
             )
             .children(if row.invalid {
-                Some(
+                Some(native_accessibility::static_text(
                     invalid_glyph(p)
                         .id(("theme-token-invalid", kind as usize))
-                        .debug_selector(move || format!("theme-token-invalid-{}", kind.key()))
-                        .role(Role::Label)
-                        .aria_label(format!("{label} value is not #rrggbb")),
-                )
+                        .debug_selector(move || format!("theme-token-invalid-{}", kind.key())),
+                    format!("{label} value is not #rrggbb"),
+                ))
             } else if flagged {
-                Some(
+                Some(native_accessibility::static_text(
                     warning_glyph(p)
                         .id(("theme-token-warning", kind as usize))
-                        .debug_selector(move || format!("theme-token-warning-{}", kind.key()))
-                        .role(Role::Label)
-                        .aria_label(format!("{label} has a readability warning")),
-                )
+                        .debug_selector(move || format!("theme-token-warning-{}", kind.key())),
+                    format!("{label} has a readability warning"),
+                ))
             } else {
                 None
             })
@@ -2594,24 +2591,25 @@ impl ThemeForm {
                 })
                 .children(self.warnings.iter().enumerate().map(|(index, issue)| {
                     let text = issue.to_string();
-                    div()
-                        .id(("theme-warning", index))
-                        .debug_selector(move || format!("theme-warning-{index}"))
-                        .role(Role::Label)
-                        .aria_label(text.clone())
-                        .flex()
-                        .items_start()
-                        .gap_2()
-                        .child(warning_glyph(p))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(appearance::ui_text(11.))
-                                .line_height(relative(1.4))
-                                .text_color(rgb(p.text))
-                                .child(text),
-                        )
+                    native_accessibility::static_text(
+                        div()
+                            .id(("theme-warning", index))
+                            .debug_selector(move || format!("theme-warning-{index}")),
+                        text.clone(),
+                    )
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .child(warning_glyph(p))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(appearance::ui_text(11.))
+                            .line_height(relative(1.4))
+                            .text_color(rgb(p.text))
+                            .child(text),
+                    )
                 }))
                 .when(count > 0, |list| {
                     list.child(

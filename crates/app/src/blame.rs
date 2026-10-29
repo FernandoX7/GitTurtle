@@ -524,7 +524,7 @@ impl GitTurtle {
             .children(self.blame.data.as_ref().filter(|data| data.shallow).map(|_| static_text("blame-shallow-boundary", "Shallow repository · attribution and line history stop at the locally available boundary.").flex_shrink_0().px_3().py_2().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
             .children(self.blame.error.as_ref().map(|error| static_text("blame-error", format!("Attribution unavailable: {error}")).flex_shrink_0().max_h(px(100.)).overflow_y_scroll().p_3().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.warning))))
             .child(crate::native_accessibility::clips_children(div().id("blame-lines-region").role(Role::ListBox).aria_label("Source lines and commit attribution").tab_stop(true).key_context("GitTurtleList").on_action(cx.listener(|this, _: &gpui_kit::component::input::Copy, window, cx| { this.copy_blame_line(false, window, cx); })).track_focus(focus).flex_1().min_h_0().min_w_0()
-                .child(if count == 0 { div().id("blame-empty-state").role(Role::Label).aria_label(format!("{empty_title}. {empty_detail}")).size_full().child(empty(empty_title, empty_detail)).into_any_element() } else {
+                .child(if count == 0 { div().id("blame-empty-state").size_full().child(empty(empty_title, empty_detail)).into_any_element() } else {
                     uniform_list("blame-lines", count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|index| this.render_blame_row(index, cx)).collect::<Vec<_>>())).size_full().track_scroll(&self.blame.scroll).into_any_element()
                 })))
             .child(div().flex_shrink_0().max_h(px(260.)).border_t_1().border_color(rgb(p.border)).p_3().flex().flex_col().gap_2()
@@ -631,16 +631,7 @@ fn blame_source(index: usize, cx: &App) -> Stateful<Div> {
         .text_size(crate::appearance::ui_text(11.))
 }
 
-/// Stable Label nodes expose the same meaningful copy to assistive technology.
-/// Plain string children alone do not get an ID in this GPUI version.
-fn static_text(id: impl Into<ElementId>, value: impl Into<SharedString>) -> Stateful<Div> {
-    let value = value.into();
-    div()
-        .id(id)
-        .role(Role::Label)
-        .aria_label(value.clone())
-        .child(value)
-}
+use crate::native_accessibility::text as static_text;
 
 /// Cap text shaping for unusually long source lines. Exact source stays in the
 /// bounded result and is used by Copy, independently of the displayed excerpt.

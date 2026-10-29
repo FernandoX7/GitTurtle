@@ -130,15 +130,7 @@ fn overflows(scroll: &ScrollHandle) -> bool {
     scroll.max_offset().y > Pixels::ZERO
 }
 
-fn static_text(id: &'static str, value: impl Into<SharedString>) -> Stateful<Div> {
-    let value = value.into();
-    div()
-        .id(id)
-        .debug_selector(|| id.into())
-        .role(Role::Label)
-        .aria_label(value.clone())
-        .child(value)
-}
+use crate::native_accessibility::text as static_text;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -186,7 +178,10 @@ impl GitTurtle {
                         // back, so nothing in the dialog moves.
                         let room = appearance::button_ring_room(cx);
                         dialog
-                            .title(static_text("tags-dialog-title", "Tags").mb(-room))
+                            .title(
+                                native_accessibility::dialog_title("tags-dialog-title", "Tags")
+                                    .mb(-room),
+                            )
                             .width(appearance::dialog_width(px(600.), window))
                             .gap(DIALOG_FOOTER_GAP - room)
                             .child(browser.clone())
@@ -320,7 +315,7 @@ impl GitTurtle {
                         });
                     })
                 })).when(remotes.is_empty(), |element| element.child(static_text("tag-remotes-empty", "No remotes configured. Add a remote from the branch menu to push a tag.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "tag-remote-scrollbar"));
-            dialog.title(static_text("tag-inspector-title", details.tag.name.clone())).width(appearance::dialog_width(px(640.), window)).gap(DIALOG_FOOTER_GAP - room).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
+            dialog.title(native_accessibility::dialog_title("tag-inspector-title", details.tag.name.clone())).width(appearance::dialog_width(px(640.), window)).gap(DIALOG_FOOTER_GAP - room).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
         });
     }
     pub(super) fn finish_tag_write(
@@ -368,7 +363,10 @@ impl GitTurtle {
             let submit = form.clone();
             let cancel = form.clone();
             dialog
-                .title(static_text("create-tag-dialog-title", "Create a local tag"))
+                .title(native_accessibility::dialog_title(
+                    "create-tag-dialog-title",
+                    "Create a local tag",
+                ))
                 .width(appearance::dialog_width(px(560.), window))
                 .child(form.clone())
                 .button_props(

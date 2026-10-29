@@ -2638,13 +2638,14 @@ impl GitTurtle {
                                 .text_color(rgb(if summary_length > 72 { p.warning } else { p.muted }));
                             let whole = SharedString::from(title_counter(summary_length));
                             if forms.counter_word {
-                                counter.child(whole)
+                                counter.child(whole).into_any_element()
                             } else {
-                                // Without "suggested" the counter names it.
+                                // Without "suggested" the counter is read by its whole text.
                                 crate::views::note_compact_label("commit-title-counter", &whole);
-                                counter.role(Role::Label).aria_label(whole.clone())
+                                native_accessibility::static_text(counter, whole.clone())
                                     .tooltip(move |window, cx| Tooltip::new(whole.clone()).build(window, cx))
                                     .child(format!("{summary_length}/72"))
+                                    .into_any_element()
                             }
                         }))
                     .child(div().debug_selector(|| "commit-title".into()).child(Input::new(&self.commit_title).readonly(busy).aria_label("Commit title").text_size(crate::appearance::ui_text(12.))))

@@ -1802,11 +1802,11 @@ impl GitTurtle {
                         .kind(DialogKind::Alert)
                         .title("Could not open repository picker")
                         .child(
-                            div()
-                                .id("repository-picker-error")
-                                .role(Role::Label)
-                                .aria_label(error.clone())
-                                .child(folder_picker::styled_message(&error, palette(cx).muted)),
+                            native_accessibility::static_text(
+                                div().id("repository-picker-error"),
+                                error.clone(),
+                            )
+                            .child(folder_picker::styled_message(&error, palette(cx).muted)),
                         )
                 }),
             });

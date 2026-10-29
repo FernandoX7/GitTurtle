@@ -236,12 +236,8 @@ impl GitTurtle {
             let room = appearance::button_ring_room(cx);
             dialog
                 .title(
-                    div()
-                        .id("quick-open-title")
-                        .role(Role::Label)
-                        .aria_label("Quick Open File")
-                        .mb(-room)
-                        .child("Quick Open File"),
+                    native_accessibility::dialog_title("quick-open-title", "Quick Open File")
+                        .mb(-room),
                 )
                 .width(appearance::dialog_width(px(700.), window))
                 .gap(crate::tags::DIALOG_FOOTER_GAP - room)
@@ -584,7 +580,7 @@ impl GitTurtle {
                 .when(!self.is_quick_source(), |element| element.max_h(px(260.)))
                 .p_3().flex().flex_col().gap_2()
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
-                .child(div().id("revision-identities").role(Role::Label).aria_label(details.clone()).text_size(crate::appearance::ui_text(11.)).child(details))
+                .child(native_accessibility::text("revision-identities", details).text_size(crate::appearance::ui_text(11.)))
                 .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Targets stay pinned while you inspect files. Refresh reviews current refs. No checkout or download."))
                 .child(button("change-revisions","Choose targets…","",false).on_click(cx.listener(|this,_,window,cx|this.open_revision_comparison(window,cx))))))
             .when(!self.is_quick_source(), |element| element.child(self.render_files(cx))).into_any_element()
