@@ -893,6 +893,7 @@ impl Panel {
                 this.error=(!errors.is_empty()).then(||errors.join("\n"));
                 this.save_status=if had_saved {"Draft restored locally"}else{"No local draft yet"}.into();
                 this.focus_visible_section(window,cx);
+                this.review.opened.set(true);
             },Err(error)=>this.error=Some(format!("{error:#}"))
         },window,cx);
     }
@@ -1054,6 +1055,7 @@ impl Panel {
         }
         self.save_draft(window, cx);
         self.closed = true;
+        self.review.opened.set(false);
         self.request_generation = self.request_generation.wrapping_add(1);
         self.pending = false;
         self.writing = false;
@@ -1147,6 +1149,9 @@ impl Render for Panel {
         // The room a focused control's ring takes outside its edge.
         let room = appearance::button_ring_room(cx);
         let blocks = self.review.body_blocks.clone();
+        // Where the line holding the open PR's title starts, for showing the PR as it opens.
+        let title_line = std::rc::Rc::new(std::cell::Cell::new(px(0.)));
+        let line = title_line.clone();
         // The panel's content, its text one inset in from this edge. Each part of it starts a
         // block of the body, where a reveal may bring the body's top edge.
         let content = div().debug_selector(||"github-panel-content".into()).on_children_prepainted(blocks.starts()).min_w_0().flex().flex_col().gap_2()
@@ -1211,11 +1216,17 @@ impl Render for Panel {
                     .child(phrases("github-page",format!("Page {} · up to {} PRs",self.page,github::PAGE_SIZE)).min_w_0().ml(text_inset()).text_color(rgb(p.muted)))
                     .child(button("github-next","Next PR page","",false).disabled(pending||!self.has_next).on_click(cx.listener(|this,_,window,cx|this.refresh(this.page+1,window,cx))))))
             .when_some(self.pull.as_ref(),|element,pull|element
-                .child(self.part("pull-header",div(),cx).flex().flex_col().gap_2()
-                    .child(div().flex().flex_wrap().items_center().gap_2().child(button("github-back-list",if self.review.show_list{"Hide PR list"}else{"Pull requests"},"arrow-left",false).debug_selector(||"github-back-list".into()).mr(-text_inset()).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.review.show_list= !this.review.show_list;cx.notify();})))
+                // The PR's header and its section tabs, shown from the title's line as the PR
+                // opens.
+                .child(div().flex().flex_col().gap_2().on_children_prepainted(self.reveal_opened(title_line,cx)).child(self.part("pull-header",div(),cx).flex().flex_col().gap_2()
+                    .child(div().flex().flex_wrap().items_center().gap_2().on_children_prepainted(move|children,_,_|{
+                        // The title's line: the Button's where the title stands beside it, its
+                        // own where it wraps below.
+                        if let [back,title]=children[..]{line.set(if title.top()<back.bottom(){back.top().min(title.top())}else{title.top()});}
+                    }).child(button("github-back-list",if self.review.show_list{"Hide PR list"}else{"Pull requests"},"arrow-left",false).debug_selector(||"github-back-list".into()).mr(-text_inset()).disabled(pending).on_click(cx.listener(|this,_,window,cx|{this.save_draft(window,cx);this.review.show_list= !this.review.show_list;cx.notify();})))
                         .child(label("github-pull-title",format!("#{} · {}",pull.number,pull.title)).debug_selector(||"github-pull-title".into()).min_w_0().ml(text_inset()).font_weight(FontWeight::SEMIBOLD).text_size(appearance::ui_text(15.))))
                     .child(label("github-branch-context",format!("{} → {} · {}",pull.head.branch,pull.base.branch,if pull.draft{"Draft PR"}else{"Open PR"})).ml(text_inset()).text_color(rgb(p.muted))))
-                .child(self.render_tabs(cx))
+                .child(self.render_tabs(cx)))
                 .when(self.review.section==Section::Overview,|element|element
                     .child(label("github-captured-identities",format!("Before · {}\nAfter  · {}",pull.base.sha,pull.head.sha)).ml(text_inset()).text_color(rgb(p.muted)))
                     .when_some(self.description.as_ref(),|element,description|element.child(self.part("description",div(),cx).h(px(120.)).flex_shrink_0().child(crate::editor_find::Editor::new(description).readonly(true).h_full().aria_label("Pull request description, exact Markdown source"))))
@@ -2885,6 +2896,85 @@ mod tests {
                 assert!(
                     ring.whole,
                     "{at}: the wide window fits the pane whole: {ring:?}"
+                );
+            }
+        }
+    }
+
+    /// Opening a PR from the list, by the keyboard, at 13 and 18 pt in a 461 × 490 window shows
+    /// it from its title: the title whole in the body with Overview, the tab it opens to and its
+    /// first stop, whole below it, and at 13 pt its captured identities too, where the PR once
+    /// opened showing only its title, the tabs below the fold (Overview's top at 464 px against
+    /// a body ending at 355.5 px at 13 pt). At 18 pt the tabs wrap, and Review's row lies below
+    /// the fold. In a 1,480 × 800
+    /// window, which shows all of that as it is, the body stays at its top, the controls and
+    /// notices above the PR in view.
+    #[gpui::test]
+    async fn opening_a_pr_shows_it_from_its_title(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, pull, cx) = fixture_panel(cx).await;
+        let body_scroll = cx.read(|cx| panel.read(cx).review.body_scroll.clone());
+        for (interface, width, height) in REVEAL_SIZES {
+            let at = format!("{interface} pt in {width} × {height}");
+            crate::focus_ring::sweep::interface_size(cx, interface);
+            cx.simulate_resize(size(px(width), px(height)));
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.pull = None;
+                    panel.review.show_list = true;
+                    panel.review.body_scroll.set_offset(point(px(0.), px(0.)));
+                    panel.focus_visible_section(window, cx);
+                    cx.notify();
+                })
+            });
+            crate::width_walk::frame(cx);
+            // The keyboard drives, as Return on a PR row does: focus reveals.
+            cx.simulate_keystrokes("tab");
+            crate::width_walk::frame(cx);
+            body_scroll.set_offset(point(px(0.), px(0.)));
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| panel.inspect(pull.clone(), window, cx))
+            });
+            settle_panel(&app, cx).await;
+            for _ in 0..3 {
+                crate::width_walk::frame(cx);
+            }
+            assert!(
+                cx.read(|cx| panel.read(cx).pull.is_some() && !panel.read(cx).review.show_list),
+                "{at}: the PR opened"
+            );
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let inside = |bounds: Bounds<Pixels>| {
+                bounds.top() >= body.top() - px(0.5) && bounds.bottom() <= body.bottom() + px(0.5)
+            };
+            let title = cx.debug_bounds("github-pull-title").expect("the title");
+            assert!(
+                inside(title),
+                "{at}: the title {title:?} lies whole in the body {body:?}"
+            );
+            let overview = cx
+                .debug_bounds("github-section-0")
+                .expect("the Overview tab");
+            assert!(
+                inside(overview),
+                "{at}: Overview {overview:?}, the PR's first stop, lies whole in the body \
+                 {body:?}, below the title {title:?} and the branches {:?}",
+                cx.debug_bounds("github-branch-context")
+            );
+            if interface == 13 {
+                // And the summary of what the PR compares, below the tabs.
+                let identities = cx
+                    .debug_bounds("github-captured-identities")
+                    .expect("the captured identities");
+                assert!(
+                    inside(identities),
+                    "{at}: the captured identities {identities:?} lie whole in the body {body:?}"
+                );
+            }
+            if width > 1000. {
+                assert_eq!(
+                    body_scroll.offset().y,
+                    px(0.),
+                    "{at}: the wide window shows the PR without scrolling"
                 );
             }
         }

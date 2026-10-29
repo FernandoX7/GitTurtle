@@ -66,6 +66,8 @@ pub(super) struct ReviewState {
     pub revealed_focus: std::rc::Rc<std::cell::RefCell<FocusObservation>>,
     /// Where the body's blocks start, for its reveals.
     pub body_blocks: Blocks,
+    /// A PR has just opened: the next frame shows it from its title ([`Panel::reveal_opened`]).
+    pub opened: std::rc::Rc<std::cell::Cell<bool>>,
     pub files: Vec<PullFile>,
     pub file_page: u32,
     pub files_next: bool,
@@ -116,6 +118,7 @@ impl ReviewState {
             body_scroll: ScrollHandle::new(),
             revealed_focus: Default::default(),
             body_blocks: Blocks::default(),
+            opened: Default::default(),
             files: vec![],
             file_page: 1,
             files_next: false,
@@ -488,6 +491,50 @@ impl Panel {
                 let inset = window.rem_size() + px(2.);
                 reveal(&scroll, &revealed, &blocks, bounds, inset, None, window, cx);
             }
+        }
+    }
+    /// For the element holding an open PR's header and section tabs, which report the body's
+    /// blocks: in the first frame after the PR opens ([`ReviewState::opened`]), where the line
+    /// holding its title, which starts at `title`, and the tabs are not both in view, the body
+    /// scrolls so that line is at its top, the title whole and the PR's first content below it
+    /// rather than the controls above, as in a 461 × 490 window, where the PR once opened
+    /// showing only its title. Focus stays on the section the PR opens to, without revealing
+    /// it, which would take the title out of view again.
+    pub(super) fn reveal_opened(
+        &self,
+        title: std::rc::Rc<std::cell::Cell<Pixels>>,
+        cx: &App,
+    ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        let scroll = self.review.body_scroll.clone();
+        let revealed = self.review.revealed_focus.clone();
+        let blocks = self.review.body_blocks.clone();
+        let opened = self.review.opened.clone();
+        let inset = appearance::button_ring_room(cx);
+        move |children, window, cx| {
+            blocks.report(&children);
+            let Some(tabs) = children.last() else {
+                return;
+            };
+            if !opened.replace(false) {
+                return;
+            }
+            let viewport = scroll.bounds();
+            *revealed.borrow_mut() = FocusObservation {
+                focus: window.focused(cx),
+                viewport,
+                rem_size: window.rem_size(),
+            };
+            let top = title.get() - inset;
+            if top >= viewport.top() && tabs.bottom() + inset <= viewport.bottom() {
+                return;
+            }
+            let previous = scroll.offset();
+            let scroll = scroll.clone();
+            window.defer(cx, move |window, _| {
+                if scroll.offset() == previous && scroll.bounds() == viewport {
+                    scroll_edge_to(&scroll, viewport, previous, top, window);
+                }
+            });
         }
     }
     /// `element` as the part of the panel's body called `name`. When the keyboard moves
