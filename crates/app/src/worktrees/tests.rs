@@ -956,6 +956,48 @@ async fn the_forced_removal_review_draws_a_whole_ring_at_every_stop(cx: &mut Tes
     sweep::assert_whole(failures);
 }
 
+/// In a 461 × 490 half tile, at 13 and 18 pt, with a worktree selected,
+/// every Tab stop of the worktree manager draws its ring whole and in view
+/// while the pointer moves: the content scrolls the control the keyboard
+/// moves onto into view with its ring, the list as a whole for a row, as the
+/// Reflog's and Stashes' do. The selected worktree's details, Open in
+/// GitTurtle to Force remove, lay below the content's fold at both sizes,
+/// where only the first field was revealed as the manager opened, so Tab
+/// moved onto controls the fold cut or no frame showed.
+#[gpui::test]
+async fn a_narrow_manager_shows_every_detail_stop_whole(cx: &mut TestAppContext) {
+    use crate::focus_ring::sweep;
+    let fixture = Fixture::new();
+    let (app, cx) = app_window(cx, fixture.repo.clone());
+    sweep::prepare(&app, cx);
+    cx.simulate_resize(size(px(461.), px(490.)));
+    let mut failures = Vec::new();
+    for interface in sweep::SIZES {
+        sweep::interface_size(cx, interface);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_worktree_actions(fixture.second.clone(), None, window, cx)
+            })
+        });
+        let manager = manager(&app, cx);
+        settle(&manager, cx).await;
+        draw(cx);
+        assert!(
+            cx.debug_bounds("force-remove-managed-worktree").is_some(),
+            "{interface} pt: the selected worktree's details are drawn"
+        );
+        sweep::walk(
+            &app,
+            cx,
+            "the narrow worktree manager",
+            interface,
+            &mut failures,
+        );
+        sweep::close_dialogs(cx, "the narrow worktree manager", interface, &mut failures);
+    }
+    sweep::assert_whole(failures);
+}
+
 /// A read that answers while keyboard focus is on its loading row's Cancel
 /// takes the row away and hands focus to the first field below it, ringed
 /// whole: the filter in Manage, the branch field in Create. Escape still

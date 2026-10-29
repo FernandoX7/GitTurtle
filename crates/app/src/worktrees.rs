@@ -233,8 +233,10 @@ struct WorktreeManager {
     /// Whether the next frame scrolls the content to show the shown form's
     /// first field, if it holds focus: set as the dialog opens.
     reveal_field: bool,
-    /// The content's scroll.
-    content: ScrollHandle,
+    /// The content's scroll, which its scrollbar follows and which reveals
+    /// the control the keyboard moves focus onto, the worktree list as a
+    /// whole for a row.
+    content: crate::focus_reveal::FocusReveal,
     /// The worktree list's scroll, which its scroll cue follows and which
     /// reveals the row the keyboard moves focus onto.
     rows: crate::focus_reveal::FocusReveal,
@@ -283,7 +285,7 @@ impl WorktreeManager {
             pending: false,
             cancel_read: focus_ring::LoadingCancel::new(cx),
             reveal_field: false,
-            content: ScrollHandle::new(),
+            content: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
             rows: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
             reviewing: false,
             error: None,
@@ -631,13 +633,33 @@ impl Render for WorktreeManager {
         let row = appearance::ui_size(36.);
         let floor_rows = trees.len().clamp(1, 2) as f32;
         let rows_floor = row * floor_rows + (room + ROW_RING_CLEARANCE) * (floor_rows - 1.);
-        // A row focus has moved onto scrolls into the list's view in this
-        // frame.
+        // A control the keyboard moves focus onto scrolls into view in this
+        // frame with its ring: the list shows the row, and the content the
+        // whole list, or the control, as the Reflog's do. Each control
+        // reports where it lies to the content; the selected worktree's
+        // details, below the list, once stayed below the content's fold.
         self.rows.reveal(window, cx);
+        self.content.reveal(window, cx);
         let rows: Vec<_> = (0..trees.len().min(100))
             .map(|index| self.rows.focus(("managed-worktree-row", index), cx))
             .collect();
         let reveal = self.rows.items(rows.clone(), room);
+        let show_list = self.content.group(rows.clone(), room);
+        let tabs = [
+            "worktree-browse-tab",
+            "worktree-create-tab",
+            "refresh-worktrees",
+        ]
+        .map(|id| self.content.focus(id, cx));
+        let filter = self.filter.read(cx).focus_handle(cx);
+        let actions = [
+            "open-managed-worktree",
+            "reveal-managed-worktree",
+            "edit-managed-worktree",
+            "remove-managed-worktree",
+            "force-remove-managed-worktree",
+        ]
+        .map(|id| self.content.focus(id, cx));
         let cue = crate::tags::ScrollCue::new(self.rows.scroll(), room);
         // As the dialog opens, the content scrolls the shown form's first
         // field into view with its ring: it follows the tabs' row, the
@@ -648,23 +670,23 @@ impl Render for WorktreeManager {
                 + usize::from(self.pending)
                 + usize::from(self.error.is_some())
                 + if self.creating { 2 } else { 0 };
-            self.content.scroll_to_item(field);
+            self.content.scroll().scroll_to_item(field);
         }
-        let content = crate::native_accessibility::clips_children(div().id("worktree-manager-content").debug_selector(|| "worktree-manager-content".into()).flex().flex_col().gap_3().max_h(px(570.).min(body_height) + room * 2.).p(room).mx(-room).overflow_y_scroll().track_scroll(&self.content)
-            .child(div().flex().flex_wrap().gap_2()
-                .child(button("worktree-browse-tab", "Manage", "", !self.creating).debug_selector(|| "worktree-browse-tab".to_string()).toggled(!self.creating).on_click(cx.listener(|this, _, window, cx| this.switch_form(false, window, cx))))
-                .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).debug_selector(|| "worktree-create-tab".to_string()).toggled(self.creating).on_click(cx.listener(|this, _, window, cx| this.switch_form(true, window, cx))))
-                .child(button("refresh-worktrees", "Refresh", "refresh", false).debug_selector(|| "refresh-worktrees".to_string()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
-            .when(self.pending, |element| element.child(div().flex().gap_2().child(label("worktree-loading", "Reading worktree identities and content…").min_w_0().text_size(crate::appearance::ui_text(12.))).child(button("cancel-worktree-read", "Cancel", "", false).track_focus(self.cancel_read.handle()).debug_selector(|| "cancel-worktree-read".to_string()).on_click(cx.listener(|this, _, window, cx| { this.cancel(); this.leave_loading_row(window, cx); cx.notify(); })))))
+        let content = crate::native_accessibility::clips_children(div().on_children_prepainted(self.content.observe()).id("worktree-manager-content").debug_selector(|| "worktree-manager-content".into()).flex().flex_col().gap_3().max_h(px(570.).min(body_height) + room * 2.).p(room).mx(-room).overflow_y_scroll().track_scroll(self.content.scroll())
+            .child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.content.controls(tabs.iter().cloned().map(Some).collect(), room))
+                .child(button("worktree-browse-tab", "Manage", "", !self.creating).track_focus(&tabs[0]).debug_selector(|| "worktree-browse-tab".to_string()).toggled(!self.creating).on_click(cx.listener(|this, _, window, cx| this.switch_form(false, window, cx))))
+                .child(button("worktree-create-tab", "Create worktree…", "plus", self.creating).track_focus(&tabs[1]).debug_selector(|| "worktree-create-tab".to_string()).toggled(self.creating).on_click(cx.listener(|this, _, window, cx| this.switch_form(true, window, cx))))
+                .child(button("refresh-worktrees", "Refresh", "refresh", false).track_focus(&tabs[2]).debug_selector(|| "refresh-worktrees".to_string()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
+            .when(self.pending, |element| element.child(div().flex().gap_2().on_children_prepainted(self.content.controls(vec![None, Some(self.cancel_read.handle().clone())], room)).child(label("worktree-loading", "Reading worktree identities and content…").min_w_0().text_size(crate::appearance::ui_text(12.))).child(button("cancel-worktree-read", "Cancel", "", false).track_focus(self.cancel_read.handle()).debug_selector(|| "cancel-worktree-read".to_string()).on_click(cx.listener(|this, _, window, cx| { this.cancel(); this.leave_loading_row(window, cx); cx.notify(); })))))
             .children(self.error.as_ref().map(|error| label("worktree-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .when(!self.creating, |element| element
                 // Each first field stands in the ring's room, given back
                 // through its margin, so revealing it shows its ring whole.
-                .child(div().py(room).my(-room).child(Input::new(&self.filter).aria_label("Filter worktrees by branch or path").cleanable(true)))
+                .child(div().on_children_prepainted(self.content.control(filter, room)).py(room).my(-room).child(Input::new(&self.filter).aria_label("Filter worktrees by branch or path").cleanable(true)))
                 // Past its height, as where a half tile leaves it one row,
                 // the list cues the rest with its scrollbar, and a row Tab
                 // moves onto scrolls into view with its ring.
-                .child(div().debug_selector(|| "managed-worktree-entries".into()).flex().flex_col().min_h_0().when(!trees.is_empty(), |entries| entries.min_h(rows_floor)).child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap(room + ROW_RING_CLEARANCE).children(trees.iter().take(100).zip(rows).enumerate().map(|(index, (tree, focus))| {
+                .child(div().debug_selector(|| "managed-worktree-entries".into()).on_children_prepainted(show_list).flex().flex_col().min_h_0().when(!trees.is_empty(), |entries| entries.min_h(rows_floor)).child(cue.list(div().on_children_prepainted(cue.observe(reveal)).id("managed-worktree-list").debug_selector(|| "managed-worktree-list".into()).max_h(px(190.) + room * 2.).p(room).m(-room).overflow_y_scroll().track_scroll(self.rows.scroll()).flex().flex_col().gap(room + ROW_RING_CLEARANCE).children(trees.iter().take(100).zip(rows).enumerate().map(|(index, (tree, focus))| {
                     let tree = tree.clone(); let selected = self.selected.as_ref() == Some(&tree.path); let text = format!("{} · {}{}{}", tree.branch.as_deref().unwrap_or("Detached HEAD"), tree.path.display(), if tree.locked { " · Locked" } else { "" }, if tree.prunable { " · Missing or stale" } else { "" });
                     worktree_row(index, text, selected, p).track_focus(&focus).on_click(cx.listener(move |this, _, window, cx| this.select(tree.clone(), window, cx)))
                 })).when(trees.is_empty() && !self.pending, |element| element.child(label("worktrees-empty", "No worktrees match this filter.").text_size(crate::appearance::ui_text(12.)))), "managed-worktree-scrollbar").min_h_0()))
@@ -675,12 +697,12 @@ impl Render for WorktreeManager {
                         .child(label("worktree-selected-identity", format!("{}{} · {}\n{}", details.tree.branch.as_deref().unwrap_or("Detached HEAD"), if details.main { " · Main worktree" } else if details.current { " · Current worktree" } else { "" }, short_oid(&details.tree.oid), details.tree.path.display())).text_size(crate::appearance::ui_text(12.)))
                         .child(label("worktree-selected-status", if details.missing { "Folder missing or unavailable".into() } else { format!("{} changed/untracked files · {} ignored files{}", details.changed_files, details.ignored_files, if details.removal_blocked.is_none() { " · Clean" } else { "" }) }).text_size(crate::appearance::ui_text(12.)))
                         .when(details.force_removal_blocked.is_none(), |element| element.when_some(details.removal_blocked.as_ref(), |element, reason| element.child(label("worktree-removal-protection", reason.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
-                        .child(div().flex().flex_wrap().gap_2()
-                            .child(button("open-managed-worktree", "Open in GitTurtle", "", false).disabled(unavailable || details.missing || details.current).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| { if owner.operation_busy.is_none() && owner.path.as_deref() == Some(this.repo.path()) { window.close_dialog(cx); owner.open(path.clone(), None, window, cx); } }); })))
-                            .child(button("reveal-managed-worktree", if cfg!(target_os = "macos") { "Finder" } else { "Files" }, "", false).disabled(details.missing).on_click(move |_, _, cx| cx.reveal_path(&finder)))
-                            .child(button("edit-managed-worktree", "Editor", "", false).disabled(unavailable || details.missing).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| owner.open_worktree_editor(editor.clone(), window, cx)); })))
-                            .child(button("remove-managed-worktree", "Remove worktree…", "", false).debug_selector(|| "remove-managed-worktree".to_string()).disabled(unavailable || details.removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Ordinary, window, cx))))
-                            .child(button("force-remove-managed-worktree", "Force remove worktree…", "", false).debug_selector(|| "force-remove-managed-worktree".to_string()).when(!unavailable && details.force_removal_blocked.is_none(), |button| button.text_color(rgb(p.removed))).disabled(unavailable || details.force_removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Force, window, cx)))))
+                        .child(div().flex().flex_wrap().gap_2().on_children_prepainted(self.content.controls(actions.iter().cloned().map(Some).collect(), room))
+                            .child(button("open-managed-worktree", "Open in GitTurtle", "", false).track_focus(&actions[0]).disabled(unavailable || details.missing || details.current).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| { if owner.operation_busy.is_none() && owner.path.as_deref() == Some(this.repo.path()) { window.close_dialog(cx); owner.open(path.clone(), None, window, cx); } }); })))
+                            .child(button("reveal-managed-worktree", if cfg!(target_os = "macos") { "Finder" } else { "Files" }, "", false).track_focus(&actions[1]).disabled(details.missing).on_click(move |_, _, cx| cx.reveal_path(&finder)))
+                            .child(button("edit-managed-worktree", "Editor", "", false).track_focus(&actions[2]).disabled(unavailable || details.missing).on_click(cx.listener(move |this, _, window, cx| { let _ = this.owner.update(cx, |owner, cx| owner.open_worktree_editor(editor.clone(), window, cx)); })))
+                            .child(button("remove-managed-worktree", "Remove worktree…", "", false).track_focus(&actions[3]).debug_selector(|| "remove-managed-worktree".to_string()).disabled(unavailable || details.removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Ordinary, window, cx))))
+                            .child(button("force-remove-managed-worktree", "Force remove worktree…", "", false).track_focus(&actions[4]).debug_selector(|| "force-remove-managed-worktree".to_string()).when(!unavailable && details.force_removal_blocked.is_none(), |button| button.text_color(rgb(p.removed))).disabled(unavailable || details.force_removal_blocked.is_some()).on_click(cx.listener(|this, _, window, cx| this.remove(RemovalMode::Force, window, cx)))))
                         .when_some(details.force_removal_blocked.as_ref(), |element, reason| element.child(label("worktree-force-removal-protection", format!("Force removal unavailable: {reason}")).debug_selector(|| "worktree-force-removal-protection".into()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))))
                 }))
             .when(self.creating, |element| element
@@ -715,7 +737,7 @@ impl Render for WorktreeManager {
                     .right(-gpui_kit::component::scroll::Scrollbar::width() - room)
                     .w(gpui_kit::component::scroll::Scrollbar::width())
                     .child(
-                        gpui_kit::component::scroll::Scrollbar::vertical(&self.content)
+                        gpui_kit::component::scroll::Scrollbar::vertical(self.content.scroll())
                             .id("worktree-manager-scrollbar")
                             .mode(gpui_kit::component::scroll::ScrollbarMode::Always)
                             .viewport_from_layout(),
