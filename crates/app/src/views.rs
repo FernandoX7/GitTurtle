@@ -2838,7 +2838,7 @@ impl GitTurtle {
         .filter(|_| text);
         // The path keeps its room before its actions keep theirs: Blame
         // gives up its label, then the actions fold into one menu.
-        let actions = file.map_or(PathActions::Labelled, |file| {
+        let row = file.map_or(PathRow::WHOLE, |file| {
             self.path_actions(
                 &file.path().display().to_string(),
                 history_index.is_some(),
@@ -2883,25 +2883,39 @@ impl GitTurtle {
                             .child(if staged { "Staged" } else { "Unstaged" })
                     }),
             )
-            .child(
+            .child({
                 // Where not even the actions' menu leaves it room, the file
-                // name stays whole and the directory elides first.
+                // name stays whole with as much of its directory as fits
+                // (`path_tail`), the actions wrapping below where the name
+                // does not fit beside them; the whole path is its tooltip
+                // and its accessible name.
+                let whole: SharedString = file
+                    .map(|file| file.path().display().to_string())
+                    .unwrap_or("File comparison".into())
+                    .into();
+                let shown = shown_compare_path(&whole, row.room, window);
+                #[cfg(test)]
+                COMPARE_PATH_SHOWN.with(|shown_path| {
+                    *shown_path.borrow_mut() = Some((shown.clone(), whole.clone()))
+                });
+                // The line's own start elision cuts a name wider than the
+                // row, and guards a measurement a fraction of a pixel short.
                 ellipsis_start(
                     div()
                         .id("preview-file-path")
                         .debug_selector(|| "preview-file-path".into())
                         .flex_1()
-                        .min_w_0(),
+                        .min_w(row.least),
                 )
+                .role(Role::Label)
+                .aria_label(whole.clone())
+                .aria_value(whole)
                 .text_size(crate::appearance::ui_text(12.))
                 .font_weight(FontWeight::MEDIUM)
                 .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
-                .child(
-                    file.map(|file| file.path().display().to_string())
-                        .unwrap_or("File comparison".into()),
-                ),
-            );
-        if let Some(file) = file.filter(|_| actions == PathActions::Menu) {
+                .child(shown)
+            });
+        if let Some(file) = file.filter(|_| row.actions == PathActions::Menu) {
             path_controls =
                 path_controls.child(self.file_actions_menu(file, history_index, blame_index, cx));
         } else {
@@ -2931,12 +2945,12 @@ impl GitTurtle {
                         }))
                 }));
         }
-        if let Some(index) = blame_index.filter(|_| actions != PathActions::Menu) {
+        if let Some(index) = blame_index.filter(|_| row.actions != PathActions::Menu) {
             const DETAIL: &str =
                 "Line attribution and history; working files include uncommitted lines";
             // Blame keeps its label where the whole path fits beside it;
             // otherwise its icon, so the path is not cut for a label.
-            let labelled = actions == PathActions::Labelled;
+            let labelled = row.actions == PathActions::Labelled;
             let blame = if labelled {
                 button("open-blame", "Blame", "", false).tooltip(DETAIL)
             } else {
@@ -3962,7 +3976,9 @@ impl GitTurtle {
     /// and Blame (`blame`), `gap_1` apart. Blame keeps its label where the
     /// path fits beside it, the actions keep their icons where it fits beside
     /// those, and otherwise, where two or more would fold, they fold into one
-    /// File actions menu.
+    /// File actions menu. Where not even "…/" and the file name fit beside
+    /// the actions but do on the row, the actions wrap below the path, which
+    /// takes the row; a name wider than the row keeps them beside it.
     fn path_actions(
         &self,
         path: &str,
@@ -3971,7 +3987,7 @@ impl GitTurtle {
         modes: bool,
         (column, column_min): (Pixels, Pixels),
         window: &Window,
-    ) -> PathActions {
+    ) -> PathRow {
         let rem = window.rem_size();
         let room = column - rem * 1.5;
         let control = appearance::ui_size(28.);
@@ -4010,18 +4026,37 @@ impl GitTurtle {
         let count = 1 + usize::from(history) + usize::from(blame);
         let icons = (control + gap) * count as f32;
         let room = row - badge;
+        // The least the path shows: its file name whole after "…/".
+        let least = path.rfind('/').map_or(needed, |slash| {
+            let least = format!("…{}", &path[slash..]);
+            cached_text_width(&COMPARE_PATH_LEAST, &least, window, || {
+                shaped_width(&least, appearance::ui_text(12.), FontWeight::MEDIUM, window).ceil()
+            })
+        });
+        // A name wider than the whole row cannot be whole: the actions stay
+        // beside it and the line's own start elision cuts it.
+        let whole_name = least <= room;
+        let fit = |actions, beside: Pixels| PathRow {
+            actions,
+            room: if least > beside && whole_name {
+                room
+            } else {
+                beside
+            },
+            least: if whole_name { least } else { px(0.) },
+        };
         if blame {
             let label = cached_width(&BLAME_LABEL, &LineKey::current(window), || {
                 line_widths(&[("Blame", appearance::ui_text(12.))], window)
             }) + appearance::ui_size(20.);
             if room - (icons - control + label) >= needed {
-                return PathActions::Labelled;
+                return fit(PathActions::Labelled, room - (icons - control + label));
             }
         }
         if room - icons >= needed || count < 2 {
-            PathActions::Icons
+            fit(PathActions::Icons, room - icons)
         } else {
-            PathActions::Menu
+            fit(PathActions::Menu, room - control - gap)
         }
     }
 
@@ -4551,6 +4586,98 @@ impl GitTurtle {
     }
 }
 
+/// How the comparison path's row lays out (`path_actions`): its actions, the
+/// room the path gets on its line and the least width it keeps, "…/" and its
+/// file name, so the actions wrap below it rather than cut the name.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PathRow {
+    actions: PathActions,
+    room: Pixels,
+    least: Pixels,
+}
+
+impl PathRow {
+    /// No file: the placeholder, whole, beside labelled actions.
+    const WHOLE: Self = Self {
+        actions: PathActions::Labelled,
+        room: Pixels::MAX,
+        least: px(0.),
+    };
+}
+
+/// `path`, a path's displayed form, in `room`, as `width` measures a line:
+/// whole where it fits; otherwise its file name whole after "…/" and as many
+/// of its nearest directories as fit whole ("…/src/app/views.rs"); where not
+/// even the nearest one does, as much of that directory's end as fits
+/// ("…ets/turtle.png"), down to "…/" and the file name alone. Where not even
+/// that fits, the whole path, which the line's own start elision cuts. It
+/// cuts only at a separator or a character boundary, so a name that is not
+/// UTF-8 keeps the replacement characters its display shows.
+pub(crate) fn path_tail(path: &str, room: Pixels, width: impl Fn(&str) -> Pixels) -> String {
+    if width(path) <= room {
+        return path.to_owned();
+    }
+    let Some(slash) = path.rfind('/') else {
+        return path.to_owned();
+    };
+    // Whole directories, the most first.
+    for (separator, _) in path[..slash].match_indices('/') {
+        let tail = format!("…{}", &path[separator..]);
+        if width(&tail) <= room {
+            return tail;
+        }
+    }
+    let start = path[..slash]
+        .rfind('/')
+        .map_or(0, |separator| separator + 1);
+    let nearest = &path[start..slash];
+    let name = &path[slash..];
+    // The nearest directory from its `skip`th character; all of them
+    // skipped leaves "…/" and the name.
+    let starts: Vec<usize> = nearest.char_indices().map(|(at, _)| at).collect();
+    let tail = |skip: usize| {
+        let from = starts.get(skip).copied().unwrap_or(nearest.len());
+        format!("…{}{name}", &nearest[from..])
+    };
+    // A first directory with nothing before it is not shown whole after
+    // the ellipsis.
+    let (mut low, mut high) = (usize::from(start == 0), starts.len());
+    if width(&tail(high)) > room {
+        return path.to_owned();
+    }
+    while low < high {
+        let middle = (low + high) / 2;
+        if width(&tail(middle)) <= room {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    tail(low)
+}
+
+/// Compare's path as it shows in `room` (`path_tail`), in its font, laid
+/// out again only when the path, the room, the font or the sizes change.
+fn shown_compare_path(path: &SharedString, room: Pixels, window: &Window) -> SharedString {
+    let key = LineKey::current(window);
+    COMPARE_PATH_TAIL.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((cached, cached_path, cached_room, shown)) = &*cache
+            && *cached == key
+            && cached_path == path
+            && *cached_room == room
+        {
+            return shown.clone();
+        }
+        let shown: SharedString = path_tail(path, room, |text| {
+            shaped_width(text, appearance::ui_text(12.), FontWeight::MEDIUM, window).ceil()
+        })
+        .into();
+        *cache = Some((key, path.clone(), room, shown.clone()));
+        shown
+    })
+}
+
 /// How the comparison path's row lays out its actions (`path_actions`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum PathActions {
@@ -4982,6 +5109,10 @@ thread_local! {
     static TEXT_MODES: TextWidth = const { RefCell::new(None) };
     static FOOTER_LINE: TextWidth = const { RefCell::new(None) };
     static COMPARE_PATH: TextWidth = const { RefCell::new(None) };
+    static COMPARE_PATH_LEAST: TextWidth = const { RefCell::new(None) };
+    /// The path Compare last showed, for its room (`shown_compare_path`).
+    static COMPARE_PATH_TAIL: RefCell<Option<(LineKey, SharedString, Pixels, SharedString)>> =
+        const { RefCell::new(None) };
     static PARENT_LABELS: TextWidth = const { RefCell::new(None) };
     static AREA_BADGE: TextWidth = const { RefCell::new(None) };
     static STATUS_WORDS: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
@@ -5142,6 +5273,10 @@ thread_local! {
     /// it shows, such as the Changes count (`compact_control_label`).
     pub(crate) static COMPACT_LABELS: RefCell<std::collections::BTreeMap<&'static str, SharedString>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
+    /// What Compare's path showed in the last frame drawn and its whole
+    /// accessible name (`path_tail`).
+    pub(crate) static COMPARE_PATH_SHOWN: RefCell<Option<(SharedString, SharedString)>> =
+        const { RefCell::new(None) };
     /// The icon asset each control drew since the map was last cleared, by
     /// its element ID: the shared `button` helper's and the profile's
     /// (`note_control_icon`).
@@ -10226,6 +10361,154 @@ pub(crate) mod tests {
             menu.left() - room >= toolbar.left(),
             "the ring's room {room:?} left of {menu:?} inside {toolbar:?}"
         );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A path too long for its room keeps its file name whole and as much
+    /// of its directory as fits: whole directories after "…/" where they
+    /// fit, else the nearest one's end, else "…/" and the name; where not
+    /// even that fits, the whole path, for the line's own elision. Measured
+    /// a pixel per character.
+    #[test]
+    fn a_long_path_keeps_its_file_name_and_nearest_directory() {
+        let tail = |path: &str, room: f32| {
+            path_tail(path, px(room), |text| px(text.chars().count() as f32))
+        };
+        assert_eq!(tail("src/app/views.rs", 16.), "src/app/views.rs");
+        assert_eq!(tail("crates/app/src/views.rs", 18.), "…/app/src/views.rs");
+        assert_eq!(tail("crates/app/src/views.rs", 17.), "…/src/views.rs");
+        assert_eq!(tail("crates/app/src/views.rs", 13.), "…src/views.rs");
+        assert_eq!(tail("crates/app/src/views.rs", 12.), "…rc/views.rs");
+        assert_eq!(tail("crates/app/src/views.rs", 10.), "…/views.rs");
+        assert_eq!(
+            tail("crates/app/src/views.rs", 9.),
+            "crates/app/src/views.rs"
+        );
+        assert_eq!(tail("assets/turtle.png", 15.), "…ets/turtle.png");
+        assert_eq!(tail("assets/turtle.png", 12.), "…/turtle.png");
+        assert_eq!(tail("README.md", 4.), "README.md");
+        // A name that is not UTF-8 keeps the replacement characters its
+        // display shows, cut only at character boundaries.
+        let lossy = "plan\u{FFFD}\u{FFFD}/na\u{FFFD}ve.rs";
+        assert_eq!(tail(lossy, 12.), "…\u{FFFD}\u{FFFD}/na\u{FFFD}ve.rs");
+        assert_eq!(tail(lossy, 11.), "…\u{FFFD}/na\u{FFFD}ve.rs");
+        assert_eq!(tail(lossy, 10.), "…/na\u{FFFD}ve.rs");
+    }
+
+    /// Compare's path in a 461 × 490 half tile at 13 and 18 pt: a path too
+    /// long for its room keeps its file name whole and as much of its
+    /// directory as fits, where the line's own start elision showed
+    /// "…avigationSidebar.tsx" with no directory. Where "…/" and the name do
+    /// not fit beside File actions, the control wraps below the path, which
+    /// takes the row. The shown text fits its box; the whole path stays the
+    /// accessible name, and a name that is not UTF-8 shows the replacement
+    /// characters its display does.
+    #[gpui::test]
+    async fn a_long_compare_path_keeps_its_file_name_and_nearest_directory(
+        cx: &mut TestAppContext,
+    ) {
+        const DIRECTORY: &str = "src/components/navigation/";
+        let names = [
+            "Repository.tsx",
+            "RepositoryNav.tsx",
+            "RepositoryNavigat.tsx",
+            "RepositoryNavigation.tsx",
+            "RepositoryNavigationSi.tsx",
+            "RepositoryNavigationSide.tsx",
+            "RepositoryNavigationSidebar.tsx",
+        ];
+        let mut script = String::from(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000000 +0000\ndata 10\nlong paths\n",
+        );
+        let mut paths: Vec<String> = names
+            .iter()
+            .map(|name| format!("{DIRECTORY}{name}"))
+            .collect();
+        paths.push("crates/app/src/components/views.rs".into());
+        for path in &paths {
+            script.push_str(&format!("M 100644 inline {path}\ndata 5\ntext\n\n"));
+        }
+        // "src/plan\xe9/components/na\xefve.rs", its bytes not UTF-8.
+        script.push_str(
+            "M 100644 inline \"src/plan\\351/components/na\\357ve.rs\"\ndata 5\ntext\n\ndone\n",
+        );
+        let (_fixture, app, cx) = history_window_from(cx, &script).await;
+        let files = app.read_with(cx, |app, _| app.files.len());
+        assert_eq!(files, paths.len() + 1);
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(461.), px(490.)));
+            let (mut wrapped, mut elided) = (0, 0);
+            for index in 0..files {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.select_file(index, window, cx))
+                });
+                settle(&app, cx).await;
+                COMPARE_PATH_SHOWN.with(|shown| shown.borrow_mut().take());
+                draw(cx);
+                let (shown, whole) = COMPARE_PATH_SHOWN
+                    .with(|shown| shown.borrow().clone())
+                    .expect("the path drawn");
+                let display =
+                    app.read_with(cx, |app, _| app.files[index].path().display().to_string());
+                let at = format!("{display:?} at {text} pt");
+                assert_eq!(whole.as_ref(), display, "{at}: the whole path is its name");
+                let measure = |cx: &mut VisualTestContext, line: &str| {
+                    cx.update(|window, _| {
+                        shaped_width(line, appearance::ui_text(12.), FontWeight::MEDIUM, window)
+                    })
+                };
+                let path = cx.debug_bounds("preview-file-path").unwrap();
+                let toolbar = cx.debug_bounds("compare-toolbar").unwrap();
+                let rem = cx.update(|window, _| window.rem_size());
+                let slash = display.rfind('/').unwrap();
+                let name = &display[slash..];
+                let least = format!("…{name}");
+                // A name wider than the whole row is left to the line's
+                // own elision; every other is whole, in a line that fits.
+                if measure(cx, &least) <= toolbar.size.width - rem * 1.5 {
+                    assert!(shown.ends_with(name), "{at}: {shown:?} keeps {name:?}");
+                    assert!(
+                        measure(cx, &shown) <= path.size.width + px(0.5),
+                        "{at}: {shown:?} fits {path:?}"
+                    );
+                    elided += usize::from(shown.as_ref() != display);
+                } else {
+                    assert_eq!(shown.as_ref(), display, "{at}");
+                }
+                if shown.as_ref() != display && shown.ends_with(name) {
+                    let directory = &display[..slash];
+                    let last = directory.chars().last().unwrap();
+                    if shown.as_ref() == least {
+                        let more = format!("…{last}{name}");
+                        assert!(
+                            measure(cx, &more) > path.size.width,
+                            "{at}: {shown:?} where {more:?} fits {path:?}"
+                        );
+                    } else {
+                        assert!(shown.starts_with('…'), "{at}: {shown:?}");
+                    }
+                }
+                if let Some(menu) = cx.debug_bounds("file-actions-menu")
+                    && menu.top() >= path.bottom()
+                {
+                    wrapped += 1;
+                }
+            }
+            assert!(wrapped > 0, "at {text} pt a name took the row");
+            assert!(elided >= 3, "at {text} pt {elided} paths elided");
+            let lossy = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .map(|file| file.path().display().to_string())
+                    .find(|path| path.contains('\u{FFFD}'))
+            });
+            assert_eq!(
+                lossy.as_deref(),
+                Some("src/plan\u{FFFD}/components/na\u{FFFD}ve.rs"),
+                "the display of a name that is not UTF-8"
+            );
+        }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
