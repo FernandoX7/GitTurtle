@@ -881,6 +881,9 @@ struct AmendForm {
     /// Whether the line beneath the fields says that the integration its
     /// last review was refused for has ended ([`PAUSE_ENDED`]).
     pause_ended: bool,
+    /// How often the form has been shown, which gives its refusal a fresh
+    /// node each time it opens again (`native_accessibility::refusal_line`).
+    opened: usize,
 }
 impl AmendForm {
     fn new(
@@ -903,6 +906,7 @@ impl AmendForm {
             initial,
             error: None,
             pause_ended: false,
+            opened: 0,
         }
     }
     fn draft(&self, cx: &App) -> CommitDraft {
@@ -989,10 +993,16 @@ impl Render for AmendForm {
                     .text_color(rgb(p.muted))
                     .child("The next step reviews the staged snapshot and the effect on history."),
             )
-            .children(form_line(self.error.as_deref(), self.pause_ended, cx))
+            .children(form_line(
+                self.error.as_deref(),
+                self.pause_ended,
+                self.opened,
+                cx,
+            ))
     }
 }
 fn show_amend(form: Entity<AmendForm>, window: &mut Window, cx: &mut App) {
+    form.update(cx, |form, _| form.opened += 1);
     window.open_alert_dialog(cx, move |dialog, window, _| {
         let submit = form.clone();
         dialog
@@ -1019,6 +1029,9 @@ struct StashForm {
     /// Whether the line beneath the fields says that the integration its
     /// last review was refused for has ended ([`PAUSE_ENDED`]).
     pause_ended: bool,
+    /// How often the form has been shown, which gives its refusal a fresh
+    /// node each time it opens again (`native_accessibility::refusal_line`).
+    opened: usize,
 }
 impl StashForm {
     fn new(
@@ -1036,6 +1049,7 @@ impl StashForm {
             include_untracked: false,
             error: None,
             pause_ended: false,
+            opened: 0,
         }
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -1075,10 +1089,11 @@ impl Render for StashForm {
             .child(div().flex().flex_col().gap_1().child("Stash name").child(Input::new(&self.name).aria_label("Stash name")))
             .child(Checkbox::new("stash-include-untracked").label("Include untracked files").checked(self.include_untracked)
                 .on_click(cx.listener(|this, checked, _, cx| { this.include_untracked = *checked; cx.notify(); })))
-            .children(form_line(self.error.as_deref(), self.pause_ended, cx))
+            .children(form_line(self.error.as_deref(), self.pause_ended, self.opened, cx))
     }
 }
 fn show_stash_form(form: Entity<StashForm>, window: &mut Window, cx: &mut App) {
+    form.update(cx, |form, _| form.opened += 1);
     window.open_alert_dialog(cx, move |dialog, window, _| {
         let submit = form.clone();
         dialog
@@ -1108,11 +1123,27 @@ fn pause_ended(error: &mut Option<String>, ended: &mut bool) -> bool {
 }
 
 /// The line beneath a recovery form's fields: why its last review was
-/// refused, or, `pause_ended`, that the integration it was refused for has
-/// ended, a status heard once assistive technology finishes speaking.
-fn form_line(error: Option<&str>, pause_ended: bool, cx: &App) -> Option<AnyElement> {
+/// refused, an alert announced at once, again by a fresh node each time the
+/// form opens again with it (`opened`, `native_accessibility::refusal_line`),
+/// or, `pause_ended`, that the integration it was refused for has ended, a
+/// status heard once assistive technology finishes speaking. The refusal was
+/// no live region, so it went unannounced as it first appeared and as the
+/// form opened again with it.
+fn form_line(
+    error: Option<&str>,
+    pause_ended: bool,
+    opened: usize,
+    cx: &App,
+) -> Option<AnyElement> {
     match error {
-        Some(error) => Some(form_error(error, cx)),
+        Some(error) => Some(
+            native_accessibility::refusal_line("recovery-form-error", opened, error.to_owned())
+                .max_h(px(130.))
+                .overflow_y_scroll()
+                .text_size(crate::appearance::ui_text(12.))
+                .text_color(rgb(palette(cx).warning))
+                .into_any_element(),
+        ),
         None => pause_ended.then(|| {
             native_accessibility::static_text(
                 div()
@@ -2638,7 +2669,9 @@ mod tests {
     /// asks for the form's review, as its button does: the review is
     /// refused in the core's words without reading a plan, and the form
     /// opens again with that refusal beneath its fields and the value kept,
-    /// asking for a quiet read of the pause.
+    /// asking for a quiet read of the pause. The refusal is announced at
+    /// once, and asked for again while still paused, the form opens again
+    /// with it already there and announces it again by a fresh node.
     async fn reopened_refused_while_paused(cx: &mut gpui::TestAppContext, form: PausedForm) {
         let (fixture, app, cx) =
             crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
@@ -2753,9 +2786,56 @@ mod tests {
             app.read_with(cx, |app, _| app.automatic.quiet_read_requested()),
             "{form:?}: the refusal asks for a quiet read of the pause"
         );
+        // Announced at once, as when it first appears in an open form.
+        let first = refusal_announced(form);
+        quiet_reads_land(&app, cx);
+        assert!(
+            app.read_with(cx, |app, _| app.integration_state.is_some()),
+            "{form:?}: the read finds the merge still paused"
+        );
+
+        // Review again, still paused: the form opens again with the same
+        // refusal already there, announced again by a fresh node.
+        cx.update(|window, cx| {
+            window.dispatch_action(
+                Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
+                cx,
+            )
+        });
+        frame(cx);
+        assert_eq!(
+            paused_form(&app, cx, form),
+            (Some(PAUSED_REFUSAL.into()), value.into()),
+            "{form:?}: refused again"
+        );
+        assert!(dialog_open(cx), "{form:?}: the form opens again once more");
+        let second = refusal_announced(form);
+        assert_ne!(
+            first, second,
+            "{form:?}: the refusal it opens with is a fresh node, announced again"
+        );
         drop(nothing);
         quiet_reads_land(&app, cx);
         drop(fixture);
+    }
+
+    /// The node that announces the open recovery form's refusal: one, at
+    /// once.
+    fn refusal_announced(form: PausedForm) -> String {
+        let mut announced =
+            crate::native_accessibility::written::announced_from("recovery-form-error-");
+        assert_eq!(
+            announced.len(),
+            1,
+            "{form:?}: one refusal announced: {announced:?}"
+        );
+        let (node, how) = announced.pop().expect("the refusal");
+        assert_eq!(
+            how,
+            crate::native_accessibility::written::Announced::ASSERTIVE,
+            "{form:?}: the refusal is announced at once"
+        );
+        node
     }
 
     /// Amend last commit…, opened at rest, is refused while a merge is

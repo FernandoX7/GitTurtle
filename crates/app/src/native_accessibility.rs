@@ -1606,6 +1606,32 @@ pub(crate) trait LiveRegion: StatefulInteractiveElement + Element {
 
 impl<E: StatefulInteractiveElement + Element> LiveRegion for E {}
 
+/// A form's line saying why its last review was refused or could not be
+/// prepared, `text`: an alert, announced at once as a whole, whether it
+/// appears in the open form or is there as the form opens again. Such a form
+/// closes as its review is asked for and opens again with the line, and
+/// `opening`, the form's count of its openings, gives the line a fresh node
+/// each time: opened again within a frame, as a refusal while an
+/// integration is paused opens it, the form kept the line's node, which an
+/// assistive technology announces only as it is added or its text changes,
+/// so the same reason again went unannounced. Tests find the line by its
+/// debug selector, `id`, and what it asks to announce under
+/// `<id>-<opening>` ([`written::announced_from`]).
+pub(crate) fn refusal_line(
+    id: &'static str,
+    opening: usize,
+    text: impl Into<SharedString>,
+) -> Stateful<Div> {
+    let text = text.into();
+    div()
+        .id((id, opening))
+        .debug_selector(move || id.to_owned())
+        .role(Role::Alert)
+        .aria_label(text.clone())
+        .assertive()
+        .child(text)
+}
+
 /// `element`, a container that scrolls or clips what it holds, as the
 /// accessibility node AccessKit expects of one: it clips its children, and its
 /// bounds are the part of it that its ancestors leave visible, or, where they
@@ -2682,6 +2708,23 @@ pub(crate) mod written {
     /// element that is not one.
     pub(crate) fn announced(id: &str) -> Option<Announced> {
         LIVE.with(|live| live.borrow().get(id).copied())
+    }
+
+    /// Every live region [`announced`] would return whose element ID starts
+    /// with `prefix`, by element ID in order: a line with a fresh ID for
+    /// each opening of its form ([`super::refusal_line`]) is found by its
+    /// stem.
+    pub(crate) fn announced_from(prefix: &str) -> Vec<(String, Announced)> {
+        LIVE.with(|live| {
+            let mut found: Vec<(String, Announced)> = live
+                .borrow()
+                .iter()
+                .filter(|(id, _)| id.starts_with(prefix))
+                .map(|(id, announced)| (id.clone(), *announced))
+                .collect();
+            found.sort_by(|a, b| a.0.cmp(&b.0));
+            found
+        })
     }
 
     /// A window's draw begins: what [`announced`] returns, and what [`open`]

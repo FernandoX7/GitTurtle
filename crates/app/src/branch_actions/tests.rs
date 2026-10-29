@@ -274,3 +274,102 @@ async fn remote_manager_that_fits_paints_no_thumb(cx: &mut TestAppContext) {
         &selectors("managed-remote", 2),
     );
 }
+
+/// Asks for the open branch or remote form's review, as its button does,
+/// lets its preparation fail and returns the node that announces why: the
+/// form opens again with the reason in its line beneath the fields, `line`,
+/// an alert announced at once.
+async fn review_fails(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, line: &str) -> String {
+    cx.update(|window, cx| {
+        window.dispatch_action(
+            Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
+            cx,
+        )
+    });
+    let read = app.update(cx, |app, _| app.branch_actions.task.take());
+    read.expect("the review is prepared").await;
+    draw(cx);
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "{line}: the form opens again"
+    );
+    assert!(
+        cx.debug_bounds(line.to_owned().leak()).is_some(),
+        "{line}: the form draws why"
+    );
+    let mut announced = native_accessibility::written::announced_from(&format!("{line}-"));
+    assert_eq!(
+        announced.len(),
+        1,
+        "{line}: one line announced: {announced:?}"
+    );
+    let (node, how) = announced.pop().unwrap();
+    assert_eq!(
+        how,
+        native_accessibility::written::Announced::ASSERTIVE,
+        "{line}: announced at once"
+    );
+    node
+}
+
+/// A branch or remote form whose review cannot be prepared opens again with
+/// the reason beneath its fields, an alert announced at once, as Rename
+/// branch… does for the branch's own name and Edit remote for a remote
+/// removed meanwhile. Opened again with that line already there, after
+/// another review fails the same way, the line is a fresh node, announced
+/// again as when it first appeared. The line was no live region, so neither
+/// was announced; and a form that closes and opens again within a frame, as
+/// a quick preparation can, keeps its nodes, which assistive technology
+/// does not announce again.
+#[gpui::test]
+async fn a_reopened_branch_or_remote_form_announces_why_afresh(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let (repo, app, cx) = small_window_with_branches(cx, fixture.path(), 1);
+    // Rename branch… starts with the branch's own name, which the core
+    // refuses.
+    let plan = Arc::new(repo.branch_plan("feature-00").unwrap());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_branch_form(BranchFormMode::Rename(plan), window, cx)
+        })
+    });
+    draw(cx);
+    let first = review_fails(&app, cx, "branch-form-error").await;
+    let second = review_fails(&app, cx, "branch-form-error").await;
+    assert_ne!(
+        first, second,
+        "Rename branch…: a fresh node announces it again"
+    );
+    cx.update(|window, cx| window.close_dialog(cx));
+    draw(cx);
+
+    // Edit remote for a remote removed after the form opened.
+    let bare = fixture.path().join("upstream.git");
+    git(
+        fixture.path(),
+        &["init", "--quiet", "--bare", bare.to_str().unwrap()],
+    );
+    git(
+        repo.path(),
+        &["remote", "add", "upstream", bare.to_str().unwrap()],
+    );
+    let expected = repo
+        .remote_configs()
+        .unwrap()
+        .into_iter()
+        .find(|remote| remote.name == "upstream")
+        .expect("the remote");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_remote_form(Some(Arc::new(expected)), window, cx)
+        })
+    });
+    draw(cx);
+    git(repo.path(), &["remote", "remove", "upstream"]);
+    let first = review_fails(&app, cx, "remote-form-error").await;
+    let second = review_fails(&app, cx, "remote-form-error").await;
+    assert_ne!(
+        first, second,
+        "Edit remote: a fresh node announces it again"
+    );
+}

@@ -995,6 +995,7 @@ fn field_label(label: &'static str, cx: &App) -> AnyElement {
 }
 
 fn show_branch_form(form: Entity<BranchForm>, window: &mut Window, cx: &mut App) {
+    form.update(cx, |form, _| form.opened += 1);
     let title = match &form.read(cx).mode {
         BranchFormMode::Rename(_) => "Rename branch",
         BranchFormMode::Track(_) => "Create tracking branch",
@@ -1017,6 +1018,7 @@ fn show_branch_form(form: Entity<BranchForm>, window: &mut Window, cx: &mut App)
 }
 
 fn show_remote_form(form: Entity<RemoteForm>, window: &mut Window, cx: &mut App) {
+    form.update(cx, |form, _| form.opened += 1);
     let title = form
         .read(cx)
         .expected
@@ -1202,6 +1204,10 @@ struct BranchForm {
     name: Entity<InputState>,
     checkout: bool,
     error: Option<String>,
+    /// How often the form has been shown, which gives the line saying why
+    /// its review failed a fresh node each time it opens again
+    /// (`native_accessibility::refusal_line`).
+    opened: usize,
     _subscription: Subscription,
 }
 
@@ -1237,6 +1243,7 @@ impl BranchForm {
             name,
             checkout: true,
             error: None,
+            opened: 0,
             _subscription: subscription,
         }
     }
@@ -1317,11 +1324,11 @@ impl Render for BranchForm {
                         })),
                 )
             })
+            // Announced at once, again each time the form opens with it.
             .children(self.error.as_ref().map(|error| {
-                div()
+                native_accessibility::refusal_line("branch-form-error", self.opened, error.clone())
                     .text_size(crate::appearance::ui_text(12.))
                     .text_color(rgb(p.warning))
-                    .child(error.clone())
             }))
     }
 }
@@ -1425,6 +1432,10 @@ struct RemoteForm {
     store_refs: bool,
     advanced: bool,
     error: Option<String>,
+    /// How often the form has been shown, which gives the line saying why
+    /// its review failed a fresh node each time it opens again
+    /// (`native_accessibility::refusal_line`).
+    opened: usize,
 }
 
 impl RemoteForm {
@@ -1480,6 +1491,7 @@ impl RemoteForm {
             store_refs,
             advanced: false,
             error: None,
+            opened: 0,
         }
     }
 
@@ -1575,7 +1587,8 @@ impl Render for RemoteForm {
                     .on_click(cx.listener(|this, checked, _, cx| { this.store_refs = *checked; cx.notify(); })))
                 .when(self.store_refs, |element| element.child(shortcuts::tab_leaves(Textarea::new(&self.rules).h(px(90.)).aria_label("Git fetch refspecs, one per line"))))
                 .child(div().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)).child("Advanced Git refspecs, one per line. The standard mapping tracks every remote branch under this remote's name."))))
-            .children(self.error.as_ref().map(|error| div().text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone())))
+            // Announced at once, again each time the form opens with it.
+            .children(self.error.as_ref().map(|error| native_accessibility::refusal_line("remote-form-error", self.opened, error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
     }
 }
 
