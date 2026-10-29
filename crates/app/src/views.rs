@@ -19165,7 +19165,11 @@ pub(crate) mod tests {
     /// itself the message's viewport draws. The message is a document read
     /// as a whole, which clips nothing, and its title reported its layout
     /// bounds: AT-SPI gave it y 372–614 in a viewport ending at 558, over
-    /// the "Changed files" heading, at 18 pt in a 461 px window.
+    /// the "Changed files" heading, at 18 pt in a 461 px window. The message
+    /// renders only the pieces it draws some of, so on Linux AT-SPI reports
+    /// each one showing, at that part: the adapter withholds showing only
+    /// from a node wholly outside its clipping ancestor, and the message has
+    /// none.
     #[gpui::test]
     async fn message_pieces_report_the_part_the_details_draw(cx: &mut TestAppContext) {
         let subject = "Update the layout notes so the inspector's title wraps over several \
@@ -19222,6 +19226,27 @@ pub(crate) mod tests {
                 );
                 if node_bounds(cx, layout).y1 > drawn.y1 + 0.5 {
                     cut += 1;
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    use crate::native_accessibility::atspi_state_tests::{next_frame, reached};
+                    use accesskit_atspi_common::State;
+                    let name = node.value().expect("its text").to_owned();
+                    let found = reached(next_frame(cx));
+                    let piece = found
+                        .iter()
+                        .find(|found| found.name == name)
+                        .unwrap_or_else(|| panic!("{at}: AT-SPI reaches piece {index}"));
+                    assert!(
+                        piece.state.contains(State::Visible | State::Showing),
+                        "{at}: piece {index}, drawn in part, shows: {:?}",
+                        piece.state
+                    );
+                    assert_eq!(
+                        (piece.extents.y, piece.extents.y + piece.extents.height),
+                        (bounds.y0 as i32, bounds.y1 as i32),
+                        "{at}: piece {index} is reported at the part the viewport draws"
+                    );
                 }
             }
             assert!(pieces > 0, "{at}: the message draws its pieces");

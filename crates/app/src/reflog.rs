@@ -1527,7 +1527,7 @@ mod tests {
     /// 640 × 490 the dialog's content scrolls and its edge cuts the list, so
     /// entries inside the list's own bounds lie below the dialog. AccessKit
     /// still offers the first entry past an edge, for an assistive technology
-    /// to move into.
+    /// to move into, which AT-SPI reports visible but not showing.
     ///
     /// The test platform builds no accessibility tree, so the test builds the
     /// part GPUI would: the window, each clipping container's node as it
@@ -1632,7 +1632,6 @@ mod tests {
             };
 
             let found = reached(tree(None));
-            let showing = State::Showing | State::Visible;
             for index in 0..count {
                 let name = format!("entry {index}");
                 let entry = found.iter().find(|node| node.name == name);
@@ -1644,8 +1643,17 @@ mod tests {
                     entry.is_some(),
                     drawn[index]
                 );
+                // An entry the list draws shows; the one past an edge is
+                // visible but off screen.
                 if let Some(entry) = entry {
-                    assert!(entry.state.contains(showing), "{name}: {entry:?}");
+                    assert_eq!(
+                        (
+                            entry.state.contains(State::Visible),
+                            entry.state.contains(State::Showing)
+                        ),
+                        (true, drawn[index]),
+                        "{name}: {entry:?}"
+                    );
                 }
             }
             // The list reports the part of itself the dialog shows.
@@ -1670,7 +1678,8 @@ mod tests {
                 found[0].extents
             );
 
-            // Focus keeps an entry reachable wherever it lies.
+            // Focus keeps an entry reachable wherever it lies, showing only
+            // where the list draws it.
             let last = count - 1;
             let found = reached(tree(Some(last)));
             let focused = found
@@ -1678,7 +1687,8 @@ mod tests {
                 .find(|node| node.name == format!("entry {last}"))
                 .unwrap_or_else(|| panic!("the focused entry {last} is reached at 640 × {height}"));
             assert!(
-                focused.state.contains(showing | State::Focused),
+                focused.state.contains(State::Visible | State::Focused)
+                    && focused.state.contains(State::Showing) == drawn[last],
                 "{focused:?}"
             );
         }

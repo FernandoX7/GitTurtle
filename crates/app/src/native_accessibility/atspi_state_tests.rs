@@ -443,3 +443,90 @@ fn a_page_shown_again_after_a_dialog_puts_everything_it_holds_on_the_bus() {
         "only the window and the dialog were on the bus while the page was hidden"
     );
 }
+
+/// A node AccessKit's filter keeps wholly outside its nearest clipping
+/// ancestor, as the first child past that edge or because it holds focus, is
+/// visible but not showing: off screen, as browsers report one. A node inside
+/// that ancestor, or partly inside it, shows, as does one with no clipping
+/// ancestor. The adapter reported every node it keeps both visible and
+/// showing, so text GitTurtle reports where it lies below a body's fold, as
+/// the GitHub panel's notice at 18 pt in a 461 × 490 window, read as shown
+/// over Back to repository (vendored patch, `GITTURTLE-PATCH.md`).
+#[test]
+fn a_node_outside_its_clip_is_visible_but_not_showing() {
+    use gpui_kit::gpui::accesskit::Rect as Bounds;
+    let named = |role: Role, name: &str, y0: f64, y1: f64| {
+        let mut node = Node::new(role);
+        node.set_label(name);
+        node.set_bounds(Bounds {
+            x0: 0.,
+            y0,
+            x1: 100.,
+            y1,
+        });
+        node
+    };
+    let [root, body, inside, cut, past, beyond, focused, footer] =
+        [0, 1, 2, 3, 4, 5, 6, 7].map(LocalNodeId);
+    let mut window = Node::new(Role::Window);
+    window.set_bounds(Bounds {
+        x0: 0.,
+        y0: 0.,
+        x1: 100.,
+        y1: 500.,
+    });
+    window.set_children(vec![body, footer]);
+    let mut body_node = named(Role::ScrollView, "Body", 0., 100.);
+    body_node.set_clips_children();
+    body_node.set_children(vec![inside, cut, past, beyond, focused]);
+    let update = TreeUpdate {
+        nodes: vec![
+            (root, window),
+            (body, body_node),
+            (inside, named(Role::Button, "Inside", 10., 30.)),
+            (cut, named(Role::Status, "Cut by the fold", 90., 120.)),
+            (past, named(Role::Status, "Past the fold", 120., 200.)),
+            (beyond, named(Role::Button, "Beyond", 210., 230.)),
+            (focused, named(Role::Button, "Focused", 300., 320.)),
+            (
+                footer,
+                named(Role::Button, "Back to repository", 400., 430.),
+            ),
+        ],
+        tree: Some(Tree::new(root)),
+        tree_id: TreeId::ROOT,
+        focus: focused,
+    };
+    let found = reached(update);
+    let state = |name: &str| {
+        found
+            .iter()
+            .find(|node| node.name == name)
+            .map(|node| node.state)
+    };
+    for name in ["Inside", "Cut by the fold", "Back to repository"] {
+        let state = state(name).unwrap_or_else(|| panic!("{name} is reached"));
+        assert!(
+            state.contains(State::Visible | State::Showing),
+            "{name} shows: {state:?}"
+        );
+    }
+    for name in ["Past the fold", "Focused"] {
+        let state = state(name).unwrap_or_else(|| panic!("{name} is reached"));
+        assert!(
+            state.contains(State::Visible) && !state.contains(State::Showing),
+            "{name} is visible but not showing: {state:?}"
+        );
+    }
+    assert_eq!(state("Beyond"), None, "AccessKit's filter leaves it out");
+    let past = found
+        .iter()
+        .find(|node| node.name == "Past the fold")
+        .expect("reached");
+    assert_eq!(
+        (past.extents.y, past.extents.height),
+        (120, 80),
+        "the node keeps its extents: {:?}",
+        past.extents
+    );
+}

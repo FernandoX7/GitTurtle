@@ -1912,7 +1912,10 @@ mod tests {
     /// where it lies. It reported its layout where the body cut it, so at 18 pt in a 461 × 490
     /// window AT-SPI gave a notice the fold cut y 569–731, over Back to repository; then an
     /// empty rectangle on the body's edge where the body drew none of it, which AccessKit
-    /// keeps as the child past the fold and AT-SPI reported 0 px tall at y 557.
+    /// keeps as the child past the fold and AT-SPI reported 0 px tall at y 557. On Linux the
+    /// notice the body draws none of is visible but not showing on AT-SPI, at the extents of
+    /// its layout, and one it draws some of shows: reported where it lies and showing, it
+    /// read as shown over Back to repository.
     #[gpui::test]
     async fn the_notice_reports_the_part_the_panel_draws(cx: &mut TestAppContext) {
         use crate::native_accessibility::written;
@@ -1946,6 +1949,30 @@ mod tests {
             let scale = pixel(cx);
             let (notice, body, layout) = measure(cx);
             let (top, bottom) = (layout.y0.max(body.y0), layout.y1.min(body.y1));
+            #[cfg(target_os = "linux")]
+            {
+                use crate::native_accessibility::atspi_state_tests::{next_frame, reached};
+                use accesskit_atspi_common::State;
+                let found = reached(next_frame(cx));
+                let shown = found
+                    .iter()
+                    .find(|found| found.name == OFFLINE)
+                    .unwrap_or_else(|| panic!("{at}: AT-SPI reaches the notice"));
+                assert_eq!(
+                    (shown.extents.y, shown.extents.y + shown.extents.height),
+                    (notice.y0 as i32, notice.y1 as i32),
+                    "{at}: AT-SPI reports the notice at its node's bounds"
+                );
+                assert_eq!(
+                    (
+                        shown.state.contains(State::Visible),
+                        shown.state.contains(State::Showing)
+                    ),
+                    (true, bottom - top >= scale),
+                    "{at}: the notice is visible, and shows only where the body draws it: {:?}",
+                    shown.state
+                );
+            }
             if bottom - top >= scale {
                 assert!(
                     (notice.y0 - top).abs() <= 0.5 && (notice.y1 - bottom).abs() <= 0.5,

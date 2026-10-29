@@ -34,6 +34,29 @@ use crate::{
 
 pub(crate) struct NodeWrapper<'a>(pub(crate) &'a Node<'a>);
 
+// GitTurtle patch (GITTURTLE-PATCH.md): whether `node`'s bounding box lies
+// wholly outside that of its nearest ancestor that clips its children, which
+// the application reports as the part of that ancestor it draws. A node
+// without bounds, or without a clipping ancestor, is not.
+fn clipped_out(node: &Node<'_>) -> bool {
+    let Some(bounds) = node.bounding_box() else {
+        return false;
+    };
+    let mut ancestor = node.parent();
+    while let Some(parent) = ancestor {
+        if parent.clips_children() {
+            return parent.bounding_box().is_some_and(|clip| {
+                bounds.x1 <= clip.x0
+                    || bounds.x0 >= clip.x1
+                    || bounds.y1 <= clip.y0
+                    || bounds.y0 >= clip.y1
+            });
+        }
+        ancestor = parent.parent();
+    }
+    false
+}
+
 impl NodeWrapper<'_> {
     pub(crate) fn name(&self) -> Option<String> {
         if self.0.label_comes_from_value() {
@@ -318,7 +341,13 @@ impl NodeWrapper<'_> {
         }
         let filter_result = filter(self.0);
         if filter_result == FilterResult::Include {
-            atspi_state.insert(State::Visible | State::Showing);
+            // GitTurtle patch (GITTURTLE-PATCH.md): a node that lies wholly
+            // outside its nearest clipping ancestor is visible but not
+            // showing, off screen, as browsers report one.
+            atspi_state.insert(State::Visible);
+            if !clipped_out(self.0) {
+                atspi_state.insert(State::Showing);
+            }
         }
         if state.is_required() {
             atspi_state.insert(State::Required);

@@ -15,8 +15,8 @@ match the supplemental notices in `docs/licenses/dependencies.json`.
 
 ## Changes
 
-Two files are modified: `src/node.rs` and `src/adapter.rs`. No other source,
-manifest or dependency changes.
+Two files are modified: `src/node.rs`, with two changes, and `src/adapter.rs`.
+No other source, manifest or dependency changes.
 
 ### Disabled controls (`src/node.rs`)
 
@@ -32,6 +32,37 @@ input reported `read-only`. With the backport, a disabled node reports none of t
 enabled node keeps `enabled` and `sensitive`, or `read-only` when its role
 supports it and it is read-only. The `is_read_only()` it calls already exists
 in the locked `accesskit_consumer` 0.38.0.
+
+### Off-screen nodes (`src/node.rs`)
+
+A GitTurtle change, not a backport: upstream `NodeWrapper::state` inserts
+`Visible | Showing` for every node AccessKit's filter includes, and AccessKit
+0.24 has no off-screen property an application could set instead. The
+filter keeps a clipped node's first child past each edge, for an assistive
+technology to move into, and any focused node wherever it lies. GitTurtle
+reports such a node where it lies (`native_accessibility::drawn_part`
+reports the layout of text or a clipping container the window draws none
+of), so without this change AT-SPI read the GitHub panel's notice, below its
+body's fold at 18 pt in a 461 x 490 window, as shown over the dialog's Back
+to repository button. Before that, GitTurtle reported such text as an empty
+rectangle on the clip's edge, which AT-SPI listed 0 px tall at y 557.
+
+`NodeWrapper::state` now inserts `Visible` for an included node and
+`Showing` only when the node's bounding box does not lie wholly outside the
+bounding box of its nearest ancestor that clips its children
+(`clipped_out`): off screen, as browsers report a scrolled-away element. A
+partly drawn node, a node without bounds and a node with no clipping
+ancestor keep `Showing`. GitTurtle's clipping nodes report the part of
+themselves the window draws (`native_accessibility::clips_children`), so the
+nearest one's bounds are what the node could be drawn in. The work is one
+walk up the node's ancestors when a client reads its state or the adapter
+compares a changed node's states; a change of `Showing` reaches clients as
+the existing state-change event. macOS has no showing state and uses
+`accesskit_macos`, which this does not touch.
+
+Upstream status: not proposed upstream. The published 0.19.1 source inserts
+both states for every included node; whether a later release tells an
+off-screen node apart has not been checked.
 
 ### A page shown again after a modal dialog (`src/adapter.rs`)
 
@@ -82,18 +113,32 @@ feeds the adapter a page's frames around a dialog, with a recording callback
 in place of `accesskit_unix`'s bus: a control that changes as the dialog opens
 and a line that appears beneath it are on the bus after Escape, nothing the
 page holds is while the dialog covers it, and its live status is not
-announced again. Run
+announced again. Its `a_node_outside_its_clip_is_visible_but_not_showing`
+maps a clipping scroll view whose children lie inside, across its edge,
+wholly past it (kept by the filter) and far past it with focus, and a
+control with no clipping ancestor: the two wholly outside are `Visible`
+without `Showing` at their own extents, the others show. In the
+application, `github_view::tests::the_notice_reports_the_part_the_panel_draws`
+reads the GitHub panel's notice through the adapter at 13 and 18 pt in a
+461 x 490 window and at 13 pt in 1,480 x 980 (showing where the body draws
+it, `Visible` without `Showing` at its layout's extents below the fold at
+18 pt), and `views::tests::message_pieces_report_the_part_the_details_draw`
+the inspector's commit message, whose pieces, each drawn at least in part,
+show at the part drawn. Run
 `cargo test --locked -p gitturtle --bin gitturtle native_accessibility::atspi_state_tests`
 on Linux. Native AT-SPI reads are recorded in `docs/validation.md`.
 
 ## Removal
 
-The `src/node.rs` change can go when GitTurtle moves to a GPUI Kit and
+The disabled-controls change can go when GitTurtle moves to a GPUI Kit and
 `gpui-pre` release whose Linux backend depends on `accesskit_unix` 0.24 or
 later (which requires `accesskit_atspi_common` 0.21 or later), or when an
 upstream 0.19.x release carries #788. The `src/adapter.rs` change can go once
 the adapter GitTurtle uses handles a node that moves between `ExcludeNode` and
-`ExcludeSubtree`; until then carry it onto the newer source. Retire this
+`ExcludeSubtree`; until then carry it onto the newer source. The off-screen
+change can go once the adapter GitTurtle uses withholds `Showing` from a node
+wholly outside its clipping ancestor, or AccessKit offers an off-screen
+property that GitTurtle sets instead; until then carry it too. Retire this
 patch, the `[patch.crates-io]` entry, the workspace exclusion and the
-`vendor/AGENTS.md` row when neither change remains. Keep the application
+`vendor/AGENTS.md` row when no change remains. Keep the application
 tests; they then cover the upstream crate.
