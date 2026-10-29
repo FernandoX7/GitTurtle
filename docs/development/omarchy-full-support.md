@@ -574,7 +574,7 @@ cover current upstream x86-64 Omarchy.
         From the native review of `gitturtle-62d10ae` against `-7abe8b2` (frames
         `.local/item8-2026-10-27/tools/qa/s*-{7abe8b2,62d10ae}/`, write-up `findings-q8-2026-10-29.md`):
         - Bugs: a quick Stage or Unstage draws the branch picker and profile button in the busy grey
-          for one frame (~135 ms after the press); under a still pointer the pressed control's
+          for one frame (~25 ms) while the write runs; under a still pointer the pressed control's
           tooltip ("Stage gamma.txt") stays over the row that moved beneath it until the pointer
           moves; Settings opened by Ctrl+, with an Omarchy theme at 18 pt in 461×490 focuses the
           Omarchy card below the fold (the button reveals it); after a one-match Shortcuts search the
@@ -596,6 +596,9 @@ cover current upstream x86-64 Omarchy.
           menu's visible edge is 13.5 px inside the list (the 1 px border was measured); the
           640×430 image under the band is drawn whole, as intended; Details… as text at rest is
           DESIGN.md's rule.
+        - Accessibility: at 18 pt in 461×490 the GitHub panel's offline status is reported on the
+          bus with 0 height at the panel body's bottom edge (y 557 physical) rather than left out
+          while it is scrolled out of view.
         - Tools: `scripts/native_qa/qa.py` cannot drive this host (needs python-xlib and XWayland
           with Mutter or XTest); a Hyprland backend (grim, hyprctl, the wlr virtual pointer, wtype)
           would let scenarios run here.
