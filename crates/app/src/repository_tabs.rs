@@ -2255,7 +2255,7 @@ impl LibraryView {
         format!("{name} · {}", path.display())
     }
 }
-use crate::native_accessibility::text as workspace_text;
+use crate::native_accessibility::{LiveRegion as _, text as workspace_text};
 
 impl Render for LibraryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2271,7 +2271,7 @@ impl Render for LibraryView {
         );
         div().flex().flex_col().gap_3().child(workspace_text("local-workspaces-description", "Pinned repositories stay available after their tab closes. Named workspaces are local groups; opening a group only reads its selected repository.").text_size(appearance::ui_text(12.)))
             .children(self.active.as_ref().map(|path| workspace_text("local-workspaces-current-repository", format!("Current repository: {}", self.project_identity(path))).text_size(appearance::ui_text(12.)).truncate().tooltip({let identity=self.project_identity(path);move|window,cx|Tooltip::new(identity.clone()).build(window,cx)})))
-            .child(div().flex().items_center().gap_2().child(div().flex_1().child(Input::new(&self.name).aria_label("New local workspace name"))).child(button("create-local-workspace","Create workspace","",false).accessibility_label(create_label).on_click(cx.listener(|this,_,window,cx|{
+            .child(div().flex().items_center().gap_2().child(div().flex_1().child(Input::new(&self.name).aria_label("New local workspace name"))).child(button("create-local-workspace","Create workspace","",false).accessibility_label(create_label).debug_selector(||"create-local-workspace".into()).on_click(cx.listener(|this,_,window,cx|{
                 let name=this.name.read(cx).value().trim().to_owned();
                 if name.is_empty()||name.len()>64||name.contains(['\n','\r','\0']){this.error=Some("Use a workspace name of 1–64 bytes.".into());cx.notify();return;}
                 if this.session.groups.len()>=MAX_GROUPS||this.session.groups.contains(&name){this.error=Some("Choose a new name; up to 16 local workspaces are supported.".into());cx.notify();return;}
@@ -2279,7 +2279,7 @@ impl Render for LibraryView {
                 if let Some(path)=this.active.clone(){if let Some(entry)=this.session.library.iter_mut().find(|entry|entry.path.path()==path){entry.group=Some(name);}else{this.session.library.push(LibraryEntry{path:SavedPath::new(&path),pinned:false,group:Some(name)});}}
                 this.name.update(cx,|input,cx|input.set_value("",window,cx));this.error=None;cx.notify();
             }))))
-            .children(self.error.as_ref().map(|error|workspace_text("local-workspaces-error", error.clone()).role(Role::Alert).text_color(rgb(colors.removed))))
+            .children(self.error.as_ref().map(|error|workspace_text("local-workspaces-error", error.clone()).role(Role::Alert).assertive().text_color(rgb(colors.removed))))
             .child(crate::native_accessibility::clips_children(div().id("local-workspace-library").max_h(px(360.)).overflow_y_scroll().flex().flex_col().gap_2()
                 .children(self.session.groups.clone().into_iter().enumerate().map(|(index,group)|{
                     let count=self.session.library.iter().filter(|entry|entry.group.as_ref()==Some(&group)).count();let assign=group.clone();let open=group.clone();let remove=group.clone();
@@ -4948,6 +4948,34 @@ mod tests {
         let mut other_node = gpui::accesskit::Node::new(other.a11y_role().unwrap());
         other.write_a11y_info(&mut other_node);
         assert_ne!(node.value(), other_node.value());
+    }
+
+    /// A workspace name Local workspaces refuses is an alert announced at
+    /// once, as a whole, as every form's refusal is: it was an alert with no
+    /// live region, which an assistive technology is never asked to
+    /// announce, so a screen reader heard nothing when Create workspace
+    /// refused an empty name.
+    #[gpui::test]
+    async fn a_refused_workspace_name_is_announced_at_once(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = views::tests::history_window(cx).await;
+        crate::focus_ring::sweep::open_dialog(&app, cx, "Local workspaces", |app, window, cx| {
+            app.open_repository_library(window, cx)
+        })
+        .await;
+        assert!(cx.debug_bounds("local-workspaces-error").is_none());
+        native_accessibility::written::forget();
+        crate::copy_feedback::tests::click(cx, "create-local-workspace");
+        views::tests::settle(&app, cx).await;
+        assert!(
+            cx.debug_bounds("local-workspaces-error").is_some(),
+            "an empty name is refused in the dialog"
+        );
+        assert_eq!(
+            native_accessibility::written::announced("local-workspaces-error"),
+            Some(native_accessibility::written::Announced::ASSERTIVE)
+        );
+        cx.update(|window, cx| window.close_dialog(cx));
+        views::tests::draw(cx);
     }
 
     fn session(paths: &[&str], active: usize) -> Session {
