@@ -167,9 +167,15 @@ impl crate::focus_ring::sweep::Opened for Option<Entity<ReflogBrowser>> {
     }
 }
 impl ReflogBrowser {
+    /// The filter's focus handle, for the focus sweep.
+    #[cfg(test)]
+    pub(crate) fn filter_focus(&self, cx: &App) -> FocusHandle {
+        self.query.read(cx).focus_handle(cx)
+    }
     /// Opens `browser` in its dialog, with focus in its filter field.
     fn show(browser: Entity<Self>, window: &mut Window, cx: &mut App) {
         let filter = browser.read(cx).query.read(cx).focus_handle(cx);
+        browser.update(cx, |browser, _| browser.reveal_filter = true);
         window.open_alert_dialog(cx, move |dialog, window, cx| {
             let done = browser.clone();
             let cancel = browser.clone();
@@ -207,7 +213,9 @@ impl ReflogBrowser {
         // dialog opened with focus nowhere to be seen. The filter is the
         // first stop worth a key: focus it now, as the palette does its
         // query, so keys typed before the next frame reach it and the first
-        // frame draws its ring. The dialog keeps the opener to return to.
+        // frame draws its ring, scrolled into the content's view where the
+        // explanation above it fills the content, as at 18 pt in a 461 × 490
+        // window. The dialog keeps the opener to return to.
         filter.focus(window, cx);
         window.refresh();
     }
@@ -230,6 +238,10 @@ pub(crate) struct ReflogBrowser {
     message: Option<Entity<EditorState>>,
     /// The content's scroll, which its scrollbar follows.
     content_scroll: ScrollHandle,
+    /// Whether the next frame scrolls the content to show the filter, if it
+    /// holds focus: set as the dialog opens and as each read lands, since
+    /// the scope's summary that a read adds above the filter moves it down.
+    reveal_filter: bool,
     /// The changed-file list's scroll, which its scrollbar follows.
     files_scroll: ScrollHandle,
     /// The entries whose text the last layout cut.
@@ -293,6 +305,7 @@ impl ReflogBrowser {
             changes: Vec::new(),
             message: None,
             content_scroll: ScrollHandle::new(),
+            reveal_filter: false,
             files_scroll: ScrollHandle::new(),
             cut_entries: CutEntries::default(),
             pending: false,
@@ -336,7 +349,7 @@ impl ReflogBrowser {
         });
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Reflog read interrupted. Refresh to try again.")));
-            let _ = this.update_in(cx, |this, window, cx| { if this.closed.load(std::sync::atomic::Ordering::Acquire) { return; } this.pending = false; this.leave_loading_row(window, cx); if !this.current(cx) { this.error = Some("The repository changed or an operation started. Reopen the reflog when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
+            let _ = this.update_in(cx, |this, window, cx| { if this.closed.load(std::sync::atomic::Ordering::Acquire) { return; } this.pending = false; this.reveal_filter = true; this.leave_loading_row(window, cx); if !this.current(cx) { this.error = Some("The repository changed or an operation started. Reopen the reflog when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
         }));
         cx.notify();
     }
@@ -447,11 +460,24 @@ impl Render for ReflogBrowser {
         let file_row = file_row_height();
         let files_shown = file_rows_shown();
         let files_scroll = self.changes.len().min(100) > files_shown;
+        // The filter follows the explanation, the scope's row and, once a
+        // log is read, its summary and any limit notice: the least scroll
+        // that shows it and its ring, which its wrapper holds.
+        if std::mem::take(&mut self.reveal_filter)
+            && self.query.read(cx).focus_handle(cx).is_focused(window)
+        {
+            let filter = 2
+                + usize::from(self.page.is_some())
+                + usize::from(self.page.as_ref().is_some_and(|page| page.truncated));
+            self.content_scroll.scroll_to_item(filter);
+        }
         let content = div().id("reflog-browser-content").debug_selector(|| "reflog-browser-content".into()).flex().flex_col().gap_3().max_h(px(590.).min(body_height) + room).px(room).mx(-room).pb(room).overflow_y_scroll().track_scroll(&self.content_scroll)
             .child(label("reflog-explanation", "Git records local reference movements here, including actions by other tools. HEAD belongs to this worktree; branch logs are shared. Entries expire, and unreachable objects may be pruned. This is not a permanent backup or a complete activity history.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
             .child(div().flex().gap_2().child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh", false).debug_selector(|| "refresh-reflog".into()).disabled(self.pending).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
             .when_some(self.page.as_ref(), |element, page| element.child(label("reflog-scope-summary", format!("{} · {} retained entries · newest first", page.reference, page.entries.len())).text_size(crate::appearance::ui_text(12.))).when(page.truncated, |element| element.child(label("reflog-limit", "Showing the newest 1,000 records within a 4 MiB tail. Older records are outside this bounded view.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
-            .child(Input::new(&self.query).aria_label("Filter loaded reflog entries").cleanable(true))
+            // The filter stands in the ring's room, given back through its
+            // margin, so revealing it shows its ring whole.
+            .child(div().py(room).my(-room).child(Input::new(&self.query).aria_label("Filter loaded reflog entries").cleanable(true)))
             .when(self.pending, |element| element.child(div().flex().gap_2().child(label("reflog-loading", "Reading local reflog or selected commit…").text_size(crate::appearance::ui_text(12.))).child(button("cancel-reflog-read", "Cancel", "", false).track_focus(self.cancel_read.handle()).debug_selector(|| "cancel-reflog-read".into()).on_click(cx.listener(|this, _, window, cx| { this.cancel(); this.leave_loading_row(window, cx); cx.notify(); })))))
             .children(self.error.as_ref().map(|error| label("reflog-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
             .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().child(native_accessibility::clips_children(div().id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(px(230.) + room * 2.).p(room).m(-room).overflow_y_scroll().flex().flex_col().gap_1().children(matches.iter().take(100).enumerate().map(|(index, entry)| {

@@ -442,6 +442,80 @@ async fn the_ring_room_at_list_and_dialog_edges_moves_nothing(cx: &mut TestAppCo
     }
 }
 
+/// The sizes a dialog opens at in [`dialogs_open_with_a_whole_ring_on_their_first_field`]:
+/// the default size in a full window, and the largest in a half tile.
+const OPENING: [(u8, f32, f32); 2] = [(13, 1280., 800.), (18, 461., 490.)];
+
+/// The Reflog, the worktree manager and Tags each open with focus on their
+/// first field, the filter, and its ring drawn whole in the first frames,
+/// before any key, at 13 pt in 1280 × 800 and 18 pt in 461 × 490. The
+/// worktree manager and Tags opened with focus on the dialog's shell, which
+/// draws nothing, so the first Tab landed on Manage or on the filter; the
+/// Reflog focused its filter below its content's fold at 18 pt in the half
+/// tile, where nothing showed it.
+#[gpui::test]
+async fn dialogs_open_with_a_whole_ring_on_their_first_field(cx: &mut TestAppContext) {
+    use std::{cell::RefCell, rc::Rc};
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    prepare(&app, cx);
+    let mut failures = Vec::new();
+    for (interface, width, height) in OPENING {
+        cx.simulate_resize(size(px(width), px(height)));
+        interface_size(cx, interface);
+        for surface in ["the Reflog", "Worktrees", "Tags"] {
+            let field = match surface {
+                "the Reflog" => {
+                    let browser = Rc::new(RefCell::new(None));
+                    let opened = browser.clone();
+                    open_dialog(&app, cx, surface, move |app, window, cx| {
+                        let browser = app.open_reflog_browser(window, cx);
+                        *opened.borrow_mut() = browser.clone();
+                        browser
+                    })
+                    .await;
+                    let browser = browser.borrow().clone().expect("the Reflog opens");
+                    browser.read_with(cx, |browser, cx| browser.filter_focus(cx))
+                }
+                "Worktrees" => {
+                    open_dialog(&app, cx, surface, |app, window, cx| {
+                        app.open_worktree_manager(window, cx)
+                    })
+                    .await;
+                    worktrees::settle_manager(&app, cx).await;
+                    worktrees::first_field(&app, cx)
+                }
+                _ => {
+                    open_dialog(&app, cx, surface, |app, window, cx| {
+                        app.open_tags(window, cx)
+                    })
+                    .await;
+                    tags::filter(&app, cx)
+                }
+            };
+            // The pointer moving keeps the ring, as at every stop.
+            cx.simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::none());
+            draw(cx, 1);
+            let at = format!("{surface} at {interface} pt in {width} × {height}");
+            if !cx.update(|window, _| field.is_focused(window)) {
+                failures.push(format!("{at}: its first field does not hold focus"));
+            } else {
+                let ring = ring(cx, &field);
+                if ring.is_empty() {
+                    failures.push(format!("{at}: its first field paints no ring"));
+                }
+                for outline in ring.iter().filter(|outline| !outline.whole) {
+                    failures.push(format!(
+                        "{at}: a clip cuts its first field's ring at {:?}, sides {:?}",
+                        outline.bounds, outline.sides
+                    ));
+                }
+            }
+            close_dialogs(cx, surface, interface, &mut failures);
+        }
+    }
+    assert_whole(failures);
+}
+
 /// The repository's dialogs: Reflog, interactive rebase, the rewrite review,
 /// the command palette, Quick Open and Keyboard Shortcuts.
 #[gpui::test]

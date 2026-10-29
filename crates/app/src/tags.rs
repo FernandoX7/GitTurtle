@@ -140,6 +140,9 @@ pub(super) struct State {
     /// The Tags list or Push to… list opened last, for tests.
     #[cfg(test)]
     list: Option<FocusReveal>,
+    /// The filter of the Tags dialog opened last, for tests.
+    #[cfg(test)]
+    filter: Option<FocusHandle>,
 }
 
 impl GitTurtle {
@@ -170,6 +173,11 @@ impl GitTurtle {
                     {
                         this.tag_actions.list = Some(browser.read(cx).rows.clone());
                     }
+                    let filter = browser.read(cx).query.read(cx).focus_handle(cx);
+                    #[cfg(test)]
+                    {
+                        this.tag_actions.filter = Some(filter.clone());
+                    }
                     window.open_alert_dialog(cx, move |dialog, window, cx| {
                         // The dialog clips its body to the body's bounds, and
                         // the browser keeps the focus ring's room inside them
@@ -187,6 +195,11 @@ impl GitTurtle {
                             .child(browser.clone())
                             .button_props(DialogButtonProps::default().ok_text("Done"))
                     });
+                    // Opening the dialog focuses its shell, which draws no
+                    // ring: the filter, the first field, takes focus so the
+                    // first frame draws its ring, as the Reflog's does.
+                    filter.focus(window, cx);
+                    window.refresh();
                 }
                 Err(error) => this.operation_error = Some(format!("{error:#}")),
             },
@@ -571,6 +584,13 @@ impl Render for TagForm {
             .when(self.pending, |element| element.child(static_text("tag-preparation-status", "Preparing exact target and signing settings…").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| static_text("tag-preparation-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
     }
+}
+
+/// The filter of the Tags dialog opened last, for the focus sweep.
+#[cfg(test)]
+pub(crate) fn filter(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> FocusHandle {
+    app.read_with(cx, |app, _| app.tag_actions.filter.clone())
+        .expect("Tags opened")
 }
 
 /// Opens Create tag, annotated as it opens, and returns its annotation
