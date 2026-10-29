@@ -402,6 +402,23 @@ pub(crate) fn refusing(
         .accessibility_disabled(refused || dimmed)
 }
 
+/// `input`, which a busy spell leaves `refused`: it takes no edit and is
+/// announced read-only at once, and takes the disabled look only where
+/// `dimmed`, as [`refusing`] has a control. Targets' fields dimmed the
+/// moment any write started, a quick Stage's too.
+pub(crate) fn refusing_input(
+    input: Input,
+    key: impl FnOnce() -> String,
+    refused: bool,
+    dimmed: bool,
+) -> Input {
+    #[cfg(test)]
+    refusals::record(key(), refused || dimmed, dimmed);
+    #[cfg(not(test))]
+    let _ = key;
+    input.disabled(dimmed).readonly(refused || dimmed)
+}
+
 /// What [`refusing`] last gave each control, for tests: the test platform
 /// builds no accessibility tree.
 #[cfg(test)]
@@ -3877,7 +3894,7 @@ impl GitTurtle {
                         .child(div().flex().flex_col().gap_1()
                             .child(action_field_label("Find or create a branch", p.muted))
                             .child(div().flex().items_center().gap_1()
-                                .child(div().w(appearance::ui_size(170.)).child(Input::new(&self.branch_name).aria_label("Branch to switch to or create").text_size(crate::appearance::ui_text(12.)).disabled(busy)))
+                                .child(div().w(appearance::ui_size(170.)).child(refusing_input(Input::new(&self.branch_name).aria_label("Branch to switch to or create").text_size(crate::appearance::ui_text(12.)), || "branch-name".into(), busy, looks_busy)))
                                 // Each reads Switched or Created where it was
                                 // touched once Git reports success, though the
                                 // name field it read has emptied.
@@ -3896,10 +3913,10 @@ impl GitTurtle {
                         .child(div().w(px(1.)).h(crate::appearance::ui_size(32.)).mx_1().bg(rgb(p.border)))
                         .child(div().w(appearance::ui_size(120.)).flex().flex_col().gap_1()
                             .child(action_field_label("Remote", p.muted))
-                            .child(Input::new(&self.remote_name).aria_label("Git remote target").text_size(crate::appearance::ui_text(12.)).disabled(busy)))
+                            .child(refusing_input(Input::new(&self.remote_name).aria_label("Git remote target").text_size(crate::appearance::ui_text(12.)), || "remote-name".into(), busy, looks_busy)))
                         .child(div().w(appearance::ui_size(200.)).flex().flex_col().gap_1()
                             .child(action_field_label("Remote branch", p.muted))
-                            .child(Input::new(&self.remote_branch).aria_label("Remote branch target").text_size(crate::appearance::ui_text(12.)).disabled(busy))))
+                            .child(refusing_input(Input::new(&self.remote_branch).aria_label("Remote branch target").text_size(crate::appearance::ui_text(12.)), || "remote-branch".into(), busy, looks_busy))))
                     .child(div().flex().items_center().gap_1p5().text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted))
                         .child(icon("remote", 12., p.muted))
                         .child(div().min_w_0().truncate().child(remote.map_or_else(

@@ -333,6 +333,11 @@ impl ReflogBrowser {
         let filter = self.query.read(cx).focus_handle(cx);
         self.cancel_read.release_to(&filter, window, cx);
     }
+    /// Whether the browser may act now. Its recovery controls dim the moment
+    /// a write runs, without the busy look's delay (`workspace::BusyLook`):
+    /// the write is the recovery branch this browser's own review created,
+    /// and the name and commit it read dim with it so they are not taken
+    /// for ones a second review could still change.
     fn current(&self, cx: &App) -> bool {
         self.owner.upgrade().is_some_and(|owner| {
             let owner = owner.read(cx);

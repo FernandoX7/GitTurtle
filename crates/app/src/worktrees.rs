@@ -325,6 +325,11 @@ impl WorktreeManager {
         let field = self.first_field(cx);
         self.cancel_read.release_to(&field, window, cx);
     }
+    /// Whether the dialog may act now. Its controls dim the moment a write
+    /// runs, without the busy look's delay (`workspace::BusyLook`): the
+    /// write is the one this dialog's own Create or Remove submitted, and
+    /// the fields and choices it read dim with it so they are not taken
+    /// for ones a second press could still change.
     fn current(&self, cx: &App) -> bool {
         self.owner.upgrade().is_some_and(|owner| {
             let owner = owner.read(cx);

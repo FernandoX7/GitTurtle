@@ -348,8 +348,11 @@ impl Render for ActivityBrowser {
         crate::native_accessibility::clips_children(div().id("activity-browser-content").max_h(body_height).overflow_y_scroll().flex().flex_col().gap_2().text_size(appearance::ui_text(12.))
             .child(div().text_color(rgb(p.muted)).child("The latest 200 operations submitted by GitTurtle, across repositories. This is not a complete record of work performed by Git or other tools. Reflog recovery is available separately."))
             .child(div().flex().flex_wrap().gap_2()
-                .child(button("activity-refresh","Refresh current repository","",false).disabled(app.operation_busy.is_some()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{window.close_dialog(cx);app.refresh_worktree(window,cx);});}}))
-                .child(button("activity-reflog","Browse reflog…","",false).disabled(app.operation_busy.is_some()||app.repository.is_none()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{window.close_dialog(cx);app.open_reflog_browser(window,cx);});}})))
+                .child(crate::workspace::refusing(button("activity-refresh","Refresh current repository","",false),||"activity-refresh".into(),app.operation_busy.is_some(),app.operation_shown().is_some()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{
+                    // Refused at once while a write runs, before it looks so.
+                    if app.operation_busy.is_some() { return; }
+                    window.close_dialog(cx);app.refresh_worktree(window,cx);});}}))
+                .child(crate::workspace::refusing(button("activity-reflog","Browse reflog…","",false),||"activity-reflog".into(),app.operation_busy.is_some()||app.repository.is_none(),app.operation_shown().is_some()||app.repository.is_none()).on_click({let owner=self.owner.clone();move |_,window,cx|{let _=owner.update(cx,|app,cx|{window.close_dialog(cx);app.open_reflog_browser(window,cx);});}})))
             .children(error.map(|error|div().text_color(rgb(p.warning)).child(error)))
             .child(crate::native_accessibility::clips_children(div().id("activity-entries").h(list_height).flex_shrink_0().overflow_y_scroll().flex().flex_col().gap_2()
                 .children(entries.into_iter().rev().map(|entry|{

@@ -1251,9 +1251,17 @@ impl GitTurtle {
             0.25,
         )
         .debug_selector(|| "history-newest".into())
-        .disabled(
-            self.repository.is_none() || self.loading.is_some() || self.operation_busy.is_some(),
-        )
+        // `request_history_discovery` refuses while a write runs; it looks
+        // unavailable for that once the write looks busy.
+        .map(|latest| {
+            let unread = self.repository.is_none() || self.loading.is_some();
+            crate::workspace::refusing(
+                latest,
+                || "history-newest".into(),
+                unread || self.operation_busy.is_some(),
+                unread || self.operation_shown().is_some(),
+            )
+        })
         .on_click(cx.listener(|this, _, window, cx| this.show_latest_history(window, cx)));
         // While there is new history, Latest, which shows it and ends the
         // cue, leads its name and tooltip with the cue's words, and an accent
@@ -5740,7 +5748,14 @@ impl Render for GitTurtle {
                             .when(self.history_updates.committed.as_ref().is_some_and(|oid| notice.starts_with(&format!("Committed {}", short_oid(oid)))), |row| row.child(
                                 button("view-created-commit", "View commit", "", false)
                                     .flex_shrink_0()
-                                    .disabled(self.loading.is_some() || self.operation_busy.is_some())
+                                    // `request_history_discovery` refuses while
+                                    // a write runs.
+                                    .map(|view| crate::workspace::refusing(
+                                        view,
+                                        || "view-created-commit".into(),
+                                        self.loading.is_some() || self.operation_busy.is_some(),
+                                        self.loading.is_some() || self.operation_shown().is_some(),
+                                    ))
                                     .tooltip("Inspect the commit you created; the next commit draft stays saved")
                                     .on_click(cx.listener(|this, _, window, cx| this.view_created_commit(window, cx)))
                             ))

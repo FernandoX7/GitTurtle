@@ -1233,6 +1233,90 @@ mod tests {
         );
     }
 
+    /// A write's busy look waits in History, Targets and the Activity
+    /// dialog as it does in Changes: Latest, Targets' branch and remote
+    /// fields and Activity's Refresh and Browse reflog refuse at once and
+    /// are announced so, the fields read-only, but dim only once the write
+    /// has run 200 ms. They dimmed the moment any write started.
+    #[gpui::test]
+    async fn history_targets_and_activity_dim_only_once_a_write_looks_busy(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::workspace::refusals::{self, Refusal};
+        let (_fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.git_actions_open = true;
+                cx.notify();
+            })
+        });
+        draw(cx);
+        let frame = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        };
+        let page = [
+            "history-newest",
+            "branch-name",
+            "remote-name",
+            "remote-branch",
+        ];
+        let dialog = ["activity-refresh", "activity-reflog"];
+        let seen = |keys: &[&'static str]| {
+            keys.iter()
+                .map(|key| (*key, refusals::get(key)))
+                .collect::<Vec<_>>()
+        };
+        let states = |keys: &[&'static str], announced, dimmed| {
+            keys.iter()
+                .map(|key| (*key, Some(Refusal { announced, dimmed })))
+                .collect::<Vec<_>>()
+        };
+        refusals::forget();
+        frame(cx);
+        assert_eq!(seen(&page), states(&page, false, false), "at rest");
+
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::StageAll,
+                    "Staging files…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        frame(cx);
+        assert_eq!(seen(&page), states(&page, true, false), "the write starts");
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_activity(window, cx)));
+        frame(cx);
+        assert_eq!(
+            seen(&dialog),
+            states(&dialog, true, false),
+            "Activity opened as it starts"
+        );
+
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.executor().run_until_parked();
+        frame(cx);
+        assert_eq!(
+            [seen(&page), seen(&dialog)].concat(),
+            [states(&page, true, true), states(&dialog, true, true)].concat(),
+            "once the write looks busy"
+        );
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        crate::views::tests::settle(&app, cx).await;
+    }
+
     /// After gamma's Stage moves its row, epsilon's row takes its place under
     /// the pointer, which has not moved: epsilon's Stage draws no hover fill
     /// and shows no tooltip, as it did while the person never moved to it.
