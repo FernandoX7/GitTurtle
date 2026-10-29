@@ -13644,6 +13644,34 @@ pub(crate) mod tests {
         written.expect("the field's element was built")
     }
 
+    /// The accessibility node `build` writes, built inside the render of a
+    /// view drawn for it: a kit control's render asks for the view it is
+    /// drawn in, which a bare draw has none of.
+    pub(crate) fn view_node(
+        cx: &mut VisualTestContext,
+        build: impl Fn(&mut Window, &mut App) -> gpui::accesskit::Node + 'static,
+    ) -> gpui::accesskit::Node {
+        struct Probe<F> {
+            build: F,
+            node: Option<gpui::accesskit::Node>,
+        }
+        impl<F: Fn(&mut Window, &mut App) -> gpui::accesskit::Node + 'static> Render for Probe<F> {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.node = Some((self.build)(window, cx));
+                div()
+            }
+        }
+        let probe = cx.update(|_, cx| cx.new(|_| Probe { build, node: None }));
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let view = probe.clone();
+        cx.draw(point(px(0.), px(0.)), viewport, move |_, _| {
+            view.into_any_element()
+        });
+        probe
+            .update(cx, |probe, _| probe.node.take())
+            .expect("the node is built")
+    }
+
     /// The Changes filter's placeholder fits its field in whole words. In
     /// the tight form's one row at 18 pt in a 461 × 490 window, where the
     /// field is about 86 px, it reads the short "Filter", whole, where it

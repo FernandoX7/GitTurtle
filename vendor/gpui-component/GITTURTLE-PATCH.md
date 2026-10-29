@@ -338,6 +338,54 @@ at least 6 of 255 in one channel in every palette. Remove this part of the
 patch when upstream Switch draws a focus indicator and a hover state, or offers
 equivalent settings, and those tests pass without it.
 
+The switch-row patch also modifies `src/switch.rs`. Upstream Switch draws only
+a label beside its track, at the kit's text size, and sets no accessible
+description. A Settings row drew its title and description beside a bare
+Switch, so only the 36 × 20 px track answered the pointer and the row's text
+was read apart from the switch; Follow system appearance also drew its words
+as the Switch's label, which at 18 pt in a 461 px window wrapped its title to
+three lines. `Switch::leading` now draws an element before the track inside
+the base Switch, which then fills its width with the track at its trailing
+edge: a press anywhere on the row toggles it, the hover lift covers the row
+(the root's group), a disabled Switch blocks the row and gives its text the
+disabled label colour wherever it sets none of its own, and the leading text
+is drawn but not read, provided no element in it has an ID (one that has
+writes a node of its own, read apart from the Switch) and the label stays on
+its default side, the right (a label on the left reverses the row, putting
+`leading` after the track). `Switch::accessibility_description` sets the base
+Switch's `aria_description`, which assistive technology reads after the name.
+Without `leading` or a description the Switch renders as before.
+
+The consumers are the four Settings switch rows, three outside Linux, where
+the desktop's monospace font row is not offered, and the disabled-dim probe
+(`settings::switch_row`, `crates/app/src/settings.rs` and
+`crates/app/src/appearance.rs`).
+`cargo test --locked -p gitturtle each_switch_row_says_its_setting_once`
+walks Settings at 13 and 18 pt in a 461 and a 1,480 px window and requires
+each switch's own node, its base Switch rendered, named by its row's title and
+described by its description, no row text read apart from it, and the track
+ending the row;
+`a_switch_row_answers_the_pointer_as_its_switch` presses a row's title and
+description and hovers its title; on Linux only,
+`a_locked_follow_system_row_toggles_nothing` and
+`a_locked_follow_system_dims_its_title` lock it with the Omarchy theme, so a
+removal check elsewhere runs neither. Remove this part of the patch when
+upstream Switch holds leading content and an accessible description, and those
+tests pass without it.
+
+The test-node patch modifies `src/switch.rs` and `src/button/button.rs`.
+`Switch::base` returns the base Switch that `render` draws inside its styled
+box, and `Button::base` the base Button that `render` draws, so an
+application's tests can render either and read its node: the test platform
+builds no accessibility tree. Neither changes what is drawn; `render` returns
+exactly what `base` builds. The consumers are tests only:
+`each_switch_row_says_its_setting_once` reads each Settings switch's node
+through `Switch::base`, and `tags::tests::review_tag_waits_for_the_busy_look`
+reads Review tag's node through `Button::base` (both through
+`views::tests::view_node`). Remove both methods when upstream exposes the built
+base element or the test platform builds an accessibility tree, and those
+tests read the nodes without them.
+
 The diff-roles patch modifies `src/highlighter/registry.rs`,
 `src/highlighter/wasm_stub.rs` and `src/highlighter/languages.rs`, and adds
 `src/highlighter/languages/diff/highlights.scm`. Upstream builds the diff

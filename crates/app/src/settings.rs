@@ -657,20 +657,6 @@ impl GitTurtle {
             Some(
                 div()
                     .debug_selector(|| "code-font-setting".into())
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    // Toggling shows the pending line, then the answer, and
-                    // turning off shows the off line: the row keeps the
-                    // height of the tallest, so neither the Switch nor the
-                    // rows below move when one replaces another.
-                    .child(steady_setting_description(
-                        "Use the desktop's monospace font",
-                        description,
-                        &[off, pending],
-                        cx,
-                    ))
                     .child(
                         div()
                             .on_children_prepainted(
@@ -678,19 +664,30 @@ impl GitTurtle {
                             )
                             .debug_selector(|| "code-font-switch".into())
                             .child(
-                                Switch::new("settings-system-code-font")
-                                    .track_focus(&focus)
-                                    .accessibility_label(
-                                        "Use the desktop's monospace font for code",
-                                    )
-                                    .checked(self.settings.system_code_font)
-                                    .on_click(cx.listener(|this, checked: &bool, window, cx| {
+                                // Toggling shows the pending line, then the
+                                // answer, and turning off shows the off line:
+                                // the row keeps the height of the tallest, so
+                                // neither the Switch nor the rows below move
+                                // when one replaces another.
+                                switch_row(
+                                    "settings-system-code-font",
+                                    "Use the desktop's monospace font",
+                                    "Use the desktop's monospace font for code",
+                                    description,
+                                    &[off, pending],
+                                    cx,
+                                )
+                                .track_focus(&focus)
+                                .checked(self.settings.system_code_font)
+                                .on_click(cx.listener(
+                                    |this, checked: &bool, window, cx| {
                                         if this.settings.system_code_font != *checked {
                                             this.settings.system_code_font = *checked;
                                             desktop_text::set_system_code_font(*checked, cx);
                                             this.save_preferences(window, cx);
                                         }
-                                    })),
+                                    },
+                                )),
                             ),
                     )
                     .into_any_element(),
@@ -2236,37 +2233,31 @@ impl GitTurtle {
             .gap_5()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(setting_description(
-                        "Follow system appearance",
-                        follow_description.clone(),
-                        cx,
-                    ))
+                    .on_children_prepainted(self.keep_in_view(vec![Some(follow.clone())], cx))
+                    .debug_selector(|| "follow-system-switch".into())
                     .child(
-                        div()
-                            .on_children_prepainted(
-                                self.keep_in_view(vec![Some(follow.clone())], cx),
-                            )
-                            .debug_selector(|| "follow-system-switch".into())
-                            .child(
-                                Switch::new("follow-system")
-                                    .track_focus(&follow)
-                                    .checked(follow_checked)
-                                    .disabled(desktop_theme)
-                                    .label("Follow system appearance")
-                                    .on_click(cx.listener(|this, checked, window, cx| {
-                                        // The Omarchy theme follows the desktop instead.
-                                        if this.follows_desktop_theme(cx) {
-                                            return;
-                                        }
-                                        this.settings.follow_system = *checked;
-                                        this.apply_appearance(window, cx);
-                                        this.save_preferences(window, cx);
-                                    })),
-                            ),
+                        switch_row(
+                            "follow-system",
+                            FOLLOW_SYSTEM,
+                            FOLLOW_SYSTEM,
+                            follow_description.clone(),
+                            &[],
+                            cx,
+                        )
+                        .track_focus(&follow)
+                        .checked(follow_checked)
+                        .disabled(desktop_theme)
+                        .on_click(cx.listener(
+                            |this, checked, window, cx| {
+                                // The Omarchy theme follows the desktop instead.
+                                if this.follows_desktop_theme(cx) {
+                                    return;
+                                }
+                                this.settings.follow_system = *checked;
+                                this.apply_appearance(window, cx);
+                                this.save_preferences(window, cx);
+                            },
+                        )),
                     ),
             )
             .child(self.render_theme_picker(theme_columns, cx))
@@ -2366,21 +2357,18 @@ impl GitTurtle {
                         .on_click(cx.listener(|this, _, window, cx| { this.settings.external_editor = this.settings_editor.read(cx).value().trim().to_owned(); this.save_preferences(window, cx); })))))
             .child(
                 div()
-                    .on_children_prepainted(self.keep_in_view(vec![None, Some(reopen_last.clone())], cx))
+                    .on_children_prepainted(self.keep_in_view(vec![Some(reopen_last.clone())], cx))
                     .debug_selector(|| "settings-reopen-last-row".into())
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(setting_description(
-                        "Restore repository tabs on startup",
-                        "Reopen the selected tab and retain up to eight saved repository tabs.",
-                        cx,
-                    ))
                     .child(
-                        Switch::new("settings-reopen-last")
+                        switch_row(
+                            "settings-reopen-last",
+                            REOPEN_LAST,
+                            REOPEN_LAST,
+                            "Reopen the selected tab and retain up to eight saved repository tabs.",
+                            &[],
+                            cx,
+                        )
                             .track_focus(&reopen_last)
-                            .accessibility_label("Restore repository tabs on startup")
                             .checked(self.settings.reopen_last)
                             .on_click(cx.listener(|this, checked: &bool, window, cx| {
                                 if this.settings.reopen_last != *checked {
@@ -2392,20 +2380,18 @@ impl GitTurtle {
             )
             .child(
                 div()
-                    .on_children_prepainted(self.keep_in_view(vec![None, Some(project_pane.clone())], cx))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(setting_description(
-                        "Show the project list",
-                        "Keep a pane on the far left to jump between known projects and sort them into groups.",
-                        cx,
-                    ))
+                    .on_children_prepainted(self.keep_in_view(vec![Some(project_pane.clone())], cx))
+                    .debug_selector(|| "settings-project-pane-row".into())
                     .child(
-                        Switch::new("settings-project-pane")
+                        switch_row(
+                            "settings-project-pane",
+                            PROJECT_PANE,
+                            PROJECT_PANE,
+                            "Keep a pane on the far left to jump between known projects and sort them into groups.",
+                            &[],
+                            cx,
+                        )
                             .track_focus(&project_pane)
-                            .accessibility_label("Show the project list")
                             .checked(self.settings.project_pane)
                             .on_click(cx.listener(|this, checked: &bool, window, cx| {
                                 if this.settings.project_pane != *checked {
@@ -2420,7 +2406,7 @@ impl GitTurtle {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(setting_description(
+                    .child(field_description(
                         "Default branch",
                         "Used when creating a new repository.",
                         cx,
@@ -2438,7 +2424,7 @@ impl GitTurtle {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .child(Input::new(&self.settings_branch)),
+                                    .child(Input::new(&self.settings_branch).aria_label("Default branch")),
                             )
                             .child(
                                 Button::new("save-default-branch")
@@ -4278,68 +4264,159 @@ fn swatch_run<const N: usize>(
     .into_any_element()
 }
 
+/// A setting's title and description, read together.
 fn setting_description(
     title: &'static str,
     description: impl Into<SharedString>,
     cx: &App,
 ) -> AnyElement {
-    steady_setting_description(title, description, &[], cx)
+    let description = description.into();
+    read_setting_text(title, &description, format!("{title}. {description}"), cx)
 }
 
-/// A setting's title and description, the description line as tall as the
-/// tallest of it and `reserve`, the other descriptions its row can show, so
-/// replacing one with another moves nothing. Only `description` is drawn and
-/// named.
-fn steady_setting_description(
+/// A field's title and description, the title the field's name, so the
+/// text reads only the description: the Default branch's read "Default
+/// branch. Used when creating a new repository." before the field named
+/// "Default branch".
+fn field_description(
     title: &'static str,
+    description: impl Into<SharedString>,
+    cx: &App,
+) -> AnyElement {
+    let description = description.into();
+    read_setting_text(title, &description, description.to_string(), cx)
+}
+
+/// A setting's title and description, read as `label`.
+fn read_setting_text(
+    title: &'static str,
+    description: &SharedString,
+    label: String,
+    cx: &App,
+) -> AnyElement {
+    let selector = label.clone();
+    setting_text(
+        native_accessibility::static_text(
+            div()
+                .id(title)
+                // Tests read the accessible name here; other builds skip it.
+                .debug_selector(move || format!("setting-description: {selector}")),
+            label,
+        ),
+        title,
+        description,
+        &[],
+        cx,
+    )
+    .into_any_element()
+}
+
+/// The titles of the switches' rows, which name their switches.
+pub(crate) const FOLLOW_SYSTEM: &str = "Follow system appearance";
+const REOPEN_LAST: &str = "Restore repository tabs on startup";
+const PROJECT_PANE: &str = "Show the project list";
+
+/// A Settings switch whose row is the control: its `title` and
+/// `description` are drawn before its track (the kit's `Switch::leading`),
+/// the description as tall as the tallest of it and `reserve`, the other
+/// descriptions the row can show, so replacing one with another moves
+/// nothing. The switch is named `name`, its title or that title said in
+/// full, and described by `description`, so assistive technology reads the
+/// row once, with the switch: the row's text read the title before the
+/// description, the switch's name again, and the description apart from
+/// the switch. A press anywhere on the row toggles the switch, hovering it
+/// lifts the track, and the title takes the disabled label's dim with the
+/// switch, as Follow system appearance's label did. The switch draws no
+/// label of its own: Follow system appearance drew one beside its track as
+/// well as its title, which at 18 pt in a 461 px window wrapped to three
+/// lines beside it.
+pub(crate) fn switch_row(
+    id: &'static str,
+    title: &'static str,
+    name: &'static str,
     description: impl Into<SharedString>,
     reserve: &[SharedString],
     cx: &App,
-) -> AnyElement {
-    let p = palette(cx);
+) -> Switch {
     let description = description.into();
-    let label = format!("{title}. {description}");
-    let selector = label.clone();
-    native_accessibility::static_text(
-        div()
-            .id(title)
-            // Tests read the accessible name here; other builds skip it.
-            .debug_selector(move || format!("setting-description: {selector}")),
-        label,
-    )
-    .flex_1()
-    .min_w_0()
-    .flex()
-    .flex_col()
-    .gap_1()
-    .child(
-        div()
-            .text_size(crate::appearance::ui_text(12.))
-            .font_weight(FontWeight::MEDIUM)
-            .child(title),
-    )
-    .child(
-        div()
-            .grid()
-            .grid_cols(1)
-            .text_size(crate::appearance::ui_text(11.))
-            .line_height(relative(1.5))
-            .text_color(rgb(p.muted))
-            .child(div().row_start(1).col_start(1).child(description.clone()))
-            .children(
-                reserve
-                    .iter()
-                    .filter(|text| **text != description)
-                    .map(|text| {
-                        div()
-                            .row_start(1)
-                            .col_start(1)
-                            .invisible()
-                            .child(text.clone())
-                    }),
-            ),
-    )
-    .into_any_element()
+    #[cfg(test)]
+    SWITCHES.with(|switches| {
+        switches
+            .borrow_mut()
+            .insert(id, (name, description.to_string()))
+    });
+    // The kit leaves 8 px before the track; the rows beside keep 12.
+    Switch::new(id)
+        .w_full()
+        .accessibility_label(name)
+        .accessibility_description(description.clone())
+        .leading(setting_text(div().pr_1(), title, &description, reserve, cx))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The name and description each Settings switch was last built with,
+    /// by ID: the test platform builds no accessibility tree.
+    static SWITCHES: std::cell::RefCell<
+        std::collections::BTreeMap<&'static str, (&'static str, String)>,
+    > = std::cell::RefCell::default();
+}
+
+/// What the Settings switch `id` was last built with: its name and its
+/// description.
+#[cfg(test)]
+pub(crate) fn switch_built(id: &str) -> Option<(&'static str, String)> {
+    SWITCHES.with(|switches| switches.borrow().get(id).cloned())
+}
+
+/// `element` holding a setting's title and description, the description as
+/// tall as the tallest of it and `reserve`.
+fn setting_text<E: Styled + ParentElement>(
+    element: E,
+    title: &'static str,
+    description: &SharedString,
+    reserve: &[SharedString],
+    cx: &App,
+) -> E {
+    let p = palette(cx);
+    element
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .debug_selector(move || format!("setting-title: {title}"))
+                .text_size(crate::appearance::ui_text(12.))
+                .font_weight(FontWeight::MEDIUM)
+                .child(title)
+                .children(appearance::text_probe(move || {
+                    format!("setting-title: {title}")
+                })),
+        )
+        .child(
+            div()
+                .debug_selector(move || format!("setting-detail: {title}"))
+                .grid()
+                .grid_cols(1)
+                .text_size(crate::appearance::ui_text(11.))
+                .line_height(relative(1.5))
+                .text_color(rgb(p.muted))
+                .child(div().row_start(1).col_start(1).child(description.clone()))
+                .children(
+                    reserve
+                        .iter()
+                        .filter(|text| *text != description)
+                        .map(|text| {
+                            div()
+                                .row_start(1)
+                                .col_start(1)
+                                .invisible()
+                                .child(text.clone())
+                        }),
+                ),
+        )
 }
 
 /// A labelled field which a write leaves `(refused, dimmed)`
@@ -5281,11 +5358,14 @@ mod picker_tests {
 
         let (_app, cx) = open_app(cx);
         let describes = |cx: &mut VisualTestContext, description: &str| {
-            let label = format!("Use the desktop's monospace font. {description}");
+            // The row's description is its switch's accessible description.
+            assert!(page_shows(cx, "code-font-switch"));
+            let built = switch_built("settings-system-code-font").map(|(_, built)| built);
             let state = cx.read(desktop_text::system_code_font);
-            assert!(
-                drawn(cx, format!("setting-description: {label}")).is_some(),
-                "the row reads {label:?} while {state:?}"
+            assert_eq!(
+                built.as_deref(),
+                Some(description),
+                "the switch's description while {state:?}"
             );
         };
         let toggle = |cx: &mut VisualTestContext| {
@@ -5348,11 +5428,13 @@ mod picker_tests {
 
         let (_app, cx) = open_app(cx);
         let describes = |cx: &mut VisualTestContext, description: &str| {
-            let label = format!("Use the desktop's monospace font. {description}");
+            assert!(page_shows(cx, "code-font-switch"));
+            let built = switch_built("settings-system-code-font").map(|(_, built)| built);
             let state = cx.read(desktop_text::system_code_font);
-            assert!(
-                drawn(cx, format!("setting-description: {label}")).is_some(),
-                "the row reads {label:?} while {state:?}"
+            assert_eq!(
+                built.as_deref(),
+                Some(description),
+                "the switch's description while {state:?}"
             );
         };
         let toggle = |cx: &mut VisualTestContext| {
@@ -5908,6 +5990,349 @@ mod picker_tests {
                 assert_still(cx, &format!("turning {selector} off again"));
             }
         }
+    }
+
+    /// The four switches' rows, for tests: each switch's ID, its row's
+    /// title, its description at rest and the selector drawn around the row.
+    fn switch_rows() -> Vec<(&'static str, &'static str, String, &'static str)> {
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut rows = vec![
+            (
+                "follow-system",
+                FOLLOW_SYSTEM,
+                "Braden in Light Mode; your selected dark palette in Dark Mode.".to_owned(),
+                "follow-system-switch",
+            ),
+            (
+                "settings-reopen-last",
+                REOPEN_LAST,
+                "Reopen the selected tab and retain up to eight saved repository tabs.".to_owned(),
+                "settings-reopen-last-row",
+            ),
+            (
+                "settings-project-pane",
+                PROJECT_PANE,
+                "Keep a pane on the far left to jump between known projects and sort them into groups."
+                    .to_owned(),
+                "settings-project-pane-row",
+            ),
+        ];
+        #[cfg(target_os = "linux")]
+        rows.push((
+            "settings-system-code-font",
+            "Use the desktop's monospace font",
+            format!(
+                "Code uses the bundled {}. Turn on to use fontconfig's monospace font when it is fixed-width.",
+                crate::mono()
+            ),
+            "code-font-switch",
+        ));
+        rows
+    }
+
+    /// The Switch track the last frame painted inside `row`.
+    fn track_in(cx: &mut VisualTestContext, row: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+        painted_quads(cx)
+            .into_iter()
+            .find(|quad| quad.size == size(px(36.), px(20.)) && row.contains(&quad.center()))
+    }
+
+    /// Each switch's row says its setting once, at 13 and 18 pt in a 461
+    /// and a 1,480 px window: the switch is named by the row's title and
+    /// described by its description, the row's text is not read apart from
+    /// the switch, the title stays inside the window, Follow system's on one
+    /// line, and the track ends the row, with no label drawn after it.
+    /// Follow system appearance drew its words beside its track as well as
+    /// in its title, which at 18 pt in a 461 px window wrapped to three lines
+    /// beside them, and each row's text read its title before its
+    /// description, the switch's name again, apart from the switch.
+    #[gpui::test]
+    fn each_switch_row_says_its_setting_once(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let rows = switch_rows();
+        for interface in [13, 18] {
+            for width in [461., 1480.] {
+                let at = format!("{interface} pt at {width} px");
+                // Tall enough to paint every row of the narrow page.
+                cx.simulate_resize(size(px(width), px(9000.)));
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.settings.interface_text_size = interface;
+                        appearance::apply_text_sizes(interface, code, window, cx);
+                        cx.notify();
+                    })
+                });
+                settle(cx);
+                SWITCHES.with(|switches| switches.borrow_mut().clear());
+                crate::native_accessibility::written::forget();
+                assert!(page_shows(cx, "follow-system-switch"), "{at}");
+                // The rows' text is read nowhere apart from the switches,
+                // while List density's title and description are.
+                let read = crate::native_accessibility::written::labels();
+                assert!(
+                    read.iter().any(|(_, label)| label
+                        .as_deref()
+                        .is_some_and(|label| label.starts_with("List density. "))),
+                    "{at}: List density is read"
+                );
+                for (_, title, description, _) in &rows {
+                    assert!(
+                        !read.iter().any(|(_, label)| label
+                            .as_deref()
+                            .is_some_and(|label| label.contains(title)
+                                || label.contains(description.as_str()))),
+                        "{at}: {title}'s row is read apart from its switch: {read:?}"
+                    );
+                }
+                // One line of a title, as a short one draws it.
+                let line = drawn(cx, "setting-title: List density".into())
+                    .expect("List density's title")
+                    .size
+                    .height;
+                for (id, title, description, row) in &rows {
+                    let built = switch_built(id);
+                    assert!(
+                        built.as_ref().is_some_and(
+                            |(name, built)| name.starts_with(title) && built == description
+                        ),
+                        "{at}: {id} is built {built:?}, not named by {title:?} and described \
+                         by {description:?}"
+                    );
+                    for read in [format!("{title}. {description}"), description.clone()] {
+                        assert!(
+                            drawn(cx, format!("setting-description: {read}")).is_none(),
+                            "{at}: {title}'s row reads {read:?} apart from its switch"
+                        );
+                    }
+                    let drawn_title = drawn(cx, format!("setting-title: {title}"))
+                        .unwrap_or_else(|| panic!("{at}: {title} is drawn"));
+                    assert!(
+                        drawn_title.right() <= px(width),
+                        "{at}: {title} {drawn_title:?} runs past the window"
+                    );
+                    // A longer title may wrap inside its room beside the
+                    // track ("Restore repository tabs on startup" takes two
+                    // lines at 18 pt in 461 px); Follow system's never does.
+                    if *title == FOLLOW_SYSTEM {
+                        assert_eq!(
+                            drawn_title.size.height, line,
+                            "{at}: {title} {drawn_title:?} takes one line"
+                        );
+                    }
+                    let row = shown(cx, row).unwrap_or_else(|| panic!("{at}: {row}"));
+                    let track = track_in(cx, row)
+                        .unwrap_or_else(|| panic!("{at}: {title}'s row {row:?} draws its track"));
+                    assert!(
+                        drawn_title.right() <= track.left() && track.right() == row.right(),
+                        "{at}: {title}'s track {track:?} does not end its row {row:?} after its \
+                         title {drawn_title:?}"
+                    );
+                }
+                // Each switch's own node, as the page's arguments build it.
+                for (id, title, description, _) in &rows {
+                    let (name, _) = switch_built(id).expect("built");
+                    let node = switch_node(cx, id, title, name, description);
+                    assert_eq!(
+                        (node.role(), node.label(), node.description()),
+                        (
+                            gpui::accesskit::Role::Switch,
+                            Some(name),
+                            Some(description.as_str())
+                        ),
+                        "{at}: {id}'s node"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The accessibility node of the switch [`switch_row`] builds for these
+    /// arguments, its base Switch built inside a draw, as
+    /// `views::tests::input_node` builds a field's.
+    fn switch_node(
+        cx: &mut VisualTestContext,
+        id: &'static str,
+        title: &'static str,
+        name: &'static str,
+        description: &str,
+    ) -> gpui::accesskit::Node {
+        let description = SharedString::from(description.to_owned());
+        crate::views::tests::view_node(cx, move |window, cx| {
+            use gpui::Element as _;
+            let base = switch_row(id, title, name, description.clone(), &[], cx).base(window, cx);
+            let element = RenderOnce::render(base, window, cx).into_element();
+            let mut node =
+                gpui::accesskit::Node::new(element.a11y_role().expect("the switch's role"));
+            element.write_a11y_info(&mut node);
+            node
+        })
+    }
+
+    /// A press on a switch's row, its title or its description, toggles the
+    /// switch, and hovering the row lifts an unchecked track by the palette's
+    /// hover step, as the label Follow system appearance drew beside its
+    /// track did: with that label gone, only the 36 by 20 px track answered.
+    #[gpui::test]
+    fn a_switch_row_answers_the_pointer_as_its_switch(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        cx.update(|window, cx| ThemeChoice::Midnight.apply(Some(window), cx));
+        let reopen = |cx: &mut VisualTestContext| cx.read(|cx| app.read(cx).settings.reopen_last);
+        let away = |cx: &mut VisualTestContext| {
+            cx.simulate_mouse_move(point(px(4.), px(4.)), None, Modifiers::default());
+            settle(cx);
+        };
+        settle(cx);
+        let row = shown(cx, "settings-reopen-last-row").expect("the row");
+        let before = reopen(cx);
+        for part in [
+            format!("setting-title: {REOPEN_LAST}"),
+            format!("setting-detail: {REOPEN_LAST}"),
+        ] {
+            let at = drawn(cx, part.clone()).expect("the title");
+            let was = reopen(cx);
+            cx.simulate_click(at.center(), Modifiers::default());
+            settle(cx);
+            assert_eq!(reopen(cx), !was, "a press on {part} toggles the switch");
+            away(cx);
+        }
+        assert_eq!(reopen(cx), before);
+        // Unchecked, hovered on its title: the track lifts.
+        if reopen(cx) {
+            let title = drawn(cx, format!("setting-title: {REOPEN_LAST}")).expect("the title");
+            cx.simulate_click(title.center(), Modifiers::default());
+            away(cx);
+        }
+        assert!(!reopen(cx), "Restore repository tabs is off");
+        // The fill of the 36 by 20 px quad painted at `track`.
+        let fill = |cx: &mut VisualTestContext, track: Bounds<Pixels>| {
+            cx.update(|window, _| {
+                let scale = window.scale_factor();
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .find(|quad| {
+                        let b = quad.bounds;
+                        (b.left().as_f32() / scale - f32::from(track.left())).abs() < 0.01
+                            && (b.top().as_f32() / scale - f32::from(track.top())).abs() < 0.01
+                            && (b.size.width.as_f32() / scale - 36.).abs() < 0.01
+                    })
+                    .map(|quad| quad.background)
+            })
+        };
+        let track = track_in(cx, row).expect("the track");
+        let resting = fill(cx, track);
+        let title = drawn(cx, format!("setting-title: {REOPEN_LAST}")).expect("the title");
+        cx.simulate_mouse_move(title.center(), None, Modifiers::default());
+        settle(cx);
+        let hovered = fill(cx, track);
+        let lift = Background::from(Hsla::from(rgb(cx.read(palette).switch_hover())));
+        assert_eq!(hovered, Some(lift), "the hovered title lifts the track");
+        assert_ne!(resting, hovered);
+        away(cx);
+    }
+
+    /// Linux: while the Omarchy theme locks Follow system, a press on its
+    /// row's title turns nothing on, as a press on its track does not.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_locked_follow_system_row_toggles_nothing(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("current");
+        std::fs::create_dir_all(root.join("theme")).unwrap();
+        let colors = include_bytes!("../tests/fixtures/omarchy/tokyo-night.toml");
+        std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+        std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+        cx.update(|cx| drop(appearance::omarchy::install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.settings.follow_system = false;
+                app.settings.theme = ThemeSelection::Omarchy;
+                app.apply_appearance(window, cx);
+            })
+        });
+        settle(cx);
+        assert!(page_shows(cx, "follow-system-switch"));
+        let title = drawn(cx, format!("setting-title: {FOLLOW_SYSTEM}")).expect("the title");
+        cx.simulate_click(title.center(), Modifiers::default());
+        settle(cx);
+        assert!(
+            !cx.read(|cx| app.read(cx).settings.follow_system),
+            "the locked row turned Follow system on"
+        );
+    }
+
+    /// The default branch's field is named by its title, "Default branch",
+    /// which the row's text then leaves to it: it had no name and no
+    /// placeholder, so assistive technology announced an unnamed field.
+    #[gpui::test]
+    fn the_default_branch_field_is_named_by_its_title(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        assert!(page_shows(cx, "save-default-branch"));
+        let field = cx.read(|cx| app.read(cx).settings_branch.clone());
+        crate::native_accessibility::written::forget();
+        assert!(page_shows(cx, "save-default-branch"));
+        let read: Vec<_> = crate::native_accessibility::written::labels()
+            .into_iter()
+            .filter_map(|(_, label)| label)
+            .filter(|label| label.contains("new repository"))
+            .collect();
+        assert_eq!(
+            read,
+            ["Used when creating a new repository."],
+            "the row's text reads its description alone"
+        );
+        let label = crate::views::tests::input_node(cx, &field)
+            .label()
+            .map(str::to_owned);
+        assert_eq!(label.as_deref(), Some("Default branch"));
+    }
+
+    /// Linux: while the Omarchy theme locks Follow system, the row's title,
+    /// which names the switch, takes the disabled label's dim with it, as
+    /// the label the switch drew beside its track did, and loses it once
+    /// another theme releases the switch.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_locked_follow_system_dims_its_title(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("current");
+        std::fs::create_dir_all(root.join("theme")).unwrap();
+        let colors = include_bytes!("../tests/fixtures/omarchy/tokyo-night.toml");
+        std::fs::write(root.join("theme/colors.toml"), colors).unwrap();
+        std::fs::write(root.join("theme.name"), "tokyo-night\n").unwrap();
+        cx.update(|cx| drop(appearance::omarchy::install(Some(root.clone()), cx)));
+        let (app, cx) = open_app(cx);
+        settle(cx);
+        let key = format!("setting-title: {FOLLOW_SYSTEM}");
+        // Whether the switch is locked, the title's colour and the dim.
+        let choose = |cx: &mut VisualTestContext, theme: ThemeSelection| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.theme = theme;
+                    app.apply_appearance(window, cx);
+                })
+            });
+            settle(cx);
+            assert!(page_shows(cx, "follow-system-switch"));
+            cx.read(|cx| {
+                (
+                    app.read(cx).follows_desktop_theme(cx),
+                    appearance::drawn_color(&key),
+                    gpui_kit::component::switch::disabled_label_color(cx),
+                )
+            })
+        };
+        let (locked, color, dim) = choose(cx, ThemeSelection::Omarchy);
+        assert!(locked, "the Omarchy theme locks Follow system");
+        assert_eq!(color, Some(dim), "the locked switch's title is dimmed");
+        let (locked, color, dim) = choose(cx, ThemeSelection::BuiltIn(ThemeChoice::Midnight));
+        assert!(!locked, "Midnight releases Follow system");
+        assert!(
+            color.is_some_and(|color| color != dim),
+            "the released switch's title is not dimmed: {color:?}"
+        );
     }
 
     /// Tab, then Shift-Tab, walk every Settings control in a 1,000 × 680

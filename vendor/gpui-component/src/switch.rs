@@ -3,9 +3,9 @@ use crate::{
     text::Text, tooltip::ComponentTooltip,
 };
 use gpui::{
-    App, Background, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement,
-    ParentElement as _, RenderOnce, SharedString, StyleRefinement, Styled, Window, div,
-    prelude::FluentBuilder as _, px,
+    AnyElement, App, Background, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement,
+    ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _,
+    StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_base::{Switch as BaseSwitch, SwitchThumb, SwitchTrack, spring};
 use std::rc::Rc;
@@ -31,6 +31,10 @@ pub struct Switch {
     /// GitTurtle patch: a caller-owned focus handle, used instead of keyed
     /// state.
     focus_handle: Option<FocusHandle>,
+    /// GitTurtle patch: content drawn before the track, inside the Switch.
+    leading: Option<AnyElement>,
+    /// GitTurtle patch: what assistive technology reads after the name.
+    accessibility_description: Option<SharedString>,
 }
 
 impl Switch {
@@ -50,6 +54,8 @@ impl Switch {
             color: None,
             tooltip: ComponentTooltip::default(),
             focus_handle: None,
+            leading: None,
+            accessibility_description: None,
         }
     }
 
@@ -105,6 +111,35 @@ impl Switch {
         self.tooltip.text = Some((tooltip.into(), None));
         self
     }
+
+    /// Draw `leading` before the track, inside the Switch, which then fills
+    /// its width with the track at its trailing edge: a settings row whose
+    /// title and description are the control. A press anywhere on the row
+    /// toggles it, hovering it lifts the track as hovering the label does,
+    /// and its text takes the disabled label colour wherever it sets none of
+    /// its own. Its text is drawn, not read, while no element in it has an
+    /// ID: one with an ID writes a node of its own, which is read apart from
+    /// the Switch. Name the Switch with
+    /// [`accessibility_label`](Self::accessibility_label) and describe it
+    /// with [`accessibility_description`](Self::accessibility_description).
+    /// It leads only with the label on its default side, the right: a label
+    /// on the left reverses the row and puts `leading` after the track.
+    ///
+    /// GitTurtle patch: upstream draws only a label after or before the
+    /// track, at the kit's text size.
+    pub fn leading(mut self, leading: impl IntoElement) -> Self {
+        self.leading = Some(leading.into_any_element());
+        self
+    }
+
+    /// Set what assistive technology reads after the Switch's name and
+    /// state, such as a settings row's description.
+    ///
+    /// GitTurtle patch: upstream sets no description.
+    pub fn accessibility_description(mut self, description: impl Into<SharedString>) -> Self {
+        self.accessibility_description = Some(description.into());
+        self
+    }
 }
 
 impl Styled for Switch {
@@ -150,6 +185,18 @@ pub fn disabled_label_color(cx: &App) -> Hsla {
 
 impl RenderOnce for Switch {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let style = self.style.clone();
+        div().refine_style(&style).child(self.base(window, cx))
+    }
+}
+
+impl Switch {
+    /// The base Switch this Switch draws inside its own styled box: the
+    /// element whose accessibility node names and describes it, which an
+    /// application's tests read by rendering it.
+    ///
+    /// GitTurtle patch: upstream builds it inside `render`.
+    pub fn base(self, window: &mut Window, cx: &mut App) -> BaseSwitch {
         let checked = self.checked;
         let on_click = self.on_click.clone();
         let accessibility_label = self
@@ -221,86 +268,96 @@ impl RenderOnce for Switch {
             .switch_hover
             .filter(|_| !checked && !self.disabled);
 
-        div().refine_style(&self.style).child(
-            BaseSwitch::new(self.id.clone())
-                .track_focus(&focus_handle)
-                .group(SWITCH_GROUP)
-                .checked(checked)
-                .disabled(self.disabled)
-                .styles(|styles| {
-                    styles.disabled(|style| {
-                        style.text_color(disabled_label_color).cursor_not_allowed()
+        BaseSwitch::new(self.id.clone())
+            .track_focus(&focus_handle)
+            .group(SWITCH_GROUP)
+            .checked(checked)
+            .disabled(self.disabled)
+            .styles(|styles| {
+                styles.disabled(|style| {
+                    style.text_color(disabled_label_color).cursor_not_allowed()
+                })
+            })
+            .when_some(accessibility_label, |this, label| {
+                this.accessibility_label(label)
+            })
+            .when_some(self.accessibility_description, |this, description| {
+                this.aria_description(description)
+            })
+            .when_some(on_click, |this, on_click| {
+                this.on_change(move |next, _, window, cx| on_click(&next, window, cx))
+            })
+            .h_flex()
+            .gap_2()
+            .map(|this| {
+                if self.leading.is_some() {
+                    this.w_full().items_center()
+                } else {
+                    this.items_start()
+                }
+            })
+            .when(self.label_side.is_left(), |this| this.flex_row_reverse())
+            .when_some(self.leading, |this, leading| {
+                this.child(div().flex_1().min_w_0().child(leading))
+            })
+            .child(
+                // Switch Bar
+                SwitchTrack::new((self.id.clone(), "track"))
+                    .checked(checked)
+                    .disabled(self.disabled)
+                    .when(cfg!(test), |this| {
+                        this.debug_selector(|| "switch-bar".into())
                     })
-                })
-                .when_some(accessibility_label, |this, label| {
-                    this.accessibility_label(label)
-                })
-                .when_some(on_click, |this, on_click| {
-                    this.on_change(move |next, _, window, cx| on_click(&next, window, cx))
-                })
-                .h_flex()
-                .gap_2()
-                .items_start()
-                .when(self.label_side.is_left(), |this| this.flex_row_reverse())
-                .child(
-                    // Switch Bar
-                    SwitchTrack::new((self.id.clone(), "track"))
-                        .checked(checked)
-                        .disabled(self.disabled)
-                        .when(cfg!(test), |this| {
-                            this.debug_selector(|| "switch-bar".into())
-                        })
-                        .w(bg_width)
-                        .h(bg_height)
-                        .rounded(radius)
-                        .flex()
-                        .items_center()
-                        .border(inset)
-                        .border_color(cx.theme().transparent)
-                        .when(!checked, |this| this.bg(unchecked_bg))
-                        .styles(|styles| {
-                            styles
-                                .checked(|style| style.bg(checked_bg))
-                                .disabled(|style| style.bg(disabled_bg))
-                        })
-                        .when_some(hover_bg, |this, hover| {
-                            this.group_hover(SWITCH_GROUP, |style| style.bg(hover))
-                        })
-                        // The ring is the Button's; the border it would tint
-                        // is the thumb's transparent inset, so it stays clear.
-                        .when(focused, |this| {
-                            apply_focus_ring(this, cx.theme().button_focus_ring, window, cx)
-                                .border_color(cx.theme().transparent)
-                        })
-                        .map(|this| self.tooltip.apply(this))
-                        .child(
-                            // Switch Toggle
-                            SwitchThumb::new(checked)
-                                .disabled(self.disabled)
-                                .rounded(radius)
-                                .size(bar_width)
-                                .left(thumb_x)
-                                .bg(toggle_bg)
-                                .styles(|styles| {
-                                    styles.disabled(|style| style.bg(disabled_toggle_bg))
-                                }),
-                        ),
-                )
-                .when_some(self.label, |this, label| {
-                    this.child(
-                        div()
-                            .when(cfg!(test), |this| {
-                                this.debug_selector(|| "switch-label".into())
-                            })
-                            .line_height(bg_height)
-                            .child(label)
-                            .map(|this| match self.size {
-                                Size::XSmall | Size::Small => this.text_sm(),
-                                _ => this.text_base(),
+                    .w(bg_width)
+                    .h(bg_height)
+                    .rounded(radius)
+                    .flex()
+                    .items_center()
+                    .border(inset)
+                    .border_color(cx.theme().transparent)
+                    .when(!checked, |this| this.bg(unchecked_bg))
+                    .styles(|styles| {
+                        styles
+                            .checked(|style| style.bg(checked_bg))
+                            .disabled(|style| style.bg(disabled_bg))
+                    })
+                    .when_some(hover_bg, |this, hover| {
+                        this.group_hover(SWITCH_GROUP, |style| style.bg(hover))
+                    })
+                    // The ring is the Button's; the border it would tint
+                    // is the thumb's transparent inset, so it stays clear.
+                    .when(focused, |this| {
+                        apply_focus_ring(this, cx.theme().button_focus_ring, window, cx)
+                            .border_color(cx.theme().transparent)
+                    })
+                    .map(|this| self.tooltip.apply(this))
+                    .child(
+                        // Switch Toggle
+                        SwitchThumb::new(checked)
+                            .disabled(self.disabled)
+                            .rounded(radius)
+                            .size(bar_width)
+                            .left(thumb_x)
+                            .bg(toggle_bg)
+                            .styles(|styles| {
+                                styles.disabled(|style| style.bg(disabled_toggle_bg))
                             }),
-                    )
-                }),
-        )
+                    ),
+            )
+            .when_some(self.label, |this, label| {
+                this.child(
+                    div()
+                        .when(cfg!(test), |this| {
+                            this.debug_selector(|| "switch-label".into())
+                        })
+                        .line_height(bg_height)
+                        .child(label)
+                        .map(|this| match self.size {
+                            Size::XSmall | Size::Small => this.text_sm(),
+                            _ => this.text_base(),
+                        }),
+                )
+            })
     }
 }
 

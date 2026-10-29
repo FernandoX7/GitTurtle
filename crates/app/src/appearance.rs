@@ -4778,8 +4778,8 @@ mod tests {
         Box::leak(format!("{kind}-{surface}").into_boxed_str())
     }
 
-    /// Each kind of disabled Button and a disabled Switch with its label, in
-    /// a row on each of [`disabled_label_surfaces`] of the applied palette.
+    /// Each kind of disabled Button and a disabled Settings switch row, in a
+    /// row on each of [`disabled_label_surfaces`] of the applied palette.
     struct DisabledControls;
 
     impl gpui::Render for DisabledControls {
@@ -4789,7 +4789,6 @@ mod tests {
             cx: &mut gpui::Context<Self>,
         ) -> impl gpui::IntoElement {
             use gpui_kit::component::button::{Button, ButtonVariants as _};
-            use gpui_kit::component::switch::Switch;
             use gpui_kit::component::{Disableable as _, Selectable as _};
             use gpui_kit::{InteractiveElement as _, ParentElement as _, div};
 
@@ -4820,10 +4819,18 @@ mod tests {
                             }
                             .disabled(true)
                         }))
+                        // Follow system appearance's row as Settings draws
+                        // it, its title the switch's label.
                         .child(
-                            Switch::new(disabled_selector("switch", surface))
-                                .label("Follow system appearance")
-                                .disabled(true),
+                            crate::settings::switch_row(
+                                disabled_selector("switch", surface),
+                                crate::settings::FOLLOW_SYSTEM,
+                                crate::settings::FOLLOW_SYSTEM,
+                                "Omarchy follows your desktop theme",
+                                &[],
+                                cx,
+                            )
+                            .disabled(true),
                         )
                 }))
         }
@@ -4869,6 +4876,15 @@ mod tests {
             });
             assert_eq!(dim, Hsla::from(palette.disabled_label()), "{name} dim");
             assert_eq!(switch_label, dim, "{name} Switch label");
+            // A disabled Settings switch's title, its label, draws in it.
+            assert_eq!(
+                drawn_color(&format!(
+                    "setting-title: {}",
+                    crate::settings::FOLLOW_SYSTEM
+                )),
+                Some(dim),
+                "{name} disabled switch's title"
+            );
             let dim = dim.to_rgb();
             // The dim's contrast on `beneath`, recording a failure where it
             // keeps more than 60% of enabled secondary text's.

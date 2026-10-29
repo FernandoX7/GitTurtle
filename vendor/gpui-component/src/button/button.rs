@@ -602,6 +602,17 @@ impl InteractiveElement for Button {
 
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        self.base(window, cx)
+    }
+}
+
+impl Button {
+    /// The base Button this Button draws: the element whose accessibility
+    /// node names it and says whether it is available, which an
+    /// application's tests read by rendering it.
+    ///
+    /// GitTurtle patch: upstream builds it inside `render`.
+    pub fn base(self, window: &mut Window, cx: &mut App) -> gpui_base::Button {
         let style: ButtonVariant = self.variant;
         let interactive = self.interactive();
         let hoverable = self.hoverable();
