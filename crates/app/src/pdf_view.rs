@@ -468,7 +468,8 @@ fn header_room(index: usize, side: Pixels, heading: &str, window: &Window) -> Pi
 }
 
 /// The comparison's sides, each with its header of page controls; `width`
-/// is the comparison's as last laid out, which its open controls' form fits.
+/// is the comparison's (`rich_preview::render_comparison`), which its open
+/// controls' form fits.
 pub(super) fn render_comparison<T: 'static>(
     preview: &rich_preview::Comparison,
     quick: bool,

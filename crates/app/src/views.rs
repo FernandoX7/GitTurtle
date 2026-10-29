@@ -2812,43 +2812,34 @@ impl GitTurtle {
     }
     /// `column_min` is the preview column's narrowest width; the path row keeps
     /// 220 px before the modes wrap below it, but never more than that column
-    /// holds, and its buttons wrap below the path rather than clip. `column`
-    /// is its width as last laid out, which the review options fit.
+    /// holds, and its buttons wrap below the path rather than clip.
     ///
-    /// An image comparison is laid out for the column's width in the frame
-    /// it is drawn instead ([`crate::in_frame`]): its toolbar's groups (the
-    /// path's actions, the modes and the zooms) and what gives way beneath
-    /// them are chosen from that width, so a width change never draws a
-    /// frame with the choice of the frame before.
-    pub(super) fn render_preview(
-        &self,
-        column_min: Pixels,
-        column: Pixels,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    /// The preview is laid out for the column's width in the frame it is
+    /// drawn ([`crate::in_frame`]): its toolbar's groups (the path's actions,
+    /// the text modes, or an image's modes and zooms), the review options,
+    /// the footer's whole or short line and what gives way beneath an image
+    /// are chosen from that width, so a width change never draws a frame
+    /// with the choice of the frame before.
+    pub(super) fn render_preview(&self, column_min: Pixels, cx: &mut Context<Self>) -> AnyElement {
         if self.blame.is_visible() {
             return self.render_blame(cx);
         }
-        if matches!(self.content.as_deref(), Some(Content::Images { .. })) {
-            let owner = cx.entity().downgrade();
-            return div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .child(
-                    crate::in_frame::in_frame(move |bounds, window, cx| {
-                        owner
-                            .update(cx, |this, cx| {
-                                this.render_preview_at(column_min, bounds.size.width, window, cx)
-                            })
-                            .unwrap_or_else(|_| div().into_any_element())
-                    })
-                    .named("image-preview"),
-                )
-                .into_any_element();
-        }
-        self.render_preview_at(column_min, column, window, cx)
+        let owner = cx.entity().downgrade();
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                crate::in_frame::in_frame(move |bounds, window, cx| {
+                    owner
+                        .update(cx, |this, cx| {
+                            this.render_preview_at(column_min, bounds.size.width, window, cx)
+                        })
+                        .unwrap_or_else(|_| div().into_any_element())
+                })
+                .named("compare-preview"),
+            )
+            .into_any_element()
     }
 
     /// The preview [`Self::render_preview`] draws, in a column `column` wide.
@@ -3001,10 +2992,12 @@ impl GitTurtle {
                 )
                 .tooltip(format!("Blame · {DETAIL}"))
             };
-            path_controls =
-                path_controls.child(blame.debug_selector(|| "open-blame".into()).on_click(
+            path_controls = path_controls.child(crate::in_frame::probed(
+                blame.debug_selector(|| "open-blame".into()).on_click(
                     cx.listener(move |this, _, window, cx| this.open_blame(index, window, cx)),
-                ));
+                ),
+                "open-blame",
+            ));
         }
         // Keep the path and its actions together. At narrow widths or larger
         // interface sizes, modes form another row instead of crushing the path.
@@ -3078,13 +3071,19 @@ impl GitTurtle {
                             Tooltip::new(whole.clone()).build(window, cx)
                         })
                     })
-                    .child(
+                    .child(crate::in_frame::probed(
                         div()
                             .debug_selector(|| "compare-footer-text".into())
                             .min_w_0()
                             .truncate()
                             .child(shown),
-                    )
+                        // Which line it shows, for tests.
+                        if fits {
+                            "compare-footer-line"
+                        } else {
+                            "compare-footer-short"
+                        },
+                    ))
                     .into_any_element(),
                 line,
             }
@@ -3184,10 +3183,13 @@ impl GitTurtle {
                             column_min,
                             window,
                         );
-                        let menu = compact_control_label(
-                            button("text-mode-menu", label, "", false),
+                        let menu = crate::in_frame::probed(
+                            compact_control_label(
+                                button("text-mode-menu", label, "", false),
+                                "text-mode-menu",
+                                format!("Comparison mode: {label}"),
+                            ),
                             "text-mode-menu",
-                            format!("Comparison mode: {label}"),
                         )
                         .debug_selector(|| "text-mode-menu".into())
                         .px(appearance::ui_size(TEXT_MODE_MENU_INSET))
@@ -3222,7 +3224,7 @@ impl GitTurtle {
                             toolbar.child(menu)
                         }
                     } else {
-                        toolbar.child(modes)
+                        toolbar.child(crate::in_frame::probed(modes, "text-modes"))
                     };
                     let editor = match self.text_mode {
                         TextMode::Split | TextMode::Diagrams | TextMode::Markdown => &None,
@@ -5706,17 +5708,6 @@ impl GitTurtle {
             FilesHeader::WHOLE
         };
         let left = if self.mode != WorkspaceMode::History {
-            // The preview column as last laid out. Entering from History it is
-            // the column History left: its own, beside the rail or beside
-            // navigation. The state lives while this branch is drawn.
-            let measured = window.use_keyed_state("preview-column-width", cx, |_, _| None);
-            let column = measured.read(cx).unwrap_or_else(|| {
-                if self.history_sidebar && !narrow {
-                    px(self.settings.navigation_width + self.history_width) - rail
-                } else {
-                    px(self.history_width)
-                }
-            });
             div()
                 .size_full()
                 .flex()
@@ -5727,15 +5718,7 @@ impl GitTurtle {
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .on_prepaint(move |bounds, _, cx| {
-                            measured.update(cx, |width, cx| {
-                                if *width != Some(bounds.size.width) {
-                                    *width = Some(bounds.size.width);
-                                    cx.notify();
-                                }
-                            })
-                        })
-                        .child(self.render_preview(content_min - rail, column, window, cx)),
+                        .child(self.render_preview(content_min - rail, cx)),
                 )
                 .into_any_element()
         } else if self.sidebar && !narrow {
@@ -8925,7 +8908,7 @@ pub(crate) mod tests {
                 draw(cx);
                 let last = probe::take();
                 let mut settled = Vec::new();
-                for region in ["image-preview", "image-comparison"] {
+                for region in ["compare-preview", "image-comparison"] {
                     let region_frames: Vec<_> = frames
                         .iter()
                         .filter(|frame| frame.region == region)
@@ -8975,6 +8958,83 @@ pub(crate) mod tests {
         }
         crate::in_frame::probe::stop();
         assert!(footer_left, "the walk meets the footer giving way");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Compare's toolbar and footer choose their form from the preview
+    /// column's width in the frame they are drawn ([`crate::in_frame`]), for
+    /// text as for an image. Chosen from the column's width a frame before,
+    /// the first frame after a width change drew the form of the width
+    /// before: the path's actions (Blame labelled, as its icon, or folded
+    /// with the others into File actions), the text modes (labelled or one
+    /// menu, beside the path or on a row of their own) and the footer's whole
+    /// or short line, so at 18 pt the native toolbar kept its form for a
+    /// 701 px window in the first frame at 661 px, until the next input.
+    /// Every frame drawn as the window narrows and widens by 40 px between
+    /// 501 and 1,061 px, at 13 and 18 pt, lays the preview out as the frame
+    /// it settles in, and the walk meets each of those forms.
+    #[gpui::test]
+    async fn compare_chooses_its_toolbar_and_footer_in_the_frame_it_is_drawn(
+        cx: &mut TestAppContext,
+    ) {
+        let script = history_script(2, 40).replace("notes.txt", "src/compare/notes.txt");
+        let (_fixture, app, cx) = history_window_from(cx, &script).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        crate::in_frame::probe::watch();
+        let mut met = std::collections::BTreeSet::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(1061.), px(980.)));
+            draw(cx);
+            let control = cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.)));
+            let widths = (501..=1061)
+                .rev()
+                .step_by(40)
+                .chain((501..=1061).step_by(40));
+            for width in widths {
+                let at = format!("{text} pt, resized to {width} × 980");
+                let settled =
+                    frames_match_their_settled_frame(cx, &at, "compare-preview", None, |cx| {
+                        cx.simulate_resize(size(px(width as f32), px(980.)));
+                        draw(cx);
+                    });
+                let has = |part| settled.part(part).is_some();
+                met.insert(match settled.part("open-blame") {
+                    Some(blame) if blame.size.width > control => "Blame labelled",
+                    Some(_) => "Blame as its icon",
+                    None => "actions folded",
+                });
+                met.insert(if has("text-modes") {
+                    "modes labelled"
+                } else if has("text-mode-menu") {
+                    "modes as a menu"
+                } else {
+                    "no modes"
+                });
+                met.insert(if has("compare-footer-line") {
+                    "footer whole"
+                } else if has("compare-footer-short") {
+                    "footer short"
+                } else {
+                    "no footer"
+                });
+            }
+        }
+        crate::in_frame::probe::stop();
+        assert_eq!(
+            met.into_iter().collect::<Vec<_>>(),
+            [
+                "Blame as its icon",
+                "Blame labelled",
+                "actions folded",
+                "footer short",
+                "footer whole",
+                "modes as a menu",
+                "modes labelled",
+            ],
+            "the walk meets every form"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

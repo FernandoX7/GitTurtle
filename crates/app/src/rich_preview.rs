@@ -373,8 +373,9 @@ fn header_room(index: usize, side: Pixels, heading: &str, format: &str, window: 
 /// Render only supplied content. A dialog child must not borrow its parent
 /// entity while that parent is already rendering the dialog layer; `opener`
 /// opens captured bytes for the comparison's open controls, which take the
-/// form the comparison's `width`, as its container was last laid out, leaves
-/// them room for ([`crate::system_preview::Offer::form`]).
+/// form the comparison's `width` leaves them room for
+/// ([`crate::system_preview::Offer::form`]): Compare's column in the frame it
+/// is drawn, or a dialog's box as last laid out ([`measured_box`]).
 pub(super) fn render_comparison<T: 'static>(
     preview: &Comparison,
     quick: bool,
@@ -677,8 +678,8 @@ fn decoded_source(excerpt: &str, cx: &App) -> Div {
 }
 
 impl GitTurtle {
-    /// The comparison in Compare's preview column, `width` wide as last laid
-    /// out.
+    /// The comparison in Compare's preview column, `width` wide in the frame
+    /// it is drawn.
     pub(super) fn render_rich_preview(
         &self,
         preview: &Comparison,
