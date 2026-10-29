@@ -1748,6 +1748,72 @@ mod tests {
         }
     }
 
+    /// The panel's notice, a polite status, reports the part of itself the
+    /// panel's scrolling body draws. It reported its layout bounds, so at
+    /// 18 pt in a 461 × 490 window AT-SPI gave the offline fixture's notice
+    /// y 569–731 below the body's fold, over Back to repository.
+    #[gpui::test]
+    async fn the_notice_reports_the_part_the_panel_draws(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, cx) = repository_window(cx);
+        cx.update(|window, cx| {
+            let repo = app.read(cx).repository.clone().unwrap();
+            let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
+            panel.update(cx, |panel, cx| {
+                panel.review.fixture = true;
+                panel.account = Some("offline-reviewer".into());
+                panel.notice = Some(
+                    "Offline review fixture · fixed sample data; account connection and network \
+                     transport are unavailable in this mode."
+                        .into(),
+                );
+                panel.destination.update(cx, |input, cx| {
+                    input.set_value("gitturtle-fixture/native-review", window, cx)
+                });
+                panel.close(window, cx);
+            });
+            app.update(cx, |app, cx| app.open_github(window, cx));
+        });
+        settle_panel(&app, cx).await;
+        let mut past = 0;
+        for (text, width, height) in [(13, 461., 490.), (18, 461., 490.), (13, 1480., 980.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            native_accessibility::written::forget();
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let body = native_accessibility::clipping_node("github-panel")
+                .unwrap_or_else(|| panic!("{at}: the panel's body clips what it holds"))
+                .bounds()
+                .expect("bounds");
+            let notice = native_accessibility::written::get("github-notice")
+                .unwrap_or_else(|| panic!("{at}: the notice writes its node"))
+                .node;
+            assert_eq!(notice.role(), Role::Status, "{at}");
+            let bounds = notice.bounds().expect("bounds");
+            assert!(
+                bounds.x0 >= body.x0 - 0.01
+                    && bounds.y0 >= body.y0 - 0.01
+                    && bounds.x1 <= body.x1 + 0.01
+                    && bounds.y1 <= body.y1 + 0.01,
+                "{at}: the notice reports {bounds:?}, outside the part of the body the \
+                 window draws, {body:?}"
+            );
+            let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+            let layout = cx
+                .debug_bounds("github-notice")
+                .expect("the notice is laid out");
+            if f64::from(f32::from(layout.bottom())) * scale > body.y1 + 0.5 {
+                past += 1;
+            }
+        }
+        assert!(past > 0, "the body cuts the notice at some size");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        settle_panel(&app, cx).await;
+    }
+
     /// A request that answers while keyboard focus is on the busy row's
     /// Cancel takes the row away and hands focus to the section the panel
     /// shows, before a PR is chosen its destination field, drawn with its

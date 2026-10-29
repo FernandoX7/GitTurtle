@@ -538,12 +538,7 @@ impl<E: Element> Element for ClipsChildren<E> {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        // The content mask is what the ancestors let through; GPUI scales
-        // layout bounds to the node's bounds the same way.
-        let visible = physical(
-            bounds.intersect(&window.content_mask().bounds),
-            window.scale_factor(),
-        );
+        let visible = drawn_part(bounds, window);
         self.visible = Some(visible);
         #[cfg(test)]
         let written = written::open(self, Some(visible));
@@ -714,9 +709,19 @@ impl<E: Element> Element for BeneathModal<E> {
 /// `aria_label`, which reached AT-SPI as a label with no name, so a screen
 /// reader found none of them. GPUI's own text element writes its text as the
 /// value too. The element's other properties, such as an `aria_description`
-/// for what its tooltip adds, stay as it writes them. Focus and the Tab
-/// order do not change: the wrapper adds no dispatch node, focus handle or
-/// listener, and the element needs an ID for GPUI to write a node at all.
+/// for what its tooltip adds, stay as it writes them.
+///
+/// Its bounds are the part of it the window draws, as a clipping
+/// container's are ([`clips_children`]): text that a scrolling body, a list
+/// or a document cuts is reported where it is drawn rather than where its
+/// layout runs on. GPUI gives each node its layout bounds, so the GitHub
+/// panel's notice reached AT-SPI 162 px tall over the Back to repository
+/// button at 18 pt in a 461 px window, and the inspector's message title
+/// ran 56 px past its document's foot over "Changed files". The node stays
+/// where it is in the tree, so a document read as a whole still reads it.
+/// Focus and the Tab order do not change: the wrapper adds no dispatch
+/// node, focus handle or listener, and the element needs an ID for GPUI to
+/// write a node at all.
 pub(crate) fn static_text<E: IntoElement>(
     element: E,
     text: impl Into<SharedString>,
@@ -724,6 +729,7 @@ pub(crate) fn static_text<E: IntoElement>(
     StaticText {
         inner: element.into_element(),
         text: text.into(),
+        visible: None,
     }
 }
 
@@ -731,6 +737,10 @@ pub(crate) fn static_text<E: IntoElement>(
 pub(crate) struct StaticText<E> {
     inner: E,
     text: SharedString,
+    /// The part of the text its ancestors leave visible, in the physical
+    /// window pixels of AccessKit's bounds, measured as it prepaints, as
+    /// [`ClipsChildren`] measures it.
+    visible: Option<gpui::accesskit::Rect>,
 }
 
 impl<E: Element> IntoElement for StaticText<E> {
@@ -771,9 +781,10 @@ impl<E: Element> Element for StaticText<E> {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        // GPUI gives the node its layout bounds, scaled to physical pixels.
+        let visible = drawn_part(bounds, window);
+        self.visible = Some(visible);
         #[cfg(test)]
-        let written = written::open(self, Some(physical(bounds, window.scale_factor())));
+        let written = written::open(self, Some(visible));
         let state = self
             .inner
             .prepaint(id, inspector, bounds, layout, window, cx);
@@ -813,11 +824,16 @@ impl<E: Element> Element for StaticText<E> {
         }
     }
 
+    /// The node takes the drawn part of the text as its bounds here: GPUI
+    /// writes it before it prepaints the element.
     fn a11y_synthetic_children(
         &mut self,
         prepaint: &mut Self::PrepaintState,
         builder: &mut A11ySubtreeBuilder,
     ) {
+        if let Some(visible) = self.visible {
+            builder.parent_node().set_bounds(visible);
+        }
         self.inner.a11y_synthetic_children(prepaint, builder);
     }
 }
@@ -886,6 +902,27 @@ pub(crate) fn dialog_title(
     #[cfg(test)]
     written::built(&title);
     title
+}
+
+/// The part of `bounds`, an element's layout as it prepaints, that its
+/// ancestors leave visible, in the physical window pixels of AccessKit's
+/// bounds. The content mask is what the ancestors let through; GPUI scales
+/// layout bounds to a node's bounds the same way. An element the mask leaves
+/// out entirely is drawn nowhere: its part is empty, on the mask's edge
+/// nearest to it, where `Bounds::intersect` leaves an empty rectangle at the
+/// element's own corner, past the clip (the GitHub panel's notice below its
+/// body's fold, at the notice's top over Back to repository).
+fn drawn_part(bounds: Bounds<Pixels>, window: &Window) -> gpui::accesskit::Rect {
+    let mask = physical(window.content_mask().bounds, window.scale_factor());
+    let laid_out = physical(bounds, window.scale_factor());
+    let (x0, x1) = (mask.x0, mask.x1.max(mask.x0));
+    let (y0, y1) = (mask.y0, mask.y1.max(mask.y0));
+    gpui::accesskit::Rect {
+        x0: laid_out.x0.clamp(x0, x1),
+        y0: laid_out.y0.clamp(y0, y1),
+        x1: laid_out.x1.clamp(x0, x1),
+        y1: laid_out.y1.clamp(y0, y1),
+    }
 }
 
 /// `bounds` in the physical window pixels of AccessKit's bounds, at `scale`.

@@ -14783,18 +14783,29 @@ pub(crate) mod tests {
         settle(&app, cx).await;
         let row_height = app.read_with(cx, |app, _| px(app.settings.density.file_row_height()));
         let mut cut = 0;
-        for (text, width, height) in [
-            (13, 461., 980.),
-            (18, 461., 980.),
-            (13, 461., 490.),
-            (18, 461., 490.),
+        // History's inspector, then Compare's, which keeps the list beside
+        // the file it compares, at the window sizes the native reviews read.
+        for (compare, text, width, height) in [
+            (false, 13, 461., 980.),
+            (false, 18, 461., 980.),
+            (false, 13, 461., 490.),
+            (false, 18, 461., 490.),
+            (false, 18, 1000., 680.),
+            (true, 13, 461., 490.),
+            (true, 18, 461., 490.),
+            (true, 18, 1000., 680.),
         ] {
+            if compare && app.read_with(cx, |app, _| app.mode != WorkspaceMode::Compare) {
+                cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+                settle(&app, cx).await;
+            }
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
             draw(cx);
             crate::native_accessibility::forget_clipping_nodes();
             draw(cx);
-            let at = format!("{text} pt at {width} × {height}");
+            let page = if compare { "Compare" } else { "History" };
+            let at = format!("{page} at {text} pt in {width} × {height}");
             let window = node_bounds(
                 cx,
                 Bounds::new(point(px(0.), px(0.)), size(px(width), px(height))),
@@ -14837,6 +14848,75 @@ pub(crate) mod tests {
             assert!(rows > 1, "{at}: the rows write nodes that clip");
         }
         assert!(cut > 0, "the list cuts a row at some size");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Each piece of the inspector's commit message reports the part of
+    /// itself the message's viewport draws. The message is a document read
+    /// as a whole, which clips nothing, and its title reported its layout
+    /// bounds: AT-SPI gave it y 372–614 in a viewport ending at 558, over
+    /// the "Changed files" heading, at 18 pt in a 461 px window.
+    #[gpui::test]
+    async fn message_pieces_report_the_part_the_details_draw(cx: &mut TestAppContext) {
+        let subject = "Update the layout notes so the inspector's title wraps over several \
+                       lines in a half tile";
+        let body = "The first paragraph of the body explains the change.\n\n\
+                    The second paragraph lies below the fold.";
+        let message = format!("{subject}\n\n{body}");
+        let input = format!(
+            "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> \
+             1700000000 +0000\ndata {}\n{message}\nM 100644 inline notes.txt\ndata 6\nnotes\n\
+             done\n",
+            message.len()
+        );
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_commit(0, window, cx)));
+        settle(&app, cx).await;
+        let mut cut = 0;
+        for (text, width, height) in [(13, 461., 490.), (18, 461., 490.), (13, 640., 490.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            crate::native_accessibility::forget_clipping_nodes();
+            draw(cx);
+            let at = format!("{text} pt in {width} × {height}");
+            let window = Bounds::new(point(px(0.), px(0.)), size(px(width), px(height)));
+            let viewport = cx
+                .debug_bounds("commit-message-viewport")
+                .unwrap_or_else(|| panic!("{at}: the message is drawn"));
+            let drawn = node_bounds(cx, viewport.intersect(&window));
+            let mut pieces = 0;
+            for index in 0..8 {
+                let Some(layout) = bounds_of(cx, format!("commit-message-piece-{index}")) else {
+                    continue;
+                };
+                pieces += 1;
+                let node = crate::native_accessibility::written::get(&format!(
+                    "commit-message-piece-{index}"
+                ))
+                .unwrap_or_else(|| panic!("{at}: piece {index} writes its node"))
+                .node;
+                assert_eq!(node.role(), Role::Label, "{at}: piece {index}");
+                assert!(
+                    node.value().is_some(),
+                    "{at}: piece {index} is read by its text"
+                );
+                let bounds = node.bounds().expect("bounds");
+                assert!(
+                    bounds.x0 >= drawn.x0 - 0.01
+                        && bounds.y0 >= drawn.y0 - 0.01
+                        && bounds.x1 <= drawn.x1 + 0.01
+                        && bounds.y1 <= drawn.y1 + 0.01,
+                    "{at}: piece {index} reports {bounds:?}, outside the part of the message \
+                     the window draws, {drawn:?}"
+                );
+                if node_bounds(cx, layout).y1 > drawn.y1 + 0.5 {
+                    cut += 1;
+                }
+            }
+            assert!(pieces > 0, "{at}: the message draws its pieces");
+        }
+        assert!(cut > 0, "the viewport cuts a piece at some size");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

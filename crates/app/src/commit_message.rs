@@ -404,25 +404,30 @@ pub(super) fn summary(text: &str) -> String {
     }
 }
 
+/// A piece of the inspector's message: static text read by its text, whose
+/// node reports the part the message's viewport draws, where the title ran
+/// past the viewport's foot at 18 pt in a 461 px window, over the Changed
+/// files heading below.
 fn render_piece(piece: &Piece, index: usize, selection: &Selection, cx: &App) -> impl IntoElement {
     let colors = palette(cx);
-    div()
-        .id(("commit-message-piece", index))
-        .role(Role::Label)
-        // AccessKit adapters expose static label text through its value.
-        .aria_value(piece.text.clone())
-        .w_full()
-        .min_w_0()
-        .px_3()
-        .pr(appearance::ui_size(20.))
-        .when(index == 0, |row| row.pt_2())
-        .when(piece.body_start && index > 0, |row| row.pt_3())
-        .text_color(rgb(colors.text))
-        .text_size(appearance::ui_text(if piece.title { 15. } else { 12. }))
-        .line_height(relative(if piece.title { 1.35 } else { 1.5 }))
-        .when(piece.title, |row| row.font_weight(FontWeight::MEDIUM))
-        .min_h(appearance::ui_size(if piece.title { 20.25 } else { 18. }))
-        .child(selection.piece(piece))
+    crate::native_accessibility::static_text(
+        div()
+            .id(("commit-message-piece", index))
+            .debug_selector(move || format!("commit-message-piece-{index}")),
+        piece.text.clone(),
+    )
+    .w_full()
+    .min_w_0()
+    .px_3()
+    .pr(appearance::ui_size(20.))
+    .when(index == 0, |row| row.pt_2())
+    .when(piece.body_start && index > 0, |row| row.pt_3())
+    .text_color(rgb(colors.text))
+    .text_size(appearance::ui_text(if piece.title { 15. } else { 12. }))
+    .line_height(relative(if piece.title { 1.35 } else { 1.5 }))
+    .when(piece.title, |row| row.font_weight(FontWeight::MEDIUM))
+    .min_h(appearance::ui_size(if piece.title { 20.25 } else { 18. }))
+    .child(selection.piece(piece))
 }
 
 impl GitTurtle {
