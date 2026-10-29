@@ -1860,6 +1860,9 @@ impl GitTurtle {
             operation,
         } = state;
         let path = self.path.clone();
+        // A paused integration read again as ended: a recovery refusal that
+        // read the pause no longer holds.
+        let ended = self.integration_state.is_some() && matches!(operation, Ok(None));
         self.integration_state = match operation {
             Ok(state) => state,
             Err(error) => {
@@ -1868,6 +1871,9 @@ impl GitTurtle {
                 None
             }
         };
+        if ended {
+            self.integration_ended(cx);
+        }
         let preferred = self.working_selected.and_then(|(index, area)| {
             self.work_status
                 .as_ref()?

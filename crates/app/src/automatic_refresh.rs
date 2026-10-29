@@ -30,6 +30,12 @@ impl State {
     pub(crate) fn rescan_queued(&self) -> bool {
         self.pending.rescan
     }
+    /// Whether a quiet read, which reads the working state whatever it was
+    /// asked for, waits to run or runs, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn quiet_read_requested(&self) -> bool {
+        !self.pending.is_empty() || self.inflight.is_some()
+    }
     pub fn reset(&mut self) {
         let epoch = self.epoch.wrapping_add(1);
         *self = Self {

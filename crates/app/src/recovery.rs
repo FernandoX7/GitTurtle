@@ -1,4 +1,5 @@
 //! Explicit, prepared recovery actions and a read-only stash inspector.
+use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use gitturtle_core::{
     CommitRecoveryPlan, RecoveryCommand, RecoveryKind, StashPage, StashSnapshot, WriteCommand,
@@ -16,6 +17,10 @@ const PREPARING: &str = "Preparing recovery action…";
 /// words of the core's plans (`GitTurtle::read_recovery`).
 pub(super) const PAUSED_REFUSAL: &str =
     "Finish the current operation and resolve conflicts before starting another recovery action";
+/// What a recovery form says in place of [`PAUSED_REFUSAL`] once a status
+/// read finds the integration it refused for ended
+/// (`GitTurtle::integration_ended`).
+const PAUSE_ENDED: &str = "The paused operation has ended. Review again to continue.";
 const STASH_PAGE_SIZE: usize = 40;
 /// The least height a saved file's comparison keeps in the Stashes detail,
 /// at the default interface size, where the window leaves the detail less
@@ -69,6 +74,14 @@ impl GitTurtle {
     /// paused, in the core's words and the way its refusal arrives, once the
     /// caller's update has ended: a form that asked, `failure`, closes and
     /// reopens with it, and otherwise the window's error shows it.
+    ///
+    /// The pause is the one the window read last, which may be stale: a
+    /// merge finished in a terminal before the local watcher's read lands,
+    /// or a retained tab restored its own. So the refusal also asks for a
+    /// quiet read of the working state, which reads and writes nothing else,
+    /// and the next try reads that pause, while a read that finds it ended
+    /// replaces the refusal ([`Self::integration_ended`]). The action itself
+    /// is never tried again.
     fn refuse_while_paused(
         &mut self,
         failure: Option<Failure>,
@@ -83,6 +96,44 @@ impl GitTurtle {
             }
             cx.notify();
         });
+        self.queue_automatic_refresh(
+            local_refresh::LocalChange {
+                worktree: true,
+                ..Default::default()
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// A status read found that the integration paused when the window last
+    /// read it has ended: a recovery form of this repository whose line
+    /// refuses because one was paused says it has ended instead, and the
+    /// window's error stops refusing so. The refusal may be the window's or
+    /// the core's, which share their words; any later reason stays.
+    pub(super) fn integration_ended(&mut self, cx: &mut Context<Self>) {
+        let path = self.path.clone();
+        if let Some(form) = &self.recovery.amend
+            && form.read(cx).repository == path
+        {
+            form.update(cx, |form, cx| {
+                if pause_ended(&mut form.error, &mut form.pause_ended) {
+                    cx.notify();
+                }
+            });
+        }
+        if let Some(form) = &self.recovery.stash
+            && form.read(cx).repository == path
+        {
+            form.update(cx, |form, cx| {
+                if pause_ended(&mut form.error, &mut form.pause_ended) {
+                    cx.notify();
+                }
+            });
+        }
+        if self.operation_error.as_deref() == Some(PAUSED_REFUSAL) {
+            self.operation_error = None;
+        }
     }
 
     /// Prepares a recovery action with `prepare` on the operation executor,
@@ -813,6 +864,9 @@ struct AmendForm {
     description: Entity<TextareaState>,
     initial: CommitDraft,
     error: Option<String>,
+    /// Whether the line beneath the fields says that the integration its
+    /// last review was refused for has ended ([`PAUSE_ENDED`]).
+    pause_ended: bool,
 }
 impl AmendForm {
     fn new(
@@ -834,6 +888,7 @@ impl AmendForm {
             description,
             initial,
             error: None,
+            pause_ended: false,
         }
     }
     fn draft(&self, cx: &App) -> CommitDraft {
@@ -846,6 +901,7 @@ impl AmendForm {
         amended_message(&self.plan.target.message, &self.initial, &self.draft(cx))
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.pause_ended = false;
         if self.title.read(cx).value().trim().is_empty() {
             self.error = Some("Enter a commit title.".into());
             cx.notify();
@@ -919,7 +975,7 @@ impl Render for AmendForm {
                     .text_color(rgb(p.muted))
                     .child("The next step reviews the staged snapshot and the effect on history."),
             )
-            .children(self.error.as_ref().map(|error| form_error(error, cx)))
+            .children(form_line(self.error.as_deref(), self.pause_ended, cx))
     }
 }
 fn show_amend(form: Entity<AmendForm>, window: &mut Window, cx: &mut App) {
@@ -946,6 +1002,9 @@ struct StashForm {
     name: Entity<InputState>,
     include_untracked: bool,
     error: Option<String>,
+    /// Whether the line beneath the fields says that the integration its
+    /// last review was refused for has ended ([`PAUSE_ENDED`]).
+    pause_ended: bool,
 }
 impl StashForm {
     fn new(
@@ -962,9 +1021,11 @@ impl StashForm {
             name,
             include_untracked: false,
             error: None,
+            pause_ended: false,
         }
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.pause_ended = false;
         let name = self.name.read(cx).value().to_string();
         if name.trim().is_empty() {
             self.error = Some("Give this stash a name so you can find it later.".into());
@@ -1000,7 +1061,7 @@ impl Render for StashForm {
             .child(div().flex().flex_col().gap_1().child("Stash name").child(Input::new(&self.name).aria_label("Stash name")))
             .child(Checkbox::new("stash-include-untracked").label("Include untracked files").checked(self.include_untracked)
                 .on_click(cx.listener(|this, checked, _, cx| { this.include_untracked = *checked; cx.notify(); })))
-            .children(self.error.as_ref().map(|error| form_error(error, cx)))
+            .children(form_line(self.error.as_deref(), self.pause_ended, cx))
     }
 }
 fn show_stash_form(form: Entity<StashForm>, window: &mut Window, cx: &mut App) {
@@ -1020,9 +1081,46 @@ fn show_stash_form(form: Entity<StashForm>, window: &mut Window, cx: &mut App) {
             .on_ok(move |_, window, cx| submit.update(cx, |form, cx| form.submit(window, cx)))
     });
 }
+/// Replaces a recovery form's `error` that refuses because an integration
+/// was paused with the line that says it has ended, `ended`; returns whether
+/// it did. Any other reason stays.
+fn pause_ended(error: &mut Option<String>, ended: &mut bool) -> bool {
+    if error.as_deref() != Some(PAUSED_REFUSAL) {
+        return false;
+    }
+    *error = None;
+    *ended = true;
+    true
+}
+
+/// The line beneath a recovery form's fields: why its last review was
+/// refused, or, `pause_ended`, that the integration it was refused for has
+/// ended, a status heard once assistive technology finishes speaking.
+fn form_line(error: Option<&str>, pause_ended: bool, cx: &App) -> Option<AnyElement> {
+    match error {
+        Some(error) => Some(form_error(error, cx)),
+        None => pause_ended.then(|| {
+            native_accessibility::static_text(
+                div()
+                    .id("recovery-form-note")
+                    .debug_selector(|| "recovery-form-note".into())
+                    .role(Role::Status)
+                    .aria_label(PAUSE_ENDED)
+                    .polite()
+                    .text_size(crate::appearance::ui_text(12.))
+                    .text_color(rgb(palette(cx).muted))
+                    .child(PAUSE_ENDED),
+                PAUSE_ENDED,
+            )
+            .into_any_element()
+        }),
+    }
+}
+
 fn form_error(error: &str, cx: &App) -> AnyElement {
     div()
         .id("recovery-form-error")
+        .debug_selector(|| "recovery-form-error".into())
         .max_h(px(130.))
         .overflow_y_scroll()
         .text_size(crate::appearance::ui_text(12.))
@@ -2316,5 +2414,170 @@ mod tests {
             &["stash-comparison", "stash-detail"],
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Lets every quiet read the window has asked for land: each runs on
+    /// the window's reader, a thread `run_until_parked` cannot wait for.
+    fn quiet_reads_land(app: &Entity<GitTurtle>, cx: &mut gpui::VisualTestContext) {
+        for _ in 0..8 {
+            if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                return;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        panic!("a quiet read asked for never ran");
+    }
+
+    /// Reads the working state, as Refresh does, and lets it land: a merge
+    /// paused outside the app is the window's pause from then on.
+    async fn read_pause(app: &Entity<GitTurtle>, cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(app, cx).await;
+        quiet_reads_land(app, cx);
+        assert!(
+            app.read_with(cx, |app, _| app.integration_state.is_some()),
+            "the merge paused"
+        );
+    }
+
+    /// Draws a frame without running the window's tasks, so a reply
+    /// waiting on the reader stays unread.
+    fn frame(cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+
+    /// A recovery action refuses while an integration is paused from the
+    /// pause the window read last, which a change outside the app can end
+    /// unseen, as it does here: the test's local watch reports nothing,
+    /// like one whose read has not landed yet, or a retained tab's restored
+    /// pause. Review stash in an open Save changes to stash… form is
+    /// refused in the core's words and asks for a quiet read of the working
+    /// state; once it lands and finds the merge ended, the form's line says
+    /// so instead of refusing. Revert, as a keyboard's commit menu offers
+    /// it, is refused in the window's error and asks the same, and that
+    /// error ends with the merge. Nothing read the pause again: each try was
+    /// refused from the same stale pause until some other read landed, and
+    /// the form went on refusing after it.
+    #[gpui::test]
+    async fn a_paused_refusal_reads_the_pause_again_and_gives_way_once_it_ends(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let identity = [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+        ];
+        let git = |arguments: &[&str]| {
+            crate::views::tests::fixture_git(&repository, &[&identity[..], arguments].concat())
+        };
+        git(&["reset", "-q", "--hard"]);
+        git(&["checkout", "-q", "-b", "side"]);
+        std::fs::write(repository.join("side.txt"), "side\n").unwrap();
+        git(&["add", "side.txt"]);
+        git(&["commit", "-q", "-m", "side"]);
+        git(&["checkout", "-q", "main"]);
+        let paused = |cx: &mut gpui::VisualTestContext| {
+            app.read_with(cx, |app, _| app.integration_state.is_some())
+        };
+        let asked = |cx: &mut gpui::VisualTestContext| {
+            app.read_with(cx, |app, _| app.automatic.quiet_read_requested())
+        };
+
+        git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        read_pause(&app, cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_stash_form(window, cx)));
+        crate::views::tests::draw(cx);
+        let form = app.read_with(cx, |app, _| app.recovery.stash.clone().expect("the form"));
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.name
+                    .update(cx, |name, cx| name.set_value("paused work", window, cx))
+            })
+        });
+        // The merge ends in a terminal, unseen.
+        git(&["merge", "--abort"]);
+        // Review stash, as its button asks, with nothing run after it.
+        cx.update(|window, cx| {
+            window.dispatch_action(
+                Box::new(gpui_kit::component::dialog::Confirm { secondary: false }),
+                cx,
+            )
+        });
+        frame(cx);
+        assert_eq!(
+            form.read_with(cx, |form, _| form.error.clone()),
+            Some(PAUSED_REFUSAL.into()),
+            "Review stash is refused from the pause read last"
+        );
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the form reopens"
+        );
+        assert!(
+            cx.debug_bounds("recovery-form-error").is_some(),
+            "the form draws the refusal"
+        );
+        assert!(asked(cx), "the refusal asks for a quiet read");
+        assert!(paused(cx), "the read has not landed");
+
+        quiet_reads_land(&app, cx);
+        frame(cx);
+        assert!(!paused(cx), "the read finds the merge ended");
+        assert_eq!(
+            form.read_with(cx, |form, _| (form.error.clone(), form.pause_ended)),
+            (None, true),
+            "the refusal gives way"
+        );
+        assert!(
+            cx.debug_bounds("recovery-form-error").is_none(),
+            "the form draws no refusal"
+        );
+        assert!(
+            cx.debug_bounds("recovery-form-note").is_some(),
+            "the form says the merge ended"
+        );
+        assert_eq!(
+            crate::native_accessibility::written::announced("recovery-form-note")
+                .map(|announced| announced.live),
+            Some(gpui::accesskit::Live::Polite),
+            "a status, heard once speech pauses"
+        );
+        cx.update(|window, cx| window.close_dialog(cx));
+        crate::views::tests::draw(cx);
+
+        // Revert, as Enter on a keyboard's commit menu chooses it.
+        git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        read_pause(&app, cx).await;
+        git(&["merge", "--abort"]);
+        let commit = app.read_with(cx, |app, _| commit_target(&app.commits[0]));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.choose_commit_recovery(RecoveryKind::Revert, commit, window, cx)
+            })
+        });
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            Some(PAUSED_REFUSAL.into()),
+            "Revert is refused in the window's error"
+        );
+        assert!(asked(cx), "the refusal asks for a quiet read");
+        quiet_reads_land(&app, cx);
+        assert!(!paused(cx), "the read finds the merge ended again");
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None,
+            "the window's refusal ends with the merge"
+        );
+        drop(fixture);
     }
 }
