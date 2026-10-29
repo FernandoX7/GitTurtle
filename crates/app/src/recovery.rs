@@ -1840,17 +1840,30 @@ mod tests {
     /// the detail scrolls the control the keyboard moves onto into view with
     /// its ring, as the dialogs' lists do. Its group, mode and restore
     /// controls once stayed below the detail's fold, drawing no ring.
+    ///
+    /// The window lists no History beneath the dialog, as the Reflog's walk
+    /// does not: on the History fixture the selected commit row's accent bar
+    /// under the backdrop now and then differed between the walk's focused
+    /// and blurred frames and was read as a stop's ring.
     #[gpui::test]
     async fn a_narrow_stash_detail_shows_every_stop_whole(cx: &mut gpui_kit::TestAppContext) {
         use crate::focus_ring::sweep;
-        use crate::views::tests::{draw, fixture_git, history_window};
-        let (_fixture, app, cx) = history_window(cx).await;
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "edited\n").unwrap();
+        git(
+            repo.path(),
+            &[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                "kept for later",
+            ],
+        );
+        let (app, cx) = window(cx, &repo);
         sweep::prepare(&app, cx);
-        let root = app.read_with(cx, |app, _| app.path.clone().unwrap());
-        fixture_git(&root, &["config", "user.name", "Stash Fixture"]);
-        fixture_git(&root, &["config", "user.email", "stash@example.invalid"]);
-        std::fs::write(root.join("notes.txt"), "edited\n").unwrap();
-        fixture_git(&root, &["stash", "push", "-m", "kept for later"]);
         cx.simulate_resize(size(px(461.), px(490.)));
         let mut failures = Vec::new();
         for interface in sweep::SIZES {
