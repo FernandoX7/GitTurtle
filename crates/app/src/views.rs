@@ -4886,6 +4886,12 @@ thread_local! {
     static SUBJECT_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static GRAPH_TITLE: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     static COMPACT_COUNT: TextWidth = const { RefCell::new(None) };
+    /// A fresh outcome in the status bar and the keyboard hints beside it,
+    /// whole and as their keys (`GitTurtle::status_hints`).
+    static STATUS_OUTCOME: TextWidth = const { RefCell::new(None) };
+    static STATUS_HINTS: TextWidth = const { RefCell::new(None) };
+    static STATUS_KEYS: TextWidth = const { RefCell::new(None) };
+    static STATUS_WARNING: RefCell<Option<(LineKey, Pixels)>> = const { RefCell::new(None) };
     /// The changed-file filter's placeholder as it fits the width its field
     /// last painted at (`workspace::placeholder_fit`).
     static CHANGED_FILTER_FIT: crate::workspace::PlaceholderFit = const { RefCell::new(None) };
@@ -5492,26 +5498,88 @@ impl GitTurtle {
     /// modal dialog or sheet, those of the dialog control holding focus,
     /// which has keys of its own, or none. The page's keys do not reach the
     /// page beneath a modal, so its hints never show there.
+    ///
+    /// While a write's outcome is fresh in the status line
+    /// ([`Self::fresh_outcome`]), the outcome comes first: the hints keep
+    /// their whole form where the outcome stays whole beside it, else their
+    /// keys alone ("↑↓ · Enter"), else they leave until the outcome ends. At
+    /// 18 pt in a 461 × 490 half tile the whole hints took 277.5 px and cut
+    /// "Up to date with origin · nothing new" to "Up to date with ori…".
     pub(super) fn status_hints(&self, window: &mut Window, cx: &mut App) -> Option<String> {
+        let hints = self.key_hints(window, cx)?;
+        let Some(outcome) = self.fresh_outcome() else {
+            return Some(hints.whole());
+        };
+        let measure = |cache, text: &str| {
+            cached_text_width(cache, text, window, || {
+                line_widths(&[(text, appearance::ui_text(10.))], window)
+            })
+        };
+        let line = measure(&STATUS_OUTCOME, outcome);
+        let gap = window.pixel_snap(window.rem_size() * 0.5);
+        let room = self.status_line_room(window);
+        let (whole, keys) = (hints.whole(), hints.keys());
+        let fits = |hints: Pixels| line + gap + hints <= room;
+        if fits(measure(&STATUS_HINTS, &whole)) {
+            Some(whole)
+        } else if fits(measure(&STATUS_KEYS, &keys)) {
+            Some(keys)
+        } else {
+            None
+        }
+    }
+
+    /// The hints [`Self::status_hints`] draws whole, each key with what it
+    /// does.
+    fn key_hints(&self, window: &mut Window, cx: &mut App) -> Option<shortcuts::KeyHints> {
         if window.has_active_dialog(cx) || window.has_active_sheet(cx) {
             return self
                 .dialog_hints
                 .focused(window)
-                .map(shortcuts::DialogKeys::hints);
+                .map(shortcuts::DialogKeys::key_hints);
         }
-        Some(match self.page {
-            AppPage::Settings => "Tab Move between controls · Esc Back".to_owned(),
-            AppPage::Projects => format!("{}O Open repository · Esc Back", primary_label()),
+        let key = |key: &str, action| (key.to_owned(), action);
+        Some(shortcuts::KeyHints(match self.page {
+            AppPage::Settings => vec![key("Tab", "Move between controls"), key("Esc", "Back")],
+            AppPage::Projects => vec![
+                (format!("{}O", primary_label()), "Open repository"),
+                key("Esc", "Back"),
+            ],
             AppPage::Repository => match self.mode {
-                WorkspaceMode::Compare => "Esc Back to history · ↑↓ Files".to_owned(),
-                WorkspaceMode::Working => "↑↓ Review files · Esc Back to history".to_owned(),
-                WorkspaceMode::History => format!(
-                    "{}F Search · ↑↓ Navigate · {} Open file",
-                    primary_label(),
-                    shortcuts::ENTER
-                ),
+                WorkspaceMode::Compare => vec![key("Esc", "Back to history"), key("↑↓", "Files")],
+                WorkspaceMode::Working => {
+                    vec![key("↑↓", "Review files"), key("Esc", "Back to history")]
+                }
+                WorkspaceMode::History => vec![
+                    (format!("{}F", primary_label()), "Search"),
+                    key("↑↓", "Navigate"),
+                    key(shortcuts::ENTER, "Open file"),
+                ],
             },
-        })
+        }))
+    }
+
+    /// The room the status bar leaves its line and its keyboard hints, a
+    /// `gap_2` apart: the strip spans the window inside its `px_3` and holds
+    /// the 5 px status dot and, where drawn, the local refresh warning with
+    /// its Refresh and Details… (`render`), each a `gap_2` from the next.
+    fn status_line_room(&self, window: &Window) -> Pixels {
+        let rem = window.rem_size();
+        let gap = window.pixel_snap(rem * 0.5);
+        let mut room =
+            content_size(window).width - window.pixel_snap(rem * 0.75) * 2. - px(5.) - gap;
+        if self.automatic.watch_warning().is_some() {
+            room -= cached_width(&STATUS_WARNING, &LineKey::current(window), || {
+                let small = appearance::ui_text(10.);
+                let widths = |text| line_widths(&[(text, small)], window);
+                gap + widths("Some changes need Refresh")
+                    + gap
+                    + self.labelled_width(widths("Refresh"), false, window)
+                    + gap
+                    + self.labelled_width(widths("Details…"), false, window)
+            });
+        }
+        room
     }
 }
 
@@ -5793,7 +5861,7 @@ impl Render for GitTurtle {
                         },
                     )))
                     .child(
-                        div().flex_1().truncate().child(match self.page {
+                        div().debug_selector(|| "status-line".into()).flex_1().truncate().child(match self.page {
                             AppPage::Projects => {
                                 "Open a project or start a new repository".to_owned()
                             }

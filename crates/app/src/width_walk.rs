@@ -10,9 +10,10 @@
 //! hint wrapped inside a phrase, and on a field's placeholder wider than
 //! its field. The fixture has no remote, so every page's bar shows that
 //! edge; History is walked again on a detached HEAD, on a branch with no
-//! upstream, with the navigation at its 180 px minimum, and with a search
-//! that found nothing, whose line and Clear search must lie wholly inside
-//! the list. The window is resized from width to width as a person or a
+//! upstream, with the navigation at its 180 px minimum, with a search that
+//! found nothing, whose line and Clear search must lie wholly inside the
+//! list, and with a write's outcome fresh in the status line, which must be
+//! drawn whole beside the keyboard hints. The window is resized from width to width as a person or a
 //! tiling window manager resizes it, so the inspector is drawn at the size
 //! its panel group rescales it to, not only its saved width.
 //!
@@ -97,6 +98,11 @@ enum Rule {
     /// labelled controls left the list 2 px and Clear search ended below the
     /// window.
     StateOutside,
+    /// A write's fresh outcome in the status line is drawn short of its
+    /// whole text beside the keyboard hints, as "Up to date with ori…" at
+    /// 18 pt in a 461 × 490 half tile: the outcome comes first, and the
+    /// hints keep their keys alone, or leave, while it lasts.
+    OutcomeCut,
 }
 
 /// The pages the walk lays out.
@@ -390,8 +396,30 @@ impl Walk<'_> {
         self.inspect_navigation(width, height, cx);
         self.inspect_placeholders(width, height, cx);
         self.inspect_edge(width, height, cx);
+        self.inspect_outcome(width, height, cx);
         if self.page == Page::HistorySearch {
             self.inspect_search_state(width, height, cx);
+        }
+    }
+
+    /// Records a fresh outcome in the status line drawn short of its whole
+    /// text. A truncated line is whole inside its clip, so the cut-text rule
+    /// cannot see it: its box is narrower than the text it says.
+    fn inspect_outcome(&mut self, width: f32, height: f32, cx: &mut VisualTestContext) {
+        let Some(outcome) = self
+            .app
+            .read_with(cx, |app, _| app.fresh_outcome().map(str::to_owned))
+        else {
+            return;
+        };
+        let need = cx.update(|window, _| {
+            let weight = window.text_style().font_weight;
+            shaped_width(&outcome, appearance::ui_text(10.), weight, window).ceil()
+        });
+        let drawn = cx.debug_bounds("status-line").map(|line| line.size.width);
+        if drawn.is_none_or(|drawn| drawn < need - px(0.5)) {
+            let detail = format!("{outcome:?} in {drawn:?} of its {need:?}");
+            self.found(Rule::OutcomeCut, "status-line", (width, height), detail);
         }
     }
 
@@ -764,25 +792,40 @@ async fn walk(page: Page, text: u8, cx: &mut TestAppContext) {
 
 /// [`walk`] on History with the navigation dragged to its 180 px minimum.
 async fn walk_narrowest_navigation(text: u8, cx: &mut TestAppContext) {
-    walk_with(Page::History, text, &[], true, cx).await;
+    walk_with(Page::History, text, &[], true, None, cx).await;
 }
 
 /// [`walk`], once the Git commands `edge` have moved the fixture to another
 /// repository edge, as a detached HEAD or a branch with no upstream.
 async fn walk_at_edge(page: Page, text: u8, edge: &[&[&str]], cx: &mut TestAppContext) {
-    walk_with(page, text, edge, false, cx).await;
+    walk_with(page, text, edge, false, None, cx).await;
+}
+
+/// [`walk`] on History with a Fetch's outcome fresh in the status line
+/// for the whole walk: the test clock stands still, so it never ends.
+async fn walk_with_outcome(text: u8, cx: &mut TestAppContext) {
+    let outcome = "Up to date with origin · nothing new";
+    walk_with(Page::History, text, &[], false, Some(outcome), cx).await;
 }
 
 /// [`walk_at_edge`], with the navigation dragged to its 180 px minimum
-/// where `narrowest`, as its divider drags it.
+/// where `narrowest`, and `outcome` recorded as a write's fresh outcome.
 async fn walk_with(
     page: Page,
     text: u8,
     edge: &[&[&str]],
     narrowest: bool,
+    outcome: Option<&str>,
     cx: &mut TestAppContext,
 ) {
     let (_fixture, app, cx, path) = open(page, cx).await;
+    if let Some(outcome) = outcome {
+        app.update(cx, |app, cx| {
+            let root = app.repository.as_ref().unwrap().path().to_owned();
+            app.record_outcome(&root, outcome.to_owned(), cx);
+        });
+        frame(cx);
+    }
     if narrowest {
         cx.simulate_resize(size(px(1480.), px(980.)));
         crate::views::tests::draw(cx);
@@ -821,6 +864,10 @@ async fn walk_with(
         walk.walk(height, cx);
     }
     cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    if let Some(outcome) = outcome {
+        let fresh = app.read_with(cx, |app, _| app.fresh_outcome().map(str::to_owned));
+        assert_eq!(fresh.as_deref(), Some(outcome), "fresh for the whole walk");
+    }
     walk.verdict();
 }
 
@@ -963,6 +1010,18 @@ async fn a_search_with_no_match_keeps_its_state_whole_at_13_pt(cx: &mut TestAppC
 #[gpui::test]
 async fn a_search_with_no_match_keeps_its_state_whole_at_18_pt(cx: &mut TestAppContext) {
     walk(Page::HistorySearch, 18, cx).await;
+}
+
+/// A write's fresh outcome stays whole in the status line: the keyboard
+/// hints beside it keep their keys alone, or leave, while it lasts.
+#[gpui::test]
+async fn a_fresh_outcome_keeps_the_status_line_whole_at_13_pt(cx: &mut TestAppContext) {
+    walk_with_outcome(13, cx).await;
+}
+
+#[gpui::test]
+async fn a_fresh_outcome_keeps_the_status_line_whole_at_18_pt(cx: &mut TestAppContext) {
+    walk_with_outcome(18, cx).await;
 }
 
 #[gpui::test]

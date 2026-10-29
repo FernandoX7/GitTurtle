@@ -650,22 +650,48 @@ pub(super) enum DialogKeys {
     RebaseSequence,
 }
 
+/// Keyboard hints for the status bar: each key and what it does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct KeyHints(pub(super) Vec<(String, &'static str)>);
+
+impl KeyHints {
+    /// The whole form, `Key Action · Key Action`.
+    pub(super) fn whole(&self) -> String {
+        self.join(|(key, action)| format!("{key} {action}"))
+    }
+
+    /// The keys alone, `Key · Key`: the form the hints take where a fresh
+    /// outcome in the status line needs their room (`GitTurtle::status_hints`).
+    pub(super) fn keys(&self) -> String {
+        self.join(|(key, _)| key.clone())
+    }
+
+    fn join(&self, phrase: impl Fn(&(String, &'static str)) -> String) -> String {
+        self.0.iter().map(phrase).collect::<Vec<_>>().join(" · ")
+    }
+}
+
 impl DialogKeys {
-    /// The hints in the status bar's form, `Key Action · Key Action`. Escape
+    /// The hints the status bar names, each key with what it does. Escape
     /// is named by the dialog's own button it stands for ([`Self::dismiss`]):
     /// the palette's hints said "Esc Close" beside its Cancel button, while
     /// Quick Open's said "Esc Cancel".
-    pub(super) fn hints(self) -> String {
-        let escape = format!("Esc {}", self.dismiss());
-        match self {
-            Self::Palette | Self::QuickOpen => format!("↑↓ Select · {ENTER} Open · {escape}"),
-            Self::Shortcuts => format!("↑↓ Browse · {escape}"),
-            Self::RebaseSequence => format!(
-                "↑↓ Select · {} / {} Reorder · {escape}",
-                key_label("alt-up"),
-                key_label("alt-down")
-            ),
-        }
+    pub(super) fn key_hints(self) -> KeyHints {
+        let escape = ("Esc".to_owned(), self.dismiss());
+        KeyHints(match self {
+            Self::Palette | Self::QuickOpen => {
+                vec![("↑↓".into(), "Select"), (ENTER.into(), "Open"), escape]
+            }
+            Self::Shortcuts => vec![("↑↓".into(), "Browse"), escape],
+            Self::RebaseSequence => vec![
+                ("↑↓".into(), "Select"),
+                (
+                    format!("{} / {}", key_label("alt-up"), key_label("alt-down")),
+                    "Reorder",
+                ),
+                escape,
+            ],
+        })
     }
 
     /// The verb of the dialog's button that Escape stands for, as the button

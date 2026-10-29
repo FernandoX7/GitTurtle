@@ -995,7 +995,7 @@ mod tests {
             }
             assert!(cx.debug_bounds(help).is_some(), "{keys:?}: {help}");
             let named = hints(cx);
-            assert_eq!(named, Some(keys.hints()), "{keys:?}");
+            assert_eq!(named, Some(keys.key_hints().whole()), "{keys:?}");
             let named = named.unwrap();
             assert!(!named.contains("Search"), "{keys:?}");
             assert!(drawn(cx), "{keys:?}");
@@ -1014,7 +1014,8 @@ mod tests {
         }
         assert!(
             shortcuts::DialogKeys::Palette
-                .hints()
+                .key_hints()
+                .whole()
                 .contains(shortcuts::ENTER)
         );
     }

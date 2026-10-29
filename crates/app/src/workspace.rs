@@ -1828,6 +1828,17 @@ impl GitTurtle {
             .unwrap_or(&self.status)
     }
 
+    /// The write's outcome the status line reads while it is fresh, if it
+    /// reads one ([`Self::status_line`]): the keyboard hints beside it give
+    /// it their room ([`Self::status_hints`]).
+    pub(super) fn fresh_outcome(&self) -> Option<&str> {
+        let outcome = self.status_outcome.as_ref()?;
+        (self.page == AppPage::Repository
+            && self.error.is_none()
+            && self.path.as_ref() == Some(&outcome.repository))
+        .then_some(outcome.text.as_str())
+    }
+
     /// The status bar's account of the working tree. Changes sets it when it
     /// is shown, refreshed or previewed, because History's figures describe a
     /// commit's files and a working preview holds only the previewed one.
