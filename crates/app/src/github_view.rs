@@ -405,6 +405,9 @@ struct Panel {
     discussion: bool,
     account: Option<String>,
     notice: Option<String>,
+    /// The notice last announced ([`Panel::announce_notice`]), `None` once the panel closes,
+    /// so that it announces the notice it reopens with.
+    heard_notice: Option<String>,
     error: Option<String>,
     pending: bool,
     /// The busy row's Cancel, which hands focus to the shown section as the
@@ -449,7 +452,7 @@ impl Panel {
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
             rows:vec![],page:1,has_next:false,pull:None,status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
-            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),error:None,pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,writing:false,closed:false,
+            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard_notice:None,error:None,pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,writing:false,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
         if this.review.fixture {
@@ -1054,6 +1057,26 @@ impl Panel {
             },
         }, window, cx);
     }
+    /// Announces the notice the panel shows, once and politely, through the window's
+    /// announcement (`copy_feedback::announce`), as the panel opens with it and whenever it
+    /// changes, and leaves a control reading Copied as it is. The notice's own line is a
+    /// status but no live region: an adapter announces a live region only while AccessKit's
+    /// filter keeps its node, which it does not once another child lies between the node and
+    /// the body's edge, and again each time the body scrolls it back. At 18 pt in a 461 × 490
+    /// window the notice lies below the fold, under the banner whose Move fixture head changes
+    /// it.
+    fn announce_notice(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.heard_notice == self.notice {
+            return;
+        }
+        self.heard_notice.clone_from(&self.notice);
+        if let Some(notice) = self.notice.clone() {
+            // The frame being drawn has drawn the window's announcement already.
+            window.defer(cx, move |window, cx| {
+                copy_feedback::announce(window, cx, notice)
+            });
+        }
+    }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending && self.writing {
             self.error=Some("A GitHub action is in progress for this captured destination. Wait for the result, or choose Cancel and inspect GitHub before resubmitting.".into());
@@ -1068,6 +1091,7 @@ impl Panel {
         }
         self.save_draft(window, cx);
         self.closed = true;
+        self.heard_notice = None;
         self.review.opened.set(false);
         self.request_generation = self.request_generation.wrapping_add(1);
         self.pending = false;
@@ -1153,6 +1177,7 @@ impl Panel {
 }
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.announce_notice(window, cx);
         let p = palette(cx);
         let pending = self.pending;
         let scroll = self.review.body_scroll.clone();
@@ -1170,7 +1195,7 @@ impl Render for Panel {
         let content = div().debug_selector(||"github-panel-content".into()).on_children_prepainted(blocks.starts()).min_w_0().flex().flex_col().gap_2()
             .when(self.review.fixture,|element|element.child(self.part("banner",div(),cx).flex().flex_wrap().items_center().gap_2().py_2().px(text_inset()).rounded(px(6.)).bg(rgb(p.subtle))
                 .child(label("github-fixture-mode","OFFLINE FIXTURE · native review · no network or credentials").debug_selector(||"github-fixture-mode".into()).min_w_0().text_color(rgb(p.muted)))
-                .child(button("github-fixture-move",if self.review.fixture_moved{"Fixture head moved"}else{"Move fixture head"},"",false).disabled(pending||self.review.fixture_moved).on_click(cx.listener(|this,_,_,cx|{this.review.fixture_moved=true;this.confirm=None;this.notice=Some("Fixture head moved remotely. This view and its draft retain the original commit. Submit to verify stale-head refusal, or Refresh PRs and reopen to inspect the new head.".into());cx.notify();})))))
+                .child(button("github-fixture-move",if self.review.fixture_moved{"Fixture head moved"}else{"Move fixture head"},"",false).debug_selector(||"github-fixture-move".into()).disabled(pending||self.review.fixture_moved).on_click(cx.listener(|this,_,_,cx|{this.review.fixture_moved=true;this.confirm=None;this.notice=Some("Fixture head moved remotely. This view and its draft retain the original commit. Submit to verify stale-head refusal, or Refresh PRs and reopen to inspect the new head.".into());cx.notify();})))))
             .child(self.part("toolbar",div(),cx).flex().flex_wrap().items_center().gap_2()
                 // Focus moved onto the field, by a click or by Name repository below, which
                 // reveals it even when it holds focus already, scrolls it into view with its
@@ -1186,7 +1211,7 @@ impl Render for Panel {
                     .child(button("github-connect","Connect GitHub CLI account","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx))))
                     .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
                     .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.run(false,|_|SecureStore.remove(),|result,this,_,_|match result{Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx)))))))
-            .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).polite().text_color(rgb(p.muted))))
+            .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).text_color(rgb(p.muted))))
             .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Alert).assertive().text_color(rgb(p.warning))))
             .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Alert).assertive().text_color(rgb(p.warning))))
             .when(pending,|element|element.child(self.part("busy",div(),cx).flex().items_center().gap_2().pl(text_inset())
@@ -1770,70 +1795,417 @@ mod tests {
         }
     }
 
-    /// The panel's notice, a polite status, reports the part of itself the
-    /// panel's scrolling body draws. It reported its layout bounds, so at
-    /// 18 pt in a 461 × 490 window AT-SPI gave the offline fixture's notice
-    /// y 569–731 below the body's fold, over Back to repository.
-    #[gpui::test]
-    async fn the_notice_reports_the_part_the_panel_draws(cx: &mut TestAppContext) {
-        use crate::tags::tests::draw;
-        let (_fixture, app, cx) = repository_window(cx);
-        cx.update(|window, cx| {
+    /// The offline fixture's notice, as the panel opens with it.
+    const OFFLINE: &str = "Offline review fixture · fixed sample data; account connection and \
+                           network transport are unavailable in this mode.";
+    /// The notice Move fixture head leaves.
+    const MOVED: &str = "Fixture head moved remotely. This view and its draft retain the \
+                         original commit. Submit to verify stale-head refusal, or Refresh PRs \
+                         and reopen to inspect the new head.";
+
+    /// A window on an empty repository and the panel on the offline fixture, closed and warm
+    /// with the fixture's notice, for [`open_notice_panel`]. Dialogs open at rest, so a click
+    /// lands where the last frame drew its button. Keep the returned directory until the test
+    /// ends.
+    fn notice_panel(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        &mut VisualTestContext,
+    ) {
+        let (fixture, app, cx) = repository_window(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let panel = cx.update(|window, cx| {
             let repo = app.read(cx).repository.clone().unwrap();
             let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
             panel.update(cx, |panel, cx| {
                 panel.review.fixture = true;
                 panel.account = Some("offline-reviewer".into());
-                panel.notice = Some(
-                    "Offline review fixture · fixed sample data; account connection and network \
-                     transport are unavailable in this mode."
-                        .into(),
-                );
+                panel.notice = Some(OFFLINE.into());
                 panel.destination.update(cx, |input, cx| {
                     input.set_value("gitturtle-fixture/native-review", window, cx)
                 });
                 panel.close(window, cx);
             });
-            app.update(cx, |app, cx| app.open_github(window, cx));
+            panel
         });
-        settle_panel(&app, cx).await;
-        let mut past = 0;
-        for (text, width, height) in [(13, 461., 490.), (18, 461., 490.), (13, 1480., 980.)] {
-            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
-            cx.simulate_resize(size(px(width), px(height)));
-            draw(cx);
-            native_accessibility::written::forget();
-            draw(cx);
-            let at = format!("{text} pt in {width} × {height}");
+        (fixture, app, panel, cx)
+    }
+
+    /// Opens the warm panel at `interface` pt in a `width` × `height` window, its body at its
+    /// top.
+    async fn open_notice_panel(
+        app: &Entity<GitTurtle>,
+        panel: &Entity<Panel>,
+        (interface, width, height): (u8, f32, f32),
+        cx: &mut VisualTestContext,
+    ) {
+        use crate::tags::tests::draw;
+        cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+        cx.simulate_resize(size(px(width), px(height)));
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+        settle_panel(app, cx).await;
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        scroll.set_offset(point(px(0.), px(0.)));
+        draw(cx);
+        draw(cx);
+    }
+
+    /// Scrolls the body so the notice's top lies at `top`, as far as the body scrolls.
+    fn scroll_notice_to(cx: &mut VisualTestContext, scroll: &ScrollHandle, top: Pixels) {
+        let notice = cx.debug_bounds("github-notice").expect("the notice");
+        let offset =
+            (scroll.offset().y + (top - notice.top())).clamp(-scroll.max_offset().y, px(0.));
+        scroll.set_offset(point(px(0.), offset));
+        crate::tags::tests::draw(cx);
+        crate::tags::tests::draw(cx);
+    }
+
+    /// The window's scale: one pixel in AccessKit's physical bounds.
+    fn pixel(cx: &mut VisualTestContext) -> f64 {
+        f64::from(cx.update(|window, _| window.scale_factor()))
+    }
+
+    /// `bounds` in the physical window pixels of AccessKit's bounds.
+    fn physical_rect(cx: &mut VisualTestContext, bounds: Bounds<Pixels>) -> gpui::accesskit::Rect {
+        let scale = pixel(cx);
+        let edge = |value: Pixels| f64::from(f32::from(value)) * scale;
+        gpui::accesskit::Rect {
+            x0: edge(bounds.left()),
+            y0: edge(bounds.top()),
+            x1: edge(bounds.right()),
+            y1: edge(bounds.bottom()),
+        }
+    }
+
+    /// Whether two rectangles in physical pixels agree to half a pixel.
+    fn same_rect(a: gpui::accesskit::Rect, b: gpui::accesskit::Rect) -> bool {
+        [(a.x0, b.x0), (a.y0, b.y0), (a.x1, b.x1), (a.y1, b.y1)]
+            .into_iter()
+            .all(|(a, b)| (a - b).abs() <= 0.5)
+    }
+
+    /// Every node an assistive technology reaches in the window's tree as the next frame
+    /// writes it, through AccessKit's filter, the dialog's own node added for the dialog.
+    fn reachable_nodes(cx: &mut VisualTestContext) -> Vec<native_accessibility::Reachable> {
+        use crate::native_accessibility::{reachable, written};
+        written::forget();
+        crate::tags::tests::draw(cx);
+        let size = cx.update(|window, _| window.viewport_size());
+        let window = physical_rect(cx, Bounds::new(point(px(0.), px(0.)), size));
+        let tree = written::Assembly::default()
+            .node("dialog", gpui::accesskit::Node::new(Role::Dialog), None)
+            .everything(Some("dialog"))
+            .tree(window, None);
+        reachable(tree)
+    }
+
+    /// The panel's notice, a status, reports the part of itself the panel's scrolling body
+    /// draws, and where the body draws none of it, or less than a pixel of it, its layout:
+    /// where it lies. It reported its layout where the body cut it, so at 18 pt in a 461 × 490
+    /// window AT-SPI gave a notice the fold cut y 569–731, over Back to repository; then an
+    /// empty rectangle on the body's edge where the body drew none of it, which AccessKit
+    /// keeps as the child past the fold and AT-SPI reported 0 px tall at y 557.
+    #[gpui::test]
+    async fn the_notice_reports_the_part_the_panel_draws(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        // The notice's node, the part of the body the window draws and the notice's layout,
+        // as the next frame writes them.
+        let measure = |cx: &mut VisualTestContext| {
+            written::forget();
+            crate::tags::tests::draw(cx);
             let body = native_accessibility::clipping_node("github-panel")
-                .unwrap_or_else(|| panic!("{at}: the panel's body clips what it holds"))
+                .expect("the body clips what it holds")
                 .bounds()
                 .expect("bounds");
-            let notice = native_accessibility::written::get("github-notice")
-                .unwrap_or_else(|| panic!("{at}: the notice writes its node"))
+            let node = written::get("github-notice")
+                .expect("the notice writes its node")
                 .node;
-            assert_eq!(notice.role(), Role::Status, "{at}");
-            let bounds = notice.bounds().expect("bounds");
-            assert!(
-                bounds.x0 >= body.x0 - 0.01
-                    && bounds.y0 >= body.y0 - 0.01
-                    && bounds.x1 <= body.x1 + 0.01
-                    && bounds.y1 <= body.y1 + 0.01,
-                "{at}: the notice reports {bounds:?}, outside the part of the body the \
-                 window draws, {body:?}"
-            );
-            let scale = cx.update(|window, _| f64::from(window.scale_factor()));
-            let layout = cx
-                .debug_bounds("github-notice")
-                .expect("the notice is laid out");
-            if f64::from(f32::from(layout.bottom())) * scale > body.y1 + 0.5 {
-                past += 1;
+            assert_eq!(node.role(), Role::Status);
+            let layout = cx.debug_bounds("github-notice").expect("the notice");
+            (
+                node.bounds().expect("bounds"),
+                body,
+                physical_rect(cx, layout),
+            )
+        };
+        let mut cut = 0;
+        for sizes in [(13, 461., 490.), (18, 461., 490.), (13, 1480., 980.)] {
+            let (interface, width, height) = sizes;
+            let at = format!("{interface} pt in {width} × {height}");
+            open_notice_panel(&app, &panel, sizes, cx).await;
+            let scale = pixel(cx);
+            let (notice, body, layout) = measure(cx);
+            let (top, bottom) = (layout.y0.max(body.y0), layout.y1.min(body.y1));
+            if bottom - top >= scale {
+                assert!(
+                    (notice.y0 - top).abs() <= 0.5 && (notice.y1 - bottom).abs() <= 0.5,
+                    "{at}: the notice reports {notice:?}, not the part of it the body draws, \
+                     {top}–{bottom}"
+                );
+            } else {
+                assert!(
+                    same_rect(notice, layout),
+                    "{at}: the notice the body draws none of reports {notice:?}, not where it \
+                     lies, {layout:?}"
+                );
             }
+            if layout.y0 >= body.y1 {
+                // Below the fold. Scrolled so the fold cuts it 10 px below its top, it reports
+                // those 10 px, while its layout runs on past the fold.
+                let fold = px((body.y1 / scale) as f32);
+                scroll_notice_to(cx, &scroll, fold - px(10.));
+                let (notice, body, layout) = measure(cx);
+                assert!(
+                    layout.y1 > body.y1 + scale,
+                    "{at}: the fold cuts the notice"
+                );
+                assert!(
+                    (notice.y0 - layout.y0).abs() <= 0.5
+                        && (notice.y1 - body.y1).abs() <= 0.5
+                        && (notice.y1 - notice.y0 - 10. * scale).abs() <= 0.5,
+                    "{at}: the notice the fold cuts reports {notice:?}, not its 10 px above \
+                     the fold at {}",
+                    body.y1
+                );
+                // Less than a pixel above the fold, it reports where it lies.
+                scroll_notice_to(cx, &scroll, fold - px(0.5));
+                let (notice, _, layout) = measure(cx);
+                assert!(
+                    same_rect(notice, layout),
+                    "{at}: the notice half a pixel above the fold reports {notice:?}, not where \
+                     it lies, {layout:?}"
+                );
+                cut += 1;
+            }
+            escape(cx);
         }
-        assert!(past > 0, "the body cuts the notice at some size");
+        assert!(
+            cut > 0,
+            "the body's fold lies above the notice at some size"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
-        cx.update(|window, cx| window.close_all_dialogs(cx));
-        settle_panel(&app, cx).await;
+    }
+
+    /// No node an assistive technology reaches in the panel reports an empty rectangle, or one
+    /// less than a pixel across, at 13 and 18 pt in a 461 × 490 window: with the notice, which
+    /// at 18 pt lies below the body's fold, the child past it that AccessKit keeps, and
+    /// reports where it lies; without it, where the pull request list is that child; and with
+    /// a failure's alert, which is announced at once as it appears. Each undrawn one reported
+    /// an empty rectangle on the body's edge (y 557 at 18 pt), as the pager's "Page 1 · up to
+    /// 50 PRs" did at 13 pt.
+    #[gpui::test]
+    async fn no_panel_node_reports_an_empty_rectangle(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        const FAILURE: &str = "Could not read repository remotes and saved drafts.";
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let reach = |cx: &mut VisualTestContext, at: &str| {
+            let found = reachable_nodes(cx);
+            let scale = pixel(cx);
+            for node in &found {
+                if let Some(bounds) = node.bounds {
+                    assert!(
+                        bounds.x1 - bounds.x0 >= scale - 0.01
+                            && bounds.y1 - bounds.y0 >= scale - 0.01,
+                        "{at}: {:?} {:?} is reached at {bounds:?}, less than a pixel across",
+                        node.role,
+                        node.name
+                    );
+                }
+            }
+            found
+        };
+        // A node reached past the fold of its clipping ancestor.
+        let past_fold = |node: &native_accessibility::Reachable| {
+            node.bounds
+                .zip(node.clip)
+                .is_some_and(|(bounds, clip)| bounds.y0 >= clip.y1 - 0.01)
+        };
+        for sizes in [(13, 461., 490.), (18, 461., 490.)] {
+            let (interface, width, height) = sizes;
+            let at = format!("{interface} pt in {width} × {height}");
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, _| {
+                    panel.notice = Some(OFFLINE.into());
+                    panel.error = None;
+                })
+            });
+            open_notice_panel(&app, &panel, sizes, cx).await;
+            let found = reach(cx, &format!("{at}, with the notice"));
+            let notice = found
+                .iter()
+                .find(|node| node.name.as_deref() == Some(OFFLINE));
+            if interface == 18 {
+                let notice = notice.unwrap_or_else(|| panic!("{at}: AccessKit keeps the notice"));
+                assert!(
+                    past_fold(notice),
+                    "{at}: the notice reports where it lies, past the fold: {notice:?}"
+                );
+            }
+
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.notice = None;
+                    cx.notify();
+                })
+            });
+            let found = reach(cx, &format!("{at}, without the notice"));
+            if interface == 18 {
+                assert!(
+                    found
+                        .iter()
+                        .any(|node| node.role == Role::ScrollView && past_fold(node)),
+                    "{at}: the pull request list is kept past the fold where it lies: {found:?}"
+                );
+            }
+
+            #[cfg(target_os = "linux")]
+            let mut bus = {
+                use crate::native_accessibility::atspi_state_tests::{Bus, next_frame};
+                Bus::new(next_frame(cx))
+            };
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.error = Some(FAILURE.into());
+                    cx.notify();
+                })
+            });
+            let found = reach(cx, &format!("{at}, with a failure"));
+            assert_eq!(
+                written::announced("github-error"),
+                Some(written::Announced::ASSERTIVE),
+                "{at}: the failure is an assertive alert"
+            );
+            assert!(
+                found
+                    .iter()
+                    .any(|node| node.role == Role::Alert && node.name.as_deref() == Some(FAILURE)),
+                "{at}: the alert is in reach"
+            );
+            #[cfg(target_os = "linux")]
+            {
+                use crate::native_accessibility::atspi_state_tests::next_frame;
+                bus.update(next_frame(cx));
+                assert!(
+                    bus.announced().iter().any(|text| text == FAILURE),
+                    "{at}: AT-SPI announces the alert as it appears"
+                );
+            }
+            cx.update(|_, cx| panel.update(cx, |panel, _| panel.error = None));
+            escape(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The window's announcement says the panel's notice as the panel opens with it, again as
+    /// it reopens with it unchanged, and as it changes, wherever the body has scrolled it:
+    /// Move fixture head changes it from the banner while, at 18 pt in a 461 × 490 window, it
+    /// lies below the fold. Scrolling the body to it announces nothing, and the notice is no
+    /// live region of its own. A copy button keeps reading Copied for its 1.5 s through a
+    /// notice, which announced as a confirmation without a button would end it at once.
+    #[gpui::test]
+    async fn the_window_announces_the_panels_notice(cx: &mut TestAppContext) {
+        use crate::copy_feedback::{
+            RESTORE_AFTER,
+            tests::{Shows, announced, click, shows, wait},
+        };
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        for sizes in [(13, 461., 490.), (18, 461., 490.)] {
+            let (interface, width, height) = sizes;
+            let at = format!("{interface} pt in {width} × {height}");
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, _| {
+                    panel.notice = Some(OFFLINE.into());
+                    panel.review.fixture_moved = false;
+                })
+            });
+            open_notice_panel(&app, &panel, sizes, cx).await;
+            assert_eq!(
+                announced(cx).map(|(_, text)| text).as_deref(),
+                Some(OFFLINE),
+                "{at}: the panel announces the notice it opens with"
+            );
+            assert_eq!(
+                written::announced("github-notice"),
+                None,
+                "{at}: the notice is no live region of its own"
+            );
+
+            click(cx, "github-fixture-move");
+            draw(cx);
+            draw(cx);
+            let (heard, notice) = announced(cx).expect("an announcement");
+            assert_eq!(notice, MOVED, "{at}: the changed notice is announced");
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let shown = cx.debug_bounds("github-notice").expect("the notice");
+            assert_eq!(
+                shown.top() < body.bottom(),
+                interface == 13,
+                "{at}: the body draws the changed notice at 13 pt only"
+            );
+
+            scroll_notice_to(cx, &scroll, body.top());
+            assert_eq!(
+                announced(cx).map(|(id, _)| id),
+                Some(heard.clone()),
+                "{at}: scrolling the notice into view announces nothing"
+            );
+
+            // Closed until the announcement has gone, and reopened with the notice unchanged.
+            escape(cx);
+            wait(cx, RESTORE_AFTER);
+            assert_eq!(announced(cx), None, "{at}: the announcement has gone");
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+            settle_panel(&app, cx).await;
+            draw(cx);
+            draw(cx);
+            let (again, notice) = announced(cx).expect("an announcement");
+            assert_eq!(
+                (notice.as_str(), again != heard),
+                (MOVED, true),
+                "{at}: the reopened panel announces its notice afresh"
+            );
+            escape(cx);
+        }
+
+        // A copy, then a notice.
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.notice = Some(OFFLINE.into());
+                panel.review.fixture_moved = false;
+            })
+        });
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+        click(cx, "github-account-options");
+        cx.run_until_parked();
+        draw(cx);
+        click(cx, "github-sign-in-help");
+        assert_eq!(shows(cx, "github-sign-in-help"), Shows::Copied);
+        click(cx, "github-fixture-move");
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            announced(cx).map(|(_, text)| text).as_deref(),
+            Some(MOVED),
+            "the notice is announced"
+        );
+        assert_eq!(
+            shows(cx, "github-sign-in-help"),
+            Shows::Copied,
+            "the sign-in command still reads Copied"
+        );
+        wait(cx, RESTORE_AFTER);
+        assert_eq!(shows(cx, "github-sign-in-help"), Shows::Rest);
+        assert_eq!(announced(cx), None);
+        escape(cx);
     }
 
     /// A request that answers while keyboard focus is on the busy row's

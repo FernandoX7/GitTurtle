@@ -1505,7 +1505,8 @@ impl<E: StatefulInteractiveElement + Element> LiveRegion for E {}
 
 /// `element`, a container that scrolls or clips what it holds, as the
 /// accessibility node AccessKit expects of one: it clips its children, and its
-/// bounds are the part of it that its ancestors leave visible.
+/// bounds are the part of it that its ancestors leave visible, or its layout
+/// where they leave none of it (`drawn_part`).
 ///
 /// GPUI gives each node its layout bounds and never says that a node clips,
 /// so a control scrolled out of a list, a Reflog entry below the dialog's
@@ -1893,8 +1894,9 @@ impl<E: Element> Element for Recorded<E> {
 /// layout runs on. GPUI gives each node its layout bounds, so the GitHub
 /// panel's notice reached AT-SPI 162 px tall over the Back to repository
 /// button at 18 pt in a 461 px window, and the inspector's message title
-/// ran 56 px past its document's foot over "Changed files". The node stays
-/// where it is in the tree, so a document read as a whole still reads it.
+/// ran 56 px past its document's foot over "Changed files". Text the window
+/// draws none of reports where it lies (`drawn_part`). The node stays where
+/// it is in the tree, so a document read as a whole still reads it.
 /// Focus and the Tab order do not change: the wrapper adds no dispatch
 /// node, focus handle or listener, and the element needs an ID for GPUI to
 /// write a node at all.
@@ -2083,21 +2085,32 @@ pub(crate) fn dialog_title(
 /// The part of `bounds`, an element's layout as it prepaints, that its
 /// ancestors leave visible, in the physical window pixels of AccessKit's
 /// bounds. The content mask is what the ancestors let through; GPUI scales
-/// layout bounds to a node's bounds the same way. An element the mask leaves
-/// out entirely is drawn nowhere: its part is empty, on the mask's edge
-/// nearest to it, where `Bounds::intersect` leaves an empty rectangle at the
-/// element's own corner, past the clip (the GitHub panel's notice below its
-/// body's fold, at the notice's top over Back to repository).
+/// layout bounds to a node's bounds the same way.
+///
+/// An element the mask leaves out, or shows less than a pixel of across,
+/// keeps its whole layout instead: that is where it lies. AccessKit's filter
+/// keeps the first child past each edge of a clipping node, for an assistive
+/// technology to move into, and every other control it keeps there reports
+/// its layout, as GPUI writes it. Such text once reported an empty rectangle
+/// on the mask's edge nearest to it, so the GitHub panel's notice, below its
+/// body's fold at 18 pt in a 461 × 490 window, reached AT-SPI 0 px tall on
+/// the body's bottom edge (y 557 in physical pixels).
 fn drawn_part(bounds: Bounds<Pixels>, window: &Window) -> gpui::accesskit::Rect {
-    let mask = physical(window.content_mask().bounds, window.scale_factor());
-    let laid_out = physical(bounds, window.scale_factor());
-    let (x0, x1) = (mask.x0, mask.x1.max(mask.x0));
-    let (y0, y1) = (mask.y0, mask.y1.max(mask.y0));
-    gpui::accesskit::Rect {
-        x0: laid_out.x0.clamp(x0, x1),
-        y0: laid_out.y0.clamp(y0, y1),
-        x1: laid_out.x1.clamp(x0, x1),
-        y1: laid_out.y1.clamp(y0, y1),
+    let scale = window.scale_factor();
+    let mask = physical(window.content_mask().bounds, scale);
+    let laid_out = physical(bounds, scale);
+    let drawn = gpui::accesskit::Rect {
+        x0: laid_out.x0.max(mask.x0),
+        y0: laid_out.y0.max(mask.y0),
+        x1: laid_out.x1.min(mask.x1),
+        y1: laid_out.y1.min(mask.y1),
+    };
+    // Less than a pixel across, at the window's scale, is no part.
+    let pixel = f64::from(scale);
+    if drawn.x1 - drawn.x0 < pixel || drawn.y1 - drawn.y0 < pixel {
+        laid_out
+    } else {
+        drawn
     }
 }
 

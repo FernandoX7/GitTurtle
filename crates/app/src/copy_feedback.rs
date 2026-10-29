@@ -6,6 +6,11 @@
 //! Fetch, Pull, Push, Create and Switch, and the branch picker's switch and
 //! tracking-branch creation).
 //!
+//! Its announcement node also says what no control confirms ([`announce`]):
+//! the GitHub panel's notice, as the panel opens with it and as it changes,
+//! from wherever its body has scrolled it. That leaves the control reading
+//! its confirmation, and the time it reads it, alone.
+//!
 //! Every copy a person asks for goes through [`copy`]: it writes the
 //! clipboard, marks the copy button it came from, if any, and posts one polite
 //! "Copied ‹what›" announcement. For [`RESTORE_AFTER`] the marked button,
@@ -76,6 +81,11 @@ struct Feedback {
     latest: Option<Confirmed>,
     /// Restores `latest`; replacing it cancels the previous one's timer.
     restore: Option<Task<()>>,
+    /// The latest announcement without a confirmation ([`announce`]), which
+    /// leaves `latest`'s mark and its timer alone.
+    spoken: Option<Confirmed>,
+    /// Ends `spoken`; replacing it cancels the previous one's timer.
+    quiet: Option<Task<()>>,
 }
 impl Global for Feedback {}
 
@@ -188,6 +198,46 @@ fn restore(generation: usize, cx: &mut App) {
     if let Some(confirmed) = feedback.latest.take() {
         // The window may have closed since.
         let _ = confirmed.window.update(cx, |_, window, _| window.refresh());
+    }
+}
+
+/// Announces `announcement` once, politely, from the window's announcement
+/// node, as [`confirm`] does, without confirming on any control: a control
+/// that reads its confirmation keeps it for the rest of its time, where a
+/// confirmation without a mark would end it. The node goes after
+/// [`RESTORE_AFTER`], or when a newer announcement takes its place.
+pub(crate) fn announce(window: &mut Window, cx: &mut App, announcement: impl Into<SharedString>) {
+    let feedback = cx.default_global::<Feedback>();
+    feedback.generation = feedback.generation.wrapping_add(1);
+    let generation = feedback.generation;
+    feedback.spoken = Some(Confirmed {
+        generation,
+        window: window.window_handle(),
+        mark: None,
+        announcement: announcement.into(),
+    });
+    window.refresh();
+    let quiet = cx.spawn(async move |cx| {
+        cx.background_executor().timer(RESTORE_AFTER).await;
+        cx.update(|cx| quiet(generation, cx));
+    });
+    cx.global_mut::<Feedback>().quiet = Some(quiet);
+}
+
+/// Ends announcement `generation` unless a newer one replaced it, redrawing
+/// the window it was made in.
+fn quiet(generation: usize, cx: &mut App) {
+    let feedback = cx.global_mut::<Feedback>();
+    if feedback
+        .spoken
+        .as_ref()
+        .is_none_or(|spoken| spoken.generation != generation)
+    {
+        return;
+    }
+    if let Some(spoken) = feedback.spoken.take() {
+        // The window may have closed since.
+        let _ = spoken.window.update(cx, |_, window, _| window.refresh());
     }
 }
 
@@ -436,14 +486,19 @@ fn confirming_with(
         })
 }
 
-/// The polite status node announcing the latest confirmation in `window`,
-/// drawn once at the window root until it is restored. Each one is a new node,
-/// which screen readers announce when it appears; it is out of flow and
-/// draws nothing. AT-SPI announces its name and AccessKit's macOS adapter
-/// its value, so both carry the text.
+/// The polite status node announcing the latest confirmation or
+/// announcement in `window`, drawn once at the window root until it ends.
+/// Each one is a new node, which screen readers announce when it appears; it
+/// is out of flow and draws nothing. AT-SPI announces its name and
+/// AccessKit's macOS adapter its value, so both carry the text.
 pub(crate) fn announcement(window: &Window, cx: &App) -> Option<Stateful<Div>> {
-    let latest = cx.try_global::<Feedback>()?.latest.as_ref()?;
-    (latest.window == window.window_handle()).then(|| {
+    let feedback = cx.try_global::<Feedback>()?;
+    let latest = [feedback.latest.as_ref(), feedback.spoken.as_ref()]
+        .into_iter()
+        .flatten()
+        .filter(|made| made.window == window.window_handle())
+        .max_by_key(|made| made.generation)?;
+    Some(
         div()
             .id(("copy-announcement", latest.generation))
             .debug_selector(|| "copy-announcement".into())
@@ -453,8 +508,8 @@ pub(crate) fn announcement(window: &Window, cx: &App) -> Option<Stateful<Div>> {
             .aria_value(latest.announcement.clone())
             .absolute()
             .size(px(1.))
-            .overflow_hidden()
-    })
+            .overflow_hidden(),
+    )
 }
 
 #[cfg(test)]
