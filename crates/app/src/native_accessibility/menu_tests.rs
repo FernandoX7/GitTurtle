@@ -190,6 +190,44 @@ fn a_menu_the_keyboard_opens_starts_on_its_first_action(cx: &mut TestAppContext)
     assert_eq!(*chosen.borrow(), ["First"]);
 }
 
+/// Enter acts only on an entry that can act. The pointer's hover selects any
+/// row, so a pointer resting on the disabled item, the label or the closing
+/// caption leaves the selection there; Enter then does nothing and the menu
+/// stays open. Enter ran the disabled item's handler. On an available item
+/// the hover and Enter act as before.
+#[gpui::test]
+fn enter_under_the_pointer_acts_only_on_an_item_that_can_act(cx: &mut TestAppContext) {
+    let (cx, chosen) = open_menu(cx);
+    for selector in [
+        "menu-item: Unavailable · MenuItem disabled",
+        "menu-item: Saved profiles · Label",
+        "menu-item: Showing the original Git diff · Label",
+    ] {
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_mouse_move(row.center(), None, Modifiers::default());
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(
+            *chosen.borrow(),
+            Vec::<&str>::new(),
+            "Enter over {selector}"
+        );
+        assert!(
+            cx.debug_bounds(selector).is_some(),
+            "the menu stays open after Enter over {selector}"
+        );
+    }
+    let first = cx
+        .debug_bounds("menu-item: First · MenuItem")
+        .expect("the first item");
+    cx.simulate_mouse_move(first.center(), None, Modifiers::default());
+    draw(cx);
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert_eq!(*chosen.borrow(), ["First"], "Enter over an available item");
+}
+
 /// The keyboard's cursor in a menu is marked as a list's selected row is:
 /// the `selected` fill and a 2 px leading marker of `accent`, at 3:1 or more
 /// against that fill and against the menu's raised surface, in every

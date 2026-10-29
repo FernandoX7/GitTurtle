@@ -529,6 +529,21 @@ this part of the patch when upstream lets an application keep popups clear of
 a region at the window's foot and places a context menu as it places a
 dropdown, and those tests pass without it.
 
+The menu-confirm patch modifies `src/menu/popup_menu.rs`. Upstream's
+`confirm`, which Enter and a click run, acted on whatever entry was selected.
+The pointer's hover selects any row, a disabled item or a label among them, so
+Enter with the pointer resting on a disabled item ran its handler, a command
+the menu showed as unavailable. `confirm` now acts only on an entry that can
+act (`is_clickable`, the test the menu keys already use); on any other it does
+nothing and the menu stays open. The consumers are every kit menu with a
+disabled item, among them the Linux Menu, the Working row menus and the
+History commit menu during a write.
+`cargo test --locked -p gitturtle enter_under_the_pointer_acts_only_on_an_item_that_can_act`
+rests the pointer on a disabled item, a label and a closing caption in turn
+and presses Enter: nothing runs and the menu stays open; on an available item
+Enter acts. Remove this part of the patch when upstream's `confirm` passes over
+entries that cannot act, and that test passes without it.
+
 The `usize`-constant patch modifies `src/highlighter/highlighter.rs`. Upstream
 imports the `std::usize` module (`use std::{…, usize}`), so the `usize::MIN`
 and `usize::MAX` in `HighlightSummary`'s `Summary::zero` and in

@@ -1024,7 +1024,14 @@ impl PopupMenu {
     fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
         match self.selected_index {
             Some(index) => {
-                let item = self.menu_items.get(index);
+                // GitTurtle patch: only an entry that can act acts. The
+                // pointer's hover selects any row, a disabled item or a
+                // label among them, and Enter then ran a disabled item's
+                // handler.
+                let item = self
+                    .menu_items
+                    .get(index)
+                    .filter(|item| item.is_clickable());
                 match item {
                     Some(PopupMenuItem::Item {
                         handler, action, ..
