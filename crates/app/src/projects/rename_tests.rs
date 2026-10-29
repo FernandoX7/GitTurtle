@@ -1,5 +1,5 @@
 use super::*;
-use crate::{activity, image_lifetime, preferences, recovery_drafts, repository_tabs};
+use crate::{activity, preferences, recovery_drafts, repository_tabs};
 use core::prelude::v1::test;
 use gpui_kit::component::Root;
 use std::{cell::RefCell, rc::Rc};
@@ -8,10 +8,7 @@ fn test_app(
     cx: &mut TestAppContext,
 ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
     cx.executor().allow_parking();
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        image_lifetime::init(cx);
-    });
+    crate::views::tests::init_app(cx);
     let fixture = tempfile::tempdir().unwrap();
     let captured = Rc::new(RefCell::new(None));
     let observed = captured.clone();

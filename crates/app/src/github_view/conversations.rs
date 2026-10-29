@@ -624,15 +624,6 @@ mod tests {
 
     #[gpui::test]
     async fn reply_focus_navigation_recovery_and_exact_completion(cx: &mut TestAppContext) {
-        // ITERATIONS reruns every seed on this thread, which keeps one test
-        // settings directory: without a fresh one, the reply draft an earlier
-        // seed saved is restored into this seed's composer.
-        crate::preferences::inherit_test_settings_directory(std::sync::Arc::new(
-            tempfile::Builder::new()
-                .prefix("gitturtle-app-tests-")
-                .tempdir()
-                .unwrap(),
-        ));
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
         assert!(
@@ -649,10 +640,7 @@ mod tests {
         let panel_repo = repo.clone();
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let output = captured.clone();
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let (_, cx) = cx.add_window_view(move |window, cx| {
             let app = cx.new(|cx| {
                 let mut app = GitTurtle::new(

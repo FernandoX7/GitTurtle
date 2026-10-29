@@ -1529,9 +1529,8 @@ mod tests {
         };
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let output = captured.clone();
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             cx.bind_keys([
                 KeyBinding::new(find_shortcut, Search, Some("GitTurtleList")),
                 KeyBinding::new("escape", ClearSearch, Some("GitTurtle")),

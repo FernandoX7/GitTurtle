@@ -2743,10 +2743,7 @@ mod tests {
         let repo = GitRepository::open(fixture.path()).unwrap();
         let view: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let captured = view.clone();
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let (_, cx) = cx.add_window_view(move |window, cx| {
             let app = cx.new(|cx| {
                 let mut app = GitTurtle::new(

@@ -605,10 +605,7 @@ mod tests {
             vanished_scope: None,
             commits,
         };
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
         let (_, window_cx) = cx.add_window_view(move |window, cx| {

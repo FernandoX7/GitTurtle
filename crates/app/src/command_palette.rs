@@ -1229,7 +1229,7 @@ mod tests {
 #[cfg(test)]
 mod render_tests {
     use super::*;
-    use crate::{activity, image_lifetime, recovery_drafts, repository_tabs};
+    use crate::{activity, recovery_drafts, repository_tabs};
     use core::prelude::v1::test;
     use gpui_kit::{Background, Bounds, ScaledPixels, component::Root, point};
     use std::{cell::RefCell, rc::Rc};
@@ -1238,9 +1238,8 @@ mod render_tests {
     /// repository's commands are unavailable, and dialogs opening at rest.
     fn hub(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
         cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             // A dialog otherwise fades in on a wall-clock animation.
             cx.set_reduce_motion(true);
         });

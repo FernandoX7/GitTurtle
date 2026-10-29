@@ -306,10 +306,7 @@ mod tests {
         // GitTurtle::new loads profiles on the real preferences executor; the
         // barrier below drains it before teardown.
         cx.executor().allow_parking();
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
         let (_, cx) = cx.add_window_view(move |window, cx| {

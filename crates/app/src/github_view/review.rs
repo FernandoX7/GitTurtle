@@ -1717,10 +1717,7 @@ mod tests {
         let panel_repo = repo.clone();
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let output = captured.clone();
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let (_, cx) = cx.add_window_view(move |window, cx| {
             let app = cx.new(|cx| {
                 let mut app = GitTurtle::new(
@@ -1978,9 +1975,8 @@ mod tests {
         let panel_repo = repo.clone();
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let output = captured.clone();
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             ThemeChoice::ALL[0].apply(None, cx);
         });
         let (_, cx) = cx.add_window_view(move |window, cx| {
@@ -2190,10 +2186,7 @@ mod tests {
         let panel_repo = repo.clone();
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let output = captured.clone();
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let (_, cx) = cx.add_window_view(move |window, cx| {
             let app = cx.new(|cx| {
                 let mut app = GitTurtle::new(
@@ -2383,10 +2376,7 @@ mod tests {
         let panel_repo = repo.clone();
         let observed: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let output = observed.clone();
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let (_, cx) = cx.add_window_view(move |window, cx| {
             let app = cx.new(|cx| {
                 let mut app = GitTurtle::new(
@@ -3197,9 +3187,8 @@ mod tests {
         let panel_repo = repo.clone();
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let output = captured.clone();
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             cx.set_reduce_motion(true);
         });
         let (_, cx) = cx.add_window_view(move |window, cx| {

@@ -6818,6 +6818,21 @@ pub(crate) mod tests {
         styled_history_window(cx, input.as_ref(), |root| root).await
     }
 
+    /// Readies a test to build `GitTurtle`: from empty settings stores, then
+    /// with the kit and the renderer's image lifetime installed. Every test
+    /// that builds the app starts here, before it writes any store of its
+    /// own. A `#[gpui::test]` runs every seed on one thread, which keeps one
+    /// test settings directory, so without the reset a seed's app read what
+    /// the last seed saved: its recent projects, its GitHub reply drafts, the
+    /// preference file a later seed expected to create.
+    pub(crate) fn init_app(cx: &mut TestAppContext) {
+        preferences::fresh_test_settings_directory();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            image_lifetime::init(cx);
+        });
+    }
+
     /// [`history_window_from`] on the repository the `input` bytes import,
     /// with the window's root styled by `style`, as the width walk marks
     /// every text run (`width_walk`).
@@ -6839,14 +6854,7 @@ pub(crate) mod tests {
         };
 
         cx.executor().allow_parking();
-        // Every run starts from empty stores, each seed of a `#[gpui::test]`
-        // included: seeds share their thread, and with it the last seed's
-        // recent projects, which the project hub then listed.
-        preferences::fresh_test_settings_directory();
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        init_app(cx);
         let fixture = tempfile::tempdir().unwrap();
         let repo = fixture_repository(fixture.path().join("narrow"));
         let mut command = Command::new("git");

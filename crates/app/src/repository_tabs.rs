@@ -2354,10 +2354,7 @@ mod tests {
         preferences
             .project_names
             .insert(canonical.clone(), "Turtle 客户端".into());
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
         let (_, cx) = cx.add_window_view(|window, cx| {
@@ -2480,10 +2477,7 @@ mod tests {
     async fn desktop_scale_updates_each_window_and_retained_tab_once(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let mut windows = Vec::new();
         let mut apps = Vec::new();
         let mut editors = Vec::new();
@@ -2747,9 +2741,8 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let repo = linear_history_fixture(fixture.path().join("history"), 500);
         let destination = fixture.path().join("isolated-session.json");
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             cx.bind_keys([KeyBinding::new("end", LastRow, Some("GitTurtleList"))]);
         });
         let mut expected_y = None;
@@ -2897,10 +2890,7 @@ mod tests {
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
         let repo = linear_history_fixture(fixture.path().join("history"), 500);
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         // A test window's maximized size, before the window manager tiles it.
         let (app, mut window_cx) = open_tab_window(
             cx,
@@ -2982,10 +2972,7 @@ mod tests {
         let initial = first.path().to_owned();
         let next = second.path().to_owned();
         let destination = fixture.path().join("isolated-session.json");
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
         let (_, window_cx) = cx.add_window_view(move |window, cx| {
@@ -3079,10 +3066,7 @@ mod tests {
         let initial = first.path().to_owned();
         let next = second.path().to_owned();
         let destination = fixture.path().join("isolated-session.json");
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
         let (_, window_cx) = cx.add_window_view(move |window, cx| {
@@ -3221,9 +3205,8 @@ mod tests {
         } else {
             "ctrl-o"
         };
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             cx.bind_keys([KeyBinding::new(open_key, OpenRepository, Some("GitTurtle"))]);
         });
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
@@ -3447,10 +3430,7 @@ mod tests {
             .collect::<Vec<_>>();
         let initial = paths[0].clone();
         let destination = fixture.path().join("isolated-session.json");
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
         let (_, cx) = cx.add_window_view(move |window, cx| {
@@ -3660,10 +3640,7 @@ mod tests {
             .collect::<Vec<_>>();
         let initial = paths[0].clone();
         let destination = fixture.path().join("isolated-session.json");
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
         let (_, cx) = cx.add_window_view(move |window, cx| {
@@ -3814,10 +3791,7 @@ mod tests {
         });
         let initial = paths[0].clone();
         let destination = fixture.path().join("isolated-session.json");
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
         let (_, cx) = cx.add_window_view(move |window, cx| {
@@ -4227,9 +4201,8 @@ mod tests {
         let repo = tagged_repository(fixture.path());
         let initial = repo.path().to_owned();
         let destination = fixture.path().join("isolated-session.json");
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             // A dialog otherwise slides in on a wall-clock animation.
             cx.set_reduce_motion(true);
         });
@@ -4417,10 +4390,7 @@ mod tests {
         let repository = crate::views::tests::fixture_repository(fixture.path().join("repository"));
         let path = repository.path().to_owned();
         let destination = fixture.path().join("isolated-session.json");
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
         let (_, window_cx) = cx.add_window_view(move |window, cx| {
@@ -4494,10 +4464,7 @@ mod tests {
             ..Default::default()
         };
         saved.clone().save_at(&save_path).unwrap();
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
         let destination = save_path.clone();
@@ -4692,10 +4659,7 @@ mod tests {
         // pre-sanitized in-memory bookmark.
         std::fs::write(&destination, serde_json::to_vec(&saved).unwrap()).unwrap();
         let restored = Session::load_at(&destination).unwrap();
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let initial = repo.path().to_owned();
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
@@ -4784,10 +4748,7 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         // The first initial path is the saved active repository; the second
         // represents an explicit CLI path that takes precedence over that tab.
         for initial_index in [3, 6] {

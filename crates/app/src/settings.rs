@@ -4583,10 +4583,7 @@ mod theme_apply_tests {
     fn theme_switch_submits_no_job_and_keeps_editor_and_find(cx: &mut TestAppContext) {
         // GitTurtle::new starts a real preferences worker; saves reply from it.
         cx.executor().allow_parking();
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let output = captured.clone();
         let (_, cx) = cx.add_window_view(move |window, cx| {
@@ -4710,9 +4707,8 @@ mod picker_tests {
     pub(super) fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
         // GitTurtle::new starts a real preferences worker; saves reply from it.
         cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             theme_editor::init(cx);
         });
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();

@@ -2871,9 +2871,8 @@ pub(crate) mod tests {
     fn open_app(cx: &mut TestAppContext) -> (Entity<GitTurtle>, &mut VisualTestContext) {
         // GitTurtle::new starts a real preferences worker; saves reply from it.
         cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             init(cx);
         });
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();

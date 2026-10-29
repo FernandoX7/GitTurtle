@@ -648,9 +648,8 @@ pub(crate) mod tests {
         repo: &GitRepository,
     ) -> (Entity<GitTurtle>, &'a mut VisualTestContext) {
         cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             // A dialog otherwise slides in on a wall-clock animation.
             cx.set_reduce_motion(true);
         });

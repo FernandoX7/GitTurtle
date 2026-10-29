@@ -713,10 +713,7 @@ pub(crate) mod tests {
         cx: &mut TestAppContext,
         commits: Vec<Commit>,
     ) -> (Entity<Probe>, Entity<GitTurtle>, &mut VisualTestContext) {
-        cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let app_holder = Rc::new(RefCell::new(None));
         let probe_holder = Rc::new(RefCell::new(None));
         let captured_app = app_holder.clone();

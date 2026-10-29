@@ -87,9 +87,8 @@ fn app_window(
     repo: GitRepository,
 ) -> (Entity<GitTurtle>, &mut VisualTestContext) {
     cx.executor().allow_parking();
+    crate::views::tests::init_app(cx);
     cx.update(|cx| {
-        gpui_kit::init(cx);
-        image_lifetime::init(cx);
         native_accessibility::bind_keys(cx);
     });
     let captured = Rc::new(RefCell::new(None));

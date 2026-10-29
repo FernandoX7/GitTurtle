@@ -262,7 +262,7 @@ mod tests {
     ) {
         use crate::{
             AppPage, Content, FileChange, GitTurtle, Output, Preferences, WorkspaceMode, activity,
-            image_lifetime, recovery_drafts, repository_tabs,
+            recovery_drafts, repository_tabs,
         };
         use gitturtle_core::ChangeStatus;
         use gpui::{AppContext, Entity, component::Root};
@@ -281,10 +281,7 @@ mod tests {
         }
 
         cx.executor().allow_parking();
-        cx.update(|cx| {
-            gpui::init(cx);
-            image_lifetime::init(cx);
-        });
+        crate::views::tests::init_app(cx);
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();
         let observed = captured.clone();
         let (_, cx) = cx.add_window_view(move |window, cx| {

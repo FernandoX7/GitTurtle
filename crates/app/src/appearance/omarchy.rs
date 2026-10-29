@@ -1074,9 +1074,8 @@ mod tests {
         // GitTurtle::new starts a real preferences worker, and the watcher delivers from
         // its own thread.
         cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            crate::image_lifetime::init(cx);
             crate::theme_editor::init(cx);
         });
         let captured: Rc<std::cell::RefCell<Option<Entity<crate::GitTurtle>>>> = Rc::default();
@@ -1467,9 +1466,8 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
         cx.executor().allow_parking();
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            crate::image_lifetime::init(cx);
             crate::theme_editor::init(cx);
         });
         let mut preferences = crate::Preferences::default();

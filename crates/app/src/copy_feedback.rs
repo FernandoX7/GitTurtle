@@ -472,9 +472,8 @@ pub(crate) mod tests {
         cx: &mut TestAppContext,
         commits: Vec<Commit>,
     ) -> (Entity<GitTurtle>, &mut VisualTestContext) {
+        crate::views::tests::init_app(cx);
         cx.update(|cx| {
-            gpui_kit::init(cx);
-            image_lifetime::init(cx);
             shortcuts::bind_keys(cx);
         });
         let captured: Rc<RefCell<Option<Entity<GitTurtle>>>> = Default::default();

@@ -1,7 +1,5 @@
 use super::*;
-use crate::{
-    AppPage, activity, image_lifetime, preferences::AppSettings, recovery_drafts, repository_tabs,
-};
+use crate::{AppPage, activity, preferences::AppSettings, recovery_drafts, repository_tabs};
 use core::prelude::v1::test;
 use gpui_kit::component::Root;
 use std::{cell::RefCell, fs, path::Path, rc::Rc};
@@ -12,10 +10,7 @@ fn test_app(
     library: ProjectLibrary,
 ) -> (Entity<GitTurtle>, &mut VisualTestContext) {
     cx.executor().allow_parking();
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        image_lifetime::init(cx);
-    });
+    crate::views::tests::init_app(cx);
     let preferences = Preferences {
         settings,
         project_library: library,
@@ -759,10 +754,8 @@ fn a_recent_project_reply_adds_only_what_the_pane_lacked_and_the_store_kept(
 async fn a_failed_save_stays_visible_in_the_pane_until_retry_succeeds(cx: &mut TestAppContext) {
     let (library, group, _) = library_with_group();
     let (app, cx) = test_app(cx, enabled(), library);
-    // A directory where the store should be makes every write fail. An
-    // earlier iteration on this thread leaves the saved file there.
+    // A directory where the store should be makes every write fail.
     let store = crate::preferences::settings_path().unwrap();
-    let _ = fs::remove_file(&store);
     fs::create_dir_all(&store).unwrap();
 
     cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_group(group, window, cx)));
@@ -880,10 +873,8 @@ async fn naming_a_group_saves_it_and_removing_it_keeps_the_projects(cx: &mut Tes
 async fn a_group_dialog_shows_its_own_failed_save_beside_a_newer_one(cx: &mut TestAppContext) {
     let (library, group, _) = library_with_group();
     let (app, cx) = test_app(cx, enabled(), library);
-    // A directory where the store should be makes the group's save fail. An
-    // earlier iteration on this thread leaves the saved file there.
+    // A directory where the store should be makes the group's save fail.
     let store = crate::preferences::settings_path().unwrap();
-    let _ = fs::remove_file(&store);
     fs::create_dir_all(&store).unwrap();
 
     let form = cx.update(|window, cx| {
