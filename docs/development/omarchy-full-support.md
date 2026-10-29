@@ -552,6 +552,47 @@ cover current upstream x86-64 Omarchy.
           the fold until the next Tab.
         - Filters: the Working Changes filter shares the History filter's executor and is not
           coalesced.
+        Found by the implementers on the evening of 2026-10-29:
+        - Feedback: Tags, Stashes and the rebase form, open when a write starts, refuse their
+          actions silently and never announce or look unavailable; the profile picker still dims
+          at once while its own profile save runs; Compare's change arrows refuse during a write
+          but their keyboard shortcuts still move.
+        - Menus: a right-click menu near the status bar is moved up by the kit's clamp over the
+          clicked row (button menus now open above their button instead); right-click menus on
+          branch, worktree and working rows read the busy state once when they open and are not
+          rebuilt when a write starts or ends (button menus now are); a button that moves while its
+          menu is open, without a resize, keeps the rows it was given at open.
+        - Tests: the test node recorder keeps no live-region properties, so no test pins an
+          assertive announcement (GPUI applies live regions only while assistive technology is
+          active, so the recorder needs them recorded where they are set); the theme editor's
+          `finish_transfer` drains the writer while `an_import_the_full_preference_executor_refuses_changes_nothing`
+          still holds it, so a pending import hangs the test instead of failing it; real-time
+          waits remain in `recovery.rs` (Stashes tests, the focus sweep's `landed` loops),
+          `workspace/confirmation_tests.rs` (`finish`) and the helper near `views.rs:17624`.
+        - Accessibility: `repository_tabs.rs` `local-workspaces-error` is an alert that never sets
+          an assertive live region, so it is probably not announced.
+        From the native review of `gitturtle-62d10ae` against `-7abe8b2` (frames
+        `.local/item8-2026-10-27/tools/qa/s*-{7abe8b2,62d10ae}/`, write-up `findings-q8-2026-10-29.md`):
+        - Bugs: a quick Stage or Unstage draws the branch picker and profile button in the busy grey
+          for one frame (~135 ms after the press); under a still pointer the pressed control's
+          tooltip ("Stage gamma.txt") stays over the row that moved beneath it until the pointer
+          moves; Settings opened by Ctrl+, with an Omarchy theme at 18 pt in 461×490 focuses the
+          Omarchy card below the fold (the button reveals it); after a one-match Shortcuts search a
+          thumb stays drawn and the status reads "1 shortcuts"; in a 640×430 window at 13 pt the
+          refusal band keeps a 40.5 px image; at 18 pt in 461×490 the image gets 61 px and Before's
+          Open control wraps onto its own line.
+        - Native against test fonts: the commit menu's fill ends 14.5 px inside the list's edge at
+          18 pt (13.5 expected); a 480 px inspector in a 1,404 px window draws 454.5 px with Actions
+          as text (455.5 and an icon expected); long Compare paths read "…n/RepositoryNav.tsx" and
+          "…omponents/views.rs" with File actions beside them, not below (as in the base).
+        - Tools: `scripts/native_qa/qa.py` cannot drive this host (needs python-xlib and XWayland
+          with Mutter or XTest); a Hyprland backend (grim, hyprctl, the wlr virtual pointer, wtype)
+          would let scenarios run here.
+        - System preview: at 18 pt, side by side at a zoom other than Fit, the pan arrows' row
+          pushes Before's control under the clip.
+        - Worktree manager: the Create form's branch choices list overflows with no always-visible
+          scrollbar (as before at 1480×980 18 pt); the worktree list's floor applies only with rows,
+          so its "No worktrees match this filter." line may be squeezed (from the code, untested).
         Owner decision, 2026-10-28: Linux reaches feature parity with macOS where possible; macOS is
         checked later on a Mac. The gaps (README "Linux gaps", `docs/file-previews.md`,
         `docs/linux.md`), each a separate change with a dated research note on the dependency
