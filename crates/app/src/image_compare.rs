@@ -657,8 +657,9 @@ impl GitTurtle {
         // The overlay's or the wipe's adjustment keeps the toolbar's trailing
         // edge, so the zooms stay beside the modes in every mode. Where its
         // labelled line does not fit the toolbar, the line keeps only its
-        // value, its words in its tooltip and the buttons' names, and the
-        // group wraps rather than run past the column.
+        // value, its words in its tooltip, its accessible name and the
+        // buttons' names, and the group wraps rather than run past the
+        // column.
         let adjust_labelled = adjust_width(adjust_line, window) <= room;
         let mut adjust = div()
             .debug_selector(|| "image-adjust".into())
@@ -681,7 +682,10 @@ impl GitTurtle {
             } else {
                 (value, adjust_line[1])
             };
-            adjust = adjust.child(
+            // Read as its whole line in either form: its value alone once
+            // read only "50%".
+            let read = whole.clone();
+            adjust = adjust.child(crate::native_accessibility::static_text(
                 div()
                     .id("image-adjust-line")
                     .debug_selector(|| "image-adjust-line".into())
@@ -695,7 +699,8 @@ impl GitTurtle {
                         })
                     })
                     .child(shown),
-            );
+                read,
+            ));
             for (id, label, delta) in [("image-less", "−", -0.1), ("image-more", "+", 0.1)] {
                 adjust = adjust.child(
                     button(id, label, "", false)

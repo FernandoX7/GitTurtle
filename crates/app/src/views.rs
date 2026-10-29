@@ -7636,8 +7636,11 @@ pub(crate) mod tests {
     /// the named windows and every 80 px, the zooms keep the place they
     /// have side by side (they moved to the toolbar's centre when an
     /// adjustment joined it) and the adjustment lies in the column (its
-    /// labelled line ran past it at 13 pt in 461 px), and at every amount the
-    /// forms and widths stay. Wider, the zooms are never less labelled. The
+    /// labelled line ran past it at 13 pt in 461 px) and its line is read
+    /// as its whole line, "After opacity · 50%", even where it shows its
+    /// value alone, as at 18 pt in 461 px (it once read only "50%"), and at
+    /// every amount the forms and widths stay. Wider, the zooms are never
+    /// less labelled. The
     /// walk meets all three forms, and each moves a large image as the arrow
     /// does; at the images' start Pan left and Pan up are unavailable, the
     /// menus passing over them, and Pan left becomes available once the
@@ -7645,6 +7648,7 @@ pub(crate) mod tests {
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn the_pan_never_takes_a_toolbar_row(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
         use crate::system_preview::tests::png;
         let (before, after) = (png(Some(b"before")), png(Some(b"after")));
         let input = file_commits(&[
@@ -7698,6 +7702,8 @@ pub(crate) mod tests {
         // Where each form of the pan was first met side by side: its text
         // size and window width, 490 px tall.
         let mut met = std::collections::BTreeMap::new();
+        // Whether the adjustment's line kept only its value at 18 pt.
+        let mut value_only = false;
         for text in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             // Labelled zooms at a narrower width stay labelled wider.
@@ -7754,6 +7760,28 @@ pub(crate) mod tests {
                                 holds_with_ring(content, adjust),
                                 "{at}: the adjustment {adjust:?} lies in the preview {content:?}"
                             );
+                        }
+                        // Its line is read as its whole line, labelled or
+                        // its value alone, which once read only "50%".
+                        if mode != crate::image_compare::Mode::SideBySide {
+                            let whole = if mode == crate::image_compare::Mode::Wipe {
+                                "Before width · 50%"
+                            } else {
+                                "After opacity · 50%"
+                            };
+                            let node = written::get("image-adjust-line")
+                                .expect("the adjustment's line is drawn")
+                                .node;
+                            assert_eq!(
+                                (node.role(), node.value()),
+                                (gpui::accesskit::Role::Label, Some(whole)),
+                                "{at}: the adjustment's line is read as its whole line"
+                            );
+                            let labelled = cx.update(|window, _| {
+                                line_widths(&[(whole, appearance::ui_text(11.))], window)
+                            });
+                            let line = bounds("image-adjust-line", cx);
+                            value_only |= text == 18 && line.size.width < labelled / 2.;
                         }
                         let name = COMPACT_LABELS
                             .with(|labels| labels.borrow().get("image-zoom-menu").cloned())
@@ -7812,6 +7840,10 @@ pub(crate) mod tests {
             met.keys().copied().collect::<Vec<_>>(),
             ["arrows", "menu", "zoom menu"],
             "the walk meets every form of the pan"
+        );
+        assert!(
+            value_only,
+            "the walk meets the adjustment's line as its value alone at 18 pt"
         );
         // Overlaid or wiped, at every amount, the zooms, the pan and the
         // adjustment keep one form and one place: measured at the amount
