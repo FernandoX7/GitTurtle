@@ -472,6 +472,19 @@ impl Root {
         Some(root.read(cx).tooltip_overlay.clone())
     }
 
+    /// Hides this window's tooltip, shown or still waiting out its delay.
+    ///
+    /// GitTurtle patch: the overlay forgets a tooltip only when its trigger's
+    /// hover ends, a press hides it, or another trigger replaces it. A
+    /// trigger that is no longer drawn ends no hover, so an application that
+    /// moves a control away from under a pointer that stays still cancels the
+    /// tooltip it asked for here.
+    pub fn hide_tooltip(window: &Window, cx: &mut App) {
+        if let Some(overlay) = Self::tooltip_overlay(window, cx) {
+            overlay.update(cx, |overlay, cx| overlay.hide(cx));
+        }
+    }
+
     /// Get the fallback native-menu overlay entity for this window.
     pub(crate) fn native_menu_overlay(
         window: &Window,

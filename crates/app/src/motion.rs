@@ -232,8 +232,23 @@ impl GitTurtle {
 
     /// New rows were installed. Where the pressed row no longer stands in
     /// its place under the still pointer, what arrived there shows no hover
-    /// and no tooltip until the pointer moves.
-    pub(super) fn rows_moved_under_pointer(&mut self) {
+    /// and no tooltip until the pointer moves, and the tooltip the pressed
+    /// control asked for, shown or still waiting out its delay, goes with
+    /// it: the window's tooltip keeps a request until its control's hover
+    /// ends, which a control no longer drawn never reports, so "Stage
+    /// gamma.txt" once showed over epsilon's row a second after the press.
+    /// A pointer that has left its place, onto a control outside the list
+    /// whose own moves the list does not see, is no longer still: what it
+    /// rests on keeps its hover and its tooltip, which hiding the window's
+    /// tooltip here once cancelled for good.
+    pub(super) fn rows_moved_under_pointer(&mut self, window: &Window, cx: &mut App) {
+        if self
+            .still_pointer
+            .as_ref()
+            .is_some_and(|still| still.at != window.mouse_position())
+        {
+            self.still_pointer = None;
+        }
         let status = self.work_status.as_ref();
         let Some(still) = self.still_pointer.as_mut() else {
             return;
@@ -247,6 +262,9 @@ impl GitTurtle {
             }
             _ => false,
         };
+        if !stays && !still.moved {
+            gpui_kit::component::Root::hide_tooltip(window, cx);
+        }
         still.moved |= !stays;
     }
 
@@ -2351,56 +2369,144 @@ mod tests {
 
     /// After gamma's Stage moves its row, epsilon's row takes its place under
     /// the pointer, which has not moved: epsilon's Stage draws no hover fill
-    /// and shows no tooltip, as it did while the person never moved to it.
-    /// Once the pointer moves a pixel, it lights up and its tooltip shows.
+    /// and no tooltip shows there, as while the person never moved to it.
+    /// Nor does any control's that was under the pointer: the pressed one's
+    /// "Stage gamma.txt", requested before the rows moved, whether the press
+    /// came at once, while that tooltip waited out its delay or while it
+    /// showed, once appeared over epsilon's row about a second after the
+    /// press and stayed until the pointer moved; and gamma's own control in
+    /// Staged, which starts its flight under the pointer, said "Staged".
+    /// Once the pointer moves a pixel, epsilon's Stage lights up and its own
+    /// tooltip shows. A pointer that leaves for Fetch before the rows land
+    /// is not still: Fetch's tooltip shows there, where hiding the window's
+    /// tooltip as the rows landed once cancelled it for good.
     #[gpui::test]
     async fn a_still_pointer_lights_nothing_the_rows_moved_under_it(cx: &mut TestAppContext) {
-        let (_fixture, app, cx) = six_files(cx).await;
-        let (_, palette) = crate::appearance::test_palettes().remove(0);
-        cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
-        // Tall enough that every row is in view.
-        cx.simulate_resize(size(px(1480.), px(1300.)));
-        draw(cx);
-        let repository = app.read_with(cx, |app, _| app.path.clone());
-        let tooltip: &'static str = format!(
-            "{}/tooltip/rest",
-            workspace::confirmations::file(
-                &repository,
-                Path::new("epsilon.txt"),
-                ChangeArea::Unstaged
-            )
-            .control()
-        )
-        .leak();
-        let fills = |cx: &mut VisualTestContext| {
-            let control = cx.debug_bounds("working-stage-6").expect("row 6's Stage");
-            crate::appearance::painted_button(cx, control).0
-        };
-        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
-        assert_eq!(position_of(&app, cx, "gamma.txt", ChangeArea::Unstaged), 6);
-        let pointer = cx.debug_bounds("working-stage-6").unwrap().center();
-        toggle(&app, cx, 6).await;
-        advance(cx, ROW_TRAVEL.as_millis() as u64);
-        assert_eq!(flying(&app, cx), None);
-        // [Staged 3, alpha, beta, gamma, Unstaged 3, delta, epsilon, zeta]
-        assert_eq!(
-            position_of(&app, cx, "epsilon.txt", ChangeArea::Unstaged),
-            6
-        );
-        assert!(
-            cx.debug_bounds("working-stage-6")
-                .unwrap()
-                .contains(&pointer)
-        );
-        assert_eq!(fills(cx), [], "no hover under the still pointer");
-        advance(cx, 1000);
-        assert!(cx.debug_bounds(tooltip).is_none(), "no tooltip");
+        // How long the pointer rests on gamma's Stage before pressing it:
+        // not at all, less than the tooltip's 500 ms delay, and past it; and
+        // whether it then leaves the list for Fetch before the rows land.
+        for (rest, leaves) in [
+            (None, false),
+            (Some(300), false),
+            (Some(600), false),
+            (None, true),
+        ] {
+            let (_fixture, app, cx) = six_files(cx).await;
+            let (_, palette) = crate::appearance::test_palettes().remove(0);
+            cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
+            // Tall enough that every row is in view.
+            cx.simulate_resize(size(px(1480.), px(1300.)));
+            draw(cx);
+            let repository = app.read_with(cx, |app, _| app.path.clone());
+            let tooltip = |name: &str, area: ChangeArea| -> &'static str {
+                format!(
+                    "{}/tooltip/rest",
+                    workspace::confirmations::file(&repository, Path::new(name), area).control()
+                )
+                .leak()
+            };
+            let (gamma, epsilon) = (
+                tooltip("gamma.txt", ChangeArea::Unstaged),
+                tooltip("epsilon.txt", ChangeArea::Unstaged),
+            );
+            // Every tooltip, whatever its control: the kit's rounded popup
+            // on the popover fill, at whatever opacity its fade has reached,
+            // apart from what rests on that fill before the press (the
+            // fields; a row, which may take the same fill, is square).
+            let popover: Hsla =
+                cx.read(|cx| *gpui_kit::component::Theme::global(cx).tokens.popover);
+            let popups = |cx: &mut VisualTestContext| -> Vec<Bounds<ScaledPixels>> {
+                cx.update(|window, _| {
+                    window
+                        .painted_quads()
+                        .into_iter()
+                        .filter(|quad| {
+                            quad.corner_radii.top_left > ScaledPixels(0.)
+                                && quad.background.as_solid().is_some_and(|fill| {
+                                    fill.a > 0.
+                                        && Hsla {
+                                            a: popover.a,
+                                            ..fill
+                                        } == popover
+                                })
+                        })
+                        .map(|quad| quad.bounds)
+                        .collect()
+                })
+            };
+            let resting = popups(cx);
+            let tooltips = |cx: &mut VisualTestContext| {
+                popups(cx)
+                    .into_iter()
+                    .filter(|popup| !resting.contains(popup))
+                    .count()
+            };
+            let fills = |cx: &mut VisualTestContext| {
+                let control = cx.debug_bounds("working-stage-6").expect("row 6's Stage");
+                crate::appearance::painted_button(cx, control).0
+            };
+            // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+            assert_eq!(position_of(&app, cx, "gamma.txt", ChangeArea::Unstaged), 6);
+            let pointer = cx.debug_bounds("working-stage-6").unwrap().center();
+            if let Some(rest) = rest {
+                cx.simulate_mouse_move(pointer, None, Modifiers::default());
+                draw(cx);
+                advance(cx, rest);
+                let showing = rest > 500;
+                assert_eq!(
+                    (cx.debug_bounds(gamma).is_some(), tooltips(cx)),
+                    (showing, usize::from(showing)),
+                    "{rest} ms on gamma's Stage"
+                );
+            }
+            if leaves {
+                let fetch = cx.debug_bounds("fetch").expect("Fetch").center();
+                cx.simulate_click(pointer, Modifiers::default());
+                cx.simulate_mouse_move(fetch, None, Modifiers::default());
+                draw(cx);
+                let write = app
+                    .update(cx, |app, _| app.operation_task.take())
+                    .expect("the write");
+                write.await;
+                rows_arrived(&app, cx).await;
+                advance(cx, ROW_TRAVEL.as_millis() as u64);
+                advance(cx, 500);
+                assert_eq!(tooltips(cx), 1, "Fetch's tooltip under the pointer");
+                continue;
+            }
+            toggle(&app, cx, 6).await;
+            advance(cx, ROW_TRAVEL.as_millis() as u64);
+            assert_eq!(flying(&app, cx), None);
+            // [Staged 3, alpha, beta, gamma, Unstaged 3, delta, epsilon, zeta]
+            assert_eq!(
+                position_of(&app, cx, "epsilon.txt", ChangeArea::Unstaged),
+                6
+            );
+            assert!(
+                cx.debug_bounds("working-stage-6")
+                    .unwrap()
+                    .contains(&pointer)
+            );
+            assert_eq!(fills(cx), [], "{rest:?}: no hover under the still pointer");
+            for after in [400, 800, 1200, 1600] {
+                advance(cx, 400);
+                assert_eq!(tooltips(cx), 0, "{rest:?}: no tooltip {after} ms on");
+            }
 
-        cx.simulate_mouse_move(pointer + point(px(1.), px(0.)), None, Modifiers::default());
-        draw(cx);
-        assert_eq!(fills(cx).len(), 1, "the moved pointer lights it up");
-        advance(cx, 1000);
-        assert!(cx.debug_bounds(tooltip).is_some(), "and shows its tooltip");
+            cx.simulate_mouse_move(pointer + point(px(1.), px(0.)), None, Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                fills(cx).len(),
+                1,
+                "{rest:?}: the moved pointer lights it up"
+            );
+            advance(cx, 1000);
+            assert_eq!(
+                (cx.debug_bounds(epsilon).is_some(), tooltips(cx)),
+                (true, 1),
+                "{rest:?}: and shows its own tooltip"
+            );
+        }
     }
 
     /// Under reduced motion the row is in its slot in the first frame the

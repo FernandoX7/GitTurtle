@@ -3663,11 +3663,20 @@ impl GitTurtle {
         // pressed a row's Stage or Unstage shows no hover and no tooltip
         // until it moves (`motion::StillPointer`).
         let still = self.still_over_moved_rows();
-        let quiet = move |button: Button| {
+        // A control takes the shared look without its hover fill, and no
+        // tooltip at all, not even its confirmation's word: gamma's Stage,
+        // confirmed in Staged as its flight began under the pointer, said
+        // "Staged" there.
+        let feedback = move |mark: copy_feedback::Mark,
+                             action: copy_feedback::Action,
+                             label: &'static str,
+                             tooltip: String,
+                             cx: &App| {
             if still {
-                button.with_variant(appearance::still_control_button_variant())
+                copy_feedback::still_feedback_button(mark, action, label, cx)
+                    .with_variant(appearance::still_control_button_variant())
             } else {
-                button
+                copy_feedback::feedback_button(mark, action, label, tooltip, cx)
             }
         };
         // The shown rows index the shown status, an earlier one while a
@@ -3725,31 +3734,15 @@ impl GitTurtle {
                     || !self.working_filter.read(cx).value().is_empty();
                 let refused = busy || self.working_paths.pending || empty;
                 let unavailable = ((busy || self.working_paths.pending) && looks_busy) || empty;
-                let control = quiet(if forms.section_action_label {
-                    copy_feedback::feedback_button(
-                        mark,
-                        confirmation,
-                        action,
-                        if still { "" } else { detail },
-                        cx,
-                    )
+                let control = if forms.section_action_label {
+                    feedback(mark, confirmation, action, detail.into(), cx)
                 } else {
                     crate::views::compact_control_name(
-                        copy_feedback::feedback_button(
-                            mark,
-                            confirmation,
-                            "",
-                            if still {
-                                String::new()
-                            } else {
-                                format!("{action} · {detail}")
-                            },
-                            cx,
-                        ),
+                        feedback(mark, confirmation, "", format!("{action} · {detail}"), cx),
                         selector,
                         action,
                     )
-                });
+                };
                 let part = move |part: &'static str| -> String {
                     format!(
                         "{}-heading-{part}",
@@ -4025,7 +4018,7 @@ impl GitTurtle {
                         // once the Stage or Unstage that moved its file here
                         // succeeded, and keeps its name.
                         row.child(
-                            quiet(copy_feedback::feedback_button(
+                            feedback(
                                 confirmations::file(&self.path, &entry.path, area),
                                 if staged {
                                     confirmations::STAGED_FILE
@@ -4033,13 +4026,9 @@ impl GitTurtle {
                                     confirmations::UNSTAGED_FILE
                                 },
                                 "",
-                                if still {
-                                    String::new()
-                                } else {
-                                    stage_label.clone()
-                                },
+                                stage_label.clone(),
                                 cx,
-                            ))
+                            )
                             .debug_selector(move || format!("working-stage-{position}"))
                             .accessibility_label(stage_label)
                             .map(|control| {

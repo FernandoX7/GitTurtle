@@ -948,6 +948,28 @@ then none after a move to the same place, and only the row under the pointer
 after a 1 px move. Remove this part of the patch when upstream lights at most
 the row under the pointer after a wheel and that test passes without it.
 
+The tooltip-hide patch modifies `src/root.rs`. Upstream's managed tooltip asks
+the window's overlay to show when its trigger's hover begins and to hide when
+it ends, and a press hides it; nothing else does. A trigger that stops being
+drawn under a pointer that stays put ends no hover, so the overlay keeps its
+request, shown or still waiting out its delay, and draws it at the trigger's
+last bounds over whatever took its place until the pointer moves: after
+gamma's Stage moved gamma's row away, "Stage gamma.txt" appeared over
+epsilon's row a second after the press. `Root::hide_tooltip` is public and
+hides the window's tooltip, shown or waiting, through the overlay's existing
+`hide`; the overlay itself is unchanged.
+
+The consumer is `GitTurtle::rows_moved_under_pointer`
+(`crates/app/src/motion.rs`), which hides it when the rows a row's own Stage or
+Unstage produced put another row under the still pointer (`DESIGN.md`).
+`cargo test --locked -p gitturtle a_still_pointer_lights_nothing_the_rows_moved_under_it`
+presses gamma's Stage at once, after 300 ms on it (its tooltip waiting) and
+after 600 ms (shown), and finds no tooltip painted for 1.6 s once epsilon's
+row is under the pointer, then epsilon's own after a 1 px move; without the
+call it fails with a tooltip painted 400 ms on. Remove this part of the patch
+when upstream drops a managed tooltip whose trigger is no longer drawn and that
+test passes without the call.
+
 The dialog-kind patch modifies `src/dialog/dialog.rs` and
 `src/dialog/alert_dialog.rs`, with the base patch's `DialogKind`. Upstream
 AlertDialog always hosts the base `AlertDialog`, so every modal opened through

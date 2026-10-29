@@ -236,14 +236,40 @@ pub(crate) fn feedback_button(
 ) -> Button {
     let label = label.into();
     let frame = button_frame(mark.control.clone(), &label, action.icon, false);
-    confirming(
+    confirming_with(
         frame,
         appearance::ui_size(6.),
         Fit::Reserve,
         mark,
         action,
         label,
-        tooltip,
+        Some(tooltip.into()),
+        cx,
+    )
+}
+
+/// [`feedback_button`] with no tooltip at all, not even its confirmation's
+/// word: a control a list moved under a pointer that has not moved since
+/// shows none until the pointer moves (`motion::StillPointer`). An icon-only
+/// control given an empty tooltip still says its confirmation in one, so
+/// gamma's Stage, confirmed in Staged as its flight began under the still
+/// pointer, said "Staged" there.
+pub(crate) fn still_feedback_button(
+    mark: Mark,
+    action: Action,
+    label: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    let label = label.into();
+    let frame = button_frame(mark.control.clone(), &label, action.icon, false);
+    confirming_with(
+        frame,
+        appearance::ui_size(6.),
+        Fit::Reserve,
+        mark,
+        action,
+        label,
+        None,
         cx,
     )
 }
@@ -279,10 +305,33 @@ pub(crate) fn confirming(
     tooltip: impl Into<SharedString>,
     cx: &App,
 ) -> Button {
+    confirming_with(
+        frame,
+        gap,
+        fit,
+        mark,
+        action,
+        label,
+        Some(tooltip.into()),
+        cx,
+    )
+}
+
+/// [`confirming`], with no tooltip at all where `tooltip` is `None`.
+#[allow(clippy::too_many_arguments)]
+fn confirming_with(
+    frame: Button,
+    gap: impl Into<DefiniteLength>,
+    fit: Fit,
+    mark: Mark,
+    action: Action,
+    label: impl Into<SharedString>,
+    tooltip: Option<SharedString>,
+    cx: &App,
+) -> Button {
     let copied = confirmed(&mark, cx);
     let id = mark.control.clone();
     let label = label.into();
-    let tooltip = tooltip.into();
     let labelled = !label.is_empty();
     let gap = gap.into();
     let selector = id.clone();
@@ -349,12 +398,14 @@ pub(crate) fn confirming(
     if labelled {
         // The content is drawn text, which names nothing.
         button = button.accessibility_label(label);
-        return if tooltip.is_empty() {
-            button
-        } else {
-            button.tooltip(tooltip)
+        return match tooltip {
+            Some(tooltip) if !tooltip.is_empty() => button.tooltip(tooltip),
+            _ => button,
         };
     }
+    let Some(tooltip) = tooltip else {
+        return button;
+    };
     if tooltip.is_empty() {
         return if copied {
             button.tooltip(action.done)
