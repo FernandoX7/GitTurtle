@@ -7037,6 +7037,45 @@ pub(crate) mod tests {
         let (_fixture, _app, _cx) = history_window(cx).await;
     }
 
+    /// A seed's app quits as a real one does, waiting for what its quit
+    /// observers queue on its own threads, even in a test that never let the
+    /// scheduler park: here the repository session save and the preferences
+    /// barrier answer from the preferences thread while the shutdown waits.
+    /// The test macro's teardown quit with parking forbidden, so such a reply
+    /// tripped GPUI's check that no other thread wakes a deterministic test,
+    /// and on a loaded host any seed could fail with "Detected activity on
+    /// thread gitturtle-preferences" (`vendor/gpui-pre-macros`). The thread is
+    /// held until the shutdown has polled the app's observers, so the replies
+    /// land then every time; the check runs as the seed ends.
+    #[gpui::test]
+    fn a_seed_quits_while_its_saves_answer_from_their_thread(cx: &mut TestAppContext) {
+        let commits = vec![crate::commit_message::tests::commit("a", "Title", "Body.")];
+        let (app, cx) = crate::copy_feedback::tests::history(cx, commits);
+        let mut held = Some(app.read_with(cx, |app, _| app.preferences_writer.hold()));
+        let app = app.downgrade();
+        cx.update(|_, cx| {
+            // Registered after the app's own, so the shutdown calls this once
+            // they have queued their saves, and polls it after theirs.
+            cx.on_app_quit(move |cx| {
+                let (done, answered) = std::sync::mpsc::channel();
+                let marker = app.update(cx, |app, _| {
+                    app.preferences_writer.submit(move || {
+                        let _ = done.send(());
+                        Ok(())
+                    })
+                });
+                let held = held.take();
+                async move {
+                    drop(held);
+                    if marker.is_ok() {
+                        answered.recv().expect("the preferences thread answered");
+                    }
+                }
+            })
+            .detach();
+        });
+    }
+
     /// [`history_window_from`] on the repository the `input` bytes import,
     /// with the window's root styled by `style`, as the width walk marks
     /// every text run (`width_walk`).

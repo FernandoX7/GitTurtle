@@ -170,9 +170,11 @@ fn generate_test_function(
                         // GitTurtle: quit the TestAppContext rather than the App
                         // (GITTURTLE-PATCH.md), so its on_quit cleanups free each
                         // window context `into_mut` leaked and the seed's app drops.
+                        // Its quit observers may wait on the app's own threads, so
+                        // the shutdown may park for their replies.
                         cx_teardowns.extend(quote!(
                             #cx_varname.run_until_parked();
-                            #cx_varname.update(|cx| cx.background_executor().forbid_parking());
+                            #cx_varname.update(|cx| cx.background_executor().allow_parking());
                             #cx_varname.quit();
                             #cx_varname.run_until_parked();
                             drop(#cx_varname);
@@ -265,7 +267,7 @@ fn generate_test_function(
                             // GitTurtle: as in the async branch above.
                             cx_teardowns.extend(quote!(
                                 #cx_varname.run_until_parked();
-                                #cx_varname.update(|cx| cx.background_executor().forbid_parking());
+                                #cx_varname.update(|cx| cx.background_executor().allow_parking());
                                 #cx_varname.quit();
                                 #cx_varname.run_until_parked();
                                 drop(#cx_varname);
