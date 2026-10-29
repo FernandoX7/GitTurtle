@@ -1330,7 +1330,9 @@ fn mode_tooltip(mode: Mode) -> &'static str {
 /// The image's usable minimum beneath the captions, before scaling: a fitted
 /// image 64 px tall inside the 16 px margins [`layout`] keeps on each side.
 /// A document's page, diagram or model keeps the same beneath its header's
-/// line ([`crate::system_preview::header_ends`]).
+/// line wherever the room holds one line above it, and otherwise gives way
+/// for that one line, as the image does for its band
+/// ([`crate::system_preview::header_ends`]).
 pub(crate) const STAGE_MIN: f32 = 96.;
 
 /// The side captions' row an image comparison draws beneath its toolbar, over

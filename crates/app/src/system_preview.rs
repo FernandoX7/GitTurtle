@@ -602,15 +602,21 @@ pub(crate) struct HeaderEnd {
 /// ([`crate::image_compare::STAGE_MIN`]) first, and the line shows every line
 /// it wraps to where the room beneath the headers' controls holds them above
 /// that minimum, otherwise the whole lines that room holds above it, the last
-/// ending in an ellipsis, so it always ends at a whole line; where it holds
-/// none it draws none, its words still in its name and announcement. The
-/// ends and `body` are laid out for the room the side leaves them in the
+/// ending in an ellipsis, so it always ends at a whole line. It keeps one
+/// whole line even where that room holds none, so a click always answers on
+/// screen: the content then gives way below its minimum, as an image does
+/// beneath its band ([`crate::image_compare`]), and where the side is
+/// shorter than that line with its padding and rule, the padding goes first.
+/// The ends and `body` are laid out for the room the side leaves them in the
 /// frame they are drawn ([`crate::in_frame`]), so neither the first frame
 /// after an answer nor one after a resize draws the line for another room.
 /// The line once showed the whole answer, scrolling inside a scaled 100 px
 /// that cut a line at 13 pt in a 640 × 680 window, and then took every line
 /// the clip left it, which left a PDF page no height at 18 pt in a 461 × 490
-/// window. Tests find the line as `<control id>/note`, the body as
+/// window; then it drew none where the room held none above the minimum, so
+/// a failed open in the rewrite review's 100 px box, the Stashes dialog's
+/// 120 px floor or Compare at 18 pt in a 461 × 490 window changed nothing on
+/// screen. Tests find the line as `<control id>/note`, the body as
 /// `<name>/body` and the region's frames under `name`.
 pub(crate) fn header_ends(
     name: &'static str,
@@ -643,16 +649,20 @@ pub(crate) fn header_ends(
                 return header;
             };
             let natural = crate::image_compare::wrapped_lines(&answer.brief, size, width, window);
-            let shown = natural.min(fit);
-            if shown == 0 {
-                // Named and announced, with no line drawn.
-                return header.child(crate::in_frame::probed(answer.frame(cx), "header-note"));
-            }
+            // Always one whole line: the click answers on screen, and the
+            // content gives way below its minimum for it, as an image does
+            // beneath its band.
+            let shown = natural.min(fit).max(1);
             let clamp = (natural > shown).then_some(shown);
-            header.pb(end.bottom).child(crate::in_frame::probed(
-                answer.short_line(clamp, cx),
-                "header-note",
-            ))
+            // Where the side is shorter than the line with its padding and
+            // rule, the padding goes first.
+            let padded = bounds.size.height >= line * shown as f32 + end.bottom + px(1.);
+            header
+                .when(padded, |header| header.pb(end.bottom))
+                .child(crate::in_frame::probed(
+                    answer.short_line(clamp, cx),
+                    "header-note",
+                ))
         });
         div()
             .size_full()
@@ -868,6 +878,65 @@ pub(crate) mod tests {
         ))
     }
 
+    /// Clicks After's open control `control` in a document's header, whose
+    /// open fails, and checks the answer on screen, `at` naming the case: the
+    /// line `note` beneath the header's controls shows one whole line inside
+    /// each of `clips`, the box the comparison is drawn in and what scrolls
+    /// it, its whole answer in its tooltip, though the room beneath the
+    /// controls holds no line above the content `body`'s minimum, which gives
+    /// way for it. Where the room held none, the line once drew none and the
+    /// click changed nothing there.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn a_failed_open_answers_on_one_line(
+        cx: &mut gpui_kit::VisualTestContext,
+        at: &str,
+        [control, note, body]: [&'static str; 3],
+        clips: &[&'static str],
+    ) {
+        use crate::tags::tests::{draw, hovered_tooltips, rendered};
+        let slack = px(0.5);
+        queue(Err(seen_as_svg("a PDF document")));
+        let center = rendered(cx, control).center();
+        cx.simulate_click(center, gpui::Modifiers::none());
+        cx.run_until_parked();
+        draw(cx);
+        let (whole, failed) = cx.read(latest_note).expect("a line says why");
+        assert!(
+            failed && whole.starts_with("Could not open After. The desktop would open"),
+            "{at}: the answer {whole:?}"
+        );
+        let (line, body) = (rendered(cx, note), rendered(cx, body));
+        let (line_height, minimum) = cx.update(|window, _| {
+            (
+                crate::image_compare::text_line(appearance::ui_text(11.), window),
+                appearance::ui_size(crate::image_compare::STAGE_MIN),
+            )
+        });
+        assert!(
+            (line.size.height - line_height).abs() <= slack,
+            "{at}: the line {line:?} shows one whole line of {line_height:?}"
+        );
+        assert!(
+            body.size.height < minimum - slack,
+            "{at}: the content {body:?} keeps its minimum {minimum:?}, so the room held a line"
+        );
+        for &selector in clips {
+            let clip = rendered(cx, selector);
+            assert!(
+                line.top() >= clip.top() - slack
+                    && line.bottom() <= clip.bottom() + slack
+                    && line.left() >= clip.left() - slack
+                    && line.right() <= clip.right() + slack,
+                "{at}: the line {line:?} lies whole in {selector} {clip:?}"
+            );
+        }
+        assert_eq!(
+            hovered_tooltips(cx, note),
+            1,
+            "{at}: the line's tooltip holds the whole answer"
+        );
+    }
+
     /// After's open control, whose clicks a test answers itself.
     fn after_control() -> Target {
         Target {
@@ -977,7 +1046,7 @@ pub(crate) mod tests {
 
     /// The short line beneath an image side's caption, and the line in a
     /// document's header ([`header_ends`]) in each form it takes there
-    /// (every line, the lines that fit, none), shows its reason first and is
+    /// (every line, the lines that fit, one), shows its reason first and is
     /// named, as it is announced, by the whole answer, with the side it
     /// could not open: "Could not open After. The desktop would open …".
     #[cfg(target_os = "linux")]
@@ -1009,9 +1078,9 @@ pub(crate) mod tests {
             let answer = target.answered(cx).expect("the click's answer");
             assert_eq!(answer.brief(), "Seen as an SVG document, so not opened");
             let lines = [
-                answer.frame(cx),
                 target.answered(cx).unwrap().short_line(None, cx),
-                answer.short_line(Some(2), cx),
+                target.answered(cx).unwrap().short_line(Some(2), cx),
+                answer.short_line(Some(1), cx),
             ];
             for line in lines {
                 let element = line.into_element();

@@ -9101,22 +9101,26 @@ pub(crate) mod tests {
     /// ("Seen as an SVG document, so not opened"), its whole answer kept in
     /// the line's tooltip, accessible name and announcement, as the header's
     /// last line beneath all of its controls. Content stays whole before the
-    /// line does: the page or model beneath keeps its scaled 96 px minimum,
-    /// and the line shows every line it wraps to where the room beneath the
-    /// controls holds them above that, otherwise the whole lines it holds,
-    /// none where it holds none. For a PDF, which Linux shows in the rich
-    /// document header (as it does a Mermaid file's diagrams), and a text 3D
-    /// model's header, at 13 and 18 pt in 461, 640 and 1480 px windows, the
-    /// line ends at a whole line inside the preview, the content keeps its
-    /// minimum while a line shows, and one more line would cut into it. The
-    /// line once took every line the clip left it, which left the page no
-    /// height at 18 pt in a 461 × 490 window, and in the model's header it
-    /// sat among the source actions, pushing the camera controls and the
-    /// views down; they now stay where they were, whole in the preview where
-    /// they were. Every frame after the answer arrives, and after a resize,
-    /// lays the line and the content out as the frame they settle in: the
-    /// line was once drawn unclamped in the answer's first frame and clamped
-    /// a frame late after each resize.
+    /// line shows more than one line: the page or model beneath keeps its
+    /// scaled 96 px minimum, and the line shows every line it wraps to where
+    /// the room beneath the controls holds them above that, otherwise the
+    /// whole lines it holds, and always one, the content then giving way
+    /// below its minimum. For a PDF, which Linux shows in the rich document
+    /// header (as it does a Mermaid file's diagrams), and a text 3D model's
+    /// header, at 13 and 18 pt in 461, 640 and 1480 px windows, the line
+    /// shows at least one whole line, inside the preview wherever the
+    /// header's own controls end inside it (a narrow model side's wrap past
+    /// its foot), the content keeps its minimum wherever the line shows more
+    /// than one, and one more line would cut into it. At 18 pt in a 461 × 490
+    /// window the room held no line above the minimum and the line drew
+    /// none, so a failed open changed nothing on screen; before that the line
+    /// took every line the clip left it, which left the page no height there,
+    /// and in the model's header it sat among the source actions, pushing the
+    /// camera controls and the views down; they now stay where they were,
+    /// whole in the preview where they were. Every frame after the answer
+    /// arrives, and after a resize, lays the line and the content out as the
+    /// frame they settle in: the line was once drawn unclamped in the
+    /// answer's first frame and clamped a frame late after each resize.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn a_document_header_says_why_in_a_short_line(cx: &mut TestAppContext) {
@@ -9133,17 +9137,17 @@ pub(crate) mod tests {
         let short = "Seen as an SVG document, so not opened";
         let slack = px(0.5);
         let (mut shown_every, mut shown_fewer, mut controls_inside) = (false, false, false);
+        let mut kept_one = false;
         crate::in_frame::probe::watch();
         // Each document: its file, its control, its line, the region its
-        // header ends in, the gap above the line, and the controls that
-        // come before the line in its header.
+        // header ends in, and the controls that come before the line in its
+        // header.
         let headers = [
             (
                 "document.pdf",
                 "system-preview-1",
                 "system-preview-1/note",
                 ("rich-sides", "rich-sides/body"),
-                0.5,
                 None,
                 "a PDF document",
             ),
@@ -9152,12 +9156,11 @@ pub(crate) mod tests {
                 "model-external-1",
                 "model-external-1/note",
                 ("model-side-1", "model-side-1/body"),
-                0.25,
                 Some("model-camera-controls-1"),
                 "plain text",
             ),
         ];
-        for (path, control, note, (region, body), gap, controls, kind) in headers {
+        for (path, control, note, (region, body), controls, kind) in headers {
             let index = app.read_with(cx, |app, _| {
                 app.files
                     .iter()
@@ -9193,13 +9196,12 @@ pub(crate) mod tests {
                 );
                 let line = bounds(note, cx);
                 let body = bounds(body, cx);
-                let (line_height, wrapped, minimum, gap) = cx.update(|window, _| {
+                let (line_height, wrapped, minimum) = cx.update(|window, _| {
                     let size = appearance::ui_text(11.);
                     (
                         crate::image_compare::text_line(size, window),
                         crate::image_compare::wrapped_lines(short, size, line.size.width, window),
                         appearance::ui_size(96.),
-                        window.rem_size() * gap,
                     )
                 });
                 let lines = line.size.height / line_height;
@@ -9208,12 +9210,15 @@ pub(crate) mod tests {
                     "{at}: the line {line:?} ends at a whole line of {line_height:?}"
                 );
                 let lines = lines.round() as usize;
-                assert!(lines <= wrapped, "{at}: {lines} of the {wrapped} lines");
-                if lines > 0 {
-                    assert!(
-                        body.size.height >= minimum - slack,
-                        "{at}: the content {body:?} keeps its minimum {minimum:?} beneath the line's {lines} lines"
-                    );
+                assert!(
+                    (1..=wrapped).contains(&lines),
+                    "{at}: the line shows {lines} of its {wrapped} lines, and at least one"
+                );
+                // Where the header's own controls reach past the preview's
+                // foot, as a narrow side's wrapped controls do at 13 pt in a
+                // 461 × 490 window, what lies beneath them is out of view.
+                let in_view = line.top() < content.bottom() - slack;
+                if in_view {
                     assert!(
                         line.top() >= content.top() - slack
                             && line.bottom() <= content.bottom() + slack
@@ -9222,11 +9227,24 @@ pub(crate) mod tests {
                         "{at}: the line {line:?} lies whole in the preview {content:?}"
                     );
                 }
+                if body.size.height < minimum - slack {
+                    assert_eq!(
+                        lines, 1,
+                        "{at}: the content {body:?} gives way below its minimum {minimum:?} only for the line's one line"
+                    );
+                    kept_one |= in_view;
+                }
+                // A failed open on a PDF here once changed nothing on screen.
+                if path == "document.pdf" && (text, width, height) == (18, 461., 490.) {
+                    assert!(
+                        in_view && body.size.height < minimum - slack,
+                        "{at}: the line {line:?} is in view above the content {body:?}, which gives way for it"
+                    );
+                }
                 if lines < wrapped {
                     shown_fewer = true;
-                    let opened = if lines == 0 { gap } else { px(0.) };
                     assert!(
-                        body.size.height - line_height - opened < minimum + slack,
+                        body.size.height - line_height < minimum + slack,
                         "{at}: another line would leave the content {body:?} its minimum {minimum:?}, yet the line shows {lines} of {wrapped}"
                     );
                 } else {
@@ -9262,8 +9280,8 @@ pub(crate) mod tests {
         }
         crate::in_frame::probe::stop();
         assert!(
-            shown_every && shown_fewer,
-            "lines shown whole and lines the room cuts short"
+            shown_every && shown_fewer && kept_one,
+            "lines shown whole, lines the room cuts short, and one line the room holds none above the content's minimum for"
         );
         assert!(
             controls_inside,
@@ -9277,14 +9295,17 @@ pub(crate) mod tests {
     /// header does (`system_preview::header_ends`): a side with its pages
     /// and a side whose document has none each say why a click on Open in
     /// default app opened nothing in the short line beneath their controls,
-    /// which ends at a whole line inside the preview, above a page that keeps
-    /// its scaled 96 px minimum where a line is drawn, with one more line
-    /// cutting into it where the line shows fewer than it wraps to; every
-    /// frame after the answer, and after a 40 px resize, lays the line and
-    /// the page out as the frame they settle in. Linux renders no pages, so
-    /// the test gives After a one-page document by hand, whose page request
-    /// fails there as on any build without PDFKit; Before is the side Linux
-    /// prepares, with no pages, which the view's other call site draws.
+    /// which shows at least one whole line, inside the preview wherever the
+    /// header's controls end inside it (a narrow After side's wrap past its
+    /// foot), above a page that keeps its scaled 96 px minimum wherever the
+    /// line shows more than one and gives way below it only for the one line,
+    /// with one more line cutting into it where the line shows fewer than it
+    /// wraps to; every frame after the answer, and after a 40 px resize, lays
+    /// the line and the page out as the frame they settle in. Linux renders
+    /// no pages, so the test gives After a one-page document by hand, whose
+    /// page request fails there as on any build without PDFKit; Before is the
+    /// side Linux prepares, with no pages, which the view's other call site
+    /// draws.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn the_pdf_page_view_says_why_in_a_short_line(cx: &mut TestAppContext) {
@@ -9327,7 +9348,7 @@ pub(crate) mod tests {
         };
         let short = "Seen as an SVG document, so not opened";
         let slack = px(0.5);
-        let (mut shown_every, mut shown_fewer) = (false, false);
+        let (mut shown_every, mut shown_fewer, mut kept_one) = (false, false, false);
         crate::in_frame::probe::watch();
         for (control, note, region, body) in [
             (
@@ -9383,12 +9404,15 @@ pub(crate) mod tests {
                     "{at}: the line {line:?} ends at a whole line of {line_height:?}"
                 );
                 let lines = lines.round() as usize;
-                assert!(lines <= wrapped, "{at}: {lines} of the {wrapped} lines");
-                if lines > 0 {
-                    assert!(
-                        body.size.height >= minimum - slack,
-                        "{at}: the page {body:?} keeps its minimum {minimum:?} beneath the line's {lines} lines"
-                    );
+                assert!(
+                    (1..=wrapped).contains(&lines),
+                    "{at}: the line shows {lines} of its {wrapped} lines, and at least one"
+                );
+                // Where the header's own controls reach past the preview's
+                // foot, as a narrow side's wrapped controls do at 13 pt in a
+                // 461 × 490 window, what lies beneath them is out of view.
+                let in_view = line.top() < content.bottom() - slack;
+                if in_view {
                     assert!(
                         line.top() >= content.top() - slack
                             && line.bottom() <= content.bottom() + slack
@@ -9397,15 +9421,17 @@ pub(crate) mod tests {
                         "{at}: the line {line:?} lies whole in the preview {content:?}"
                     );
                 }
+                if body.size.height < minimum - slack {
+                    assert_eq!(
+                        lines, 1,
+                        "{at}: the page {body:?} gives way below its minimum {minimum:?} only for the line's one line"
+                    );
+                    kept_one |= in_view;
+                }
                 if lines < wrapped {
                     shown_fewer = true;
-                    let opened = if lines == 0 {
-                        cx.update(|window, _| window.rem_size() * 0.5)
-                    } else {
-                        px(0.)
-                    };
                     assert!(
-                        body.size.height - line_height - opened < minimum + slack,
+                        body.size.height - line_height < minimum + slack,
                         "{at}: another line would leave the page {body:?} its minimum {minimum:?}, yet the line shows {lines} of {wrapped}"
                     );
                 } else {
@@ -9425,8 +9451,8 @@ pub(crate) mod tests {
         }
         crate::in_frame::probe::stop();
         assert!(
-            shown_every && shown_fewer,
-            "lines shown whole and lines the room cuts short"
+            shown_every && shown_fewer && kept_one,
+            "lines shown whole, lines the room cuts short, and one line the room holds none above the content's minimum for"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }

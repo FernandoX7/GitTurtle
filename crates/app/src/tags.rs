@@ -784,6 +784,38 @@ pub(crate) mod tests {
         read.expect("a tag read was started").await;
     }
 
+    /// The tooltips hovering `selector` newly paints, by the kit's popover
+    /// fill; the pointer then leaves the window until they have gone.
+    pub(crate) fn hovered_tooltips(cx: &mut VisualTestContext, selector: &'static str) -> usize {
+        const SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+        let popover = cx.read(|cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).tokens.popover)
+        });
+        let popups = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| quad.background == popover)
+                    .map(|quad| quad.bounds)
+                    .collect::<Vec<_>>()
+            })
+        };
+        let before = popups(cx);
+        let control = rendered(cx, selector);
+        cx.simulate_mouse_move(control.center(), None, Modifiers::default());
+        cx.executor().advance_clock(SHOW_DELAY);
+        draw(cx);
+        let shown = popups(cx)
+            .into_iter()
+            .filter(|popup| !before.contains(popup))
+            .count();
+        cx.simulate_mouse_move(point(px(-1.), px(-1.)), None, Modifiers::default());
+        cx.executor().advance_clock(SHOW_DELAY);
+        draw(cx);
+        shown
+    }
+
     pub(crate) fn rendered(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
         cx.debug_bounds(selector)
             .unwrap_or_else(|| panic!("rendered {selector}"))

@@ -18,25 +18,30 @@ impl GitTurtle {
         let remote = self.remote_name.read(cx).value().trim().to_owned();
         let branch = self.remote_branch.read(cx).value().trim().to_owned();
         let form = cx.new(|cx| SeriesBrowser::new(owner, repo, remote, branch, window, cx));
-        window.open_alert_dialog(cx, move |dialog, window, _| {
-            let close = form.clone();
-            let cancel = form.clone();
-            dialog
-                .title("Review rewritten series")
-                .width(appearance::dialog_width(px(980.), window))
-                .max_h(appearance::dialog_max_height(window))
-                .child(form.clone())
-                .footer(DialogFooter::new().child(
-                    button("close-series-review", "Back to repository", "", false).on_click(
-                        move |_, window, cx| close.update(cx, |form, cx| form.close(window, cx)),
-                    ),
-                ))
-                .on_cancel(move |_, window, cx| {
-                    cancel.update(cx, |form, cx| form.back(window, cx));
-                    false
-                })
-        });
+        open_series_dialog(form, window, cx);
     }
+}
+
+/// Opens the series review's dialog around `form`.
+fn open_series_dialog(form: Entity<SeriesBrowser>, window: &mut Window, cx: &mut App) {
+    window.open_alert_dialog(cx, move |dialog, window, _| {
+        let close = form.clone();
+        let cancel = form.clone();
+        dialog
+            .title("Review rewritten series")
+            .width(appearance::dialog_width(px(980.), window))
+            .max_h(appearance::dialog_max_height(window))
+            .child(form.clone())
+            .footer(DialogFooter::new().child(
+                button("close-series-review", "Back to repository", "", false).on_click(
+                    move |_, window, cx| close.update(cx, |form, cx| form.close(window, cx)),
+                ),
+            ))
+            .on_cancel(move |_, window, cx| {
+                cancel.update(cx, |form, cx| form.back(window, cx));
+                false
+            })
+    });
 }
 
 struct SeriesBrowser {
@@ -711,7 +716,7 @@ impl Render for SeriesBrowser {
                 && plan.remote_ref
                     == format!("refs/heads/{}", self.remote_branch.read(cx).value().trim())
         });
-        crate::native_accessibility::clips_children(div().id("rewrite-review-body").min_w_0().px(room).mx(-room).pb(room).max_h(px(height) + room).when(self.inspecting, |element| element.h(px(height))).overflow_y_scroll().flex().flex_col().gap_2()
+        crate::native_accessibility::clips_children(div().id("rewrite-review-body").debug_selector(|| "rewrite-review-body".into()).min_w_0().px(room).mx(-room).pb(room).max_h(px(height) + room).when(self.inspecting, |element| element.h(px(height))).overflow_y_scroll().flex().flex_col().gap_2()
             .on_action(cx.listener(|this, _: &gpui_kit::component::input::Escape, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .on_action(cx.listener(|this, _: &ClearSearch, window, cx| { this.back(window, cx); cx.stop_propagation(); }))
             .when(!self.inspecting, |element| element
@@ -743,7 +748,7 @@ impl Render for SeriesBrowser {
                     let file = &this.files[index]; button(("series-file", index), file.path().to_string_lossy().into_owned(), "", this.selected_file == Some(index)).w_full().h(appearance::ui_size(30.)).on_click(cx.listener(move |this, _, window, cx| this.file(index, window, cx))).into_any_element()
                 }).collect::<Vec<_>>())).size_full().track_scroll(&self.files_scroll))))
                 .when(matches!(self.content.as_deref(), Some(Content::Text { .. })), |element| element.child(div().flex().gap_2().children(["Patch", "Before source", "After source", "Diagrams"].into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, label)| button(("series-text-mode", mode), label, "", self.text_mode == mode).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); }))))))
-                .child(div().flex_1().min_h(px(100.)).border_1().border_color(rgb(p.border)).overflow_hidden().child(frame.child(self.render_content(width, window, cx)))))
+                .child(div().debug_selector(|| "series-file-preview".into()).flex_1().min_h(px(100.)).border_1().border_color(rgb(p.border)).overflow_hidden().child(frame.child(self.render_content(width, window, cx)))))
             .when(self.pending, |element| element.child(div().text_color(rgb(p.muted)).child("Reading captured local history…")))
             .when_some(self.error.as_ref(), |element, error| element.child(div().max_h(px(100.)).id("series-review-error").overflow_y_scroll().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone()))))
     }
@@ -813,5 +818,83 @@ mod tests {
                 assert_eq!(browser.preview_retained_bytes(), 0);
             })
         });
+    }
+
+    /// An inspected commit's document, in the series review's file box, which
+    /// keeps 100 px, says why a click on Open in default app opened nothing on
+    /// one whole line beneath its header's controls, its whole answer in the
+    /// line's tooltip, and the page beneath gives way below its minimum for
+    /// it: in a 461 × 490 window the room beneath the header held no line
+    /// above that minimum, so the line drew none and the click changed
+    /// nothing on screen.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn an_inspected_document_says_why_on_one_whole_line(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let document = repo.path().join("document.pdf");
+        for (text, message) in [("first", "Add a document"), ("second", "Rewrite it")] {
+            std::fs::write(&document, pdf(text)).unwrap();
+            git(repo.path(), &["add", "document.pdf"]);
+            git(repo.path(), &["commit", "--quiet", "-m", message]);
+        }
+        // A fresh repository keeps its branch as a loose reference.
+        let head = std::fs::read_to_string(repo.path().join(".git/refs/heads/main")).unwrap();
+        let files = repo.changes_with_renames(head.trim(), 0).unwrap();
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let browser = cx.update(|window, cx| {
+            let repo = app
+                .read(cx)
+                .repository
+                .clone()
+                .expect("the window's repository");
+            let browser = cx.new(|cx| {
+                SeriesBrowser::new(
+                    app.downgrade(),
+                    repo,
+                    "origin".into(),
+                    "main".into(),
+                    window,
+                    cx,
+                )
+            });
+            open_series_dialog(browser.clone(), window, cx);
+            browser
+        });
+        // The rewritten commit's files, as Inspect rewritten files lists
+        // them, and its document chosen.
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.inspecting = true;
+                browser.inspect_label = "Rewritten".into();
+                browser.files = files;
+                browser.file(0, window, cx);
+            })
+        });
+        for _ in 0..400 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            draw(cx);
+            if cx.debug_bounds("system-preview-1").is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        crate::system_preview::tests::a_failed_open_answers_on_one_line(
+            cx,
+            "the series review at 13 pt in 461 × 490",
+            [
+                "system-preview-1",
+                "system-preview-1/note",
+                "rich-sides/body",
+            ],
+            &["series-file-preview", "rewrite-review-body"],
+        );
     }
 }
