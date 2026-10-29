@@ -2216,6 +2216,7 @@ fn main() {
             cx,
         );
         native_accessibility::bind_keys(cx);
+        native_accessibility::keep_popups_above_the_status_bar(cx);
         image_lifetime::init(cx);
         interactive_rebase::init(cx);
         theme_editor::init(cx);

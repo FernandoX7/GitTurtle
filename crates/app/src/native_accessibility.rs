@@ -361,8 +361,29 @@ fn menu_bounds(window: &Window) -> Bounds<Pixels> {
 /// [`MENU_MARGIN`] above the status bar, so that it never covers the bar,
 /// and no less than [`MENU_FLOOR`].
 pub(crate) fn menu_room(top: Pixels, window: &Window) -> Pixels {
-    (crate::theme_editor::status_bar_top(window) - MENU_MARGIN - top)
-        .max(appearance::ui_size(MENU_FLOOR))
+    (menu_foot(window) - top).max(appearance::ui_size(MENU_FLOOR))
+}
+
+/// The lowest a popup's fill reaches in `window`: its drawn edge, the ring
+/// the kit paints in the band outside the fill
+/// ([`gpui_kit::component::POPOVER_EDGE_WIDTH`]), [`MENU_MARGIN`] above the
+/// status bar. A menu whose fill ended 8 px above the bar drew its edge 7 px
+/// above it.
+pub(crate) fn menu_foot(window: &Window) -> Pixels {
+    crate::theme_editor::status_bar_top(window)
+        - MENU_MARGIN
+        - gpui_kit::component::POPOVER_EDGE_WIDTH
+}
+
+/// Keeps every kit popup in the app, a dropdown or a right-click menu, above
+/// [`menu_foot`]: the kit's window-bounded placement moves one that would
+/// run lower up, as it moves one that would leave the window, so a menu
+/// opened at a low row or taller than the room below its button never
+/// covers the status bar or comes nearer it than its margin.
+pub(crate) fn keep_popups_above_the_status_bar(cx: &mut App) {
+    gpui_kit::base::set_popup_bottom_inset(cx, |window| {
+        window.viewport_size().height - menu_foot(window)
+    });
 }
 
 /// `menu` as every menu in the app opens. Opened from the keyboard (the

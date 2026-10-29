@@ -7822,6 +7822,7 @@ pub(crate) mod tests {
         cx.update(|cx| {
             gpui_kit::init(cx);
             image_lifetime::init(cx);
+            native_accessibility::keep_popups_above_the_status_bar(cx);
         });
     }
 
@@ -12357,6 +12358,75 @@ pub(crate) mod tests {
             cx.simulate_keystrokes("escape");
             draw(cx);
             assert!(cx.debug_bounds(BROWSE).is_none(), "{at}: Escape closed it");
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// At 13 and 18 pt in a 461 × 490 window, a dropdown, the Working
+    /// Actions menu, and a right-click menu on History's lowest whole row
+    /// keep their drawn edge, the ring the kit paints in the band outside
+    /// the fill, 8 px or more above the status bar. The row's menu, taller
+    /// than the room below the pointer, moves up: it ran 19.5 px over the
+    /// bar at 13 pt.
+    #[gpui::test]
+    async fn menus_keep_their_edge_8_px_above_the_status_bar(cx: &mut TestAppContext) {
+        const BROWSE: &str = "menu-item: Browse stashes… · MenuItem";
+        const REVERT: &str = "Revert this commit…";
+        let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+        for text in [13, 18] {
+            cx.update(|window, cx| {
+                appearance::apply_text_sizes(text, 12, window, cx);
+                app.update(cx, |app, cx| app.show_working(window, cx));
+            });
+            settle(&app, cx).await;
+            let at = format!("{text} pt in 461 × 490");
+            open_working_actions(cx, size(px(461.), px(490.)));
+            let browse = cx
+                .debug_bounds(BROWSE)
+                .unwrap_or_else(|| panic!("{at}: the Actions menu"));
+            let surface = menu_surface(cx, browse);
+            let status = crate::theme_editor::tests::status_bar_top(cx);
+            assert!(
+                surface.bottom() + edge <= status - px(8.) + px(0.01),
+                "{at}: the Actions menu {surface:?} draws its edge 8 px above the bar at {status:?}"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+            settle(&app, cx).await;
+            let status = crate::theme_editor::tests::status_bar_top(cx);
+            let row = (0..40)
+                .filter_map(|index| cx.debug_bounds(format!("history-row-{index}").leak()))
+                .filter(|row| row.bottom() <= status)
+                .max_by(|a, b| f32::from(a.bottom()).total_cmp(&f32::from(b.bottom())))
+                .unwrap_or_else(|| panic!("{at}: a whole History row"));
+            // Near the row's leading edge: the row runs past the list's
+            // viewport, under the inspector.
+            let pointer = point(row.left() + px(16.), row.center().y);
+            cx.simulate_mouse_move(pointer, None, Modifiers::default());
+            cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
+            cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
+            // The kit builds the menu in a deferred callback.
+            cx.run_until_parked();
+            draw(cx);
+            let item = menu_rows(cx, &[REVERT])
+                .first()
+                .map(|(_, item)| *item)
+                .unwrap_or_else(|| panic!("{at}: the row's menu"));
+            let surface = menu_surface(cx, item);
+            assert!(
+                surface.size.height > status - pointer.y - px(8.),
+                "{at}: the row's menu {surface:?} is taller than the room below {pointer:?}"
+            );
+            assert!(
+                surface.bottom() + edge <= status - px(8.) + px(0.01),
+                "{at}: the row's menu {surface:?} draws its edge 8 px above the bar at {status:?}"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
