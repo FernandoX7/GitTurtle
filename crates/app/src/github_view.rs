@@ -1642,20 +1642,23 @@ mod tests {
     }
 
     /// The sign-in command's copy button, drawn by the panel's own view in
-    /// the dialog layer, reads Copied at its own size and restores: a copy
+    /// the dialog layer, reads Copied in its own bounds and restores: a copy
     /// redraws the whole window, not only the view that owns its button.
     #[gpui::test]
     async fn the_sign_in_command_reads_copied_inside_the_panel(cx: &mut TestAppContext) {
         use crate::copy_feedback::{RESTORE_AFTER, tests::*};
         let (_fixture, app, cx) = repository_window(cx);
+        // Dialogs slide in on the wall clock, which the test clock does not
+        // hold: a loaded host let the panel move between the frame that
+        // measured a button and the frame its press drew, and the click
+        // missed. They open at rest, where every frame draws them in place.
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         open_panel(&app, cx).await;
         crate::commit_message::tests::draw(cx);
         click(cx, "github-account-options");
         cx.run_until_parked();
-        // The dialog slides in on the wall clock, so only sizes compare.
-        let size =
-            |cx: &mut VisualTestContext| cx.debug_bounds("github-sign-in-help").unwrap().size;
-        let rest = size(cx);
+        let bounds = |cx: &mut VisualTestContext| cx.debug_bounds("github-sign-in-help").unwrap();
+        let rest = bounds(cx);
         assert_eq!(shows(cx, "github-sign-in-help"), Shows::Rest);
 
         click(cx, "github-sign-in-help");
@@ -1664,12 +1667,12 @@ mod tests {
             "gh auth login --hostname github.com --web --skip-ssh-key"
         );
         assert_eq!(shows(cx, "github-sign-in-help"), Shows::Copied);
-        assert_eq!(size(cx), rest);
+        assert_eq!(bounds(cx), rest);
         assert_eq!(announced(cx).unwrap().1, "Copied sign-in command");
 
         wait(cx, RESTORE_AFTER);
         assert_eq!(shows(cx, "github-sign-in-help"), Shows::Rest);
-        assert_eq!(size(cx), rest);
+        assert_eq!(bounds(cx), rest);
         assert_eq!(announced(cx), None);
         cx.update(|window, cx| window.close_dialog(cx));
     }
