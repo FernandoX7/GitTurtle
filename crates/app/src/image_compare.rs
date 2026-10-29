@@ -1202,7 +1202,9 @@ fn mode_tooltip(mode: Mode) -> &'static str {
 
 /// The image's usable minimum beneath the captions, before scaling: a fitted
 /// image 64 px tall inside the 16 px margins [`layout`] keeps on each side.
-const STAGE_MIN: f32 = 96.;
+/// A document's page, diagram or model keeps the same beneath its header's
+/// line ([`crate::system_preview::header_ends`]).
+pub(crate) const STAGE_MIN: f32 = 96.;
 
 /// The side captions' row an image comparison draws beneath its toolbar, over
 /// the row's rule: each side's name, then the control that opens it, as a
@@ -1537,7 +1539,7 @@ pub(crate) fn text_line(size: Pixels, window: &Window) -> Pixels {
 
 /// The lines `text` wraps to at `size` in `room`, as its text element lays
 /// it out in the inherited interface font.
-fn wrapped_lines(text: &str, size: Pixels, room: Pixels, window: &Window) -> usize {
+pub(crate) fn wrapped_lines(text: &str, size: Pixels, room: Pixels, window: &Window) -> usize {
     let style = window.text_style();
     window
         .text_system()

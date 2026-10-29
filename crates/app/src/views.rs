@@ -8401,6 +8401,341 @@ pub(crate) mod tests {
         assert_eq!(notice(cx), (None, false));
     }
 
+    /// A document's header says why a click on its Open in default app opened
+    /// nothing in the short line an image side's band shows, reason first
+    /// ("Seen as an SVG document, so not opened"), its whole answer kept in
+    /// the line's tooltip, accessible name and announcement, as the header's
+    /// last line beneath all of its controls. Content stays whole before the
+    /// line does: the page or model beneath keeps its scaled 96 px minimum,
+    /// and the line shows every line it wraps to where the room beneath the
+    /// controls holds them above that, otherwise the whole lines it holds,
+    /// none where it holds none. For a PDF, which Linux shows in the rich
+    /// document header (as it does a Mermaid file's diagrams), and a text 3D
+    /// model's header, at 13 and 18 pt in 461, 640 and 1480 px windows, the
+    /// line ends at a whole line inside the preview, the content keeps its
+    /// minimum while a line shows, and one more line would cut into it. The
+    /// line once took every line the clip left it, which left the page no
+    /// height at 18 pt in a 461 × 490 window, and in the model's header it
+    /// sat among the source actions, pushing the camera controls and the
+    /// views down; they now stay where they were, whole in the preview where
+    /// they were. Every frame after the answer arrives, and after a resize,
+    /// lays the line and the content out as the frame they settle in: the
+    /// line was once drawn unclamped in the answer's first frame and clamped
+    /// a frame late after each resize.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_document_header_says_why_in_a_short_line(cx: &mut TestAppContext) {
+        use crate::system_preview::tests::{latest_note, queue, seen_as_svg};
+        let pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n";
+        let obj = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        let input = file_commits(&[("media", &[("document.pdf", pdf), ("shape.obj", obj)])]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let short = "Seen as an SVG document, so not opened";
+        let slack = px(0.5);
+        let (mut shown_every, mut shown_fewer, mut controls_inside) = (false, false, false);
+        crate::in_frame::probe::watch();
+        // Each document: its file, its control, its line, the region its
+        // header ends in, the gap above the line, and the controls that
+        // come before the line in its header.
+        let headers = [
+            (
+                "document.pdf",
+                "system-preview-1",
+                "system-preview-1/note",
+                ("rich-sides", "rich-sides/body"),
+                0.5,
+                None,
+                "a PDF document",
+            ),
+            (
+                "shape.obj",
+                "model-external-1",
+                "model-external-1/note",
+                ("model-side-1", "model-side-1/body"),
+                0.25,
+                Some("model-camera-controls-1"),
+                "plain text",
+            ),
+        ];
+        for (path, control, note, (region, body), gap, controls, kind) in headers {
+            let index = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == std::path::Path::new(path))
+                    .expect("the commit adds it")
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+            settle(&app, cx).await;
+            for (text, width, height) in [
+                (13, 461., 490.),
+                (18, 461., 490.),
+                (13, 640., 680.),
+                (18, 640., 680.),
+                (13, 1480., 980.),
+                (18, 1480., 980.),
+            ] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let at = format!("{path} at {text} pt in {width} × {height}");
+                let content = bounds("preview-content", cx);
+                let before = controls.map(|controls| bounds(controls, cx));
+                queue(Err(seen_as_svg(kind)));
+                let center = bounds(control, cx).center();
+                frames_match_their_settled_frame(cx, &at, region, Some("header-note"), |cx| {
+                    cx.simulate_click(center, Modifiers::default());
+                    cx.run_until_parked();
+                });
+                let (whole, failed) = cx.read(latest_note).expect("a line says why");
+                assert!(
+                    failed && whole.starts_with("Could not open After. The desktop would open"),
+                    "{at}: the whole answer {whole:?} stays the line's"
+                );
+                let line = bounds(note, cx);
+                let body = bounds(body, cx);
+                let (line_height, wrapped, minimum, gap) = cx.update(|window, _| {
+                    let size = appearance::ui_text(11.);
+                    (
+                        crate::image_compare::text_line(size, window),
+                        crate::image_compare::wrapped_lines(short, size, line.size.width, window),
+                        appearance::ui_size(96.),
+                        window.rem_size() * gap,
+                    )
+                });
+                let lines = line.size.height / line_height;
+                assert!(
+                    (lines - lines.round()).abs() * line_height <= slack,
+                    "{at}: the line {line:?} ends at a whole line of {line_height:?}"
+                );
+                let lines = lines.round() as usize;
+                assert!(lines <= wrapped, "{at}: {lines} of the {wrapped} lines");
+                if lines > 0 {
+                    assert!(
+                        body.size.height >= minimum - slack,
+                        "{at}: the content {body:?} keeps its minimum {minimum:?} beneath the line's {lines} lines"
+                    );
+                    assert!(
+                        line.top() >= content.top() - slack
+                            && line.bottom() <= content.bottom() + slack
+                            && line.left() >= content.left() - slack
+                            && line.right() <= content.right() + slack,
+                        "{at}: the line {line:?} lies whole in the preview {content:?}"
+                    );
+                }
+                if lines < wrapped {
+                    shown_fewer = true;
+                    let opened = if lines == 0 { gap } else { px(0.) };
+                    assert!(
+                        body.size.height - line_height - opened < minimum + slack,
+                        "{at}: another line would leave the content {body:?} its minimum {minimum:?}, yet the line shows {lines} of {wrapped}"
+                    );
+                } else {
+                    shown_every = true;
+                }
+                if let (Some(controls), Some(before)) = (controls, before) {
+                    let after = bounds(controls, cx);
+                    assert_eq!(after, before, "{at}: the line moves no control above it");
+                    if before.bottom() <= content.bottom() + slack {
+                        controls_inside = true;
+                    }
+                    assert!(
+                        before.bottom() > content.bottom() + slack
+                            || after.bottom() <= content.bottom() + slack,
+                        "{at}: the controls {after:?} stay whole in the preview {content:?}"
+                    );
+                }
+                // A resize keeps the line laid out for the room it has.
+                let taller = format!("{at}, 40 px taller");
+                frames_match_their_settled_frame(cx, &taller, region, None, |cx| {
+                    cx.simulate_resize(size(px(width), px(height + 40.)));
+                    draw(cx);
+                });
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                // The next showing starts without the line.
+                app.update(cx, |app, cx| {
+                    app.preview_showing = crate::system_preview::Showing::next();
+                    cx.notify();
+                });
+                draw(cx);
+            }
+        }
+        crate::in_frame::probe::stop();
+        assert!(
+            shown_every && shown_fewer,
+            "lines shown whole and lines the room cuts short"
+        );
+        assert!(
+            controls_inside,
+            "the model's controls are whole in the preview"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The PDF page view, which a build that renders PDF pages (macOS, with
+    /// PDFKit) draws for a PDF, ends each side's header as a document's
+    /// header does (`system_preview::header_ends`): a side with its pages
+    /// and a side whose document has none each say why a click on Open in
+    /// default app opened nothing in the short line beneath their controls,
+    /// which ends at a whole line inside the preview, above a page that keeps
+    /// its scaled 96 px minimum where a line is drawn, with one more line
+    /// cutting into it where the line shows fewer than it wraps to; every
+    /// frame after the answer, and after a 40 px resize, lays the line and
+    /// the page out as the frame they settle in. Linux renders no pages, so
+    /// the test gives After a one-page document by hand, whose page request
+    /// fails there as on any build without PDFKit; Before is the side Linux
+    /// prepares, with no pages, which the view's other call site draws.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_pdf_page_view_says_why_in_a_short_line(cx: &mut TestAppContext) {
+        use crate::system_preview::tests::{latest_note, queue, seen_as_svg};
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let (first, second) = (pdf("first"), pdf("second"));
+        let input = file_commits(&[
+            ("first", &[("document.pdf", first.as_bytes())]),
+            ("second", &[("document.pdf", second.as_bytes())]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        // After as a build that renders pages prepares it.
+        app.update(cx, |app, cx| {
+            let Some(Content::Rich(preview)) = app.content.as_deref() else {
+                panic!("a changed PDF is a document comparison");
+            };
+            let bytes = preview.new.captured.clone().expect("After's bytes");
+            let mut paged =
+                crate::rich_preview::Side::prepare(bytes.to_vec(), &preview.new.name, || Ok(()))
+                    .expect("After prepares");
+            paged.pdf = Some(Arc::new(
+                crate::pdf_view::Document::new(bytes, 1, None, || Ok(())).expect("a document"),
+            ));
+            let old = preview.old.clone();
+            app.content = Some(Arc::new(Content::Rich(crate::rich_preview::Comparison {
+                old,
+                new: Arc::new(paged),
+            })));
+            cx.notify();
+        });
+        draw(cx);
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let short = "Seen as an SVG document, so not opened";
+        let slack = px(0.5);
+        let (mut shown_every, mut shown_fewer) = (false, false);
+        crate::in_frame::probe::watch();
+        for (control, note, region, body) in [
+            (
+                "pdf-system-0",
+                "pdf-system-0/note",
+                "pdf-side-0",
+                "pdf-side-0/body",
+            ),
+            (
+                "pdf-system-1",
+                "pdf-system-1/note",
+                "pdf-side-1",
+                "pdf-side-1/body",
+            ),
+        ] {
+            for (text, width, height) in [
+                (13, 461., 490.),
+                (18, 461., 490.),
+                (13, 640., 680.),
+                (18, 640., 680.),
+                (13, 1480., 980.),
+                (18, 1480., 980.),
+            ] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(width), px(height)));
+                draw(cx);
+                let at = format!("{region} at {text} pt in {width} × {height}");
+                let content = bounds("preview-content", cx);
+                queue(Err(seen_as_svg("a PDF document")));
+                let center = bounds(control, cx).center();
+                frames_match_their_settled_frame(cx, &at, region, Some("header-note"), |cx| {
+                    cx.simulate_click(center, Modifiers::default());
+                    cx.run_until_parked();
+                });
+                let (whole, failed) = cx.read(latest_note).expect("a line says why");
+                assert!(
+                    failed && whole.contains("The desktop would open this copy as an SVG"),
+                    "{at}: the whole answer {whole:?} stays the line's"
+                );
+                let line = bounds(note, cx);
+                let body = bounds(body, cx);
+                let (line_height, wrapped, minimum) = cx.update(|window, _| {
+                    let size = appearance::ui_text(11.);
+                    (
+                        crate::image_compare::text_line(size, window),
+                        crate::image_compare::wrapped_lines(short, size, line.size.width, window),
+                        appearance::ui_size(96.),
+                    )
+                });
+                let lines = line.size.height / line_height;
+                assert!(
+                    (lines - lines.round()).abs() * line_height <= slack,
+                    "{at}: the line {line:?} ends at a whole line of {line_height:?}"
+                );
+                let lines = lines.round() as usize;
+                assert!(lines <= wrapped, "{at}: {lines} of the {wrapped} lines");
+                if lines > 0 {
+                    assert!(
+                        body.size.height >= minimum - slack,
+                        "{at}: the page {body:?} keeps its minimum {minimum:?} beneath the line's {lines} lines"
+                    );
+                    assert!(
+                        line.top() >= content.top() - slack
+                            && line.bottom() <= content.bottom() + slack
+                            && line.left() >= content.left() - slack
+                            && line.right() <= content.right() + slack,
+                        "{at}: the line {line:?} lies whole in the preview {content:?}"
+                    );
+                }
+                if lines < wrapped {
+                    shown_fewer = true;
+                    let opened = if lines == 0 {
+                        cx.update(|window, _| window.rem_size() * 0.5)
+                    } else {
+                        px(0.)
+                    };
+                    assert!(
+                        body.size.height - line_height - opened < minimum + slack,
+                        "{at}: another line would leave the page {body:?} its minimum {minimum:?}, yet the line shows {lines} of {wrapped}"
+                    );
+                } else {
+                    shown_every = true;
+                }
+                let taller = format!("{at}, 40 px taller");
+                frames_match_their_settled_frame(cx, &taller, region, None, |cx| {
+                    cx.simulate_resize(size(px(width), px(height + 40.)));
+                    draw(cx);
+                });
+                app.update(cx, |app, cx| {
+                    app.preview_showing = crate::system_preview::Showing::next();
+                    cx.notify();
+                });
+                draw(cx);
+            }
+        }
+        crate::in_frame::probe::stop();
+        assert!(
+            shown_every && shown_fewer,
+            "lines shown whole and lines the room cuts short"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// [`history_window`] on the repository `input` imports.
     pub(crate) async fn history_window_from(
         cx: &mut TestAppContext,

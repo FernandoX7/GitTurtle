@@ -422,7 +422,6 @@ pub(super) fn render_comparison<T: 'static>(
             .gap_2()
             .px_3()
             .py_2()
-            .border_b_1()
             .border_r_1()
             .border_color(rgb(colors.border))
             .child(
@@ -441,14 +440,14 @@ pub(super) fn render_comparison<T: 'static>(
                     .text_color(rgb(colors.muted))
                     .child(side.metadata.format.clone()),
             );
-        let mut note = None;
+        let mut answer = None;
         if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
             let target = opener.target(("system-preview", index), label, bytes, &side.name, offer);
             // Labelled where it fits beside the side's name and format,
             // otherwise its icon.
             let room = header_room(index, side_width, label, &side.metadata.format, window);
             header = header.child(target.button(offer.form(room, window), cx));
-            note = target.note(cx);
+            answer = target.answered(cx);
         }
         if !side.pages.is_empty() {
             for (name, delta, disabled) in [
@@ -509,9 +508,6 @@ pub(super) fn render_comparison<T: 'static>(
                 }
             )));
         }
-        // Why the last click opened nothing, on a line of its own under
-        // the header's controls.
-        header = header.children(note);
         let mut body = div()
             .id(("rich-side-scroll", index))
             .flex_1()
@@ -623,7 +619,7 @@ pub(super) fn render_comparison<T: 'static>(
             }
         }
         (
-            header,
+            (header, answer),
             div()
                 .flex_1()
                 .min_w_0()
@@ -635,13 +631,34 @@ pub(super) fn render_comparison<T: 'static>(
         )
     })
     .unzip();
+    let (headers, answers): (Vec<_>, Vec<_>) = headers.into_iter().unzip();
+    // Each header ends, beneath its controls, with the line saying why its
+    // last click opened nothing, laid out with the bodies beneath, the
+    // headers' padding beneath and their rules ending them there.
+    let end = crate::system_preview::HeaderEnd {
+        inset: window.rem_size() * 0.75,
+        bottom: window.rem_size() * 0.5,
+        right_rule: true,
+        border: colors.border,
+    };
     div()
         .size_full()
         .min_w_0()
         .flex()
         .flex_col()
         .child(div().flex().min_w_0().children(headers))
-        .child(div().flex_1().min_h_0().min_w_0().flex().children(bodies))
+        .child(crate::system_preview::header_ends(
+            "rich-sides",
+            answers,
+            end,
+            div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .flex()
+                .children(bodies)
+                .into_any_element(),
+        ))
         .into_any_element()
 }
 

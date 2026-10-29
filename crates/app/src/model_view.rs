@@ -667,9 +667,7 @@ fn render_side<T: 'static>(
         .flex_col()
         .gap_1()
         .px_2()
-        .py_1()
-        .border_b_1()
-        .border_color(rgb(colors.border));
+        .py_1();
     let format = if side.model.is_some() {
         side.metadata.format.clone()
     } else {
@@ -741,6 +739,23 @@ fn render_side<T: 'static>(
             }),
         );
     }
+    // Why the last open opened nothing, as the header's last line, beneath
+    // all of its controls, the camera's, the views' and the clip's among
+    // them: laid out with the model beneath, after the header's padding and
+    // rule (`system_preview::header_ends`). Inside the actions it once
+    // pushed those controls down past the preview's clip.
+    let mut answer = None;
+    let end = crate::system_preview::HeaderEnd {
+        inset: window.rem_size() * 0.5,
+        bottom: window.rem_size() * 0.25,
+        right_rule: false,
+        border: colors.border,
+    };
+    let name = if index == 0 {
+        "model-side-0"
+    } else {
+        "model-side-1"
+    };
     if let (Some(offer), Some(bytes), false) = (side.system_preview, &side.captured, lfs_pointer) {
         let target = opener.target(("model-external", index), label, bytes, &side.name, offer);
         let mut control = target.button(offer.form(room, window), cx);
@@ -748,8 +763,8 @@ fn render_side<T: 'static>(
             control = control
                 .accessibility_label(format!("Open captured {label} model in system preview"));
         }
-        // Why the last open opened nothing, on a line under the actions.
-        source_actions = source_actions.child(control).children(target.note(cx));
+        source_actions = source_actions.child(control);
+        answer = target.answered(cx);
     }
     header = header.child(source_actions);
     let Some(document) = side.model.clone() else {
@@ -768,7 +783,10 @@ fn render_side<T: 'static>(
             .flex()
             .flex_col()
             .child(header)
-            .child(
+            .child(crate::system_preview::header_ends(
+                name,
+                vec![answer],
+                end,
                 div()
                     .id(("model-unavailable", index))
                     .flex_1()
@@ -802,8 +820,9 @@ fn render_side<T: 'static>(
                             .text_size(appearance::ui_text(12.))
                             .text_color(rgb(colors.muted))
                             .child(message),
-                    ),
-            )
+                    )
+                    .into_any_element(),
+            ))
             .into_any_element();
     };
     let (camera, wireframe, linked, pending, error, frame, display_camera, focus) = {
@@ -927,6 +946,7 @@ fn render_side<T: 'static>(
     );
     header = header.child(
         div()
+            .debug_selector(move || format!("model-camera-controls-{index}"))
             .flex()
             .flex_wrap()
             .items_center()
@@ -1045,7 +1065,12 @@ fn render_side<T: 'static>(
         .border_r_1()
         .border_color(rgb(colors.border))
         .child(header)
-        .child(canvas)
+        .child(crate::system_preview::header_ends(
+            name,
+            vec![answer],
+            end,
+            canvas,
+        ))
         .child(
             div()
                 .id(("model-details", index))

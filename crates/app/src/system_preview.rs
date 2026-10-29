@@ -17,14 +17,16 @@
 //! once something opened, the control reads Opened for
 //! [`copy_feedback::RESTORE_AFTER`] and "Opened a read-only copy of the
 //! captured bytes." is announced. When nothing opened, a line beneath the
-//! control's row says why ([`Target::note`]): a failure in the warning color,
+//! control's row says why ([`header_ends`]): a failure in the warning color,
 //! announced at once, or, when the portal reports the request cancelled (a
 //! closed application chooser, whether or not it offered an application), a
-//! muted "Nothing opened.". Beneath an image side's caption the line is short and
-//! leads with the reason ([`Answer::short_line`]), the whole answer in its tooltip
-//! and name; the short line is written from the failure's typed [`Category`],
-//! never from its sentence. The line stays while that comparison is shown and goes when
-//! another is ([`Showing`]); nothing reaches the window-wide notice.
+//! muted "Nothing opened.". Beneath an image side's caption, as in a
+//! document's header, the line is short and leads with the reason
+//! ([`Answer::short_line`]), the whole answer in its tooltip, name and
+//! announcement; the short line is written from the failure's typed
+//! [`Category`], never from its sentence. The line stays while that
+//! comparison is shown and goes when another is ([`Showing`]); nothing
+//! reaches the window-wide notice.
 
 use crate::copy_feedback::{self, Action, Mark};
 use crate::native_accessibility::LiveRegion as _;
@@ -506,27 +508,10 @@ impl Target {
         button
     }
 
-    /// The line beneath the control's row saying why its last click in this
-    /// showing opened nothing, as wide as the row so it starts a line of its
-    /// own in a wrapping row: a failure in the warning color fitted to the
-    /// page's surfaces, announced at once, or a closed chooser in muted
-    /// text, announced politely, each by its whole answer. A long reason
-    /// scrolls inside the line's scaled 100 px. Tests find it as
-    /// `<control id>/note`.
-    pub(crate) fn note(&self, cx: &App) -> Option<Stateful<Div>> {
-        let answer = self.answered(cx)?;
-        Some(
-            answer
-                .frame(cx)
-                .max_h(appearance::ui_size(100.))
-                .overflow_y_scroll()
-                .child(answer.text),
-        )
-    }
-
     /// Why its last click in this showing opened nothing, for a caller that
     /// draws the short line itself ([`Answer::short_line`]), as an image
-    /// side's band does beneath its caption.
+    /// side's band does beneath its caption and a document's header does
+    /// through [`header_ends`].
     pub(crate) fn answered(&self, cx: &App) -> Option<Answer> {
         let note = cx
             .try_global::<Notes>()?
@@ -593,6 +578,101 @@ impl Target {
                 .retain(|note| note.mark != self.mark || note.showing != self.opener.showing);
         }
     }
+}
+
+/// How a document's side header ends beneath its controls, which
+/// [`header_ends`] draws beneath the header's own padding, which is the gap
+/// above a line of its own: the header's inset either side, its padding beneath
+/// a drawn line and its rule beneath, with a rule on its right where it has one.
+#[derive(Clone, Copy)]
+pub(crate) struct HeaderEnd {
+    pub(crate) inset: Pixels,
+    pub(crate) bottom: Pixels,
+    pub(crate) right_rule: bool,
+    pub(crate) border: u32,
+}
+
+/// The ends of a document's side headers, side by side, each with the line
+/// saying why its last click in this showing opened nothing (`answers`, one
+/// per header) as its header's last line, beneath all of its controls, and
+/// the sides' `body` beneath them: the short line an image side's band shows
+/// ([`Answer::short_line`]), with its whole answer in its tooltip, its
+/// accessible name and its announcement. Content stays whole before labels
+/// do: the page, diagram or model in `body` keeps its usable minimum
+/// ([`crate::image_compare::STAGE_MIN`]) first, and the line shows every line
+/// it wraps to where the room beneath the headers' controls holds them above
+/// that minimum, otherwise the whole lines that room holds above it, the last
+/// ending in an ellipsis, so it always ends at a whole line; where it holds
+/// none it draws none, its words still in its name and announcement. The
+/// ends and `body` are laid out for the room the side leaves them in the
+/// frame they are drawn ([`crate::in_frame`]), so neither the first frame
+/// after an answer nor one after a resize draws the line for another room.
+/// The line once showed the whole answer, scrolling inside a scaled 100 px
+/// that cut a line at 13 pt in a 640 × 680 window, and then took every line
+/// the clip left it, which left a PDF page no height at 18 pt in a 461 × 490
+/// window. Tests find the line as `<control id>/note`, the body as
+/// `<name>/body` and the region's frames under `name`.
+pub(crate) fn header_ends(
+    name: &'static str,
+    answers: Vec<Option<Answer>>,
+    end: HeaderEnd,
+    body: AnyElement,
+) -> crate::in_frame::InFrame {
+    crate::in_frame::in_frame(move |bounds, window, cx| {
+        let size = appearance::ui_text(11.);
+        let line = crate::image_compare::text_line(size, window);
+        let sides = answers.len().max(1) as f32;
+        let right = if end.right_rule { px(1.) } else { px(0.) };
+        let width = bounds.size.width / sides - end.inset * 2. - right;
+        // The lines the room beneath the controls holds above the content's
+        // minimum, above the padding beneath a drawn line and the rule.
+        let room = bounds.size.height
+            - appearance::ui_size(crate::image_compare::STAGE_MIN)
+            - end.bottom
+            - px(1.);
+        let fit = (room / line).floor().max(0.) as usize;
+        let ends = answers.into_iter().map(|answer| {
+            let header = div()
+                .flex_1()
+                .min_w_0()
+                .px(end.inset)
+                .border_b_1()
+                .when(end.right_rule, |header| header.border_r_1())
+                .border_color(rgb(end.border));
+            let Some(answer) = answer else {
+                return header;
+            };
+            let natural = crate::image_compare::wrapped_lines(&answer.brief, size, width, window);
+            let shown = natural.min(fit);
+            if shown == 0 {
+                // Named and announced, with no line drawn.
+                return header.child(crate::in_frame::probed(answer.frame(cx), "header-note"));
+            }
+            let clamp = (natural > shown).then_some(shown);
+            header.pb(end.bottom).child(crate::in_frame::probed(
+                answer.short_line(clamp, cx),
+                "header-note",
+            ))
+        });
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(div().flex().min_w_0().children(ends))
+            .child(crate::in_frame::probed(
+                div()
+                    .debug_selector(move || format!("{name}/body"))
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(body),
+                "body",
+            ))
+            .into_any_element()
+    })
+    .named(name)
 }
 
 impl GitTurtle {
@@ -895,9 +975,11 @@ pub(crate) mod tests {
         store.close();
     }
 
-    /// The short line beneath an image side's caption shows its reason first
-    /// and is named, as it is announced, by the whole answer, with the side
-    /// it could not open: "Could not open After. The desktop would open …".
+    /// The short line beneath an image side's caption, and the line in a
+    /// document's header ([`header_ends`]) in each form it takes there
+    /// (every line, the lines that fit, none), shows its reason first and is
+    /// named, as it is announced, by the whole answer, with the side it
+    /// could not open: "Could not open After. The desktop would open …".
     #[cfg(target_os = "linux")]
     #[gpui::test]
     fn a_short_line_is_named_by_the_whole_answer(cx: &mut gpui_kit::TestAppContext) {
@@ -921,32 +1003,41 @@ pub(crate) mod tests {
                 .clone()
                 .answer(Err(seen_as_svg("a PNG image")), window, cx)
         });
-        let mut written = None;
+        let mut written = Vec::new();
         let viewport = cx.update(|window, _| window.viewport_size());
         cx.draw(gpui::point(px(0.), px(0.)), viewport, |_, cx| {
             let answer = target.answered(cx).expect("the click's answer");
             assert_eq!(answer.brief(), "Seen as an SVG document, so not opened");
-            let element = answer.short_line(Some(2), cx).into_element();
-            let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
-            element.write_a11y_info(&mut node);
-            // Read as it is built: the window's next draw starts its live
-            // regions afresh, and this line is drawn outside it.
-            let id = gpui::Element::id(&element).expect("the line's ID");
-            let announced = crate::native_accessibility::written::announced(&id.to_string());
-            written = Some((announced, node));
+            let lines = [
+                answer.frame(cx),
+                target.answered(cx).unwrap().short_line(None, cx),
+                answer.short_line(Some(2), cx),
+            ];
+            for line in lines {
+                let element = line.into_element();
+                let mut node = gpui::accesskit::Node::new(element.a11y_role().expect("a role"));
+                element.write_a11y_info(&mut node);
+                // Read as it is built: the window's next draw starts its live
+                // regions afresh, and these lines are drawn outside it.
+                let id = gpui::Element::id(&element).expect("the line's ID");
+                let announced = crate::native_accessibility::written::announced(&id.to_string());
+                written.push((announced, node));
+            }
             div()
         });
-        let (announced, node) = written.expect("the line was built");
-        assert_eq!(node.role(), gpui::accesskit::Role::Alert);
-        assert_eq!(
-            node.label(),
-            Some(format!("Could not open After. {reason}").as_str())
-        );
-        // A failure interrupts: it is announced at once, as a whole.
-        assert_eq!(
-            announced,
-            Some(crate::native_accessibility::written::Announced::ASSERTIVE)
-        );
+        assert_eq!(written.len(), 3, "every form was built");
+        for (announced, node) in written {
+            assert_eq!(node.role(), gpui::accesskit::Role::Alert);
+            assert_eq!(
+                node.label(),
+                Some(format!("Could not open After. {reason}").as_str())
+            );
+            // A failure interrupts: it is announced at once, as a whole.
+            assert_eq!(
+                announced,
+                Some(crate::native_accessibility::written::Announced::ASSERTIVE)
+            );
+        }
     }
 
     /// Every open control is named in one form that starts with what it

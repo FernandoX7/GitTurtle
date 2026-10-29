@@ -484,18 +484,24 @@ pub(super) fn render_comparison<T: 'static>(
         let room = header_room(index, side_width, &heading, window);
         // The heading's line is as tall as the scaled 28 px controls, so an
         // absent side's header aligns with its partner's.
-        let mut header = div().flex().flex_wrap().items_center().gap_2().p_2().border_b_1().border_color(rgb(colors.border)).child(div().min_h(appearance::ui_size(28.)).flex().items_center().font_weight(FontWeight::SEMIBOLD).child(heading));
-        let mut note = None;
+        // The header's padding beneath and its rule end it beneath the line
+        // saying why a click opened nothing, laid out with the page
+        // (`system_preview::header_ends`).
+        let mut header = div().flex().flex_wrap().items_center().gap_2().p_2().child(div().min_h(appearance::ui_size(28.)).flex().items_center().font_weight(FontWeight::SEMIBOLD).child(heading));
+        let end = crate::system_preview::HeaderEnd { inset: window.rem_size() * 0.5, bottom: window.rem_size() * 0.5, right_rule: false, border: colors.border };
+        let name = if index == 0 { "pdf-side-0" } else { "pdf-side-1" };
+        let mut answer = None;
         if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
             let target = opener.target(("pdf-system",index), label, bytes, &side.name, offer);
             let control = target.button(offer.form(room, window), cx);
             let control = if cfg!(target_os = "macos") { control.accessibility_label(format!("{label}: open captured PDF in System preview")) } else { control };
             header = header.child(control);
-            note = target.note(cx);
+            answer = target.answered(cx);
         }
         let mut body = div().id(("pdf-scroll",index)).flex_1().min_h_0().min_w_0().overflow_scroll().p_3();
         let Some(document) = side.pdf.clone() else {
-            return div().flex_1().min_w_0().h_full().flex().flex_col().child(header.children(note)).child(body.child(side.error.clone().unwrap_or_else(|| if side.present {"PDF preview unavailable"} else {"No file on this side"}.into()))).into_any_element();
+            let body = body.child(side.error.clone().unwrap_or_else(|| if side.present {"PDF preview unavailable"} else {"No file on this side"}.into()));
+            return div().flex_1().min_w_0().h_full().flex().flex_col().child(header).child(crate::system_preview::header_ends(name, vec![answer], end, body.into_any_element())).into_any_element();
         };
         let partner = if quick { None } else { other.pdf.clone() };
         let (page, zoom, pending, error, cached) = {
@@ -539,8 +545,6 @@ pub(super) fn render_comparison<T: 'static>(
         if let Some(other)=&other.pdf && document.linked.load(Ordering::Relaxed) && other.count!=document.count {
             header=header.child(div().text_size(appearance::ui_text(10.)).child(format!("Different page counts: {} / {}. Each side stops at its last page.",document.count,other.count)));
         }
-        // Why the last open opened nothing, on a line under the controls.
-        header = header.children(note);
         let page_number = page + 1;
         let rendered = match side.system_preview.filter(|_| side.captured.is_some()) {
             Some(offer) => format!("Rendered page; {} opens the captured document.", offer.label()),
@@ -555,7 +559,8 @@ pub(super) fn render_comparison<T: 'static>(
             body = body.child(div().mt_2().text_size(appearance::ui_text(11.)).child("The revisions have different page counts. Linked navigation stops each side at its own last page."));
         }
         let view=cx.entity().downgrade();
-        div().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(header).child(body)
+        // Why the last open opened nothing, as the header's last line.
+        div().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(header).child(crate::system_preview::header_ends(name, vec![answer], end, body.into_any_element()))
             .on_prepaint(move |_,window,cx| { let _=view.update(cx,|_,cx|document.request(window,cx)); }).into_any_element()
     })).into_any_element()
 }
