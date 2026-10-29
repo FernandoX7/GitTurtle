@@ -175,6 +175,8 @@ Reserve the empty Find collection without constructing an input/panel or replaci
 
 Prepare render-image pixels on the worker. Before/After image sides share bounded pan state; active drags continue across app content and clear on release or preview replacement. Overlay/wipe composes existing images in one source coordinate system without copying pixels on drag. Preserve absent/error sides, original dimension ratios when sides are independently downsampled, and the distinction between source dimensions and decoded-preview zoom. Retained navigation copies exclude active drag gestures.
 
+An image comparison's accessibility tree keeps its shape as the room changes ([native accessibility](../../../docs/native-accessibility.md)). A click's band is a group in every layout, named and described only where it carries the words that gave way, because GPUI writes a node only for an element with a role and a container that takes one only in some layouts moves what it holds under a new node. Tests read where GPUI puts such a node by wrapping its element in `native_accessibility::recorded`.
+
 GIF comparisons start paused and retain a bounded set of worker-prepared frames.
 Play/Pause and frame stepping share one time position across Before/After; a
 shorter side holds its last frame until both loop. Painting selects an existing

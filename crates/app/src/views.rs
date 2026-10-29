@@ -7654,9 +7654,13 @@ pub(crate) mod tests {
     /// sides of the image's last pixel: the band gained an ID'd group only
     /// where the image was not drawn, so its alert's accessibility node, which
     /// GPUI derives from the path, changed there and could be announced
-    /// again at every resize across it. Walked in half-pixel steps through
-    /// the heights of a 461 px window where the band's foot meets the
-    /// image's last pixels, at 13 and 18 pt.
+    /// again at every resize across it. So does the node holding the line,
+    /// the band's group: the group took its role only there, and GPUI writes
+    /// a node only for an element with a role, so the alert, the same node,
+    /// moved from a node around the comparison to the new group, whose added
+    /// child a screen reader can take for a new line. Walked in half-pixel
+    /// steps through the heights of a 461 px window where the band's foot
+    /// meets the image's last pixels, at 13 and 18 pt.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn a_refusal_band_leaves_no_image_sliver_or_second_rule(cx: &mut TestAppContext) {
@@ -7688,9 +7692,10 @@ pub(crate) mod tests {
             cx.run_until_parked();
             let (mut drawn, mut left) = (false, false);
             // The ID path the line saying why is drawn at, which GPUI derives
-            // its alert's accessibility node from, on each side of the
-            // image's last pixel.
+            // its alert's accessibility node from, and the node holding that
+            // node, with its role, on each side of the image's last pixel.
             let mut paths = std::collections::BTreeSet::new();
+            let mut parents = std::collections::BTreeSet::new();
             for half_pixels in heights.clone().step_by(1).map(|h| h * 2) {
                 for height in [half_pixels as f32 / 2., (half_pixels + 1) as f32 / 2.] {
                     // What this frame's drawn nodes record, and nothing else.
@@ -7701,6 +7706,8 @@ pub(crate) mod tests {
                         labels.remove("image-open-notes-name");
                     });
                     cx.simulate_resize(size(px(461.), px(height)));
+                    draw(cx);
+                    crate::native_accessibility::written::forget();
                     draw(cx);
                     let at = format!("{text} pt in 461 × {height}");
                     let band = bounds("image-side-note-1", cx);
@@ -7729,12 +7736,26 @@ pub(crate) mod tests {
                         )
                     });
                     assert!(painted, "{at}: the band's half {band:?} has its surface");
-                    paths.insert(
-                        crate::native_accessibility::written::node_path(
-                            "image-system-preview-1/note",
-                        )
-                        .unwrap_or_else(|| panic!("{at}: the line is drawn")),
+                    let path = crate::native_accessibility::written::node_path(
+                        "image-system-preview-1/note",
+                    )
+                    .unwrap_or_else(|| panic!("{at}: the line is drawn"));
+                    // The path ends in the line's own ID.
+                    let line = path.rsplit('.').next().unwrap_or_default().to_owned();
+                    let alert = crate::native_accessibility::written::get(&line)
+                        .unwrap_or_else(|| panic!("{at}: the line {line} is a node"));
+                    assert_eq!(
+                        alert.node.role(),
+                        gpui::accesskit::Role::Alert,
+                        "{at}: the line is an alert"
                     );
+                    let parent = alert.parent.clone().map(|parent| {
+                        let role = crate::native_accessibility::written::get(&parent)
+                            .map(|written| written.node.role());
+                        (parent, role)
+                    });
+                    parents.insert(format!("{parent:?}"));
+                    paths.insert(path);
                     match cx.debug_bounds("image-canvas-area") {
                         Some(image) => {
                             drawn = true;
@@ -7800,6 +7821,17 @@ pub(crate) mod tests {
                 paths.len(),
                 1,
                 "{text} pt: the line keeps one accessibility node, so it is not announced again, across the image's last pixel: {paths:?}"
+            );
+            assert_eq!(
+                parents.into_iter().collect::<Vec<_>>(),
+                [format!(
+                    "{:?}",
+                    Some((
+                        "image-open-notes".to_owned(),
+                        Some(gpui::accesskit::Role::Group)
+                    ))
+                )],
+                "{text} pt: the band's group holds the line on both sides of the image's last pixel, so it is not added to a new node there"
             );
             app.update(cx, |app, cx| {
                 app.preview_showing = crate::system_preview::Showing::next();

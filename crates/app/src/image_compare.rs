@@ -883,6 +883,7 @@ impl GitTurtle {
             };
             let described = !left.is_empty();
             let description = SharedString::from(left.join(". "));
+            let band_keeps = described && !fit.image_shown && band.is_some();
             let band = band.map(|_| {
                 div()
                     .debug_selector(|| "image-open-notes".into())
@@ -921,19 +922,24 @@ impl GitTurtle {
                                                 half.border_b_1().border_color(rgb(p.border))
                                             })
                                             .when(fit.band_padded, |half| half.py_1())
-                                            .child(answer.short_line(clamp, cx))
+                                            .child(native_accessibility::recorded(
+                                                answer.short_line(clamp, cx),
+                                            ))
                                     })
                             }),
                     )
             });
-            // The band keeps one ID path on both sides of the image's last
-            // pixel, so each line in it keeps its accessibility node, which a
-            // new path would announce again, and its tooltip. Where the image
-            // is not drawn, the band is a group named for what is drawn and
-            // described by the words that gave way.
+            // The band keeps one ID path and one node, a group, on both sides
+            // of the image's last pixel, so each line in it keeps its
+            // accessibility node and the node holding it, and its tooltip: a
+            // new path is a new node, and GPUI writes a node only for an
+            // element with a role, so a group only where the image was not
+            // drawn moved the line beneath a new node there, which a screen
+            // reader can announce again. Where the image is not drawn, the
+            // group is named for what is drawn and described by the words
+            // that gave way.
             let band = band.map(|band| {
-                let named = !fit.image_shown && described;
-                if named {
+                if band_keeps {
                     // Only the band drawn in this frame records its name and
                     // description for tests.
                     crate::views::note_compact_label("image-open-notes", &description);
@@ -942,24 +948,26 @@ impl GitTurtle {
                         &SharedString::from(details_label),
                     );
                 }
-                div()
-                    .id("image-open-notes")
-                    .flex()
-                    .flex_col()
-                    .map(|wrapper| {
-                        if fit.image_shown {
-                            wrapper.flex_shrink_0()
-                        } else {
-                            wrapper.flex_1().min_h_0()
-                        }
-                    })
-                    .when(named, |wrapper| {
-                        wrapper
-                            .role(Role::Group)
-                            .aria_label(details_label)
-                            .aria_description(description.clone())
-                    })
-                    .child(crate::in_frame::probed(band, "image-open-notes"))
+                native_accessibility::recorded(
+                    div()
+                        .id("image-open-notes")
+                        .role(Role::Group)
+                        .flex()
+                        .flex_col()
+                        .map(|wrapper| {
+                            if fit.image_shown {
+                                wrapper.flex_shrink_0()
+                            } else {
+                                wrapper.flex_1().min_h_0()
+                            }
+                        })
+                        .when(band_keeps, |wrapper| {
+                            wrapper
+                                .aria_label(details_label)
+                                .aria_description(description.clone())
+                        })
+                        .child(crate::in_frame::probed(band, "image-open-notes")),
+                )
             });
             let canvas = fit.image_shown.then(|| {
                 // Only the image drawn in this frame records its name and

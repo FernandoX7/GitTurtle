@@ -991,6 +991,108 @@ impl<E: Element> Element for BeneathModal<E> {
     }
 }
 
+/// `element`, an element that gives itself a role, such as a group or an
+/// alert, with the node GPUI writes for it recorded for tests as this
+/// module's wrappers record theirs ([`written`]), so a test reads which node
+/// holds the nodes drawn inside it. GPUI writes a node only for an element
+/// with an ID and a role, and makes each node the child of the nearest
+/// element around it that writes one: a container that takes its role only
+/// in some layouts moves what it holds under another node as the layout
+/// changes, which the test window, which never builds a tree, cannot show
+/// otherwise. In a frame where the element has no role it records nothing,
+/// as GPUI writes nothing. It changes nothing else: it lays out, draws and
+/// writes its node as the element does.
+pub(crate) fn recorded<E: IntoElement>(element: E) -> Recorded<E::Element> {
+    Recorded {
+        inner: element.into_element(),
+    }
+}
+
+/// The element [`recorded`] returns.
+pub(crate) struct Recorded<E> {
+    inner: E,
+}
+
+impl<E: Element> IntoElement for Recorded<E> {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl<E: Element> Element for Recorded<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    type PrepaintState = E::PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        self.inner.id()
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.inner.source_location()
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        self.inner.request_layout(id, inspector, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        // With its layout bounds, as GPUI writes it.
+        #[cfg(test)]
+        let written = written::open(self, Some(physical(bounds, window.scale_factor())));
+        let state = self
+            .inner
+            .prepaint(id, inspector, bounds, layout, window, cx);
+        #[cfg(test)]
+        written::close(written);
+        state
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        inspector: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.inner
+            .paint(id, inspector, bounds, layout, prepaint, window, cx);
+    }
+
+    fn a11y_role(&self) -> Option<Role> {
+        self.inner.a11y_role()
+    }
+
+    fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
+        self.inner.write_a11y_info(node);
+    }
+
+    fn a11y_synthetic_children(
+        &mut self,
+        prepaint: &mut Self::PrepaintState,
+        builder: &mut A11ySubtreeBuilder,
+    ) {
+        self.inner.a11y_synthetic_children(prepaint, builder);
+    }
+}
+
 /// `element`, which draws text or stands for it, as static text that an
 /// assistive technology reads as `text`: a label whose text is its value, or,
 /// where the caller gives it a role of its own (a heading, a status, an
