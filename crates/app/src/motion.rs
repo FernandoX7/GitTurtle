@@ -1514,9 +1514,10 @@ mod tests {
     }
 
     /// Whether the last frame drew the busy look: the progress label,
-    /// Cancel, "Refreshing…", the tab's "· working", or Stage all or Unstage
-    /// all, which
-    /// stay available through the writes below, in the disabled colour.
+    /// Cancel, "Refreshing…", the tab's "· working", Stage all or Unstage
+    /// all, which stay available through the writes below, in the disabled
+    /// colour, the branch picker or the Git profile picker dimmed, or the
+    /// commit action reading "Working…".
     fn looks_busy(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Vec<&'static str> {
         let disabled =
             cx.update(|_, cx| gpui_kit::component::Theme::global(cx).disabled_foreground());
@@ -1546,14 +1547,29 @@ mod tests {
                 drawn.push(control);
             }
         }
+        for (control, key) in [
+            ("the branch picker", "current-branch"),
+            ("the profile picker", "profile-button"),
+        ] {
+            let refusal = crate::workspace::refusals::get(key)
+                .unwrap_or_else(|| panic!("{control} is drawn"));
+            if refusal.dimmed {
+                drawn.push(control);
+            }
+        }
+        if app.read_with(cx, |app, cx| app.commit_action_label(cx)) == "Working…" {
+            drawn.push("Commit's Working…");
+        }
         drawn
     }
 
     /// A row's Stage that lands with its rows within the busy look's delay
     /// never looks busy: in every frame from the press to the landing no
-    /// progress label or Cancel is drawn, the tab does not read "· working"
-    /// and Stage all and Unstage all keep their resting colour, where the
-    /// write once dimmed every control for a frame. Acceptance does not
+    /// progress label or Cancel is drawn, the tab does not read "· working",
+    /// Stage all and Unstage all keep their resting colour, the branch and
+    /// profile pickers are not dimmed and the commit action does not read
+    /// "Working…", where the write once dimmed every control for a frame and
+    /// the commit action read "Working…" in it. Acceptance does not
     /// wait: another row's Stage pressed while the write runs is refused at
     /// once, and its row does not take the travelling row's place. A write
     /// still running when the delay ends looks busy then, and not a
@@ -1564,7 +1580,10 @@ mod tests {
         let (_, palette) = crate::appearance::test_palettes().remove(0);
         cx.update(|window, cx| palette.apply(palette.is_light(), Some(window), cx));
         draw(cx);
+        // Each inspected frame records the pickers afresh, so `looks_busy`
+        // reads what that frame drew rather than an earlier one.
         let frame = |cx: &mut VisualTestContext| {
+            crate::workspace::refusals::forget();
             cx.update(|window, cx| {
                 window.simulate_next_frame(cx);
                 window.draw(cx).clear(cx);
@@ -1657,7 +1676,10 @@ mod tests {
                 "Cancel",
                 "the tab's · working",
                 "Stage all",
-                "Unstage all"
+                "Unstage all",
+                "the branch picker",
+                "the profile picker",
+                "Commit's Working…"
             ],
             "once the delay passed"
         );

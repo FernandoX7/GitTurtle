@@ -1063,10 +1063,13 @@ impl GitTurtle {
         )
     }
 
-    /// The commit action's label: what it commits, or why it cannot.
+    /// The commit action's label: what it commits, or why it cannot. It
+    /// reads "Working…" only once a write looks busy (`BusyLook`), as the
+    /// action dims only then: it read so the moment any write started, a
+    /// quick Stage's too, for the one frame before its rows landed.
     pub(super) fn commit_action_label(&self, cx: &App) -> String {
         let staged = self.working_paths.staged_count;
-        if self.operation_busy.is_some() {
+        if self.operation_shown().is_some() {
             "Working…".to_owned()
         } else if self.work_status.is_none()
             || self.working_filter_waiting()
