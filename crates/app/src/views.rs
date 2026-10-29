@@ -11642,6 +11642,39 @@ pub(crate) mod tests {
                 && !written::lies_in("pdf-position-status-1", "pdf-side-1/header"),
             "the position's live region lies outside the header's region"
         );
+        // And over none of the side's controls or its page, which an
+        // assistive technology's hit test would otherwise miss for it: laid
+        // over the whole side, it covered Fit, −, +, the page number and the
+        // page.
+        let uncovered = |cx: &mut VisualTestContext, at: &str| {
+            written::forget();
+            draw(cx);
+            let status = written::get("pdf-position-status-1")
+                .and_then(|written| written.node.bounds())
+                .expect("the position's live region is drawn");
+            for selector in [
+                "pdf-system-1",
+                "pdf-retry-1",
+                "pdf-page-number-1",
+                "pdf-zoom-3",
+                "pdf-zoom-4",
+                "pdf-zoom-5",
+                "pdf-side-1/body",
+            ] {
+                let Some(drawn) = cx.debug_bounds(selector) else {
+                    continue;
+                };
+                let drawn = node_bounds(cx, drawn);
+                assert!(
+                    status.x1 <= drawn.x0
+                        || drawn.x1 <= status.x0
+                        || status.y1 <= drawn.y0
+                        || drawn.y1 <= status.y0,
+                    "{at}: the position's live region {status:?} covers {selector} {drawn:?}"
+                );
+            }
+        };
+        uncovered(cx, "at the header's top");
         // Its labelled controls are wider than the 88 px side, as the
         // views' menu is, so the walk checks the scroll's reveal alone.
         let list = reveal("pdf-side-1", &app, cx);
@@ -11684,6 +11717,7 @@ pub(crate) mod tests {
             );
             if key == "tab" && *selector == controls.last().expect("controls").1 {
                 assert!(list.scroll().offset().y < px(0.), "Tab scrolled the header");
+                uncovered(cx, "with the header scrolled");
             }
         }
     }

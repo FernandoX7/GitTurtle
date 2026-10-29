@@ -550,10 +550,13 @@ pub(super) fn render_comparison<T: 'static>(
             header = header.child(held.track(("pdf-zoom",id), zoom, cx));
         }
         header = header.child(div().text_size(appearance::ui_text(10.)).child(format!("{:.0}%",zoom*100.)));
-        // The position's live region lies over the whole side, outside the
-        // header's region, which can scroll it out of view and out of reach
-        // of assistive technology while it is still being announced.
-        let status = crate::native_accessibility::recorded(div().id(SharedString::from(format!("pdf-position-status-{index}"))).absolute().inset_0().role(Role::Status).aria_label(format!("{label}: page {} of {}, {:.0} percent zoom",page+1,document.count,zoom*100.)).polite());
+        // The position's live region lies outside the header's region, which
+        // can scroll it out of view and out of reach of assistive technology
+        // while it is still being announced, in a 1 px box at the side's
+        // top-left, in the header's padding, where no control or page lies:
+        // laid over the whole side, it took AccessKit's hit tests, which try
+        // later siblings first, from Fit, −, +, the page number and the page.
+        let status = crate::native_accessibility::recorded(div().id(SharedString::from(format!("pdf-position-status-{index}"))).absolute().top_0().left_0().size(px(1.)).role(Role::Status).aria_label(format!("{label}: page {} of {}, {:.0} percent zoom",page+1,document.count,zoom*100.)).polite());
         if let Some(other)=&other.pdf && document.linked.load(Ordering::Relaxed) && other.count!=document.count {
             header=header.child(div().text_size(appearance::ui_text(10.)).child(format!("Different page counts: {} / {}. Each side stops at its last page.",document.count,other.count)));
         }
