@@ -11816,6 +11816,100 @@ pub(crate) mod tests {
         }
     }
 
+    /// At 18 pt in a 461 × 490 window, Shift-F10 on any of History's rows
+    /// opens the commit's menu ending at least 8 px above the status bar,
+    /// moved up where the row leaves it less: on a low row, whose menu's
+    /// least height reached past the bar but not past the window's foot, it
+    /// ended 2 px above the bar, as the anchor moves a menu only once it
+    /// runs past the window. A press on the bar below the menu still closes
+    /// it and returns focus to the list, as one anywhere outside it does.
+    #[gpui::test]
+    async fn keyboard_commit_menu_stays_above_the_status_bar(cx: &mut TestAppContext) {
+        const REVERT: &str = "menu-item: Revert this commit… · MenuItem";
+        const COMMITS: usize = 12;
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(COMMITS, 1)).await;
+        cx.update(|window, cx| {
+            shortcuts::bind_keys(cx);
+            native_accessibility::bind_keys(cx);
+            appearance::ThemeChoice::Midnight.apply(Some(window), cx);
+            appearance::apply_text_sizes(18, 12, window, cx);
+        });
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let status = crate::theme_editor::tests::status_bar_top(cx);
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).focus.is_focused(window))
+        };
+        let open = |index: usize, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.select_commit(index, window, cx);
+                    app.pane = Pane::History;
+                    window.focus(&app.focus, cx);
+                })
+            });
+        };
+        // Each whole row of the list, selected in place as a click selects
+        // it, from the top down to the list's foot.
+        let mut lowest = None;
+        for index in 0..COMMITS {
+            open(index, cx);
+            settle(&app, cx).await;
+            let list = app.read_with(cx, |app, _| {
+                app.history_scroll.0.borrow().base_handle.bounds()
+            });
+            let Some(row) = cx
+                .debug_bounds(format!("history-row-{index}").leak())
+                .filter(|row| row.bottom() <= list.bottom())
+            else {
+                break;
+            };
+            cx.simulate_keystrokes("shift-f10");
+            draw(cx);
+            let item = cx
+                .debug_bounds(REVERT)
+                .unwrap_or_else(|| panic!("row {index} {row:?}: the commit's menu"));
+            let surface = menu_surface(cx, item);
+            assert!(
+                surface.bottom() <= status - px(8.) + px(0.25) && surface.top() >= px(0.),
+                "row {index} {row:?}: the menu {surface:?} ends 8 px above the status bar at {status:?}"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                cx.debug_bounds(REVERT).is_none(),
+                "row {index}: Escape closed it"
+            );
+            lowest = Some(index);
+        }
+        let lowest = lowest.expect("the list's whole rows");
+        assert!(lowest >= 1, "the rows down to a low one, {lowest}");
+        // The lowest row's menu moves up to the bar's margin, the room it
+        // keeps below lying over the bar: a press on the bar there, outside
+        // the menu, closes it.
+        open(lowest, cx);
+        settle(&app, cx).await;
+        cx.simulate_keystrokes("shift-f10");
+        draw(cx);
+        let item = cx.debug_bounds(REVERT).expect("the lowest row's menu");
+        let surface = menu_surface(cx, item);
+        assert!(
+            (status - px(8.) - surface.bottom()).abs() <= px(0.5),
+            "row {lowest}: the menu {surface:?} moved up to 8 px above the bar at {status:?}"
+        );
+        cx.simulate_click(
+            point(surface.center().x, status + px(4.)),
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert!(
+            cx.debug_bounds(REVERT).is_none(),
+            "a press on the bar closed the menu"
+        );
+        assert!(focused(cx), "the press returned focus to the list");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Shift-F10 and the Menu key open the navigator's cursor row's menu,
     /// the one a right-click opens, below the row: a branch's name and
     /// Branch actions…. Escape closes it and returns focus to the tree.

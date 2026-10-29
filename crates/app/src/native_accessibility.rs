@@ -80,7 +80,8 @@ pub(super) struct KeyboardMenu {
     /// larger window has outgrown.
     viewport: Size<Pixels>,
     /// The room the menu keeps from the window's foot: the status bar and
-    /// [`MENU_MARGIN`] above it.
+    /// [`MENU_MARGIN`] above it, less the client inset the anchor keeps
+    /// there already.
     bottom: Pixels,
     _subscriptions: [Subscription; 2],
 }
@@ -117,11 +118,15 @@ impl KeyboardMenu {
         });
         window.focus(&handle, cx);
         let viewport = window.viewport_size();
+        // The anchor keeps the client inset from every window edge itself.
+        let inset = window.client_inset().unwrap_or_default();
         Self {
             menu,
             position,
             viewport,
-            bottom: viewport.height - crate::theme_editor::status_bar_top(window) + MENU_MARGIN,
+            bottom: (viewport.height - crate::theme_editor::status_bar_top(window) + MENU_MARGIN
+                - inset)
+                .max(Pixels::ZERO),
             _subscriptions: [dismiss, blur],
         }
     }
@@ -174,17 +179,32 @@ impl KeyboardMenu {
                             .position(self.position)
                             // Where the row leaves the menu less than its
                             // least room above the status bar, it moves up
-                            // rather than cover the bar.
+                            // rather than cover the bar. The anchor moves
+                            // its child only once the child overflows the
+                            // window itself, adding the margin after, so a
+                            // margin alone never kept a menu off the bar
+                            // (at 18 pt in a 461 × 490 window one ended 2 px
+                            // above it): the bar and its margin are part of
+                            // the child, a spacer with no hitbox below the
+                            // menu, so a press there still reaches the
+                            // overlay, and the anchor's own bottom margin is
+                            // nothing.
                             .snap_to_window_with_margin(Edges {
-                                bottom: self.bottom,
+                                bottom: Pixels::ZERO,
                                 ..Edges::all(MENU_MARGIN)
                             })
                             .child(
-                                // A press inside the menu must reach its
-                                // item, not the overlay behind it.
                                 div()
-                                    .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
-                                    .child(self.menu.clone()),
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        // A press inside the menu must reach
+                                        // its item, not the overlay behind it.
+                                        div()
+                                            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                                            .child(self.menu.clone()),
+                                    )
+                                    .child(div().flex_shrink_0().h(self.bottom)),
                             ),
                     ),
             ),
