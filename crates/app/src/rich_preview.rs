@@ -1,7 +1,6 @@
 //! Captured-byte document and media information, with static native PDF pages.
 use crate::{appearance::CodeFont, *};
 use gitturtle_preview::{MAX_INPUT_BYTES, metadata};
-use gpui_kit::base::ElementExt;
 use std::{
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
@@ -320,26 +319,6 @@ pub(super) fn prepare_mermaid(
     }))
 }
 
-/// A box for a comparison that a dialog lays out, filling the space the
-/// dialog gives it, and the width it was last laid out at, which
-/// [`render_comparison`] fits its open controls to. The width lives in
-/// `window` under `key` while the box is drawn, so a comparison shown in it
-/// later starts at that width; before the box's first layout it is zero, where
-/// every open control takes its icon form.
-pub(crate) fn measured_box(key: &'static str, window: &mut Window, cx: &mut App) -> (Div, Pixels) {
-    let measured = window.use_keyed_state(key, cx, |_, _| None::<Pixels>);
-    let width = measured.read(cx).unwrap_or_default();
-    let frame = div().size_full().on_prepaint(move |bounds, _, cx| {
-        measured.update(cx, |width, cx| {
-            if *width != Some(bounds.size.width) {
-                *width = Some(bounds.size.width);
-                cx.notify();
-            }
-        })
-    });
-    (frame, width)
-}
-
 thread_local! {
     /// Each side header's heading and format, laid out.
     static BEFORE_HEADING: crate::views::TextWidth = const { std::cell::RefCell::new(None) };
@@ -374,8 +353,9 @@ fn header_room(index: usize, side: Pixels, heading: &str, format: &str, window: 
 /// entity while that parent is already rendering the dialog layer; `opener`
 /// opens captured bytes for the comparison's open controls, which take the
 /// form the comparison's `width` leaves them room for
-/// ([`crate::system_preview::Offer::form`]): Compare's column in the frame it
-/// is drawn, or a dialog's box as last laid out ([`measured_box`]).
+/// ([`crate::system_preview::Offer::form`]): Compare's column, or the box
+/// Stashes or the rewrite review draws it in, in the frame it is drawn
+/// ([`crate::in_frame`]).
 pub(super) fn render_comparison<T: 'static>(
     preview: &Comparison,
     quick: bool,

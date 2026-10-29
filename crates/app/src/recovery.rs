@@ -1872,7 +1872,8 @@ impl StashBrowser {
             .into_any_element()
     }
 
-    /// The selected file, `width` wide as its box was last laid out.
+    /// The selected file, `width` wide as its box is in the frame it is
+    /// drawn.
     fn render_content(&self, width: Pixels, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let p = palette(cx);
         if let Some(error) = &self.preview_error {
@@ -2058,7 +2059,7 @@ fn reveal_note(
 impl Render for StashBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        let (frame, width) = crate::rich_preview::measured_box("stash-file-width", window, cx);
+        let browser = cx.entity().downgrade();
         let narrow = window.viewport_size().width < px(800.);
         let height = (f32::from(window.viewport_size().height) - 230.).clamp(300., 620.);
         let busy = self.metadata_task.is_some();
@@ -2359,7 +2360,14 @@ impl Render for StashBrowser {
                     .child(div().flex().items_center().gap_1().on_children_prepainted(self.detail.controls(mode_focus, room)).children(modes.into_iter().map(|(mode, label, focus)| {
                         button(("stash-text-mode", mode), label, "", self.text_mode == mode).track_focus(&focus).disabled(!matches!(self.content.as_deref(), Some(Content::Text { .. }))).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.ensure_editor(window, cx); cx.notify(); }))
                     })))
-                    .child(div().debug_selector(|| "stash-comparison".into()).when(file_chosen, |element| element.flex_1().min_h(crate::appearance::ui_size(STASH_CONTENT_FLOOR))).when(!file_chosen, |element| element.flex_grow(1.).flex_shrink_0()).border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden().on_children_prepainted(self.detail.group(text_focus, room)).child(frame.child(self.render_content(width, window, cx))))
+                    .child(div().debug_selector(|| "stash-comparison".into()).when(file_chosen, |element| element.flex_1().min_h(crate::appearance::ui_size(STASH_CONTENT_FLOOR))).when(!file_chosen, |element| element.flex_grow(1.).flex_shrink_0()).border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden().on_children_prepainted(self.detail.group(text_focus, room))
+                        // A chosen file's comparison is built for the box's
+                        // width in the frame it is drawn (`in_frame`), so its
+                        // open controls take the form that width leaves them
+                        // in the first frame after a resize; until then the
+                        // box holds its prompt, whose height it keeps.
+                        .when(file_chosen, |element| element.flex().flex_col().child(crate::in_frame::in_frame(move |bounds, window, cx| browser.update(cx, |this, cx| this.render_content(bounds.size.width, window, cx)).unwrap_or_else(|_| div().into_any_element())).named("stash-comparison")))
+                        .when(!file_chosen, |element| element.child(self.render_content(px(0.), window, cx))))
                     .children(inline))
                 // Where its loading line stood, at the detail's edge, and
                 // short enough for one line beside the stacked list at 18 pt
@@ -2819,6 +2827,65 @@ mod tests {
             &["stash-comparison", "stash-detail"],
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A stashed document's comparison takes its open controls' form from
+    /// its box's width in the frame it is drawn ([`crate::in_frame`]): every
+    /// frame drawn as the window narrows and widens between 461 and 1,481 px
+    /// at 13 and 18 pt lays the comparison out as the frame it settles in,
+    /// and the walk meets After's control labelled and as its icon. Built
+    /// from the box's width a frame before, the first frame after a resize
+    /// drew the form of the width before.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_stashed_comparison_takes_its_form_in_the_frame_it_is_drawn(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let document = repo.path().join("document.pdf");
+        std::fs::write(&document, pdf("first")).unwrap();
+        git(repo.path(), &["add", "document.pdf"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add a document"]);
+        std::fs::write(&document, pdf("second")).unwrap();
+        git(repo.path(), &["stash", "push", "-m", "kept for later"]);
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1481.), px(980.)));
+        draw(cx);
+        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
+            for _ in 0..400 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(50));
+                draw(cx);
+                if cx.debug_bounds(selector).is_some() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("{selector} never drawn");
+        };
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
+        landed(cx, "saved-stash-row-0");
+        let row = cx.debug_bounds("saved-stash-row-0").unwrap();
+        cx.simulate_click(row.center(), Modifiers::none());
+        landed(cx, "stash-file-0");
+        let file = cx.debug_bounds("stash-file-0").unwrap();
+        cx.simulate_click(file.center(), Modifiers::none());
+        landed(cx, "system-preview-1");
+        let met = crate::system_preview::tests::open_controls_take_their_form_in_the_frame(
+            cx,
+            "the Stashes dialog",
+            "stash-comparison",
+        );
+        assert_eq!(
+            met.into_iter().collect::<Vec<_>>(),
+            ["icon", "labelled"],
+            "the walk meets both forms"
+        );
     }
 
     /// Lets every quiet read the window has asked for land: each runs on

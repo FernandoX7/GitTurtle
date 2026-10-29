@@ -469,7 +469,8 @@ impl SeriesBrowser {
             }
         });
     }
-    /// The inspected file, `width` wide as its box was last laid out.
+    /// The inspected file, `width` wide as its box is in the frame it is
+    /// drawn.
     fn render_content(&self, width: Pixels, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if let Some(messages) = &self.messages {
             return div()
@@ -689,7 +690,6 @@ impl SeriesBrowser {
 impl Render for SeriesBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        let (frame, width) = rich_preview::measured_box("rewrite-file-width", window, cx);
         let height = (f32::from(window.viewport_size().height) - 250.).clamp(240., 690.);
         // The body scrolls, so it clips its controls on both axes. It keeps
         // the focus ring's room beside and below them, giving the sides back
@@ -702,6 +702,7 @@ impl Render for SeriesBrowser {
             .owner
             .upgrade()
             .is_some_and(|owner| owner.read(cx).focus_ring.shows(&self.focus));
+        let series = cx.entity().downgrade();
         let row_count = self.review.as_ref().map_or(0, |review| review.rows.len());
         let row_height = appearance::ui_size(68.);
         let list_height = (row_height * row_count.clamp(1, 6) as f32 + px(2.))
@@ -748,7 +749,10 @@ impl Render for SeriesBrowser {
                     let file = &this.files[index]; button(("series-file", index), file.path().to_string_lossy().into_owned(), "", this.selected_file == Some(index)).w_full().h(appearance::ui_size(30.)).on_click(cx.listener(move |this, _, window, cx| this.file(index, window, cx))).into_any_element()
                 }).collect::<Vec<_>>())).size_full().track_scroll(&self.files_scroll))))
                 .when(matches!(self.content.as_deref(), Some(Content::Text { .. })), |element| element.child(div().flex().gap_2().children(["Patch", "Before source", "After source", "Diagrams"].into_iter().enumerate().filter(|(mode,_)| *mode != 3 || matches!(self.content.as_deref(), Some(Content::Text {diagrams:Some(_),..}))).map(|(mode, label)| button(("series-text-mode", mode), label, "", self.text_mode == mode).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.prepare_editor(window, cx); cx.notify(); }))))))
-                .child(div().debug_selector(|| "series-file-preview".into()).flex_1().min_h(px(100.)).border_1().border_color(rgb(p.border)).overflow_hidden().child(frame.child(self.render_content(width, window, cx)))))
+                // Built for the box's width in the frame it is drawn
+                // (`in_frame`), so the open controls take the form that
+                // width leaves them in the first frame after a resize.
+                .child(div().debug_selector(|| "series-file-preview".into()).flex_1().min_h(px(100.)).flex().flex_col().border_1().border_color(rgb(p.border)).overflow_hidden().child(crate::in_frame::in_frame(move |bounds, window, cx| series.update(cx, |this, cx| this.render_content(bounds.size.width, window, cx)).unwrap_or_else(|_| div().into_any_element())).named("rewrite-comparison"))))
             .when(self.pending, |element| element.child(div().text_color(rgb(p.muted)).child("Reading captured local history…")))
             .when_some(self.error.as_ref(), |element, error| element.child(div().max_h(px(100.)).id("series-review-error").overflow_y_scroll().text_size(appearance::ui_text(12.)).text_color(rgb(p.warning)).child(error.clone()))))
     }
@@ -895,6 +899,83 @@ mod tests {
                 "rich-sides/body",
             ],
             &["series-file-preview", "rewrite-review-body"],
+        );
+    }
+
+    /// An inspected document's comparison takes its open controls' form
+    /// from its box's width in the frame it is drawn ([`crate::in_frame`]):
+    /// every frame drawn as the window narrows and widens between 461 and
+    /// 1,481 px at 13 and 18 pt lays the comparison out as the frame it
+    /// settles in, and the walk meets After's control labelled and as its
+    /// icon. Built from the box's width a frame before, the first frame after
+    /// a resize drew the form of the width before.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn an_inspected_comparison_takes_its_form_in_the_frame_it_is_drawn(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let document = repo.path().join("document.pdf");
+        for (text, message) in [("first", "Add a document"), ("second", "Rewrite it")] {
+            std::fs::write(&document, pdf(text)).unwrap();
+            git(repo.path(), &["add", "document.pdf"]);
+            git(repo.path(), &["commit", "--quiet", "-m", message]);
+        }
+        let head = std::fs::read_to_string(repo.path().join(".git/refs/heads/main")).unwrap();
+        let files = repo.changes_with_renames(head.trim(), 0).unwrap();
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1481.), px(980.)));
+        draw(cx);
+        let browser = cx.update(|window, cx| {
+            let repo = app
+                .read(cx)
+                .repository
+                .clone()
+                .expect("the window's repository");
+            let browser = cx.new(|cx| {
+                SeriesBrowser::new(
+                    app.downgrade(),
+                    repo,
+                    "origin".into(),
+                    "main".into(),
+                    window,
+                    cx,
+                )
+            });
+            open_series_dialog(browser.clone(), window, cx);
+            browser
+        });
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.inspecting = true;
+                browser.inspect_label = "Rewritten".into();
+                browser.files = files;
+                browser.file(0, window, cx);
+            })
+        });
+        for _ in 0..400 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            draw(cx);
+            if cx.debug_bounds("system-preview-1").is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let met = crate::system_preview::tests::open_controls_take_their_form_in_the_frame(
+            cx,
+            "the series review",
+            "rewrite-comparison",
+        );
+        assert_eq!(
+            met.into_iter().collect::<Vec<_>>(),
+            ["icon", "labelled"],
+            "the walk meets both forms"
         );
     }
 }

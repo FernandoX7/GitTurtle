@@ -529,7 +529,13 @@ impl Target {
                     this.open_captured_bytes(target.clone(), window, cx)
                 });
             });
-        button.accessibility_label(accessible_name(label, Some(self.side), &self.copy()))
+        // Tests read each frame's form where the control is drawn
+        // (`in_frame::probe`).
+        crate::in_frame::probed(button, "open-control").accessibility_label(accessible_name(
+            label,
+            Some(self.side),
+            &self.copy(),
+        ))
     }
 
     /// What its click hands over, as its accessible name ends.
@@ -909,6 +915,90 @@ pub(crate) mod tests {
                 "The desktop would open this copy as an SVG document (image/svg+xml) rather than as {kind}, so nothing was opened."
             ),
         ))
+    }
+
+    /// Walks a window showing a document's comparison in the `in_frame`
+    /// region `region` from 1,481 to 461 px wide and back, in 60 px steps,
+    /// 980 px tall, at 13 and 18 pt, and checks, `at` naming the surface,
+    /// that every frame drawn after each resize draws the open controls
+    /// (`open-control`) in the form of the frame it settles in. Returns the
+    /// forms of After's control the walk met, "labelled" or "icon". Chosen
+    /// from the region's width as last laid out, the first frame after a
+    /// resize drew the form of the width before.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn open_controls_take_their_form_in_the_frame(
+        cx: &mut gpui_kit::VisualTestContext,
+        at: &str,
+        region: &'static str,
+    ) -> std::collections::BTreeSet<&'static str> {
+        use crate::in_frame::probe;
+        use crate::views::tests::draw;
+        let icon = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, _| window.pixel_snap(appearance::ui_size(28.))) + px(1.)
+        };
+        let forms = |frame: &probe::Frame, icon: Pixels| -> Vec<&'static str> {
+            frame
+                .parts
+                .iter()
+                .filter(|(part, _)| *part == "open-control")
+                .map(|(_, bounds)| {
+                    if bounds.size.width > icon {
+                        "labelled"
+                    } else {
+                        "icon"
+                    }
+                })
+                .collect()
+        };
+        probe::watch();
+        let mut met = std::collections::BTreeSet::new();
+        for interface in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(1481.), px(980.)));
+            draw(cx);
+            let icon = icon(cx);
+            let widths = (461..=1481)
+                .rev()
+                .step_by(60)
+                .chain((461..=1481).step_by(60));
+            for width in widths {
+                let case = format!("{at} at {interface} pt, resized to {width} × 980");
+                probe::take();
+                cx.simulate_resize(size(px(width as f32), px(980.)));
+                draw(cx);
+                let frames: Vec<_> = probe::take()
+                    .into_iter()
+                    .filter(|frame| frame.region == region)
+                    .collect();
+                draw(cx);
+                let settled = probe::take()
+                    .into_iter()
+                    .rfind(|frame| frame.region == region)
+                    .unwrap_or_else(|| panic!("{case}: {region} is drawn"));
+                let settled = forms(&settled, icon);
+                assert!(
+                    !frames.is_empty(),
+                    "{case}: {region} was drawn after the resize"
+                );
+                for (index, frame) in frames.iter().enumerate() {
+                    assert_eq!(
+                        forms(frame, icon),
+                        settled,
+                        "{case}: frame {index} of {} draws the open controls as they settle, in {:?}",
+                        frames.len(),
+                        frame.bounds
+                    );
+                }
+                met.insert(
+                    *settled
+                        .last()
+                        .unwrap_or_else(|| panic!("{case}: After's open control is drawn")),
+                );
+            }
+        }
+        probe::stop();
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        met
     }
 
     /// Clicks After's open control `control` in a document's header, whose
