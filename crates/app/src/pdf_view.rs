@@ -484,21 +484,25 @@ pub(super) fn render_comparison<T: 'static>(
         // The heading's line is as tall as the scaled 28 px controls, so an
         // absent side's header aligns with its partner's.
         // The header's padding beneath and its rule end it beneath the line
-        // saying why a click opened nothing, laid out with the page
-        // (`system_preview::header_ends`).
-        let mut header = div().flex().flex_wrap().items_center().gap_2().p_2().child(div().min_h(appearance::ui_size(28.)).flex().items_center().font_weight(FontWeight::SEMIBOLD).child(heading));
+        // saying why a click opened nothing, laid out with the header and the
+        // page for the side's room, where controls taller than the room above
+        // the line scroll (`system_preview::header_ends`).
+        let mut header = div().debug_selector(move || format!("pdf-side-header-{index}")).flex().flex_wrap().items_center().gap_2().p_2().child(div().min_h(appearance::ui_size(28.)).flex().items_center().font_weight(FontWeight::SEMIBOLD).child(heading));
         let end = crate::system_preview::HeaderEnd { inset: window.rem_size() * 0.5, bottom: window.rem_size() * 0.5, right_rule: false, border: colors.border };
         let name = if index == 0 { "pdf-side-0" } else { "pdf-side-1" };
+        // The header scrolls where a narrow side cannot hold its controls,
+        // revealing the one Tab moves onto (`system_preview::header_ends`).
+        let held = crate::system_preview::SideHeader::new(name, if index == 0 { "pdf-side-0/scrollbar" } else { "pdf-side-1/scrollbar" }, cx.entity_id(), opener.showing(), window, cx);
         let mut answer = None;
         if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
             let target = opener.target(("pdf-system",index), label, bytes, &side.name, "PDF", offer);
-            header = header.child(target.control(offer.form(room, window), cx));
+            header = header.child(target.held_control(offer.form(room, window), &held, cx));
             answer = target.answered(cx);
         }
         let mut body = div().id(("pdf-scroll",index)).flex_1().min_h_0().min_w_0().overflow_scroll().p_3();
         let Some(document) = side.pdf.clone() else {
             let body = body.child(side.error.clone().unwrap_or_else(|| if side.present {"PDF preview unavailable"} else {"No file on this side"}.into()));
-            return div().flex_1().min_w_0().h_full().flex().flex_col().child(header).child(crate::system_preview::header_ends(name, vec![answer], end, body.into_any_element())).into_any_element();
+            return div().flex_1().min_w_0().h_full().flex().flex_col().child(crate::system_preview::header_ends(name, Some(crate::system_preview::OwnHeader { header: header.into_any_element(), foot: None, held }), vec![answer], end, body.into_any_element())).into_any_element();
         };
         let partner = if quick { None } else { other.pdf.clone() };
         let (page, zoom, pending, error, cached) = {
@@ -508,37 +512,48 @@ pub(super) fn render_comparison<T: 'static>(
         };
         if let Some(cached)=&cached {
             let prepared=cached.clone();
-            header=header.child(button(("pdf-read-text",index),"Read page text","file-text",false).accessibility_label(format!("{label}: read extracted text from page {}",page+1)).on_click(move|_,window,cx|read_page_text(prepared.clone(),label,page+1,window,cx)));
+            header=header.child(held.track(("pdf-read-text",index), button(("pdf-read-text",index),"Read page text","file-text",false).accessibility_label(format!("{label}: read extracted text from page {}",page+1)).on_click(move|_,window,cx|read_page_text(prepared.clone(),label,page+1,window,cx)), cx));
         }
         if error.is_some() {
             let target=document.clone();
-            header=header.child(button(("pdf-retry",index),"Retry page","refresh",false).on_click(cx.listener(move|_,_,window,cx| {let mut state=target.state.lock().unwrap_or_else(|e|e.into_inner());state.error=None;state.pending=false;state.generation=state.generation.wrapping_add(1);drop(state);window.refresh();cx.notify();})));
+            let retry = button(("pdf-retry",index),"Retry page","refresh",false).debug_selector(move || format!("pdf-retry-{index}")).on_click(cx.listener(move|_,_,window,cx| {let mut state=target.state.lock().unwrap_or_else(|e|e.into_inner());state.error=None;state.pending=false;state.generation=state.generation.wrapping_add(1);drop(state);window.refresh();cx.notify();}));
+            header=header.child(held.track(("pdf-retry",index), retry, cx));
         }
         for (previous, disabled) in [(true,page == 0),(false,page+1 >= document.count)] {
             let document = document.clone(); let partner = partner.clone();
-            header = header.child(button((if previous {"pdf-back"} else {"pdf-forward"},index), "", if previous {"chevron-left"} else {"chevron-right"}, false)
+            let id = if previous {"pdf-back"} else {"pdf-forward"};
+            let step = button((id,index), "", if previous {"chevron-left"} else {"chevron-right"}, false)
+                .debug_selector(move || format!("{id}-{index}"))
                 .accessibility_label(format!("{label}: {} page",if previous {"Previous"} else {"Next"})).disabled(disabled)
-                .on_click(cx.listener(move |_,_,window,cx| { document.select(if previous {page.saturating_sub(1)} else {page+1},partner.as_deref()); window.refresh(); cx.notify(); })));
+                .on_click(cx.listener(move |_,_,window,cx| { document.select(if previous {page.saturating_sub(1)} else {page+1},partner.as_deref()); window.refresh(); cx.notify(); }));
+            header = header.child(held.track((id,index), step, cx));
         }
         let target = document.clone(); let linked_partner = partner.clone();
-        header = header.child(button(("pdf-page-number",index), format!("Page {} / {}",page+1,document.count), "", false).accessibility_label(format!("{label}: page {} of {}. Enter page number",page+1,document.count))
-            .on_click(move |_,window,cx|page_picker(target.clone(),linked_partner.clone(),label,window,cx)));
+        let number = button(("pdf-page-number",index), format!("Page {} / {}",page+1,document.count), "", false).debug_selector(move || format!("pdf-page-number-{index}")).accessibility_label(format!("{label}: page {} of {}. Enter page number",page+1,document.count))
+            .on_click(move |_,window,cx|page_picker(target.clone(),linked_partner.clone(),label,window,cx));
+        header = header.child(held.track(("pdf-page-number",index), number, cx));
         if let Some(partner) = partner {
             let linked = document.linked.load(Ordering::Relaxed);
             let target = document.clone();
-            header = header.child(button(("pdf-link",index), if linked {"Linked pages"} else {"Independent pages"}, "", linked).toggled(linked).accessibility_label(format!("{label}: linked PDF page navigation")).on_click(cx.listener(move |_,_,window,cx| {
+            header = header.child(held.track(("pdf-link",index), button(("pdf-link",index), if linked {"Linked pages"} else {"Independent pages"}, "", linked).toggled(linked).accessibility_label(format!("{label}: linked PDF page navigation")).on_click(cx.listener(move |_,_,window,cx| {
                 target.linked.store(!linked,Ordering::Relaxed); partner.linked.store(!linked,Ordering::Relaxed);
                 if !linked { target.select(page,Some(&partner)); }
                 window.refresh(); cx.notify();
-            })));
+            })), cx));
         }
         for (action,text) in [(0i32,"Fit"),(-1,"−"),(1,"+")] {
             let target = document.clone();
-            header = header.child(button(("pdf-zoom",index*3+(action+1) as usize),text,"",false).accessibility_label(format!("{label}: {}",match action {-1=>"Zoom out",1=>"Zoom in",_=>"Fit page width"})).on_click(cx.listener(move |_,_,window,cx| {
+            let id = index*3+(action+1) as usize;
+            let zoom = button(("pdf-zoom",id),text,"",false).debug_selector(move || format!("pdf-zoom-{id}")).accessibility_label(format!("{label}: {}",match action {-1=>"Zoom out",1=>"Zoom in",_=>"Fit page width"})).on_click(cx.listener(move |_,_,window,cx| {
                 let mut state = target.state.lock().unwrap_or_else(|e|e.into_inner()); state.zoom=if action==0 {1.}else{(state.zoom * if action<0 {0.8}else{1.25}).clamp(0.25,4.)}; drop(state); window.refresh(); cx.notify();
-            })));
+            }));
+            header = header.child(held.track(("pdf-zoom",id), zoom, cx));
         }
-        header = header.child(div().id(("pdf-position-status",index)).role(Role::Status).aria_label(format!("{label}: page {} of {}, {:.0} percent zoom",page+1,document.count,zoom*100.)).polite().text_size(appearance::ui_text(10.)).child(format!("{:.0}%",zoom*100.)));
+        header = header.child(div().text_size(appearance::ui_text(10.)).child(format!("{:.0}%",zoom*100.)));
+        // The position's live region lies over the whole side, outside the
+        // header's region, which can scroll it out of view and out of reach
+        // of assistive technology while it is still being announced.
+        let status = crate::native_accessibility::recorded(div().id(SharedString::from(format!("pdf-position-status-{index}"))).absolute().inset_0().role(Role::Status).aria_label(format!("{label}: page {} of {}, {:.0} percent zoom",page+1,document.count,zoom*100.)).polite());
         if let Some(other)=&other.pdf && document.linked.load(Ordering::Relaxed) && other.count!=document.count {
             header=header.child(div().text_size(appearance::ui_text(10.)).child(format!("Different page counts: {} / {}. Each side stops at its last page.",document.count,other.count)));
         }
@@ -557,7 +572,7 @@ pub(super) fn render_comparison<T: 'static>(
         }
         let view=cx.entity().downgrade();
         // Why the last open opened nothing, as the header's last line.
-        div().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(header).child(crate::system_preview::header_ends(name, vec![answer], end, body.into_any_element()))
+        div().relative().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(crate::system_preview::header_ends(name, Some(crate::system_preview::OwnHeader { header: header.into_any_element(), foot: None, held }), vec![answer], end, body.into_any_element())).child(status)
             .on_prepaint(move |_,window,cx| { let _=view.update(cx,|_,cx|document.request(window,cx)); }).into_any_element()
     })).into_any_element()
 }

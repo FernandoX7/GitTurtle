@@ -10888,10 +10888,14 @@ pub(crate) mod tests {
     /// below its minimum. For a PDF, which Linux shows in the rich document
     /// header (as it does a Mermaid file's diagrams), and a text 3D model's
     /// header, at 13 and 18 pt in 461, 640 and 1480 px windows, the line
-    /// shows at least one whole line, inside the preview wherever the
-    /// header's own controls end inside it (a narrow model side's wrap past
-    /// its foot), the content keeps its minimum wherever the line shows more
-    /// than one, and one more line would cut into it. At 18 pt in a 461 × 490
+    /// shows at least one whole line, inside the preview at every size, the
+    /// content keeps its minimum wherever the line shows more than one, and
+    /// one more line would cut into it. The model's own header lies in the
+    /// preview above the line, and where its controls are taller than the
+    /// room the line leaves them, as at 13 and 18 pt in a 461 × 490 window
+    /// and at 18 pt in 640 × 680, it scrolls to its end and back; they once
+    /// wrapped past the preview's foot and took the line out of view, which
+    /// the test then let pass unchecked. At 18 pt in a 461 × 490
     /// window the room held no line above the minimum and the line drew
     /// none, so a failed open changed nothing on screen; before that the line
     /// took every line the clip left it, which left the page no height there,
@@ -10917,11 +10921,11 @@ pub(crate) mod tests {
         let short = "Seen as an SVG document, so not opened";
         let slack = px(0.5);
         let (mut shown_every, mut shown_fewer, mut controls_inside) = (false, false, false);
-        let mut kept_one = false;
+        let (mut kept_one, mut scrolled) = (false, false);
         crate::in_frame::probe::watch();
         // Each document: its file, its control, its line, the region its
-        // header ends in, and the controls that come before the line in its
-        // header.
+        // header ends in, and the controls that come before the line in a
+        // header of the side's own, with that header.
         let headers = [
             (
                 "document.pdf",
@@ -10936,7 +10940,7 @@ pub(crate) mod tests {
                 "model-external-1",
                 "model-external-1/note",
                 ("model-side-1", "model-side-1/body"),
-                Some("model-camera-controls-1"),
+                Some(("model-camera-controls-1", "model-side-header-1")),
                 "plain text",
             ),
         ];
@@ -10962,7 +10966,23 @@ pub(crate) mod tests {
                 draw(cx);
                 let at = format!("{path} at {text} pt in {width} × {height}");
                 let content = bounds("preview-content", cx);
-                let before = controls.map(|controls| bounds(controls, cx));
+                // A side's own header that scrolls shows the control once
+                // scrolled to it, as a wheel or Tab does.
+                if let Some(held) = cx.debug_bounds(format!("{region}/header").leak()) {
+                    let open = bounds(control, cx);
+                    if open.bottom() > held.bottom() {
+                        cx.simulate_event(gpui::ScrollWheelEvent {
+                            position: held.center(),
+                            delta: gpui::ScrollDelta::Pixels(point(
+                                px(0.),
+                                held.bottom() - open.bottom(),
+                            )),
+                            ..Default::default()
+                        });
+                        draw(cx);
+                    }
+                }
+                let before = controls.map(|(controls, _)| bounds(controls, cx));
                 queue(Err(seen_as_svg(kind)));
                 let center = bounds(control, cx).center();
                 frames_match_their_settled_frame(cx, &at, region, Some("header-note"), |cx| {
@@ -10994,30 +11014,29 @@ pub(crate) mod tests {
                     (1..=wrapped).contains(&lines),
                     "{at}: the line shows {lines} of its {wrapped} lines, and at least one"
                 );
-                // Where the header's own controls reach past the preview's
-                // foot, as a narrow side's wrapped controls do at 13 pt in a
-                // 461 × 490 window, what lies beneath them is out of view.
-                let in_view = line.top() < content.bottom() - slack;
-                if in_view {
-                    assert!(
-                        line.top() >= content.top() - slack
-                            && line.bottom() <= content.bottom() + slack
-                            && line.left() >= content.left() - slack
-                            && line.right() <= content.right() + slack,
-                        "{at}: the line {line:?} lies whole in the preview {content:?}"
-                    );
-                }
+                // Whole in the preview at every size: a narrow side's own
+                // header controls scroll above it where they are taller than
+                // the room it leaves them. They once wrapped past the
+                // preview's foot, at 13 and 18 pt in a 461 × 490 window and
+                // at 18 pt in 640 × 680, and took the line out of view.
+                assert!(
+                    line.top() >= content.top() - slack
+                        && line.bottom() <= content.bottom() + slack
+                        && line.left() >= content.left() - slack
+                        && line.right() <= content.right() + slack,
+                    "{at}: the line {line:?} lies whole in the preview {content:?}"
+                );
                 if body.size.height < minimum - slack {
                     assert_eq!(
                         lines, 1,
                         "{at}: the content {body:?} gives way below its minimum {minimum:?} only for the line's one line"
                     );
-                    kept_one |= in_view;
+                    kept_one = true;
                 }
                 // A failed open on a PDF here once changed nothing on screen.
                 if path == "document.pdf" && (text, width, height) == (18, 461., 490.) {
                     assert!(
-                        in_view && body.size.height < minimum - slack,
+                        body.size.height < minimum - slack,
                         "{at}: the line {line:?} is in view above the content {body:?}, which gives way for it"
                     );
                 }
@@ -11030,17 +11049,19 @@ pub(crate) mod tests {
                 } else {
                     shown_every = true;
                 }
-                if let (Some(controls), Some(before)) = (controls, before) {
+                if let (Some((controls, header)), Some(before)) = (controls, before) {
                     let after = bounds(controls, cx);
                     assert_eq!(after, before, "{at}: the line moves no control above it");
-                    if before.bottom() <= content.bottom() + slack {
+                    let held = format!("{region}/header").leak();
+                    if side_header_scrolls(cx, &at, held, header, line, content) {
+                        scrolled = true;
+                    } else {
                         controls_inside = true;
+                        assert!(
+                            after.bottom() <= content.bottom() + slack,
+                            "{at}: the controls {after:?} stay whole in the preview {content:?}"
+                        );
                     }
-                    assert!(
-                        before.bottom() > content.bottom() + slack
-                            || after.bottom() <= content.bottom() + slack,
-                        "{at}: the controls {after:?} stay whole in the preview {content:?}"
-                    );
                 }
                 // A resize keeps the line laid out for the room it has.
                 let taller = format!("{at}, 40 px taller");
@@ -11064,10 +11085,60 @@ pub(crate) mod tests {
             "lines shown whole, lines the room cuts short, and one line the room holds none above the content's minimum for"
         );
         assert!(
-            controls_inside,
-            "the model's controls are whole in the preview"
+            controls_inside && scrolled,
+            "the model's controls whole in the preview, and its header scrolling where they are taller than its room"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A side's own header, laid out in `region` (`<name>/header`) as
+    /// `system_preview::header_ends` lays it out, lies in the preview
+    /// `content` above its `line`, and where the header's controls (`header`)
+    /// are taller than that region, it scrolls: a wheel over it brings the
+    /// header's end to the region's foot, and another back to its top.
+    /// Whether it scrolls.
+    #[cfg(target_os = "linux")]
+    fn side_header_scrolls(
+        cx: &mut VisualTestContext,
+        at: &str,
+        region: &'static str,
+        header: &'static str,
+        line: Bounds<Pixels>,
+        content: Bounds<Pixels>,
+    ) -> bool {
+        let slack = px(0.5);
+        let held = cx
+            .debug_bounds(region)
+            .unwrap_or_else(|| panic!("{at}: {region} is drawn"));
+        assert!(
+            held.top() >= content.top() - slack && held.bottom() <= line.top() + slack,
+            "{at}: the header {held:?} lies in the preview {content:?} above the line {line:?}"
+        );
+        let start = cx.debug_bounds(header).expect("the side's header");
+        if start.size.height <= held.size.height + slack {
+            return false;
+        }
+        let wheel = |cx: &mut VisualTestContext, by: f32| {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: held.center(),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(by))),
+                ..Default::default()
+            });
+            draw(cx);
+        };
+        wheel(cx, -4000.);
+        let end = cx.debug_bounds(header).expect("the side's header");
+        assert!(
+            (end.bottom() - held.bottom()).abs() <= slack,
+            "{at}: scrolled to its end, the header {end:?} ends at its region's foot {held:?}"
+        );
+        wheel(cx, 4000.);
+        let back = cx.debug_bounds(header).expect("the side's header");
+        assert!(
+            (back.top() - held.top()).abs() <= slack,
+            "{at}: scrolled back, the header {back:?} starts at its region's top {held:?}"
+        );
+        true
     }
 
     /// The PDF page view, which a build that renders PDF pages (macOS, with
@@ -11075,9 +11146,12 @@ pub(crate) mod tests {
     /// header does (`system_preview::header_ends`): a side with its pages
     /// and a side whose document has none each say why a click on Open in
     /// default app opened nothing in the short line beneath their controls,
-    /// which shows at least one whole line, inside the preview wherever the
-    /// header's controls end inside it (a narrow After side's wrap past its
-    /// foot), above a page that keeps its scaled 96 px minimum wherever the
+    /// which shows at least one whole line, inside the preview at every size
+    /// beneath the side's header, which lies in the preview and scrolls to its
+    /// end and back where its controls are taller than the room the line
+    /// leaves them (a narrow After side's once wrapped past the preview's
+    /// foot and took the line out of view), above a page that keeps its
+    /// scaled 96 px minimum wherever the
     /// line shows more than one and gives way below it only for the one line,
     /// with one more line cutting into it where the line shows fewer than it
     /// wraps to; every frame after the answer, and after a 40 px resize, lays
@@ -11128,20 +11202,22 @@ pub(crate) mod tests {
         };
         let short = "Seen as an SVG document, so not opened";
         let slack = px(0.5);
-        let (mut shown_every, mut shown_fewer, mut kept_one) = (false, false, false);
+        let (mut shown_every, mut shown_fewer, mut scrolled) = (false, false, false);
         crate::in_frame::probe::watch();
-        for (control, note, region, body) in [
+        for (control, note, region, body, header) in [
             (
                 "pdf-system-0",
                 "pdf-system-0/note",
                 "pdf-side-0",
                 "pdf-side-0/body",
+                "pdf-side-header-0",
             ),
             (
                 "pdf-system-1",
                 "pdf-system-1/note",
                 "pdf-side-1",
                 "pdf-side-1/body",
+                "pdf-side-header-1",
             ),
         ] {
             for (text, width, height) in [
@@ -11188,26 +11264,26 @@ pub(crate) mod tests {
                     (1..=wrapped).contains(&lines),
                     "{at}: the line shows {lines} of its {wrapped} lines, and at least one"
                 );
-                // Where the header's own controls reach past the preview's
-                // foot, as a narrow side's wrapped controls do at 13 pt in a
-                // 461 × 490 window, what lies beneath them is out of view.
-                let in_view = line.top() < content.bottom() - slack;
-                if in_view {
-                    assert!(
-                        line.top() >= content.top() - slack
-                            && line.bottom() <= content.bottom() + slack
-                            && line.left() >= content.left() - slack
-                            && line.right() <= content.right() + slack,
-                        "{at}: the line {line:?} lies whole in the preview {content:?}"
-                    );
-                }
+                // Whole in the preview at every size: a narrow side's own
+                // header controls scroll above it where they are taller than
+                // the room it leaves them. They once wrapped past the
+                // preview's foot, at 13 and 18 pt in a 461 × 490 window and
+                // at 18 pt in 640 × 680, and took the line out of view.
+                assert!(
+                    line.top() >= content.top() - slack
+                        && line.bottom() <= content.bottom() + slack
+                        && line.left() >= content.left() - slack
+                        && line.right() <= content.right() + slack,
+                    "{at}: the line {line:?} lies whole in the preview {content:?}"
+                );
                 if body.size.height < minimum - slack {
                     assert_eq!(
                         lines, 1,
                         "{at}: the page {body:?} gives way below its minimum {minimum:?} only for the line's one line"
                     );
-                    kept_one |= in_view;
                 }
+                let held = format!("{region}/header").leak();
+                scrolled |= side_header_scrolls(cx, &at, held, header, line, content);
                 if lines < wrapped {
                     shown_fewer = true;
                     assert!(
@@ -11231,10 +11307,220 @@ pub(crate) mod tests {
         }
         crate::in_frame::probe::stop();
         assert!(
-            shown_every && shown_fewer && kept_one,
-            "lines shown whole, lines the room cuts short, and one line the room holds none above the content's minimum for"
+            shown_every && shown_fewer && scrolled,
+            "lines shown whole, lines the room cuts short, and a header that scrolls above its line"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A narrow document side's own header, a 3D model's and the PDF page
+    /// view's, keeps its content first and its controls reachable. At 13 pt
+    /// in a 461 × 490 window, where the header once took the side's whole
+    /// room and left the model and the page 0 px, the content keeps its
+    /// scaled 96 px minimum and the header scrolls above it with a scrollbar
+    /// painted while it overflows; the model's details, a label, gave their
+    /// room before the controls were cut, where at 18 pt they kept 48 px and
+    /// left After's open control 10 px. Tab moves through every control of
+    /// the model's and the page view's header and Shift+Tab back, each
+    /// revealed whole with its ring in the region (they were focused undrawn).
+    /// The page view's position, a polite live region, lies outside the
+    /// region that can scroll it out of reach. A header scrolled down starts
+    /// at its top again in the next showing, as a new file's does.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_narrow_side_header_keeps_its_content_and_reveals_its_controls(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::focus_reveal::tests::{assert_tab_reveals, control};
+        use crate::native_accessibility::written;
+        let obj = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let (first, second) = (pdf("first"), pdf("second"));
+        let input = file_commits(&[
+            ("first", &[("document.pdf", first.as_bytes())]),
+            (
+                "second",
+                &[("document.pdf", second.as_bytes()), ("shape.obj", obj)],
+            ),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let slack = px(0.5);
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let select = |path: &str, app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            let index = app.read_with(cx, |app, _| {
+                app.files
+                    .iter()
+                    .position(|file| file.path() == std::path::Path::new(path))
+                    .expect("the commit changes it")
+            });
+            cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+        };
+        // Whether the region `region` paints a scrollbar's thumb at its edge.
+        let cued = |region: &'static str, cx: &mut VisualTestContext| {
+            let held = bounds(region, cx);
+            let width = gpui_kit::component::scroll::Scrollbar::width();
+            let track = Bounds::new(
+                point(held.right() - width - px(4.), held.top()),
+                size(width + px(4.), held.size.height),
+            );
+            crate::tags::tests::painted_thumb(cx, track).is_some()
+        };
+        let reveal = |name: &'static str, app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| crate::system_preview::side_header(app.entity_id(), name, cx))
+                .expect("the side's header")
+        };
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+
+        // The model: its content keeps its minimum, its details give way.
+        select("shape.obj", &app, cx);
+        settle(&app, cx).await;
+        draw(cx);
+        let minimum = cx.update(|_, _| appearance::ui_size(96.));
+        let body = bounds("model-side-1/body", cx);
+        assert!(
+            body.size.height >= minimum - slack,
+            "the model {body:?} keeps its minimum {minimum:?}"
+        );
+        let held = bounds("model-side-1/header", cx);
+        assert!(
+            bounds("model-side-header-1", cx).bottom() > held.bottom() + slack,
+            "the header {held:?} scrolls"
+        );
+        assert!(cued("model-side-1/header", cx), "a scrollbar cues the rest");
+        let details = bounds("model-side-1/foot", cx);
+        assert!(
+            details.size.height < slack,
+            "the details {details:?} give way before the header's controls are cut"
+        );
+        // Tab moves through the header's controls, each revealed whole.
+        let list = reveal("model-side-1", &app, cx);
+        cx.update(|window, cx| list.focus(("model-source", 1usize), cx).focus(window, cx));
+        draw(cx);
+        // The views' menu, wider than the 88 px side, ends the walk short.
+        let mut controls = vec![control("model-external", 1)];
+        controls.extend((5..10).map(|index| control("model-camera", index)));
+        assert_tab_reveals(cx, &list, "model-side-1/header", &controls);
+        // The next showing starts at the header's top.
+        let top = bounds("model-side-1/header", cx).top();
+        assert!(
+            bounds("model-side-header-1", cx).top() < top - slack,
+            "Tab left the header scrolled"
+        );
+        app.update(cx, |app, cx| {
+            app.preview_showing = crate::system_preview::Showing::next();
+            cx.notify();
+        });
+        draw(cx);
+        assert!(
+            (bounds("model-side-header-1", cx).top() - top).abs() <= slack,
+            "the next showing's header starts at its top"
+        );
+        // At 18 pt the details still give their room first.
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        draw(cx);
+        let details = bounds("model-side-1/foot", cx);
+        assert!(
+            details.size.height < slack,
+            "at 18 pt the details {details:?} give way before the header's controls are cut"
+        );
+        // In a full window the details stay, beneath a header that fits.
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        assert!(
+            bounds("model-side-1/foot", cx).size.height > slack
+                && bounds("model-side-header-1", cx).bottom()
+                    <= bounds("model-side-1/header", cx).bottom() + slack,
+            "the details stay where the header's controls fit"
+        );
+        cx.simulate_resize(size(px(461.), px(490.)));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+
+        // The PDF page view, After given a page as a build with PDFKit has.
+        select("document.pdf", &app, cx);
+        settle(&app, cx).await;
+        app.update(cx, |app, cx| {
+            let Some(Content::Rich(preview)) = app.content.as_deref() else {
+                panic!("a changed PDF is a document comparison");
+            };
+            let bytes = preview.new.captured.clone().expect("After's bytes");
+            let mut paged =
+                crate::rich_preview::Side::prepare(bytes.to_vec(), &preview.new.name, || Ok(()))
+                    .expect("After prepares");
+            paged.pdf = Some(Arc::new(
+                crate::pdf_view::Document::new(bytes, 1, None, || Ok(())).expect("a document"),
+            ));
+            let old = preview.old.clone();
+            app.content = Some(Arc::new(Content::Rich(crate::rich_preview::Comparison {
+                old,
+                new: Arc::new(paged),
+            })));
+            cx.notify();
+        });
+        draw(cx);
+        let body = bounds("pdf-side-1/body", cx);
+        assert!(
+            body.size.height >= minimum - slack,
+            "the page {body:?} keeps its minimum {minimum:?}"
+        );
+        assert!(cued("pdf-side-1/header", cx), "a scrollbar cues the rest");
+        written::forget();
+        draw(cx);
+        assert!(
+            written::get("pdf-position-status-1").is_some()
+                && !written::lies_in("pdf-position-status-1", "pdf-side-1/header"),
+            "the position's live region lies outside the header's region"
+        );
+        // Its labelled controls are wider than the 88 px side, as the
+        // views' menu is, so the walk checks the scroll's reveal alone.
+        let list = reveal("pdf-side-1", &app, cx);
+        let start = if cx.debug_bounds("pdf-retry-1").is_some() {
+            "pdf-retry"
+        } else {
+            "pdf-system"
+        };
+        cx.update(|window, cx| list.focus((start, 1usize), cx).focus(window, cx));
+        draw(cx);
+        let mut controls = vec![control("pdf-page-number", 1)];
+        controls.extend([4, 3, 5].map(|index| control("pdf-zoom", index)));
+        let ring = appearance::BUTTON_FOCUS_RING.width + appearance::BUTTON_FOCUS_RING.gap;
+        let walk: Vec<_> = controls
+            .iter()
+            .map(|control| ("tab", control))
+            .chain(
+                controls
+                    .iter()
+                    .rev()
+                    .skip(1)
+                    .map(|control| ("shift-tab", control)),
+            )
+            .collect();
+        for (key, (id, selector)) in walk {
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert_eq!(
+                cx.update(|window, _| list.focused(window)).as_ref(),
+                Some(id),
+                "{key} focuses {selector}"
+            );
+            let (shown, held) = (
+                bounds(selector, cx).dilate(ring),
+                bounds("pdf-side-1/header", cx),
+            );
+            assert!(
+                shown.top() >= held.top() - px(0.01) && shown.bottom() <= held.bottom() + px(0.01),
+                "after {key}, {selector} and its ring {shown:?} lie in the header's region {held:?}"
+            );
+            if key == "tab" && *selector == controls.last().expect("controls").1 {
+                assert!(list.scroll().offset().y < px(0.), "Tab scrolled the header");
+            }
+        }
     }
 
     /// [`history_window`] on the repository `input` imports.

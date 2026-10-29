@@ -637,6 +637,7 @@ pub(super) fn render_comparison<T: 'static>(
         .child(div().flex().min_w_0().children(headers))
         .child(crate::system_preview::header_ends(
             "rich-sides",
+            None,
             answers,
             end,
             div()

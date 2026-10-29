@@ -353,6 +353,11 @@ impl Opener {
         self
     }
 
+    /// The showing its controls belong to.
+    pub(crate) fn showing(&self) -> Showing {
+        self.showing
+    }
+
     /// The open control `control` for the captured `bytes` of the `side`
     /// ("Before", "After", "Source") stored as `name`, which `offer` offers,
     /// on a surface that shows `what` (`quick_look_copy`). Linux never uses
@@ -586,6 +591,26 @@ impl Target {
             .into_any_element()
     }
 
+    /// [`Self::control`] in a side's own header, whose region also reveals
+    /// it ([`SideHeader::track`]): the button keeps the header's focus
+    /// handle, and where the opener's container reveals its controls too
+    /// (a narrow model or PDF page side in Stashes), the wrapper tracks the
+    /// container's handle around it, so focus on the button lies in both
+    /// and each reveals it in its own scroll.
+    pub(crate) fn held_control(&self, form: Form, held: &SideHeader, cx: &mut App) -> AnyElement {
+        let button = held.track(self.control.clone(), self.button(form, cx), cx);
+        let Some((reveal, margin)) = &self.opener.reveal else {
+            return button.into_any_element();
+        };
+        let focus = reveal.focus(self.control.clone(), cx);
+        div()
+            .flex_shrink_0()
+            .track_focus(&focus)
+            .on_children_prepainted(reveal.control(focus, *margin))
+            .child(button)
+            .into_any_element()
+    }
+
     /// What its click hands over, as its accessible name ends.
     fn copy(&self) -> String {
         #[cfg(target_os = "linux")]
@@ -708,7 +733,174 @@ pub(crate) struct HeaderEnd {
 /// 120 px floor or Compare at 18 pt in a 461 × 490 window changed nothing on
 /// screen. Tests find the line as `<control id>/note`, the body as
 /// `<name>/body` and the region's frames under `name`.
+///
+/// A side whose header is its own, a 3D model's or the PDF page view's,
+/// passes it as `side` ([`OwnHeader`]), and it is laid out above its line in
+/// the room the side has in the frame drawn, in one order, content first.
+/// The rule beneath the header always keeps its pixel, and the line its one
+/// whole line with its padding where a click answered; the content keeps its
+/// usable minimum ([`crate::image_compare::STAGE_MIN`]) wherever that leaves
+/// the header at least a control's height, and otherwise what is left beyond
+/// that height; the header takes the rest, whole where that holds its controls
+/// and otherwise in a region that tall which scrolls, cued by a scrollbar and
+/// revealing the control Tab moves onto, so its controls stay inside the
+/// preview and the line whole beneath them. A side's `foot`, the model's
+/// details, gives way before the header does. In a narrow side, at 13 and
+/// 18 pt in a 461 × 490 window and at 18 pt in 640 × 680, the controls once
+/// wrapped past the preview's foot and took the line out of view. Tests find
+/// that region as `<name>/header`.
 pub(crate) fn header_ends(
+    name: &'static str,
+    side: Option<OwnHeader>,
+    answers: Vec<Option<Answer>>,
+    end: HeaderEnd,
+    body: AnyElement,
+) -> crate::in_frame::InFrame {
+    let Some(OwnHeader { header, foot, held }) = side else {
+        return ends(name, answers, end, body);
+    };
+    let answered = answers.iter().any(Option::is_some);
+    crate::in_frame::in_frame(move |bounds, window, _| {
+        let height = bounds.size.height;
+        // The rule's pixel, and the line's one whole line with its padding
+        // where a click answered.
+        let line = crate::image_compare::text_line(appearance::ui_text(11.), window);
+        let reserve = (px(1.) + if answered { line + end.bottom } else { px(0.) }).min(height);
+        // The content keeps its minimum, and the header the rest, where
+        // that is at least a control's height; otherwise the header keeps
+        // that, so its controls stay reachable, and the content the rest.
+        let row = appearance::ui_size(28.).min(height - reserve);
+        let most =
+            (height - reserve - appearance::ui_size(crate::image_compare::STAGE_MIN)).max(row);
+        let content = height - reserve - most;
+        let cue = crate::tags::ScrollCue::new(held.reveal.scroll(), px(0.));
+        let region = div()
+            .on_children_prepainted(cue.observe(held.reveal.observe()))
+            .id(SharedString::from(format!("{name}/header")))
+            .debug_selector(move || format!("{name}/header"))
+            .max_h(most)
+            .overflow_y_scroll()
+            .track_scroll(held.reveal.scroll())
+            .child(header);
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            // A region that scrolls and clips what it holds for assistive
+            // technology, its scrollbar shown while it overflows.
+            .child(
+                cue.list(region, held.scrollbar)
+                    .flex_shrink(1.)
+                    .min_h(row.min(most)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(reserve + content)
+                    .flex()
+                    .flex_col()
+                    .child(ends(name, answers, end, body)),
+            )
+            // The foot gives way first: its share of any shortfall outweighs
+            // the header's by far.
+            .children(foot.map(|foot| {
+                div()
+                    .debug_selector(move || format!("{name}/foot"))
+                    .flex_shrink(1_000_000.)
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(foot)
+            }))
+            .into_any_element()
+    })
+}
+
+/// A side's own header for [`header_ends`]: the header, what lies beneath
+/// the side's content (the model's details), and the header's scrolling
+/// state.
+pub(crate) struct OwnHeader {
+    pub(crate) header: AnyElement,
+    pub(crate) foot: Option<AnyElement>,
+    pub(crate) held: SideHeader,
+}
+
+/// The scrolling state of a side's own header: it reveals the control Tab
+/// moves onto ([`crate::focus_reveal`]), and it is made again for each
+/// showing, so the next file's header starts at its top.
+#[derive(Clone)]
+pub(crate) struct SideHeader {
+    reveal: crate::focus_reveal::FocusReveal,
+    scrollbar: &'static str,
+}
+
+/// Each side header's state, by the view drawing it and the side's region,
+/// with the showing it was made for.
+#[derive(Default)]
+struct SideHeaders(
+    std::collections::HashMap<
+        (EntityId, &'static str),
+        (Showing, crate::focus_reveal::FocusReveal),
+    >,
+);
+impl Global for SideHeaders {}
+
+impl SideHeader {
+    /// The header of side `name` that `view` draws in `showing`, revealing
+    /// in this frame the control focus has moved onto; its scrollbar is
+    /// `scrollbar`.
+    pub(crate) fn new(
+        name: &'static str,
+        scrollbar: &'static str,
+        view: EntityId,
+        showing: Showing,
+        window: &Window,
+        cx: &mut App,
+    ) -> Self {
+        let fresh = || {
+            (
+                showing,
+                crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
+            )
+        };
+        let headers = &mut cx.default_global::<SideHeaders>().0;
+        let held = headers.entry((view, name)).or_insert_with(fresh);
+        if held.0 != showing {
+            *held = fresh();
+        }
+        let reveal = held.1.clone();
+        reveal.reveal(window, cx);
+        Self { reveal, scrollbar }
+    }
+
+    /// `button`, which Tab reveals in the header's region, its focus tracked
+    /// as `id`.
+    pub(crate) fn track(&self, id: impl Into<ElementId>, button: Button, cx: &mut App) -> Button {
+        let focus = self.reveal.focus(id, cx);
+        let report = self
+            .reveal
+            .control(focus.clone(), appearance::button_ring_room(cx));
+        gpui_kit::base::ElementExt::on_prepaint(
+            button.track_focus(&focus),
+            move |bounds, window, cx| report(vec![bounds], window, cx),
+        )
+    }
+}
+
+/// The state of the side header `name` that `view` draws, for a test.
+#[cfg(test)]
+pub(crate) fn side_header(
+    view: EntityId,
+    name: &'static str,
+    cx: &App,
+) -> Option<crate::focus_reveal::FocusReveal> {
+    cx.try_global::<SideHeaders>()
+        .and_then(|headers| headers.0.get(&(view, name)))
+        .map(|(_, reveal)| reveal.clone())
+}
+
+/// The ends [`header_ends`] draws beneath the headers' controls, with the
+/// sides' `body`, laid out for the room beneath those controls.
+fn ends(
     name: &'static str,
     answers: Vec<Option<Answer>>,
     end: HeaderEnd,

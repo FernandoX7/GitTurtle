@@ -17,9 +17,13 @@
 //! a fixed height, `size_full` or a flex share of a parent that has one. A
 //! parent whose height comes from its content gives it none, where a `flex_1`
 //! div would have grown to what it holds, and so does a parent whose other
-//! children take all of its height, as a narrow document side's wrapped
-//! header controls can; from inside, the two look alike, so nothing checks
-//! for the first.
+//! children take all of its height, as an image comparison's toolbars can in
+//! a very short window; from inside, the two look alike, so nothing checks
+//! for the first. A narrow document side's wrapped header controls once took
+//! all of their side's height too; the side's header is now laid out in the
+//! side's own frame and bounded there (`system_preview::header_ends`), so it
+//! leaves the frame beneath it at least the rule's pixel and, where a click
+//! answered, the line's one whole line.
 
 use crate::*;
 

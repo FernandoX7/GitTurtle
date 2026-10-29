@@ -176,6 +176,7 @@ pub(super) fn clip_control<T: 'static>(
     label: &'static str,
     document: &Arc<Document>,
     partner: Option<Arc<Document>>,
+    held: &crate::system_preview::SideHeader,
     cx: &mut Context<T>,
 ) -> Option<AnyElement> {
     let clips = document.scene.animation_clips();
@@ -205,36 +206,41 @@ pub(super) fn clip_control<T: 'static>(
             .items_center()
             .gap_2()
             .child(
-                button(("model-clip", index), text, "", false)
-                    .dropdown_caret(true)
-                    .accessibility_label(label_text)
-                    .app_menu(move |mut menu, _, _| {
-                        menu = menu.label(format!("{label} animation"));
-                        for (clip, name) in std::iter::once((None, "Default pose".to_owned()))
-                            .chain(target.scene.animation_clips().iter().enumerate().map(
+                held.track(
+                    ("model-clip", index),
+                    button(("model-clip", index), text, "", false)
+                        .dropdown_caret(true)
+                        .accessibility_label(label_text),
+                    cx,
+                )
+                .app_menu(move |mut menu, _, _| {
+                    menu = menu.label(format!("{label} animation"));
+                    for (clip, name) in
+                        std::iter::once((None, "Default pose".to_owned())).chain(
+                            target.scene.animation_clips().iter().enumerate().map(
                                 |(index, clip)| {
                                     (
                                         Some(index),
                                         format!("{} · {:.2} s", clip.name, clip.duration_seconds),
                                     )
                                 },
-                            ))
-                        {
-                            let target = target.clone();
-                            let partner = partner.clone();
-                            let owner = owner.clone();
-                            menu = menu.item(
-                                PopupMenuItem::new(name).checked(selected == clip).on_click(
-                                    move |_, window, cx| {
-                                        choose_clip(&target, partner.as_ref(), clip);
-                                        window.refresh();
-                                        let _ = owner.update(cx, |_, cx| cx.notify());
-                                    },
-                                ),
-                            );
-                        }
-                        menu
-                    }),
+                            ),
+                        )
+                    {
+                        let target = target.clone();
+                        let partner = partner.clone();
+                        let owner = owner.clone();
+                        menu =
+                            menu.item(PopupMenuItem::new(name).checked(selected == clip).on_click(
+                                move |_, window, cx| {
+                                    choose_clip(&target, partner.as_ref(), clip);
+                                    window.refresh();
+                                    let _ = owner.update(cx, |_, cx| cx.notify());
+                                },
+                            ));
+                    }
+                    menu
+                }),
             )
             .children(selected_duration.map(|duration| {
                 div()

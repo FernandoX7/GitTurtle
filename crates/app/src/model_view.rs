@@ -699,6 +699,25 @@ fn render_side<T: 'static>(
         side.metadata.source.is_some(),
         window,
     );
+    let name = if index == 0 {
+        "model-side-0"
+    } else {
+        "model-side-1"
+    };
+    // The header scrolls where a narrow side cannot hold its controls,
+    // revealing the one Tab moves onto (`system_preview::header_ends`).
+    let held = crate::system_preview::SideHeader::new(
+        name,
+        if index == 0 {
+            "model-side-0/scrollbar"
+        } else {
+            "model-side-1/scrollbar"
+        },
+        cx.entity_id(),
+        opener.showing(),
+        window,
+        cx,
+    );
     let mut source_actions = div().flex().flex_wrap().items_center().gap_2().child(
         div()
             .id(("model-source-label", index))
@@ -716,45 +735,40 @@ fn render_side<T: 'static>(
         // The control's id names the side; the mark adds its path.
         let mark = copy_feedback::Mark::new(("model-source", index), &side.name);
         let copy_mark = mark.clone();
-        source_actions = source_actions.child(
-            copy_feedback::copy_button(
-                mark,
-                if lfs_pointer {
-                    "Copy pointer"
-                } else {
-                    "Copy source"
-                },
-                "",
+        let copy = copy_feedback::copy_button(
+            mark,
+            if lfs_pointer {
+                "Copy pointer"
+            } else {
+                "Copy source"
+            },
+            "",
+            cx,
+        )
+        .accessibility_label(format!("Copy exact {label} {content}"))
+        .on_click(move |_, window, cx| {
+            copy_feedback::copy(
+                window,
                 cx,
+                Some(copy_mark.clone()),
+                &format!("{label} {content}"),
+                source.to_string(),
             )
-            .accessibility_label(format!("Copy exact {label} {content}"))
-            .on_click(move |_, window, cx| {
-                copy_feedback::copy(
-                    window,
-                    cx,
-                    Some(copy_mark.clone()),
-                    &format!("{label} {content}"),
-                    source.to_string(),
-                )
-            }),
-        );
+        });
+        source_actions = source_actions.child(held.track(("model-source", index), copy, cx));
     }
     // Why the last open opened nothing, as the header's last line, beneath
     // all of its controls, the camera's, the views' and the clip's among
-    // them: laid out with the model beneath, after the header's padding and
-    // rule (`system_preview::header_ends`). Inside the actions it once
-    // pushed those controls down past the preview's clip.
+    // them: laid out with the header and the model beneath for the side's
+    // room, after the header's padding and rule (`system_preview::header_ends`),
+    // where controls taller than the room above the line scroll. Inside the
+    // actions it once pushed those controls down past the preview's clip.
     let mut answer = None;
     let end = crate::system_preview::HeaderEnd {
         inset: window.rem_size() * 0.5,
         bottom: window.rem_size() * 0.25,
         right_rule: false,
         border: colors.border,
-    };
-    let name = if index == 0 {
-        "model-side-0"
-    } else {
-        "model-side-1"
     };
     if let (Some(offer), Some(bytes), false) = (side.system_preview, &side.captured, lfs_pointer) {
         let target = opener.target(
@@ -765,7 +779,8 @@ fn render_side<T: 'static>(
             "model",
             offer,
         );
-        source_actions = source_actions.child(target.control(offer.form(room, window), cx));
+        source_actions =
+            source_actions.child(target.held_control(offer.form(room, window), &held, cx));
         answer = target.answered(cx);
     }
     header = header.child(source_actions);
@@ -784,9 +799,13 @@ fn render_side<T: 'static>(
             .h_full()
             .flex()
             .flex_col()
-            .child(header)
             .child(crate::system_preview::header_ends(
                 name,
+                Some(crate::system_preview::OwnHeader {
+                    header: header.into_any_element(),
+                    foot: None,
+                    held,
+                }),
                 vec![answer],
                 end,
                 div()
@@ -853,13 +872,9 @@ fn render_side<T: 'static>(
     ] {
         let target = document.clone();
         let partner = partner.clone();
-        controls = controls.child(
-            button(
-                ("model-camera", index * 5 + id),
-                text,
-                "",
-                id == 4 && wireframe,
-            )
+        let camera = index * 5 + id;
+        let control = button(("model-camera", camera), text, "", id == 4 && wireframe)
+            .debug_selector(move || format!("model-camera-{camera}"))
             .when(id == 4, |button| button.toggled(wireframe))
             .accessibility_label(format!(
                 "{label}: {}",
@@ -874,26 +889,31 @@ fn render_side<T: 'static>(
                 target.change(partner.as_deref(), action);
                 window.refresh();
                 cx.notify();
-            })),
-        );
+            }));
+        controls = controls.child(held.track(("model-camera", camera), control, cx));
     }
     let selected_view = selected_standard_view(camera);
     let target = document.clone();
     let view_partner = partner.clone();
     let view_owner = cx.entity().downgrade();
-    let mut views = div().flex().flex_wrap().items_center().gap_1().child(
-        button(
+    let choose = held
+        .track(
             ("model-views", index),
-            selected_view.map_or("Custom view", |view| view.label()),
-            "",
-            false,
+            button(
+                ("model-views", index),
+                selected_view.map_or("Custom view", |view| view.label()),
+                "",
+                false,
+            )
+            .debug_selector(move || format!("model-views-{index}"))
+            .dropdown_caret(true)
+            .accessibility_label(format!(
+                "{label}: Standard views, {}",
+                selected_view.map_or("Custom", |view| view.label())
+            ))
+            .tooltip("Choose Isometric, Front, Back, Left, Right, Top or Bottom"),
+            cx,
         )
-        .dropdown_caret(true)
-        .accessibility_label(format!(
-            "{label}: Standard views, {}",
-            selected_view.map_or("Custom", |view| view.label())
-        ))
-        .tooltip("Choose Isometric, Front, Back, Left, Right, Top or Bottom")
         .app_menu(move |mut menu, _, _| {
             menu = menu.label(format!("{label} standard view"));
             for view in ModelStandardView::ALL {
@@ -911,32 +931,37 @@ fn render_side<T: 'static>(
                 );
             }
             menu
-        }),
-    );
+        });
+    let mut views = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_1()
+        .child(choose);
     if let Some(partner) = partner.clone() {
         let target = document.clone();
-        views = views.child(
-            button(
-                ("model-link", index),
-                if linked { "Linked" } else { "Independent" },
-                "",
-                linked,
-            )
-            .toggled(linked)
-            .accessibility_label(format!(
-                "{label}: {}",
-                if linked {
-                    "Cameras linked. Switch to independent cameras"
-                } else {
-                    "Cameras independent. Link cameras to this view"
-                }
-            ))
-            .on_click(cx.listener(move |_, _, window, cx| {
-                target.set_linked(&partner, !linked);
-                window.refresh();
-                cx.notify();
-            })),
-        );
+        let link = button(
+            ("model-link", index),
+            if linked { "Linked" } else { "Independent" },
+            "",
+            linked,
+        )
+        .debug_selector(move || format!("model-link-{index}"))
+        .toggled(linked)
+        .accessibility_label(format!(
+            "{label}: {}",
+            if linked {
+                "Cameras linked. Switch to independent cameras"
+            } else {
+                "Cameras independent. Link cameras to this view"
+            }
+        ))
+        .on_click(cx.listener(move |_, _, window, cx| {
+            target.set_linked(&partner, !linked);
+            window.refresh();
+            cx.notify();
+        }));
+        views = views.child(held.track(("model-link", index), link, cx));
     }
     let summary = format!(
         "{} triangles · view span {:.4} {}",
@@ -960,6 +985,7 @@ fn render_side<T: 'static>(
         label,
         &document,
         partner.clone(),
+        &held,
         cx,
     ));
     let first_frame = frame.is_none();
@@ -1062,42 +1088,49 @@ fn render_side<T: 'static>(
         .flex_col()
         .border_r_1()
         .border_color(rgb(colors.border))
-        .child(header)
         .child(crate::system_preview::header_ends(
             name,
+            Some(crate::system_preview::OwnHeader {
+                header: header.into_any_element(),
+                // The details, a label, give way before the header's
+                // controls do.
+                foot: Some(
+                    div()
+                        .id(("model-details", index))
+                        .debug_selector(move || format!("model-details-{index}"))
+                        .role(Role::Label)
+                        .aria_value(native_accessibility::bounded_accessible_text(format!(
+                            "{label} model details: {details}"
+                        )))
+                        .max_h(px(48.))
+                        .overflow_y_scroll()
+                        .p_2()
+                        .text_size(appearance::ui_text(10.))
+                        .text_color(rgb(colors.muted))
+                        .child(
+                            div()
+                                .id(("model-summary", index))
+                                .role(Role::Label)
+                                .aria_value(format!(
+                                    "{label}: {} · {summary}",
+                                    document.scene.appearance_label()
+                                ))
+                                .child(format!(
+                                    "{} · {} triangles · {}",
+                                    document.scene.appearance_label(),
+                                    document.scene.triangle_count(),
+                                    document.scene.units.label()
+                                )),
+                        )
+                        .child(details)
+                        .into_any_element(),
+                ),
+                held,
+            }),
             vec![answer],
             end,
             canvas,
         ))
-        .child(
-            div()
-                .id(("model-details", index))
-                .role(Role::Label)
-                .aria_value(native_accessibility::bounded_accessible_text(format!(
-                    "{label} model details: {details}"
-                )))
-                .max_h(px(48.))
-                .overflow_y_scroll()
-                .p_2()
-                .text_size(appearance::ui_text(10.))
-                .text_color(rgb(colors.muted))
-                .child(
-                    div()
-                        .id(("model-summary", index))
-                        .role(Role::Label)
-                        .aria_value(format!(
-                            "{label}: {} · {summary}",
-                            document.scene.appearance_label()
-                        ))
-                        .child(format!(
-                            "{} · {} triangles · {}",
-                            document.scene.appearance_label(),
-                            document.scene.triangle_count(),
-                            document.scene.units.label()
-                        )),
-                )
-                .child(details),
-        )
         .into_any_element()
 }
 
