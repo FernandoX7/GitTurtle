@@ -441,6 +441,56 @@ cover current upstream x86-64 Omarchy.
           needs a release History scroll measurement; History's commit list has no Shift-F10 menu
           and the trees no Menu key; "Up to date" and tracking-branch creation still use the
           window notice.
+        Found by the native reviews of 2026-10-28 night (frames `.local/item8-2026-10-27/tools/qa/{t2,f2,d2,g2,q3d,q3c,q3g,q4*,prg,prm}-{00f0add,91fb95e}/` and `{pre,prf,sp2*}-{91fb95e,7342c3e}/`; [validation entries](../validation.md#october-28-night-the-header-gives-way-by-icons-historys-search-is-named-by-its-label-and-rows-report-what-is-drawn)):
+        - Feedback: Stage all's "✓ Staged" is drawn in the disabled colour (3.19:1) while it
+          confirms on an emptied group; the new-commit cue and Latest's dot stay through Pull and
+          Push once the commit is on top, and the dot sits 1.5 px from Latest's arrow at 18 pt;
+          a quick write flashes the busy chrome for under 200 ms and, since `541d974`, the write
+          controls dim while rows are pending (delay the busy look); a still pointer ends over a
+          moved row's control with its tooltip; the list's bottom jumps 23 px for one frame; a
+          test should pin that a history notice ends no control's confirmation.
+        - Empty states: the Working filter's no-match line is missing at 18 pt in 461 px and, at
+          1,480 px, sits above the Changes header and pushes it 21 px (draw it inside the list
+          with Clear filter); the detached compact bar shows two commit glyphs and never the
+          word; the wide bar's detached picker uses a branch glyph; the compact "No remote"
+          glyph is the cloud beside Fetch's.
+        - System preview: at 18 pt in 461 × 490 the refusal band shows only "Could not / open
+          After." and at 13 pt cuts its fourth line; the image stays hidden while it shows
+          (decided: a short reason-first line, capped at two lines when a taller band would
+          take the image's 96 px minimum); its surface spans both halves while its text wraps
+          in After's; a sub-pixel image sliver and a doubled rule at its foot; the 100 px cap cuts
+          a line at 640 × 680; the inspector title breaks "Add polyglot.pn / g" at 18 pt; before
+          any click at 461 × 490 the image gets 60–83 px (the give-way of the side dimensions).
+        - Dialogs: Keyboard Shortcuts at 13 pt in 461 × 490 ends 14 px over the status bar (cap
+          dialogs at the bar's top); at 18 pt the Reflog opens with its focused filter below the
+          clip; Worktrees and Tags open with no visible focus; the Reflog's first-row ring is cut
+          at its list's clip, it lists an undrawn row (HEAD@{6}) and has no scroll cue; Worktrees
+          shows one of two rows with no cue; Quick Open's hint leaves "cancels" alone at 18 pt;
+          Tags' placeholder is cut at 18 pt; Worktrees and Tags centre their rows' labels; the
+          Midnight backdrop barely separates a dialog from History; right-click menus near the
+          status bar can still overlap it (a kit margin); Stashes' hint leaves "files." alone.
+        - GitHub panel: a reopened PR's focused Conversations pane loses its ring's top edge;
+          opening a PR in a narrow panel shows only its title; revealing a conversation slices
+          its author line; wrapping to the first stop leaves the body 6.5–10 px down; the
+          file-page bound is cut 3 px at the fold at 18 pt; the right edge moves 19 px between
+          section tabs at 13 pt; the scroll cue is 1.52:1 / 1.28:1; the fixture banner breaks
+          inside a phrase; the range hint ends a line on "·"; the status bar is reported
+          unclipped on the bus.
+        - Inspector and Compare: Changed files rows report bounds past their list; P1's ring at
+          18 pt in 1,000 × 680 is 1 px from the clip (the sweep runs only at 1,280 × 800); P1
+          ends 0.5 px above the divider; about 60 px stays blank between P1 and Changed files at
+          13 pt; Compare's ring and the selected file's accent bar read as one doubled stroke at
+          13 pt in 461 px; the File actions "…" beside the Working pane's "…"; a start-elided long
+          path keeps no directory; the status bar's timing is cut mid-number at 18 pt; History's
+          changed-files filter empties its rows before its worker answers; a saved inspector
+          width is stored unclamped; the width walk never draws the inspector narrower than its
+          saved width.
+        - Header and navigation: 183.5 px of the tab strip stays empty when both header controls
+          are icons at 18 pt in 461 px (labels could give way one at a time); the branch filter's
+          placeholder and Local/Remote/Worktrees at 18 pt (in a brief).
+        - Driver gaps (tools, not product): a tap does not move keyboard focus (P1's ring),
+          Return from History opened the commit actions menu instead of Compare, the 18 pt
+          GitHub list in 461 px, the review text and Files in the candidate's walk.
         Owner decision, 2026-10-28: Linux reaches feature parity with macOS where possible; macOS is
         checked later on a Mac. The gaps (README "Linux gaps", `docs/file-previews.md`,
         `docs/linux.md`), each a separate change with a dated research note on the dependency
