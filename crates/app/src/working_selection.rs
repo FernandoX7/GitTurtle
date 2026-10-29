@@ -1,5 +1,12 @@
 //! Stable, visible file selection; row indices are never write targets.
 use crate::*;
+
+/// Whether two repository paths name one file: every byte the same, so
+/// `sub` and `sub/`, which `Path` holds equal, as a deleted `sub` and an
+/// untracked repository at `sub/` are, name two.
+pub(crate) fn same_path(one: &Path, other: &Path) -> bool {
+    one.as_os_str() == other.as_os_str()
+}
 use gitturtle_core::{ChangeArea, RepositoryStatus, StatusEntry, WriteCommand};
 use gpui_kit::prelude::FluentBuilder;
 use std::{collections::BTreeSet, path::Path};
@@ -277,7 +284,7 @@ impl GitTurtle {
                 workspace::WorkingRow::File(index, at) if at == area => status
                     .entries
                     .get(index)
-                    .filter(|entry| entry.path == path)
+                    .filter(|entry| same_path(&entry.path, path))
                     .map(|entry| (position, entry)),
                 _ => None,
             })
@@ -313,6 +320,9 @@ impl GitTurtle {
             entry: entry.clone(),
             staged: target.staged,
         });
+        // Built from the inputs as they are now, as the rows land. A write's
+        // start or end builds a keyboard's menu again through the rebuild
+        // that follows writes and pauses (branch E), not here.
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         let busy = self.operation_busy.is_some();
         let Some(menu) = &mut self.file_menu else {
@@ -620,7 +630,7 @@ impl GitTurtle {
                         if let Some(anchor) = anchor {
                             if let Some(next_top) = this.working_rows.iter().position(|row| match row {
                                 workspace::WorkingRow::Heading(area, _) | workspace::WorkingRow::Directory(_, area) => anchor.path.is_none() && *area == anchor.area,
-                                workspace::WorkingRow::File(index, area) => *area == anchor.area && this.work_status.as_ref().and_then(|status| status.entries.get(*index)).is_some_and(|entry| Some(&entry.path) == anchor.path.as_ref()),
+                                workspace::WorkingRow::File(index, area) => *area == anchor.area && this.work_status.as_ref().and_then(|status| status.entries.get(*index)).is_some_and(|entry| anchor.path.as_deref().is_some_and(|path| same_path(&entry.path, path))),
                             }) {
                                 let height = f32::from(window.pixel_snap(px(this.settings.density.file_row_height())));
                                 this.working_scroll.0.borrow().base_handle.set_offset(anchor.reanchored_offset(next_top, height));
@@ -663,7 +673,11 @@ impl GitTurtle {
             if key.staged != staged {
                 continue;
             }
-            let Some(entry) = status.entries.iter().find(|entry| entry.path == key.path) else {
+            let Some(entry) = status
+                .entries
+                .iter()
+                .find(|entry| same_path(&entry.path, &key.path))
+            else {
                 return;
             };
             if entry.conflicted {

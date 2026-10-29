@@ -781,9 +781,10 @@ fn a_resized_window_closes_a_button_s_menu_rather_than_turn_it_over_the_button(
 
 /// A row's menu, sized for the room where it opened, leaves its row when
 /// the row moves where the menu fits neither below it nor wholly above it,
-/// or leaves the part of its list drawn: clamped to the room, it lay over
-/// the row it acts on. Moved where it still fits on either side, or never
-/// fitting since it opened, it stays.
+/// or is not drawn: clamped to the room, it lay over the row it acts on.
+/// Moved where it still fits on either side it stays, and so does a menu
+/// whose row has not moved, even fitting on neither side, until that row
+/// moves.
 #[test]
 fn a_row_menu_leaves_a_row_moved_where_it_no_longer_fits() {
     use super::{RowAnchor, leaves_its_row};
@@ -794,7 +795,7 @@ fn a_row_menu_leaves_a_row_moved_where_it_no_longer_fits() {
         below: px(top + 44.),
         trailing: None,
     };
-    let (menu, opened) = (size(px(160.), px(150.)), (row(100.), true));
+    let (menu, opened) = (size(px(160.), px(150.)), row(100.));
     assert!(
         !leaves_its_row(opened, (row(100.), true), menu, room),
         "as it opened"
@@ -818,10 +819,10 @@ fn a_row_menu_leaves_a_row_moved_where_it_no_longer_fits() {
     let tall = size(px(160.), px(280.));
     assert!(
         !leaves_its_row(opened, (row(100.), true), tall, room),
-        "never fitting"
+        "unmoved, fitting on neither side"
     );
     assert!(
-        !leaves_its_row((row(300.), false), (row(300.), false), menu, room),
-        "opened for a row the list did not draw"
+        leaves_its_row(opened, (row(101.), true), tall, room),
+        "moved, fitting on neither side"
     );
 }

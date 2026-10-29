@@ -1911,7 +1911,7 @@ impl GitTurtle {
             self.working_paths.supersede(shown);
             self.working_selected = preferred.as_ref().and_then(|(path, area)| {
                 status.entries.iter().enumerate().find_map(|(i, entry)| {
-                    if &entry.path != path {
+                    if !crate::working_selection::same_path(&entry.path, path) {
                         return None;
                     }
                     retained_area(
@@ -5152,6 +5152,19 @@ mod tests {
         }
         assert_ne!(id(b"a", unstaged), id(b"a", ChangeArea::Staged));
         assert_eq!(id(b"a\xff", unstaged), id(b"a\xff", unstaged));
+    }
+
+    /// The rows' lookups by path (a menu's row, a departure's landing, the
+    /// cursor kept through a refresh, the scroll anchor, the selection's
+    /// files) compare every byte, as the rows' IDs do: `sub` and `sub/`,
+    /// which `Path` holds equal, are two files.
+    #[test]
+    fn same_path_tells_sub_from_sub_slash() {
+        use crate::working_selection::same_path;
+        use std::path::Path;
+        assert!(!same_path(Path::new("sub"), Path::new("sub/")));
+        assert!(!same_path(Path::new("a//b"), Path::new("a/b")));
+        assert!(same_path(Path::new("sub/"), Path::new("sub/")));
     }
 
     #[test]

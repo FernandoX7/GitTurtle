@@ -209,6 +209,28 @@ impl ListRow {
         let top = bounds.top() + state.base_handle.offset().y + self.height * self.row as f32;
         top < bounds.bottom() && top + self.height > bounds.top()
     }
+
+    /// Scrolls the list the least that shows the whole row, as
+    /// `ScrollStrategy::Nearest` does, at once rather than at the list's next
+    /// layout, so a menu opened beside it is placed and sized beside the row
+    /// in view: opened for a row a wheel had scrolled away, it lay pinned to
+    /// the list's edge, beside no row.
+    fn reveal(&self) {
+        let state = self.scroll.0.borrow();
+        let bounds = state.base_handle.bounds();
+        let offset = state.base_handle.offset();
+        let top = bounds.top() + offset.y + self.height * self.row as f32;
+        let shift = if top < bounds.top() {
+            bounds.top() - top
+        } else if top + self.height > bounds.bottom() {
+            (bounds.bottom() - top - self.height).max(bounds.top() - top)
+        } else {
+            return;
+        };
+        state
+            .base_handle
+            .set_offset(point(offset.x, offset.y + shift));
+    }
 }
 
 /// A row's menu opened from the keyboard beside the row it acts on, with
@@ -233,8 +255,8 @@ pub(super) struct KeyboardMenu {
     viewport: Size<Pixels>,
     /// Where the menu's fill may lie when it opened ([`menu_bounds`]).
     room: Bounds<Pixels>,
-    /// Where its row was, and whether it was drawn, as it opened.
-    opened: (RowAnchor, bool),
+    /// Where its row was as it opened.
+    opened: RowAnchor,
     /// Its action context, and the tallest its items may be.
     focus: FocusHandle,
     cap: Pixels,
@@ -258,9 +280,12 @@ impl KeyboardMenu {
         cx: &mut Context<GitTurtle>,
     ) -> Self {
         let row = row.into();
+        if let RowPlace::Listed(listed) = &row {
+            listed.reveal();
+        }
         let room = menu_bounds(window);
-        let opened = (row.anchor(), row.drawn());
-        let cap = opened.0.cap(room);
+        let opened = row.anchor();
+        let cap = opened.cap(room);
         let menu = PopupMenu::build(window, cx, {
             let focus = focus.clone();
             move |menu, window, cx| {
@@ -298,7 +323,10 @@ impl KeyboardMenu {
 
     /// Builds the menu again in place with `build`, as it opened, its
     /// keyboard cursor on its first action: the row's file changed under it,
-    /// and its items act on what the row now shows.
+    /// and its items act on what the row now shows. A cursor the keys had
+    /// moved further returns to that first action; a right-click's menu
+    /// built again ([`PointerMenu::built_from`]) loses its highlight, as the
+    /// kit's rebuild clears it.
     pub(super) fn rebuild(
         &self,
         build: impl FnOnce(PopupMenu) -> PopupMenu + 'static,
@@ -421,8 +449,8 @@ impl KeyboardMenu {
 /// menu no longer lay beside the row it acts on.
 struct RowMenu {
     row: RowPlace,
-    /// Where the row was, and whether it was drawn, as the menu opened.
-    opened: (RowAnchor, bool),
+    /// Where the row was as the menu opened.
+    opened: RowAnchor,
     room: Bounds<Pixels>,
     menu: AnyElement,
     close: CloseMenu,
@@ -432,22 +460,24 @@ struct RowMenu {
 /// returns it, once the frame being drawn ends.
 type CloseMenu = std::rc::Rc<dyn Fn(&mut Window, &mut App)>;
 
-/// Whether a row's menu, opened beside its row at `opened` (and whether the
-/// row was drawn then), leaves it now that the row lies at `now`, drawn or
-/// not, its fill `size` tall in `room`: the row left the part of its list
-/// drawn, or moved where the fill, sized for the room where it opened, fits
-/// neither below it nor wholly above it, where [`RowMenu::origin`] would
-/// clamp it over the row. A menu that fitted neither as it opened, in a
-/// window too short for it, keeps the place it opened at.
+/// Whether a row's menu, opened beside its row at `opened`, leaves it now
+/// that the row lies at `now`, drawn or not, its fill `size` tall in
+/// `room`: the row is not drawn, being out of the part of its list shown,
+/// or it moved, by more than rounding, where the fill, sized for the room
+/// where it opened, fits neither below it nor wholly above it, where
+/// [`RowMenu::origin`] would clamp it over the row. A menu whose row has not
+/// moved stays where it opened, even fitting on neither side, as in a
+/// window too short for it; once that row moves it closes too. A keyboard's
+/// menu opens with its row in view ([`ListRow::reveal`]).
 fn leaves_its_row(
-    (opened, was_drawn): (RowAnchor, bool),
+    opened: RowAnchor,
     (now, drawn): (RowAnchor, bool),
     size: Size<Pixels>,
     room: Bounds<Pixels>,
 ) -> bool {
     let fits =
         now.below + size.height <= room.bottom() || now.top - MENU_EDGE - size.height >= room.top();
-    (was_drawn && !drawn) || (now.moved_from(opened) && !fits)
+    !drawn || (now.moved_from(opened) && !fits)
 }
 
 impl RowMenu {
@@ -990,7 +1020,12 @@ impl<E> PointerMenu<E> {
     /// frame's, so its items act on what the row now shows, as a write's
     /// start or end builds it again ([`Self::follows_writes`]). A menu kept
     /// as it opened offered to delete an untracked file that had since been
-    /// added and edited, which the delete then refused.
+    /// added and edited, which the delete then refused. Built again, the menu
+    /// highlights nothing, since the kit's `PopupMenu::rebuild` clears its
+    /// selection, where a keyboard's menu built again puts its cursor on its
+    /// first action ([`KeyboardMenu::rebuild`]).
+    // TODO(F): keep the highlighted item, by its label, across a rebuild
+    // once the vendored menu can select an item by label.
     pub(crate) fn built_from<T: PartialEq + 'static>(mut self, inputs: T) -> Self {
         self.inputs = Some(BuiltFrom {
             value: std::rc::Rc::new(inputs),
@@ -1223,7 +1258,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                         .on_action(|_: &ManageNavigation, _, _| {})
                         .child(RowMenu {
                             row: RowPlace::Pointer(pressed.place),
-                            opened: (pressed.opened, true),
+                            opened: pressed.opened,
                             room: menu_bounds(window),
                             menu: menu.into_any_element(),
                             close,

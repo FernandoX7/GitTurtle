@@ -130,7 +130,10 @@ pub(crate) fn landing(
     path: &Path,
     from: ChangeArea,
 ) -> Option<usize> {
-    let entry = status.entries.iter().position(|entry| entry.path == path)?;
+    let entry = status
+        .entries
+        .iter()
+        .position(|entry| crate::working_selection::same_path(&entry.path, path))?;
     let mut landing = None;
     for (position, row) in rows.iter().enumerate() {
         if let workspace::WorkingRow::File(index, area) = *row
@@ -258,7 +261,9 @@ impl GitTurtle {
                 area == still.area
                     && status
                         .and_then(|status| status.entries.get(index))
-                        .is_some_and(|entry| entry.path == still.path)
+                        .is_some_and(|entry| {
+                            crate::working_selection::same_path(&entry.path, &still.path)
+                        })
             }
             _ => false,
         };
@@ -1362,7 +1367,7 @@ mod tests {
                 .iter()
                 .position(|row| {
                     matches!(row, workspace::WorkingRow::File(index, at)
-                        if *at == area && status.entries[*index].path == Path::new(name))
+                        if *at == area && status.entries[*index].path.as_os_str() == std::ffi::OsStr::new(name))
                 })
                 .unwrap_or_else(|| panic!("{name} in {area:?}"))
         })
@@ -3253,6 +3258,10 @@ mod tests {
         let stage = cx
             .debug_bounds("menu-item: Stage · MenuItem")
             .unwrap_or_else(|| panic!("{opening:?}: the menu leads with Stage"));
+        // The write held, so its rows cannot land and start the flight
+        // before the departure is read: a quick one, on its own thread, once
+        // did within the click's run until parked.
+        let write = app.update(cx, |app, _| app.operations.hold());
         cx.simulate_click(stage.center(), Modifiers::default());
         let departed = app.read_with(cx, |app, _| match &app.working_travel {
             RowTravel::Departed(departure) => Some((departure.path.clone(), departure.top)),
@@ -3266,9 +3275,7 @@ mod tests {
             (top - row.top()).abs() < px(0.5),
             "{opening:?}: from gamma's row at {row:?}, not {top:?}"
         );
-        if let Some(write) = app.update(cx, |app, _| app.operation_task.take()) {
-            write.await;
-        }
+        release(&app, write, cx).await;
         crate::views::tests::settle(&app, cx).await;
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
@@ -3344,6 +3351,161 @@ mod tests {
     #[gpui::test]
     async fn a_keyboard_menu_closes_as_its_row_leaves_the_list(cx: &mut TestAppContext) {
         a_row_menu_closes_as_its_row_leaves_the_list(cx, Opening::Keyboard).await;
+    }
+
+    /// A keyboard's menu on `sub/`, an untracked repository beside `sub`, a
+    /// tracked file whose deletion is staged, stays `sub/`'s through a quiet
+    /// refresh that moves both rows, which `Path` holds equal. Git lists
+    /// the repository only once `sub` has left the index, so the two rows
+    /// are in different groups; this keeps them apart through a refresh,
+    /// and `same_path_tells_sub_from_sub_slash` the comparison itself.
+    #[gpui::test]
+    async fn a_keyboard_menu_tells_sub_from_sub_slash(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        std::fs::write(repository.join("sub"), "sub\n").unwrap();
+        fixture_git(&repository, &["add", "sub"]);
+        fixture_git(
+            &repository,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "sub",
+                "--",
+                "sub",
+            ],
+        );
+        fixture_git(&repository, &["rm", "--quiet", "sub"]);
+        fixture_git(&repository, &["init", "--quiet", "sub"]);
+        std::fs::write(repository.join("sub/inner.txt"), "inner\n").unwrap();
+        quietly_refreshed(&app, cx);
+        let (sub, slash) = (
+            position_of(&app, cx, "sub", ChangeArea::Staged),
+            position_of(&app, cx, "sub/", ChangeArea::Unstaged),
+        );
+        assert!(
+            sub < slash,
+            "sub in Staged, row {sub}, above sub/ in Unstaged, row {slash}"
+        );
+        let (row, item) = open_row_menu(&app, cx, "sub/", Opening::Keyboard);
+        assert_eq!(offered(cx, "Delete untracked file…"), Some(true));
+        delete_outside(&app, cx, "delta.txt");
+        let selector: &'static str = format!(
+            "working-row-{}",
+            position_of(&app, cx, "sub/", ChangeArea::Unstaged)
+        )
+        .leak();
+        let moved = cx.debug_bounds(selector).expect(selector);
+        assert_eq!(
+            offered(cx, "Delete untracked file…"),
+            Some(true),
+            "sub/'s menu, not sub's"
+        );
+        assert_eq!(
+            offered(cx, "Discard changes…"),
+            None,
+            "sub/'s menu, not sub's"
+        );
+        let drawn = cx.debug_bounds(IGNORE_ITEM).expect("sub/'s menu");
+        let (before, after) = (item.origin - row.origin, drawn.origin - moved.origin);
+        assert!(
+            (before.y - after.y).abs() < px(0.5),
+            "beside sub/'s row {moved:?}: {drawn:?}"
+        );
+    }
+
+    /// Shift-F10 on a cursor row that a wheel scrolled out of the list opens
+    /// its menu beside the row, scrolled back into view the least it needs.
+    /// It opened pinned to the list's edge, beside no row.
+    #[gpui::test]
+    async fn a_keyboard_menu_opens_beside_its_row_in_view(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        for n in 1..=8 {
+            std::fs::write(repository.join(format!("m{n}.txt")), "more\n").unwrap();
+        }
+        quietly_refreshed(&app, cx);
+        let delta = position_of(&app, cx, "delta.txt", ChangeArea::Unstaged);
+        let selector: &'static str = format!("working-row-{delta}").leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| list.focus(window, cx));
+        let last = app.read_with(cx, |app, _| app.working_rows.len() - 1);
+        app.update(cx, |app, _| {
+            app.working_scroll.scroll_to_item(last, ScrollStrategy::Top)
+        });
+        next_frame(cx);
+        assert!(cx.debug_bounds(selector).is_none(), "delta scrolled away");
+        cx.simulate_keystrokes("shift-f10");
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        next_frame(cx);
+        let row = cx.debug_bounds(selector).expect("delta's row in view");
+        let item = cx.debug_bounds(IGNORE_ITEM).expect("delta's menu open");
+        assert!(
+            item.top() >= row.bottom() && item.top() < row.bottom() + row.size.height,
+            "delta's menu {item:?} below its row {row:?}"
+        );
+    }
+
+    /// A right-click's menu built again for its file's new status, as after
+    /// gamma is added and edited outside the app, is built from that status
+    /// when a write starts and ends too: the write's rebuild used the
+    /// builder the menu opened with, which brought back Delete untracked
+    /// file… for a tracked file.
+    #[gpui::test]
+    async fn a_rebuilt_right_click_menu_follows_writes_with_its_new_items(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        open_row_menu(&app, cx, "gamma.txt", Opening::RightClick);
+        fixture_git(&repository, &["add", "gamma.txt"]);
+        std::fs::write(repository.join("gamma.txt"), "gamma\nedited\n").unwrap();
+        quietly_refreshed(&app, cx);
+        assert_eq!(
+            offered(cx, "Discard changes…"),
+            Some(true),
+            "rebuilt for gamma"
+        );
+        let write = held(
+            &app,
+            cx,
+            gitturtle_core::WriteCommand::Stage {
+                paths: vec![PathBuf::from("zeta.txt")],
+            },
+        );
+        next_frame(cx);
+        assert_eq!(
+            offered(cx, "Discard changes…"),
+            Some(false),
+            "unavailable while the write runs"
+        );
+        assert_eq!(
+            offered(cx, "Delete untracked file…"),
+            None,
+            "while the write runs"
+        );
+        release(&app, write, cx).await;
+        next_frame(cx);
+        assert_eq!(
+            offered(cx, "Discard changes…"),
+            Some(true),
+            "available once the write ends"
+        );
+        assert_eq!(
+            offered(cx, "Delete untracked file…"),
+            None,
+            "once the write ends"
+        );
     }
 
     /// Shift-F10 in an open right-click menu, on a History commit, a
