@@ -596,6 +596,12 @@ cover current upstream x86-64 Omarchy.
           menu's visible edge is 13.5 px inside the list (the 1 px border was measured); the
           640×430 image under the band is drawn whole, as intended; Details… as text at rest is
           DESIGN.md's rule.
+        - Later the same evening: keyboard row menus (Shift-F10, the Menu key) still read the busy
+          state once and are not rebuilt when a write starts or ends (button and right-click menus
+          now are); Create tag's "Review tag" belongs to its dialog and shows an error during a
+          write rather than looking unavailable; `vendor/gpui-component/GITTURTLE-PATCH.md` still
+          names the app's right-click menus as consumers of the popup-inset and context-menu-lifetime
+          patches, which they no longer use (update the notes or retire the patches, vendor-scoped).
         - Accessibility: at 18 pt in 461×490 the GitHub panel's offline status is reported on the
           bus with 0 height at the panel body's bottom edge (y 557 physical) rather than left out
           while it is scrolled out of view.
