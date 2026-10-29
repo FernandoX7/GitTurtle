@@ -442,7 +442,14 @@ pub(super) fn render_comparison<T: 'static>(
             );
         let mut answer = None;
         if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
-            let target = opener.target(("system-preview", index), label, bytes, &side.name, offer);
+            let target = opener.target(
+                ("system-preview", index),
+                label,
+                bytes,
+                &side.name,
+                "file",
+                offer,
+            );
             // Labelled where it fits beside the side's name and format,
             // otherwise its icon.
             let room = header_room(index, side_width, label, &side.metadata.format, window);

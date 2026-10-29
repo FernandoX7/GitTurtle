@@ -71,15 +71,44 @@ pub(crate) fn offer(_bytes: &[u8], _check: &impl Fn() -> Result<()>) -> Result<O
     Ok(None)
 }
 
+/// The open control's label on macOS, where Quick Look shows the copy.
+pub(crate) const QUICK_LOOK: &str = "System preview";
+
 impl Offer {
     /// The control's label, naming what happens on this platform.
     pub(crate) fn label(self) -> &'static str {
         if cfg!(target_os = "macos") {
-            "System preview"
+            QUICK_LOOK
         } else {
             "Open in default app"
         }
     }
+}
+
+/// The accessible name of an open control labelled `label`, in one form on
+/// every platform and surface: the visible label first, so speech input finds
+/// the control by what it shows (WCAG 2.5.3), then the `side`, which the label
+/// leaves to the heading or caption beside it, and then the read-only `copy`
+/// the click hands over. On Linux that names the type the default application
+/// receives (`Offer::copy`): "Open in default app: After, a read-only copy
+/// as a PDF document" in a document's header, "Open in default app: Before, a
+/// read-only copy as a PNG image" in an image side's caption. On macOS it
+/// names what the surface shows (`quick_look_copy`): "System preview:
+/// Source, a read-only copy of the captured image".
+pub(crate) fn accessible_name(label: &str, side: Option<&str>, copy: &str) -> String {
+    match side {
+        Some(side) => format!("{label}: {side}, {copy}"),
+        None => format!("{label}: {copy}"),
+    }
+}
+
+/// What a click hands Quick Look, for a control on a surface that shows
+/// `what` ("image", "PDF", "model", or "file" for any other document):
+/// "a read-only copy of the captured image". Linux builds it only for the
+/// tests that pin macOS's names.
+#[cfg(any(not(target_os = "linux"), test))]
+pub(crate) fn quick_look_copy(what: &str) -> String {
+    format!("a read-only copy of the captured {what}")
 }
 
 #[cfg(target_os = "linux")]
@@ -93,26 +122,17 @@ impl Offer {
         )
     }
 
-    /// The accessible name of a control labelled `label`: one form for every
-    /// open control, which starts with the visible label, so speech input
-    /// finds the control by what it shows (WCAG 2.5.3), then names the
-    /// `side`, which the label leaves to the heading beside it, and the type
-    /// the application receives: "Open in default app: After, a read-only
-    /// copy as a PDF document" in a document's header, "Open in default app:
-    /// Before, a read-only copy as a PNG image" in an image side's caption.
-    pub(crate) fn accessible_name(self, label: &str, side: Option<&str>) -> String {
-        let copy = format!("a read-only copy as {}", self.kind.description());
-        match side {
-            Some(side) => format!("{label}: {side}, {copy}"),
-            None => format!("{label}: {copy}"),
-        }
+    /// What a click hands the default application, as an open control's
+    /// [`accessible_name`] ends: "a read-only copy as a PDF document".
+    fn copy(self) -> String {
+        format!("a read-only copy as {}", self.kind.description())
     }
 
     /// The icon form's tooltip, which leads with the label it does not show
     /// and names what the application receives: "Open in default app: a
     /// read-only copy as a PDF document".
     fn icon_tooltip(self) -> String {
-        self.accessible_name(self.label(), None)
+        accessible_name(self.label(), None, &self.copy())
     }
 
     /// The sentence that tells a reader where the complete animation is.
@@ -310,21 +330,23 @@ impl Opener {
     }
 
     /// The open control `control` for the captured `bytes` of the `side`
-    /// ("Before", "After", "Source") stored as `name`, which `offer` offers.
-    /// Linux never uses `name`.
+    /// ("Before", "After", "Source") stored as `name`, which `offer` offers,
+    /// on a surface that shows `what` (`quick_look_copy`). Linux never uses
+    /// `name` or `what`: its name says the type the bytes are handed over as.
     pub(crate) fn target(
         &self,
         control: impl Into<ElementId>,
         side: &'static str,
         bytes: &Arc<[u8]>,
         name: &std::path::Path,
+        what: &'static str,
         offer: Offer,
     ) -> Target {
         // The bytes' allocation and length name what was opened, so another
         // file's control in the same place is at rest.
         let subject = (Arc::as_ptr(bytes) as *const u8 as usize, bytes.len());
         #[cfg(target_os = "linux")]
-        let _ = name;
+        let _ = (name, what);
         Target {
             opener: self.clone(),
             mark: Mark::new(control, subject),
@@ -333,6 +355,8 @@ impl Opener {
             offer,
             #[cfg(not(target_os = "linux"))]
             name: name.to_path_buf(),
+            #[cfg(not(target_os = "linux"))]
+            what,
         }
     }
 }
@@ -378,6 +402,9 @@ pub(crate) struct Target {
     offer: Offer,
     #[cfg(not(target_os = "linux"))]
     name: std::path::PathBuf,
+    /// What the surface shows, which macOS's name says Quick Look receives.
+    #[cfg(not(target_os = "linux"))]
+    what: &'static str,
 }
 
 /// The lines beneath open controls whose click opened nothing, newest last.
@@ -483,10 +510,10 @@ impl Target {
     /// icon, reading Opened in its own bounds while a click's confirmation
     /// lasts (in its tooltip as an icon). Labelled, it shows the action alone
     /// ("Open in default app"), under the heading or caption that names its
-    /// side. In either form its name leads with that label: on Linux
-    /// [`Offer::accessible_name`], which adds the side and the type the
-    /// application receives, as the tooltip names the type; macOS callers
-    /// may name it more fully.
+    /// side. In either form it is named in one form on every platform
+    /// ([`accessible_name`]): that label, the side, and what the click hands
+    /// over, the type the application receives on Linux, as the tooltip
+    /// names it, and on macOS what the surface shows.
     pub(crate) fn button(&self, form: Form, cx: &App) -> Button {
         let label = self.offer.label();
         let (shown, tooltip) = match form {
@@ -501,11 +528,19 @@ impl Target {
                     this.open_captured_bytes(target.clone(), window, cx)
                 });
             });
+        button.accessibility_label(accessible_name(label, Some(self.side), &self.copy()))
+    }
+
+    /// What its click hands over, as its accessible name ends.
+    fn copy(&self) -> String {
         #[cfg(target_os = "linux")]
-        let button = button.accessibility_label(self.offer.accessible_name(label, Some(self.side)));
+        {
+            self.offer.copy()
+        }
         #[cfg(not(target_os = "linux"))]
-        let button = button.accessibility_label(label);
-        button
+        {
+            quick_look_copy(self.what)
+        }
     }
 
     /// Why its last click in this showing opened nothing, for a caller that
@@ -816,7 +851,6 @@ fn copy_refused(error: &anyhow::Error) -> Failure {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    #[cfg(target_os = "linux")]
     use ::core::prelude::v1::test;
 
     /// Queues what the next click on an open control reports, in place of
@@ -950,6 +984,8 @@ pub(crate) mod tests {
             },
             #[cfg(not(target_os = "linux"))]
             name: "captured".into(),
+            #[cfg(not(target_os = "linux"))]
+            what: "image",
         }
     }
 
@@ -1063,6 +1099,7 @@ pub(crate) mod tests {
                 "After",
                 &png,
                 std::path::Path::new("captured"),
+                "image",
                 offer,
             )
         });
@@ -1106,6 +1143,49 @@ pub(crate) mod tests {
                 announced,
                 Some(crate::native_accessibility::written::Announced::ASSERTIVE)
             );
+        }
+    }
+
+    /// macOS names every open control in the form Linux does, label first
+    /// ([`accessible_name`]), its copy named for what the surface shows:
+    /// it once led with the side on an image's caption ("Source: open
+    /// captured image in System preview") and a PDF's header ("After: open
+    /// captured PDF in System preview"), and a model's header read "Open
+    /// captured After model in system preview", none starting with the label
+    /// the control shows; a document's header named the label alone. Linux
+    /// builds never draw these names, so this pins them; macOS's own build
+    /// draws them through [`Target::button`].
+    #[test]
+    fn macos_names_an_open_control_label_first() {
+        let name = |side, what| accessible_name(QUICK_LOOK, Some(side), &quick_look_copy(what));
+        for (side, what, expected) in [
+            (
+                "Source",
+                "image",
+                "System preview: Source, a read-only copy of the captured image",
+            ),
+            (
+                "Before",
+                "image",
+                "System preview: Before, a read-only copy of the captured image",
+            ),
+            (
+                "After",
+                "PDF",
+                "System preview: After, a read-only copy of the captured PDF",
+            ),
+            (
+                "After",
+                "model",
+                "System preview: After, a read-only copy of the captured model",
+            ),
+            (
+                "Before",
+                "file",
+                "System preview: Before, a read-only copy of the captured file",
+            ),
+        ] {
+            assert_eq!(name(side, what), expected);
         }
     }
 
@@ -1154,7 +1234,7 @@ pub(crate) mod tests {
                     let offer = offer(bytes, &|| Ok(())).unwrap().expect("offered");
                     let name = std::path::Path::new("captured");
                     opener
-                        .target(*control, side, bytes, name, offer)
+                        .target(*control, side, bytes, name, "file", offer)
                         .button(*form, cx)
                 })
                 .collect::<Vec<_>>()

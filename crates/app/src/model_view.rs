@@ -757,13 +757,15 @@ fn render_side<T: 'static>(
         "model-side-1"
     };
     if let (Some(offer), Some(bytes), false) = (side.system_preview, &side.captured, lfs_pointer) {
-        let target = opener.target(("model-external", index), label, bytes, &side.name, offer);
-        let mut control = target.button(offer.form(room, window), cx);
-        if cfg!(target_os = "macos") {
-            control = control
-                .accessibility_label(format!("Open captured {label} model in system preview"));
-        }
-        source_actions = source_actions.child(control);
+        let target = opener.target(
+            ("model-external", index),
+            label,
+            bytes,
+            &side.name,
+            "model",
+            offer,
+        );
+        source_actions = source_actions.child(target.button(offer.form(room, window), cx));
         answer = target.answered(cx);
     }
     header = header.child(source_actions);

@@ -492,10 +492,8 @@ pub(super) fn render_comparison<T: 'static>(
         let name = if index == 0 { "pdf-side-0" } else { "pdf-side-1" };
         let mut answer = None;
         if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
-            let target = opener.target(("pdf-system",index), label, bytes, &side.name, offer);
-            let control = target.button(offer.form(room, window), cx);
-            let control = if cfg!(target_os = "macos") { control.accessibility_label(format!("{label}: open captured PDF in System preview")) } else { control };
-            header = header.child(control);
+            let target = opener.target(("pdf-system",index), label, bytes, &side.name, "PDF", offer);
+            header = header.child(target.button(offer.form(room, window), cx));
             answer = target.answered(cx);
         }
         let mut body = div().id(("pdf-scroll",index)).flex_1().min_h_0().min_w_0().overflow_scroll().p_3();

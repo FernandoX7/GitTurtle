@@ -645,8 +645,14 @@ impl GitTurtle {
             {
                 let label = names[index];
                 let path = side_path.unwrap_or(std::path::Path::new("image.bin"));
-                let target =
-                    opener.target(("image-system-preview", index), label, bytes, path, offer);
+                let target = opener.target(
+                    ("image-system-preview", index),
+                    label,
+                    bytes,
+                    path,
+                    "image",
+                    offer,
+                );
                 answers[index] = target.answered(cx);
                 offers[index] = Some((target, offer));
             }
@@ -1384,18 +1390,9 @@ impl Captions<'_> {
                     .filter(|index| !self.source || *index == 1)
                     .map(|i| {
                         let (name, details) = (self.names[i], self.details[i].clone());
-                        // On Linux the control names itself; Quick Look's
-                        // takes a name with its side.
-                        let control = self.controls[i].as_ref().map(|(target, form)| {
-                            let control = target.button(*form, cx);
-                            if cfg!(target_os = "macos") {
-                                control.accessibility_label(format!(
-                                    "{name}: open captured image in System preview"
-                                ))
-                            } else {
-                                control
-                            }
-                        });
+                        let control = self.controls[i]
+                            .as_ref()
+                            .map(|(target, form)| target.button(*form, cx));
                         // Beneath the names, a side without a control keeps
                         // its line, so both sides' details stay level.
                         let keep_place = (!self.inline && offered && control.is_none())
