@@ -7620,6 +7620,183 @@ pub(crate) mod tests {
         (inline_met, beneath_met, level_met)
     }
 
+    /// At a zoom other than Fit the pan follows the zooms and never takes a
+    /// toolbar row of its own, so the captions and their open controls stay
+    /// where Fit draws them: at 18 pt in a 461 × 490 window a row of four
+    /// arrows put the captions 48 px lower, at 350 rather than 302, Before's
+    /// control under the preview's clip and Compare's footer past its foot.
+    /// Side by side at 13 and 18 pt, in 461 × 490, 461 × 980, 640 × 680 and
+    /// 1,480 × 980 windows and every 40 px from 461 to 1,461 px wide 490 px
+    /// tall, each zoom past Fit draws one form of the pan beside the zooms,
+    /// whole in the preview with its focus ring: four arrows, a Pan menu, or
+    /// the zoom menu's own items, which it is then named for ("Zoom and pan:
+    /// 100%"). The sides' names and open controls stay where Fit drew them
+    /// and the zooms keep the form Fit drew them in; at 18 pt in 461 × 490
+    /// both controls lie whole in the preview. The walk meets all three
+    /// forms, and each moves a large image as the arrow does.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn the_pan_never_takes_a_toolbar_row(cx: &mut TestAppContext) {
+        use crate::system_preview::tests::png;
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        // Large enough to pan at every zoom past Fit.
+        edit_image_sides(&app, cx, |_, side| {
+            if let Some(image) = side.image.as_mut() {
+                (image.width, image.height) = (2000, 2000);
+                (image.original_width, image.original_height) = (2000, 2000);
+            }
+        });
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let zoom = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext, zoom: f32| {
+            app.update(cx, |app, cx| {
+                app.set_image_zoom(zoom);
+                cx.notify();
+            });
+            draw(cx);
+        };
+        // Where the sides' names and open controls are drawn, and whether the
+        // zooms are labelled.
+        let place = |cx: &mut VisualTestContext| {
+            (
+                [
+                    "image-side-name-0",
+                    "image-side-name-1",
+                    "image-system-preview-0",
+                    "image-system-preview-1",
+                ]
+                .map(|selector| bounds(selector, cx)),
+                cx.debug_bounds("image-zooms").is_some(),
+            )
+        };
+        let slack = px(0.5);
+        let mut sizes = vec![(461., 490.), (461., 980.), (640., 680.), (1480., 980.)];
+        sizes.extend((461..=1461).step_by(40).map(|width| (width as f32, 490.)));
+        let mut met = std::collections::BTreeSet::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            for &(width, height) in &sizes {
+                cx.simulate_resize(size(px(width), px(height)));
+                zoom(&app, cx, 0.);
+                let at = format!("{text} pt in {width} × {height}");
+                let fit = place(cx);
+                for scale in [0.5, 1., 2.] {
+                    zoom(&app, cx, scale);
+                    let at = format!("{at} at {scale}");
+                    assert_eq!(
+                        place(cx),
+                        fit,
+                        "{at}: the names, the open controls and the zooms' form stay as Fit draws them"
+                    );
+                    let content = bounds("preview-content", cx);
+                    let zooms = cx
+                        .debug_bounds("image-zooms")
+                        .or_else(|| cx.debug_bounds("image-zoom-menu"))
+                        .expect("the zooms");
+                    let name = COMPACT_LABELS
+                        .with(|labels| labels.borrow().get("image-zoom-menu").cloned())
+                        .filter(|_| !fit.1);
+                    let in_menu = name
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with("Zoom and pan: "));
+                    let forms = [
+                        ("arrows", cx.debug_bounds("image-pan-arrows")),
+                        ("menu", cx.debug_bounds("image-pan-menu")),
+                    ];
+                    let drawn: Vec<_> = forms
+                        .iter()
+                        .filter_map(|(form, pan)| pan.map(|pan| (*form, pan)))
+                        .collect();
+                    match drawn.as_slice() {
+                        [(form, pan)] => {
+                            assert!(!in_menu, "{at}: the zoom menu {name:?} keeps only zooms");
+                            assert!(
+                                (pan.top() - zooms.top()).abs() <= slack
+                                    && pan.left() >= zooms.right() - slack,
+                                "{at}: the pan's {form} {pan:?} follow the zooms {zooms:?} on their row"
+                            );
+                            assert!(
+                                holds_with_ring(content, *pan),
+                                "{at}: the pan's {form} {pan:?} lie in the preview {content:?}"
+                            );
+                            met.insert(*form);
+                        }
+                        [] => {
+                            assert!(
+                                in_menu,
+                                "{at}: with neither arrows nor a Pan menu, the zoom menu {name:?} holds the pan"
+                            );
+                            met.insert("zoom menu");
+                        }
+                        _ => panic!("{at}: one form of the pan, not {drawn:?}"),
+                    }
+                }
+                if (text, width, height) == (18, 461., 490.) {
+                    let content = bounds("preview-content", cx);
+                    for control in &fit.0[2..] {
+                        assert!(
+                            control.bottom() <= content.bottom() + slack,
+                            "{at}: the open control {control:?} lies whole in the preview {content:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            met,
+            ["arrows", "menu", "zoom menu"].into_iter().collect(),
+            "the walk meets every form of the pan"
+        );
+
+        // Each form moves the images as its arrow does: Pan right, the
+        // second direction, shows more of the right.
+        let moved = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.image_pan())
+        };
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        zoom(&app, cx, 1.);
+        let arrow = bounds("pan-right", cx);
+        cx.simulate_click(arrow.center(), Modifiers::default());
+        draw(cx);
+        assert_eq!(moved(&app, cx), [-80., 0.], "the arrow pans right");
+        for (text, width, menu, presses) in [
+            (18, 461., "image-pan-menu", "down down enter"),
+            (
+                13,
+                501.,
+                "image-zoom-menu",
+                "down down down down down down enter",
+            ),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(490.)));
+            zoom(&app, cx, 1.);
+            let control = bounds(menu, cx);
+            cx.simulate_click(control.center(), Modifiers::default());
+            draw(cx);
+            cx.simulate_keystrokes(presses);
+            draw(cx);
+            assert_eq!(
+                moved(&app, cx),
+                [-80., 0.],
+                "{text} pt in {width} × 490: {menu}'s Pan right pans right"
+            );
+            assert_eq!(app.read_with(cx, |app, _| app.zoom), 1., "the zoom stays");
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The line saying why a click on an image side's Open in default app
     /// opened nothing takes its own room beneath its side's caption, in the
     /// column's flow: laid over the image, a refusal in a 461 × 490 window,
