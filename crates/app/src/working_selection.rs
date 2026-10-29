@@ -1,6 +1,6 @@
 //! Stable, visible file selection; row indices are never write targets.
 use crate::*;
-use gitturtle_core::{ChangeArea, RepositoryStatus, WriteCommand};
+use gitturtle_core::{ChangeArea, RepositoryStatus, StatusEntry, WriteCommand};
 use gpui_kit::prelude::FluentBuilder;
 use std::{collections::BTreeSet, path::Path};
 
@@ -253,37 +253,82 @@ impl GitTurtle {
         }
     }
 
-    /// Where `path`'s row in `area` stands among the actionable rows. A row
-    /// menu acts on its file by path and finds the row's place when it
-    /// acts, since rows coming or going before it move that place.
-    pub(super) fn working_row_position(&self, path: &Path, area: ChangeArea) -> Option<usize> {
+    /// The element ID of the shown rows' row of the `index`th file in
+    /// `area`, made once per row of the status they show
+    /// (`workspace::WorkingRowIds`).
+    pub(super) fn working_row_key(&self, index: usize, area: ChangeArea) -> ElementId {
+        let status = match &self.working_paths.retained {
+            Some((status, _)) => status,
+            None => self.work_status.as_ref().expect("the status the rows show"),
+        };
+        self.working_row_ids.borrow_mut().get(status, index, area)
+    }
+
+    /// Where `path`'s row in `area` stands among the actionable rows, with
+    /// the file as it now stands there. A row menu acts on its file by path
+    /// and finds the row's place when it acts, since rows coming or going
+    /// before it move that place.
+    fn working_row_entry(&self, path: &Path, area: ChangeArea) -> Option<(usize, &StatusEntry)> {
         let status = self.work_status.as_ref()?;
-        self.actionable_working_rows().iter().position(|row| {
-            matches!(row, workspace::WorkingRow::File(index, at)
-                if *at == area
-                    && status.entries.get(*index).is_some_and(|entry| entry.path == path))
-        })
+        self.actionable_working_rows()
+            .iter()
+            .enumerate()
+            .find_map(|(position, row)| match *row {
+                workspace::WorkingRow::File(index, at) if at == area => status
+                    .entries
+                    .get(index)
+                    .filter(|entry| entry.path == path)
+                    .map(|entry| (position, entry)),
+                _ => None,
+            })
+    }
+
+    /// Where `path`'s row in `area` stands among the actionable rows.
+    pub(super) fn working_row_position(&self, path: &Path, area: ChangeArea) -> Option<usize> {
+        self.working_row_entry(path, area)
+            .map(|(position, _)| position)
     }
 
     /// Keeps the file list's keyboard menu, while it is a Working Changes
     /// row's (`file_menu_row`), with that row as installed rows move it:
-    /// drawn beside the row where it now stands, or, where the row went, as
-    /// a refresh after its file was committed, staged away, reverted or
+    /// drawn beside the row where it now stands, and built again, its
+    /// keyboard cursor on its first action, where the file's status changed,
+    /// so its items act on what the row now shows; or, where the row went,
+    /// as a refresh after its file was committed, staged away, reverted or
     /// deleted outside the app takes it, closed, focus returning to the
     /// list. Kept by the row's place, the menu stayed there, beside
     /// whichever row moved into it, and its items still acted on the file
-    /// that left.
+    /// that left; kept as it opened, it offered to delete an untracked file
+    /// that had since been added, which the delete refused.
     pub(super) fn follow_working_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((path, area)) = &self.file_menu_row else {
+        let Some((target, stage_control)) = &self.file_menu_row else {
             return;
         };
-        match self.working_row_position(path, *area) {
-            Some(row) => {
-                if let Some(menu) = &mut self.file_menu {
-                    menu.follow_row(row);
-                }
-            }
-            None => self.dismiss_file_menu(window, cx),
+        let stage_control = *stage_control;
+        let Some((row, entry)) = self.working_row_entry(&target.entry.path, target.area()) else {
+            self.dismiss_file_menu(window, cx);
+            return;
+        };
+        let changed = (*entry != target.entry).then(|| workspace::MenuRow {
+            entry: entry.clone(),
+            staged: target.staged,
+        });
+        let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
+        let busy = self.operation_busy.is_some();
+        let Some(menu) = &mut self.file_menu else {
+            return;
+        };
+        menu.follow_row(row);
+        if let Some(target) = changed {
+            let built = target.clone();
+            menu.rebuild(
+                move |menu| {
+                    workspace::working_row_menu(menu, owner, repository, built, stage_control, busy)
+                },
+                window,
+                cx,
+            );
+            self.file_menu_row = Some((target, stage_control));
         }
     }
 

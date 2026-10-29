@@ -3905,7 +3905,8 @@ impl GitTurtle {
                 let entry = &self.shown_working_status().unwrap().entries[index];
                 let paths = entry.paths();
                 let row_path = entry.path.clone();
-                let ignore_entry = entry.clone();
+                let ignore_entry = std::rc::Rc::new(entry.clone());
+                let menu_entry = ignore_entry.clone();
                 let ignore_owner = cx.entity().downgrade();
                 let ignore_repository = self.path.clone();
                 let name = entry
@@ -3956,7 +3957,7 @@ impl GitTurtle {
                     format!("{path_detail} · {status_label}")
                 };
                 div()
-                    .id(working_row_id(&entry.path, area))
+                    .id(self.working_row_key(index, area))
                     .role(Role::ListBoxOption)
                     .aria_label(format!(
                         "{} · {} · {}",
@@ -4140,13 +4141,16 @@ impl GitTurtle {
                             ignore_owner.clone(),
                             ignore_repository.clone(),
                             MenuRow {
-                                entry: ignore_entry.clone(),
+                                entry: (*ignore_entry).clone(),
                                 staged,
                             },
                             forms.file_action,
                             busy,
                         )
                     })
+                    // A file whose status changes under its open menu, as
+                    // one added outside the app, builds the menu again.
+                    .built_from(menu_entry)
                     .follows_writes(cx.entity().downgrade())
                     .into_any_element()
             }
@@ -4194,28 +4198,20 @@ impl GitTurtle {
         );
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         let busy = self.operation_busy.is_some();
-        let path = entry.path.clone();
+        let target = MenuRow {
+            entry,
+            staged: area == ChangeArea::Staged,
+        };
+        let built = target.clone();
         self.file_menu = Some(native_accessibility::KeyboardMenu::open(
             anchor,
             self.file_focus.clone(),
-            move |menu| {
-                working_row_menu(
-                    menu,
-                    owner,
-                    repository,
-                    MenuRow {
-                        entry,
-                        staged: area == ChangeArea::Staged,
-                    },
-                    stage_control,
-                    busy,
-                )
-            },
+            move |menu| working_row_menu(menu, owner, repository, built, stage_control, busy),
             Self::dismiss_file_menu,
             window,
             cx,
         ));
-        self.file_menu_row = Some((path, area));
+        self.file_menu_row = Some((target, stage_control));
         cx.notify();
     }
 
@@ -4655,27 +4651,80 @@ fn sync_summary(status: &gitturtle_core::RepositoryStatus) -> String {
 /// as `px_3` at the root rem the app sets, the interface text's 13 px.
 /// The file row a Working Changes menu acts on: its status entry and whether
 /// it is the staged row.
-struct MenuRow {
-    entry: StatusEntry,
-    staged: bool,
+#[derive(Clone)]
+pub(super) struct MenuRow {
+    pub(super) entry: StatusEntry,
+    pub(super) staged: bool,
 }
 
-/// A Working Changes file row's element ID: its path, byte for byte, in its
-/// group. The state GPUI keeps for the row, its open right-click menu among
-/// it, stays with the file as rows come or go around it, and goes with the
-/// row when the file leaves the list. Keyed by the file's index in the
-/// status, a menu open on a row passed to the next row when a refresh took
-/// an earlier file away, its items still acting on the file it was opened
-/// on.
-fn working_row_id(path: &std::path::Path, area: ChangeArea) -> ElementId {
-    ElementId::NamedChild(
-        Arc::new(ElementId::Path(Arc::from(path))),
-        match area {
-            ChangeArea::Staged => "staged-file",
-            ChangeArea::Unstaged => "unstaged-file",
+impl MenuRow {
+    pub(super) fn area(&self) -> ChangeArea {
+        if self.staged {
+            ChangeArea::Staged
+        } else {
+            ChangeArea::Unstaged
         }
-        .into(),
-    )
+    }
+}
+
+/// A Working Changes file row's element ID: its group and its path's bytes,
+/// all of them, so `sub` and `sub/`, which `Path` holds equal, are two rows,
+/// and a name that is not UTF-8 keeps every byte. The state GPUI keeps for
+/// the row, its open right-click menu among it, stays with the file as rows
+/// come or go around it, and goes with the row when the file leaves the
+/// list. Keyed by the file's index in the status, a menu open on a row
+/// passed to the next row when a refresh took an earlier file away, its
+/// items still acting on the file it was opened on. The bytes are written
+/// as text one way only: valid UTF-8 as itself with each backslash doubled,
+/// and any other byte as `\xNN`.
+pub(super) fn working_row_id(path: &std::path::Path, area: ChangeArea) -> ElementId {
+    use std::fmt::Write as _;
+    let mut id = String::from(match area {
+        ChangeArea::Staged => "staged-file:",
+        ChangeArea::Unstaged => "unstaged-file:",
+    });
+    for chunk in path.as_os_str().as_encoded_bytes().utf8_chunks() {
+        for c in chunk.valid().chars() {
+            if c == '\\' {
+                id.push('\\');
+            }
+            id.push(c);
+        }
+        for byte in chunk.invalid() {
+            let _ = write!(id, "\\x{byte:02x}");
+        }
+    }
+    ElementId::Name(id.into())
+}
+
+/// The element IDs of the rows of one status's files, made as the list
+/// first draws each row and reused in every frame after, a clone of a
+/// shared string, until the rows show another status
+/// (`GitTurtle::working_row_key`). The status is held weakly, which keeps
+/// its allocation, so another status never takes its address.
+#[derive(Default)]
+pub(super) struct WorkingRowIds {
+    status: std::sync::Weak<gitturtle_core::RepositoryStatus>,
+    ids: HashMap<(usize, bool), ElementId>,
+}
+
+impl WorkingRowIds {
+    /// The ID of the row of `status`'s `index`th file in `area`.
+    pub(super) fn get(
+        &mut self,
+        status: &Arc<gitturtle_core::RepositoryStatus>,
+        index: usize,
+        area: ChangeArea,
+    ) -> ElementId {
+        if !std::ptr::eq(self.status.as_ptr(), Arc::as_ptr(status)) {
+            self.status = Arc::downgrade(status);
+            self.ids.clear();
+        }
+        self.ids
+            .entry((index, area == ChangeArea::Staged))
+            .or_insert_with(|| working_row_id(&status.entries[index].path, area))
+            .clone()
+    }
 }
 
 /// A Working Changes file row's menu, which a right-click on the row and
@@ -4685,7 +4734,7 @@ fn working_row_id(path: &std::path::Path, area: ChangeArea) -> ElementId {
 /// on its file by path: a Stage or Unstage departs from where the file's row
 /// stands when it acts, which rows coming or going before it may have moved
 /// since the menu opened.
-fn working_row_menu(
+pub(super) fn working_row_menu(
     menu: PopupMenu,
     owner: WeakEntity<GitTurtle>,
     repository: Option<PathBuf>,
@@ -5005,7 +5054,9 @@ mod confirmation_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{commit_composer_height, display_remote_url, remote_defaults, retained_area};
+    use super::{
+        commit_composer_height, display_remote_url, remote_defaults, retained_area, working_row_id,
+    };
     use core::prelude::v1::test;
     use gitturtle_core::ChangeArea;
 
@@ -5069,6 +5120,38 @@ mod tests {
             remote_defaults(&status, &remotes),
             ("team/upstream".into(), "different-name".into())
         );
+    }
+
+    /// A file row's ID keeps every byte of its path: `sub` deleted and an
+    /// untracked repository at `sub/` are two Unstaged rows, which `Path`,
+    /// equal for both, gave one ID; a name that is not UTF-8 keeps its
+    /// bytes; and a backslash in a name is never read as an escape.
+    #[test]
+    #[cfg(unix)]
+    fn working_row_ids_keep_every_byte_of_the_path() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let id = |path: &[u8], area| {
+            working_row_id(
+                std::path::Path::new(std::ffi::OsStr::from_bytes(path)),
+                area,
+            )
+        };
+        let unstaged = ChangeArea::Unstaged;
+        for (one, other) in [
+            (&b"sub"[..], &b"sub/"[..]),
+            (b"a\xff", b"a\xfe"),
+            (b"a\xff", b"a\\xff"),
+            (b"a//b", b"a/b"),
+            (b"./a", b"a"),
+        ] {
+            assert_ne!(
+                id(one, unstaged),
+                id(other, unstaged),
+                "{one:?} and {other:?}"
+            );
+        }
+        assert_ne!(id(b"a", unstaged), id(b"a", ChangeArea::Staged));
+        assert_eq!(id(b"a\xff", unstaged), id(b"a\xff", unstaged));
     }
 
     #[test]

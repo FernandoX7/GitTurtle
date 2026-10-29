@@ -3177,6 +3177,175 @@ mod tests {
         a_row_menu_closes_with_its_row(cx, Opening::Keyboard).await;
     }
 
+    /// A working row's menu, opened as `opening` opens it on an untracked
+    /// file, is built again when the file is added and edited outside the
+    /// app: its row stays, and its items act on the file as it now is,
+    /// Ignore… unavailable for a tracked file and Discard changes… in place
+    /// of Delete untracked file…. Built as it opened, it still offered to
+    /// ignore the file and to delete it, which the delete then refused.
+    async fn a_row_menu_follows_its_files_status(cx: &mut TestAppContext, opening: Opening) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        open_row_menu(&app, cx, "gamma.txt", opening);
+        assert_eq!(
+            offered(cx, "Delete untracked file…"),
+            Some(true),
+            "{opening:?}"
+        );
+        fixture_git(&repository, &["add", "gamma.txt"]);
+        std::fs::write(repository.join("gamma.txt"), "gamma\nedited\n").unwrap();
+        quietly_refreshed(&app, cx);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            offered(cx, "Discard changes…"),
+            Some(true),
+            "{opening:?}: gamma's menu offers to discard its edit"
+        );
+        assert_eq!(offered(cx, "Delete untracked file…"), None, "{opening:?}");
+        assert!(
+            cx.debug_bounds("menu-item: Ignore…, untracked files only · MenuItem disabled")
+                .is_some(),
+            "{opening:?}: Ignore… is unavailable for a tracked file"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menu_follows_its_files_status(cx: &mut TestAppContext) {
+        a_row_menu_follows_its_files_status(cx, Opening::RightClick).await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_menu_follows_its_files_status(cx: &mut TestAppContext) {
+        a_row_menu_follows_its_files_status(cx, Opening::Keyboard).await;
+    }
+
+    /// A working row's menu, opened as `opening` opens it at 18 pt in a
+    /// 461 px window, where the row has no room for its Stage control and
+    /// the menu leads with Stage: after a quiet refresh takes an earlier
+    /// row away, its Stage departs from gamma's row where it now stands.
+    /// Holding the row's place from when it opened, it departed from zeta's.
+    async fn a_row_menus_stage_departs_from_its_row(cx: &mut TestAppContext, opening: Opening) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(1300.)));
+        draw(cx);
+        // gamma in view and selected, which the refresh keeps in view.
+        let gamma = position_of(&app, cx, "gamma.txt", ChangeArea::Unstaged);
+        app.update(cx, |app, _| {
+            app.working_scroll
+                .scroll_to_item(gamma, ScrollStrategy::Center)
+        });
+        next_frame(cx);
+        let row = cx
+            .debug_bounds(format!("working-row-{gamma}").leak())
+            .expect("gamma's row in view");
+        cx.simulate_click(row.center(), Modifiers::default());
+        next_frame(cx);
+        open_row_menu(&app, cx, "gamma.txt", opening);
+        delete_outside(&app, cx, "delta.txt");
+        let selector: &'static str = format!(
+            "working-row-{}",
+            position_of(&app, cx, "gamma.txt", ChangeArea::Unstaged)
+        )
+        .leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        let stage = cx
+            .debug_bounds("menu-item: Stage · MenuItem")
+            .unwrap_or_else(|| panic!("{opening:?}: the menu leads with Stage"));
+        cx.simulate_click(stage.center(), Modifiers::default());
+        let departed = app.read_with(cx, |app, _| match &app.working_travel {
+            RowTravel::Departed(departure) => Some((departure.path.clone(), departure.top)),
+            _ => None,
+        });
+        let Some((path, top)) = departed else {
+            panic!("{opening:?}: gamma's row departed");
+        };
+        assert_eq!(path, Path::new("gamma.txt"), "{opening:?}");
+        assert!(
+            (top - row.top()).abs() < px(0.5),
+            "{opening:?}: from gamma's row at {row:?}, not {top:?}"
+        );
+        if let Some(write) = app.update(cx, |app, _| app.operation_task.take()) {
+            write.await;
+        }
+        crate::views::tests::settle(&app, cx).await;
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menus_stage_departs_from_its_row(cx: &mut TestAppContext) {
+        a_row_menus_stage_departs_from_its_row(cx, Opening::RightClick).await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_menus_stage_departs_from_its_row(cx: &mut TestAppContext) {
+        a_row_menus_stage_departs_from_its_row(cx, Opening::Keyboard).await;
+    }
+
+    /// A working row's menu, opened as `opening` opens it, closes when its
+    /// row leaves the part of the list drawn, as when the list scrolls past
+    /// it, and focus returns to the list. A right-click's menu went with its
+    /// row, no longer drawn, while a keyboard's stayed, pinned to the
+    /// list's edge. (A refresh keeps the cursor row, a keyboard menu's row,
+    /// in view, so files arriving above it scroll the list rather than
+    /// push the row out.)
+    async fn a_row_menu_closes_as_its_row_leaves_the_list(
+        cx: &mut TestAppContext,
+        opening: Opening,
+    ) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, _| list.is_focused(window));
+        // Eight more files after gamma, so that the list scrolls.
+        for n in 1..=8 {
+            std::fs::write(repository.join(format!("m{n}.txt")), "more\n").unwrap();
+        }
+        quietly_refreshed(&app, cx);
+        open_row_menu(&app, cx, "delta.txt", opening);
+        let last = app.read_with(cx, |app, _| app.working_rows.len() - 1);
+        app.update(cx, |app, _| {
+            app.working_scroll.scroll_to_item(last, ScrollStrategy::Top)
+        });
+        next_frame(cx);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        let delta: &'static str = format!(
+            "working-row-{}",
+            position_of(&app, cx, "delta.txt", ChangeArea::Unstaged)
+        )
+        .leak();
+        assert!(
+            cx.debug_bounds(delta).is_none(),
+            "{opening:?}: delta's row left the part of the list drawn"
+        );
+        assert_eq!(
+            offered(cx, "Ignore…"),
+            None,
+            "{opening:?}: delta's menu closed"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.file_menu.is_none()),
+            "{opening:?}: no keyboard's menu is open"
+        );
+        assert!(focused(cx), "{opening:?}: focus is back on the list");
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menu_closes_as_its_row_leaves_the_list(cx: &mut TestAppContext) {
+        a_row_menu_closes_as_its_row_leaves_the_list(cx, Opening::RightClick).await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_menu_closes_as_its_row_leaves_the_list(cx: &mut TestAppContext) {
+        a_row_menu_closes_as_its_row_leaves_the_list(cx, Opening::Keyboard).await;
+    }
+
     /// Shift-F10 in an open right-click menu, on a History commit, a
     /// navigator branch or a working row, opens no keyboard's menu beside
     /// it: one menu is open at a time, and the right-click menu, the row's

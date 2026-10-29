@@ -778,3 +778,50 @@ fn a_resized_window_closes_a_button_s_menu_rather_than_turn_it_over_the_button(
         "opened again at 700 px the menu {surface:?} takes the room below its button {button:?}"
     );
 }
+
+/// A row's menu, sized for the room where it opened, leaves its row when
+/// the row moves where the menu fits neither below it nor wholly above it,
+/// or leaves the part of its list drawn: clamped to the room, it lay over
+/// the row it acts on. Moved where it still fits on either side, or never
+/// fitting since it opened, it stays.
+#[test]
+fn a_row_menu_leaves_a_row_moved_where_it_no_longer_fits() {
+    use super::{RowAnchor, leaves_its_row};
+    let room = Bounds::from_corners(point(px(0.), px(9.)), point(px(400.), px(300.)));
+    let row = |top: f32| RowAnchor {
+        x: px(10.),
+        top: px(top),
+        below: px(top + 44.),
+        trailing: None,
+    };
+    let (menu, opened) = (size(px(160.), px(150.)), (row(100.), true));
+    assert!(
+        !leaves_its_row(opened, (row(100.), true), menu, room),
+        "as it opened"
+    );
+    assert!(
+        !leaves_its_row(opened, (row(56.), true), menu, room),
+        "a row up"
+    );
+    assert!(
+        leaves_its_row(opened, (row(144.), true), menu, room),
+        "a row down, room for it neither below nor above"
+    );
+    assert!(
+        !leaves_its_row(opened, (row(250.), true), menu, room),
+        "above it"
+    );
+    assert!(
+        leaves_its_row(opened, (row(100.), false), menu, room),
+        "no longer drawn"
+    );
+    let tall = size(px(160.), px(280.));
+    assert!(
+        !leaves_its_row(opened, (row(100.), true), tall, room),
+        "never fitting"
+    );
+    assert!(
+        !leaves_its_row((row(300.), false), (row(300.), false), menu, room),
+        "opened for a row the list did not draw"
+    );
+}
