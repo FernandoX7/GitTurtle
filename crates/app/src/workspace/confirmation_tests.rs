@@ -363,16 +363,51 @@ async fn with_remote(
     (fixture, app, cx)
 }
 
+/// Adds a commit to [`with_remote`]'s `origin` from a clone of its own, so
+/// the next Fetch and Pull have something new to bring.
+fn advance_remote(fixture: &Path) {
+    let remote = fixture.join("remote.git");
+    let upstream = fixture.join("upstream");
+    fixture_git(
+        fixture,
+        &[
+            "clone",
+            "--quiet",
+            remote.to_str().unwrap(),
+            upstream.to_str().unwrap(),
+        ],
+    );
+    fixture_git(
+        &upstream,
+        &[
+            "-c",
+            "user.name=Upstream",
+            "-c",
+            "user.email=upstream@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "Upstream work",
+        ],
+    );
+    fixture_git(&upstream, &["push", "--quiet", "origin", "main"]);
+}
+
 /// Fetch, Pull and Push each read their past tense where they were clicked
 /// once Git reports success: the word alone, from where the icon starts and
 /// inside the content's own width, so their bounds, which decide where the
 /// bar wraps, are those they had before they confirmed anything (an icon, a
 /// gap and the label at the medium kit Button's insets). Each is announced
 /// once ("Fetched origin"), recorded in the status line and kept out of the
-/// window-wide notice, and reverts after 1.5 s.
+/// window-wide notice, and reverts after 1.5 s. The remote has a new commit,
+/// which the Fetch brings and the Pull fast-forwards to.
 #[gpui::test]
 async fn fetch_pull_and_push_confirm_on_their_buttons(cx: &mut TestAppContext) {
-    let (_fixture, app, cx) = with_remote(cx).await;
+    let (fixture, app, cx) = with_remote(cx).await;
+    advance_remote(fixture.path());
     for (id, state, word, outcome) in [
         ("fetch", "fetched", "Fetched", "Fetched origin"),
         ("pull", "pulled", "Pulled", "Pulled origin/main"),
@@ -425,6 +460,46 @@ async fn fetch_pull_and_push_confirm_on_their_buttons(cx: &mut TestAppContext) {
     }
 }
 
+/// A Fetch or Pull that brings nothing new still reads Fetched or Pulled in
+/// its own bounds, the word within its content's width, while the
+/// announcement and the status line say what Git found: "Up to date with
+/// origin · nothing new" for the Fetch, which compared the whole remote, and
+/// "Up to date with origin/main · nothing new" for the Pull of `main`. The
+/// window-wide notice stays down. Before this, both said "Fetched origin" or
+/// "Pulled origin/main" whether or not anything arrived.
+#[gpui::test]
+async fn an_up_to_date_fetch_or_pull_says_nothing_new(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = with_remote(cx).await;
+    for (id, state, outcome) in [
+        ("fetch", "fetched", "Up to date with origin · nothing new"),
+        (
+            "pull",
+            "pulled",
+            "Up to date with origin/main · nothing new",
+        ),
+    ] {
+        let rest = bounds(cx, id);
+        let content = bounds(cx, &format!("{id}/rest"));
+        click(cx, id);
+        finish(&app, cx, id, |cx| confirms(cx, id, state) == Some(true));
+        assert_eq!(bounds(cx, id), rest, "{id} keeps its bounds");
+        let done = bounds(cx, &format!("{id}/{state}/text"));
+        assert!(
+            done.left() >= content.left() && done.right() <= content.right(),
+            "{id}'s word {done:?} in its content {content:?}"
+        );
+        assert_eq!(announced(cx).unwrap().1, outcome);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.status_line(), outcome);
+            assert_eq!(app.operation_notice, None);
+            assert_eq!(app.operation_error, None);
+        });
+        assert!(cx.debug_bounds("operation-notice-summary").is_none());
+        wait(cx, RESTORE_AFTER);
+        assert_eq!(confirms(cx, id, state), Some(false), "{id}");
+    }
+}
+
 /// A Fetch that fails stays at rest and announces no success: its error
 /// takes the window-wide error as before.
 #[gpui::test]
@@ -443,9 +518,11 @@ async fn a_failed_fetch_never_reads_fetched(cx: &mut TestAppContext) {
 /// In the compact chrome (18 pt in 461 × 490) Fetch is its icon in a 28 px
 /// square: it takes the check there and says Fetched in its tooltip while it
 /// lasts, and keeps its square and its name ("Fetch: Fetch from origin").
+/// The remote has a new commit for it to bring.
 #[gpui::test]
 async fn compact_fetch_says_fetched_in_its_tooltip_and_keeps_its_name(cx: &mut TestAppContext) {
-    let (_fixture, app, cx) = with_remote(cx).await;
+    let (fixture, app, cx) = with_remote(cx).await;
+    advance_remote(fixture.path());
     cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
     cx.simulate_resize(size(px(461.), px(490.)));
     draw(cx);

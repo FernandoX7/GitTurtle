@@ -2012,6 +2012,20 @@ impl GitTurtle {
             } => Some(format!("Pushed {local_branch} to {remote}/{remote_branch}")),
             _ => None,
         };
+        // A Fetch or Pull that brought nothing new (`WriteOutcome::up_to_date`)
+        // says so in the status line and its announcement, naming what it
+        // read: a Fetch the remote, whose every ref it compared, a Pull the
+        // branch it pulled. Its control still reads Fetched or Pulled, whose
+        // width is the control's own.
+        let up_to_date_notice = match &command {
+            WriteCommand::Fetch { remote } => {
+                Some(format!("Up to date with {remote} · nothing new"))
+            }
+            WriteCommand::Pull { remote, branch } => {
+                Some(format!("Up to date with {remote}/{branch} · nothing new"))
+            }
+            _ => None,
+        };
         let submitted_profile = if let WriteCommand::ApplyProfile(plan) = &command {
             self.submitted_profile(plan)
         } else {
@@ -2102,6 +2116,8 @@ impl GitTurtle {
                         if let Some(oid) = &outcome.commit_oid { this.tab_commit_receipt(&path, oid.clone()); }
                         let notice = if let (Some(oid), Some(message)) = (outcome.commit_oid.as_ref(), submitted_message.as_deref()) {
                             format!("Committed {} · {}", short_oid(oid), message.lines().next().unwrap_or_default())
+                        } else if let Some(notice) = up_to_date_notice.as_ref().filter(|_| outcome.up_to_date) {
+                            notice.clone()
                         } else if let Some(notice) = &success_notice {
                             notice.clone()
                         } else {
