@@ -116,6 +116,76 @@ impl RowAnchor {
     }
 }
 
+/// Where a row's menu goes ([`RowMenu`]), read as the menu is prepainted,
+/// after its row's list or the row itself has been prepainted in that
+/// frame: a menu that follows its row stays beside it in the frame that
+/// rows coming or going around it move it.
+#[derive(Clone)]
+pub(super) enum RowPlace {
+    /// Where the row was as the menu opened.
+    Opened(RowAnchor),
+    /// A right-click's row, which writes where it lies, from its bounds and
+    /// the pointer's place in it, as it is prepainted ([`PointerMenu`]).
+    Pointer(std::rc::Rc<std::cell::Cell<RowAnchor>>),
+    /// A uniform list's row, where the list lays it out ([`ListRow`]).
+    Listed(ListRow),
+}
+
+impl RowPlace {
+    fn anchor(&self) -> RowAnchor {
+        match self {
+            Self::Opened(row) => *row,
+            Self::Pointer(row) => row.get(),
+            Self::Listed(row) => row.anchor(),
+        }
+    }
+}
+
+impl From<RowAnchor> for RowPlace {
+    fn from(row: RowAnchor) -> Self {
+        Self::Opened(row)
+    }
+}
+
+impl From<ListRow> for RowPlace {
+    fn from(row: ListRow) -> Self {
+        Self::Listed(row)
+    }
+}
+
+/// The `row`th row of a uniform list of `height` tall rows, its keyboard
+/// menu starting `inset` from the list's leading edge, placed as
+/// [`KeyboardMenu::cursor_row`] places it from the list's bounds and scroll
+/// in the frame being drawn. Its owner moves it among the rows as rows come
+/// or go before it ([`KeyboardMenu::follow_row`]).
+#[derive(Clone)]
+pub(super) struct ListRow {
+    scroll: UniformListScrollHandle,
+    row: usize,
+    height: Pixels,
+    inset: Pixels,
+}
+
+impl ListRow {
+    pub(super) fn new(
+        scroll: &UniformListScrollHandle,
+        row: usize,
+        height: Pixels,
+        inset: Pixels,
+    ) -> Self {
+        Self {
+            scroll: scroll.clone(),
+            row,
+            height,
+            inset,
+        }
+    }
+
+    fn anchor(&self) -> RowAnchor {
+        KeyboardMenu::cursor_row(&self.scroll, self.row, self.height, self.inset)
+    }
+}
+
 /// A row's menu opened from the keyboard beside the row it acts on, with
 /// Shift-F10 or the Menu key: the navigator's and the project pane's cursor
 /// row ([`ManageNavigation`]), and History's commit list's and a file
@@ -131,7 +201,7 @@ impl RowAnchor {
 /// reappears over another repository tab or mode.
 pub(super) struct KeyboardMenu {
     menu: Entity<PopupMenu>,
-    row: RowAnchor,
+    row: RowPlace,
     /// The window's size when the menu opened, which its overlay covers. The
     /// menu also closes on a press outside itself, past an overlay that a
     /// larger window has outgrown.
@@ -147,17 +217,19 @@ impl KeyboardMenu {
     /// no taller than the room below `row` where that holds about four rows
     /// ([`MENU_FLOOR`]), and otherwise no taller than the larger of the room
     /// below and the room above, where it goes when the room below is too
-    /// short for it.
+    /// short for it. Opened beside a list's row ([`ListRow`]), it is drawn
+    /// where the list lays that row out in each frame.
     pub(super) fn open(
-        row: RowAnchor,
+        row: impl Into<RowPlace>,
         focus: FocusHandle,
         build: impl FnOnce(PopupMenu) -> PopupMenu + 'static,
         dismissed: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
         window: &mut Window,
         cx: &mut Context<GitTurtle>,
     ) -> Self {
+        let row = row.into();
         let room = menu_bounds(window);
-        let cap = row.cap(room);
+        let cap = row.anchor().cap(room);
         let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
             open_menu(
                 build(menu).action_context(focus),
@@ -215,6 +287,15 @@ impl KeyboardMenu {
         self.menu.focus_handle(cx).contains_focused(window, cx)
     }
 
+    /// The menu, opened beside a list's row ([`ListRow`]), now acts on the
+    /// `row`th row, where rows that came or went before its own moved it:
+    /// it is drawn beside that row from the next frame.
+    pub(super) fn follow_row(&mut self, row: usize) {
+        if let RowPlace::Listed(listed) = &mut self.row {
+            listed.row = row;
+        }
+    }
+
     /// The menu over a window-wide overlay, `id`, that a press outside the
     /// menu dismisses through `dismiss`. The overlay covers the status bar,
     /// so a press there closes the menu too.
@@ -236,7 +317,7 @@ impl KeyboardMenu {
                         dismiss(this, window, cx);
                     }))
                     .child(RowMenu {
-                        row: self.row,
+                        row: self.row.clone(),
                         room: self.room,
                         // A press inside the menu must reach its item, not
                         // the overlay behind it.
@@ -260,26 +341,25 @@ impl KeyboardMenu {
 /// before, slid a menu that ran past the window up just far enough, over its
 /// own row (5.5 px at 18 pt in a 461 × 490 window), and moved it by whole
 /// pixels, which can put half a pixel past the room; the kit's context menu
-/// did the same to a pointer's.
+/// did the same to a pointer's. Its row is read as it is prepainted
+/// ([`RowPlace`]), so a menu that follows its row stays beside it in the
+/// frame a refresh moves the row.
 struct RowMenu {
-    row: RowAnchor,
+    row: RowPlace,
     room: Bounds<Pixels>,
     menu: AnyElement,
 }
 
 impl RowMenu {
-    /// Where the menu's fill, `size`, starts.
-    fn origin(&self, size: Size<Pixels>) -> Point<Pixels> {
+    /// Where the menu's fill, `size`, starts beside `row`.
+    fn origin(&self, row: RowAnchor, size: Size<Pixels>) -> Point<Pixels> {
         let room = self.room;
-        let y = if self.row.below + size.height <= room.bottom() {
-            self.row.below
+        let y = if row.below + size.height <= room.bottom() {
+            row.below
         } else {
-            (self.row.top - MENU_EDGE - size.height).max(room.top())
+            (row.top - MENU_EDGE - size.height).max(room.top())
         };
-        let x = self
-            .row
-            .trailing
-            .map_or(self.row.x, |right| right - size.width);
+        let x = row.trailing.map_or(row.x, |right| right - size.width);
         let x = x.min(room.right() - size.width).max(room.left());
         point(x, y)
     }
@@ -334,7 +414,7 @@ impl Element for RowMenu {
         cx: &mut App,
     ) {
         let laid = window.layout_bounds(*menu);
-        let offset = self.origin(laid.size) - laid.origin;
+        let offset = self.origin(self.row.anchor(), laid.size) - laid.origin;
         window.with_element_offset(offset, |window| self.menu.prepaint(window, cx));
     }
 
@@ -730,13 +810,15 @@ pub(crate) trait AppContextMenu:
         build: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
     ) -> PointerMenu<Self> {
         // Stable across frames, so the open menu is kept from one to the
-        // next.
+        // next, and the row's own ID whole: a row keyed by its path, as a
+        // Working Changes file's is, keeps its open menu by the path's
+        // bytes as rows come or go around it.
         let caller = std::panic::Location::caller();
         let id = self
             .interactivity()
             .element_id
             .clone()
-            .map(|id| ElementId::Name(format!("app-context-menu-{id:?}").into()))
+            .map(|id| ElementId::NamedChild(std::sync::Arc::new(id), "app-context-menu".into()))
             .unwrap_or_else(|| ElementId::CodeLocation(*caller));
         PointerMenu {
             id,
@@ -758,7 +840,11 @@ impl<E: InteractiveElement + ParentElement + IntoElement + 'static> AppContextMe
 /// holds about four rows or the whole menu, its items capped at that room;
 /// otherwise wholly above the row, its edge clear of it, capped at the
 /// larger room. A resized window closes it, as it closes a button's menu,
-/// since the row it was placed beside may have moved.
+/// since the row it was placed beside may have moved. The open menu is kept
+/// by the row's element ID, so it stays with what that ID names: a row keyed
+/// by its path keeps its menu while rows come or go around it, the menu
+/// drawn beside the row where it now lies ([`Pressed`]), and the menu goes
+/// with the row when the row is no longer drawn.
 pub(crate) struct PointerMenu<E> {
     id: ElementId,
     element: Option<E>,
@@ -794,14 +880,43 @@ impl<E> PointerMenu<E> {
 struct PointerMenuState {
     menu: Option<Entity<PopupMenu>>,
     open: bool,
-    /// The row and the pointer it opened at.
-    anchor: Option<RowAnchor>,
+    /// Where the pointer opened it, in its row.
+    pressed: Option<Pressed>,
     /// Holds this state weakly: a strong hold was a cycle through the app's
     /// subscriber set that kept the menu after its row was gone.
     _dismiss: Option<Subscription>,
 }
 
 type SharedPointerMenu = std::rc::Rc<std::cell::RefCell<PointerMenuState>>;
+
+/// Where a right-click opened its row's menu: the pointer's place from the
+/// row's origin, and the menu's place in the frame being drawn, which the
+/// row writes from its bounds as it is prepainted, before the menu, drawn
+/// after the window's other elements, reads it ([`RowPlace::Pointer`]). A
+/// row that rows coming or going above it move keeps its menu beside it;
+/// placed once where the pointer pressed, the menu stayed there, beside
+/// whatever row a refresh moved into that place.
+#[derive(Clone)]
+pub(super) struct Pressed {
+    pointer: Point<Pixels>,
+    place: std::rc::Rc<std::cell::Cell<RowAnchor>>,
+}
+
+impl Pressed {
+    /// A press at `pointer` on the row painted at `row`.
+    fn at(pointer: Point<Pixels>, row: Bounds<Pixels>) -> Self {
+        Self {
+            pointer: pointer - row.origin,
+            place: std::rc::Rc::new(std::cell::Cell::new(RowAnchor::pointer(pointer, row))),
+        }
+    }
+
+    /// The row lies at `row` in this frame.
+    fn place(&self, row: Bounds<Pixels>) {
+        self.place
+            .set(RowAnchor::pointer(row.origin + self.pointer, row));
+    }
+}
 
 /// The right-click menus open in the app's windows, with the focus each
 /// returns to as it closes ([`PointerMenu`]). A right-click on a row while
@@ -866,7 +981,8 @@ impl<E: ParentElement + IntoElement + 'static> IntoElement for PointerMenu<E> {
 }
 
 impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
-    type RequestLayoutState = AnyElement;
+    /// The row, and where its open menu was pressed open.
+    type RequestLayoutState = (AnyElement, Option<Pressed>);
     type PrepaintState = Hitbox;
 
     fn id(&self) -> Option<ElementId> {
@@ -883,17 +999,18 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
         _: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
-    ) -> (LayoutId, AnyElement) {
+    ) -> (LayoutId, (AnyElement, Option<Pressed>)) {
         let shared = Self::shared(id.expect("the menu's id"), window);
         let shown = {
             let state = shared.borrow();
             state
                 .menu
                 .clone()
-                .zip(state.anchor)
+                .zip(state.pressed.clone())
                 .filter(|(menu, _)| state.open && !menu.read(cx).is_empty())
         };
-        let overlay = shown.map(|(menu, row)| {
+        let pressed = shown.as_ref().map(|(_, pressed)| pressed.clone());
+        let overlay = shown.map(|(menu, pressed)| {
             // Focused, so that its keys reach it.
             if !menu.focus_handle(cx).contains_focused(window, cx) {
                 menu.focus_handle(cx).focus(window, cx);
@@ -915,7 +1032,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                         .on_action(|_: &RowActions, _, _| {})
                         .on_action(|_: &ManageNavigation, _, _| {})
                         .child(RowMenu {
-                            row,
+                            row: RowPlace::Pointer(pressed.place),
                             room: menu_bounds(window),
                             menu: menu.into_any_element(),
                         }),
@@ -930,7 +1047,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
             .expect("the row")
             .children(overlay)
             .into_any_element();
-        (element.request_layout(window, cx), element)
+        (element.request_layout(window, cx), (element, pressed))
     }
 
     fn prepaint(
@@ -938,10 +1055,15 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        element: &mut AnyElement,
+        (element, pressed): &mut (AnyElement, Option<Pressed>),
         window: &mut Window,
         cx: &mut App,
     ) -> Hitbox {
+        // Where the row lies in this frame, which its menu, prepainted
+        // after the window's other elements, is placed beside.
+        if let Some(pressed) = pressed {
+            pressed.place(bounds);
+        }
         element.prepaint(window, cx);
         window.insert_hitbox(bounds, HitboxBehavior::Normal)
     }
@@ -951,7 +1073,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
         id: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
-        element: &mut AnyElement,
+        (element, _): &mut (AnyElement, Option<Pressed>),
         hitbox: &mut Hitbox,
         window: &mut Window,
         cx: &mut App,
@@ -977,7 +1099,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                 }
                 state._dismiss = None;
                 state.open = true;
-                state.anchor = Some(row);
+                state.pressed = Some(Pressed::at(event.position, hitbox.bounds));
             }
             // Built after this event, as the kit builds its own.
             let (shared, build, writes) = (shared.clone(), build.clone(), writes.clone());

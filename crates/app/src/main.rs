@@ -494,6 +494,10 @@ struct GitTurtle {
     /// The cursor row's menu in the changed-file or Working Changes list,
     /// opened from the keyboard (`native_accessibility::RowActions`).
     file_menu: Option<native_accessibility::KeyboardMenu>,
+    /// The Working Changes row `file_menu` was opened on, by path and group,
+    /// while the menu is that list's: installed rows move the menu with the
+    /// row, or close it where the row went (`follow_working_menu`).
+    file_menu_row: Option<(PathBuf, gitturtle_core::ChangeArea)>,
     /// The selected commit's menu in History's list, opened from the
     /// keyboard (`native_accessibility::RowActions`).
     commit_menu: Option<native_accessibility::KeyboardMenu>,
@@ -840,6 +844,7 @@ impl GitTurtle {
             focus: cx.focus_handle(),
             file_focus: cx.focus_handle(),
             file_menu: None,
+            file_menu_row: None,
             commit_menu: None,
             nav_menu: None,
             pull_requests_focus: cx.focus_handle(),

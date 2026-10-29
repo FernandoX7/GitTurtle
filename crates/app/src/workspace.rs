@@ -1826,6 +1826,7 @@ impl GitTurtle {
                         this.working_paths.reset();
                         this.integration_state = None;
                         this.working_rows.clear();
+                        this.follow_working_menu(window, cx);
                         this.working_travel = Default::default();
                         this.working_selected = None;
                         if this.mode == WorkspaceMode::Working {
@@ -3955,14 +3956,7 @@ impl GitTurtle {
                     format!("{path_detail} · {status_label}")
                 };
                 div()
-                    .id((
-                        if staged {
-                            "staged-file"
-                        } else {
-                            "unstaged-file"
-                        },
-                        index,
-                    ))
+                    .id(working_row_id(&entry.path, area))
                     .role(Role::ListBoxOption)
                     .aria_label(format!(
                         "{} · {} · {}",
@@ -4147,7 +4141,6 @@ impl GitTurtle {
                             ignore_repository.clone(),
                             MenuRow {
                                 entry: ignore_entry.clone(),
-                                row: position,
                                 staged,
                             },
                             forms.file_action,
@@ -4191,7 +4184,9 @@ impl GitTurtle {
         else {
             return;
         };
-        let anchor = native_accessibility::KeyboardMenu::cursor_row(
+        // Drawn beside the row where the list lays it out, which installed
+        // rows move as rows come or go before it (`follow_working_menu`).
+        let anchor = native_accessibility::ListRow::new(
             &self.working_scroll,
             row,
             window.pixel_snap(px(self.settings.density.file_row_height())),
@@ -4199,6 +4194,7 @@ impl GitTurtle {
         );
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         let busy = self.operation_busy.is_some();
+        let path = entry.path.clone();
         self.file_menu = Some(native_accessibility::KeyboardMenu::open(
             anchor,
             self.file_focus.clone(),
@@ -4209,7 +4205,6 @@ impl GitTurtle {
                     repository,
                     MenuRow {
                         entry,
-                        row,
                         staged: area == ChangeArea::Staged,
                     },
                     stage_control,
@@ -4220,6 +4215,7 @@ impl GitTurtle {
             window,
             cx,
         ));
+        self.file_menu_row = Some((path, area));
         cx.notify();
     }
 
@@ -4227,6 +4223,7 @@ impl GitTurtle {
     /// in the menu, so focus returns to the list; an item or Escape has moved
     /// it already, to the list or to the dialog the item opened.
     pub(super) fn dismiss_file_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.file_menu_row = None;
         if let Some(menu) = self.file_menu.take() {
             if menu.has_focus(window, cx) || window.focused(cx).is_none() {
                 window.focus(&self.file_focus, cx);
@@ -4656,19 +4653,38 @@ fn sync_summary(status: &gitturtle_core::RepositoryStatus) -> String {
 
 /// The space beside a labelled toolbar action's content: the 0.75 rem it took
 /// as `px_3` at the root rem the app sets, the interface text's 13 px.
-/// The file row a Working Changes menu acts on: its status entry, its place
-/// among the list's rows, where a Stage or Unstage departs from, and whether it
-/// is the staged row.
+/// The file row a Working Changes menu acts on: its status entry and whether
+/// it is the staged row.
 struct MenuRow {
     entry: StatusEntry,
-    row: usize,
     staged: bool,
+}
+
+/// A Working Changes file row's element ID: its path, byte for byte, in its
+/// group. The state GPUI keeps for the row, its open right-click menu among
+/// it, stays with the file as rows come or go around it, and goes with the
+/// row when the file leaves the list. Keyed by the file's index in the
+/// status, a menu open on a row passed to the next row when a refresh took
+/// an earlier file away, its items still acting on the file it was opened
+/// on.
+fn working_row_id(path: &std::path::Path, area: ChangeArea) -> ElementId {
+    ElementId::NamedChild(
+        Arc::new(ElementId::Path(Arc::from(path))),
+        match area {
+            ChangeArea::Staged => "staged-file",
+            ChangeArea::Unstaged => "unstaged-file",
+        }
+        .into(),
+    )
 }
 
 /// A Working Changes file row's menu, which a right-click on the row and
 /// Shift-F10 or the Menu key on the list's cursor row open alike. Without its
 /// Stage or Unstage control (`stage_control`) the row's menu leads with that
-/// action. Each item acts only on the repository the menu was built for.
+/// action. Each item acts only on the repository the menu was built for, and
+/// on its file by path: a Stage or Unstage departs from where the file's row
+/// stands when it acts, which rows coming or going before it may have moved
+/// since the menu opened.
 fn working_row_menu(
     menu: PopupMenu,
     owner: WeakEntity<GitTurtle>,
@@ -4677,7 +4693,7 @@ fn working_row_menu(
     stage_control: bool,
     busy: bool,
 ) -> PopupMenu {
-    let MenuRow { entry, row, staged } = target;
+    let MenuRow { entry, staged } = target;
     let discard_owner = owner.clone();
     let discard_repository = repository.clone();
     let discard_entry = entry.clone();
@@ -4693,7 +4709,14 @@ fn working_row_menu(
                 .on_click(move |_, window, cx| {
                     let _ = owner.update(cx, |this, cx| {
                         if this.path == repository {
-                            this.depart_working_row(row, window, cx);
+                            let area = if staged {
+                                ChangeArea::Staged
+                            } else {
+                                ChangeArea::Unstaged
+                            };
+                            if let Some(row) = this.working_row_position(&path, area) {
+                                this.depart_working_row(row, window, cx);
+                            }
                             this.stage_working_paths(paths.clone(), &path, staged, window, cx);
                         }
                     });

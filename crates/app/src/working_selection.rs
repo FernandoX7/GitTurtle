@@ -253,6 +253,40 @@ impl GitTurtle {
         }
     }
 
+    /// Where `path`'s row in `area` stands among the actionable rows. A row
+    /// menu acts on its file by path and finds the row's place when it
+    /// acts, since rows coming or going before it move that place.
+    pub(super) fn working_row_position(&self, path: &Path, area: ChangeArea) -> Option<usize> {
+        let status = self.work_status.as_ref()?;
+        self.actionable_working_rows().iter().position(|row| {
+            matches!(row, workspace::WorkingRow::File(index, at)
+                if *at == area
+                    && status.entries.get(*index).is_some_and(|entry| entry.path == path))
+        })
+    }
+
+    /// Keeps the file list's keyboard menu, while it is a Working Changes
+    /// row's (`file_menu_row`), with that row as installed rows move it:
+    /// drawn beside the row where it now stands, or, where the row went, as
+    /// a refresh after its file was committed, staged away, reverted or
+    /// deleted outside the app takes it, closed, focus returning to the
+    /// list. Kept by the row's place, the menu stayed there, beside
+    /// whichever row moved into it, and its items still acted on the file
+    /// that left.
+    pub(super) fn follow_working_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((path, area)) = &self.file_menu_row else {
+            return;
+        };
+        match self.working_row_position(path, *area) {
+            Some(row) => {
+                if let Some(menu) = &mut self.file_menu {
+                    menu.follow_row(row);
+                }
+            }
+            None => self.dismiss_file_menu(window, cx),
+        }
+    }
+
     /// No rows to show: the status is gone, or the filter failed and its
     /// error replaces the list.
     fn clear_working_rows(&mut self) {
@@ -473,6 +507,7 @@ impl GitTurtle {
         let departure = self.working_departure();
         let Some(status) = self.work_status.clone() else {
             self.clear_working_rows();
+            self.follow_working_menu(window, cx);
             cx.notify();
             return;
         };
@@ -555,6 +590,7 @@ impl GitTurtle {
                     Ok(Err(error)) => { this.working_paths.error = Some(error.to_string()); this.clear_working_rows(); this.working_selection.clear(); this.land_working_row(None, cx); }
                     Err(_) => { this.working_paths.error = Some("Path filtering stopped. Edit or clear the query to retry.".into()); this.clear_working_rows(); this.working_selection.clear(); this.land_working_row(None, cx); }
                 }
+                this.follow_working_menu(window, cx);
                 cx.notify();
             });
         }));

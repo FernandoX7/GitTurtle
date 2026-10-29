@@ -2947,6 +2947,236 @@ mod tests {
         }
     }
 
+    /// How a working row's menu opens: a right-click on the row, or
+    /// Shift-F10 on the list's cursor row.
+    #[derive(Clone, Copy, Debug)]
+    enum Opening {
+        RightClick,
+        Keyboard,
+    }
+
+    /// The working row menus' Ignore…, which an untracked file's row offers.
+    const IGNORE_ITEM: &str = "menu-item: Ignore… · MenuItem";
+
+    /// Reads the working state again as the local watcher does after a
+    /// change outside the app, quietly, and draws the frame after its rows
+    /// land. A Refresh reads it aloud, selecting the working file again,
+    /// which moves focus to the list. The read runs on the window's reader,
+    /// a thread `run_until_parked` cannot wait for.
+    fn quietly_refreshed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        for _ in 0..8 {
+            if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        assert!(
+            !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()),
+            "the quiet read ran"
+        );
+        crate::path_filter::filters_land(app, cx);
+        next_frame(cx);
+    }
+
+    /// Opens the menu of `name`'s Unstaged row as `opening` opens it, the
+    /// list focused and, from the keyboard, its cursor on the row. Returns
+    /// the row's bounds and its menu's Ignore…'s.
+    fn open_row_menu(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        name: &str,
+        opening: Opening,
+    ) -> (Bounds<Pixels>, Bounds<Pixels>) {
+        let selector: &'static str = format!(
+            "working-row-{}",
+            position_of(app, cx, name, ChangeArea::Unstaged)
+        )
+        .leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        match opening {
+            Opening::RightClick => {
+                cx.update(|window, cx| list.focus(window, cx));
+                let pointer = point(row.left() + px(16.), row.center().y);
+                cx.simulate_mouse_move(pointer, None, Modifiers::default());
+                cx.simulate_mouse_down(pointer, gpui::MouseButton::Right, Modifiers::default());
+                cx.simulate_mouse_up(pointer, gpui::MouseButton::Right, Modifiers::default());
+            }
+            Opening::Keyboard => {
+                cx.simulate_click(row.center(), Modifiers::default());
+                cx.update(|window, cx| list.focus(window, cx));
+                next_frame(cx);
+                cx.simulate_keystrokes("shift-f10");
+            }
+        }
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        next_frame(cx);
+        let item = cx
+            .debug_bounds(IGNORE_ITEM)
+            .unwrap_or_else(|| panic!("{opening:?}: {name}'s menu opened"));
+        (row, item)
+    }
+
+    /// [`six_files`] in a window tall enough that every row is drawn, with
+    /// the app's keys bound as the app binds them (a test window binds none
+    /// of them) and alpha selected: [Staged 2, alpha, beta, Unstaged 4,
+    /// delta, epsilon, gamma, zeta].
+    async fn six_files_for_menus(
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        let (fixture, app, cx) = six_files(cx).await;
+        cx.simulate_resize(size(px(1480.), px(1300.)));
+        draw(cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let alpha = cx.debug_bounds("working-row-1").expect("alpha's row");
+        cx.simulate_click(alpha.center(), Modifiers::default());
+        next_frame(cx);
+        (fixture, app, cx)
+    }
+
+    /// Deletes `name` outside the app and lets the quiet refresh after it
+    /// take its row away.
+    fn delete_outside(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, name: &str) {
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let rows = app.read_with(cx, |app, _| app.working_rows.len());
+        std::fs::remove_file(repository.join(name)).unwrap();
+        quietly_refreshed(app, cx);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_rows.len()),
+            rows - 1,
+            "{name}'s row went"
+        );
+    }
+
+    /// A working row's menu, opened as `opening` opens it, belongs to its
+    /// file: a quiet refresh that takes an earlier file's row away, as one
+    /// deleted outside the app, leaves it open on its own row, drawn beside
+    /// the row where it now stands, and its Ignore… acts on its file. Kept
+    /// by the row's place among the rows, a right-click's menu passed to the
+    /// row after its own, and a keyboard's stayed where it opened, beside
+    /// whichever row moved there.
+    async fn a_row_menu_stays_on_its_row_as_an_earlier_row_goes(
+        cx: &mut TestAppContext,
+        opening: Opening,
+    ) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, _| list.is_focused(window));
+        // gamma's menu, then delta, before it, deleted outside the app.
+        let (row, item) = open_row_menu(&app, cx, "gamma.txt", opening);
+        assert!(!focused(cx), "{opening:?}: gamma's menu holds focus");
+        delete_outside(&app, cx, "delta.txt");
+        let selector: &'static str = format!(
+            "working-row-{}",
+            position_of(&app, cx, "gamma.txt", ChangeArea::Unstaged)
+        )
+        .leak();
+        let moved = cx.debug_bounds(selector).expect(selector);
+        assert!(
+            (row.top() - moved.size.height - moved.top()).abs() < px(0.5),
+            "{opening:?}: gamma's row {moved:?} took delta's place above {row:?}"
+        );
+        let drawn = cx
+            .debug_bounds(IGNORE_ITEM)
+            .unwrap_or_else(|| panic!("{opening:?}: gamma's menu stayed open"));
+        assert!(!focused(cx), "{opening:?}: gamma's menu keeps focus");
+        let (before, after) = (item.origin - row.origin, drawn.origin - moved.origin);
+        assert!(
+            (before.x - after.x).abs() < px(0.5) && (before.y - after.y).abs() < px(0.5),
+            "{opening:?}: gamma's menu {drawn:?} beside its row {moved:?} as it opened, \
+             {item:?} beside {row:?}"
+        );
+        // Its Ignore… acts on gamma.
+        cx.simulate_click(drawn.center(), Modifiers::default());
+        cx.executor().run_until_parked();
+        draw(cx);
+        let selected = crate::native_accessibility::written::get("ignore-selected-path")
+            .and_then(|written| written.node.value().map(str::to_owned));
+        assert_eq!(
+            selected.as_deref(),
+            Some("Selected untracked file: gamma.txt"),
+            "{opening:?}: Ignore… in gamma's menu"
+        );
+    }
+
+    /// A working row's menu, opened as `opening` opens it, closes with its
+    /// row when a quiet refresh takes the row away, as after its file is
+    /// deleted outside the app, and focus returns to the list, whose keys
+    /// reach it again. Kept by the row's place among the rows, a
+    /// right-click's menu passed to the row after its own, and a keyboard's
+    /// stayed open where it opened, each still offering to act on the file
+    /// that had gone.
+    async fn a_row_menu_closes_with_its_row(cx: &mut TestAppContext, opening: Opening) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, _| list.is_focused(window));
+        let beta = app.read_with(cx, |app, _| match app.actionable_working_rows()[2] {
+            workspace::WorkingRow::File(index, area) => (index, area),
+            _ => panic!("beta's row"),
+        });
+        // epsilon's menu, on the row before gamma's, then epsilon deleted
+        // outside the app.
+        open_row_menu(&app, cx, "epsilon.txt", opening);
+        assert!(!focused(cx), "{opening:?}: epsilon's menu holds focus");
+        delete_outside(&app, cx, "epsilon.txt");
+        assert_eq!(
+            offered(cx, "Ignore…"),
+            None,
+            "{opening:?}: epsilon's menu closed with its row"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.file_menu.is_none()),
+            "{opening:?}: no keyboard's menu is open"
+        );
+        assert!(focused(cx), "{opening:?}: focus is back on the list");
+        cx.simulate_keystrokes("down");
+        next_frame(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.working_selected),
+            Some(beta),
+            "{opening:?}: Down reached the list"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menu_stays_on_its_row_as_an_earlier_row_goes(cx: &mut TestAppContext) {
+        a_row_menu_stays_on_its_row_as_an_earlier_row_goes(cx, Opening::RightClick).await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_menu_stays_on_its_row_as_an_earlier_row_goes(cx: &mut TestAppContext) {
+        a_row_menu_stays_on_its_row_as_an_earlier_row_goes(cx, Opening::Keyboard).await;
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menu_closes_with_its_row(cx: &mut TestAppContext) {
+        a_row_menu_closes_with_its_row(cx, Opening::RightClick).await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_menu_closes_with_its_row(cx: &mut TestAppContext) {
+        a_row_menu_closes_with_its_row(cx, Opening::Keyboard).await;
+    }
+
     /// Shift-F10 in an open right-click menu, on a History commit, a
     /// navigator branch or a working row, opens no keyboard's menu beside
     /// it: one menu is open at a time, and the right-click menu, the row's
