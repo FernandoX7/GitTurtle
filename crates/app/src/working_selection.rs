@@ -307,38 +307,40 @@ impl GitTurtle {
     /// whichever row moved into it, and its items still acted on the file
     /// that left; kept as it opened, it offered to delete an untracked file
     /// that had since been added, which the delete refused.
+    ///
+    /// A write's start or end runs it too (`KeyboardMenu::followed_by`),
+    /// which builds the menu again from the row's file as it then stands:
+    /// built again from the file as the menu opened, it brought back Delete
+    /// untracked file… for a file a refresh had found added. While rows are
+    /// being prepared there is none to act on, and the rows landing run it.
     pub(super) fn follow_working_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((target, stage_control)) = &self.file_menu_row else {
+        let Some(followed) = &self.file_menu_row else {
             return;
         };
-        let stage_control = *stage_control;
+        if self.working_paths.pending {
+            return;
+        }
+        let target = &followed.target;
         let Some((row, entry)) = self.working_row_entry(&target.entry.path, target.area()) else {
             self.dismiss_file_menu(window, cx);
             return;
         };
-        let changed = (*entry != target.entry).then(|| workspace::MenuRow {
-            entry: entry.clone(),
-            staged: target.staged,
-        });
-        // Built from the inputs as they are now, as the rows land. A write's
-        // start or end builds a keyboard's menu again through the rebuild
-        // that follows writes and pauses (branch E), not here.
-        let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
-        let busy = self.operation_busy.is_some();
+        let changed = (*entry != target.entry).then(|| entry.clone());
+        let rebuild = changed.is_some() || followed.busy != self.operation_busy.is_some();
+        if let (Some(entry), Some(followed)) = (changed, self.file_menu_row.as_mut()) {
+            followed.target.entry = entry;
+        }
+        let items = if rebuild {
+            self.working_menu_items(cx)
+        } else {
+            None
+        };
         let Some(menu) = &mut self.file_menu else {
             return;
         };
         menu.follow_row(row);
-        if let Some(target) = changed {
-            let built = target.clone();
-            menu.rebuild(
-                move |menu| {
-                    workspace::working_row_menu(menu, owner, repository, built, stage_control, busy)
-                },
-                window,
-                cx,
-            );
-            self.file_menu_row = Some((target, stage_control));
+        if let Some(items) = items {
+            menu.rebuild(items, window, cx);
         }
     }
 

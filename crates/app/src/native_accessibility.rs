@@ -276,7 +276,8 @@ pub(super) struct KeyboardMenu {
     /// ([`Self::refuses_while_paused`]).
     paused: Option<fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>)>,
     _subscriptions: [Subscription; 2],
-    /// Keeps a [`Self::following`] menu with the window's state.
+    /// Keeps a [`Self::following`] or [`Self::followed_by`] menu with the
+    /// window's state.
     _follows: Option<Subscription>,
 }
 
@@ -341,12 +342,11 @@ impl KeyboardMenu {
         // now and the window itself once the menu is open.
         let mut inputs = MenuInputs::of(app);
         let mut gone = false;
-        let (menu, focus, cap) = (this.menu.downgrade(), this.focus.clone(), this.cap);
-        let owner = cx.entity();
-        this._follows = Some(cx.observe_in(&owner, window, move |app, _, window, cx| {
-            let Some(menu) = menu.upgrade().filter(|_| !gone) else {
+        let (focus, cap) = (this.focus.clone(), this.cap);
+        this.watch(window, cx, move |app, menu, window, cx| {
+            if gone {
                 return;
-            };
+            }
             if !holds(app) {
                 // Closed as Escape closes it, its focus back on the list or
                 // tree it was opened from.
@@ -358,10 +358,62 @@ impl KeyboardMenu {
             if now != inputs {
                 inputs = now;
                 let app = &*app;
-                Self::build_again(&menu, focus.clone(), cap, |menu| build(menu, app), window, cx);
+                Self::build_again(
+                    menu,
+                    focus.clone(),
+                    cap,
+                    |menu| build(menu, app),
+                    window,
+                    cx,
+                );
+            }
+        });
+        this
+    }
+
+    /// The menu, opened by [`Self::open`], is kept with the window's state
+    /// by its owner: `follow` runs whenever a write starts or ends or an
+    /// integration pauses or ends ([`MenuInputs`], read from `app` as the
+    /// menu opens), as a Working Changes row's menu is built again from its
+    /// file as it then stands (`GitTurtle::follow_working_menu`), rather
+    /// than from what the file was as the menu opened.
+    pub(super) fn followed_by(
+        mut self,
+        follow: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+        app: &GitTurtle,
+        window: &mut Window,
+        cx: &mut Context<GitTurtle>,
+    ) -> Self {
+        let mut inputs = MenuInputs::of(app);
+        self.watch(window, cx, move |app, _, window, cx| {
+            let now = MenuInputs::of(app);
+            if now != inputs {
+                inputs = now;
+                follow(app, window, cx);
+            }
+        });
+        self
+    }
+
+    /// Calls `changed` with the window's state, and the menu, each time the
+    /// window changes while the menu is open.
+    fn watch(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<GitTurtle>,
+        mut changed: impl FnMut(
+            &mut GitTurtle,
+            &Entity<PopupMenu>,
+            &mut Window,
+            &mut Context<GitTurtle>,
+        ) + 'static,
+    ) {
+        let (menu, owner) = (self.menu.downgrade(), cx.entity());
+        self._follows = Some(cx.observe_in(&owner, window, move |app, _, window, cx| {
+            if let Some(menu) = menu.upgrade() {
+                changed(app, &menu, window, cx);
             }
         }));
-        this
     }
 
     /// The menu built with `build` beside `row`, focused.
@@ -415,7 +467,14 @@ impl KeyboardMenu {
         window: &mut Window,
         cx: &mut Context<PopupMenu>,
     ) -> PopupMenu {
-        open_menu(menu.action_context(focus), true, None, Some(cap), window, cx)
+        open_menu(
+            menu.action_context(focus),
+            true,
+            None,
+            Some(cap),
+            window,
+            cx,
+        )
     }
 
     /// Builds the menu again in place with `build`, as it opened, its

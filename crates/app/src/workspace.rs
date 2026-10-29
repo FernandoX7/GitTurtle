@@ -4232,36 +4232,48 @@ impl GitTurtle {
             window.pixel_snap(px(self.settings.density.file_row_height())),
             appearance::ui_size(appearance::PANE_INSET),
         );
-        let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
-        let target = MenuRow {
-            entry,
-            staged: area == ChangeArea::Staged,
-        };
-        let built = target.clone();
-        self.file_menu = Some(native_accessibility::KeyboardMenu::following(
-            anchor,
-            self.file_focus.clone(),
-            // Read as it is built: a write's start or end builds the open
-            // menu again.
-            move |menu, app: &GitTurtle| {
-                working_row_menu(
-                    menu,
-                    owner.clone(),
-                    repository.clone(),
-                    built.clone(),
-                    stage_control,
-                    app.operation_busy.is_some(),
-                )
+        // Its items are built from the row's file as the menu finds it each
+        // time it builds them, as it opens, as rows land and as a write
+        // starts or ends (`follow_working_menu`), never from a copy taken as
+        // it opened.
+        self.file_menu_row = Some(WorkingMenu {
+            target: MenuRow {
+                entry,
+                staged: area == ChangeArea::Staged,
             },
-            // Its file is kept by path as rows land (`follow_working_menu`).
-            |_: &GitTurtle| true,
-            Self::dismiss_file_menu,
-            self,
-            window,
-            cx,
-        ));
-        self.file_menu_row = Some((target, stage_control));
+            stage_control,
+            busy: false,
+        });
+        let Some(items) = self.working_menu_items(cx) else {
+            return;
+        };
+        self.file_menu = Some(
+            native_accessibility::KeyboardMenu::open(
+                anchor,
+                self.file_focus.clone(),
+                items,
+                Self::dismiss_file_menu,
+                window,
+                cx,
+            )
+            .followed_by(Self::follow_working_menu, self, window, cx),
+        );
         cx.notify();
+    }
+
+    /// The items of the Working Changes row's keyboard menu
+    /// (`file_menu_row`), from its file as the menu last found it, refusing
+    /// writes as the window does now.
+    pub(super) fn working_menu_items(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<impl FnOnce(PopupMenu) -> PopupMenu + 'static> {
+        let busy = self.operation_busy.is_some();
+        let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
+        let followed = self.file_menu_row.as_mut()?;
+        followed.busy = busy;
+        let (target, stage_control) = (followed.target.clone(), followed.stage_control);
+        Some(move |menu| working_row_menu(menu, owner, repository, target, stage_control, busy))
     }
 
     /// Closes the file list's keyboard menu. A press outside it leaves focus
@@ -4714,6 +4726,17 @@ impl MenuRow {
             ChangeArea::Unstaged
         }
     }
+}
+
+/// The Working Changes row a keyboard menu acts on (`GitTurtle::file_menu_row`).
+pub(super) struct WorkingMenu {
+    /// Its file as the menu's items were last built from it, by path and
+    /// group.
+    pub(super) target: MenuRow,
+    /// Whether the row had its Stage or Unstage control.
+    pub(super) stage_control: bool,
+    /// Whether the items were built refusing writes.
+    pub(super) busy: bool,
 }
 
 /// A Working Changes file row's element ID: its group and its path's bytes,

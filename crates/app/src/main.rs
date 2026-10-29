@@ -502,11 +502,13 @@ struct GitTurtle {
     /// opened from the keyboard (`native_accessibility::RowActions`).
     file_menu: Option<native_accessibility::KeyboardMenu>,
     /// The Working Changes row `file_menu` was opened on, while the menu is
-    /// that list's: the file its items were built from, by path and group,
-    /// and whether the row had its Stage or Unstage control. Installed rows
-    /// move the menu with the row, build it again where the file's status
-    /// changed, or close it where the row went (`follow_working_menu`).
-    file_menu_row: Option<(workspace::MenuRow, bool)>,
+    /// that list's: the file its items were last built from, by path and
+    /// group, whether the row had its Stage or Unstage control, and whether
+    /// they were built refusing writes. Installed rows move the menu with the
+    /// row, build it again where the file's status changed, or close it where
+    /// the row went, and a write's start or end builds it again from the file
+    /// as it then stands (`follow_working_menu`).
+    file_menu_row: Option<workspace::WorkingMenu>,
     /// The Working Changes file rows' element IDs, made once per row of the
     /// status the rows show (`working_row_key`).
     working_row_ids: std::cell::RefCell<workspace::WorkingRowIds>,

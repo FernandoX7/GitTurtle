@@ -4005,23 +4005,26 @@ mod tests {
         );
     }
 
-    /// A right-click's menu built again for its file's new status, as after
-    /// gamma is added and edited outside the app, is built from that status
-    /// when a write starts and ends too: the write's rebuild used the
-    /// builder the menu opened with, which brought back Delete untracked
-    /// file… for a tracked file.
-    #[gpui::test]
-    async fn a_rebuilt_right_click_menu_follows_writes_with_its_new_items(cx: &mut TestAppContext) {
+    /// A working row's menu, opened as `opening` opens it, built again for
+    /// its file's new status, as after gamma is added and edited outside the
+    /// app, is built from that status when a write starts and ends too: a
+    /// right-click's write rebuild used the builder the menu opened with,
+    /// and a keyboard's the file as the menu opened, which both brought back
+    /// Delete untracked file… for a tracked file.
+    async fn a_rebuilt_row_menu_follows_writes_with_its_new_items(
+        cx: &mut TestAppContext,
+        opening: Opening,
+    ) {
         let (_fixture, app, cx) = six_files_for_menus(cx).await;
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
-        open_row_menu(&app, cx, "gamma.txt", Opening::RightClick);
+        open_row_menu(&app, cx, "gamma.txt", opening);
         fixture_git(&repository, &["add", "gamma.txt"]);
         std::fs::write(repository.join("gamma.txt"), "gamma\nedited\n").unwrap();
         quietly_refreshed(&app, cx);
         assert_eq!(
             offered(cx, "Discard changes…"),
             Some(true),
-            "rebuilt for gamma"
+            "{opening:?}: rebuilt for gamma"
         );
         let write = held(
             &app,
@@ -4034,25 +4037,35 @@ mod tests {
         assert_eq!(
             offered(cx, "Discard changes…"),
             Some(false),
-            "unavailable while the write runs"
+            "{opening:?}: unavailable while the write runs"
         );
         assert_eq!(
             offered(cx, "Delete untracked file…"),
             None,
-            "while the write runs"
+            "{opening:?}: while the write runs"
         );
         release(&app, write, cx).await;
         next_frame(cx);
         assert_eq!(
             offered(cx, "Discard changes…"),
             Some(true),
-            "available once the write ends"
+            "{opening:?}: available once the write ends"
         );
         assert_eq!(
             offered(cx, "Delete untracked file…"),
             None,
-            "once the write ends"
+            "{opening:?}: once the write ends"
         );
+    }
+
+    #[gpui::test]
+    async fn a_rebuilt_right_click_menu_follows_writes_with_its_new_items(cx: &mut TestAppContext) {
+        a_rebuilt_row_menu_follows_writes_with_its_new_items(cx, Opening::RightClick).await;
+    }
+
+    #[gpui::test]
+    async fn a_rebuilt_keyboard_menu_follows_writes_with_its_new_items(cx: &mut TestAppContext) {
+        a_rebuilt_row_menu_follows_writes_with_its_new_items(cx, Opening::Keyboard).await;
     }
 
     /// Shift-F10 in an open right-click menu, on a History commit, a
