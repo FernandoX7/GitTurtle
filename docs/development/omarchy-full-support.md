@@ -536,6 +536,22 @@ cover current upstream x86-64 Omarchy.
           file is chosen); a scroll stop cuts Review restore… in the 67 px detail at 461 × 490;
           taste: with no stash the 219 px list holds one line above a disabled Previous/More, the
           tracking-branch tooltip covers the path line, the author tooltip repeats a whole label.
+        Found by the implementers and reviewers later on 2026-10-29:
+        - Layout: a branch picker at its 280 px limit overflows the ~242 px group at 18 pt; a long
+          file name wider than Compare's whole row at 461 px (the fixture's
+          `RepositoryNavigationSidebar.tsx`) is still start-elided (recommended: let the path take
+          a second line at narrow widths rather than cut the name); `compare_minimum` does not count
+          the row File actions wraps onto; scroll containers stop mid-control (no whole-control
+          snapping in GPUI's scroll); in very short windows a keyboard menu caps below DESIGN's four
+          rows; a dropdown moved up by the status-bar inset can cover its trigger (keep it clear of
+          its trigger); the raised pickers' own edge is unmeasured against the dimmed page.
+        - GitHub panel: the Files page's bound is cut 3 px at the fold at rest at 18 pt (layout,
+          not reveal); at 461 × 490 the Conversations pane is taller than the body, so its ring's
+          bottom is below the fold; when the content cannot scroll further (Recover drafts at 13 pt
+          461) a top edge can still cut a line; after a keyboard open focus stays on the pane below
+          the fold until the next Tab.
+        - Filters: the Working Changes filter shares the History filter's executor and is not
+          coalesced.
         Owner decision, 2026-10-28: Linux reaches feature parity with macOS where possible; macOS is
         checked later on a Mac. The gaps (README "Linux gaps", `docs/file-previews.md`,
         `docs/linux.md`), each a separate change with a dated research note on the dependency
