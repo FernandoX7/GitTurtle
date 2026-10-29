@@ -28,7 +28,6 @@ pub(super) struct State {
     observed: Option<HistoryScope>,
     complete: Option<HashSet<String>>,
     pub pending: Option<Update>,
-    followed: bool,
     scope_error: Option<String>,
     /// The vanished scope already reported, so later quiet refreshes and
     /// accepted writes do not raise it again after it is dismissed.
@@ -64,11 +63,9 @@ impl State {
         self.observed = None;
         self.complete = None;
         self.pending = None;
-        self.followed = false;
     }
     pub fn scope_unavailable(&mut self) {
         self.pending = Some(Update::Changed);
-        self.followed = false;
     }
     /// A quiet read could not resolve the scope; the displayed history stays.
     /// One vanished scope is reported once: after its report is dismissed,
@@ -105,18 +102,21 @@ impl State {
     pub fn captured(&mut self, snapshot: &worker::Snapshot) {
         self.remember(snapshot);
         self.pending = None;
-        self.followed = false;
     }
+    /// A quiet read's `snapshot`. Where History is `following` its newest
+    /// rows, the read is installed at the top of the list it follows, so the
+    /// rows a cue would announce, this read's and any an earlier one cued,
+    /// are the ones it shows: the cue ends rather than staying, as it did
+    /// through the reads after Pull and Push with the new commit already on
+    /// top. Elsewhere the list keeps its rows and the update is cued.
     fn observe(&mut self, snapshot: &worker::Snapshot, following: bool) {
-        if let Some(previous) = &self.observed
+        if following {
+            self.pending = None;
+        } else if let Some(previous) = &self.observed
             && let Some(update) =
                 classify_snapshot_update(previous, self.complete.as_ref(), snapshot)
         {
             self.pending = Some(self.pending.map_or(update, |pending| pending.merge(update)));
-            self.followed = following;
-        }
-        if following && self.pending.is_some() {
-            self.followed = true;
         }
         self.remember(snapshot);
     }
@@ -459,23 +459,19 @@ impl GitTurtle {
     }
 
     /// The cue History's scope toolbar shows while a quiet read has
-    /// observed history the list does not show yet, or shows only since it
-    /// followed the newest rows (`views::render_history_scope_toolbar`). It
-    /// lives in the toolbar, where the bar it replaced, a full-width row
-    /// above History in every mode, pushed the page down 35 px after a
-    /// Fetch; Latest, beside it, is its action, which reads current local
-    /// tips and ends it, as the bar's Show latest and Dismiss did.
+    /// observed history the list does not show yet
+    /// (`views::render_history_scope_toolbar`). It lives in the toolbar,
+    /// where the bar it replaced, a full-width row above History in every
+    /// mode, pushed the page down 35 px after a Fetch; Latest, beside it, is
+    /// its action, which reads current local tips and ends it, as the bar's
+    /// Show latest and Dismiss did. A later quiet read that History follows
+    /// at its top, such as the one after a Pull, shows those rows and ends
+    /// it too, as Refresh, which captures current tips, does.
     pub(super) fn history_update_cue(&self) -> Option<UpdateCue> {
         let update = self.history_updates.pending?;
-        let label = SharedString::from(update.label());
-        let following = self.history_updates.followed
-            && follows_latest(
-                self.mode,
-                self.history_search_active(),
-                self.history_paging.is_deep(self.visible.len()),
-                f32::from(self.history_scroll.0.borrow().base_handle.offset().y),
-            );
-        Some(UpdateCue { label, following })
+        Some(UpdateCue {
+            label: update.label().into(),
+        })
     }
 }
 
@@ -485,9 +481,6 @@ pub(super) struct UpdateCue {
     /// politely: "1 new commit", "History updated". They stay the same as
     /// History scrolls, so the status is not announced again.
     pub label: SharedString,
-    /// Whether History shows the new rows at its top, which Latest's
-    /// tooltip says.
-    pub following: bool,
 }
 
 #[cfg(test)]
@@ -683,7 +676,9 @@ mod tests {
                 );
                 assert!(Arc::ptr_eq(app.content.as_ref().unwrap(), &content));
                 assert_eq!(window.focused(cx), focus);
-                assert_eq!(app.history_updates.pending, Some(Update::New(3)));
+                // "b", followed at the top, is shown; "c" and "d", read
+                // while History kept its rows, are cued.
+                assert_eq!(app.history_updates.pending, Some(Update::New(2)));
                 app
             });
             *captured.borrow_mut() = Some(app.clone());
@@ -812,15 +807,10 @@ mod tests {
     fn bursts_coalesce_and_uncertainty_remains_honest() {
         let mut state = State {
             pending: Some(Update::New(2)),
-            followed: true,
             ..Default::default()
         };
         state.scope_unavailable();
         assert_eq!(state.pending, Some(Update::Changed));
-        assert!(
-            !state.followed,
-            "a vanished scope cannot claim current rows are visible"
-        );
         let mut error = None;
         state.report_scope_error("branch missing", None, &mut error);
         state.clear_scope_error(&mut error);
@@ -834,6 +824,21 @@ mod tests {
             Update::New(2).merge(Update::Changed).merge(Update::New(3)),
             Update::Changed
         );
+    }
+
+    /// Draws History with `update` cued. A quiet read History follows at its
+    /// top, such as the local watcher's after the fixture's own writes, shows
+    /// current rows and ends the cue, and can land between a draw's frames,
+    /// so the cue is set and drawn again until it lasted through them all.
+    fn draw_cued(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, update: Update) {
+        for _ in 0..50 {
+            app.update(cx, |app, _| app.history_updates.pending = Some(update));
+            crate::views::tests::draw(cx);
+            if app.read_with(cx, |app, _| app.history_updates.pending == Some(update)) {
+                return;
+            }
+        }
+        panic!("the cue lasted through a draw");
     }
 
     /// The new-history cue lives in History's scope toolbar, so nothing
@@ -864,7 +869,11 @@ mod tests {
         };
         let first_row = bounds(cx, "history-row-0").top();
 
-        // A commit made elsewhere, read by a quiet refresh as a Fetch's is.
+        // A commit made elsewhere, read by a quiet refresh as a Fetch's is,
+        // in Changes, where History keeps its rows: at History's top the
+        // read would show it there, with nothing to cue.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
         fixture_git(
             &fixture.path().join("narrow"),
             &[
@@ -903,6 +912,12 @@ mod tests {
             app.read_with(cx, |app, _| app.history_updates.pending),
             Some(Update::New(1))
         );
+        // Back at History's top, a later quiet read, such as the local
+        // watcher's of the same commit, is followed and ends the cue
+        // (`a_followed_quiet_read_shows_the_cued_rows_and_ends_the_cue`), so
+        // each layout below draws the cue from the update this read found.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        settle(&app, cx).await;
         assert_eq!(
             bounds(cx, "history-row-0").top(),
             first_row,
@@ -921,7 +936,7 @@ mod tests {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             cx.simulate_resize(size(px(width), px(height)));
             crate::views::COMPACT_LABELS.with(|names| names.borrow_mut().clear());
-            draw(cx);
+            draw_cued(&app, cx, Update::New(1));
             let toolbar = bounds(cx, "history-scope-toolbar");
             let status = bounds(cx, "history-update-status");
             assert!(within(status, toolbar), "{at}: {status:?} in {toolbar:?}");
@@ -958,7 +973,7 @@ mod tests {
 
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         cx.simulate_resize(size(px(1000.), px(680.)));
-        draw(cx);
+        draw_cued(&app, cx, Update::New(1));
         let latest = bounds(cx, "history-newest");
         cx.simulate_click(latest.center(), Modifiers::default());
         settle(&app, cx).await;
@@ -967,5 +982,168 @@ mod tests {
             None
         );
         assert!(cx.debug_bounds("history-update-status").is_none());
+    }
+
+    /// A quiet read History follows at its top, as the read after a Pull or
+    /// a Push from History is (`refresh_after_write` queues it), installs
+    /// its rows there and ends the cue an earlier read, made in Changes,
+    /// raised: the rows it announced are shown, so its status and Latest's
+    /// dot go. The cue once stayed through Pull and Push with the new commit
+    /// already the top row.
+    #[gpui::test]
+    async fn a_followed_quiet_read_shows_the_cued_rows_and_ends_the_cue(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, fixture_git, history_script, history_window_from, settle};
+        let (fixture, app, cx) = history_window_from(cx, &history_script(3, 1)).await;
+        settle(&app, cx).await;
+        let repository = fixture.path().join("narrow");
+        let commit = |message: &str| {
+            fixture_git(
+                &repository,
+                &[
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "commit",
+                    "--allow-empty",
+                    "--quiet",
+                    "-m",
+                    message,
+                ],
+            )
+        };
+        let quiet_read = |cx: &mut VisualTestContext, done: &dyn Fn(&GitTurtle) -> bool| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.queue_automatic_refresh(
+                        local_refresh::LocalChange {
+                            git: true,
+                            worktree: true,
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                })
+            });
+            for _ in 0..2000 {
+                cx.run_until_parked();
+                if app.read_with(cx, |app, _| done(app)) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("the quiet read landed");
+        };
+        let rows = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.visible
+                    .iter()
+                    .take(2)
+                    .map(|&row| app.commits[row].subject.clone())
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        // A commit read in Changes, where History keeps its rows, is cued.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        commit("fetched");
+        quiet_read(cx, &|app| app.history_updates.pending.is_some());
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.history_updates.pending),
+            Some(Update::New(1))
+        );
+        // Back at History's top the cue lasts exactly while the list does
+        // not show the commit: the local watcher's own read of it, followed
+        // there, may already have shown it and ended the cue.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+        settle(&app, cx).await;
+        draw(cx);
+        let cued = app.read_with(cx, |app, _| app.history_updates.pending.is_some());
+        assert_eq!(
+            cued,
+            rows(cx).first().map(String::as_str) != Some("fetched"),
+            "the cue lasts while the list does not show the commit"
+        );
+        assert_eq!(cx.debug_bounds("history-newest-dot").is_some(), cued);
+
+        // The read after a Pull, followed at History's top, shows it and
+        // the commit the Pull brought, and the cue ends.
+        commit("pulled");
+        quiet_read(cx, &|app| {
+            app.visible
+                .first()
+                .is_some_and(|&row| app.commits[row].subject == "pulled")
+        });
+        settle(&app, cx).await;
+        draw(cx);
+        assert_eq!(rows(cx), ["pulled", "fetched"]);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.history_updates.pending),
+            None,
+            "the rows the cue announced are shown"
+        );
+        assert!(cx.debug_bounds("history-update-status").is_none());
+        assert!(cx.debug_bounds("history-newest-dot").is_none());
+    }
+
+    /// While the cue lasts, Latest's dot is 5 px across, 1 px inside the
+    /// button's top right corner, scaled with the text, at 13 and 18 pt in
+    /// the labelled and the compact toolbar. In the compact square it stands
+    /// at least 2 px clear of the up arrow, whose ink beside the rows the
+    /// dot covers ends 8.8 px in from the square's right edge at 13 pt: the
+    /// 6 px dot 2 px in stood 0.8 px from it there and 0.9 px at 18 pt.
+    #[gpui::test]
+    async fn latest_marks_the_cue_with_a_dot_clear_of_its_arrow(cx: &mut TestAppContext) {
+        use crate::views::tests::{history_script, history_window_from, settle};
+        let (_fixture, app, cx) = history_window_from(cx, &history_script(3, 1)).await;
+        settle(&app, cx).await;
+        let near = |a: Pixels, b: Pixels| (f32::from(a) - f32::from(b)).abs() <= 0.5;
+        for (text, width, height, compact) in [
+            (13, 1480., 980., false),
+            (18, 1480., 980., false),
+            (13, 461., 490., true),
+            (18, 461., 490., true),
+        ] {
+            let at = format!("{text} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw_cued(&app, cx, Update::New(1));
+            let latest = cx.debug_bounds("history-newest").expect("Latest is drawn");
+            let dot = cx
+                .debug_bounds("history-newest-dot")
+                .expect("its dot is drawn");
+            let inset = appearance::ui_size(1.);
+            assert!(
+                near(dot.size.width, appearance::ui_size(5.)),
+                "{at}: {dot:?}"
+            );
+            assert!(
+                near(dot.size.height, appearance::ui_size(5.)),
+                "{at}: {dot:?}"
+            );
+            assert!(
+                near(dot.top() - latest.top(), inset),
+                "{at}: {dot:?} in {latest:?}"
+            );
+            assert!(
+                near(latest.right() - dot.right(), inset),
+                "{at}: {dot:?} in {latest:?}"
+            );
+            assert_eq!(
+                near(latest.size.width, latest.size.height),
+                compact,
+                "{at}: Latest's square {latest:?}"
+            );
+            if compact {
+                let ink = latest.right() - appearance::ui_size(8.8);
+                assert!(
+                    f32::from(dot.left() - ink) >= 2.,
+                    "{at}: {dot:?} clear of the arrow's ink at {ink:?}"
+                );
+            }
+        }
     }
 }

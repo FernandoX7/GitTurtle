@@ -1205,9 +1205,13 @@ impl GitTurtle {
         // cue, leads its name and tooltip with the cue's words, and an accent
         // dot in its top right corner marks it, so the cue is seen where its
         // words do not fit. The dot is laid over the button from a box of the
-        // button's own size, so it sits 2 px in from the button's edge, clear
-        // of the label and of the icon's glyph, rather than from the content
-        // inside the button's padding, where it touched both.
+        // button's own size, rather than from the content inside the
+        // button's padding, where it touched the label and the glyph. It
+        // sits 1 px in from the button's edge, 5 px across, so it stands at
+        // least 2 px clear of the compact square's up arrow, whose ink ends
+        // 8.8 px from the square's right edge at the default size, beside
+        // the rows the dot covers; the 6 px dot 2 px in stood 0.8 px from it
+        // there and 0.9 px at 18 pt.
         let latest = match &cue {
             Some(cue) => {
                 let name = SharedString::from(format!("Latest · {}", cue.label));
@@ -1220,20 +1224,15 @@ impl GitTurtle {
                     .relative()
                     .flex_shrink_0()
                     .child(latest.tooltip(format!(
-                        "{name}{} · Read current local history and show its newest rows; keeps the selected inspector",
-                        if cue.following {
-                            ", shown at the top"
-                        } else {
-                            ""
-                        }
+                        "{name} · Read current local history and show its newest rows; keeps the selected inspector"
                     )))
                     .child(
                         div()
                             .debug_selector(|| "history-newest-dot".into())
                             .absolute()
-                            .top(appearance::ui_size(2.))
-                            .right(appearance::ui_size(2.))
-                            .size(appearance::ui_size(6.))
+                            .top(appearance::ui_size(1.))
+                            .right(appearance::ui_size(1.))
+                            .size(appearance::ui_size(5.))
                             .rounded_full()
                             .bg(rgb(colors.accent)),
                     )
