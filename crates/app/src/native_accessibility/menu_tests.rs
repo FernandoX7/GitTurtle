@@ -7,8 +7,9 @@ use crate::*;
 use core::prelude::v1::test;
 use gpui_kit::component::{
     Theme,
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use std::{cell::RefCell, rc::Rc};
 
 /// The items chosen from the probe's menu, in order.
@@ -374,5 +375,88 @@ fn a_dropdown_trigger_keeps_its_place_among_its_siblings(cx: &mut TestAppContext
         after.left(),
         grow.right() + margin,
         "one margin between {grow:?} and {after:?}"
+    );
+}
+
+/// The menus a row's right-click built, as weak handles.
+type Built = Rc<RefCell<Vec<WeakEntity<PopupMenu>>>>;
+
+/// A row with the app's right-click menu, drawn while `shown` holds, as a
+/// History or Working Changes row is until a list change or a scroll takes
+/// it away.
+struct ContextRowProbe {
+    shown: bool,
+    built: Built,
+}
+
+impl Render for ContextRowProbe {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let built = self.built.clone();
+        div().size_full().p_4().when(self.shown, |this| {
+            this.child(
+                div()
+                    .id("context-row")
+                    .debug_selector(|| "context-row".into())
+                    .h(px(24.))
+                    .w_full()
+                    .child("A row")
+                    .app_context_menu(move |menu, _, cx| {
+                        built.borrow_mut().push(cx.entity().downgrade());
+                        menu.item(PopupMenuItem::new("Act"))
+                    }),
+            )
+        })
+    }
+}
+
+/// A right-click menu goes with its row. The kit's context menu keeps the
+/// menu it opened, and the subscription to that menu's dismissal, in state
+/// its element shares with the dismissal's callback; the callback held that
+/// state strongly, a cycle through the app's subscriber set that kept the
+/// menu, and everything its builder captured, for the rest of the app's
+/// life once the row was gone.
+#[gpui::test]
+fn a_context_menu_goes_with_its_row(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let built = Built::default();
+    let probe = Rc::new(RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let (built, probe) = (built.clone(), probe.clone());
+        move |window, cx| {
+            let row = cx.new(|_| ContextRowProbe { shown: true, built });
+            *probe.borrow_mut() = Some(row.clone());
+            Root::new(row, window, cx)
+        }
+    });
+    let probe: Entity<ContextRowProbe> = probe.take().expect("the probe");
+    draw(cx);
+    let row = cx.debug_bounds("context-row").expect("the row");
+    cx.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
+    draw(cx);
+    draw(cx);
+    assert!(
+        cx.debug_bounds("menu-item: Act · MenuItem").is_some(),
+        "the right-click opened the row's menu"
+    );
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert!(
+        cx.debug_bounds("menu-item: Act · MenuItem").is_none(),
+        "Escape closed the menu"
+    );
+
+    probe.update(cx, |probe, cx| {
+        probe.shown = false;
+        cx.notify();
+    });
+    draw(cx);
+    draw(cx);
+    assert!(cx.debug_bounds("context-row").is_none(), "the row is gone");
+    let built = built.borrow();
+    assert_eq!(built.len(), 1, "one menu was built");
+    assert!(
+        built[0].upgrade().is_none(),
+        "the row's menu outlived the row"
     );
 }

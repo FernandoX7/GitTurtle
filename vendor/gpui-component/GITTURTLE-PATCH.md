@@ -855,3 +855,22 @@ opens fifteen of the repository window's dialogs and reads each as a modal
 dialog named by its title, then a reviewed write as a modal alert dialog; the
 discard review's test reads its own alert. Remove this part of the patch when
 upstream lets an AlertDialog choose its role, and those tests pass without it.
+
+The context-menu lifetime patch modifies `src/menu/context_menu.rs`. A context
+menu element keeps, in state it shares with its callbacks, the menu it opened
+and the subscription to that menu's dismiss event, and upstream's dismiss
+callback held that shared state strongly. The app's subscriber set keeps the
+callback until the subscription drops, and a GPUI subscription holds the set
+strongly, so the set, the callback, the shared state and the subscription
+formed a cycle that no drop broke: once its element was gone, a context menu's
+last menu stayed alive with everything its builder captured, for the rest of
+the app's life and past it. The callback now holds the shared state weakly and
+does nothing once the state is gone; opening, dismissing and replacing a menu
+are unchanged. The consumers are every app right-click menu, which the app
+builds through `AppContextMenu::app_context_menu`, among them the History and
+Working Changes rows' menus.
+`cargo test --locked -p gitturtle native_accessibility::menu_tests::a_context_menu_goes_with_its_row`
+opens a row's menu with a right-click, closes it with Escape, takes the row
+away and checks that the menu was released; it failed before this change.
+Remove this part of the patch when upstream's dismiss callback no longer holds
+the shared state strongly, and that test passes without it.
