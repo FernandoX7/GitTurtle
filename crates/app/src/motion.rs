@@ -1944,16 +1944,18 @@ mod tests {
 
     /// Starts a Stage all and holds it, as a slow write.
     fn held_write(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> crate::operations::Held {
+        held(app, cx, gitturtle_core::WriteCommand::StageAll)
+    }
+
+    /// Starts `command` and holds it, as a slow write.
+    fn held(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        command: gitturtle_core::WriteCommand,
+    ) -> crate::operations::Held {
         let held = app.update(cx, |app, _| app.operations.hold());
         cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                app.write(
-                    gitturtle_core::WriteCommand::StageAll,
-                    "Staging files…",
-                    window,
-                    cx,
-                )
-            })
+            app.update(cx, |app, cx| app.write(command, "Working…", window, cx))
         });
         next_frame(cx);
         held
@@ -2482,6 +2484,235 @@ mod tests {
         .await;
         close_dialog(cx);
         drop(fixture);
+    }
+
+    /// Opens the right-click menu of the row `selector` draws, near its
+    /// leading edge, and draws it.
+    fn right_click(cx: &mut VisualTestContext, selector: &'static str) {
+        let row = cx.debug_bounds(selector).expect(selector);
+        let pointer = point(row.left() + px(16.), row.center().y);
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        cx.simulate_mouse_down(pointer, gpui::MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(pointer, gpui::MouseButton::Right, Modifiers::default());
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        next_frame(cx);
+    }
+
+    /// Whether the open menu offers `item`: drawn available, drawn
+    /// disabled, or not drawn.
+    fn offered(cx: &mut VisualTestContext, item: &str) -> Option<bool> {
+        let drawn = |cx: &mut VisualTestContext, role: &str| {
+            cx.debug_bounds(format!("menu-item: {item} · {role}").leak())
+                .is_some()
+        };
+        if drawn(cx, "MenuItem") {
+            Some(true)
+        } else if drawn(cx, "MenuItem disabled") {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// A right-click menu on a History commit, a navigator branch or a
+    /// working row follows writes as the pickers' menus do: opened at rest,
+    /// it is built again in place, its items disabled, when a write starts
+    /// and available again when it ends; opened while a write runs, it
+    /// offers none of the items the write refuses until it ends. Each read
+    /// the write once, as it opened, and kept its items so.
+    #[gpui::test]
+    async fn right_click_menus_follow_writes(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        fixture_git(&repository, &["reset", "-q", "--hard"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        let branch = app.read_with(cx, |app, _| {
+            app.nav_rows
+                .iter()
+                .position(|row| matches!(row, crate::NavRow::Branch(..)))
+                .expect("a branch in the navigator")
+        });
+        let branch: &'static str = format!("nav-row-{branch}").leak();
+        // An Unstage all with nothing staged, which moves no row.
+        let write =
+            |cx: &mut VisualTestContext| held(&app, cx, gitturtle_core::WriteCommand::UnstageAll);
+        let rows = [
+            ("history-row-0", "Revert this commit…"),
+            (branch, "Branch actions…"),
+            ("working", "Delete untracked file…"),
+        ];
+        for (row, item) in rows {
+            let row = if row == "working" {
+                // An untracked file in Changes.
+                std::fs::write(repository.join("extra.txt"), "extra\n").unwrap();
+                cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+                rows_arrived(&app, cx).await;
+                draw(cx);
+                let position = position_of(&app, cx, "extra.txt", ChangeArea::Unstaged);
+                format!("working-row-{position}").leak()
+            } else {
+                row
+            };
+            right_click(cx, row);
+            assert_eq!(offered(cx, item), Some(true), "{row}: {item} at rest");
+            let held = write(cx);
+            next_frame(cx);
+            assert_eq!(
+                offered(cx, item),
+                Some(false),
+                "{row}: {item} in the open menu once a write starts"
+            );
+            release(&app, held, cx).await;
+            next_frame(cx);
+            assert_eq!(
+                offered(cx, item),
+                Some(true),
+                "{row}: {item} in the open menu once the write ends"
+            );
+            cx.simulate_keystrokes("escape");
+            next_frame(cx);
+            let held = write(cx);
+            right_click(cx, row);
+            assert_eq!(
+                offered(cx, item),
+                Some(false),
+                "{row}: {item} in a menu opened while a write runs"
+            );
+            release(&app, held, cx).await;
+            next_frame(cx);
+            assert_eq!(
+                offered(cx, item),
+                Some(true),
+                "{row}: {item} in that menu once the write ends"
+            );
+            cx.simulate_keystrokes("escape");
+            next_frame(cx);
+        }
+        drop(fixture);
+    }
+
+    /// However a right-click menu closes, by Escape, a press outside it or
+    /// a resize, as a tiling compositor's re-tile does, focus returns to the
+    /// list it was opened from, whose keys reach it again: Down moves the
+    /// selection and Shift-F10 opens the keyboard's menu. So it does after a
+    /// right-click on another row, or a third, or on the same row again,
+    /// closes the menu open there and opens the row's own. The resize's
+    /// dismissal skipped the menu's own Cancel and left focus on the menu,
+    /// which no frame drew, so Down, Space and Shift-F10 stopped reaching
+    /// the list; a menu opened by a right-click on another row returned
+    /// focus to the menu it closed, which no frame drew either. The app's
+    /// keys are bound here as the app binds them; a test window binds none
+    /// of them (`views::tests::init_app`).
+    #[gpui::test]
+    async fn a_right_click_menus_focus_returns_to_its_list_however_it_closes(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = six_files(cx).await;
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, _| list.is_focused(window));
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]
+        let row_of = |cx: &mut VisualTestContext, position: usize| {
+            app.read_with(cx, |app, _| match app.actionable_working_rows()[position] {
+                workspace::WorkingRow::File(index, area) => Some((index, area)),
+                _ => None,
+            })
+        };
+        let (delta, epsilon) = (row_of(cx, 4), row_of(cx, 5));
+        let item = "Delete untracked file…";
+        // How far below the pointer a right-click menu draws its item.
+        let below = |cx: &mut VisualTestContext, pointer: Point<Pixels>| {
+            cx.debug_bounds(format!("menu-item: {item} · MenuItem").leak())
+                .map(|drawn| f32::from(drawn.top() - pointer.y))
+        };
+        let (delta_row, epsilon_row, gamma_row) =
+            ("working-row-4", "working-row-5", "working-row-6");
+        // The rows each case right-clicks in turn, each while the menu the
+        // one before opened is still open, and how it closes the last.
+        let cases: [(&str, &[&'static str]); 6] = [
+            ("Escape", &[delta_row]),
+            ("a press outside", &[delta_row]),
+            ("a resize", &[delta_row]),
+            ("Escape", &[epsilon_row, delta_row]),
+            ("Escape", &[epsilon_row, delta_row, gamma_row]),
+            ("Escape", &[delta_row, delta_row]),
+        ];
+        let mut offset = None;
+        for (closing, rows) in cases {
+            let case = format!("{closing} after a right-click on {rows:?}");
+            // delta selected, the list focused.
+            let row = cx.debug_bounds(delta_row).expect("delta's row");
+            cx.simulate_click(row.center(), Modifiers::default());
+            cx.update(|window, cx| list.focus(window, cx));
+            next_frame(cx);
+            assert_eq!(app.read_with(cx, |app, _| app.working_selected), delta);
+            for (turn, selector) in rows.iter().enumerate() {
+                // The first right-click where `right_click` presses; a later
+                // one beside the open menu's leading edge, which starts at
+                // the pointer before, so that it lands on the row.
+                let bounds = cx.debug_bounds(selector).expect(selector);
+                let inset = if turn == 0 { px(16.) } else { px(6.) };
+                let pointer = point(bounds.left() + inset, bounds.center().y);
+                cx.simulate_mouse_move(pointer, None, Modifiers::default());
+                cx.simulate_mouse_down(pointer, gpui::MouseButton::Right, Modifiers::default());
+                cx.simulate_mouse_up(pointer, gpui::MouseButton::Right, Modifiers::default());
+                cx.executor().run_until_parked();
+                next_frame(cx);
+                next_frame(cx);
+                // The row's own menu, at its pointer.
+                let drawn = below(cx, pointer).expect("the row's menu opened");
+                let offset = *offset.get_or_insert(drawn);
+                assert!(
+                    (drawn - offset).abs() < 1.,
+                    "{case}: {selector}'s menu opened at its pointer"
+                );
+                assert!(!focused(cx), "{case}: the menu holds focus");
+            }
+            match closing {
+                "Escape" => cx.simulate_keystrokes("escape"),
+                "a press outside" => {
+                    // On delta's row, before the pointer the menu opened at,
+                    // outside the menu's fill. The list's foot lies under the
+                    // menu's lower items in this window.
+                    let outside = point(row.left() + px(6.), row.bottom() - px(4.));
+                    cx.simulate_click(outside, Modifiers::default());
+                }
+                _ => {
+                    let viewport = cx.update(|window, _| window.viewport_size());
+                    cx.simulate_resize(size(viewport.width - px(80.), viewport.height - px(80.)));
+                }
+            }
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert_eq!(offered(cx, item), None, "{case}: the menu closed");
+            assert!(focused(cx), "{case}: focus is back on the list");
+            cx.simulate_keystrokes("down");
+            next_frame(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.working_selected),
+                epsilon,
+                "{case}: Down reached the list"
+            );
+            cx.simulate_keystrokes("shift-f10");
+            next_frame(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.file_menu.is_some()),
+                "{case}: Shift-F10 opened the keyboard's menu"
+            );
+            assert_eq!(offered(cx, item), Some(true), "{case}: epsilon's menu");
+            cx.simulate_keystrokes("escape");
+            next_frame(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.file_menu.is_none()) && focused(cx),
+                "{case}: Escape closed the keyboard's menu"
+            );
+        }
     }
 
     /// The Settings page's identity fields and actions wait for a write's

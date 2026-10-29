@@ -4129,7 +4129,12 @@ impl GitTurtle {
                             cx,
                         )
                     }))
-                    .app_context_menu(move |menu, _, _| {
+                    .app_context_menu(move |menu, _, cx| {
+                        // Read as it is built: a write's start or end builds
+                        // the open menu again.
+                        let busy = ignore_owner
+                            .upgrade()
+                            .is_none_or(|owner| owner.read(cx).operation_busy.is_some());
                         working_row_menu(
                             menu,
                             ignore_owner.clone(),
@@ -4143,6 +4148,7 @@ impl GitTurtle {
                             busy,
                         )
                     })
+                    .follows_writes(cx.entity().downgrade())
                     .into_any_element()
             }
         }

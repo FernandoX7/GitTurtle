@@ -60,21 +60,51 @@ pub(super) fn bind_keys(cx: &mut App) {
     ]);
 }
 
-/// The cursor row a keyboard's menu opens beside, within the list's visible
-/// part ([`KeyboardMenu::cursor_row`]): the row's leading inset, where the
-/// menu's leading edge starts, and its top and bottom edges. A menu can end
-/// at the list's trailing inset instead ([`RowAnchor::trailing`]).
+/// The row a menu opens beside: a keyboard's cursor row, within the list's
+/// visible part ([`KeyboardMenu::cursor_row`]), or the row a pointer pressed
+/// ([`RowAnchor::pointer`]). It holds where the menu's leading edge starts,
+/// the row's top edge, above which a menu that does not fit below ends, and
+/// where the menu's top goes when it opens below: the row's foot, or the
+/// pointer. A menu can end at the
+/// list's trailing inset instead ([`RowAnchor::trailing`]).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct RowAnchor {
     /// Where the menu's leading edge starts.
     pub(super) x: Pixels,
     top: Pixels,
-    bottom: Pixels,
+    /// Where the menu's top goes when it opens below the row.
+    below: Pixels,
     /// Where the menu's trailing edge ends, in place of starting at `x`.
     trailing: Option<Pixels>,
 }
 
 impl RowAnchor {
+    /// The row painted at `row` that a pointer pressed at `pointer`: its menu
+    /// starts at the pointer, below it, or lies wholly above the row.
+    pub(super) fn pointer(pointer: Point<Pixels>, row: Bounds<Pixels>) -> Self {
+        Self {
+            x: pointer.x,
+            top: row.top(),
+            below: pointer.y.clamp(row.top(), row.bottom()),
+            trailing: None,
+        }
+    }
+
+    /// The tallest the menu's items may be with its fill inside `room`: the
+    /// room below where that holds about four rows ([`MENU_FLOOR`]), and
+    /// otherwise the larger of the room below and the room above the row,
+    /// where it goes when the room below is too short for it ([`RowMenu`]).
+    fn cap(&self, room: Bounds<Pixels>) -> Pixels {
+        let below = room.bottom() - self.below;
+        let above = self.top - MENU_EDGE - room.top();
+        if below >= appearance::ui_size(MENU_FLOOR) {
+            below
+        } else {
+            below.max(above)
+        }
+        .max(Pixels::ZERO)
+    }
+
     /// The menu ends at `right`, the list's trailing inset, rather than
     /// starting at the row's leading inset: History's commit menu, which
     /// would otherwise lie over the graph's lanes.
@@ -127,14 +157,7 @@ impl KeyboardMenu {
         cx: &mut Context<GitTurtle>,
     ) -> Self {
         let room = menu_bounds(window);
-        let below = room.bottom() - row.bottom;
-        let above = row.top - MENU_EDGE - room.top();
-        let cap = if below >= appearance::ui_size(MENU_FLOOR) {
-            below
-        } else {
-            below.max(above)
-        }
-        .max(Pixels::ZERO);
+        let cap = row.cap(room);
         let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
             open_menu(
                 build(menu).action_context(focus),
@@ -181,7 +204,7 @@ impl KeyboardMenu {
         RowAnchor {
             x: bounds.left() + inset,
             top: visible(top),
-            bottom: visible(top + height),
+            below: visible(top + height),
             trailing: None,
         }
     }
@@ -229,13 +252,15 @@ impl KeyboardMenu {
     }
 }
 
-/// A keyboard's menu, placed beside its cursor row once its size is known:
-/// below the row where it fits in `room` there, and otherwise wholly above
-/// the row, its edge clear of it, at the row's leading inset or ending at
-/// its trailing one, and inside `room` either way. GPUI's anchor, which
-/// placed it before, slid a menu that ran past the window up just far
-/// enough, over its own row (5.5 px at 18 pt in a 461 × 490 window), and
-/// moved it by whole pixels, which can put half a pixel past the room.
+/// A row's menu, placed beside its row once its size is known: below the
+/// row, or a pointer's menu below the pointer, where it fits in `room`
+/// there, and otherwise wholly above the row, its edge clear of it, at the
+/// row's leading inset or the pointer, or ending at its trailing inset, and
+/// inside `room` either way. GPUI's anchor, which placed a keyboard's menu
+/// before, slid a menu that ran past the window up just far enough, over its
+/// own row (5.5 px at 18 pt in a 461 × 490 window), and moved it by whole
+/// pixels, which can put half a pixel past the room; the kit's context menu
+/// did the same to a pointer's.
 struct RowMenu {
     row: RowAnchor,
     room: Bounds<Pixels>,
@@ -246,8 +271,8 @@ impl RowMenu {
     /// Where the menu's fill, `size`, starts.
     fn origin(&self, size: Size<Pixels>) -> Point<Pixels> {
         let room = self.room;
-        let y = if self.row.bottom + size.height <= room.bottom() {
-            self.row.bottom
+        let y = if self.row.below + size.height <= room.bottom() {
+            self.row.below
         } else {
             (self.row.top - MENU_EDGE - size.height).max(room.top())
         };
@@ -670,21 +695,309 @@ impl RenderOnce for AppDropdown {
 
 /// An element's right-click menu as the app's menus open ([`open_menu`]),
 /// in place of the kit's `context_menu`: its top is the pointer's place.
-pub(crate) trait AppContextMenu: gpui_kit::component::menu::ContextMenuExt + Sized {
+pub(crate) trait AppContextMenu:
+    InteractiveElement + ParentElement + IntoElement + Sized + 'static
+{
+    /// The menu `build` makes, each time a right-click on the row opens it.
     #[track_caller]
     fn app_context_menu(
-        self,
+        mut self,
         build: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
-    ) -> gpui_kit::component::menu::ContextMenu<Self> {
-        self.context_menu(move |menu, window, cx| {
-            let menu = build(menu, window, cx);
-            let top = window.mouse_position().y;
-            open_menu(menu, false, Some(top), None, window, cx)
+    ) -> PointerMenu<Self> {
+        // Stable across frames, so the open menu is kept from one to the
+        // next.
+        let caller = std::panic::Location::caller();
+        let id = self
+            .interactivity()
+            .element_id
+            .clone()
+            .map(|id| ElementId::Name(format!("app-context-menu-{id:?}").into()))
+            .unwrap_or_else(|| ElementId::CodeLocation(*caller));
+        PointerMenu {
+            id,
+            element: Some(self),
+            build: std::rc::Rc::new(build),
+            writes: None,
+        }
+    }
+}
+
+impl<E: InteractiveElement + ParentElement + IntoElement + 'static> AppContextMenu for E {}
+
+/// A row and the menu a right-click on it opens at the pointer
+/// ([`AppContextMenu`]). The kit's context menu placed the menu's corner at
+/// the pointer and only moved it into the window, which the status bar's
+/// inset shortens, so on a row near the bar it slid up over the row it was
+/// opened on. This one places it as a keyboard's row menu is placed
+/// ([`RowMenu`]): at the pointer, below it, where the room down to the bar
+/// holds about four rows or the whole menu, its items capped at that room;
+/// otherwise wholly above the row, its edge clear of it, capped at the
+/// larger room. A resized window closes it, as it closes a button's menu,
+/// since the row it was placed beside may have moved.
+pub(crate) struct PointerMenu<E> {
+    id: ElementId,
+    element: Option<E>,
+    build: std::rc::Rc<BuildMenu>,
+    /// The app whose writes the menu's items follow ([`Self::follows_writes`]).
+    writes: Option<WeakEntity<crate::GitTurtle>>,
+}
+
+impl<E> PointerMenu<E> {
+    /// Builds the open menu again, in place, when a write in `app` starts or
+    /// ends, as [`AppDropdown::follows_writes`] does a button's: the menu
+    /// read the write as it opened and kept its items so.
+    pub(crate) fn follows_writes(mut self, app: WeakEntity<crate::GitTurtle>) -> Self {
+        self.writes = Some(app);
+        self
+    }
+
+    fn shared(id: &GlobalElementId, window: &mut Window) -> SharedPointerMenu {
+        window.with_optional_element_state::<SharedPointerMenu, _>(Some(id), |state, _| {
+            let state = state.flatten().unwrap_or_default();
+            (state.clone(), Some(state))
         })
     }
 }
 
-impl<E: gpui_kit::component::menu::ContextMenuExt> AppContextMenu for E {}
+/// The menu a [`PointerMenu`] opened, kept from frame to frame.
+#[derive(Default)]
+struct PointerMenuState {
+    menu: Option<Entity<PopupMenu>>,
+    open: bool,
+    /// The row and the pointer it opened at.
+    anchor: Option<RowAnchor>,
+    /// Holds this state weakly: a strong hold was a cycle through the app's
+    /// subscriber set that kept the menu after its row was gone.
+    _dismiss: Option<Subscription>,
+}
+
+type SharedPointerMenu = std::rc::Rc<std::cell::RefCell<PointerMenuState>>;
+
+/// The right-click menus open in the app's windows, each by its focus, with
+/// the focus it returns to as it closes ([`PointerMenu`]). A right-click on
+/// a row while another row's menu is open closes that menu as the press
+/// starts, but focus leaves it only once the press has been handled, as its
+/// dismissal arrives; the new menu read the focus it returns to meanwhile
+/// and took the closed menu's, which no frame draws, so the list's keys
+/// stopped reaching it. It takes the closed menu's own instead, as the
+/// kit's context menu takes an earlier menu's.
+#[derive(Default)]
+struct OpenPointerMenus(Vec<(WeakFocusHandle, Option<FocusHandle>)>);
+
+impl Global for OpenPointerMenus {}
+
+impl OpenPointerMenus {
+    /// Where a menu opening now returns focus: where an open right-click
+    /// menu that holds focus returns it, or else the focus itself.
+    fn restore_target(window: &Window, cx: &App) -> Option<FocusHandle> {
+        let holder = cx.try_global::<Self>().and_then(|open| {
+            open.0.iter().find(|(menu, _)| {
+                menu.upgrade()
+                    .is_some_and(|menu| menu.contains_focused(window, cx))
+            })
+        });
+        match holder {
+            Some((_, previous)) => previous.clone(),
+            None => window.focused(cx),
+        }
+    }
+
+    /// Records `menu`, open, returning focus to `previous`; a menu that is
+    /// gone is forgotten.
+    fn open(menu: &FocusHandle, previous: Option<FocusHandle>, cx: &mut App) {
+        let open = &mut cx.default_global::<Self>().0;
+        open.retain(|(menu, _)| menu.upgrade().is_some());
+        open.push((menu.downgrade(), previous));
+    }
+
+    /// Forgets `menu`, closed.
+    fn close(menu: &FocusHandle, cx: &mut App) {
+        cx.default_global::<Self>()
+            .0
+            .retain(|(open, _)| open != menu);
+    }
+}
+
+impl<E: ParentElement + IntoElement + 'static> IntoElement for PointerMenu<E> {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
+    type RequestLayoutState = AnyElement;
+    type PrepaintState = Hitbox;
+
+    fn id(&self) -> Option<ElementId> {
+        Some(self.id.clone())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, AnyElement) {
+        let shared = Self::shared(id.expect("the menu's id"), window);
+        let shown = {
+            let state = shared.borrow();
+            state
+                .menu
+                .clone()
+                .zip(state.anchor)
+                .filter(|(menu, _)| state.open && !menu.read(cx).is_empty())
+        };
+        let overlay = shown.map(|(menu, row)| {
+            // Focused, so that its keys reach it.
+            if !menu.focus_handle(cx).contains_focused(window, cx) {
+                menu.focus_handle(cx).focus(window, cx);
+            }
+            let viewport = window.viewport_size();
+            deferred(
+                anchored().position(Point::default()).child(
+                    div()
+                        .w(viewport.width)
+                        .h(viewport.height)
+                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                        .child(RowMenu {
+                            row,
+                            room: menu_bounds(window),
+                            menu: menu.into_any_element(),
+                        }),
+                ),
+            )
+            .with_priority(gpui_kit::base::POPUP_PRIORITY)
+            .into_any_element()
+        });
+        let mut element = self
+            .element
+            .take()
+            .expect("the row")
+            .children(overlay)
+            .into_any_element();
+        (element.request_layout(window, cx), element)
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        element: &mut AnyElement,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Hitbox {
+        element.prepaint(window, cx);
+        window.insert_hitbox(bounds, HitboxBehavior::Normal)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        element: &mut AnyElement,
+        hitbox: &mut Hitbox,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        element.paint(window, cx);
+        let shared = Self::shared(id.expect("the menu's id"), window);
+        let (build, writes, hitbox) = (self.build.clone(), self.writes.clone(), hitbox.clone());
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+            if !phase.bubble() || event.button != MouseButton::Right || !hitbox.is_hovered(window) {
+                return;
+            }
+            // Focus returns where it was before the menu opened, or, while
+            // an earlier right-click menu holds it, this row's or another's,
+            // where that one returns it ([`OpenPointerMenus`]).
+            let previous = OpenPointerMenus::restore_target(window, cx);
+            let row = RowAnchor::pointer(event.position, hitbox.bounds);
+            {
+                let mut state = shared.borrow_mut();
+                // Its dismissal, which no longer reaches this state, would
+                // have forgotten it.
+                if let Some(menu) = state.menu.take() {
+                    OpenPointerMenus::close(&menu.focus_handle(cx), cx);
+                }
+                state._dismiss = None;
+                state.open = true;
+                state.anchor = Some(row);
+            }
+            // Built after this event, as the kit builds its own.
+            let (shared, build, writes) = (shared.clone(), build.clone(), writes.clone());
+            window.defer(cx, move |window, cx| {
+                let cap = row.cap(menu_bounds(window));
+                let open = std::rc::Rc::new(
+                    move |menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>| {
+                        let menu = build(menu, window, cx);
+                        // No action context: an action item dispatches from
+                        // the menu, drawn inside the row, and bubbles through
+                        // the row's ancestors, as the kit's context menu has
+                        // it; focus returns on dismissal below.
+                        open_menu_in(menu, false, Some(cap), None, cx)
+                    },
+                );
+                let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
+                    let viewport = window.viewport_size();
+                    cx.observe_window_bounds(window, move |_, window, cx| {
+                        if window.viewport_size() != viewport {
+                            cx.emit(gpui::DismissEvent);
+                        }
+                    })
+                    .detach();
+                    if let Some(app) = writes.as_ref().and_then(WeakEntity::upgrade) {
+                        let mut busy = app.read(cx).operation_busy.is_some();
+                        let open = open.clone();
+                        cx.observe_in(&app, window, move |menu, app, window, cx| {
+                            let now = app.read(cx).operation_busy.is_some();
+                            if now != busy {
+                                busy = now;
+                                menu.rebuild(window, cx, |menu, window, cx| open(menu, window, cx));
+                            }
+                        })
+                        .detach();
+                    }
+                    open(menu, window, cx)
+                });
+                OpenPointerMenus::open(&menu.focus_handle(cx), previous.clone(), cx);
+                // However it closes, by Escape, an item, a press outside or a
+                // resize, focus the menu still holds returns where it was
+                // before it opened: a resize's dismissal, which skips the
+                // menu's own Cancel, left focus on the menu no frame draws,
+                // so the list's keys stopped reaching it. An item that moved
+                // focus on, to a dialog it opened, keeps it there.
+                let dismiss = window.subscribe(&menu, cx, {
+                    let shared = std::rc::Rc::downgrade(&shared);
+                    move |menu, _: &gpui::DismissEvent, window, cx| {
+                        let handle = menu.focus_handle(cx);
+                        OpenPointerMenus::close(&handle, cx);
+                        if let Some(previous) = &previous
+                            && handle.contains_focused(window, cx)
+                        {
+                            window.focus(previous, cx);
+                        }
+                        if let Some(shared) = shared.upgrade() {
+                            shared.borrow_mut().open = false;
+                        }
+                        window.refresh();
+                    }
+                });
+                let mut state = shared.borrow_mut();
+                state.menu = Some(menu);
+                state._dismiss = Some(dismiss);
+                window.refresh();
+            });
+        });
+    }
+}
 
 /// An element with an ID whose node is a live region: an assistive
 /// technology announces what it says when it changes, at once for a failure

@@ -1136,6 +1136,8 @@ impl GitTurtle {
                     row_menu(menu, &owner, &key, snapshot)
                 }
             })
+            // A write's start or end builds the open menu again.
+            .follows_writes(owner.clone())
             .into_any_element()
     }
 

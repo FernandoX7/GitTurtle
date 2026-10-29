@@ -1069,6 +1069,8 @@ impl GitTurtle {
                         disabled,
                     )
                 })
+                // A write's start or end builds the open menu again.
+                .follows_writes(cx.entity().downgrade())
                 .into_any_element()
         } else if let Some(tree) = contextual_worktree {
             element
@@ -1087,6 +1089,8 @@ impl GitTurtle {
                         disabled,
                     )
                 })
+                // A write's start or end builds the open menu again.
+                .follows_writes(cx.entity().downgrade())
                 .into_any_element()
         } else {
             element.into_any_element()
@@ -2229,6 +2233,8 @@ impl GitTurtle {
                 cx,
             )
         })
+        // A write's start or end builds the open menu again.
+        .follows_writes(cx.entity().downgrade())
         .into_any_element()
     }
 
@@ -14403,8 +14409,10 @@ pub(crate) mod tests {
     /// Actions menu, and a right-click menu on History's lowest whole row
     /// keep their drawn edge, the ring the kit paints in the band outside
     /// the fill, 8 px or more above the status bar. The row's menu, taller
-    /// than the room below the pointer, moves up: it ran 19.5 px over the
-    /// bar at 13 pt.
+    /// than the room below the pointer, goes wholly above the row it was
+    /// opened on, its edge clear of the row: it ran 19.5 px over the bar at
+    /// 13 pt, and then the kit's clamp moved it up over the row. In a
+    /// 1480 × 800 window, with room below, it opens at the pointer.
     #[gpui::test]
     async fn menus_keep_their_edge_8_px_above_the_status_bar(cx: &mut TestAppContext) {
         const BROWSE: &str = "menu-item: Browse stashes… · MenuItem";
@@ -14462,10 +14470,37 @@ pub(crate) mod tests {
                 surface.bottom() + edge <= status - px(8.) + px(0.01),
                 "{at}: the row's menu {surface:?} draws its edge 8 px above the bar at {status:?}"
             );
+            assert!(
+                surface.bottom() + edge <= row.top() + px(0.01),
+                "{at}: the row's menu {surface:?} draws its edge clear above the row {row:?}"
+            );
             cx.simulate_keystrokes("escape");
             draw(cx);
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(800.)));
+        settle(&app, cx).await;
+        let row = cx
+            .debug_bounds("history-row-0")
+            .expect("History's first row");
+        let pointer = point(row.left() + px(16.), row.center().y);
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
+        cx.run_until_parked();
+        draw(cx);
+        let item = menu_rows(cx, &[REVERT])
+            .first()
+            .map(|(_, item)| *item)
+            .expect("the first row's menu");
+        let surface = menu_surface(cx, item);
+        assert!(
+            (surface.top() - pointer.y).abs() <= px(1.)
+                && (surface.left() - pointer.x).abs() <= px(1.),
+            "the first row's menu {surface:?} opens at the pointer {pointer:?} in 1480 × 800"
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
     }
 
     /// The open menu's rows labelled `labels`, in order, where the last frame
