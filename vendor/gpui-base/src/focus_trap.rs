@@ -54,10 +54,11 @@ pub(crate) struct FocusTrapManager {
     /// Map from container element ID to its focus trap info
     traps: HashMap<GlobalElementId, WeakFocusHandle>,
     /// GitTurtle patch: the node each modal trap was last laid out to write,
-    /// read by [`focused_modal_nodes`]. Debug builds only, as GPUI keeps its
-    /// own node provenance.
+    /// with the synthetic title it adds, if any, read by
+    /// [`focused_modal_nodes`] and [`focused_modal_titles`]. Debug builds
+    /// only, as GPUI keeps its own node provenance.
     #[cfg(debug_assertions)]
-    modals: HashMap<GlobalElementId, gpui::accesskit::Node>,
+    modals: HashMap<GlobalElementId, (gpui::accesskit::Node, Option<gpui::accesskit::Node>)>,
 }
 
 impl Global for FocusTrapManager {}
@@ -137,6 +138,34 @@ impl<E: InteractiveElement + ParentElement + Styled + Element> FocusTrapContaine
             focus_handle,
             dialog_label: Default::default(),
         }
+    }
+
+    /// GitTurtle patch: the title node a modal `dialog` named by its plain
+    /// captured title adds to read it, if it adds one. A title that is a
+    /// node of its own already reads in the dialog, which takes its name; a
+    /// synthetic title would repeat it.
+    ///
+    /// The title is static text, so its text is its value: AccessKit's
+    /// adapters name a label by its value and never by its label property
+    /// (AT-SPI announces the value as the name; macOS reports it as the
+    /// static text's `AXValue`). Upstream set only the label property, so
+    /// AT-SPI reached the title of a plain-text dialog, such as GitTurtle's
+    /// command palette, without a name. No label property repeats it, which
+    /// macOS would report as the title's `AXTitle` beside its value.
+    fn synthetic_title(&self, dialog: &gpui::accesskit::Node) -> Option<gpui::accesskit::Node> {
+        if !matches!(dialog.role(), gpui::Role::Dialog | gpui::Role::AlertDialog)
+            || !dialog.labelled_by().is_empty()
+            || self.dialog_label.titles_itself()
+        {
+            return None;
+        }
+        let label = self.dialog_label.get()?;
+        if dialog.label() != Some(label.as_ref()) {
+            return None;
+        }
+        let mut title = gpui::accesskit::Node::new(gpui::Role::Label);
+        title.set_value(label.to_string());
+        Some(title)
     }
 }
 
@@ -221,23 +250,10 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
         builder: &mut gpui::A11ySubtreeBuilder,
     ) {
         Element::a11y_synthetic_children(&mut self.base, prepaint, builder);
-        let role = builder.parent_node().role();
-        // A title that is a node of its own already reads in the dialog,
-        // which takes its name; a synthetic title would repeat it.
-        if matches!(role, gpui::Role::Dialog | gpui::Role::AlertDialog)
-            && builder.parent_node().labelled_by().is_empty()
-            && !self.dialog_label.titles_itself()
-        {
-            if let Some(label) = self.dialog_label.get() {
-                if builder.parent_node().label() != Some(label.as_ref()) {
-                    return;
-                }
-                let title_id = builder.synthetic_node_id("dialog-visible-title");
-                let mut title = gpui::accesskit::Node::new(gpui::Role::Label);
-                title.set_label(label.to_string());
-                if builder.push_child(title_id, title) {
-                    builder.parent_node().set_labelled_by([title_id]);
-                }
+        if let Some(title) = self.synthetic_title(builder.parent_node()) {
+            let title_id = builder.synthetic_node_id("dialog-visible-title");
+            if builder.push_child(title_id, title) {
+                builder.parent_node().set_labelled_by([title_id]);
             }
         }
     }
@@ -263,9 +279,10 @@ impl<E: InteractiveElement + ParentElement + Styled + Element + 'static> Element
         if let (Some(role), Some(id)) = (role, global_id) {
             let mut node = gpui::accesskit::Node::new(role);
             self.write_a11y_info(&mut node);
+            let title = self.synthetic_title(&node);
             FocusTrapManager::global_mut(cx)
                 .modals
-                .insert(id.clone(), node);
+                .insert(id.clone(), (node, title));
         }
         layout
     }
@@ -327,6 +344,27 @@ pub fn focused_modal_nodes(window: &Window, cx: &App) -> Vec<gpui::accesskit::No
                 .upgrade()
                 .is_some_and(|handle| handle.contains_focused(window, cx))
         })
-        .filter_map(|(id, _)| manager.modals.get(id).cloned())
+        .filter_map(|(id, _)| manager.modals.get(id).map(|(node, _)| node.clone()))
+        .collect()
+}
+
+/// GitTurtle patch: the synthetic title node each modal dialog holding
+/// focus adds to read its plain-text title, as its focus trap last laid it
+/// out to write; a dialog whose title is a node of its own adds none. GPUI
+/// writes a window's tree only while an assistive technology is active,
+/// which a test never is. Debug builds only.
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn focused_modal_titles(window: &Window, cx: &App) -> Vec<gpui::accesskit::Node> {
+    let manager = FocusTrapManager::global(cx);
+    manager
+        .traps
+        .iter()
+        .filter(|(_, handle)| {
+            handle
+                .upgrade()
+                .is_some_and(|handle| handle.contains_focused(window, cx))
+        })
+        .filter_map(|(id, _)| manager.modals.get(id).and_then(|(_, title)| title.clone()))
         .collect()
 }

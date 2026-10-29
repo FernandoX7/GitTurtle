@@ -115,11 +115,20 @@ fn readable_text(element: &mut AnyElement, depth: usize) -> Option<(SharedString
 }
 
 /// The accessible name `element` writes, if it has a role and a name.
+///
+/// GitTurtle patch: a label is named by its value, as AccessKit's adapters
+/// name it (`accesskit_consumer::Node::label_comes_from_value`), so a styled
+/// title written as static text, its text its value alone, names its dialog
+/// too; a label property is read where a label has no value.
 fn accessible_name(element: &impl Element) -> Option<SharedString> {
     let role = element.a11y_role()?;
     let mut node = gpui::accesskit::Node::new(role);
     element.write_a11y_info(&mut node);
-    node.label()
-        .filter(|label| !label.is_empty())
-        .map(|label| SharedString::from(label.to_owned()))
+    let value = (role == gpui::Role::Label)
+        .then(|| node.value())
+        .flatten()
+        .filter(|value| !value.is_empty());
+    value
+        .or_else(|| node.label().filter(|label| !label.is_empty()))
+        .map(|name| SharedString::from(name.to_owned()))
 }

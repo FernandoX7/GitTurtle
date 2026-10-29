@@ -1,3 +1,4 @@
+use crate::native_accessibility::{reachable, written};
 use crate::*;
 use core::prelude::v1::test;
 use gpui_kit::base::{Dialog as BaseDialog, DialogTitle, FocusTrapElement};
@@ -314,6 +315,14 @@ fn self_named_titles_name_their_dialog(cx: &mut TestAppContext) {
                     .mb(px(-2.))
                     .child("Edit local commits")
                     .into_any_element(),
+                // Static text, its text its value alone, as AccessKit's
+                // adapters read a label.
+                div()
+                    .id("quick-open-title")
+                    .role(Role::Label)
+                    .aria_value("Quick Open File")
+                    .child("Quick Open File")
+                    .into_any_element(),
                 // Neither readable text nor a name: the fallback stays.
                 div().child("Custom rich title").into_any_element(),
             ];
@@ -342,6 +351,7 @@ fn self_named_titles_name_their_dialog(cx: &mut TestAppContext) {
         [
             Some("Local reflog and recovery"),
             Some("Edit local commits"),
+            Some("Quick Open File"),
             Some("Alert dialog")
         ]
     );
@@ -450,6 +460,79 @@ async fn every_repository_dialog_is_named_by_its_title(cx: &mut TestAppContext) 
     assert_eq!(node.role(), Role::AlertDialog, "{title}");
     assert!(node.is_modal(), "{title}");
     assert_eq!(node.label(), Some(title), "{title}");
+    cx.update(|window, cx| window.close_dialog(cx));
+    views::tests::draw(cx);
+}
+
+/// A dialog whose title is plain text, such as the command palette's, reads
+/// that title through the label the toolkit's focus trap adds for it, named
+/// by its text through AccessKit's filter and, on Linux, the AT-SPI adapter.
+/// The trap wrote the text as the label's label property alone, which
+/// AccessKit's adapters never read for a label, so AT-SPI reached the
+/// palette's title without a name. Its text is its value alone, so macOS
+/// reports it as the static text's `AXValue` with no `AXTitle` repeating it.
+#[cfg(debug_assertions)]
+#[gpui::test]
+async fn a_plain_text_dialog_title_is_read_by_its_text(cx: &mut TestAppContext) {
+    let (_fixture, app, cx) = views::tests::history_window(cx).await;
+    crate::focus_ring::sweep::prepare(&app, cx);
+    let title = "Command palette";
+    crate::focus_ring::sweep::open_dialog(&app, cx, title, |app, window, cx| {
+        app.open_command_palette(window, cx)
+    })
+    .await;
+    let (nodes, titles) = cx.update(|window, cx| {
+        (
+            gpui_kit::base::focused_modal_nodes(window, cx),
+            gpui_kit::base::focused_modal_titles(window, cx),
+        )
+    });
+    let ([dialog], [heading]) = (nodes.as_slice(), titles.as_slice()) else {
+        panic!("{title}: one modal holds focus, titled by one label: {nodes:?}, {titles:?}");
+    };
+    assert_eq!(heading.role(), Role::Label);
+    assert_eq!(
+        heading.value(),
+        Some(title),
+        "the title's text is its value"
+    );
+    assert_eq!(
+        heading.label(),
+        None,
+        "no label property repeats the text, which macOS reads as a second title"
+    );
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let window = gpui::accesskit::Rect {
+        x0: 0.,
+        y0: 0.,
+        x1: f64::from(f32::from(viewport.width)),
+        y1: f64::from(f32::from(viewport.height)),
+    };
+    let mut dialog = dialog.clone();
+    dialog.set_bounds(window);
+    let mut heading = heading.clone();
+    heading.set_bounds(window);
+    let tree = written::Assembly::default()
+        .node("dialog", dialog, None)
+        .node("title", heading, Some("dialog"))
+        .tree(window, Some("dialog"));
+    let read: Vec<Option<String>> = reachable(tree.clone())
+        .into_iter()
+        .filter(|node| node.role == Role::Label)
+        .map(|node| node.name)
+        .collect();
+    assert_eq!(read, [Some(title.to_owned())], "through AccessKit's filter");
+    #[cfg(target_os = "linux")]
+    {
+        use crate::native_accessibility::atspi_state_tests::reached;
+        use accesskit_atspi_common::Role as AtspiRole;
+        let served: Vec<String> = reached(tree)
+            .into_iter()
+            .filter(|node| node.role == AtspiRole::Label)
+            .map(|node| node.name)
+            .collect();
+        assert_eq!(served, [title], "through the AT-SPI adapter");
+    }
     cx.update(|window, cx| window.close_dialog(cx));
     views::tests::draw(cx);
 }
