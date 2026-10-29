@@ -266,6 +266,32 @@ impl GitTurtle {
         self.working_paths.pending && self.working_rows.is_empty()
     }
 
+    /// Whether the shown rows are a path filter's that matched nothing: the
+    /// status they index has entries and none of them is listed. It follows
+    /// the shown rows rather than the field, so while a new query's rows are
+    /// prepared the list keeps showing what it showed.
+    pub(super) fn working_no_match(&self) -> bool {
+        self.working_paths.error.is_none()
+            && !self.working_rows.is_empty()
+            && self
+                .shown_working_status()
+                .is_some_and(|status| !status.entries.is_empty())
+            && !self
+                .working_rows
+                .iter()
+                .any(|row| matches!(row, workspace::WorkingRow::File(..)))
+    }
+
+    /// Empties the path filter, as the no-match state's Clear filter does,
+    /// and moves focus to the list, which shows every file again.
+    pub(super) fn clear_working_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.working_filter
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.filter_working_paths(window, cx);
+        window.focus(&self.file_focus, cx);
+        cx.notify();
+    }
+
     fn visible_working_keys(&self) -> Vec<Key> {
         self.actionable_working_rows()
             .iter()
@@ -740,21 +766,8 @@ impl GitTurtle {
                     .text_size(crate::appearance::ui_text(11.)),
                 )
             })
-            .when(
-                !self.working_filter_waiting()
-                    && self.working_paths.error.is_none()
-                    && self.working_paths.visible_count == 0
-                    && !self.working_filter.read(cx).value().is_empty(),
-                |el| {
-                    el.child(
-                        native_accessibility::text(
-                            "working-filter-empty",
-                            "No working paths match this filter",
-                        )
-                        .text_size(crate::appearance::ui_text(11.)),
-                    )
-                },
-            )
+            // A filter that matches nothing says so inside the list
+            // (`working_no_match`), so nothing here moves the list down.
             .when_some(self.working_paths.error.clone(), |el, error| {
                 el.child(
                     native_accessibility::text("working-filter-error", error)

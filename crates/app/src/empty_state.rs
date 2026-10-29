@@ -19,7 +19,7 @@ const LINE_TEXT: f32 = 12.;
 /// 18 pt half tile a short action still fits beside both.
 const PANE_INSET: f32 = 12.;
 /// The space between the line and its action, beside it or below it.
-const GAP: f32 = 8.;
+pub(crate) const GAP: f32 = 8.;
 /// The widest a pane's line runs before it wraps, at the default interface
 /// size.
 const LINE_MAX: f32 = 480.;
@@ -233,6 +233,28 @@ impl EmptyState {
             .children(self.action)
             .into_any_element()
     }
+}
+
+/// The size [`EmptyState::block`] draws its line at, for a list that
+/// measures the line's wrapped lines.
+pub(crate) fn line_text() -> Pixels {
+    appearance::ui_text(LINE_TEXT)
+}
+
+/// The height [`EmptyState::block`] takes with its line wrapped to `lines`
+/// lines and, where `action`, its action below it: what a list that keeps
+/// the state whole keeps as its least height, its own padding aside.
+pub(crate) fn block_height(lines: usize, action: bool, window: &Window) -> Pixels {
+    let line = window
+        .text_style()
+        .line_height
+        .to_pixels(line_text().into(), window.rem_size());
+    line * lines.max(1) as f32
+        + if action {
+            appearance::ui_size(GAP) + appearance::ui_size(28.)
+        } else {
+            Pixels::ZERO
+        }
 }
 
 /// An empty or edge state's action: the shared 28 px control with its icon
@@ -1352,5 +1374,116 @@ mod tests {
             "the focused field {field:?} draws its ring"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A Changes path filter that matches nothing says so inside the list,
+    /// where its rows start, with Clear filter below, in place of both
+    /// groups' headings, and nothing above the list moves. The line once sat
+    /// above the Changes header and pushed it 21 px at 13 pt, and at 18 pt in
+    /// a half tile it was not drawn at all, with the Unstaged heading gone.
+    /// Where the whole line would wrap it says "No matches", named by the
+    /// whole line, and Clear filter is its icon where its label does not fit.
+    /// Clear filter empties the field, lists every file again and moves to
+    /// the list.
+    #[gpui::test]
+    async fn a_working_filter_with_no_match_says_so_in_the_list(cx: &mut TestAppContext) {
+        use crate::workspace::{WORKING_NO_MATCH, WORKING_NO_MATCH_SHORT};
+        let (_fixture, app, cx, root) = window(cx, &history_script(1, 1)).await;
+        std::fs::write(root.join("notes.txt"), "changed\n").unwrap();
+        std::fs::write(root.join("other.txt"), "other\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        let filter = |cx: &mut VisualTestContext, query: &str| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.working_filter
+                        .update(cx, |input, cx| input.set_value(query, window, cx));
+                    app.filter_working_paths(window, cx);
+                })
+            });
+            wait(cx, "the path filter", |cx| {
+                app.read_with(cx, |app, _| !app.working_paths.pending)
+            });
+        };
+        // What lies above the list, and the list's top.
+        let above = |cx: &mut VisualTestContext| {
+            [
+                "working-selection",
+                "working-header",
+                "working-toolbar",
+                "working-pane",
+            ]
+            .map(|name| cx.debug_bounds(name).map(|bounds| (name, bounds.top())))
+        };
+        for (interface, width, height, line, labelled) in [
+            (13, 1280., 800., WORKING_NO_MATCH, true),
+            (18, 461., 490., WORKING_NO_MATCH_SHORT, false),
+        ] {
+            let at = format!("{interface} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let unfiltered = above(cx);
+            assert!(cx.debug_bounds("working-row-1").is_some(), "{at}: the rows");
+
+            filter(cx, "zzz");
+            assert_eq!(above(cx), unfiltered, "{at}: nothing above the list moves");
+            assert_eq!(shown("working-no-match").as_deref(), Some(line), "{at}");
+            let pane = cx.debug_bounds("working-pane").unwrap();
+            let drawn = cx.debug_bounds("working-no-match-line").unwrap();
+            let clear = cx.debug_bounds("working-clear-filter").unwrap();
+            let inset = cx.update(|window, _| window.rem_size() * 0.75) + px(1.);
+            assert!(
+                (drawn.left() - (pane.left() + inset)).abs() <= px(0.5),
+                "{at}: the line {drawn:?} starts at the rows' text inset in {pane:?}"
+            );
+            for (what, bounds) in [("the line", drawn), ("Clear filter", clear)] {
+                assert!(
+                    pane.contains(&bounds.origin)
+                        && bounds.right() <= pane.right()
+                        && bounds.bottom() <= pane.bottom(),
+                    "{at}: {what} {bounds:?} lies in the list {pane:?}"
+                );
+            }
+            assert!(clear.top() >= drawn.bottom(), "{at}: Clear filter is below");
+            assert!(
+                cx.debug_bounds("working-row-0").is_none(),
+                "{at}: neither heading is drawn"
+            );
+            assert_eq!(
+                // An icon is its pixel-snapped 28 px square.
+                clear.size.width > appearance::ui_size(28.) + px(1.),
+                labelled,
+                "{at}: Clear filter {clear:?} labelled"
+            );
+
+            click(cx, "working-clear-filter");
+            wait(cx, "every file again", |cx| {
+                app.read_with(cx, |app, _| !app.working_paths.pending)
+            });
+            let (query, focused) = cx.update(|window, cx| {
+                let app = app.read(cx);
+                (
+                    app.working_filter.read(cx).value().to_string(),
+                    app.file_focus.is_focused(window),
+                )
+            });
+            assert_eq!(query, "", "{at}: Clear filter empties the field");
+            assert!(focused, "{at}: and moves to the list");
+            assert!(cx.debug_bounds("working-no-match").is_none(), "{at}");
+            assert!(
+                cx.debug_bounds("working-row-1").is_some(),
+                "{at}: the rows again"
+            );
+            assert_eq!(above(cx), unfiltered, "{at}");
+        }
+        filter(cx, "zzz");
+        check_lines(
+            cx,
+            "working-no-match",
+            &[WORKING_NO_MATCH, WORKING_NO_MATCH_SHORT],
+            Some("working-clear-filter"),
+            "working-pane",
+        );
     }
 }

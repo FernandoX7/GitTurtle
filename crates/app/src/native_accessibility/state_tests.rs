@@ -377,9 +377,9 @@ async fn every_label_of_these_screens_is_named(cx: &mut TestAppContext) {
         })
     });
     wait(cx, "the working filter", |cx| {
-        cx.debug_bounds("working-filter-empty").is_some()
+        cx.debug_bounds("working-no-match").is_some()
     });
-    labels_named(cx, "Changes", &["working-filter-empty"]);
+    labels_named(cx, "Changes", &["working-no-match-line"]);
 
     open_tags(&app, cx).await;
     labels_named(cx, "Tags", &["tags-dialog-title", "tag-list-empty-line"]);
@@ -404,5 +404,35 @@ async fn every_label_of_these_screens_is_named(cx: &mut TestAppContext) {
             "ignore-destination-help",
             "ignore-tracked-explanation",
         ],
+    );
+}
+
+/// A Changes path filter with no match is read where the list draws it, by
+/// its whole line, at 18 pt in a half tile too, where it draws "No matches".
+#[gpui::test]
+async fn a_working_filter_with_no_match_is_read_by_its_line(cx: &mut TestAppContext) {
+    let (_fixture, app, cx, root) = window(cx, &history_script(1, 1)).await;
+    std::fs::write(root.join("notes.txt"), "changed\n").unwrap();
+    std::fs::write(root.join("other.txt"), "other\n").unwrap();
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    settle(&app, cx).await;
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.working_filter
+                .update(cx, |input, cx| input.set_value("zzz", window, cx));
+            app.filter_working_paths(window, cx);
+        })
+    });
+    wait(cx, "the path filter", |cx| {
+        app.read_with(cx, |app, _| !app.working_paths.pending)
+    });
+    read(
+        cx,
+        "A path filter with no match",
+        &[
+            ("branch-edge", "No remote"),
+            ("working-no-match", crate::workspace::WORKING_NO_MATCH),
+        ],
+        &[],
     );
 }

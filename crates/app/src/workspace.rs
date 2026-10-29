@@ -36,6 +36,16 @@ pub(super) struct StatusOutcome {
 /// The Changes header's height in the full form.
 const WORKING_HEADER: f32 = 44.;
 
+/// What the Working list says where its path filter matches nothing, as
+/// the Tags list says "No tags match this filter".
+pub(super) const WORKING_NO_MATCH: &str = "No files match this filter";
+/// [`WORKING_NO_MATCH`] where it would wrap, as the commit's changed files
+/// say it: three lines at 18 pt in a half tile left no room for Clear
+/// filter below them.
+pub(super) const WORKING_NO_MATCH_SHORT: &str = "No matches";
+/// The no-match state's action, which empties the filter.
+const CLEAR_FILTER: &str = "Clear filter";
+
 /// How the Working Changes inspector's rows fit its height, chosen before
 /// layout from the inspector's measured height and the heights its rows
 /// would take, so no row is cut and no frame shows one form and then the
@@ -239,6 +249,38 @@ fn working_list_floor(rows: usize, density: crate::appearance::Density, window: 
     )
 }
 
+/// The width the file list's no-match state has in an inspector `width`
+/// wide: the list stands 1 px in from the inspector's divider, and the state
+/// keeps the rows' text inset inside the list's border.
+fn working_no_match_room(width: Pixels, window: &Window) -> Pixels {
+    width - px(1.) - window.pixel_snap(px(1.)) * 2. - window.rem_size() * 0.75 * 2.
+}
+
+/// The no-match line the file list draws in `room`: the whole line where it
+/// fits on one line, otherwise its short form, which the whole line names.
+fn working_no_match_line(room: Pixels, window: &Window) -> &'static str {
+    if wrapped_lines(WORKING_NO_MATCH, empty_state::line_text(), room, window) == 1 {
+        WORKING_NO_MATCH
+    } else {
+        WORKING_NO_MATCH_SHORT
+    }
+}
+
+/// The file list's least height while it says that its path filter matches
+/// nothing, in an inspector `width` wide: the line, wrapped in its room, and
+/// Clear filter below it, inside the state's padding and the list's border,
+/// so the state is drawn whole wherever the list keeps its floor.
+fn working_no_match_floor(width: Pixels, window: &Window) -> f32 {
+    let room = working_no_match_room(width, window);
+    let line = working_no_match_line(room, window);
+    let lines = wrapped_lines(line, empty_state::line_text(), room, window);
+    f32::from(
+        empty_state::block_height(lines, true, window)
+            + appearance::ui_size(empty_state::GAP / 2.) * 2.
+            + window.pixel_snap(px(1.)) * 2.,
+    )
+}
+
 /// How the Working Changes inspector's rows fit its width, measured from the
 /// interface font at the interface size. Where a row's labelled form fits,
 /// it is drawn as before; narrower, its controls keep only their icons, with
@@ -359,6 +401,7 @@ thread_local! {
     static DESCRIPTION_LABEL: RefCell<Option<(crate::views::LineKey, Pixels)>> =
         const { RefCell::new(None) };
     static COMMIT_LABEL: crate::views::TextWidth = const { RefCell::new(None) };
+    static CLEAR_FILTER_LABEL: crate::views::TextWidth = const { RefCell::new(None) };
     /// Each placeholder as it fits the width its field last painted at.
     static TITLE_FIT: PlaceholderFit = const { RefCell::new(None) };
     static DESCRIPTION_FIT: PlaceholderFit = const { RefCell::new(None) };
@@ -752,13 +795,7 @@ impl GitTurtle {
     /// `render_working_selection` lays them out: its padding, the filter's
     /// field, the selection rows, the selection count's wrapped lines and any
     /// filtering notice, each a `gap_1` apart.
-    fn working_controls_height(
-        &self,
-        forms: WorkingForms,
-        width: Pixels,
-        window: &Window,
-        cx: &App,
-    ) -> f32 {
+    fn working_controls_height(&self, forms: WorkingForms, width: Pixels, window: &Window) -> f32 {
         use crate::appearance::{ui_size, ui_text};
         let rem = window.rem_size();
         let room = width - rem * 0.75 * 2.;
@@ -774,13 +811,6 @@ impl GitTurtle {
         let mut texts = vec![(count, ui_text(10.))];
         if self.working_filter_waiting() {
             texts.push(("Filtering working paths…".into(), ui_text(11.)));
-        }
-        if !self.working_filter_waiting()
-            && self.working_paths.error.is_none()
-            && self.working_paths.visible_count == 0
-            && !self.working_filter.read(cx).value().is_empty()
-        {
-            texts.push(("No working paths match this filter".into(), ui_text(11.)));
         }
         if let Some(error) = &self.working_paths.error {
             texts.push((error.clone(), ui_text(11.)));
@@ -803,7 +833,6 @@ impl GitTurtle {
         composer: bool,
         short: bool,
         window: &Window,
-        cx: &App,
     ) -> WorkingFit {
         let height = f32::from(height);
         let body = |heading: bool| {
@@ -814,7 +843,7 @@ impl GitTurtle {
                     0.
                 }
         };
-        let full = self.working_controls_height(forms, width, window, cx) + WORKING_HEADER;
+        let full = self.working_controls_height(forms, width, window) + WORKING_HEADER;
         if full + body(true) <= height {
             return WorkingFit {
                 tight: false,
@@ -2244,6 +2273,41 @@ impl GitTurtle {
                     .pane(cx)
             }
         });
+        // Where the rows would start, at their text inset, the line and
+        // Clear filter below it, which empties the field and moves to the
+        // list (`empty_state`). Above and below, half the gap: the list is
+        // as short as its floor in a half tile at 18 pt. Where the line would
+        // wrap, as there, it takes its short form, and where its label does
+        // not fit the list the action is its icon, named and tooltipped by
+        // its label.
+        let no_match = total > 0 && self.working_no_match();
+        let unmatched = no_match.then(|| {
+            let room = working_no_match_room(fitted_width, window);
+            let labelled = room >= labelled_button_width(CLEAR_FILTER, &CLEAR_FILTER_LABEL, window);
+            let clear = if labelled {
+                empty_state::action("working-clear-filter", CLEAR_FILTER, "close")
+            } else {
+                crate::views::compact_control_name(
+                    empty_state::action("working-clear-filter", "", "close"),
+                    "working-clear-filter",
+                    CLEAR_FILTER,
+                )
+                .tooltip(CLEAR_FILTER)
+            };
+            div()
+                .px_3()
+                .py(appearance::ui_size(empty_state::GAP / 2.))
+                .child(
+                    EmptyState::new("working-no-match", working_no_match_line(room, window))
+                        .named(WORKING_NO_MATCH)
+                        .action(clear.on_click(
+                            cx.listener(|this, _, window, cx| {
+                                this.clear_working_filter(window, cx)
+                            }),
+                        ))
+                        .block(cx),
+                )
+        });
         let branch = self
             .work_status
             .as_ref()
@@ -2261,11 +2325,18 @@ impl GitTurtle {
             .work_status
             .as_ref()
             .is_none_or(|status| status.operation.is_none());
-        let floor = working_list_floor(
-            working_floor_rows(&self.working_rows),
-            self.settings.density,
-            window,
-        );
+        // A path filter that matches nothing: the list says so in its own
+        // bounds, with Clear filter, and draws neither group's heading, as
+        // with nothing to list; it keeps the room to show both whole.
+        let floor = if no_match {
+            working_no_match_floor(fitted_width, window)
+        } else {
+            working_list_floor(
+                working_floor_rows(&self.working_rows),
+                self.settings.density,
+                window,
+            )
+        };
         let fit = self.working_fit(
             forms,
             layout.read(cx).inspector,
@@ -2274,7 +2345,6 @@ impl GitTurtle {
             composer,
             short,
             window,
-            cx,
         );
         let metrics = ComposerMetrics::new(short, fit.heading, window);
         let minimum = f32::from(metrics.minimum());
@@ -2299,7 +2369,11 @@ impl GitTurtle {
         // What is left below the list's last whole row where it has `inner`
         // inside its border, or nothing where its rows do not overflow it.
         let leftover = |inner: f32| {
-            if total > 0 && inner > floor - border && inner < row * self.working_rows.len() as f32 {
+            if total > 0
+                && !no_match
+                && inner > floor - border
+                && inner < row * self.working_rows.len() as f32
+            {
                 (inner - ((inner + 0.01) / row).floor() * row).max(0.)
             } else {
                 0.
@@ -2565,9 +2639,10 @@ impl GitTurtle {
                     .when(below > 0., |el| {
                         el.max_h(px(available - if composer { drawn } else { 0. } - below))
                     })
-                    .when(total > 0, |el| el.child(list))
-                    .children(travelling.filter(|_| total > 0))
+                    .when(total > 0 && !no_match, |el| el.child(list))
+                    .children(travelling.filter(|_| total > 0 && !no_match))
                     .children(clean)
+                    .children(unmatched)
                     .children(self.file_menu.as_ref().map(|menu| {
                         menu.render("working-row-menu-overlay", Self::dismiss_file_menu, cx)
                     }))
