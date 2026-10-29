@@ -205,6 +205,7 @@ pub struct Button {
     accessibility_label: Option<SharedString>,
     children: Vec<AnyElement>,
     disabled: bool,
+    accessibility_disabled: bool,
     pub(crate) selected: bool,
     toggled: Option<bool>,
     role: RoleOverride,
@@ -255,6 +256,7 @@ impl Button {
             accessibility_label: None,
             children: Vec::new(),
             disabled: false,
+            accessibility_disabled: false,
             selected: false,
             toggled: None,
             role: RoleOverride::default(),
@@ -508,6 +510,17 @@ impl Button {
     /// is a toggle, otherwise the button stays an ordinary push button.
     pub fn toggled(mut self, toggled: bool) -> Self {
         self.toggled = Some(toggled);
+        self
+    }
+
+    /// GitTurtle patch: reports the button disabled to assistive technology
+    /// while it keeps its enabled look and still takes input, for a control
+    /// its application refuses in its own handler before it dims it, as a
+    /// write that has only just started does. Its handler must refuse, since
+    /// the button stays clickable. A disabled button is reported disabled
+    /// either way.
+    pub fn accessibility_disabled(mut self, disabled: bool) -> Self {
+        self.accessibility_disabled = disabled;
         self
     }
 
@@ -782,6 +795,7 @@ impl RenderOnce for Button {
         }))
         .selected(self.selected)
         .disabled(disabled)
+        .accessibility_disabled(self.accessibility_disabled)
         // Base layers semantic states over the builder chain, so the caller's
         // own style is replayed inside each state to keep it the closest layer.
         .styles(|styles| {

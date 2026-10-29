@@ -169,13 +169,20 @@ impl GitTurtle {
             .cloned();
         working_actions_trigger(compact, tight.is_some())
             .disabled(self.operation_shown().is_some())
-            .app_menu(move |mut menu, _, _| {
+            .app_menu(move |mut menu, _, cx| {
+                // Every item refuses while a write runs (`working_item`), so
+                // each is disabled then from the moment the write starts,
+                // though the trigger opens the menu until the write looks
+                // busy: an assistive technology heard each one available.
+                let busy = owner
+                    .upgrade()
+                    .is_none_or(|owner| owner.read(cx).operation_busy.is_some());
                 if let Some(refresh) = tight {
                     menu = menu
                         .item(
                             working_item(
                                 "Directories",
-                                false,
+                                busy,
                                 &owner,
                                 &repository,
                                 |this, window, cx| {
@@ -188,14 +195,14 @@ impl GitTurtle {
                         )
                         .item(working_item(
                             format!("Stage {unstaged} selected"),
-                            unstaged == 0 || selection_unavailable,
+                            unstaged == 0 || selection_unavailable || busy,
                             &owner,
                             &repository,
                             |this, window, cx| this.apply_selected_files(false, window, cx),
                         ))
                         .item(working_item(
                             format!("Unstage {staged} selected"),
-                            staged == 0 || selection_unavailable,
+                            staged == 0 || selection_unavailable || busy,
                             &owner,
                             &repository,
                             |this, window, cx| this.apply_selected_files(true, window, cx),
@@ -203,7 +210,7 @@ impl GitTurtle {
                     if refresh {
                         menu = menu.item(working_item(
                             "Refresh working changes",
-                            refreshing,
+                            refreshing || busy,
                             &owner,
                             &repository,
                             |this, window, cx| this.refresh_worktree(window, cx),
@@ -215,7 +222,7 @@ impl GitTurtle {
                 let menu = working_menu_item(
                     menu,
                     "Ignore selected untracked file…",
-                    ignore_entry.is_none(),
+                    ignore_entry.is_none() || busy,
                     &owner,
                     &repository,
                     move |this, window, cx| {
@@ -227,7 +234,7 @@ impl GitTurtle {
                 let menu = working_menu_item(
                     menu,
                     "Save changes to stash…",
-                    !has_changes || paused,
+                    !has_changes || paused || busy,
                     &owner,
                     &repository,
                     |this, window, cx| this.open_stash_form(window, cx),
@@ -235,7 +242,7 @@ impl GitTurtle {
                 let menu = working_menu_item(
                     menu,
                     "Browse stashes…",
-                    false,
+                    busy,
                     &owner,
                     &repository,
                     |this, window, cx| this.open_stashes(window, cx),
@@ -248,7 +255,7 @@ impl GitTurtle {
                 let menu = working_menu_item(
                     menu.separator(),
                     "Amend last commit…",
-                    paused,
+                    paused || busy,
                     &owner,
                     &repository,
                     move |this, window, cx| {
@@ -264,7 +271,7 @@ impl GitTurtle {
                 working_menu_item(
                     menu,
                     "Undo last local commit…",
-                    paused,
+                    paused || busy,
                     &owner,
                     &repository,
                     move |this, window, cx| {

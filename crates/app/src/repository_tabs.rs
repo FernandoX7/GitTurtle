@@ -1919,10 +1919,23 @@ impl GitTurtle {
         let (left_controls, right_controls, drag_region) = {
             #[cfg(target_os = "linux")]
             {
-                let busy = self.operation_shown().is_some();
+                let busy = self.operation_busy.is_some();
+                let looks_busy = self.operation_shown().is_some();
                 (
-                    window_chrome::controls(window_chrome::Side::Left, busy, window, cx),
-                    window_chrome::controls(window_chrome::Side::Right, busy, window, cx),
+                    window_chrome::controls(
+                        window_chrome::Side::Left,
+                        busy,
+                        looks_busy,
+                        window,
+                        cx,
+                    ),
+                    window_chrome::controls(
+                        window_chrome::Side::Right,
+                        busy,
+                        looks_busy,
+                        window,
+                        cx,
+                    ),
                     window_chrome::drag_region(window, cx),
                 )
             }

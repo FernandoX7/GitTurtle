@@ -58,10 +58,19 @@ pub(super) fn strip_width(window: &Window, cx: &App) -> Pixels {
     group(Side::Left) + group(Side::Right) + gap + snap(appearance::ui_size(32.))
 }
 
-pub(super) fn controls(side: Side, busy: bool, window: &Window, cx: &App) -> Option<AnyElement> {
+/// The window's controls on `side`. A write in flight, `busy`, leaves Close
+/// refused at once (`CloseWindow`) and announced so, and dimmed once its
+/// spell looks busy, `looks_busy` (`workspace::refusing`).
+pub(super) fn controls(
+    side: Side,
+    busy: bool,
+    looks_busy: bool,
+    window: &Window,
+    cx: &App,
+) -> Option<AnyElement> {
     let buttons: Vec<_> = buttons(side, window, cx)
         .into_iter()
-        .map(|kind| control(kind, busy, window.is_maximized()))
+        .map(|kind| control(kind, busy, looks_busy, window.is_maximized()))
         .collect();
     if buttons.is_empty() {
         return None;
@@ -85,7 +94,7 @@ pub(super) fn controls(side: Side, busy: bool, window: &Window, cx: &App) -> Opt
     )
 }
 
-fn control(kind: WindowButton, busy: bool, maximized: bool) -> Button {
+fn control(kind: WindowButton, busy: bool, looks_busy: bool, maximized: bool) -> Button {
     let (id, label, symbol) = match kind {
         WindowButton::Minimize => (
             "minimize-window",
@@ -106,12 +115,20 @@ fn control(kind: WindowButton, busy: bool, maximized: bool) -> Button {
         .icon(Icon::new(symbol).size(appearance::ui_size(16.)))
         .rounded_full()
         .accessibility_label(label)
-        .tooltip(if kind == WindowButton::Close && busy {
+        .tooltip(if kind == WindowButton::Close && looks_busy {
             "Wait for the current Git operation to finish before closing"
         } else {
             label
         })
-        .disabled(kind == WindowButton::Close && busy)
+        .map(|control| {
+            let close = kind == WindowButton::Close;
+            crate::workspace::refusing(
+                control,
+                move || id.into(),
+                close && busy,
+                close && looks_busy,
+            )
+        })
         .on_click(move |_, window, cx| {
             let action: Box<dyn Action> = match kind {
                 WindowButton::Minimize => Box::new(MinimizeWindow),

@@ -25,6 +25,7 @@ pub struct Button {
     semantic_styles: ButtonStyles,
     selected: bool,
     disabled: bool,
+    accessibility_disabled: bool,
     children: SmallVec<[AnyElement; 2]>,
     on_click: Option<ClickHandler>,
     accessibility_label: Option<SharedString>,
@@ -45,6 +46,7 @@ impl Button {
             semantic_styles: ButtonStyles::default(),
             selected: false,
             disabled: false,
+            accessibility_disabled: false,
             children: SmallVec::new(),
             on_click: None,
             accessibility_label: None,
@@ -59,6 +61,15 @@ impl Button {
     /// Sets whether the button ignores pointer and keyboard activation.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// GitTurtle patch: reports the button disabled to assistive technology
+    /// while it keeps its enabled look and input, for a control its
+    /// application refuses in its own handler before it dims it. A disabled
+    /// button is reported disabled either way.
+    pub fn accessibility_disabled(mut self, disabled: bool) -> Self {
+        self.accessibility_disabled = disabled;
         self
     }
 
@@ -259,14 +270,15 @@ impl RenderOnce for Button {
             .refine_style(&style);
         AccessibleButton {
             content,
-            disabled,
+            disabled: disabled || self.accessibility_disabled,
             selected,
         }
     }
 }
 // GitTurtle patch: GPUI's Div lacks an aria-disabled setter. Preserve the
 // existing element and caller-provided synthetic subtree, adding only the
-// disabled property when the toolkit writes this rendered button's node.
+// disabled property when the toolkit writes this rendered button's node: for
+// a disabled button, or one `accessibility_disabled` reports disabled alone.
 // A Tab role also reports its existing selected state; ordinary Button
 // presentation selection remains separate from toggle accessibility.
 struct AccessibleButton {

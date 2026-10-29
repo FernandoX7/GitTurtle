@@ -381,6 +381,59 @@ pub(crate) struct BusyLook {
     reveal: Option<Task<()>>,
 }
 
+/// `control` as a busy spell leaves it: while `refused`, its own handler or
+/// `write_from` refuses a press at once, and assistive technology hears it
+/// unavailable at once with it, while it takes the disabled look only where
+/// `dimmed`, once the spell looks busy ([`BusyLook`]). Through the delay a
+/// control that looked available was announced enabled, though every press
+/// was refused. `key` names it for tests (`refusals`).
+pub(crate) fn refusing(
+    control: Button,
+    key: impl FnOnce() -> String,
+    refused: bool,
+    dimmed: bool,
+) -> Button {
+    #[cfg(test)]
+    refusals::record(key(), refused || dimmed, dimmed);
+    #[cfg(not(test))]
+    let _ = key;
+    control
+        .disabled(dimmed)
+        .accessibility_disabled(refused || dimmed)
+}
+
+/// What [`refusing`] last gave each control, for tests: the test platform
+/// builds no accessibility tree.
+#[cfg(test)]
+pub(crate) mod refusals {
+    use std::{cell::RefCell, collections::HashMap};
+
+    /// Whether a control is announced unavailable, and whether it looks it.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(crate) struct Refusal {
+        pub announced: bool,
+        pub dimmed: bool,
+    }
+
+    thread_local! {
+        static LAST: RefCell<HashMap<String, Refusal>> = Default::default();
+    }
+
+    pub(super) fn record(key: String, announced: bool, dimmed: bool) {
+        LAST.with(|last| last.borrow_mut().insert(key, Refusal { announced, dimmed }));
+    }
+
+    /// What the control `key` was last built with.
+    pub(crate) fn get(key: &str) -> Option<Refusal> {
+        LAST.with(|last| last.borrow().get(key).copied())
+    }
+
+    /// Forgets every control, so only those built after it are found.
+    pub(crate) fn forget() {
+        LAST.with(|last| last.borrow_mut().clear());
+    }
+}
+
 const UNSTAGED_HINT: &str = "Stage files to include in your commit";
 const STAGED_HINT: &str = "Only staged changes will be committed";
 const DRAFT_SAVE_NOTE: &str =
@@ -2407,11 +2460,13 @@ impl GitTurtle {
         // The commit waits for a write in flight and for the rows it counts
         // (`status_ready`), which its click refuses at once, and looks
         // unavailable for them once the spell looks busy.
-        let commit_disabled = ((busy || !status_ready) && (looks_busy || !shown))
-            || staged == 0
+        let commit_unavailable = staged == 0
             || conflicted
             || !identity_ready
             || self.commit_title.read(cx).value().trim().is_empty();
+        let commit_disabled =
+            ((busy || !status_ready) && (looks_busy || !shown)) || commit_unavailable;
+        let commit_refused = busy || !status_ready || commit_unavailable;
         // An operation in progress replaces the composer with its banner.
         let composer = self
             .work_status
@@ -2560,7 +2615,15 @@ impl GitTurtle {
             } else {
                 "Refresh working changes"
             })
-            .disabled((busy || refreshing) && looks_busy)
+            .map(|refresh| {
+                let refused = busy || refreshing;
+                refusing(
+                    refresh,
+                    || "refresh-working".into(),
+                    refused,
+                    refused && looks_busy,
+                )
+            })
             .on_click(cx.listener(|this, _, window, cx| {
                 // Refused at once, whatever it looks like yet.
                 if this.operation_busy.is_none() && this.status_task.is_none() {
@@ -2883,7 +2946,7 @@ impl GitTurtle {
                         } else {
                             commit.label(label).tooltip(detail)
                         }
-                        .disabled(commit_disabled)
+                        .map(|commit| refusing(commit, || "commit-staged".into(), commit_refused, commit_disabled))
                         .on_click(cx.listener(|this, _, window, cx| {
                             // Refused at once, whatever it looks like yet.
                             if this.working_paths.pending {
@@ -2984,10 +3047,11 @@ impl GitTurtle {
                 );
                 let origin = mark.clone();
                 let confirming = copy_feedback::confirmed(&mark, cx);
-                let unavailable = ((busy || self.working_paths.pending) && looks_busy)
-                    || count == 0
+                let empty = count == 0
                     || self.working_paths.error.is_some()
                     || !self.working_filter.read(cx).value().is_empty();
+                let refused = busy || self.working_paths.pending || empty;
+                let unavailable = ((busy || self.working_paths.pending) && looks_busy) || empty;
                 let control = quiet(if forms.section_action_label {
                     copy_feedback::feedback_button(
                         mark,
@@ -3065,10 +3129,9 @@ impl GitTurtle {
                             .child(count.to_string()),
                     )
                     .child(
-                        control
+                        refusing(control, move || selector.into(), refused, unavailable)
                             .debug_selector(move || selector.into())
                             .ml_auto()
-                            .disabled(unavailable)
                             // The write it confirms leaves it unavailable, its
                             // group emptied or the reads after it pending, and
                             // the disabled colour, 3.19:1 on Midnight's heading,
@@ -3306,7 +3369,14 @@ impl GitTurtle {
                             ))
                             .debug_selector(move || format!("working-stage-{position}"))
                             .accessibility_label(stage_label)
-                            .disabled(busy && looks_busy)
+                            .map(|control| {
+                                refusing(
+                                    control,
+                                    move || format!("working-stage-{position}"),
+                                    busy,
+                                    busy && looks_busy,
+                                )
+                            })
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
                                     cx.stop_propagation();
@@ -3502,9 +3572,10 @@ impl GitTurtle {
                 } else {
                     crate::ICON_INSET
                 });
-                appearance::keep_disabled_shape(control, looks_busy, p.panel, Some(inset), cx)
+                let control =
+                    appearance::keep_disabled_shape(control, looks_busy, p.panel, Some(inset), cx);
+                refusing(control, move || action.id.into(), busy, looks_busy)
                     .debug_selector(move || action.id.into())
-                    .disabled(looks_busy)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run_edge_action(action, window, cx)
                     }))
@@ -3613,9 +3684,9 @@ impl GitTurtle {
         let actions = [("fetch", "Fetch"), ("pull", "Pull"), ("push", "Push")]
             .into_iter()
             .map(|(id, label)| {
-                let unavailable = looks_busy
-                    || remote.is_none()
-                    || (id != "fetch" && (selected_branch.is_empty() || detached));
+                let missing =
+                    remote.is_none() || (id != "fetch" && (selected_branch.is_empty() || detached));
+                let unavailable = looks_busy || missing;
                 let tooltip = if looks_busy {
                     self.operation_busy.unwrap_or_default().to_owned()
                 } else if remote.is_none() {
@@ -3688,9 +3759,10 @@ impl GitTurtle {
                 } else {
                     action_inset()
                 };
-                appearance::keep_disabled_shape(control, unavailable, p.panel, Some(inset), cx)
+                let control =
+                    appearance::keep_disabled_shape(control, unavailable, p.panel, Some(inset), cx);
+                refusing(control, move || id.into(), busy || missing, unavailable)
                     .debug_selector(move || id.into())
-                    .disabled(unavailable)
                     .accessibility_label(name)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let remote = this.remote_name.read(cx).value().trim().to_owned();
@@ -3809,13 +3881,13 @@ impl GitTurtle {
                                 // Each reads Switched or Created where it was
                                 // touched once Git reports success, though the
                                 // name field it read has emptied.
-                                .child(copy_feedback::feedback_button(confirmations::branch_form("checkout-branch", &self.path), confirmations::SWITCH, "Switch", "Switch to the named local branch", cx).disabled(looks_busy || branch_empty)
+                                .child(copy_feedback::feedback_button(confirmations::branch_form("checkout-branch", &self.path), confirmations::SWITCH, "Switch", "Switch to the named local branch", cx).map(|switch| refusing(switch, || "checkout-branch".into(), busy || branch_empty, looks_busy || branch_empty))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         let branch = this.branch_name.read(cx).value().trim().to_owned();
                                         let origin = confirmations::branch_form("checkout-branch", &this.path);
                                         this.write_from(WriteCommand::Checkout { branch }, "Switching branch…", Some(origin.into()), window, cx);
                                     })))
-                                .child(copy_feedback::feedback_button(confirmations::branch_form("create-branch", &self.path), confirmations::CREATE, "Create", "Create and switch to a branch from HEAD", cx).disabled(looks_busy || branch_empty)
+                                .child(copy_feedback::feedback_button(confirmations::branch_form("create-branch", &self.path), confirmations::CREATE, "Create", "Create and switch to a branch from HEAD", cx).map(|create| refusing(create, || "create-branch".into(), busy || branch_empty, looks_busy || branch_empty))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         let name = this.branch_name.read(cx).value().trim().to_owned();
                                         let origin = confirmations::branch_form("create-branch", &this.path);

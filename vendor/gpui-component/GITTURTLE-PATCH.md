@@ -106,6 +106,20 @@ density and worktree Buttons in `projects.rs`, `settings.rs` and
 `worktrees.rs`. Remove this part of the patch when upstream Button keeps caller
 hover styles off a disabled Button, or GPUI lets the kit clear them.
 
+The accessibility-disabled patch also modifies `src/button/button.rs`.
+`Button::accessibility_disabled` passes its flag to the base Button's matching
+setter (see [the base patch](../gpui-base/GITTURTLE-PATCH.md)), which reports
+the node disabled while the Button keeps its enabled look, hover, focus and
+click handler. GitTurtle refuses a press of a control a write leaves
+unavailable in the control's own handler at once, but dims the control only
+once the write has run 200 ms (`workspace::refusing`); without the flag an
+assistive technology heard those controls enabled through the delay. Buttons
+that do not set it are unchanged. `cargo test --locked -p gitturtle
+a_refusing_control_is_announced_unavailable_before_it_dims` renders Buttons
+announced unavailable alone, dimmed, and neither, to the nodes they write.
+Remove this part with the base's when upstream Button separates its
+accessibility state from its disabled styling.
+
 The disabled-focus patch also modifies `src/button/button.rs`. gpui-base's
 Button tracks its focus handle only while it is enabled (`gpui-base`
 `src/button.rs`, `.when(!disabled && self.focusable, …)`), so a Button that

@@ -154,7 +154,15 @@ impl GitTurtle {
         .debug_selector(|| "page-back".into())
         .accessibility_label(back_label)
         // History's Back opens Projects, which a running write refuses.
-        .disabled(self.operation_shown().is_some() && self.mode == WorkspaceMode::History)
+        .map(|back| {
+            let history = self.mode == WorkspaceMode::History;
+            crate::workspace::refusing(
+                back,
+                || "page-back".into(),
+                self.operation_busy.is_some() && history,
+                self.operation_shown().is_some() && history,
+            )
+        })
         .tooltip(format!("{back_label} · {}[", primary_label()))
         .when(labelled, |back| back.w_full())
         // The kit centres a Button's content: the shorter "Back" keeps the
@@ -261,7 +269,14 @@ impl GitTurtle {
             .accessibility_label("Projects")
             .tooltip("Open Projects")
             // `show_projects` refuses while a write runs.
-            .disabled(self.operation_shown().is_some())
+            .map(|projects| {
+                crate::workspace::refusing(
+                    projects,
+                    || "projects".into(),
+                    self.operation_busy.is_some(),
+                    self.operation_shown().is_some(),
+                )
+            })
             .on_click(cx.listener(|this, _, window, cx| this.show_projects(window, cx)))
     }
 
@@ -386,7 +401,15 @@ impl GitTurtle {
                         )
                         .debug_selector(|| "pull-requests".into())
                         .track_focus(&self.pull_requests_focus)
-                        .disabled(busy)
+                        // `open_github_from_header` refuses while a write runs.
+                        .map(|open| {
+                            crate::workspace::refusing(
+                                open,
+                                || "pull-requests".into(),
+                                self.operation_busy.is_some(),
+                                busy,
+                            )
+                        })
                         .tooltip(
                             "Pull requests · Discover pull requests and review captured changes",
                         )
@@ -577,7 +600,16 @@ impl GitTurtle {
                         button("pull-requests", "Pull requests", "", false)
                             .debug_selector(|| "pull-requests".into())
                             .track_focus(&self.pull_requests_focus)
-                            .disabled(busy)
+                            // `open_github_from_header` refuses while a write
+                            // runs.
+                            .map(|open| {
+                                crate::workspace::refusing(
+                                    open,
+                                    || "pull-requests".into(),
+                                    self.operation_busy.is_some(),
+                                    busy,
+                                )
+                            })
                             .tooltip("Discover pull requests and review captured changes")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_github_from_header(window, cx)

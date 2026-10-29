@@ -1118,6 +1118,121 @@ mod tests {
         assert!(looks_busy(&app, cx).is_empty(), "landed");
     }
 
+    /// While a write's busy look waits, every control the write leaves
+    /// refusing a press is announced unavailable at once, though it still
+    /// looks available, and is dimmed with it once the look shows: a row's
+    /// Stage, Stage all, Refresh and the header's Projects and Pull requests
+    /// were announced enabled through the delay, and each refused a press.
+    /// The Actions menu opened then offers none of its items, each of which
+    /// refuses while a write runs, where it listed them all available. A
+    /// control announced unavailable writes AccessKit's disabled property,
+    /// as a disabled one does.
+    #[gpui::test]
+    async fn a_refusing_control_is_announced_unavailable_before_it_dims(cx: &mut TestAppContext) {
+        use crate::workspace::refusals::{self, Refusal};
+        let (_fixture, app, cx) = six_files(cx).await;
+        let frame = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        };
+        let controls = [
+            "working-stage-5",
+            "stage-all",
+            "unstage-all",
+            "refresh-working",
+            "projects",
+            "pull-requests",
+        ];
+        let states = |announced, dimmed| {
+            controls
+                .iter()
+                .map(|key| (*key, Some(Refusal { announced, dimmed })))
+                .collect::<Vec<_>>()
+        };
+        let seen = || {
+            controls
+                .iter()
+                .map(|key| (*key, refusals::get(key)))
+                .collect::<Vec<_>>()
+        };
+        refusals::forget();
+        frame(cx);
+        assert_eq!(seen(), states(false, false), "at rest");
+
+        // [Staged 2, alpha, beta, Unstaged 4, delta, epsilon, gamma, zeta]:
+        // delta's Stage, with the write held through the delay.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        let delta = cx.debug_bounds("working-stage-4").expect("delta's Stage");
+        cx.simulate_click(delta.center(), Modifiers::default());
+        frame(cx);
+        assert_eq!(seen(), states(true, false), "the press");
+
+        // The Actions menu, opened before the write looks busy.
+        let actions = cx
+            .debug_bounds("working-recovery-menu")
+            .expect("the Actions menu");
+        cx.simulate_click(actions.center(), Modifiers::default());
+        frame(cx);
+        for item in [
+            "Ignore selected untracked file…",
+            "Save changes to stash…",
+            "Browse stashes…",
+            "Amend last commit…",
+            "Undo last local commit…",
+        ] {
+            assert!(
+                cx.debug_bounds(format!("menu-item: {item} · MenuItem disabled").leak())
+                    .is_some(),
+                "{item} disabled in the menu opened while the write runs"
+            );
+        }
+        assert!(
+            cx.debug_bounds("menu-item: Browse stashes… · MenuItem")
+                .is_none()
+        );
+        cx.simulate_keystrokes("escape");
+        frame(cx);
+
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.executor().run_until_parked();
+        frame(cx);
+        assert_eq!(seen(), states(true, true), "once the write looks busy");
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        rows_arrived(&app, cx).await;
+        advance(cx, ROW_TRAVEL.as_millis() as u64);
+        assert_eq!(seen(), states(false, false), "landed");
+
+        // The node each writes: announced unavailable alone, disabled.
+        let nodes = crate::worktrees::ring_room_tests::row_nodes(
+            cx,
+            [(false, false), (true, false), (true, true)]
+                .into_iter()
+                .map(|(refused, dimmed)| {
+                    crate::workspace::refusing(
+                        crate::button("refusing-probe", "Stage", "", false),
+                        || "refusing-probe".into(),
+                        refused,
+                        dimmed,
+                    )
+                })
+                .collect(),
+        );
+        assert_eq!(
+            nodes
+                .iter()
+                .map(|node| node.is_disabled())
+                .collect::<Vec<_>>(),
+            [false, true, true]
+        );
+    }
+
     /// After gamma's Stage moves its row, epsilon's row takes its place under
     /// the pointer, which has not moved: epsilon's Stage draws no hover fill
     /// and shows no tooltip, as it did while the person never moved to it.

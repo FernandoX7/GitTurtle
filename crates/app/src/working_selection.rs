@@ -659,9 +659,9 @@ impl GitTurtle {
         // A write in flight or rows being prepared leave Stage and Unstage
         // inert at once (`apply_selected_files`), dimmed once the spell
         // looks busy.
-        let unavailable = ((self.operation_busy.is_some() || self.working_paths.pending)
-            && self.busy_shown())
-            || self.working_paths.error.is_some();
+        let spell = self.operation_busy.is_some() || self.working_paths.pending;
+        let unavailable = (spell && self.busy_shown()) || self.working_paths.error.is_some();
+        let refused = spell || self.working_paths.error.is_some();
         let grouped = self.working_selection.grouped;
         let (stage, unstage) = (format!("Stage {unstaged}"), format!("Unstage {staged}"));
         let directories = if compact {
@@ -734,7 +734,14 @@ impl GitTurtle {
                             .child(
                                 stage_button
                                     .debug_selector(|| "stage-selection".into())
-                                    .disabled(unstaged == 0 || unavailable)
+                                    .map(|stage| {
+                                        crate::workspace::refusing(
+                                            stage,
+                                            || "stage-selection".into(),
+                                            unstaged == 0 || refused,
+                                            unstaged == 0 || unavailable,
+                                        )
+                                    })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.apply_selected_files(false, window, cx)
                                     })),
@@ -742,7 +749,14 @@ impl GitTurtle {
                             .child(
                                 unstage_button
                                     .debug_selector(|| "unstage-selection".into())
-                                    .disabled(staged == 0 || unavailable)
+                                    .map(|unstage| {
+                                        crate::workspace::refusing(
+                                            unstage,
+                                            || "unstage-selection".into(),
+                                            staged == 0 || refused,
+                                            staged == 0 || unavailable,
+                                        )
+                                    })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.apply_selected_files(true, window, cx)
                                     })),
