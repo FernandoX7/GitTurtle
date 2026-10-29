@@ -172,6 +172,7 @@ mod tests {
     /// and so does each later rewrite, once armed again, but a read does not.
     #[test]
     fn a_created_directory_is_followed_through_later_rewrites() {
+        crate::local_refresh::require_native_watch();
         let home = tempfile::tempdir().unwrap();
         let (events, mut changes) = mpsc::unbounded();
         let mut watch = Watch::start(home.path(), events).unwrap();

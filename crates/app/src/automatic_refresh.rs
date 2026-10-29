@@ -483,6 +483,8 @@ pub(super) fn reanchor_offset(offset: f32, previous: usize, next: usize, row_hei
 #[cfg(test)]
 mod tests {
     use super::*;
+    // What `#[gpui::test]` expands to, not the glob's `gpui::test`.
+    use core::prelude::v1::test;
     #[::core::prelude::v1::test]
     fn quiet_reads_defer_writes_foreground_reads_and_hidden_pages() {
         let state = State {
@@ -514,6 +516,35 @@ mod tests {
         assert!(!reply_is_current(Some(&path), &path, 9, 8, 5, 5));
         assert!(!reply_is_current(Some(&path), &path, 8, 8, 6, 5));
     }
+    /// A test's app subscribes to its repository as the app does, with no
+    /// warning, but through the inert backend, holding none of the host's
+    /// inotify instances: each app a suite built held one, so concurrent
+    /// suites exhausted the per-user budget and every app opened then showed
+    /// "Some changes need Refresh", failing tests about the status bar.
+    #[gpui::test]
+    async fn a_test_app_watches_without_the_hosts_inotify_budget(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        // The subscription is made on the operation thread.
+        let watched = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.automatic.watcher.is_some())
+        };
+        for _ in 0..400 {
+            cx.run_until_parked();
+            if watched(cx) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        app.read_with(cx, |app, _| {
+            let watcher = app.automatic.watcher.as_ref();
+            assert!(
+                watcher.is_some_and(LocalWatcher::is_inert),
+                "the repository is watched without a native watch"
+            );
+            assert_eq!(app.automatic.watch_warning(), None);
+        });
+    }
+
     #[::core::prelude::v1::test]
     fn rows_inserted_above_keep_the_same_fractional_scroll_anchor() {
         assert_eq!(reanchor_offset(-345., 10, 12, 34.), -413.);

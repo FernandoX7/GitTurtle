@@ -1138,6 +1138,7 @@ mod tests {
     /// it again and applies nothing; and choosing another theme stops the watch.
     #[gpui::test]
     fn a_selected_theme_follows_each_switch_once(cx: &mut TestAppContext) {
+        crate::local_refresh::require_native_watch();
         let fixture = tempfile::tempdir().unwrap();
         let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
         cx.update(|cx| drop(install(Some(root.clone()), cx)));
@@ -1241,6 +1242,7 @@ mod tests {
     /// selected, which keeps it.
     #[gpui::test]
     fn open_settings_keep_an_unselected_card_current(cx: &mut TestAppContext) {
+        crate::local_refresh::require_native_watch();
         let fixture = tempfile::tempdir().unwrap();
         let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
         cx.update(|cx| drop(install(Some(root.clone()), cx)));
@@ -1307,6 +1309,7 @@ mod tests {
     /// Settings while the card is withdrawn drops the watch.
     #[gpui::test]
     fn open_settings_keep_watching_while_the_theme_is_gone(cx: &mut TestAppContext) {
+        crate::local_refresh::require_native_watch();
         let fixture = tempfile::tempdir().unwrap();
         let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
         cx.update(|cx| drop(install(Some(root.clone()), cx)));
@@ -1410,6 +1413,7 @@ mod tests {
     /// read's own palette applies when it lands.
     #[gpui::test]
     fn a_slow_read_applies_the_cached_palette_then_the_new_one(cx: &mut TestAppContext) {
+        crate::local_refresh::require_native_watch();
         let fixture = tempfile::tempdir().unwrap();
         let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
         cx.update(|cx| drop(install(Some(root.clone()), cx)));
@@ -1516,6 +1520,7 @@ mod tests {
     /// directory, which then follows a switch again.
     #[gpui::test]
     fn a_lost_directory_is_read_and_watched_again_on_focus_return(cx: &mut TestAppContext) {
+        crate::local_refresh::require_native_watch();
         cx.executor().allow_parking();
         let fixture = tempfile::tempdir().unwrap();
         let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
@@ -1556,6 +1561,7 @@ mod tests {
     /// switch: the switch still applies once, and the card never says the theme is gone.
     #[gpui::test]
     fn a_focus_return_mid_switch_joins_the_settling_writes(cx: &mut TestAppContext) {
+        crate::local_refresh::require_native_watch();
         let fixture = tempfile::tempdir().unwrap();
         let root = current(fixture.path(), TOKYO_NIGHT, "tokyo-night");
         cx.update(|cx| drop(install(Some(root.clone()), cx)));

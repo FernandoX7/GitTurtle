@@ -154,6 +154,19 @@ impl LocalChange {
 pub struct LocalWatcher {
     stop: Arc<AtomicBool>,
     sender: mpsc::SyncSender<Message>,
+    /// An inert subscription's delivery ([`Backend::Inert`]), held so its
+    /// changes stay pending rather than end.
+    #[cfg(test)]
+    inert: Option<Delivery>,
+}
+
+#[cfg(test)]
+impl LocalWatcher {
+    /// Whether it subscribes through [`Backend::Inert`], holding no native
+    /// watch.
+    pub(crate) fn is_inert(&self) -> bool {
+        self.inert.is_some()
+    }
 }
 
 impl Drop for LocalWatcher {
@@ -248,14 +261,24 @@ fn passive_event(event: &Event) -> bool {
 }
 
 /// What a repository's local changes are subscribed through. The app uses
-/// the platform's own notifications; a test can ask for a subscription that
-/// cannot start, as a watcher cannot once the host's inotify instances run
-/// out.
+/// the platform's own notifications. Tests subscribe through
+/// [`Backend::Inert`] unless they ask for another, so a suite's many app
+/// instances spend nothing of the host's per-user watch budget, which
+/// concurrent suites can exhaust: a test about watching uses [`watch`]
+/// itself, after [`require_native_watch`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Backend {
     /// inotify on Linux, FSEvents on macOS ([`watch`]).
-    #[default]
+    #[cfg_attr(not(test), default)]
+    #[cfg_attr(
+        test,
+        allow(dead_code, reason = "tests about watching call `watch` themselves")
+    )]
     Native,
+    /// A subscription that never reports a change and starts no watch.
+    #[cfg(test)]
+    #[default]
+    Inert,
     /// Fails as creating a native watcher does when the per-user inotify
     /// instances (`fs.inotify.max_user_instances`) are exhausted.
     #[cfg(test)]
@@ -271,10 +294,69 @@ pub(crate) fn subscribe(
     match backend {
         Backend::Native => watch(roots),
         #[cfg(test)]
+        Backend::Inert => {
+            // Its changes stay pending while the watcher holds the sender.
+            let (delivery, changes) = Delivery::channel();
+            let (sender, _) = mpsc::sync_channel(1);
+            Ok((
+                LocalWatcher {
+                    stop: Arc::default(),
+                    sender,
+                    inert: Some(delivery),
+                },
+                changes,
+            ))
+        }
+        #[cfg(test)]
         Backend::Unavailable => Err(notify::Error::io(std::io::Error::from_raw_os_error(
             libc::EMFILE,
         )))
         .context("Create native local-change watcher"),
+    }
+}
+
+/// Fails the calling test, naming what the host lacks, unless a native
+/// watcher can start and watch a directory. A test about watching needs
+/// that from the host (on Linux an inotify instance and its watches), which
+/// concurrent suites can exhaust; it then fails with this, not with a
+/// missing event or a watch state left off.
+#[cfg(test)]
+pub(crate) fn require_native_watch() {
+    let directory = tempfile::tempdir().unwrap();
+    let started = notify::recommended_watcher(|_: notify::Result<Event>| {})
+        .and_then(|mut watcher| watcher.watch(directory.path(), RecursiveMode::NonRecursive));
+    if let Err(error) = started {
+        panic!("{}", native_watch_refused(&error));
+    }
+}
+
+/// Why a test about watching cannot run when `error` refused its native
+/// watch, naming the host limit an exhausted budget is.
+#[cfg(test)]
+fn native_watch_refused(error: &notify::Error) -> String {
+    let limit = match &error.kind {
+        notify::ErrorKind::Io(io) if io.raw_os_error() == Some(libc::EMFILE) => {
+            Some("its per-user inotify instances (fs.inotify.max_user_instances)")
+        }
+        notify::ErrorKind::MaxFilesWatch => {
+            Some("its per-user inotify watches (fs.inotify.max_user_watches)")
+        }
+        notify::ErrorKind::Io(io) if io.raw_os_error() == Some(libc::ENOSPC) => {
+            Some("its per-user inotify watches (fs.inotify.max_user_watches)")
+        }
+        _ => None,
+    };
+    match limit {
+        Some(limit) => format!(
+            "this test watches through the host's native notifications, and the host has \
+             exhausted {limit}, as concurrent test suites can ({error}); rerun it once they \
+             are released or the limit is raised. Tests that are not about watching \
+             subscribe through `local_refresh::Backend::Inert` and need none."
+        ),
+        None => format!(
+            "this test watches through the host's native notifications, which refused a \
+             watch: {error}"
+        ),
     }
 }
 
@@ -343,7 +425,15 @@ pub fn watch(roots: WatchRoots) -> Result<(LocalWatcher, LocalChanges)> {
             )
         })
         .context("Start local-change watcher")?;
-    Ok((LocalWatcher { stop, sender }, changes))
+    Ok((
+        LocalWatcher {
+            stop,
+            sender,
+            #[cfg(test)]
+            inert: None,
+        },
+        changes,
+    ))
 }
 
 #[derive(Default)]
@@ -1165,6 +1255,7 @@ mod tests {
             mpsc::Receiver<LocalChange>,
             std::thread::JoinHandle<()>,
         ) {
+            require_native_watch();
             let (watcher, mut changes) = watch(self.roots.clone()).unwrap();
             let (sender, receiver) = mpsc::channel();
             let bridge = std::thread::spawn(move || {
@@ -1267,6 +1358,25 @@ mod tests {
         assert!(fixture.roots.worktree.starts_with(&fixture.path));
         assert!(fixture.roots.private_git.starts_with(&fixture.path));
         assert!(fixture.roots.common_git.starts_with(&fixture.path));
+    }
+
+    /// A test about watching, refused a native watch, fails naming the host
+    /// limit that ran out, as the per-user inotify instances do when
+    /// concurrent suites hold them, rather than with a missing event.
+    #[test]
+    fn a_refused_native_watch_names_the_exhausted_host_limit() {
+        let refused = |error: notify::Error| native_watch_refused(&error);
+        let instances = refused(notify::Error::io(std::io::Error::from_raw_os_error(
+            libc::EMFILE,
+        )));
+        assert!(
+            instances.contains("fs.inotify.max_user_instances"),
+            "{instances}"
+        );
+        let watches = refused(notify::Error::new(notify::ErrorKind::MaxFilesWatch));
+        assert!(watches.contains("fs.inotify.max_user_watches"), "{watches}");
+        let other = refused(notify::Error::path_not_found());
+        assert!(!other.contains("fs.inotify"), "{other}");
     }
 
     #[test]
@@ -1466,6 +1576,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     fn registrations(fixture: &Fixture) -> (RecommendedWatcher, Registrations) {
+        require_native_watch();
         let watcher = notify::recommended_watcher(|_: notify::Result<Event>| {}).unwrap();
         (watcher, Registrations::new(&fixture.roots))
     }
@@ -1614,6 +1725,7 @@ mod tests {
                 fs::create_dir_all(roots.private_git.join(directory)).unwrap();
             }
             fs::create_dir_all(roots.worktree.join(".hidden/nested")).unwrap();
+            require_native_watch();
             let mut watcher = notify::recommended_watcher(|_: notify::Result<Event>| {}).unwrap();
             let mut registrations = Registrations::new(&roots);
             registrations.start(&mut watcher, &roots);
