@@ -835,13 +835,16 @@ impl GitRepository {
         })
     }
 
-    /// The refs that decide whether `operation` brought anything new, read
-    /// passively: for a Fetch every ref with its commit, since configured
-    /// refspecs and followed tags can update refs outside the remote's own
-    /// namespace, and for a Pull the commit HEAD names. `None` for other
-    /// writes, and when the read fails, as on an unborn branch, whose
-    /// successful Pull always brings commits.
-    fn sync_snapshot(&self, operation: &WriteCommand) -> Option<Vec<u8>> {
+    /// A SHA-256 digest of what decides whether `operation` brought anything
+    /// new, read passively, so the network write holds 32 bytes rather than
+    /// the state itself. For a Fetch: every ref with its commit, since
+    /// configured refspecs and followed tags can update refs outside the
+    /// remote's own namespace. For a Pull: the commit HEAD names. `None` for
+    /// other writes and whenever a read fails, which leaves `up_to_date`
+    /// false, as on an unborn branch, whose successful Pull always brings
+    /// commits.
+    fn sync_snapshot(&self, operation: &WriteCommand) -> Option<[u8; 32]> {
+        let mut digest = Sha256::new();
         match operation {
             WriteCommand::Fetch { .. } => {
                 let records = run_git(
@@ -856,19 +859,20 @@ impl GitRepository {
                 // fetch creates `refs/remotes/<remote>/HEAD` where a remote
                 // was added rather than cloned (`followRemoteHEAD`), which
                 // brings nothing new.
-                Some(
-                    records
-                        .split(|byte| *byte == b'\n')
-                        .filter_map(|record| record.strip_prefix(b"\0"))
-                        .collect::<Vec<_>>()
-                        .join(&b'\n'),
-                )
+                for record in records
+                    .split(|byte| *byte == b'\n')
+                    .filter_map(|record| record.strip_prefix(b"\0"))
+                {
+                    digest.update(record);
+                    digest.update(b"\n");
+                }
             }
             WriteCommand::Pull { .. } => {
-                run_git(&self.path, &["rev-parse", "--verify", "HEAD"]).ok()
+                digest.update(run_git(&self.path, &["rev-parse", "--verify", "HEAD"]).ok()?);
             }
-            _ => None,
+            _ => return None,
         }
+        Some(digest.finalize().into())
     }
 
     pub fn init(destination: impl AsRef<Path>, initial_branch: &str) -> Result<Self> {
