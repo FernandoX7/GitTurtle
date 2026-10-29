@@ -460,6 +460,58 @@ async fn fetch_pull_and_push_confirm_on_their_buttons(cx: &mut TestAppContext) {
     }
 }
 
+/// A history notice ends no control's confirmation. A Pull from Changes
+/// brings the remote's commit, which the quiet read after it finds outside
+/// History and cues ("1 new commit"), and Pull reads Pulled through that
+/// read; in History, beside the cue and Latest's dot, it still reads Pulled
+/// and its announcement stands, until its own 1.5 s end. In earlier builds
+/// Pulled and Pushed were gone from their controls 0.7 s after the press
+/// while the full-width notice bar showed.
+#[gpui::test]
+async fn a_history_notice_ends_no_confirmation(cx: &mut TestAppContext) {
+    use crate::history_updates::Update;
+    let (fixture, app, cx) = with_remote(cx).await;
+    advance_remote(fixture.path());
+    cx.simulate_resize(size(px(1480.), px(980.)));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    settle(&app, cx).await;
+    assert_eq!(confirms(cx, "pull", "pulled"), Some(false));
+
+    click(cx, "pull");
+    // The read after the Pull, outside History, cues the commit it brought.
+    finish(&app, cx, "the Pull's cue", |cx| {
+        confirms(cx, "pull", "pulled") == Some(true)
+            && app.read_with(cx, |app, _| app.history_updates.pending.is_some())
+    });
+    assert_eq!(
+        app.read_with(cx, |app, _| app.history_updates.pending),
+        Some(Update::New(1))
+    );
+    assert_eq!(announced(cx).unwrap().1, "Pulled origin/main");
+
+    // In History the cue is drawn in the scope toolbar, Latest marked by its
+    // dot. A quiet read that History follows ends the cue, so it is drawn
+    // here as that read raised it.
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+    app.update(cx, |app, _| {
+        app.history_updates.pending = Some(Update::New(1))
+    });
+    draw(cx);
+    assert!(
+        cx.debug_bounds("history-update-status").is_some(),
+        "the cue"
+    );
+    assert!(
+        cx.debug_bounds("history-newest-dot").is_some(),
+        "Latest's dot"
+    );
+    assert_eq!(confirms(cx, "pull", "pulled"), Some(true), "beside the cue");
+    assert_eq!(announced(cx).unwrap().1, "Pulled origin/main");
+
+    wait(cx, RESTORE_AFTER);
+    assert_eq!(confirms(cx, "pull", "pulled"), Some(false));
+}
+
 /// A Fetch or Pull that brings nothing new still reads Fetched or Pulled in
 /// its own bounds, the word within its content's width, while the
 /// announcement and the status line say what Git found: "Up to date with
