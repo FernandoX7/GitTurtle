@@ -7105,6 +7105,178 @@ pub(crate) mod tests {
         }
     }
 
+    /// Both sides' open controls take one form and one place, chosen from the
+    /// narrower room a side's name leaves its control: at 18 pt in a
+    /// 461 × 490 window only Before's control, beside the wider name,
+    /// wrapped onto a line of its own, 48 px of the image's room, while
+    /// After's stayed beside its name. Each control stays on its name's line
+    /// wherever the name, the gap and the scaled 28 px icon fit in the
+    /// narrower caption, and otherwise both sit beneath their names; both
+    /// are labelled or both icons. At 13 and 18 pt in 461 × 490, 461 × 980,
+    /// 640 × 680 and 1,480 × 980 windows, the controls share their top and
+    /// their width, and the walk meets both places. Where only Before offers
+    /// its control, its place is chosen from Before's room alone, and beneath
+    /// the names After keeps an empty line of the control's height, so both
+    /// names and both sides' dimensions stay level: they ended about 36 px
+    /// apart. A source image's one caption places its control by the same
+    /// rule.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn image_caption_controls_take_one_place(cx: &mut TestAppContext) {
+        use crate::system_preview::tests::png;
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let both =
+            caption_controls_take_one_place(cx, "both offered", &[0, 1], ["Before", "After"]);
+        assert_eq!(
+            both,
+            (true, true, true),
+            "with both offered, the walk meets controls on the names' line, beneath them, and level dimensions beneath them"
+        );
+        edit_image_sides(&app, cx, |side, image| {
+            if side == 1 {
+                image.system_preview = None;
+            }
+        });
+        let single =
+            caption_controls_take_one_place(cx, "Before alone offered", &[0], ["Before", "After"]);
+        assert_eq!(
+            single,
+            (true, true, true),
+            "with Before alone offered, the walk meets its control on the names' line, beneath them, and level dimensions beneath them"
+        );
+        show_source(&app, cx, "image").await;
+        let source = caption_controls_take_one_place(cx, "a source", &[1], ["Source", "Source"]);
+        assert!(
+            source.0,
+            "a source's control stays beside its name where it fits"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// At 13 and 18 pt in 461 × 490, 461 × 980, 640 × 680 and 1,480 × 980
+    /// windows, the open controls of the sides `offered` (each side's caption
+    /// named `names`) share one top and one width, on their names' line
+    /// where the narrower caption among them holds the scaled 28 px icon
+    /// beside its name, and otherwise beneath their names, where every drawn
+    /// side's name and dimensions stay level with the other's. Whether the
+    /// walk met controls on the names' line, beneath them, and both sides'
+    /// dimensions drawn beneath them.
+    fn caption_controls_take_one_place(
+        cx: &mut VisualTestContext,
+        what: &str,
+        offered: &[usize],
+        names: [&str; 2],
+    ) -> (bool, bool, bool) {
+        let bounds = |selector: String, cx: &mut VisualTestContext| {
+            let selector: &'static str = selector.leak();
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let slack = px(0.5);
+        let (mut inline_met, mut beneath_met, mut level_met) = (false, false, false);
+        for (text, width, height) in [
+            (13, 461., 490.),
+            (18, 461., 490.),
+            (13, 461., 980.),
+            (18, 461., 980.),
+            (13, 640., 680.),
+            (18, 640., 680.),
+            (13, 1480., 980.),
+            (18, 1480., 980.),
+        ] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("{what} at {text} pt in {width} × {height}");
+            let drawn: Vec<usize> = [0, 1]
+                .into_iter()
+                .filter(|index| {
+                    cx.debug_bounds(format!("image-side-caption-{index}").leak())
+                        .is_some()
+                })
+                .collect();
+            for &index in &drawn {
+                assert_eq!(
+                    cx.debug_bounds(format!("image-system-preview-{index}").leak())
+                        .is_some(),
+                    offered.contains(&index),
+                    "{at}: side {index} offers its control only where it is offered"
+                );
+            }
+            let controls: Vec<_> = offered
+                .iter()
+                .map(|index| bounds(format!("image-system-preview-{index}"), cx))
+                .collect();
+            assert!(
+                controls.iter().all(|control| {
+                    (control.top() - controls[0].top()).abs() <= slack
+                        && (control.size.width - controls[0].size.width).abs() <= slack
+                }),
+                "{at}: the controls take one place and one form: {controls:?}"
+            );
+            let captions: Vec<_> = [0, 1]
+                .map(|index| cx.debug_bounds(format!("image-side-caption-{index}").leak()))
+                .to_vec();
+            let fits = cx.update(|window, _| {
+                offered
+                    .iter()
+                    .map(|&index| {
+                        let caption = captions[index].expect("an offered side's caption");
+                        crate::image_compare::caption_room(
+                            index,
+                            caption.size.width,
+                            names[index],
+                            window,
+                        )
+                    })
+                    .fold(px(f32::MAX), Pixels::min)
+                    >= appearance::ui_size(28.)
+            });
+            for (&index, control) in offered.iter().zip(&controls) {
+                let name = bounds(format!("image-side-name-{index}"), cx);
+                if fits {
+                    assert!(
+                        (control.top() - name.top()).abs() <= slack
+                            && control.left() >= name.right() - slack,
+                        "{at}: where the narrower caption holds the icon beside its name, control {index} {control:?} stays on its name's line {name:?}"
+                    );
+                } else {
+                    assert!(
+                        control.top() >= name.bottom() - slack,
+                        "{at}: where the narrower caption cannot hold it, control {index} {control:?} sits beneath its name {name:?}"
+                    );
+                }
+            }
+            if drawn.len() == 2 {
+                let names = [0, 1].map(|index| bounds(format!("image-side-name-{index}"), cx));
+                assert!(
+                    (names[0].top() - names[1].top()).abs() <= slack,
+                    "{at}: both names stay level: {names:?}"
+                );
+                let details = [0, 1]
+                    .map(|index| cx.debug_bounds(format!("image-side-details-{index}").leak()));
+                if let [Some(before), Some(after)] = details {
+                    assert!(
+                        (before.top() - after.top()).abs() <= slack,
+                        "{at}: both sides' dimensions stay level: {before:?} and {after:?}"
+                    );
+                    level_met |= !fits;
+                }
+            }
+            inline_met |= fits;
+            beneath_met |= !fits;
+        }
+        (inline_met, beneath_met, level_met)
+    }
+
     /// The line saying why a click on an image side's Open in default app
     /// opened nothing takes its own room beneath its side's caption, in the
     /// column's flow: laid over the image, a refusal in a 461 × 490 window,
@@ -7786,8 +7958,8 @@ pub(crate) mod tests {
     /// description: at 18 pt in that window the toolbar and the names left the
     /// image about 109 px above the footer's 33, under its scaled 133 px
     /// minimum. The test fonts' glyphs are wider than the interface font's,
-    /// so in a 461 px window the toolbar's menus take two rows and Before's
-    /// control wraps below its name, and that room falls at 461 × 560 at
+    /// so in a 461 px window the toolbar's menus take two rows and both
+    /// sides' controls sit below their names, and that room falls at 461 × 560 at
     /// 13 pt and 461 × 590 at 18 pt: there the image now keeps its scaled
     /// minimum. At every height of a 461 px window from 490 to 980, the
     /// dimensions and the footer are drawn only above an image that keeps

@@ -706,18 +706,26 @@ impl GitTurtle {
         let beneath = crate::in_frame::in_frame(move |bounds, window, cx| {
             // What the column's width decides, from its width in this frame.
             let width = bounds.size.width;
-            // The captions share the column equally; each open control is
-            // labelled where it fits beside its side's name, otherwise its
-            // icon.
+            // The captions share the column equally, and their open controls
+            // take one form and one place, chosen from the narrower room a
+            // side's name leaves its control: labelled where the label fits
+            // beside the name, otherwise its icon, and on the name's line
+            // where the icon's scaled 28 px fits there, otherwise both on the
+            // line beneath, so the sides' names and details stay level.
             let caption_width = width / if source { 1. } else { 2. };
-            let mut controls: [Option<(crate::system_preview::Target, crate::system_preview::Form)>;
-                2] = [None, None];
-            for (index, offered) in offers.into_iter().enumerate() {
-                controls[index] = offered.map(|(target, offer)| {
-                    let room = caption_room(index, caption_width, names[index], window);
-                    (target, offer.form(room, window))
-                });
-            }
+            let room = offers
+                .iter()
+                .enumerate()
+                .filter(|(_, offered)| offered.is_some())
+                .map(|(index, _)| caption_room(index, caption_width, names[index], window))
+                .reduce(|narrower, room| narrower.min(room));
+            let inline = room.is_none_or(|room| room >= crate::appearance::ui_size(28.));
+            let controls = offers.map(|offered| {
+                offered.map(|(target, offer)| {
+                    let form = offer.form(room.unwrap_or_default(), window);
+                    (target, form)
+                })
+            });
             // The band shows each side's short line in that side's half,
             // whole where the image keeps its usable minimum beneath it and
             // otherwise on two lines, and always ends at a whole line.
@@ -757,6 +765,7 @@ impl GitTurtle {
                 kinds,
                 source,
                 controls: &controls,
+                inline,
                 kept_wraps,
             };
             let fit = Beneath {
@@ -1275,7 +1284,7 @@ thread_local! {
 /// The room side `index`'s caption leaves its open control on its first line
 /// in a caption `caption` wide: the caption less its `px_3` either side and
 /// `gap_2`, and its 11 pt medium `name`.
-fn caption_room(index: usize, caption: Pixels, name: &str, window: &Window) -> Pixels {
+pub(crate) fn caption_room(index: usize, caption: Pixels, name: &str, window: &Window) -> Pixels {
     let cache = if index == 0 {
         &BEFORE_CAPTION
     } else {
@@ -1329,14 +1338,18 @@ pub(crate) const STAGE_MIN: f32 = 96.;
 /// document's header has them, and its details beneath where they stay.
 /// The name's line is as tall as the scaled 28 px control and the caption
 /// keeps to its top, so both sides' names and details line up whether or not
-/// a side offers the control, and the control stays on the first line
-/// wherever the name leaves it room.
+/// a side offers the control. The `controls` share one form and one place,
+/// on the names' line where the narrower room beside a name holds them
+/// (`inline`), otherwise on the line beneath, both together, so one side's
+/// control never wraps alone; there a side without one keeps an empty line
+/// of the control's height in its place.
 struct Captions<'a> {
     names: [&'static str; 2],
     details: &'a [String; 2],
     kinds: [Details; 2],
     source: bool,
     controls: &'a [Option<(crate::system_preview::Target, crate::system_preview::Form)>; 2],
+    inline: bool,
     /// Whether each side's [`Details::Kept`] line wraps past one line.
     kept_wraps: [bool; 2],
 }
@@ -1358,6 +1371,7 @@ impl Captions<'_> {
         p: &crate::appearance::Palette,
         cx: &App,
     ) -> Div {
+        let offered = self.controls.iter().any(Option::is_some);
         div()
             .flex()
             .border_b_1()
@@ -1380,6 +1394,10 @@ impl Captions<'_> {
                                 control
                             }
                         });
+                        // Beneath the names, a side without a control keeps
+                        // its line, so both sides' details stay level.
+                        let keep_place = (!self.inline && offered && control.is_none())
+                            .then(|| div().h(crate::appearance::ui_size(28.)).flex_shrink_0());
                         let kept = self.kinds[i] == Details::Kept;
                         let (drawn, cut) = match self.kinds[i] {
                             Details::Dimensions => (dimensions, false),
@@ -1404,10 +1422,14 @@ impl Captions<'_> {
                             .child(
                                 div()
                                     .flex()
-                                    .flex_wrap()
-                                    .items_center()
-                                    .content_start()
                                     .gap_2()
+                                    .map(|line| {
+                                        if self.inline {
+                                            line.flex_wrap().items_center().content_start()
+                                        } else {
+                                            line.flex_col().items_start()
+                                        }
+                                    })
                                     .child(
                                         native_accessibility::static_text(
                                             div().id(("image-side-description", i)).debug_selector(
@@ -1429,7 +1451,8 @@ impl Captions<'_> {
                                         })
                                         .child(name),
                                     )
-                                    .children(control),
+                                    .children(control)
+                                    .children(keep_place),
                             )
                             .when(drawn, |caption| {
                                 caption.child(
