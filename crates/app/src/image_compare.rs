@@ -865,11 +865,13 @@ impl GitTurtle {
                             .children(empty)
                     }))
             });
-            // The words of the notes and the footer that gave way, which the
-            // accessible description of the image keeps, or of the band where
-            // the image is not drawn. The footer gives way only where its
-            // room goes to one of them, so its words always reach a drawn
-            // node.
+            // The words of the notes and the footer that gave way, which one
+            // drawn node keeps in its accessible description: the image where
+            // it is drawn, otherwise the band, and otherwise the captions,
+            // which every layout draws, so they always reach a drawn node.
+            // The notes give way wherever a line each would leave the image
+            // less than its minimum, drawn or not; the footer only where its
+            // room goes to the image or the band.
             let mut left = Vec::new();
             if note_lines == 0 {
                 left.extend([scale_notice.clone(), guidance.to_owned()]);
@@ -884,6 +886,7 @@ impl GitTurtle {
             let described = !left.is_empty();
             let description = SharedString::from(left.join(". "));
             let band_keeps = described && !fit.image_shown && band.is_some();
+            let captions_keep = described && !fit.image_shown && band.is_none();
             let band = band.map(|_| {
                 div()
                     .debug_selector(|| "image-open-notes".into())
@@ -1014,12 +1017,29 @@ impl GitTurtle {
                     "image-canvas-area",
                 )
             });
+            // The captions are a group in every layout, so what they hold
+            // keeps the node holding it as the room changes. Where neither
+            // the image nor the band is drawn, as where the room is shorter
+            // than the captions, the group is named for what is drawn and
+            // described by the words that gave way, which no other drawn
+            // node keeps. The rows measured above are never drawn and write
+            // no node.
+            let captions = native_accessibility::recorded(
+                captions
+                    .build(fit.dimensions, said, &p, cx)
+                    .id("image-captions")
+                    .role(Role::Group)
+                    .when(captions_keep, |row| {
+                        row.aria_label(details_label)
+                            .aria_description(description.clone())
+                    }),
+            );
             div()
                 .debug_selector(|| "image-captions-and-stage".into())
                 .size_full()
                 .flex()
                 .flex_col()
-                .child(captions.build(fit.dimensions, said, &p, cx))
+                .child(captions)
                 // Beneath the captions: the band saying why a click opened
                 // nothing takes its own lines there, beneath its side's
                 // caption, so the captions stay put and the image, then its

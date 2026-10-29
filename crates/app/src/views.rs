@@ -7979,6 +7979,99 @@ pub(crate) mod tests {
         );
     }
 
+    /// The words of an image's notes always reach a drawn node: the accessible
+    /// description of the image where it is drawn, of a click's band where
+    /// only that is, and otherwise of the captions. Where the room beneath the
+    /// toolbar was shorter than the captions and no click had been answered,
+    /// the image had no pixel, Compare's footer stayed, having nothing to give
+    /// its room to, and the notes, a line each, left: their words went into a
+    /// description no drawn node carried. There the captions, a group in
+    /// every layout, are named "Comparison details" and described by them.
+    /// Walked down a 461 px window, at 13 and 18 pt, through the heights where
+    /// the image loses its last pixel and on to where the captions leave the
+    /// preview.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn an_image_s_notes_reach_a_drawn_node_whatever_the_room(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::system_preview::tests::png;
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let input = file_commits(&[
+            ("add", &[("image.png", &before)]),
+            ("change", &[("image.png", &after)]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let notes = ["image-source-scale", "image-interaction-guidance"];
+        // Each node that can keep the notes' words, by element ID.
+        let keepers = ["image-canvases", "image-open-notes", "image-captions"];
+        let mut met = std::collections::BTreeSet::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            // Down to the height where the toolbar leaves the captions no
+            // room in the preview, which then draws nothing beneath it.
+            for height in (200..=980).rev().step_by(4) {
+                cx.simulate_resize(size(px(461.), px(height as f32)));
+                draw(cx);
+                written::forget();
+                draw(cx);
+                let at = format!("{text} pt in 461 × {height}");
+                let shown = cx
+                    .debug_bounds("image-side-caption-0")
+                    .zip(cx.debug_bounds("preview-content"))
+                    .is_some_and(|(caption, column)| caption.top() < column.bottom());
+                if !shown {
+                    met.insert((text, "the captions leave the preview"));
+                    break;
+                }
+                let drawn = notes.map(|note| cx.debug_bounds(note).is_some());
+                if drawn.contains(&true) {
+                    assert_eq!(drawn, [true; 2], "{at}: the notes stay or leave together");
+                    met.insert((text, "notes drawn"));
+                    continue;
+                }
+                let keeping: Vec<(&str, Option<String>)> = keepers
+                    .into_iter()
+                    .filter_map(|id| {
+                        let node = written::get(id)?.node;
+                        let description = node.description()?;
+                        (description.contains("100% =")
+                            && description.contains("Linked zoom and pan"))
+                        .then(|| (id, node.label().map(str::to_owned)))
+                    })
+                    .collect();
+                let keeper = if cx.debug_bounds("image-canvas-area").is_some() {
+                    met.insert((text, "the image keeps them"));
+                    ("image-canvases", Some("Before and After images".to_owned()))
+                } else {
+                    met.insert((text, "the captions keep them"));
+                    ("image-captions", Some("Comparison details".to_owned()))
+                };
+                assert_eq!(
+                    keeping,
+                    vec![keeper],
+                    "{at}: one drawn node, named for what is drawn, keeps the notes' words"
+                );
+            }
+        }
+        let walk = [
+            "notes drawn",
+            "the image keeps them",
+            "the captions keep them",
+            "the captions leave the preview",
+        ];
+        for text in [13, 18] {
+            for step in walk {
+                assert!(
+                    met.contains(&(text, step)),
+                    "{text} pt: the walk meets {step:?}"
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A changed image's captions give way before the image beneath them, as
     /// labels give way before content: each side's dimensions stay beneath
     /// its name only where the image keeps its usable minimum, a scaled
