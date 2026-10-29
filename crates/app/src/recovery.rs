@@ -92,7 +92,11 @@ impl GitTurtle {
         cx.defer_in(window, move |this, window, cx| {
             match failure {
                 Some(failure) => failure(message, window, cx),
-                None => this.operation_error = Some(message),
+                None => {
+                    this.operation_error = Some(message);
+                    // A fresh node, heard again however often it refuses.
+                    this.error_refusals = this.error_refusals.wrapping_add(1);
+                }
             }
             cx.notify();
         });

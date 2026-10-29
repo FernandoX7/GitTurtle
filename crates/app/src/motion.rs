@@ -2923,39 +2923,56 @@ mod tests {
         );
     }
 
-    /// Enter in a commit's keyboard menu while a merge is paused: it
-    /// prepares nothing and reports the core's refusal in the window's
-    /// error, announced at once, the menu open and focused with its items
-    /// disabled.
+    /// Enter in a commit's keyboard menu while a merge is paused, twice
+    /// without the error dismissed between: each prepares nothing and
+    /// reports the core's refusal in the window's error, announced at once,
+    /// the second by a fresh node, so it is heard again, the menu open and
+    /// focused with its items disabled.
     fn enter_is_refused(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, when: &str) {
         let held = app.update(cx, |app, _| app.operations.hold());
-        cx.simulate_keystrokes("enter");
-        cx.executor().run_until_parked();
-        next_frame(cx);
-        assert_eq!(
-            app.read_with(cx, |app, _| (
-                app.operation_busy,
-                app.operation_error.clone()
-            )),
-            (None, Some(crate::recovery::PAUSED_REFUSAL.into())),
-            "{when}: Enter prepares nothing and says why"
-        );
-        assert!(
-            cx.debug_bounds("operation-error-summary").is_some(),
-            "{when}: the window's error draws the refusal"
-        );
-        assert_eq!(
-            crate::native_accessibility::written::announced("operation-error-summary"),
-            Some(crate::native_accessibility::written::Announced::ASSERTIVE),
-            "{when}: the refusal is announced at once"
-        );
-        assert!(!dialog_open(cx), "{when}: Enter asks nothing");
-        keyed_items(
-            app,
-            cx,
-            &COMMIT_ITEMS,
-            false,
-            &format!("{when}, after Enter"),
+        let mut nodes = Vec::new();
+        for press in ["Enter", "Enter again"] {
+            cx.simulate_keystrokes("enter");
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| (
+                    app.operation_busy,
+                    app.operation_error.clone()
+                )),
+                (None, Some(crate::recovery::PAUSED_REFUSAL.into())),
+                "{when}, {press}: prepares nothing and says why"
+            );
+            assert!(
+                cx.debug_bounds("operation-error-summary").is_some(),
+                "{when}, {press}: the window's error draws the refusal"
+            );
+            let mut announced =
+                crate::native_accessibility::written::announced_from("operation-error-summary-");
+            assert_eq!(
+                announced.len(),
+                1,
+                "{when}, {press}: one refusal announced: {announced:?}"
+            );
+            let (node, how) = announced.pop().expect("the refusal");
+            assert_eq!(
+                how,
+                crate::native_accessibility::written::Announced::ASSERTIVE,
+                "{when}, {press}: the refusal is announced at once"
+            );
+            nodes.push(node);
+            assert!(!dialog_open(cx), "{when}, {press}: asks nothing");
+            keyed_items(
+                app,
+                cx,
+                &COMMIT_ITEMS,
+                false,
+                &format!("{when}, after {press}"),
+            );
+        }
+        assert_ne!(
+            nodes[0], nodes[1],
+            "{when}: the refusal asked for again is a fresh node, heard again"
         );
         drop(held);
         app.update(cx, |app, _| app.operation_error = None);

@@ -6431,7 +6431,9 @@ impl Render for GitTurtle {
                         .text_color(rgb(palette(cx).removed))
                         .child(
                             div()
-                                .id("operation-error-summary")
+                                // A fresh node for each refusal, so the same
+                                // one again is announced again.
+                                .id(("operation-error-summary", self.error_refusals))
                                 .debug_selector(|| "operation-error-summary".into())
                                 .role(Role::Alert)
                                 .assertive()

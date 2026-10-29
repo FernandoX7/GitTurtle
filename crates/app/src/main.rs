@@ -390,6 +390,13 @@ struct GitTurtle {
     operation_repository: Option<PathBuf>,
     operation_outcomes: operations::RepositoryOutcomes,
     operation_error: Option<String>,
+    /// Refusals reported in the window's error
+    /// (`GitTurtle::refuse_while_paused`). Each draws the error's line as a
+    /// fresh node, which assistive technology announces as it is added, so
+    /// the same refusal asked for again is heard again: the line kept its
+    /// node and its text, and a second Enter in a paused commit menu was
+    /// silent. Window-lived; it only names the node.
+    error_refusals: usize,
     operation_notice: Option<String>,
     /// This showing of the preview, which a line beneath an open control
     /// belongs to: [`Self::clear_preview`] and a restored inspection start a
@@ -755,6 +762,7 @@ impl GitTurtle {
             operation_repository: None,
             operation_outcomes: operations::RepositoryOutcomes::default(),
             operation_error: None,
+            error_refusals: 0,
             operation_notice: None,
             preview_showing: system_preview::Showing::next(),
             operation_task: None,
