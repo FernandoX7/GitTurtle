@@ -1394,6 +1394,7 @@ impl StashBrowser {
         let selected = self.selected_file == Some(index);
         div()
             .id(("stash-file", index))
+            .debug_selector(move || format!("stash-file-{index}"))
             .role(Role::ListBoxOption)
             .aria_selected(selected)
             .aria_label(format!("{} · {}", self.area.label(), file.path().display()))
@@ -1650,6 +1651,34 @@ impl Render for StashBrowser {
         let restore_index = self.detail.focus("stash-restore-index", cx);
         let drop = self.detail.focus("drop-saved-stash", cx);
         let restore = self.detail.focus("restore-saved-stash", cx);
+        // Beside the list, the restore actions and their note are the
+        // detail's footer, whole on selection whatever the comparison takes:
+        // at 18 pt in a 1000 × 680 window they lay below the fold of the
+        // scrolling detail until the user scrolled. Stacked below the list in
+        // a narrow window, where the detail is a few lines tall (about 67 px
+        // at 18 pt in 461 × 490), they scroll with the rest, revealed with
+        // their rings as the keyboard reaches them.
+        let pinned = !narrow;
+        let actions = self.snapshot.is_some().then(|| {
+            let row = div().debug_selector(|| "stash-actions".into()).flex().flex_wrap().items_center().gap_2().pt_1()
+                .when(!pinned, |row| row.on_children_prepainted(self.detail.controls(vec![Some(restore_index.clone()), None, Some(drop.clone()), Some(restore.clone())], room)))
+                .child(Checkbox::new("stash-restore-index").track_focus(&restore_index).label("Restore staged state").checked(self.restore_index).on_click(cx.listener(|this, checked, _, cx| { this.restore_index = *checked; cx.notify(); })))
+                .child(div().flex_1())
+                .child(button("drop-saved-stash", "Drop…", "", false).track_focus(&drop).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))))
+                .child(Button::new("restore-saved-stash").primary().small().label("Review restore…").track_focus(&restore).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.restore(window, cx))));
+            div().flex().flex_col().gap_2().flex_shrink_0()
+                .child(row)
+                .child(native_accessibility::text("stash-restore-note", "Restoring keeps this stash saved. Drop it separately after checking the restored work.").text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted)))
+        });
+        let (footer, inline) = if pinned {
+            (actions, None)
+        } else {
+            (None, actions)
+        };
+        // Until a file is chosen the comparison holds only its prompt and
+        // keeps that height, which takes no room from the actions; a chosen
+        // file's comparison keeps a floor of its own.
+        let file_chosen = self.selected_file.is_some();
         div().debug_selector(|| "stash-browser".into()).h(px(height)).min_h_0().flex().gap_3().when(narrow, |element| element.flex_col())
             .child(div().debug_selector(|| "stash-list-panel".into()).w(px(255.)).min_w_0().flex_shrink_0().h_full().flex().flex_col().border_1().border_color(rgb(p.border)).rounded(px(7.)).overflow_hidden()
                 .when(narrow && detail, |element| element.w_full().h(crate::appearance::ui_size(140.)))
@@ -1678,11 +1707,12 @@ impl Render for StashBrowser {
             // there the dialog's content clips at the browser's foot, which
             // cut the ring of a control revealed at the detail's bottom. A
             // control the keyboard moves onto scrolls into view with its
-            // ring, as the Reflog's do. The comparison keeps a floor
-            // of its own rather than give its height up to the controls
-            // around it, as at 18 pt in a 1000 × 680 window, where it kept
-            // 30 px without one.
-            .when(detail, |element| element.child(cue.list(div().on_children_prepainted(cue.observe(self.detail.observe())).id("stash-detail").debug_selector(|| "stash-detail".into()).flex_1().min_w_0().min_h_0().p(room).mx(-room).mt(-room).overflow_y_scroll().track_scroll(self.detail.scroll()).flex().flex_col().gap_2()
+            // ring, as the Reflog's do. A chosen file's comparison keeps a
+            // floor of its own rather than give its height up to the
+            // controls around it, as at 18 pt in a 1000 × 680 window, where
+            // it kept 30 px without one. Beside the list the actions are the
+            // footer below it (`pinned`).
+            .when(detail, |element| element.child(div().debug_selector(|| "stash-detail-column".into()).flex_1().min_w_0().min_h_0().flex().flex_col().gap_2().child(cue.list(div().on_children_prepainted(cue.observe(self.detail.observe())).id("stash-detail").debug_selector(|| "stash-detail".into()).flex_1().min_w_0().min_h_0().p(room).mx(-room).mt(-room).overflow_y_scroll().track_scroll(self.detail.scroll()).flex().flex_col().gap_2()
                 .children(self.loading.map(|loading| native_accessibility::text("stash-detail-loading", loading).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted))))
                 .children(self.error.as_ref().map(|error| form_error(error, cx)))
                 .when_some(snapshot, |element, snapshot| element
@@ -1705,19 +1735,14 @@ impl Render for StashBrowser {
                     .child(div().flex().items_center().gap_1().on_children_prepainted(self.detail.controls(mode_focus, room)).children(modes.into_iter().map(|(mode, label, focus)| {
                         button(("stash-text-mode", mode), label, "", self.text_mode == mode).track_focus(&focus).disabled(!matches!(self.content.as_deref(), Some(Content::Text { .. }))).on_click(cx.listener(move |this, _, window, cx| { this.text_mode = mode; this.ensure_editor(window, cx); cx.notify(); }))
                     })))
-                    .child(div().flex_1().min_h(crate::appearance::ui_size(STASH_CONTENT_FLOOR)).border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden().on_children_prepainted(self.detail.group(text_focus, room)).child(frame.child(self.render_content(width, window, cx))))
-                    .child(div().flex().flex_wrap().items_center().gap_2().pt_1().on_children_prepainted(self.detail.controls(vec![Some(restore_index.clone()), None, Some(drop.clone()), Some(restore.clone())], room))
-                        .child(Checkbox::new("stash-restore-index").track_focus(&restore_index).label("Restore staged state").checked(self.restore_index).on_click(cx.listener(|this, checked, _, cx| { this.restore_index = *checked; cx.notify(); })))
-                        .child(div().flex_1())
-                        .child(button("drop-saved-stash", "Drop…", "", false).track_focus(&drop).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))))
-                        .child(Button::new("restore-saved-stash").primary().small().label("Review restore…").track_focus(&restore).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.restore(window, cx)))))
-                    .child(native_accessibility::text("stash-restore-note", "Restoring keeps this stash saved. Drop it separately after checking the restored work.").text_size(crate::appearance::ui_text(10.)).text_color(rgb(p.muted))))
+                    .child(div().debug_selector(|| "stash-comparison".into()).when(file_chosen, |element| element.flex_1().min_h(crate::appearance::ui_size(STASH_CONTENT_FLOOR))).when(!file_chosen, |element| element.flex_grow(1.).flex_shrink_0()).border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden().on_children_prepainted(self.detail.group(text_focus, room)).child(frame.child(self.render_content(width, window, cx))))
+                    .children(inline))
                 // Where its loading line stood, at the detail's edge, and
                 // short enough for one line beside the stacked list at 18 pt
                 // in a 461 × 490 window: the centred prompt that named every
                 // group wrapped there, past the detail's room, and left
                 // "files." alone on its last line at 13 pt.
-                .when(self.snapshot.is_none() && self.loading.is_none() && self.error.is_none(), |element| element.child(native_accessibility::text("stash-detail-placeholder", "Choose a stash to inspect its files.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "stash-detail-scrollbar").flex_1().min_w_0().min_h_0()))
+                .when(self.snapshot.is_none() && self.loading.is_none() && self.error.is_none(), |element| element.child(native_accessibility::text("stash-detail-placeholder", "Choose a stash to inspect its files.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "stash-detail-scrollbar").flex_1().min_w_0().min_h_0()).children(footer)))
     }
 }
 
@@ -1903,6 +1928,109 @@ mod tests {
             sweep::close_dialogs(cx, "Stashes", interface, &mut failures);
         }
         sweep::assert_whole(failures);
+    }
+
+    /// At 18 pt in a 1000 × 680 window the Stashes detail shows Restore
+    /// staged state, Drop… and Review restore… whole as a stash is selected,
+    /// without scrolling, and keeps them there, its footer, as a chosen
+    /// file's comparison takes its floor and the detail scrolls: they lay
+    /// below the scrolling detail's fold, as the empty comparison kept the
+    /// floor a file's takes. Until a file is chosen the comparison keeps its
+    /// prompt's height. Stacked in a 461 × 490 window, where the detail is a
+    /// few lines tall, the actions scroll with the rest.
+    #[gpui::test]
+    async fn the_stash_actions_stay_in_view_beside_the_list(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, git, scroll_down, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "edited\n").unwrap();
+        git(
+            repo.path(),
+            &[
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                "kept for later",
+            ],
+        );
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
+            for _ in 0..400 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(50));
+                draw(cx);
+                if cx.debug_bounds(selector).is_some() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("{selector} never drawn");
+        };
+        let bounds = |cx: &mut VisualTestContext, selector: &'static str| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("no {selector}"))
+        };
+        let slack = px(0.5);
+        for (width, height, pinned) in [(1000., 680., true), (461., 490., false)] {
+            let at = format!("18 pt in {width} × {height}");
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_stashes(window, cx)));
+            landed(cx, "saved-stash-row-0");
+            let row = bounds(cx, "saved-stash-row-0");
+            cx.simulate_click(row.center(), Modifiers::none());
+            landed(cx, "stash-actions");
+            // Until a file is chosen, the comparison is its prompt's height.
+            let comparison = bounds(cx, "stash-comparison");
+            let floor = appearance::ui_size(STASH_CONTENT_FLOOR);
+            // Layout snaps the floor to whole pixels.
+            assert!(
+                comparison.size.height < floor - px(1.),
+                "{at}: the empty comparison {comparison:?} keeps a file's floor"
+            );
+            let browser = bounds(cx, "stash-browser");
+            let detail = bounds(cx, "stash-detail");
+            let viewport = cx.update(|window, _| window.viewport_size());
+            let whole = |actions: Bounds<Pixels>| {
+                actions.top() >= detail.top() - slack
+                    && actions.bottom() <= browser.bottom().min(viewport.height) + slack
+            };
+            let actions = bounds(cx, "stash-actions");
+            assert_eq!(whole(actions), pinned, "{at}: the actions {actions:?}");
+            if pinned {
+                // The footer, below the detail's scrolling part.
+                assert!(
+                    actions.top() >= detail.bottom(),
+                    "{at}: {actions:?} in {detail:?}"
+                );
+                let file = bounds(cx, "stash-file-0");
+                cx.simulate_click(file.center(), Modifiers::none());
+                landed(cx, "stash-comparison");
+                draw(cx);
+                let comparison = bounds(cx, "stash-comparison");
+                assert!(
+                    comparison.size.height >= floor - slack,
+                    "{at}: the chosen file's comparison {comparison:?}"
+                );
+            }
+            // Scrolled to its end, the detail moves its actions only where
+            // they are not its footer.
+            let before = bounds(cx, "stash-actions");
+            let delta = ScrollDelta::Pixels(point(px(0.), px(-10_000.)));
+            let middle = bounds(cx, "stash-detail").center();
+            scroll_down(cx, middle, delta);
+            draw(cx);
+            let after = bounds(cx, "stash-actions");
+            assert_eq!(after == before, pinned, "{at}: {before:?}, then {after:?}");
+            if pinned {
+                assert!(whole(after), "{at}: the scrolled actions {after:?}");
+            }
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// Stacked in a 461 × 490 window, the Stashes dialog's saved-work list
