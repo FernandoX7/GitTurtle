@@ -15,6 +15,7 @@ AccessKit adapters MIT or Apache-2.0. Local patches preserve upstream licenses a
 | `gpui-base` 0.6.0 | [Apache-2.0](vendor/gpui-base/LICENSE-APACHE) | [Patch](vendor/gpui-base/GITTURTLE-PATCH.md) |
 | `gpui-component` 0.6.0 | [Apache-2.0](vendor/gpui-component/LICENSE-APACHE) | [Patch](vendor/gpui-component/GITTURTLE-PATCH.md) |
 | `gpui-pre-macos` 0.3.4 | [Apache-2.0](vendor/gpui-pre-macos/LICENSE-APACHE) | [Patch](vendor/gpui-pre-macos/README.gitturtle.md) |
+| `gpui-pre-macros` 0.3.4 | [Apache-2.0](vendor/gpui-pre-macros/LICENSE-APACHE) | [Patch](vendor/gpui-pre-macros/GITTURTLE-PATCH.md) (test-only) |
 | `mermaid-rs-renderer` 0.3.1 | [MIT](vendor/mermaid-rs-renderer/LICENSE) | [Patch](vendor/mermaid-rs-renderer/GITTURTLE-PATCH.md) |
 
 Other direct and transitive dependencies are pinned in `Cargo.lock`. A package's

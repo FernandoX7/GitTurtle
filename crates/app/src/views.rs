@@ -7010,6 +7010,33 @@ pub(crate) mod tests {
         });
     }
 
+    /// A seed releases the app it built once it ends, and with it the
+    /// window and the preference, operation and reader threads the app
+    /// started. The window context `add_window_view` hands out holds the app
+    /// until the test context quits, and the test macro's teardown once quit
+    /// only the app, which the test platform ignores: every seed's app lived
+    /// on, about 15 MB a seed, and the app suite at 20 iterations grew past
+    /// 20 GB until the kernel killed it (`vendor/gpui-pre-macros`). Each
+    /// seed finds the app of the seed before it gone.
+    #[gpui::test(iterations = 2)]
+    async fn each_seed_releases_the_app_it_built(cx: &mut TestAppContext) {
+        thread_local! {
+            /// The app the previous seed on this test's thread built.
+            static EARLIER: std::cell::RefCell<Option<std::rc::Weak<gpui::AppCell>>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        let earlier =
+            EARLIER.with(|earlier| earlier.replace(Some(std::rc::Rc::downgrade(&cx.app))));
+        if let Some(earlier) = earlier {
+            assert_eq!(
+                earlier.strong_count(),
+                0,
+                "the previous seed's app is still held"
+            );
+        }
+        let (_fixture, _app, _cx) = history_window(cx).await;
+    }
+
     /// [`history_window_from`] on the repository the `input` bytes import,
     /// with the window's root styled by `style`, as the width walk marks
     /// every text run (`width_walk`).
