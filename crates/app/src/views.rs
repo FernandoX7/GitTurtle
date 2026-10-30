@@ -19974,6 +19974,113 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// As on macOS, a right-click in a text field acts on that field, not
+    /// on whatever held focus before: with focus and a selected file in the
+    /// Working Changes list, a right-click's press in its filter focuses the
+    /// filter before its menu opens, so Paste puts the clipboard's text in
+    /// the filter, the list's selected row unchanged and focus back in the
+    /// filter, and a resized window that closes the menu returns focus to
+    /// the filter. The menu's actions go to the focus the window held as it
+    /// opened; had the press left focus in the list, Paste would have gone
+    /// there and done nothing.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[gpui::test]
+    async fn an_inputs_menu_acts_on_the_field_right_clicked(cx: &mut TestAppContext) {
+        let at = "13 pt in 461 × 490";
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        settle(&app, cx).await;
+        let notes = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .unwrap()
+                .entries
+                .iter()
+                .position(|entry| entry.path == std::path::Path::new("notes.txt"))
+                .unwrap()
+        });
+        let unstaged = gitturtle_core::ChangeArea::Unstaged;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.choose_working_selection(notes, unstaged, false, false, window, cx);
+                window.focus(&app.file_focus, cx);
+            })
+        });
+        draw(cx);
+        // The list's selected row. A new filter query clears the files
+        // checked for Stage and Unstage, however it is typed
+        // (`filter_working_paths`), so the row is what Paste must keep.
+        let selection =
+            |cx: &mut VisualTestContext| app.read_with(cx, |app, _| app.working_selected);
+        let chosen = selection(cx);
+        assert_eq!(chosen, Some((notes, unstaged)), "{at}: notes.txt chosen");
+        let (filter, list) = app.read_with(cx, |app, cx| {
+            (
+                app.working_filter.read(cx).focus_handle(cx),
+                app.file_focus.clone(),
+            )
+        });
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "{at}: focus starts in the list"
+        );
+        cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("notes".into())));
+        let field = cx
+            .debug_bounds("working-filter")
+            .unwrap_or_else(|| panic!("{at}: the Working Changes filter"));
+        let pointer = point(field.left() + px(16.), field.center().y.floor() + px(0.4));
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
+        assert!(
+            cx.update(|window, _| filter.is_focused(window)),
+            "{at}: the right-click's press focused the filter"
+        );
+        cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
+        // The field shows its menu in a deferred callback.
+        cx.run_until_parked();
+        draw(cx);
+        let paste = menu_rows(cx, &["Paste"])
+            .first()
+            .map(|(_, row)| *row)
+            .unwrap_or_else(|| panic!("{at}: the filter's menu at {pointer:?}"));
+        cx.simulate_click(paste.center(), Modifiers::default());
+        cx.run_until_parked();
+        // The filter's rows, which still show notes.txt, are prepared on
+        // the path filter's thread.
+        crate::path_filter::filters_land(&app, cx);
+        assert!(
+            menu_rows(cx, &["Paste"]).is_empty(),
+            "{at}: Paste closed the menu"
+        );
+        assert_eq!(
+            cx.update(|_, cx| app.read(cx).working_filter.read(cx).value().to_string()),
+            "notes",
+            "{at}: Paste put the clipboard's text in the filter"
+        );
+        assert_eq!(
+            selection(cx),
+            chosen,
+            "{at}: the list's selected row is kept"
+        );
+        assert!(
+            cx.update(|window, _| filter.is_focused(window)),
+            "{at}: focus is in the filter"
+        );
+
+        // A resize closes the field's menu and returns focus to the field.
+        right_click_field(cx, pointer, "Paste", at);
+        cx.simulate_resize(size(px(461.), px(520.)));
+        draw(cx);
+        assert!(
+            menu_rows(cx, &["Paste"]).is_empty(),
+            "{at}: a resized window closes the menu"
+        );
+        assert!(
+            cx.update(|window, _| filter.is_focused(window)),
+            "{at}: focus is back in the filter"
+        );
+    }
+
     /// The open menu's rows labelled `labels`, in order, where the last frame
     /// drew them, inside or past the menu's fold: an item's whatever its
     /// state, or a label's.
