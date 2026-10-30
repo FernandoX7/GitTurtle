@@ -1529,13 +1529,22 @@ mod tests {
     /// still offers the first entry past an edge, for an assistive technology
     /// to move into, which AT-SPI reports visible but not showing. At 640 ×
     /// 400 the content's fold lies above the list, which the dialog draws none
-    /// of: the list reports one pixel beside its top, past the fold, outside
-    /// which every entry lies, where its layout kept every entry inside it.
+    /// of, and cuts the filter before it: the list reports a strip a pixel
+    /// across beside its left edge, along its own height past the fold,
+    /// outside which every entry lies, where its layout kept every entry
+    /// inside it. So it does at the height where the list starts exactly on
+    /// that fold (about 640 × 423.5), where a pixel against the fold lay
+    /// inside the list and one against its foot met the entries it runs on
+    /// with past it. Each is walked with the filter the content draws before
+    /// the list, beside which AccessKit keeps the list as the child past the
+    /// fold, visible but not showing and holding no entry, and without it,
+    /// where AccessKit leaves the list out.
     ///
     /// The test platform builds no accessibility tree, so the test builds the
     /// part GPUI would: the window, each clipping container's node as it
-    /// prepainted, and the entries the kit's Buttons write, at their bounds.
-    /// Without a clipping node an entry is its window's child, as it was.
+    /// prepainted, the filter at its text, where the Input writes its node,
+    /// and the entries the kit's Buttons write, at their bounds. Without a
+    /// clipping node an entry is its window's child, as it was.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn assistive_technology_reaches_only_the_entries_drawn(cx: &mut TestAppContext) {
@@ -1559,7 +1568,26 @@ mod tests {
             y1: f64::from(f32::from(bounds.bottom())) * scale,
         };
 
-        for height in [680., 490., 400.] {
+        // The height at which the list starts exactly on the content's fold
+        // follows the text's metrics, so it is found near 640 × 400: the
+        // fold moves with the window's foot and the list with the dialog's
+        // centre, about a pixel nearer for each pixel taller.
+        let gap = |cx: &mut VisualTestContext| {
+            rendered(cx, "reflog-list").top() - rendered(cx, "reflog-browser-content").bottom()
+        };
+        cx.simulate_resize(size(px(640.), px(400.)));
+        draw(cx);
+        let near = 400. + f32::from(gap(cx));
+        let on_fold = (0..=16)
+            .map(|step| near - 2. + step as f32 * 0.25)
+            .find(|&height| {
+                cx.simulate_resize(size(px(640.), px(height)));
+                draw(cx);
+                gap(cx) == px(0.)
+            })
+            .unwrap_or_else(|| panic!("no height near 640 × {near} starts the list on the fold"));
+
+        for height in [680., 490., 400., on_fold] {
             crate::native_accessibility::forget_clipping_nodes();
             cx.simulate_resize(size(px(640.), px(height)));
             draw(cx);
@@ -1570,6 +1598,7 @@ mod tests {
             );
             let list = rendered(cx, "reflog-list");
             let content = rendered(cx, "reflog-browser-content");
+            let filter = cx.read(|cx| browser.read(cx).query.read(cx).input_bounds());
             let entries: Vec<Rect> = selectors
                 .iter()
                 .map(|selector| physical(rendered(cx, selector)))
@@ -1601,7 +1630,18 @@ mod tests {
                     "at 640 × {height} the dialog's edge cuts the list: {list:?} in {content:?}"
                 );
             }
-            let tree = |focus: Option<usize>| {
+            let hidden = physical(list).intersect(physical(content)).is_empty();
+            let filter_drawn = !physical(filter).intersect(physical(content)).is_empty();
+            if height == on_fold {
+                assert!(
+                    hidden && filter_drawn,
+                    "at 640 × {height} the content draws the filter {filter:?} and none of \
+                     the list {list:?} on its fold {content:?}"
+                );
+            }
+            // With `filter_node`, the content holds the filter before the
+            // list.
+            let tree = |focus: Option<usize>, filter_node: bool| {
                 let mut nodes = Vec::new();
                 let mut children: Vec<NodeId> = entries
                     .iter()
@@ -1617,6 +1657,13 @@ mod tests {
                     .collect();
                 for (id, element) in [(2, "reflog-list"), (1, "reflog-browser-content")] {
                     if let Some(mut node) = clipping_node(element) {
+                        if id == 1 && filter_node {
+                            let mut input = Node::new(A11yRole::TextInput);
+                            input.set_label("Filter loaded reflog entries");
+                            input.set_bounds(physical(filter));
+                            nodes.push((NodeId(3), input));
+                            children.insert(0, NodeId(3));
+                        }
                         node.set_children(children);
                         nodes.push((NodeId(id), node));
                         children = vec![NodeId(id)];
@@ -1634,39 +1681,6 @@ mod tests {
                 }
             };
 
-            let found = reached(tree(None));
-            for index in 0..count {
-                let name = format!("entry {index}");
-                let entry = found.iter().find(|node| node.name == name);
-                assert_eq!(
-                    entry.is_some(),
-                    offered[index],
-                    "at 640 × {height}, {name} at {:?} is reached: {}, drawn in {drawn_area:?}: {}",
-                    entries[index],
-                    entry.is_some(),
-                    drawn[index]
-                );
-                // An entry the list draws shows; the one past an edge is
-                // visible but off screen.
-                if let Some(entry) = entry {
-                    assert_eq!(
-                        (
-                            entry.state.contains(State::Visible),
-                            entry.state.contains(State::Showing)
-                        ),
-                        (true, drawn[index]),
-                        "{name}: {entry:?}"
-                    );
-                }
-            }
-            // The list reports the part of itself the dialog shows, and where
-            // it shows none of it, one pixel beside its top, past the
-            // content's fold, which leaves every entry outside it.
-            let panels: Vec<_> = found
-                .iter()
-                .filter(|node| node.role == accesskit_atspi_common::Role::Panel)
-                .map(|node| node.extents)
-                .collect();
             let inside = |inner: accesskit_atspi_common::Rect,
                           outer: accesskit_atspi_common::Rect| {
                 inner.x >= outer.x
@@ -1674,19 +1688,114 @@ mod tests {
                     && inner.x + inner.width <= outer.x + outer.width
                     && inner.y + inner.height <= outer.y + outer.height
             };
-            let hidden = physical(list).intersect(physical(content)).is_empty();
+            for filter_node in [false, true] {
+                let at = format!(
+                    "at 640 × {height} {} the filter",
+                    if filter_node { "with" } else { "without" }
+                );
+                let found = reached(tree(None, filter_node));
+                for index in 0..count {
+                    let name = format!("entry {index}");
+                    let entry = found.iter().find(|node| node.name == name);
+                    assert_eq!(
+                        entry.is_some(),
+                        offered[index],
+                        "{at}, {name} at {:?} is reached: {}, drawn in {drawn_area:?}: {}",
+                        entries[index],
+                        entry.is_some(),
+                        drawn[index]
+                    );
+                    // An entry the list draws shows; the one past an edge is
+                    // visible but off screen.
+                    if let Some(entry) = entry {
+                        assert_eq!(
+                            (
+                                entry.state.contains(State::Visible),
+                                entry.state.contains(State::Showing)
+                            ),
+                            (true, drawn[index]),
+                            "{name}: {entry:?}"
+                        );
+                    }
+                }
+                let panels: Vec<_> = found
+                    .iter()
+                    .filter(|node| node.role == accesskit_atspi_common::Role::Panel)
+                    .collect();
+                // AccessKit keeps the list where the content draws some of
+                // it, or as the child past the fold, beside the filter the
+                // content draws before it.
+                let kept = !hidden || (filter_node && filter_drawn);
+                match (&panels[..], kept) {
+                    ([content_node, list_node], true) if !hidden => assert!(
+                        inside(list_node.extents, content_node.extents)
+                            && inside(content_node.extents, found[0].extents),
+                        "{at} the list {:?} lies in the content {:?} in the window {:?}",
+                        list_node.extents,
+                        content_node.extents,
+                        found[0].extents
+                    ),
+                    ([content_node, list_node], true) => {
+                        assert!(
+                            !inside(list_node.extents, content_node.extents)
+                                && list_node.state.contains(State::Visible)
+                                && !list_node.state.contains(State::Showing),
+                            "{at} the list is kept past the content's fold, visible but not \
+                             showing: {list_node:?} in {content_node:?}"
+                        );
+                        assert!(
+                            !found.iter().any(|node| node.name.starts_with("entry ")),
+                            "{at} the kept list holds no entry: {found:?}"
+                        );
+                    }
+                    ([content_node], false) => {
+                        assert!(inside(content_node.extents, found[0].extents));
+                    }
+                    _ => panic!(
+                        "{at} the content and, kept: {kept}, the list are scroll views: {found:?}"
+                    ),
+                }
+
+                // Focus keeps an entry reachable wherever it lies in a list
+                // AccessKit keeps, showing only where the list draws it.
+                let last = count - 1;
+                let found = reached(tree(Some(last), filter_node));
+                let focused = found
+                    .iter()
+                    .find(|node| node.name == format!("entry {last}"));
+                match focused {
+                    Some(focused) => assert!(
+                        kept && focused.state.contains(State::Visible | State::Focused)
+                            && focused.state.contains(State::Showing) == drawn[last],
+                        "{at}: {focused:?}"
+                    ),
+                    None => assert!(!kept, "{at} the focused entry {last} is reached"),
+                }
+            }
+
+            // The list reports the part of itself the dialog shows, and where
+            // it shows none of it, a strip a pixel across beside its left
+            // edge, along its own height past the content's fold: outside
+            // itself and the content, which leaves every entry outside it,
+            // those it runs on with past its foot included.
             if hidden {
                 let reported = clipping_node("reflog-list")
                     .and_then(|node| node.bounds())
                     .expect("the list clips its entries");
+                let (layout, content) = (physical(list), physical(content));
                 assert!(
-                    (reported.y1 - reported.y0 - scale).abs() < 0.01
-                        && reported.y1 <= physical(list).y0 + 0.01
-                        && reported.y0 >= physical(content).y1 - 0.01,
-                    "at 640 × {height} the list {:?} the content draws none of, below {:?}, \
-                     reports {reported:?}, not one pixel beside its top",
-                    physical(list),
-                    physical(content)
+                    (reported.x1 - reported.x0 - scale).abs() < 0.01
+                        && (reported.x1 - layout.x0).abs() < 0.01
+                        && (reported.y0, reported.y1) == (layout.y0, layout.y1)
+                        && reported.intersect(layout).is_empty()
+                        && reported.intersect(content).is_empty(),
+                    "at 640 × {height} the list {layout:?} the content draws none of, below \
+                     {content:?}, reports {reported:?}, not a strip a pixel across beside its \
+                     left edge"
+                );
+                assert!(
+                    entries.iter().any(|entry| entry.y0 >= layout.y1),
+                    "at 640 × {height} the list runs on past its foot: {entries:?}"
                 );
                 assert!(
                     entries
@@ -1694,41 +1803,6 @@ mod tests {
                         .all(|entry| entry.intersect(reported).is_empty()),
                     "at 640 × {height} every entry lies outside the list's {reported:?}"
                 );
-                let [content_extents] = panels[..] else {
-                    panic!(
-                        "only the content is reached, AccessKit leaving out the list: {found:?}"
-                    );
-                };
-                assert!(inside(content_extents, found[0].extents));
-            } else {
-                let [content_extents, list_extents] = panels[..] else {
-                    panic!("the content and the list are scroll views: {found:?}");
-                };
-                assert!(
-                    inside(list_extents, content_extents)
-                        && inside(content_extents, found[0].extents),
-                    "at 640 × {height} the list {list_extents:?} lies in the content {content_extents:?} in the window {:?}",
-                    found[0].extents
-                );
-            }
-
-            // Focus keeps an entry reachable wherever it lies in a list
-            // AccessKit keeps, showing only where the list draws it.
-            let last = count - 1;
-            let found = reached(tree(Some(last)));
-            let focused = found
-                .iter()
-                .find(|node| node.name == format!("entry {last}"));
-            match focused {
-                Some(focused) => assert!(
-                    focused.state.contains(State::Visible | State::Focused)
-                        && focused.state.contains(State::Showing) == drawn[last],
-                    "{focused:?}"
-                ),
-                None => assert!(
-                    hidden,
-                    "the focused entry {last} is reached at 640 × {height}"
-                ),
             }
         }
     }

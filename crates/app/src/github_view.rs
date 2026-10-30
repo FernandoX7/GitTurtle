@@ -2139,9 +2139,10 @@ mod tests {
     /// a failure's alert, which is announced at once as it appears. Each undrawn one reported
     /// an empty rectangle on the body's edge (y 557 at 18 pt), as the pager's "Page 1 · up to
     /// 50 PRs" did at 13 pt. The alert's own node is no live region: the window's alert says it.
-    /// The list past the fold reports one pixel beside its top, so no platform's filter
-    /// reaches its pull requests: reported at its layout, it kept #42 and #43 reachable,
-    /// showing on AT-SPI and activatable, though the body draws neither.
+    /// The list past the fold reports a strip a pixel across beside its left edge, along its
+    /// own height, so no platform's filter reaches its pull requests: reported at its layout,
+    /// it kept #42 and #43 reachable, showing on AT-SPI and activatable, though the body draws
+    /// neither.
     #[gpui::test]
     async fn no_panel_node_reports_an_empty_rectangle(cx: &mut TestAppContext) {
         use crate::native_accessibility::written;
@@ -2211,8 +2212,9 @@ mod tests {
                         .any(|node| node.role == Role::ScrollView && past_fold(node)),
                     "{at}: the pull request list is kept past the fold where it lies: {found:?}"
                 );
-                // The body draws none of the list, which reports one pixel beside its top,
-                // outside which its rows lie, so no platform's filter reaches a row.
+                // The body draws none of the list, which reports a strip a pixel across
+                // beside its left edge, outside which its rows lie, so no platform's filter
+                // reaches a row.
                 let scale = pixel(cx);
                 let list = native_accessibility::clipping_node("github-pr-list")
                     .and_then(|node| node.bounds())
@@ -2220,10 +2222,11 @@ mod tests {
                 let layout = cx.debug_bounds("github-pr-list").expect("the list");
                 let layout = physical_rect(cx, layout);
                 assert!(
-                    (list.y1 - list.y0 - scale).abs() < 0.01 && list.y1 <= layout.y0 + 0.01,
-                    "{at}: the list the body draws none of reports {list:?}, not one pixel \
-                     beside its top at {}",
-                    layout.y0
+                    (list.x1 - list.x0 - scale).abs() < 0.01
+                        && (list.x1 - layout.x0).abs() < 0.01
+                        && (list.y0, list.y1) == (layout.y0, layout.y1),
+                    "{at}: the list the body draws none of reports {list:?}, not a strip a \
+                     pixel across beside the left edge of its {layout:?}"
                 );
                 let rows = panel.read_with(cx, |panel, _| {
                     panel

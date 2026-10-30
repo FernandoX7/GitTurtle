@@ -1506,8 +1506,9 @@ impl<E: StatefulInteractiveElement + Element> LiveRegion for E {}
 /// `element`, a container that scrolls or clips what it holds, as the
 /// accessibility node AccessKit expects of one: it clips its children, and its
 /// bounds are the part of it that its ancestors leave visible, or, where they
-/// leave none of it, one pixel beside its own edge nearest what they leave,
-/// outside it, so its children lie outside it too (`drawn_part`).
+/// leave none of it, a strip one pixel across beside its leading edge, along
+/// its own extent, outside it and what they leave, so its children lie
+/// outside it too (`drawn_part`).
 ///
 /// GPUI gives each node its layout bounds and never says that a node clips,
 /// so a control scrolled out of a list, a Reflog entry below the dialog's
@@ -1609,10 +1610,12 @@ impl<E: Element> Element for ClipsChildren<E> {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let visible = drawn_part(bounds, window, Undrawn::Edge);
+        let visible = drawn_part(bounds, window, Undrawn::Edge(Clipping::innermost()));
         self.visible = Some(visible);
         #[cfg(test)]
         let written = written::open(self, Some(visible));
+        // GPUI writes a node only for an element with an ID.
+        let _clipping = self.inner.id().map(|_| Clipping::open(visible));
         let state = self
             .inner
             .prepaint(id, inspector, bounds, layout, window, cx);
@@ -2093,9 +2096,43 @@ pub(crate) fn dialog_title(
 enum Undrawn {
     /// Text: its whole layout, where it lies.
     Layout,
-    /// A clipping container: one pixel against its own edge nearest what is
-    /// drawn, outside its layout, which leaves its children outside it.
-    Edge,
+    /// A clipping container: a strip one pixel across beside it, outside
+    /// its layout and what is drawn, which leaves its children outside it
+    /// ([`aside`]), clear of the bounds its nearest clipping ancestor
+    /// reported, if any.
+    Edge(Option<gpui::accesskit::Rect>),
+}
+
+thread_local! {
+    /// The bounds each [`ClipsChildren`] that writes a node reported as it
+    /// prepaints what it holds, innermost last: where a container nested in
+    /// one reports its own, such as a wrapped row in a list the window draws
+    /// none of, it keeps clear of the bounds around it ([`aside`]). GPUI
+    /// prepaints a window's elements one inside another, on this thread.
+    static CLIPS: std::cell::RefCell<Vec<gpui::accesskit::Rect>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A [`ClipsChildren`]'s entry on [`CLIPS`], removed when it has prepainted
+/// what it holds.
+struct Clipping;
+
+impl Clipping {
+    fn open(bounds: gpui::accesskit::Rect) -> Self {
+        CLIPS.with(|clips| clips.borrow_mut().push(bounds));
+        Self
+    }
+
+    /// The bounds the innermost open [`ClipsChildren`] reported.
+    fn innermost() -> Option<gpui::accesskit::Rect> {
+        CLIPS.with(|clips| clips.borrow().last().copied())
+    }
+}
+
+impl Drop for Clipping {
+    fn drop(&mut self) {
+        CLIPS.with(|clips| clips.borrow_mut().pop());
+    }
 }
 
 /// The part of `bounds`, an element's layout as it prepaints, that its
@@ -2116,12 +2153,13 @@ enum Undrawn {
 /// GPUI writes it. Such text once reported an empty rectangle on the mask's
 /// edge nearest to it, so the GitHub panel's notice, below its body's fold
 /// at 18 pt in a 461 × 490 window, reached AT-SPI 0 px tall on the body's
-/// bottom edge (y 557 in physical pixels). A clipping container reports one
-/// pixel beside its own edge instead ([`clips_children`]): AccessKit's filter
-/// measures each child against its clipping parent alone, so a list the
-/// window draws none of, reported at its layout, kept every row inside it,
-/// and the GitHub panel's pull requests, past its body's fold at 18 pt in a
-/// 461 × 490 window, were reached, showing, wherever the list lay.
+/// bottom edge (y 557 in physical pixels). A clipping container reports a
+/// strip a pixel across beside itself instead ([`clips_children`], [`aside`]):
+/// AccessKit's filter measures each child against its clipping parent
+/// alone, so a list the window draws none of, reported at its layout, kept
+/// every row inside it, and the GitHub panel's pull requests, past its
+/// body's fold at 18 pt in a 461 × 490 window, were reached, showing,
+/// wherever the list lay.
 fn drawn_part(bounds: Bounds<Pixels>, window: &Window, undrawn: Undrawn) -> gpui::accesskit::Rect {
     let scale = window.scale_factor();
     drawn_rect(
@@ -2141,22 +2179,14 @@ fn drawn_rect(
 ) -> gpui::accesskit::Rect {
     let x = drawn_span(laid_out.x0, laid_out.x1, mask.x0, mask.x1, pixel);
     let y = drawn_span(laid_out.y0, laid_out.y1, mask.y0, mask.y1, pixel);
-    let ((x0, x1), (y0, y1)) = match (x, y, undrawn) {
-        (Some(x), Some(y), _) => (x, y),
-        (_, _, Undrawn::Layout) => return laid_out,
-        // Along an axis the mask leaves the container out of, one pixel
-        // beside its edge nearest the mask; along the other, its own extent,
-        // at least a pixel.
-        (_, None, Undrawn::Edge) => (
-            (laid_out.x0, laid_out.x1.max(laid_out.x0 + pixel)),
-            beside(laid_out.y0, laid_out.y1, mask.y0, mask.y1, pixel),
-        ),
-        (None, Some(_), Undrawn::Edge) => (
-            beside(laid_out.x0, laid_out.x1, mask.x0, mask.x1, pixel),
-            (laid_out.y0, laid_out.y1.max(laid_out.y0 + pixel)),
-        ),
-    };
-    gpui::accesskit::Rect { x0, y0, x1, y1 }
+    match (x, y, undrawn) {
+        (Some((x0, x1)), Some((y0, y1)), _) => gpui::accesskit::Rect { x0, y0, x1, y1 },
+        (_, _, Undrawn::Layout) => laid_out,
+        (_, None, Undrawn::Edge(clip)) => aside(laid_out, pixel, gpui::Axis::Vertical, clip),
+        (None, Some(_), Undrawn::Edge(clip)) => {
+            aside(laid_out, pixel, gpui::Axis::Horizontal, clip)
+        }
+    }
 }
 
 /// The part of `start..end` that `from..to` shows along one axis: the
@@ -2179,19 +2209,78 @@ fn drawn_span(start: f64, end: f64, from: f64, to: f64, pixel: f64) -> Option<(f
     }
 }
 
-/// `pixel` against the edge of `start..end` nearest `from..to`, which shows
-/// none of it, on the side facing it: outside both where the gap between
-/// them allows, otherwise against `from..to`'s edge. An element with no
-/// extent inside `from..to` takes the pixel before it.
-fn beside(start: f64, end: f64, from: f64, to: f64, pixel: f64) -> (f64, f64) {
-    let near = if end <= from {
-        end.min(from - pixel)
-    } else if start >= to {
-        start.max(to + pixel) - pixel
-    } else {
-        start - pixel
+/// Where a clipping container the mask shows none of along `undrawn` reports
+/// itself, in physical pixels `pixel` wide: a strip one pixel across against
+/// its leading edge across that axis (its left for a container past a fold
+/// above or below, its top for one past a side), along its own extent, at
+/// least a pixel, which lies outside the mask along `undrawn` and outside
+/// its layout across it, so its children, which lie across it as it does,
+/// lie outside the strip and AccessKit's filter keeps none of them. Where
+/// the strip would meet `clip`, the bounds its nearest clipping ancestor
+/// reported, as a wrapped row's does in a list the window draws none of, it
+/// lies against the trailing edge instead, so the filter keeps the row out
+/// of that list too.
+///
+/// It lay along the scroll axis, against the container's edge nearest the
+/// mask, where the children a scrolling container holds past that edge run
+/// on (a list above a body's fold, not scrolled to its end) and, with less
+/// than a pixel between them, against the mask's edge inside the container:
+/// a list at y 0–100 over a body from 100, at scale 1, reported y 99–100,
+/// and the filter, keeping that list as the child past the fold, kept the
+/// row ending there and the one before it, reachable and activatable though
+/// nothing of them is drawn. Against the far edge instead, the strip met
+/// the entries the Reflog's list runs on with past its foot, at the window
+/// height where that list starts on the content's fold.
+fn aside(
+    laid_out: gpui::accesskit::Rect,
+    pixel: f64,
+    undrawn: gpui::Axis,
+    clip: Option<gpui::accesskit::Rect>,
+) -> gpui::accesskit::Rect {
+    use gpui::accesskit::Rect;
+    let (leading, trailing) = match undrawn {
+        gpui::Axis::Vertical => {
+            let (y0, y1) = (laid_out.y0, laid_out.y1.max(laid_out.y0 + pixel));
+            let x1 = laid_out.x1.max(laid_out.x0 + pixel);
+            (
+                Rect {
+                    x0: laid_out.x0 - pixel,
+                    y0,
+                    x1: laid_out.x0,
+                    y1,
+                },
+                Rect {
+                    x0: x1,
+                    y0,
+                    x1: x1 + pixel,
+                    y1,
+                },
+            )
+        }
+        gpui::Axis::Horizontal => {
+            let (x0, x1) = (laid_out.x0, laid_out.x1.max(laid_out.x0 + pixel));
+            let y1 = laid_out.y1.max(laid_out.y0 + pixel);
+            (
+                Rect {
+                    x0,
+                    y0: laid_out.y0 - pixel,
+                    x1,
+                    y1: laid_out.y0,
+                },
+                Rect {
+                    x0,
+                    y0: y1,
+                    x1,
+                    y1: y1 + pixel,
+                },
+            )
+        }
     };
-    (near, near + pixel)
+    if clip.is_some_and(|clip| !leading.intersect(clip).is_empty()) {
+        trailing
+    } else {
+        leading
+    }
 }
 
 /// `bounds` in the physical window pixels of AccessKit's bounds, at `scale`.
@@ -3010,5 +3099,240 @@ mod tests {
             .node;
         assert_eq!(node.live(), None, "no earlier flag reaches the node");
         assert!(!node.is_live_atomic());
+    }
+
+    /// A list the body draws none of, ending exactly on the body's top fold
+    /// or starting exactly on its bottom one, reports a strip a pixel across
+    /// beside its left edge, along its own extent, outside itself and the
+    /// body, so AccessKit's filter, which keeps the list as the child past
+    /// the fold beside a line the body draws, reaches none of its rows: not
+    /// the rows it runs on with past its foot, nor its wrapped rows, which
+    /// clip what they hold and report their strip beside their right edge,
+    /// clear of the list's. With no gap at all between the list and the
+    /// body, the list's pixel lay against the fold, inside the list: y 99–100
+    /// for a list at y 0–100 over a body from 100, at scale 1, so the filter
+    /// kept the row ending there and the one before it, reachable and
+    /// activatable though nothing of them is drawn; below, the pixel covered
+    /// the first row. Against the list's far edge instead, it met the rows
+    /// the list runs on with past its foot.
+    #[gpui::test]
+    fn a_list_on_the_fold_reaches_none_of_its_rows(cx: &mut TestAppContext) {
+        const ROWS: usize = 8;
+        struct Fold {
+            below: bool,
+        }
+        impl Render for Fold {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                // Eight rows of 30 px in a list 100 px tall, which runs on
+                // past its foot, the fourth across it; every other row,
+                // from the first, is wrapped, as History's are, and reports
+                // what the list draws of it.
+                let rows = (0..ROWS).map(|index| {
+                    let row = div()
+                        .id(ElementId::Name(format!("fold-row-{index}").into()))
+                        .debug_selector(move || format!("fold-row-{index}"))
+                        .role(Role::Button)
+                        .aria_label(format!("Row {index}"))
+                        .h(px(30.))
+                        .flex_shrink_0();
+                    if index % 2 == 0 {
+                        clips_children(row).into_any_element()
+                    } else {
+                        row.into_any_element()
+                    }
+                });
+                // Out of flow, ending on the body's top or starting on its
+                // bottom.
+                let list = clips_children(
+                    div()
+                        .id("fold-list")
+                        .debug_selector(|| "fold-list".into())
+                        .role(Role::ListBox)
+                        .aria_label("Rows")
+                        .absolute()
+                        .left_0()
+                        .top(if self.below { px(200.) } else { px(-100.) })
+                        .w(px(100.))
+                        .h(px(100.))
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .children(rows),
+                )
+                .into_any_element();
+                let line = text("fold-line", "Drawn").h(px(20.)).into_any_element();
+                // The tree holds the list beside the line, on the side of
+                // the fold it lies past.
+                let children = if self.below {
+                    [line, list]
+                } else {
+                    [list, line]
+                };
+                div().size_full().pt(px(100.)).child(clips_children(
+                    div()
+                        .id("fold-body")
+                        .debug_selector(|| "fold-body".into())
+                        .aria_label("Body")
+                        .relative()
+                        .w(px(100.))
+                        .h(px(200.))
+                        .overflow_hidden()
+                        .children(children),
+                ))
+            }
+        }
+
+        for below in [false, true] {
+            let (_view, cx) = cx.add_window_view(move |_, _| Fold { below });
+            written::forget();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+            let physical = |bounds: Bounds<Pixels>| super::physical(bounds, scale as f32);
+            let at = if below { "below" } else { "above" };
+            let body = physical(cx.debug_bounds("fold-body").expect("the body"));
+            let layout = physical(cx.debug_bounds("fold-list").expect("the list"));
+            assert_eq!(
+                if below { layout.y0 } else { layout.y1 },
+                if below { body.y1 } else { body.y0 },
+                "{at}: the list {layout:?} lies on the body's {body:?} fold"
+            );
+            let last = physical(cx.debug_bounds("fold-row-7").expect("the last row"));
+            assert!(
+                last.y0 >= layout.y1,
+                "{at}: the list runs on past its foot to {last:?}"
+            );
+            let reported = clipping_node("fold-list")
+                .and_then(|node| node.bounds())
+                .expect("the list clips its rows");
+
+            // The body holds the line and the list, in the order it draws
+            // them, and the list its rows.
+            let line = written::get("fold-line").expect("the line").node;
+            let assembly = written::Assembly::default().written("fold-body", None);
+            let mut assembly = if below {
+                assembly
+                    .node("fold-line", line, Some("fold-body"))
+                    .written("fold-list", None)
+            } else {
+                assembly
+                    .written("fold-list", None)
+                    .node("fold-line", line, Some("fold-body"))
+            };
+            for index in 0..ROWS {
+                let key = format!("fold-row-{index}");
+                assembly = if index % 2 == 0 {
+                    assembly.written(&key, None)
+                } else {
+                    let mut row = gpui::accesskit::Node::new(Role::Button);
+                    row.set_label(format!("Row {index}"));
+                    row.set_bounds(physical(
+                        cx.debug_bounds(key.clone().leak()).expect("the row"),
+                    ));
+                    assembly.node(&key, row, Some("fold-list"))
+                };
+            }
+            let window = cx.update(|window, _| {
+                physical(Bounds::new(point(px(0.), px(0.)), window.viewport_size()))
+            });
+            let found = reachable(assembly.tree(window, None));
+            assert!(
+                found
+                    .iter()
+                    .any(|node| node.label.as_deref() == Some("Rows")),
+                "{at}: AccessKit's filter keeps the list as the child past the fold: {found:?}"
+            );
+            let rows: Vec<_> = found
+                .iter()
+                .filter(|node| node.role == Role::Button)
+                .collect();
+            assert!(
+                rows.is_empty(),
+                "{at}: the body draws no row, yet {rows:?} are reached in the list's {reported:?}"
+            );
+            assert!(
+                (reported.x1 - reported.x0 - scale).abs() < 0.01
+                    && (reported.x1 - layout.x0).abs() < 0.01
+                    && (reported.y0, reported.y1) == (layout.y0, layout.y1)
+                    && reported.intersect(layout).is_empty()
+                    && reported.intersect(body).is_empty(),
+                "{at}: the list reports {reported:?}, not a pixel beside the left edge of its \
+                 {layout:?}, outside the body's {body:?}"
+            );
+            for index in (0..ROWS).step_by(2) {
+                let row = clipping_node(&format!("fold-row-{index}"))
+                    .and_then(|node| node.bounds())
+                    .expect("the wrapped row clips what it holds");
+                assert!(
+                    row.intersect(reported).is_empty(),
+                    "{at}: row {index} reports {row:?}, clear of the list's {reported:?}"
+                );
+            }
+        }
+    }
+
+    /// [`drawn_rect`] reports a container the mask shows none of as a strip
+    /// a pixel across beside its leading edge across the axis the mask
+    /// leaves it out along, along its own extent: outside the container and
+    /// the mask, however near the mask it lies, at either scale, and beside
+    /// its trailing edge where the leading strip would meet the bounds its
+    /// nearest clipping ancestor reported.
+    #[test]
+    fn an_undrawn_container_reports_a_strip_beside_it() {
+        use gpui::accesskit::Rect;
+        let rect = |x0, y0, x1, y1| Rect { x0, y0, x1, y1 };
+        let mask = rect(0., 200., 600., 600.);
+        for (pixel, layout, clip, expected) in [
+            // On the fold above, at scale 1 and 2, and less than a pixel
+            // or more than one above it.
+            (
+                1.,
+                rect(0., 100., 100., 200.),
+                None,
+                rect(-1., 100., 0., 200.),
+            ),
+            (2., rect(10., 0., 110., 200.), None, rect(8., 0., 10., 200.)),
+            (2., rect(10., 0., 110., 199.), None, rect(8., 0., 10., 199.)),
+            (1., rect(0., 0., 100., 190.), None, rect(-1., 0., 0., 190.)),
+            // On the fold below, and less than a pixel below it.
+            (
+                1.,
+                rect(0., 600., 100., 700.),
+                None,
+                rect(-1., 600., 0., 700.),
+            ),
+            (
+                2.,
+                rect(0., 601., 100., 800.),
+                None,
+                rect(-2., 601., 0., 800.),
+            ),
+            // Past a side: beside its top, along its width.
+            (
+                1.,
+                rect(700., 300., 800., 400.),
+                None,
+                rect(700., 299., 800., 300.),
+            ),
+            // In a list that reports the strip beside its own left edge:
+            // beside its right edge, clear of the list's.
+            (
+                1.,
+                rect(0., 620., 100., 640.),
+                Some(rect(-1., 600., 0., 700.)),
+                rect(100., 620., 101., 640.),
+            ),
+        ] {
+            let drawn = drawn_rect(layout, mask, pixel, Undrawn::Edge(clip));
+            assert_eq!(
+                drawn, expected,
+                "{layout:?} in {mask:?} at {pixel} px a pixel, in {clip:?}"
+            );
+            assert!(
+                drawn.intersect(layout).is_empty()
+                    && drawn.intersect(mask).is_empty()
+                    && clip.is_none_or(|clip| drawn.intersect(clip).is_empty()),
+                "{drawn:?} lies outside {layout:?}, {mask:?} and {clip:?}"
+            );
+        }
     }
 }
