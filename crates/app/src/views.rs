@@ -10136,7 +10136,9 @@ pub(crate) mod tests {
     }
 
     /// A side without an image says so whatever the room: an added image's
-    /// Before reads "No image on this side", and a side whose image could
+    /// Before reads "No image on this side" and, on a second line, "The file
+    /// was added" (joined by " · " where its room holds one line; it once
+    /// read the first line alone, the cause unsaid), and a side whose image could
     /// not be shown reads why, which can be a long error. Once each side's
     /// dimensions gave way to the image, that line went with them, beneath
     /// the name where it stood, so in a 461 × 490 window at 13 pt Before said
@@ -10178,7 +10180,10 @@ pub(crate) mod tests {
             cx.debug_bounds(selector)
                 .unwrap_or_else(|| panic!("{selector} is drawn"))
         };
-        let absent = "No image on this side";
+        // Why Before has no image, with its cause on a second line.
+        let absent = "No image on this side\nThe file was added";
+        // A reason on one line, beside which After's dimensions stay.
+        let short = "Unsupported image format";
         let failure = "Could not read the image: Format error decoding Png: Corrupt deflate stream: invalid distance too far back";
         let slack = px(0.5);
         let sizes = [
@@ -10241,7 +10246,15 @@ pub(crate) mod tests {
             // Its room, less its padding, which the drawn line can pass by
             // its snapping to a device pixel.
             let room = ((right - left) - rem * 1.5).max(said.size.width);
-            let (lines, line) = wraps(text, room, cx);
+            // An absent side's two lines join on the one line a room that
+            // holds no more draws.
+            let (_, line) = wraps(text, room, cx);
+            let drawn = if area.size.height - rem + slack < line * 2. {
+                text.replace('\n', " · ")
+            } else {
+                text.to_owned()
+            };
+            let (lines, line) = wraps(&drawn, room, cx);
             let shown = (said.size.height / line).round() as usize;
             assert!(
                 (said.size.height - line * shown as f32).abs() <= slack && shown >= 1,
@@ -10325,7 +10338,7 @@ pub(crate) mod tests {
 
         // Side by side and overlaid, with Before saying it has no image and
         // then why its image could not be shown.
-        for message in [None, Some(failure)] {
+        for message in [None, Some(short), Some(failure)] {
             edit_image_sides(&app, cx, |side, image| {
                 if side == 0 {
                     image.message = message.map(str::to_owned);
@@ -10439,6 +10452,8 @@ pub(crate) mod tests {
                             "{at}: After's dimensions ({after_lines} lines) gave way beside Before's {lines}-line reason, freeing no room"
                         );
                         met.insert("dimensions gave way");
+                        // An absent side's two lines join on that one line.
+                        let (lines, _) = wraps(&text.replace('\n', " · "), room, cx);
                         if lines > 1 {
                             met.insert("kept cut");
                             assert!(
@@ -10447,7 +10462,7 @@ pub(crate) mod tests {
                             );
                         }
                     }
-                    if message.is_none() && lines == 1 && width > 1000. {
+                    if message == Some(short) && lines == 1 && width > 1000. {
                         // Beside a reason on one line, as tall as they are,
                         // giving way would free no room.
                         assert!(

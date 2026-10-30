@@ -766,7 +766,7 @@ impl GitTurtle {
         } else {
             ["Before", "After"]
         };
-        let details = [old, new].map(side_details);
+        let details = [0, 1].map(|index| side_details(index, [old, new][index]));
         // A side without an image says why where its image would be, in its
         // half side by side or across a source image's room; overlaid or
         // wiped, where it has no room of its own, beneath its name whatever
@@ -929,7 +929,7 @@ impl GitTurtle {
             let kept_wraps = [0, 1].map(|i| {
                 kinds[i] == Details::Kept
                     && wrapped_lines(
-                        &details[i],
+                        &one_line(&details[i]),
                         crate::appearance::ui_text(11.),
                         caption_text,
                         window,
@@ -999,15 +999,22 @@ impl GitTurtle {
                     .flex()
                     .children([0, 1].into_iter().filter(|i| drawn(*i)).map(|i| {
                         let empty = said[i].then(|| {
+                            // An absent side's two lines, or one where the
+                            // room holds only one.
                             let text = details[i].clone();
-                            let cut =
-                                wrapped_lines(&text, band_size, caption_text, window) > empty_lines;
+                            let drawn = if empty_lines == 1 {
+                                one_line(&text)
+                            } else {
+                                text.clone()
+                            };
+                            let cut = wrapped_lines(&drawn, band_size, caption_text, window)
+                                > empty_lines;
                             let whole = text.clone();
                             native_accessibility::static_text(
                                 div()
                                     .id(("image-side-empty", i))
                                     .debug_selector(move || format!("image-side-empty-{i}")),
-                                text.clone(),
+                                text,
                             )
                             .min_w_0()
                             .text_center()
@@ -1021,7 +1028,7 @@ impl GitTurtle {
                                         .build(window, cx)
                                 })
                             })
-                            .child(text)
+                            .child(drawn)
                         });
                         div()
                             .flex_1()
@@ -1455,10 +1462,29 @@ impl GitTurtle {
     }
 }
 
-/// What an image side's caption says below its name: its dimensions and
+/// What side `index` says where its file is absent: that it has no image,
+/// and on a second line why, which holds in any comparison, not only a
+/// commit's: Before has no file where it was added, After none where it was
+/// deleted. "No image on this side" alone left the cause unsaid, and once
+/// the footer's "Added" gave way nothing on screen said the file was added.
+pub(crate) fn absent_side(index: usize) -> &'static str {
+    if index == 0 {
+        "No image on this side\nThe file was added"
+    } else {
+        "No image on this side\nThe file was deleted"
+    }
+}
+
+/// `details` on the one line a side's reason takes where its room holds no
+/// more: its lines joined.
+fn one_line(details: &str) -> String {
+    details.replace('\n', " · ")
+}
+
+/// What side `index`'s caption says below its name: its dimensions and
 /// format, with the preview's own where it was scaled and any notice, or why
-/// it shows no image.
-fn side_details(side: &worker::ImageSide) -> String {
+/// it shows no image ([`absent_side`] where its file is absent).
+fn side_details(index: usize, side: &worker::ImageSide) -> String {
     let details = side
         .image
         .as_ref()
@@ -1478,7 +1504,7 @@ fn side_details(side: &worker::ImageSide) -> String {
         .unwrap_or_else(|| {
             side.message
                 .clone()
-                .unwrap_or_else(|| "No image on this side".into())
+                .unwrap_or_else(|| absent_side(index).into())
         });
     if side.image.is_some() {
         side.message
@@ -1894,7 +1920,11 @@ impl Captions<'_> {
                                         .min_w_0()
                                         .text_color(rgb(p.muted))
                                         .when(kept && !dimensions, |line| line.truncate())
-                                        .child(details),
+                                        .child(if kept && !dimensions {
+                                            one_line(&details)
+                                        } else {
+                                            details
+                                        }),
                                 )
                             })
                     }),
@@ -2417,6 +2447,42 @@ mod tests {
         };
         assert!(beneath(70.).fit().dimensions);
         assert!(!beneath(69.).fit().dimensions);
+    }
+    /// A side whose file is absent says it has no image and, on a second
+    /// line, why: Before's file was added, After's deleted. A side whose
+    /// image could not be shown says only why.
+    #[test]
+    fn an_absent_side_says_why_on_a_second_line() {
+        let absent = crate::worker::ImageSide {
+            animation: None,
+            captured: None,
+            system_preview: None,
+            literal_source: None,
+            image: None,
+            render: None,
+            message: None,
+            bytes: 0,
+            lfs_pointer: None,
+        };
+        assert_eq!(
+            [0, 1].map(|index| super::side_details(index, &absent)),
+            [
+                "No image on this side\nThe file was added",
+                "No image on this side\nThe file was deleted",
+            ]
+        );
+        assert_eq!(
+            super::one_line(&super::side_details(1, &absent)),
+            "No image on this side · The file was deleted"
+        );
+        let unreadable = crate::worker::ImageSide {
+            message: Some("Could not read the image".into()),
+            ..absent
+        };
+        assert_eq!(
+            super::side_details(0, &unreadable),
+            "Could not read the image"
+        );
     }
     #[test]
     fn thumbnail_reduction_preserves_original_resize_and_absent_sides() {
