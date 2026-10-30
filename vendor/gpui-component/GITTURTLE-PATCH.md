@@ -1056,10 +1056,15 @@ the cursor came from rows that moved, as rows scrolled under the pointer
 inside a surface that stays put, so the pointer is still from there: the row
 only records its hover, and takes the selection once the pointer moves.
 
-The consumers are every capped menu the app opens through
-`native_accessibility::open_menu`, as the capped-menu patch lists, every
-row's menu (`KeyboardMenu`, `PointerMenu`) and Button dropdown that can move
-while open, and the app's own rule for rows that move under a still pointer
+The consumers are, for the wheel, every capped menu the app opens through
+`native_accessibility::open_menu`, as the capped-menu patch lists; for a menu
+laid out at another place or size, each row's menu, the keyboard's
+(`KeyboardMenu`) and the right-click's (`PointerMenu`), drawn beside its row
+as rows arrive above it, and every open menu built again in place as the
+state its items read changes (`MenuInputs`: a row's menu, and a Button's
+`AppMenu` that follows writes), as History's commit menu grows Amend last
+commit… and Undo last local commit… when its commit becomes HEAD; and the
+app's own rule for rows that move under a still pointer
 (`motion::StillPointer`, `DESIGN.md`).
 `cargo test --locked -p gitturtle a_wheel_over_a_capped_menu_lights_no_row_under_the_still_pointer`
 rests the pointer on the Working Actions menu's last whole row at 13 and 18
