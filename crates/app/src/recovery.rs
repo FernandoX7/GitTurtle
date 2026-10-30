@@ -7,7 +7,6 @@ use gitturtle_core::{
 use gpui_kit::component::{
     WindowExt,
     checkbox::Checkbox,
-    dialog::DialogButtonProps,
     menu::{PopupMenu, PopupMenuItem},
     scroll::{Scrollbar, ScrollbarMode},
 };
@@ -826,7 +825,7 @@ impl GitTurtle {
                 ))
                 .width(appearance::dialog_width(px(1060.), window))
                 .max_h(appearance::dialog_max_height(window))
-                .button_props(DialogButtonProps::default().ok_text("Close"))
+                .footer(crate::tags::dialog_footer("Close", None))
                 // In the dialog's content rather than its scrolling body,
                 // whose scroller lays the browser out at the height it asks
                 // for and cut its lines mid-line where the cap left less:
@@ -2064,13 +2063,13 @@ impl StashBrowser {
                         })),
                 )
         };
-        // Its label is the compact helper's, as Drop…'s beside it is: the
-        // kit's small label, `text_sm`, drew 11.375 px beside Drop…'s 12 px
-        // at 13 pt.
-        let restore = Button::new("restore-saved-stash")
+        // On the compact frame, as Drop… beside it is, with its height,
+        // padding, label size and ring: the kit's small Button stood 19.5 px
+        // beside Drop…'s 28 at 13 pt, and its label, `text_sm`, drew
+        // 11.375 px beside Drop…'s 12 px. The frame draws no content of its
+        // own; the cell holds both labels.
+        let restore = crate::button_frame("restore-saved-stash", "Review restore…", "", false)
             .primary()
-            .small()
-            .text_size(crate::appearance::ui_text(crate::LABEL_TEXT))
             .child(
                 div()
                     .grid()
@@ -5249,6 +5248,52 @@ mod tests {
                 None
             }
         }
+    }
+
+    /// Stashes' footer buttons stand on the compact frame (`button_frame`),
+    /// as Drop… beside Review restore… does: Review restore…, Drop… and the
+    /// dialog's Close are each the frame's 28 px at the interface size, at 13
+    /// and 18 pt, beside the list and stacked beneath it. Review restore…, a
+    /// small kit Button, stood 19.5 px beside Drop…'s 28 at 13 pt, and Close,
+    /// the kit's own, 26 px.
+    #[gpui::test]
+    async fn the_footer_buttons_stand_on_the_compact_frame(cx: &mut gpui::TestAppContext) {
+        let (_fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let _git = two_stashes(&repository);
+        let mut failures = Vec::new();
+        for (width, height) in [(1480., 980.), (461., 490.)] {
+            cx.simulate_resize(size(px(width), px(height)));
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                open_selected_stash(&app, cx).await;
+                crate::views::tests::draw(cx);
+                let frame = appearance::ui_size(28.);
+                for control in [
+                    "restore-saved-stash",
+                    "drop-saved-stash",
+                    "dialog-ok: Close",
+                ] {
+                    let at = format!("{control} at {text} pt in {width} × {height}");
+                    match cx.debug_bounds(control) {
+                        None => failures.push(format!("{at}: not drawn")),
+                        // Snapped to the test window's 2× device pixels.
+                        Some(drawn) if (drawn.size.height - frame).abs() > px(0.5) => failures
+                            .push(format!(
+                                "{at}: {:?} tall, not the frame's {frame:?}",
+                                drawn.size.height
+                            )),
+                        Some(_) => {}
+                    }
+                }
+                cx.update(|window, cx| window.close_all_dialogs(cx));
+                crate::views::tests::draw(cx);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     /// Stacked beneath the list at 18 pt in a 461 × 490 window, the detail

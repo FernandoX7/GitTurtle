@@ -2092,8 +2092,7 @@ fn button(
 const LABEL_INSET: f32 = 10.;
 
 /// A compact Button's label size at the default interface size, which
-/// [`button_frame`] sets: a Button built another way beside such Buttons, as
-/// Stashes' Review restore… is beside Drop…, takes it so their labels match.
+/// [`button_frame`] sets.
 const LABEL_TEXT: f32 = 12.;
 
 /// The space beside an icon-only compact Button's 16 px icon, at the default
@@ -2103,7 +2102,9 @@ const ICON_INSET: f32 = 6.;
 /// The compact frame [`button`] and `copy_feedback::copy_button` share,
 /// without content: 28 px high, with 10 px of padding beside a label and a
 /// 6 px icon/label gap, or, when `label` is empty, a 28 px square named after
-/// its `symbol` until the caller names it.
+/// its `symbol` until the caller names it. A control that draws its own
+/// content, as Stashes' Review restore… draws its label and "Preparing…" in
+/// one cell, takes the frame alone, so it matches the controls beside it.
 fn button_frame(id: impl Into<ElementId>, label: &str, symbol: &str, active: bool) -> Button {
     // Transparent at rest like the kit's ghost, with the palette's hover and
     // pressed fills: the ghost's own hover darkens a hovered row. Selected, it
