@@ -873,15 +873,19 @@ pub(crate) fn menu_foot(window: &Window) -> Pixels {
         - gpui_kit::component::POPOVER_EDGE_WIDTH
 }
 
-/// Keeps the menus the kit places in the app above [`menu_foot`]: its
-/// dropdowns ([`AppDropdown`], on the kit's dropdown menu and popover) and,
-/// on Linux, the menu a right-click in an input or text area shows, as the
-/// commit title's and description's, which the kit draws in the window (its
-/// `NativeMenu` fallback); on macOS that menu is the system's own, which
-/// this inset does not reach. The kit's window-bounded placement moves one
-/// that would run lower up, as it moves one that would leave the window, so
-/// a menu taller than the room below its button or pointer never covers the
-/// status bar or comes nearer it than its margin. The app's row menus, a
+/// Keeps the menus the kit places in the app above [`menu_foot`], so none of
+/// them covers the status bar or comes nearer it than its margin: its
+/// dropdowns ([`AppDropdown`], on the kit's dropdown menu and popover),
+/// whose side and rows the app chooses for the room on either side of their
+/// button ([`DropdownRoom`]) and which the kit's popup host keeps above the
+/// inset as it keeps them inside the window; and, on Linux, the menu a
+/// right-click in a text field or editor shows, as the commit title's and
+/// description's or Compare's text's, which the kit draws in the window
+/// (its `NativeMenu` fallback): it opens below the pointer where its items
+/// fit there and otherwise wholly above it, its items capped at the room on
+/// the side with more, so it never covers the point clicked either
+/// (`gpui_kit::base::Positioner::point`). On macOS that menu is the
+/// system's own, which this inset does not reach. The app's row menus, a
 /// right-click's ([`PointerMenu`]) and a keyboard's ([`KeyboardMenu`]),
 /// place themselves beside their row inside [`menu_bounds`] and do not use
 /// the kit's context menu, the other popup this inset reaches.
