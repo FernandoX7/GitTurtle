@@ -8,47 +8,7 @@ impl GitTurtle {
         let Some(error) = self.operation_error.as_ref() else {
             return;
         };
-        let full: Arc<str> = Arc::from(error.as_str());
-        let display = if error.len() > 64 * 1024 {
-            format!(
-                "{}\n\n[Output shortened for display. Copy details retains the complete report.]\n\n{}",
-                &error[..error.floor_char_boundary(56 * 1024)],
-                &error[error.ceil_char_boundary(error.len() - 4 * 1024)..]
-            )
-        } else {
-            error.clone()
-        };
-        let editor = text::editor(&display, "text", None, window, cx);
-        // Keyed by the details, read once: the dialog shows them unchanged.
-        let mark = copy_feedback::Mark::new("copy-operation-details", &*full);
-        window.open_alert_dialog(cx, move |dialog, window, cx| {
-            let full = Arc::clone(&full);
-            let copy_mark = mark.clone();
-            dialog
-                .title("Git operation details")
-                .width(appearance::dialog_width(px(680.), window))
-                .max_h(appearance::dialog_max_height(window))
-                .child(
-                    crate::editor_find::Editor::new(&editor)
-                        .readonly(true)
-                        .h(px(320.))
-                        .aria_label("Git operation error details"),
-                )
-                .child(
-                    copy_feedback::copy_button(mark.clone(), "Copy details", "", cx).on_click(
-                        move |_, window, cx| {
-                            copy_feedback::copy(
-                                window,
-                                cx,
-                                Some(copy_mark.clone()),
-                                "operation details",
-                                full.to_string(),
-                            )
-                        },
-                    ),
-                )
-                .button_props(DialogButtonProps::default().ok_text("Close"))
-        });
+        show_error_details(error, window, cx);
     }
 
     /// The dialog captures both the chosen repository and the prepared command.
@@ -355,4 +315,52 @@ impl GitTurtle {
             )
             .into_any_element()
     }
+}
+
+/// Opens Git's whole report of a failed operation, `error`, in a dialog of
+/// its own above whatever is open, with Copy details: the window's error's
+/// Details…, and Stashes' beside a Review restore… that Git could not
+/// prepare.
+pub(crate) fn show_error_details(error: &str, window: &mut Window, cx: &mut App) {
+    let full: Arc<str> = Arc::from(error);
+    let display = if error.len() > 64 * 1024 {
+        format!(
+            "{}\n\n[Output shortened for display. Copy details retains the complete report.]\n\n{}",
+            &error[..error.floor_char_boundary(56 * 1024)],
+            &error[error.ceil_char_boundary(error.len() - 4 * 1024)..]
+        )
+    } else {
+        error.to_owned()
+    };
+    let editor = text::editor(&display, "text", None, window, cx);
+    // Keyed by the details, read once: the dialog shows them unchanged.
+    let mark = copy_feedback::Mark::new("copy-operation-details", &*full);
+    window.open_alert_dialog(cx, move |dialog, window, cx| {
+        let full = Arc::clone(&full);
+        let copy_mark = mark.clone();
+        dialog
+            .title("Git operation details")
+            .width(appearance::dialog_width(px(680.), window))
+            .max_h(appearance::dialog_max_height(window))
+            .child(
+                crate::editor_find::Editor::new(&editor)
+                    .readonly(true)
+                    .h(px(320.))
+                    .aria_label("Git operation error details"),
+            )
+            .child(
+                copy_feedback::copy_button(mark.clone(), "Copy details", "", cx).on_click(
+                    move |_, window, cx| {
+                        copy_feedback::copy(
+                            window,
+                            cx,
+                            Some(copy_mark.clone()),
+                            "operation details",
+                            full.to_string(),
+                        )
+                    },
+                ),
+            )
+            .button_props(DialogButtonProps::default().ok_text("Close"))
+    });
 }
