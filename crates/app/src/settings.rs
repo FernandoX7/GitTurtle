@@ -2180,7 +2180,15 @@ impl GitTurtle {
             .controls(focus, appearance::button_ring_room(cx))
     }
 
-    pub(super) fn render_settings(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The Settings page, laid out `width` wide: the width it is drawn at in
+    /// this frame ([`SettingsPage`]), which beside the project list is less
+    /// than the window's.
+    pub(super) fn render_settings(
+        &self,
+        width: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // A control the keyboard has focused scrolls into view in this frame.
         self.theme_editor.page().reveal(window, cx);
         let p = palette(cx);
@@ -2188,8 +2196,12 @@ impl GitTurtle {
         // look so once the write looks busy (`workspace::BusyLook`).
         let busy = self.operation_busy.is_some();
         let looks_busy = self.operation_shown().is_some();
-        let compact = window.viewport_size().width < appearance::ui_size(1060.);
-        let narrow = window.viewport_size().width < appearance::ui_size(720.);
+        // The page's breakpoints, the theme grid's columns among them, are
+        // the page's own width, not the window's: beside the project list a
+        // 1,200 px window leaves the page 960 px, where the grid laid four
+        // columns out across the two groups' room.
+        let compact = width < appearance::ui_size(1060.);
+        let narrow = width < appearance::ui_size(720.);
         let retry = self.page_focus("retry-save-settings", cx);
         let theme_columns = if narrow {
             2
@@ -2816,7 +2828,7 @@ pub(crate) fn page_shows(cx: &mut gpui::VisualTestContext, selector: &'static st
 }
 
 impl Render for SettingsPage {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         {
             self.renders += 1;
@@ -2824,14 +2836,31 @@ impl Render for SettingsPage {
         let Some(app) = self.app.upgrade() else {
             return div().into_any_element();
         };
-        let (page, key) = app.update(cx, |app, cx| {
-            // This build's placeholders record the cards again.
+        let key = app.update(cx, |app, cx| {
+            // This build's placeholders record the cards again, when the
+            // page below is prepainted.
             app.picker_cards.0.borrow_mut().clear();
             app.sync_theme_cards(cx);
-            (app.render_settings(window, cx), app.settings_page_key())
+            app.settings_page_key()
         });
         self.seen = Some(key);
-        page
+        // Built for the width the page is drawn at in this frame, so its
+        // breakpoints follow the room it has: beside the project list, or a
+        // width the window's resizable columns give it, rather than the
+        // window's.
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                crate::in_frame::in_frame(move |bounds, window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.render_settings(bounds.size.width, window, cx)
+                    })
+                })
+                .named("settings-page"),
+            )
+            .into_any_element()
     }
 }
 
@@ -5087,6 +5116,67 @@ mod picker_tests {
 
     fn drawn(cx: &mut VisualTestContext, selector: String) -> Option<Bounds<Pixels>> {
         shown(cx, selector.leak())
+    }
+
+    /// The theme grid takes its columns from the width the page is drawn at,
+    /// not the window's. Beside the 240 px project list a 1,200 px window
+    /// leaves the page 960 px, below the 1,060 px breakpoint, so the dark
+    /// palettes' first row holds three cards, as a 960 px window without the
+    /// list does; at 18 pt a 1,480 px window, over the scaled breakpoint,
+    /// leaves the page 1,240 px, under it, and three as well. The grid laid
+    /// four out for the window's width in the room the page did not have.
+    #[gpui::test]
+    fn the_theme_grid_takes_its_columns_from_the_pages_width(cx: &mut TestAppContext) {
+        let (app, cx) = open_app(cx);
+        let dark: Vec<_> = ThemeChoice::ALL
+            .into_iter()
+            .filter(|choice| !choice.is_light())
+            .collect();
+        let first_row = |cx: &mut VisualTestContext| {
+            let card = |cx: &mut VisualTestContext, choice: ThemeChoice| {
+                drawn(cx, format!("settings-theme-{}", choice as usize))
+            };
+            let top = card(cx, dark[0]).expect("the first dark card").top();
+            dark.iter()
+                .filter(|choice| card(cx, **choice).is_some_and(|card| card.top() == top))
+                .count()
+        };
+        let code = cx.read(|cx| app.read(cx).settings.code_text_size);
+        let text_size = |cx: &mut VisualTestContext, interface: u8| {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.settings.interface_text_size = interface;
+                    appearance::apply_text_sizes(interface, code, window, cx);
+                    cx.notify();
+                })
+            });
+        };
+        for (interface, width) in [(13, 1200.), (18, 1480.)] {
+            let at = format!("{interface} pt in a {width} px window");
+            text_size(cx, interface);
+            cx.simulate_resize(size(px(width), px(2400.)));
+            settle(cx);
+            assert!(px(width) >= appearance::ui_size(1060.), "{at}");
+            assert_eq!(first_row(cx), 4, "{at} without the project list");
+            cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_pane(window, cx)));
+            settle(cx);
+            let page = drawn(cx, "settings-scroll".into()).expect("the page");
+            assert!(
+                page.size.width <= px(width - 240.) + px(0.5)
+                    && page.size.width < appearance::ui_size(1060.),
+                "{at}: the page {page:?} beside the project list"
+            );
+            assert_eq!(
+                first_row(cx),
+                3,
+                "{at}: beside the project list, the {:?} page's columns",
+                page.size.width
+            );
+            cx.update(|window, cx| app.update(cx, |app, cx| app.toggle_project_pane(window, cx)));
+            settle(cx);
+        }
+        text_size(cx, 13);
+        settle(cx);
     }
 
     /// The check badge is the name's line tall at every interface text size:
