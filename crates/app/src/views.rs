@@ -4204,6 +4204,15 @@ impl OperationStatus {
     }
 }
 
+/// The full header's labelled profile picker's width around a `label` this
+/// wide, before its 230 px limit: a medium kit Button's `px_3`, the 16 px
+/// icon, the label and the rem-sized caret, `gap_2` apart.
+fn profile_width(label: Pixels, window: &Window) -> Pixels {
+    let rem = window.rem_size();
+    let snap = |length: Pixels| window.pixel_snap(length);
+    snap(rem * 0.75) * 2. + px(16.) + snap(rem * 0.5) * 2. + label + snap(rem)
+}
+
 /// The labelled Cancel's width: a small kit Button's `px_2` around the wider
 /// of its labels (`authentication::CANCEL_LABELS`), so its label changing as
 /// it is pressed moves nothing.
@@ -4263,12 +4272,26 @@ struct HeaderPlan {
     /// The width the compact row gives the status where it goes there
     /// ([`GitTurtle::compact_operation_width`]).
     width: Option<Pixels>,
-    /// Whether a write's status can come to the status bar in this frame:
-    /// where the widest label's barest form ([`OperationStatus::widest`])
-    /// goes there. Only then does the bar keep Cancel's room beside its
-    /// line ([`GitTurtle::fit_status_bar`]); elsewhere every write's status
-    /// stays in the header, and the bar's hints and Details… keep that room.
+    /// Whether the status bar keeps Cancel's room beside its line
+    /// ([`GitTurtle::fit_status_bar`]): wherever, at the window's width and
+    /// text size, a write's status could come to the bar with any header
+    /// contents, the widest label's barest form ([`OperationStatus::widest`])
+    /// finding no room in the header's rows; decided from the width and
+    /// text size alone ([`GitTurtle::full_bar_room`], and in every compact
+    /// row, whose name can take all its room), so the bar's idle hints never
+    /// change form as a label changes. Elsewhere every write's status stays
+    /// in the header, and the bar's hints and Details… keep that room.
     bar_room: bool,
+}
+
+/// Which of the full header's controls that come and go a layout counts
+/// ([`GitTurtle::header_layout`]): Projects or its slot among the trailing
+/// controls, and History, Changes and Pull requests, which a repository
+/// brings.
+#[derive(Clone, Copy, Debug)]
+struct HeaderControls {
+    projects: bool,
+    repository: bool,
 }
 
 /// The full header's controls laid out in a window as `render_header` lays
@@ -4279,12 +4302,77 @@ struct HeaderLayout {
     trailing: Trailing,
     /// Where a running write's status goes, whether or not one runs.
     operation: OperationLayout,
-    /// Whether the widest label's barest form goes to the status bar
-    /// ([`HeaderPlan::bar_room`]).
-    bar_room: bool,
+    /// Whether the widest label's barest form goes to the status bar with
+    /// these controls and labels ([`GitTurtle::full_bar_room`]).
+    widest_to_bar: bool,
+    /// How much History and Changes, where a repository brings them, and
+    /// the profile can each grow before the controls' arrangement changes
+    /// ([`line_slack`]): Changes in the row and in the row the trailing
+    /// controls' form is decided from, the profile in the row.
+    changes_slack: Option<Pixels>,
+    profile_slack: Pixels,
     /// The room the controls wrap in, `gap` apart.
     room: Pixels,
     gap: Pixels,
+}
+
+/// The room the line holding item `at` leaves after its last item, as
+/// [`wrapped_rows`] wraps `items` in `room`, `gap` apart: how much the item
+/// can grow before that line's last item wraps. Less than nothing where the
+/// item starts its line wider than the room, which no growth of it changes.
+fn line_slack(items: &[(Pixels, Pixels)], at: usize, room: Pixels, gap: Pixels) -> Pixels {
+    let firsts: Vec<usize> = wrapped_rows(items, room, gap)
+        .into_iter()
+        .map(|(first, _)| first)
+        .collect();
+    let start = firsts
+        .iter()
+        .copied()
+        .filter(|&first| first <= at)
+        .max()
+        .unwrap_or(0);
+    let end = firsts
+        .iter()
+        .copied()
+        .find(|&first| first > at)
+        .unwrap_or(items.len());
+    let line = &items[start..end];
+    line.iter().fold(room, |left, &(width, _)| left - width) - gap * (line.len().max(1) - 1) as f32
+}
+
+/// Whether `to_bar` holds for some width from `least` to `most` of one
+/// control in the full header's wrapping row, given, for a width, whether
+/// the widest status goes to the status bar and how much the control can
+/// grow before the controls' arrangement changes ([`line_slack`],
+/// [`HeaderLayout::changes_slack`]). Until then the controls keep
+/// their lines and every room the status could take only shrinks as the
+/// control grows, so each arrangement is asked where it leaves the least,
+/// a hair short of its line's filling, and the next a hair past it, where
+/// the line's last control has wrapped, until `most`.
+fn to_bar_anywhere(
+    least: Pixels,
+    most: Pixels,
+    mut to_bar: impl FnMut(Pixels) -> (bool, Pixels),
+) -> bool {
+    let hair = px(1. / 64.);
+    let mut width = least;
+    // Each step wraps a control onto a later line, so a row of a dozen
+    // controls takes a few; the bound only guards against a stuck step.
+    for _ in 0..32 {
+        let (bar, slack) = to_bar(width);
+        if bar {
+            return true;
+        }
+        let full = width + slack;
+        if slack < px(0.) || full >= most {
+            return width < most && to_bar(most).0;
+        }
+        if slack > hair && to_bar(full - hair).0 {
+            return true;
+        }
+        width = full + hair;
+    }
+    to_bar(most).0
 }
 
 /// The lines a wrapping flex row of `items`, each its width and height,
@@ -4938,12 +5026,117 @@ impl GitTurtle {
             && self.keeps_projects_slot(width, narrow, widths, window);
         let layout =
             self.full_header_layout(width, narrow, projects || slot, false, widths, window);
+        let bar_room = self.full_bar_room(width, narrow, widths, window);
+        // Every header's contents were asked, these among them.
+        debug_assert!(
+            bar_room || !layout.widest_to_bar,
+            "the bar keeps Cancel's room wherever this header turns the widest status away"
+        );
         HeaderPlan {
             full: Some((trailing, slot)),
             operation: layout.operation,
             width: None,
-            bar_room: layout.bar_room,
+            bar_room,
         }
+    }
+
+    /// Whether the status bar keeps Cancel's room beside its line in a
+    /// frame whose full header is `width` wide ([`HeaderPlan::bar_room`]):
+    /// wherever the widest label's barest form ([`OperationStatus::widest`])
+    /// finds no room in the header's rows with some header's contents at
+    /// this width and text size. Every header's contents are asked: with
+    /// and without Projects or its slot, and a repository's toggles;
+    /// Changes without a count or with one of up to six digits, or the
+    /// longer one `widths` measures; and the profile's label from nothing to
+    /// its control's 230 px limit. So the bar's idle hints change form only
+    /// with the window's width or the text size, never as a branch, a
+    /// count, the profile or the mode changes the header's labels, and a
+    /// write whose status this header turns away finds the room kept. The
+    /// widest contents alone would not do: a profile too wide for the
+    /// spacer's line wraps with Settings onto a line of its own, which holds
+    /// the status, where a narrower one fills that line and leaves the
+    /// spacer too little, so each arrangement the contents can take is
+    /// asked where it leaves the least ([`to_bar_anywhere`]). Kept for each
+    /// width and text size ([`Measured`]); a resize asks again.
+    fn full_bar_room(
+        &self,
+        width: Pixels,
+        narrow: bool,
+        widths: &ChromeWidths,
+        window: &Window,
+    ) -> bool {
+        let line = LineKey::current(window);
+        let (least, widest) = cached_width(&CHANGES_LABELS, &line, || {
+            let label = |text: &str| line_widths(&[(text, appearance::ui_text(12.))], window);
+            let widest = (0..10)
+                .map(|digit| label(&format!("Changes · {}", digit.to_string().repeat(6))))
+                .fold(px(0.), Pixels::max);
+            (label("Changes"), widest)
+        });
+        let changes = (least.min(widths.changes), widest.max(widths.changes));
+        let key = (
+            line,
+            f32::from(width).to_bits(),
+            narrow,
+            f32::from(changes.1).to_bits(),
+        );
+        BAR_ROOM.with_borrow_mut(|cache| {
+            *cache.get(key, |_| {
+                self.widest_to_bar_anywhere(width, narrow, changes, widths, window)
+            })
+        })
+    }
+
+    /// Whether some full header `width` wide sends the widest label's
+    /// status to the bar ([`Self::full_bar_room`]): for each set of controls
+    /// ([`HeaderControls`]), each arrangement Changes can take from its
+    /// least to its most width (`changes`), and within it each arrangement
+    /// the profile can take.
+    fn widest_to_bar_anywhere(
+        &self,
+        width: Pixels,
+        narrow: bool,
+        changes: (Pixels, Pixels),
+        widths: &ChromeWidths,
+        window: &Window,
+    ) -> bool {
+        // The profile's label grows its control up to its limit; the narrow
+        // header draws its icon alone.
+        let profile = if narrow {
+            px(0.)
+        } else {
+            (window.pixel_snap(px(230.)) - profile_width(px(0.), window)).max(px(0.))
+        };
+        let layout = |controls: HeaderControls, changes: Pixels, profile: Pixels| {
+            let widths = ChromeWidths {
+                changes,
+                profile,
+                ..*widths
+            };
+            self.header_layout(width, narrow, controls, false, &widths, window)
+        };
+        [true, false].into_iter().any(|repository| {
+            [true, false].into_iter().any(|projects| {
+                let controls = HeaderControls {
+                    projects,
+                    repository,
+                };
+                let profiles = |changes: Pixels| {
+                    to_bar_anywhere(px(0.), profile, |profile| {
+                        let layout = layout(controls, changes, profile);
+                        (layout.widest_to_bar, layout.profile_slack)
+                    })
+                };
+                if !repository {
+                    return profiles(changes.0);
+                }
+                to_bar_anywhere(changes.0, changes.1, |changes| {
+                    let layout = layout(controls, changes, px(0.));
+                    let slack = layout.changes_slack.expect("a repository's toggles");
+                    (profiles(changes), slack)
+                })
+            })
+        })
     }
 
     /// How the compact header draws a running write's status
@@ -4952,7 +5145,12 @@ impl GitTurtle {
     /// most the name takes, from `Chrome::Compact`) holds the status's
     /// barest form, and the status bar elsewhere
     /// ([`OperationPlace::StatusBar`]), so the row's controls keep their
-    /// place and the name stays whole.
+    /// place and the name stays whole. The bar keeps Cancel's room in every
+    /// compact frame: a repository's name can take all of `name`, leaving
+    /// the status none, so the room, decided from the window's width and
+    /// text size alone ([`HeaderPlan::bar_room`]), is kept whatever the
+    /// name. It once followed the name, so the bar's hints changed form as
+    /// a tab with a shorter name showed.
     fn compact_operation_place(
         &self,
         name: Pixels,
@@ -4974,8 +5172,7 @@ impl GitTurtle {
                 },
             },
             width: fit.map(|(width, _)| width),
-            bar_room: Self::compact_operation_width(status.widest(), name, widths, window)
-                .is_none(),
+            bar_room: true,
         }
     }
 
@@ -5079,6 +5276,29 @@ impl GitTurtle {
         widths: &ChromeWidths,
         window: &Window,
     ) -> HeaderLayout {
+        let controls = HeaderControls {
+            projects,
+            repository: self.repository.is_some(),
+        };
+        self.header_layout(width, narrow, controls, operation, widths, window)
+    }
+
+    /// [`Self::full_header_layout`] with the `controls` given rather than
+    /// this frame's, for a header with other contents
+    /// ([`Self::full_bar_room`]).
+    fn header_layout(
+        &self,
+        width: Pixels,
+        narrow: bool,
+        controls: HeaderControls,
+        operation: bool,
+        widths: &ChromeWidths,
+        window: &Window,
+    ) -> HeaderLayout {
+        let HeaderControls {
+            projects,
+            repository,
+        } = controls;
         let rem = window.rem_size();
         let snap = |length: Pixels| window.pixel_snap(length);
         let scaled = |base: f32| snap(appearance::ui_size(base));
@@ -5100,7 +5320,8 @@ impl GitTurtle {
                 line(appearance::ui_text(14.)) + snap(rem * 0.125) + line(appearance::ui_text(11.)),
             ),
         ];
-        if self.repository.is_some() {
+        let changes_at = repository.then_some(items.len());
+        if repository {
             items.push((
                 snap(rem * 0.125) * 3.
                     + self.labelled_width(widths.history, false, window)
@@ -5116,7 +5337,8 @@ impl GitTurtle {
         let (spacer, slot) = ((px(0.), px(0.)), (control, control));
         // The row Projects would take after the spacer: one the spacer or
         // Projects starts holds the trailing controls alone.
-        let first = wrapped_rows(&[items.as_slice(), &[spacer, slot]].concat(), room, gap)
+        let decided = [items.as_slice(), &[spacer, slot]].concat();
+        let first = wrapped_rows(&decided, room, gap)
             .last()
             .map_or(0, |&(first, _)| first);
         let trailing = if first < items.len() {
@@ -5126,13 +5348,11 @@ impl GitTurtle {
                 spacer: first > items.len(),
             }
         };
-        // A medium kit Button: `px_3`, the 16 px icon, the label and the
-        // rem-sized caret, `gap_2` apart, within its 230 px limit.
+        // Within its 230 px limit.
         let profile = if narrow {
             scaled(36.)
         } else {
-            (snap(rem * 0.75) * 2. + px(16.) + snap(rem * 0.5) * 2. + widths.profile + snap(rem))
-                .min(snap(px(230.)))
+            profile_width(widths.profile, window).min(snap(px(230.)))
         };
         let spacer_at = (trailing != (Trailing::OwnRow { spacer: false })).then(|| {
             items.push(spacer);
@@ -5141,6 +5361,7 @@ impl GitTurtle {
         if projects && trailing == Trailing::Shared {
             items.push(slot);
         }
+        let profile_at = items.len();
         items.push((profile, scaled(36.)));
         items.push((control, control));
         if projects && trailing != Trailing::Shared {
@@ -5150,8 +5371,9 @@ impl GitTurtle {
         // either place holds as it starts, the spacer first: in the spacer,
         // laid out empty, or after the trailing controls in the room their
         // line leaves, so it moves nothing; where neither holds even the
-        // barest, the status bar draws it, which keeps Cancel's room only
-        // where the widest label's barest goes there too.
+        // barest, the status bar draws it, which keeps Cancel's room
+        // wherever any header's contents send the widest label's barest
+        // there (`full_bar_room`).
         let status = self.operation_status_size(widths, window);
         let identity = (scaled(100.), scaled(200.));
         let spacer_room = spacer_at.map(|at| spacer_width(&items, at, 2, identity, room, gap));
@@ -5181,7 +5403,12 @@ impl GitTurtle {
                 })
         };
         let operation_layout = place(status);
-        let bar_room = place(status.widest()).place == OperationPlace::StatusBar;
+        let widest_to_bar = place(status.widest()).place == OperationPlace::StatusBar;
+        // Changes changes the arrangement where its line fills in either
+        // row; where it starts its line too wide in one, it does in both.
+        let changes_slack = changes_at
+            .map(|at| line_slack(&decided, at, room, gap).min(line_slack(&items, at, room, gap)));
+        let profile_slack = line_slack(&items, profile_at, room, gap);
         if operation && operation_layout.place == OperationPlace::After {
             let form = operation_layout.form;
             items.push((status.width(form), status.height(form)));
@@ -5190,7 +5417,9 @@ impl GitTurtle {
             items,
             trailing,
             operation: operation_layout,
-            bar_room,
+            widest_to_bar,
+            changes_slack,
+            profile_slack,
             room,
             gap,
         }
@@ -5972,6 +6201,15 @@ thread_local! {
     /// The navigation filter's placeholder as it fits the width its field
     /// last painted at.
     static NAV_FILTER_FIT: crate::workspace::PlaceholderFit = const { RefCell::new(None) };
+    /// The Changes toggle's label without a count and its widest with one
+    /// of six digits (`GitTurtle::full_bar_room`).
+    static CHANGES_LABELS: RefCell<Option<(LineKey, (Pixels, Pixels))>> =
+        const { RefCell::new(None) };
+    /// Whether the status bar keeps Cancel's room, for each width and text
+    /// size asked lately (`GitTurtle::full_bar_room`): the font and sizes,
+    /// the header's width, whether it is narrow, and the widest Changes.
+    static BAR_ROOM: RefCell<Measured<(LineKey, u32, bool, u32), bool>> =
+        const { RefCell::new(Measured::new()) };
     /// [`SidebarWidths`] for the current font and sizes.
     static SIDEBAR_WIDTHS: RefCell<Option<(LineKey, SidebarWidths)>> = const { RefCell::new(None) };
 }
@@ -15470,17 +15708,20 @@ pub(crate) mod tests {
     /// The status bar keeps Cancel's room beside its line only where a
     /// write's status can come to it ([`HeaderPlan::bar_room`]): where the
     /// widest label's barest form, at the label's limit, which a GitHub
-    /// request's label reaches at 13 and 18 pt, finds no room in the header.
+    /// request's label reaches at 13 and 18 pt, finds no room in the header
+    /// with some header's contents at the window's width and text size.
     /// In History, without and with the local watch's warning, at 13 and
-    /// 18 pt, at the narrowest width from 461 px where keeping that room
-    /// changes the hints' form, both where the header holds every label's
-    /// status and where the widest's goes to the bar: with no write running
-    /// the hints are drawn in the form the bar has without the room where
-    /// the header holds every status, and with it where it does not; and
-    /// the widest label's status, once it looks busy, goes to the bar only
-    /// where the room is kept, moving neither the hints nor the warning.
-    /// The bar once kept the room on every repository frame, so its hints
-    /// and Details… gave way about 28 px early with no write running.
+    /// 18 pt, at the narrowest width from 461 px to 1,480 px where keeping
+    /// that room changes the hints' form, where some header's widest goes
+    /// to the bar, and where every header holds every label's status if
+    /// the bar is crowded enough there for the room to matter: with
+    /// no write running the hints are drawn in the form the bar has without
+    /// the room where every header holds every status, and with it where
+    /// one does not; and the widest label's status, once it looks busy,
+    /// goes to the bar only where the room is kept, moving neither the
+    /// hints nor the warning, wherever this header puts it. The bar once
+    /// kept the room on every repository frame, so its hints and Details…
+    /// gave way about 28 px early with no write running.
     #[gpui::test]
     async fn the_status_bar_keeps_cancels_room_only_where_a_write_can_take_it(
         cx: &mut TestAppContext,
@@ -15606,9 +15847,8 @@ pub(crate) mod tests {
                             .frame_plan(window, cx)
                             .map(|plan| plan.operation.place)
                     });
-                    assert_eq!(
-                        place == Some(OperationPlace::StatusBar),
-                        room,
+                    assert!(
+                        place != Some(OperationPlace::StatusBar) || room,
                         "{at}: {widest:?} goes to {place:?}"
                     );
                     assert!(
@@ -15628,17 +15868,16 @@ pub(crate) mod tests {
                 }
             }
         }
-        for room in [false, true] {
-            assert!(
-                found.contains(&room),
-                "a width where the room {} the hints is checked: {found:?}",
-                if room {
-                    "is kept and changes"
-                } else {
-                    "would change"
-                }
-            );
-        }
+        // Where no header sends the widest status to the bar, from about
+        // 1,240 px at 13 pt and past 1,480 px at 18 pt in the test's text
+        // system, this bar has room to spare: the hints taking the form the
+        // bar has without the room there is checked with a fresh outcome
+        // across that width
+        // (`the_bars_room_for_cancel_follows_the_width_and_text_size_alone`).
+        assert!(
+            found.contains(&true),
+            "a width where the room is kept and changes the hints is checked: {found:?}"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
@@ -15686,6 +15925,299 @@ pub(crate) mod tests {
             (after.0 - before.0, after.1 - before.1),
             (2, 2),
             "the chrome's and the status bar's widths are measured once for each size"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The status bar's room for Cancel, and so the idle bar's hints, follow
+    /// the window's width and the text size alone ([`HeaderPlan::bar_room`]),
+    /// as if the header held its widest contents: at 13 and 18 pt, with a
+    /// fresh outcome long enough that the room decides the hints' form, a
+    /// compact row keeps the room with a one-letter repository name, which
+    /// leaves the widest status room beside it, as with a long name or a
+    /// long branch; a full header keeps one decision with a short profile
+    /// and a long one at a width where the two would send the widest
+    /// status to different places; and a resize across the width where the
+    /// room starts to be kept changes the hints' form there. The room once
+    /// followed the header's labels, so the hints changed form as a tab
+    /// with a shorter name showed, at a fixed size.
+    #[gpui::test]
+    async fn the_bars_room_for_cancel_follows_the_width_and_text_size_alone(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        let path = app
+            .read_with(cx, |app, _| app.path.clone())
+            .expect("a repository");
+        let insets = cx.update(|window, _| window.viewport_size().width - body_size(window).width);
+        // The drawn hints' width, and the width of the form `fit` has for
+        // them, to compare as `the_status_bar_keeps_cancels_room_only_where_a_write_can_take_it`
+        // does.
+        let drawn = |cx: &mut VisualTestContext| {
+            cx.debug_bounds("status-hints")
+                .map(|hints| hints.size.width)
+        };
+        let form = |fit: StatusFit, cx: &mut VisualTestContext| {
+            fit.hints.map(|hints| {
+                cx.update(|window, _| line_widths(&[(&hints, appearance::ui_text(10.))], window))
+            })
+        };
+        let near = |a: Option<Pixels>, b: Option<Pixels>| match (a, b) {
+            (Some(a), Some(b)) => (a - b).abs() < px(1.),
+            (a, b) => a == b,
+        };
+        let fit =
+            |app: &Entity<GitTurtle>, width: Pixels, room: bool, cx: &mut VisualTestContext| {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.fit_status_bar_in(width, room, window, cx))
+                })
+            };
+        // A fresh outcome for which the bar's form at `one` differs from its
+        // form at `other`, each a width and whether the room is kept.
+        let tighten = |one: (Pixels, bool), other: (Pixels, bool), cx: &mut VisualTestContext| {
+            (0..400).any(|length| {
+                app.update(cx, |app, cx| {
+                    app.record_outcome(&path, format!("Pushed {}", "e".repeat(length)), cx)
+                });
+                fit(&app, one.0, one.1, cx).hints != fit(&app, other.0, other.1, cx).hints
+            })
+        };
+        let plan = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| app.read(cx).frame_plan(window, cx))
+                .expect("a Repository frame")
+        };
+        let mut profiles_checked = false;
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+
+            // A compact row: the name can take all its room.
+            let width = px(1000.);
+            cx.simulate_resize(size(width + insets, px(300.)));
+            draw(cx);
+            let at = format!("{text} pt, compact, {width:?}");
+            assert!(
+                cx.update(|window, cx| app.read(cx).chrome(window, cx).is_compact()),
+                "{at}: the compact row"
+            );
+            assert!(
+                tighten((width, true), (width, false), cx),
+                "{at}: an outcome the room decides"
+            );
+            let mut seen = Vec::new();
+            for (name, branch) in [
+                ("r", None),
+                (
+                    "a-repository-whose-name-takes-all-the-room-the-compact-row-leaves-it",
+                    None,
+                ),
+                (
+                    "r",
+                    Some("feature/a-branch-name-long-enough-to-crowd-the-branch-picker"),
+                ),
+            ] {
+                app.update(cx, |app, cx| {
+                    app.project_names.insert(path.clone(), name.into());
+                    if let (Some(status), Some(branch)) = (app.work_status.as_mut(), branch) {
+                        Arc::make_mut(status).branch = Some(branch.into());
+                    }
+                    cx.notify();
+                });
+                draw(cx);
+                let at = format!("{at}, named {name:?}, on {branch:?}");
+                if name == "r" && branch.is_none() {
+                    // The row holds the widest status beside a short name.
+                    let holds = cx.update(|window, cx| {
+                        let app = app.read(cx);
+                        let Chrome::Compact { name, .. } = app.chrome(window, cx) else {
+                            return false;
+                        };
+                        let widths = app.chrome_widths(window);
+                        let widest = app.operation_status_size(&widths, window).widest();
+                        GitTurtle::compact_operation_width(widest, name, &widths, window).is_some()
+                    });
+                    assert!(holds, "{at}: the row holds the widest status");
+                }
+                assert!(plan(cx).bar_room, "{at}: the bar keeps the room");
+                let kept = form(fit(&app, width, true, cx), cx);
+                assert!(
+                    near(drawn(cx), kept),
+                    "{at}: the hints {:?} take {kept:?}",
+                    drawn(cx)
+                );
+                seen.push(drawn(cx));
+            }
+            seen.dedup();
+            assert_eq!(
+                seen.len(),
+                1,
+                "{text} pt: one form for every name and branch: {seen:?}"
+            );
+
+            // A full header, at a width where a short profile and a long one
+            // send the widest status to different places.
+            cx.simulate_resize(size(px(1480.) + insets, px(980.)));
+            draw(cx);
+            let profiles = cx.update(|window, cx| {
+                let app = app.read(cx);
+                let widths = app.chrome_widths(window);
+                let profile = |name: &str| {
+                    let label = line_widths(&[(name, window.rem_size())], window);
+                    ChromeWidths {
+                        profile: label,
+                        ..widths
+                    }
+                };
+                let (short, long) = (profile("Al"), profile("Alexandra Montgomery-Fitzgerald"));
+                (461..=1480).map(|width| px(width as f32)).find(|&width| {
+                    let narrow = width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+                    let to_bar = |widths: &ChromeWidths| {
+                        app.full_header_layout(width, narrow, true, false, widths, window)
+                            .widest_to_bar
+                    };
+                    to_bar(&short) != to_bar(&long)
+                })
+            });
+            if let Some(width) = profiles {
+                let at = format!("{text} pt, full, {width:?}");
+                cx.simulate_resize(size(width + insets, px(980.)));
+                draw(cx);
+                let room = plan(cx).bar_room;
+                assert!(
+                    room,
+                    "{at}: one of them sends it to the bar, so the room is kept"
+                );
+                if tighten((width, true), (width, false), cx) {
+                    let mut seen = Vec::new();
+                    for name in ["Al", "Alexandra Montgomery-Fitzgerald"] {
+                        app.update(cx, |app, cx| {
+                            app.profile = Some(gitturtle_core::GitProfile {
+                                name: name.into(),
+                                ..Default::default()
+                            });
+                            cx.notify();
+                        });
+                        draw(cx);
+                        assert_eq!(app.read_with(cx, |app, _| app.profile_title()), name);
+                        assert_eq!(plan(cx).bar_room, room, "{at}, {name:?}: the room");
+                        seen.push(drawn(cx));
+                    }
+                    seen.dedup();
+                    assert_eq!(seen.len(), 1, "{at}: one form for both profiles: {seen:?}");
+                    profiles_checked = true;
+                }
+            }
+
+            // A resize across the width from which the room is no longer
+            // kept changes the hints' form there.
+            let threshold = cx.update(|window, cx| {
+                let app = app.read(cx);
+                let widths = app.chrome_widths(window);
+                let room = |width: u32| {
+                    let width = px(width as f32);
+                    let narrow = width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+                    app.header_arrangement(width, narrow, &widths, window)
+                        .bar_room
+                };
+                (462..=2400)
+                    .rev()
+                    .find(|&width| room(width - 1) && !room(width))
+            });
+            let width = threshold.expect("the room is kept below some width and not above");
+            let (narrower, wider) = (px(width as f32 - 1.), px(width as f32));
+            let at = format!("{text} pt, across {wider:?}");
+            assert!(
+                tighten((narrower, true), (wider, false), cx),
+                "{at}: an outcome the room decides there"
+            );
+            let mut forms = Vec::new();
+            for (width, room) in [(narrower, true), (wider, false)] {
+                cx.simulate_resize(size(width + insets, px(980.)));
+                draw(cx);
+                let plan = plan(cx);
+                assert!(plan.full.is_some(), "{at}: the full header at {width:?}");
+                assert_eq!(plan.bar_room, room, "{at}: the room at {width:?}");
+                let form = form(fit(&app, width, room, cx), cx);
+                assert!(
+                    near(drawn(cx), form),
+                    "{at}: the hints at {width:?} take {form:?}"
+                );
+                forms.push(drawn(cx));
+            }
+            assert!(
+                !near(forms[0], forms[1]),
+                "{at}: the hints change form: {forms:?}"
+            );
+        }
+        assert!(
+            profiles_checked,
+            "a width where the profile's label would decide is checked"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The bar's room for Cancel ([`GitTurtle::full_bar_room`]) is kept
+    /// wherever some header's contents send the widest label's status to the
+    /// bar: at 13 and 18 pt, at full-header widths from 461 to 1,480 px,
+    /// every set of controls with Changes and the profile's label sampled
+    /// across their ranges a few pixels apart sends it there only where the
+    /// room is kept, and the room is kept at some widths and not at others.
+    /// The widest labels alone would not do: a profile that fills the
+    /// spacer's line leaves it less room than a longer one that wraps with
+    /// Settings onto a line of their own.
+    #[gpui::test]
+    async fn the_bars_room_for_cancel_holds_for_every_header_s_contents(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        let mut kept = [0, 0];
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            draw(cx);
+            cx.update(|window, cx| {
+                let app = app.read(cx);
+                let widths = app.chrome_widths(window);
+                let label = |text: &str| line_widths(&[(text, appearance::ui_text(12.))], window);
+                let (least, most) = (label("Changes"), label("Changes · 888888"));
+                let limit = window.pixel_snap(px(230.)) - profile_width(px(0.), window);
+                let samples = |least: Pixels, most: Pixels, step: f32| {
+                    let count = (f32::from(most - least) / step).ceil() as usize;
+                    (0..=count).map(move |at| (least + px(at as f32 * step)).min(most))
+                };
+                for width in (461..=1480).step_by(13) {
+                    let width = px(width as f32);
+                    let narrow = width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+                    let room = app.full_bar_room(width, narrow, &widths, window);
+                    for (repository, projects) in
+                        [(true, true), (true, false), (false, true), (false, false)]
+                    {
+                        let controls = HeaderControls {
+                            projects,
+                            repository,
+                        };
+                        for changes in samples(least, most, 5.) {
+                            for profile in samples(px(0.), limit, 3.) {
+                                let widths = ChromeWidths {
+                                    changes,
+                                    profile,
+                                    ..widths
+                                };
+                                let to_bar = app
+                                    .header_layout(width, narrow, controls, false, &widths, window)
+                                    .widest_to_bar;
+                                assert!(
+                                    room || !to_bar,
+                                    "{text} pt, {width:?}: {controls:?} with Changes {changes:?} \
+                                     and the profile {profile:?} send the widest status to a bar \
+                                     that keeps no room"
+                                );
+                            }
+                        }
+                    }
+                    kept[usize::from(room)] += 1;
+                }
+            });
+        }
+        assert!(
+            kept.iter().all(|&widths| widths > 0),
+            "the room is kept at some widths and not at others: {kept:?}"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
