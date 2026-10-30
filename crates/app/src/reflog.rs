@@ -117,6 +117,33 @@ fn entry_button(
         })
 }
 
+/// Where a read's loading row, and the error it may end with, stand: below
+/// the control that asked for the read, so only the log's own read adds a
+/// line above the entry list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReadPlace {
+    /// The log's read: above the entry list, below the filter.
+    Log,
+    /// The selected entry's read: in its details below the list, below Copy
+    /// commit ID, where its commit lands.
+    Entry,
+    /// The recovery branch's review: below Review recovery branch…, the
+    /// content's last control.
+    Recovery,
+}
+
+impl ReadPlace {
+    /// `element` in this place's slot: above the list, in an entry's
+    /// details, or below Review recovery branch….
+    fn slots<T>(self, element: Option<T>) -> (Option<T>, Option<T>, Option<T>) {
+        match self {
+            Self::Log => (element, None, None),
+            Self::Entry => (None, element, None),
+            Self::Recovery => (None, None, element),
+        }
+    }
+}
+
 /// [`native_accessibility::text`] at the dialog's text inset.
 fn label(
     id: &'static str,
@@ -288,9 +315,15 @@ pub(crate) struct ReflogBrowser {
     /// reveals the entry the keyboard moves focus onto.
     entries: FocusReveal,
     /// Whether the next frame scrolls the content to show the filter, if it
-    /// holds focus: set as the dialog opens and as each read lands, since
-    /// the scope's summary that a read adds above the filter moves it down.
+    /// holds focus: set as the dialog opens and as a read of the log or an
+    /// entry lands, since the scope's summary that a read adds above the
+    /// filter moves it down. The recovery review's read, whose error stands
+    /// at the content's end, sets [`Self::reveal_recovery`] instead.
     reveal_filter: bool,
+    /// Whether the next frame scrolls the content to its end, to show the
+    /// error the recovery review ended with below Review recovery branch…,
+    /// the content's last control.
+    reveal_recovery: bool,
     /// The changed-file list's scroll, which its scrollbar follows.
     files_scroll: ScrollHandle,
     /// The entries whose text the last layout cut.
@@ -298,7 +331,8 @@ pub(crate) struct ReflogBrowser {
     pending: bool,
     /// The loading row's Cancel. As the row goes, focus it holds moves to
     /// the stop the row's place leaves nearest ([`Self::leave_loading_row`]):
-    /// the selected entry for an entry's read, else the filter.
+    /// the selected entry for an entry's read, Review recovery branch… for
+    /// the recovery review's, else the filter.
     cancel_read: focus_ring::LoadingCancel,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -359,6 +393,7 @@ impl ReflogBrowser {
             content: FocusReveal::new(Trigger::Keyboard),
             entries: FocusReveal::new(Trigger::Keyboard),
             reveal_filter: false,
+            reveal_recovery: false,
             files_scroll: ScrollHandle::new(),
             cut_entries: CutEntries::default(),
             pending: false,
@@ -377,30 +412,33 @@ impl ReflogBrowser {
         self.pending = false;
     }
     /// As the loading row goes, focus its Cancel holds moves to the stop the
-    /// row's place leaves nearest: a selected entry's read stands in the
-    /// details below the list ([`Self::reading_entry`]), so the entry, the
-    /// list's stop above it; any other read stands above the list, below the
-    /// filter, the first stop below it that every state of the browser draws.
+    /// row's place ([`Self::read_place`]) leaves nearest, the stop above it:
+    /// for an entry's read, the entry; for the recovery review's, Review
+    /// recovery branch…; for the log's, which stands above the list, the
+    /// filter, the first stop that every state of the browser draws.
     fn leave_loading_row(&self, window: &mut Window, cx: &mut App) {
-        let entry = self
-            .selected
-            .as_ref()
-            .filter(|_| self.commit.is_none())
-            .and_then(|entry| self.matches(cx).iter().take(100).position(|e| e == entry))
-            .map(|index| self.entries.focus(("reflog-entry", index), cx));
-        let to = entry.unwrap_or_else(|| self.query.read(cx).focus_handle(cx));
+        let to = match self.read_place() {
+            ReadPlace::Log => None,
+            ReadPlace::Entry => self
+                .selected
+                .as_ref()
+                .and_then(|entry| self.matches(cx).iter().take(100).position(|e| e == entry))
+                .map(|index| self.entries.focus(("reflog-entry", index), cx)),
+            ReadPlace::Recovery => Some(self.content.focus("review-reflog-recovery", cx)),
+        };
+        let to = to.unwrap_or_else(|| self.query.read(cx).focus_handle(cx));
         self.cancel_read.release_to(&to, window, cx);
     }
-    /// Whether the selected entry's commit is yet to land: its read's loading
-    /// row, and any error that read ends with, stand in the details below the
-    /// list, where the commit lands.
-    fn awaiting_entry(&self) -> bool {
-        self.selected.is_some() && self.commit.is_none()
-    }
-    /// Whether the read in progress is the selected entry's, whose commit
-    /// lands in the details below the list.
-    fn reading_entry(&self) -> bool {
-        self.pending && self.awaiting_entry()
+    /// Where the read in progress, and the error the last read ended with,
+    /// stand. Only the recovery review reads with the selected entry's
+    /// commit landed; an entry's read starts without it, and the log's
+    /// without an entry.
+    fn read_place(&self) -> ReadPlace {
+        match (&self.selected, &self.commit) {
+            (None, None) => ReadPlace::Log,
+            (Some(_), None) => ReadPlace::Entry,
+            (_, Some(_)) => ReadPlace::Recovery,
+        }
     }
     /// The entry, among the first `count` the list draws, that holds focus.
     fn focused_entry(&self, count: usize, window: &Window, cx: &mut App) -> Option<usize> {
@@ -524,8 +562,8 @@ impl ReflogBrowser {
                     return;
                 }
                 this.pending = false;
-                this.reveal_filter = true;
                 this.leave_loading_row(window, cx);
+                let place = this.read_place();
                 if !this.current(cx) {
                     this.error = Some(
                         "The repository changed or an operation started. Reopen the reflog when it finishes."
@@ -536,6 +574,16 @@ impl ReflogBrowser {
                         Ok(value) => receive(this, value, window, cx),
                         Err(error) => this.error = Some(format!("{error:#}")),
                     }
+                }
+                // The recovery review's error stands at the content's end,
+                // below the fold where the content scrolls, and its read
+                // does not scroll back to the filter, which the pointer's
+                // presses leave holding focus: that moved the list, and
+                // Review recovery branch… with it, from under the pointer,
+                // and took the review's error out of view.
+                match place {
+                    ReadPlace::Log | ReadPlace::Entry => this.reveal_filter = true,
+                    ReadPlace::Recovery => this.reveal_recovery = this.error.is_some(),
                 }
                 cx.notify();
             });
@@ -712,6 +760,12 @@ impl Render for ReflogBrowser {
                 + usize::from(self.page.as_ref().is_some_and(|page| page.truncated));
             self.content.scroll().scroll_to_item(filter);
         }
+        // The recovery review's error is the content's last child, below
+        // Review recovery branch…: the content's end shows it and its ring
+        // room, which only a fold that cuts it moves.
+        if std::mem::take(&mut self.reveal_recovery) {
+            self.content.scroll().scroll_to_bottom();
+        }
         let scope = self.scope.read(cx).focus_handle(cx);
         let read_log = self.content.focus("refresh-reflog", cx);
         let filter = self.query.read(cx).focus_handle(cx);
@@ -735,11 +789,13 @@ impl Render for ReflogBrowser {
             .or(selected_entry)
             .unwrap_or(0);
         // A selected entry's read shows its loading row in the details, where
-        // its commit lands, and leaves Read log as it was, so selecting
-        // entries with the arrow keys never moves the list or dims a control
-        // above it; the row stood above the list, which moved down by its
-        // height until each read landed. Other reads keep it above the list.
-        let reading_entry = self.reading_entry();
+        // its commit lands, and the recovery review's below Review recovery
+        // branch…, the button that asked for it. Both leave Read log as it
+        // was, so selecting entries with the arrow keys never moves the list
+        // or dims a control above it; the row stood above the list, which
+        // moved down by its height until each read landed. The log's own
+        // read keeps it above the list.
+        let place = self.read_place();
         let loading = self.pending.then(|| {
             div()
                 .flex()
@@ -751,10 +807,10 @@ impl Render for ReflogBrowser {
                 .child(
                     label(
                         "reflog-loading",
-                        if reading_entry {
-                            "Reading the selected commit…"
-                        } else {
-                            "Reading local reflog or selected commit…"
+                        match place {
+                            ReadPlace::Log => "Reading local reflog or selected commit…",
+                            ReadPlace::Entry => "Reading the selected commit…",
+                            ReadPlace::Recovery => "Checking the entry and branch name…",
                         },
                     )
                     .text_size(crate::appearance::ui_text(12.)),
@@ -770,24 +826,18 @@ impl Render for ReflogBrowser {
                         })),
                 )
         });
-        let (loading_above, loading_below) = if reading_entry {
-            (None, loading)
-        } else {
-            (loading, None)
-        };
+        let (loading_above, loading_below, loading_after_review) = place.slots(loading);
         // So does the error such a read ends with, as for a commit pruned
-        // since Git logged it: it stood above the list, which moved down by
-        // its height with each entry whose read failed.
+        // since Git logged it or a recovery branch name already taken: it
+        // stood above the list, which moved down by its height with each
+        // failed read, far from Review recovery branch… and out of view
+        // where the content had scrolled down to it.
         let error = self.error.as_ref().map(|error| {
             label("reflog-error", error.clone())
                 .text_size(crate::appearance::ui_text(12.))
                 .text_color(rgb(p.warning))
         });
-        let (error_above, error_below) = if self.awaiting_entry() {
-            (None, error)
-        } else {
-            (error, None)
-        };
+        let (error_above, error_below, error_after_review) = place.slots(error);
         let show_entry = self.entries.items(entries.clone(), room);
         let show_list = self.content.group(entries.clone(), room);
         // Past its height the entry list cues the rest with its scrollbar.
@@ -796,7 +846,7 @@ impl Render for ReflogBrowser {
             |focus: FocusHandle| div().on_children_prepainted(self.content.control(focus, room));
         let content = div().on_children_prepainted(self.content.observe()).id("reflog-browser-content").debug_selector(|| "reflog-browser-content".into()).flex().flex_col().gap_3().max_h(content_height).px(room).mx(-room).pb(room).overflow_y_scroll().track_scroll(self.content.scroll())
             .child(label("reflog-explanation", "Git records local reference movements here, including actions by other tools. HEAD belongs to this worktree; branch logs are shared. Entries expire, and unreachable objects may be pruned. This is not a permanent backup or a complete activity history.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))
-            .child(div().flex().gap_2().on_children_prepainted(self.content.controls(vec![Some(scope), Some(read_log.clone())], room)).child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh", false).track_focus(&read_log).debug_selector(|| "refresh-reflog".into()).disabled(self.pending && !reading_entry).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
+            .child(div().flex().gap_2().on_children_prepainted(self.content.controls(vec![Some(scope), Some(read_log.clone())], room)).child(div().flex_1().child(Input::new(&self.scope).aria_label("Reflog scope: HEAD or local branch name"))).child(button("refresh-reflog", "Read log", "refresh", false).track_focus(&read_log).debug_selector(|| "refresh-reflog".into()).disabled(self.pending && place == ReadPlace::Log).on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx)))))
             .when_some(self.page.as_ref(), |element, page| element.child(label("reflog-scope-summary", format!("{} · {} retained entries · newest first", page.reference, page.entries.len())).text_size(crate::appearance::ui_text(12.))).when(page.truncated, |element| element.child(label("reflog-limit", "Showing the newest 1,000 records within a 4 MiB tail. Older records are outside this bounded view.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning)))))
             // The filter stands in the ring's room, given back through its
             // margin, so revealing it shows its ring whole.
@@ -828,7 +878,11 @@ impl Render for ReflogBrowser {
                 .when(self.changes.len() > 100, |element| element.child(label("reflog-file-limit", "Showing the first 100 changed paths.").text_size(crate::appearance::ui_text(12.))))
                 .child(label("reflog-recovery-name-label", "Create a new branch at this commit to keep it reachable").text_size(crate::appearance::ui_text(12.)))
                 .child(shown(name).child(Input::new(&self.name).aria_label("New recovery branch name")))
-                .child(shown(review.clone()).flex().flex_col().child(button("review-reflog-recovery", "Review recovery branch…", "", false).track_focus(&review).debug_selector(|| "review-reflog-recovery".into()).map(|review| crate::workspace::refusing(review, || "review-reflog-recovery".into(), unavailable, dimmed)).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx))))));
+                .child(shown(review.clone()).flex().flex_col().child(button("review-reflog-recovery", "Review recovery branch…", "", false).track_focus(&review).debug_selector(|| "review-reflog-recovery".into()).map(|review| crate::workspace::refusing(review, || "review-reflog-recovery".into(), unavailable, dimmed)).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx)))))
+                // The review's loading row and error stand below the button
+                // that asked for it, the content's last children.
+                .children(loading_after_review)
+                .children(error_after_review));
         div()
             .relative()
             .min_h_0()
@@ -1423,6 +1477,85 @@ mod tests {
         });
         cx.update(|window, _| window.refresh());
         draw(cx);
+    }
+
+    /// A recovery branch name already taken fails the recovery review, whose
+    /// error stands below Review recovery branch…, the button that asked for
+    /// it, as its loading row does while it reads, and the content, scrolled
+    /// down to the button, scrolls on to show the error whole. The entry
+    /// list keeps its place in the content, and the filter, which
+    /// the pointer's presses left holding focus, is not scrolled back into
+    /// view. The error stood above the list, which moved down by its height,
+    /// far from the button and out of the content's view.
+    #[gpui::test]
+    async fn a_recovery_reviews_error_stands_below_its_button(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        git(repo.path(), &["branch", "recovery/taken"]);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        select_newest(cx, &browser).await;
+        cx.update(|window, cx| {
+            browser.update(cx, |this, cx| {
+                this.name.update(cx, |input, cx| {
+                    input.set_value("recovery/taken", window, cx);
+                });
+            });
+        });
+        content_to_end(cx, &browser);
+        let list = in_content(cx, &browser, "reflog-list");
+        let filter = browser.read_with(cx, |this, cx| this.filter_focus(cx));
+        assert!(cx.update(|window, _| filter.is_focused(window)));
+
+        // Review, its read held as a slow read is.
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        let review = rendered(cx, "review-reflog-recovery");
+        cx.simulate_click(review.center(), Modifiers::default());
+        draw(cx);
+        let loading = rendered(cx, "cancel-reflog-read");
+        assert!(
+            loading.top() >= review.bottom(),
+            "the review's loading row {loading:?} stands below Review {review:?}"
+        );
+        assert_eq!(in_content(cx, &browser, "reflog-list"), list);
+
+        drop(held);
+        settle_reads(cx, &browser);
+        let error = browser
+            .read_with(cx, |this, _| this.error.clone())
+            .expect("the review fails");
+        assert!(error.contains("already exists"), "{error}");
+        let review = rendered(cx, "review-reflog-recovery");
+        let shown = rendered(cx, "reflog-error");
+        assert!(
+            shown.top() >= review.bottom(),
+            "the error {shown:?} stands below Review {review:?}"
+        );
+        let content = rendered(cx, "reflog-browser-content");
+        assert!(
+            shows_whole(content, shown) && shows_whole(content, review),
+            "the content {content:?} shows the error {shown:?} and Review {review:?}"
+        );
+        assert_eq!(
+            in_content(cx, &browser, "reflog-list"),
+            list,
+            "the list keeps its place"
+        );
+        assert!(
+            cx.update(|window, _| filter.is_focused(window)),
+            "the filter keeps focus"
+        );
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    }
+
+    /// Where `selector` lies in the Reflog's content at offset zero: its
+    /// place in the content, which scrolling the content leaves.
+    fn in_content(
+        cx: &mut VisualTestContext,
+        browser: &Entity<ReflogBrowser>,
+        selector: &'static str,
+    ) -> Bounds<Pixels> {
+        let offset = browser.read_with(cx, |this, _| this.content.scroll().offset());
+        rendered(cx, selector) - point(px(0.), offset.y)
     }
 
     /// In a 461 × 490 half tile, at 13 and 18 pt, every Tab stop of the
