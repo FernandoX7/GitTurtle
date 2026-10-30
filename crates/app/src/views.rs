@@ -10440,8 +10440,37 @@ pub(crate) mod tests {
                         "{at}: said once"
                     );
                     let room = caption_text("image-side-caption-0", cx).max(line.size.width);
-                    let (lines, one) = wraps(text, room, cx);
+                    // An absent side keeps one line whatever the dimensions,
+                    // so the caption row never grows for it: its two lines
+                    // joined where that line holds them, and otherwise its
+                    // short line.
+                    let kept = message.is_none().then(|| {
+                        let joined = text.replace('\n', " · ");
+                        if wraps(&joined, room, cx).0 > 1 {
+                            "No image: file added".to_owned()
+                        } else {
+                            joined
+                        }
+                    });
+                    let (lines, one) = wraps(kept.as_deref().unwrap_or(text), room, cx);
                     let shown = (line.size.height / one).round() as usize;
+                    if let Some(kept) = &kept {
+                        assert!(
+                            cx.debug_bounds(format!("image-side-details-0: {kept}").leak())
+                                .is_some(),
+                            "{at}: Before's caption draws {kept:?}"
+                        );
+                        assert_eq!(shown, 1, "{at}: Before's line {line:?} is one line");
+                        if kept.starts_with("No image:") {
+                            met.insert("kept short");
+                            assert!(
+                                shows_tooltip(cx, "image-side-name-0"),
+                                "{at}: the short line's sentences are in the name's tooltip"
+                            );
+                        } else {
+                            met.insert("kept joined");
+                        }
+                    }
                     let named =
                         crate::native_accessibility::written::get("image-side-description-0")
                             .and_then(|written| written.node.value().map(str::to_owned));
@@ -10452,11 +10481,13 @@ pub(crate) mod tests {
                     );
                     let dimensions = cx.debug_bounds("image-side-details-1").is_some();
                     if dimensions {
-                        assert_eq!(
-                            shown, lines,
-                            "{at}: beside the dimensions, Before's line {line:?} is whole"
-                        );
-                        met.insert("kept whole");
+                        if kept.is_none() {
+                            assert_eq!(
+                                shown, lines,
+                                "{at}: beside the dimensions, Before's line {line:?} is whole"
+                            );
+                            met.insert("kept whole");
+                        }
                     } else {
                         assert_eq!(
                             shown, 1,
@@ -10477,9 +10508,7 @@ pub(crate) mod tests {
                             "{at}: After's dimensions ({after_lines} lines) gave way beside Before's {lines}-line reason, freeing no room"
                         );
                         met.insert("dimensions gave way");
-                        // An absent side's two lines join on that one line.
-                        let (lines, _) = wraps(&text.replace('\n', " · "), room, cx);
-                        if lines > 1 {
+                        if kept.is_none() && lines > 1 {
                             met.insert("kept cut");
                             assert!(
                                 shows_tooltip(cx, "image-side-name-0"),
@@ -10487,7 +10516,7 @@ pub(crate) mod tests {
                             );
                         }
                     }
-                    if message == Some(short) && lines == 1 && width > 1000. {
+                    if message != Some(failure) && lines == 1 && width > 1000. {
                         // Beside a reason on one line, as tall as they are,
                         // giving way would free no room.
                         assert!(
@@ -10604,6 +10633,8 @@ pub(crate) mod tests {
                 "dimensions gave way",
                 "dimensions stay",
                 "kept cut",
+                "kept joined",
+                "kept short",
                 "kept whole",
                 "one line",
                 "short in its place",

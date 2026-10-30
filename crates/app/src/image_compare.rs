@@ -928,14 +928,31 @@ impl GitTurtle {
             // name: whole beside the dimensions, and on one line ending in an
             // ellipsis where they give way, cut there where it wraps to more.
             let caption_text = caption_width - window.rem_size() * 1.5;
+            let caption_size = crate::appearance::ui_text(11.);
+            // An absent side keeps one line beneath its name whatever the
+            // dimensions, so the caption row never grows for it: its two
+            // lines joined where that line holds them, and otherwise its
+            // short line.
+            let kept_lines = [0, 1].map(|i| {
+                shorts[i]
+                    .filter(|_| kinds[i] == Details::Kept)
+                    .map(|short| {
+                        let joined = one_line(&details[i]);
+                        if wrapped_lines(&joined, caption_size, caption_text, window) > 1 {
+                            short.to_owned()
+                        } else {
+                            joined
+                        }
+                    })
+            });
             let kept_wraps = [0, 1].map(|i| {
                 kinds[i] == Details::Kept
-                    && wrapped_lines(
-                        &one_line(&details[i]),
-                        crate::appearance::ui_text(11.),
-                        caption_text,
-                        window,
-                    ) > 1
+                    && match &kept_lines[i] {
+                        // The short line stands for both sentences, which the
+                        // name's tooltip keeps.
+                        Some(line) => *line != one_line(&details[i]),
+                        None => wrapped_lines(&details[i], caption_size, caption_text, window) > 1,
+                    }
             });
             let captions = Captions {
                 names,
@@ -944,6 +961,7 @@ impl GitTurtle {
                 source,
                 controls: &controls,
                 inline,
+                kept_lines: &kept_lines,
                 kept_wraps,
             };
             let fit = Beneath {
@@ -1846,7 +1864,11 @@ struct Captions<'a> {
     source: bool,
     controls: &'a [Option<(crate::system_preview::Target, crate::system_preview::Form)>; 2],
     inline: bool,
-    /// Whether each side's [`Details::Kept`] line wraps past one line.
+    /// The one line an absent side keeps beneath its name, whatever the
+    /// dimensions: its two lines joined, or its short line.
+    kept_lines: &'a [Option<String>; 2],
+    /// Whether each side's [`Details::Kept`] line wraps past one line, or,
+    /// for an absent side, stands for its sentences in its short line.
     kept_wraps: [bool; 2],
 }
 
@@ -1890,10 +1912,13 @@ impl Captions<'_> {
                         let keep_place = (!self.inline && offered && control.is_none())
                             .then(|| div().h(crate::appearance::ui_size(28.)).flex_shrink_0());
                         let kept = self.kinds[i] == Details::Kept;
+                        let one_line_kept = self.kept_lines[i].is_some();
                         let (drawn, cut) = match self.kinds[i] {
                             Details::Dimensions => (dimensions, false),
                             Details::InItsPlace => (false, false),
-                            Details::Kept => (true, !dimensions && self.kept_wraps[i]),
+                            Details::Kept => {
+                                (true, (!dimensions || one_line_kept) && self.kept_wraps[i])
+                            }
                         };
                         let hidden = ((!drawn && !said[i]) || cut).then(|| details.clone());
                         let read = if said[i] {
@@ -1951,11 +1976,20 @@ impl Captions<'_> {
                                         .debug_selector(move || format!("image-side-details-{i}"))
                                         .min_w_0()
                                         .text_color(rgb(p.muted))
-                                        .when(kept && !dimensions, |line| line.truncate())
-                                        .child(if kept && !dimensions {
-                                            one_line(&details)
-                                        } else {
-                                            details
+                                        .when(kept && (!dimensions || one_line_kept), |line| {
+                                            line.truncate()
+                                        })
+                                        .child({
+                                            let line =
+                                                self.kept_lines[i].clone().unwrap_or(details);
+                                            div()
+                                                .debug_selector({
+                                                    let line = line.clone();
+                                                    move || {
+                                                        format!("image-side-details-{i}: {line}")
+                                                    }
+                                                })
+                                                .child(line)
                                         }),
                                 )
                             })
