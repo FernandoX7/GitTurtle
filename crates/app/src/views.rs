@@ -23404,6 +23404,20 @@ pub(crate) mod tests {
 
     /// Run `git` in a fixture repository without the developer's config.
     pub(crate) fn fixture_git(repository: &std::path::Path, args: &[&str]) {
+        let output = fixture_git_output(repository, args);
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// [`fixture_git`]'s run and what it printed, for a command expected to
+    /// fail, as a merge that stops on a conflict, or to report something.
+    pub(crate) fn fixture_git_output(
+        repository: &std::path::Path,
+        args: &[&str],
+    ) -> std::process::Output {
         let mut command = std::process::Command::new("git");
         command
             .arg("-C")
@@ -23423,12 +23437,7 @@ pub(crate) mod tests {
         ] {
             command.env_remove(name);
         }
-        let output = command.output().unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        command.output().unwrap()
     }
 
     /// Gives the fixture repository at `repository` a commit identity of its

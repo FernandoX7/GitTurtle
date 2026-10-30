@@ -488,15 +488,18 @@ impl KeyboardMenu {
 
     /// Builds the menu again in place with `build`, as it opened: the row's
     /// file changed under it, and its items act on what the row now shows.
-    /// Its keyboard's cursor stays on the item it was on, by its label, or
-    /// moves to the nearest item that can act where that one is gone or
-    /// can no longer act; while every item is refused it rests on none, and
-    /// it returns to its item once the items can act again, as when a write
-    /// ends (the kit's `PopupMenu::rebuild`). A right-click's menu built
-    /// again ([`PointerMenu::built_from`]) keeps its cursor the same way.
-    /// The cursor once returned to the first item that can act, and a
+    /// Its keyboard's cursor stays on the item it was on, by its label, and
+    /// never moves to another: where that item is gone or can no longer act,
+    /// as while a write refuses it or once it states a condition it waits
+    /// for, the cursor rests on none until the item can act again, when it
+    /// returns to it, or a key or the pointer moves it (the kit's
+    /// `PopupMenu::rebuild`). A right-click's menu built again
+    /// ([`PointerMenu::built_from`]) keeps its cursor the same way. The
+    /// cursor once returned to the first item that can act, and a
     /// right-click's lost it, so Enter just after a write ended could choose
-    /// another item than the one the keys had reached.
+    /// another item than the one the keys had reached; later it moved to the
+    /// nearest item that could act, so a conflicted file's refused Discard
+    /// changes… left it on Stage, and Enter marked the file resolved.
     pub(super) fn rebuild(
         &self,
         build: impl FnOnce(PopupMenu) -> PopupMenu,
@@ -509,7 +512,8 @@ impl KeyboardMenu {
     /// [`Self::rebuild`] for the open `menu`, in `focus`'s context and no
     /// taller than `cap`. The builder opens the menu from the keyboard,
     /// on its first item that can act, as it opened; the kit's rebuild
-    /// then puts the cursor back where the keys had left it.
+    /// then puts the cursor back where the keys had left it, or rests it on
+    /// none while that item cannot act.
     fn build_again(
         menu: &Entity<PopupMenu>,
         focus: FocusHandle,

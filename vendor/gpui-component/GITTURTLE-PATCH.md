@@ -1022,35 +1022,60 @@ write ended could choose another item than the one the keys had reached.
 `rebuild` now keeps the keyboard's cursor (`KeptCursor`) on the item it was
 on, found again by its name (`PopupMenuItem::name`: an item's or a submenu's
 label, an element item's accessible name) nearest its old place, wherever the
-builder now puts it. Where that item is gone or can no longer act, the cursor
-moves to the item that can act nearest it, the later of two as near. With
-none that can act, as while a write refuses every item, it rests on nothing
-and is kept for the next rebuild, which puts it back once its item can act.
-It takes the place of any selection the builder makes. A selection the
-pointer made is cleared, as upstream, and the menu keys are unchanged.
+builder now puts it; an item without a name is found only at its own place,
+where the entry there has none either. It never moves the cursor to another
+item. Where that item is gone or can no longer act, as while a write refuses
+it or once its name states a condition it waits for, the cursor rests on
+nothing and the menu remembers the item (`kept_cursor`), at the place it now
+stands where it is still offered, across any further rebuild, until a
+rebuild offers it able to act and the cursor returns to it, or a menu key or
+the pointer moves the selection, which forgets it. From rest, Up moves to the
+last item that can act before the remembered place and Down to the first at
+or after it. A remembered item takes the place of any selection the builder
+makes (`select_first_item`); with none, the builder's selection stands. A
+selection the pointer made is cleared, as upstream, and the menu keys are
+otherwise unchanged. An earlier form of this patch moved the cursor to the
+nearest item that could act and remembered that one, which left it on an
+action the person had not chosen: a project's Rename project… while a write
+refused Open project, and after the write; Discard changes… once Ignore… was
+refused; Stage once a file became conflicted, where Enter marked the file
+resolved; Cherry-pick once HEAD left a commit and took Amend and Undo away.
 
 The consumers are every open menu the app builds again, in
 `crates/app/src/native_accessibility.rs`: a keyboard's row menu
 (`KeyboardMenu::rebuild`), a right-click's menu (`PointerMenu`, as writes
 start or end, its row's inputs change or its rows land) and a Button's
 dropdown that follows writes (`AppDropdown::follows_writes`), among them the
-Working row menus (`workspace::working_row_menu`). The crate's own
-`menu::popup_menu::tests::a_rebuilt_menu_keeps_the_keyboard_cursor_on_its_item`,
-`a_rebuilt_menu_moves_the_cursor_to_the_nearest_item_that_can_act` and
+Working row menus (`workspace::working_row_menu`), the project rows' menus
+(`project_pane::row_menu`), the branch picker and the profiles menu. The
+crate's own `menu::popup_menu::tests::a_rebuilt_menu_keeps_the_keyboard_cursor_on_its_item`,
+`a_rebuilt_menu_rests_the_cursor_until_its_item_can_act`,
+`the_menu_keys_start_from_a_resting_cursors_item`,
+`a_key_or_the_pointer_ends_a_resting_cursors_remembering` and
 `a_rebuilt_menu_clears_the_pointers_selection`, run out of tree with the
 workspace's patch table since this crate is an excluded workspace member,
 build a menu again with the same items, an item added above the cursor's, its
-item refused, its item gone, and every item refused and then available again,
-and read the cursor's item each time; without the kept cursor the first two
-read no cursor once the menu is built again.
+item refused or gone while another can act and the builder selects its first
+item, then offered again, and read the cursor's item each time, and Up and
+Down from rest; without the kept cursor the first reads no cursor once the
+menu is built again, and with the nearest item that can act the second reads
+the cursor on Rename.
 `cargo test --locked -p gitturtle a_right_click_row_menu_keeps_its_cursor_across_a_write`
 and `a_keyboard_row_menu_keeps_its_cursor_across_a_write` move a Working row
 menu's cursor down to Delete untracked file…, start and end a Stage of another
 file, and read the cursor on no item while the write runs and back on Delete
-untracked file… once its rows land, then on Discard changes… once Ignore…,
-where the keys had moved it, can no longer act. Remove this part of the patch
-when upstream's rebuild keeps the keyboard's selection on its item and those
-tests pass without it.
+untracked file… once its rows land, then on no item once Ignore…, where the
+keys had moved it, can no longer act, and back on Ignore… once it can.
+`a_right_click_menus_cursor_rests_as_its_file_becomes_conflicted` and
+`a_keyboard_menus_cursor_rests_as_its_file_becomes_conflicted` leave a narrow
+row's menu on Discard changes… as a merge outside the app conflicts its file
+and read no cursor, and the first presses Enter and finds the file still
+conflicted;
+`project_pane::tests::a_project_rows_keyboard_menu_follows_writes` reads a
+project's cursor on Open project, on none while a write refuses it, and on
+Open project again after. Remove this part of the patch when upstream's
+rebuild keeps the keyboard's selection on its item, never on another, and
+those tests pass without it.
 
 The tooltip-hide patch modifies `src/root.rs`. Upstream's managed tooltip asks
 the window's overlay to show when its trigger's hover begins and to hide when

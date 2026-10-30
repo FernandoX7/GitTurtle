@@ -414,7 +414,11 @@ fn shift_f10_and_the_menu_key_open_the_cursor_rows_menu(cx: &mut TestAppContext)
 /// A project row's menu opened by Shift-F10 or the Menu key follows writes
 /// as its right-click menu does: Open project is disabled in place as a
 /// write starts and available again as it ends, with focus kept in the menu.
-/// It read the write once, as it opened, and kept Open project so.
+/// It read the write once, as it opened, and kept Open project so. Its
+/// keyboard's cursor, on Open project as it opens, rests on no item while
+/// the write refuses Open project and is back on it once the write ends:
+/// moved to the nearest item that could act, it rested on Rename project…
+/// and stayed there after the write, so Enter renamed instead of opening.
 #[gpui::test]
 fn a_project_rows_keyboard_menu_follows_writes(cx: &mut TestAppContext) {
     const MENU_KEY: &str = if cfg!(target_os = "macos") {
@@ -457,19 +461,40 @@ fn a_project_rows_keyboard_menu_follows_writes(cx: &mut TestAppContext) {
         });
         settle(cx);
     };
+    let cursor = |cx: &mut VisualTestContext| {
+        crate::native_accessibility::menu_tests::cursor_among(
+            cx,
+            &["Open project", "Rename project…"],
+        )
+    };
     for key in ["shift-f10", MENU_KEY] {
         cx.simulate_keystrokes(key);
         settle(cx);
         assert!(open(cx, false), "{key}: Open project at rest");
+        assert_eq!(
+            cursor(cx),
+            ["Open project"],
+            "{key}: the cursor as it opens"
+        );
         busy(cx, Some("Testing"));
         assert!(open(cx, true), "{key}: Open project once a write starts");
         assert!(
             in_menu(cx),
             "{key}: focus stays in the menu as a write starts"
         );
+        assert_eq!(
+            cursor(cx),
+            Vec::<&str>::new(),
+            "{key}: the cursor rests on none while the write refuses Open project"
+        );
         busy(cx, None);
         assert!(open(cx, false), "{key}: Open project once the write ends");
         assert!(in_menu(cx), "{key}: focus stays in the menu as it ends");
+        assert_eq!(
+            cursor(cx),
+            ["Open project"],
+            "{key}: the cursor back on Open project once the write ends"
+        );
         cx.simulate_keystrokes("escape");
         settle(cx);
         assert!(

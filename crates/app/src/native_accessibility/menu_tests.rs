@@ -315,6 +315,25 @@ fn menu_labels_read_as_secondary_text_and_disabled_items_as_disabled(cx: &mut Te
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// The items among `items` whose row draws the keyboard's cursor, the
+/// toolkit's `list_active` fill, available or refused, as the last frame
+/// painted them.
+pub(crate) fn cursor_among<'a>(cx: &mut VisualTestContext, items: &[&'a str]) -> Vec<&'a str> {
+    let fill = cx.update(|_, cx| Background::from(Theme::global(cx).list_active));
+    items
+        .iter()
+        .copied()
+        .filter(|item| {
+            ["MenuItem", "MenuItem disabled"].iter().any(|role| {
+                cx.debug_bounds(format!("menu-item: {item} · {role}").leak())
+                    .is_some_and(|bounds| {
+                        crate::appearance::painted_row(cx, bounds).0.contains(&fill)
+                    })
+            })
+        })
+        .collect()
+}
+
 /// The style a menu label draws in, which the kit names for its row:
 /// `menu-label-style: <label> · <size> px · weight <weight>`.
 pub(crate) fn menu_label_style(label: &str, size: Pixels, weight: FontWeight) -> String {

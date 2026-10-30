@@ -3834,6 +3834,18 @@ mod tests {
         name: &str,
         opening: Opening,
     ) -> (Bounds<Pixels>, Bounds<Pixels>) {
+        open_row_menu_showing(app, cx, name, opening, IGNORE_ITEM)
+    }
+
+    /// [`open_row_menu`] for a menu that draws `item`, whose bounds it
+    /// returns with the row's.
+    fn open_row_menu_showing(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        name: &str,
+        opening: Opening,
+        item: &'static str,
+    ) -> (Bounds<Pixels>, Bounds<Pixels>) {
         let selector: &'static str = format!(
             "working-row-{}",
             position_of(app, cx, name, ChangeArea::Unstaged)
@@ -3860,7 +3872,7 @@ mod tests {
         next_frame(cx);
         next_frame(cx);
         let item = cx
-            .debug_bounds(IGNORE_ITEM)
+            .debug_bounds(item)
             .unwrap_or_else(|| panic!("{opening:?}: {name}'s menu opened"));
         (row, item)
     }
@@ -4359,25 +4371,7 @@ mod tests {
         "Discard changes…",
     ];
 
-    /// The items among `items` whose row draws the keyboard's cursor, the
-    /// toolkit's `list_active` fill, available or refused.
-    fn cursor_among<'a>(cx: &mut VisualTestContext, items: &[&'a str]) -> Vec<&'a str> {
-        let fill = cx.update(|_, cx| {
-            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).list_active)
-        });
-        items
-            .iter()
-            .copied()
-            .filter(|item| {
-                ["MenuItem", "MenuItem disabled"].iter().any(|role| {
-                    cx.debug_bounds(format!("menu-item: {item} · {role}").leak())
-                        .is_some_and(|bounds| {
-                            crate::appearance::painted_row(cx, bounds).0.contains(&fill)
-                        })
-                })
-            })
-            .collect()
-    }
+    use crate::native_accessibility::menu_tests::cursor_among;
 
     /// A working row's menu, opened as `opening` opens it, its keyboard's
     /// cursor moved down to Delete untracked file…, keeps the cursor on that
@@ -4385,10 +4379,12 @@ mod tests {
     /// refuses every item the cursor rests on none, and once the write's
     /// rows land it is back on Delete untracked file…. Moved up to Ignore…,
     /// which gamma added and edited outside the app can no longer take, it
-    /// goes to the nearest item that can act, Discard changes…. Each build
-    /// once sent a right-click's cursor away and a keyboard's back to
-    /// Ignore…, so Enter just after the write chose another item than the
-    /// one the keys had reached.
+    /// rests on none, and it is back on Ignore… once gamma is untracked
+    /// again. Each build once sent a right-click's cursor away and a
+    /// keyboard's back to Ignore…, so Enter just after the write chose
+    /// another item than the one the keys had reached; later the refused
+    /// Ignore… sent it to Discard changes…, where Enter offered to discard
+    /// gamma's changes.
     async fn a_row_menu_keeps_its_cursor_across_a_write(cx: &mut TestAppContext, opening: Opening) {
         let (_fixture, app, cx) = six_files_for_menus(cx).await;
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
@@ -4453,8 +4449,20 @@ mod tests {
         );
         assert_eq!(
             cursor_among(cx, &GAMMA_ITEMS),
-            ["Discard changes…"],
-            "{opening:?}: Ignore… refused, the cursor on the nearest item that can act"
+            Vec::<&str>::new(),
+            "{opening:?}: Ignore… refused, the cursor rests on none"
+        );
+        fixture_git(&repository, &["reset", "-q", "--", "gamma.txt"]);
+        quietly_refreshed(&app, cx);
+        assert_eq!(
+            offered(cx, "Delete untracked file…"),
+            Some(true),
+            "{opening:?}: rebuilt for gamma untracked again"
+        );
+        assert_eq!(
+            cursor_among(cx, &GAMMA_ITEMS),
+            ["Ignore…"],
+            "{opening:?}: back on Ignore… once it can act again"
         );
     }
 
@@ -4466,6 +4474,132 @@ mod tests {
     #[gpui::test]
     async fn a_keyboard_row_menu_keeps_its_cursor_across_a_write(cx: &mut TestAppContext) {
         a_row_menu_keeps_its_cursor_across_a_write(cx, Opening::Keyboard).await;
+    }
+
+    /// A working row's menu, opened as `opening` opens it at 18 pt in a
+    /// 461 px window, where the row has no room for its Stage control and
+    /// the menu leads with Stage, its cursor moved to Discard changes…,
+    /// rests the cursor on none once a merge outside the app leaves the
+    /// file conflicted and the item can no longer act, and Enter in a
+    /// right-click's then runs nothing: the file stays conflicted. Moved to
+    /// the nearest item that could act, the cursor fell to Stage, and Enter
+    /// ran `git add` on the conflicted file at once, marking it resolved.
+    async fn a_row_menus_cursor_rests_as_its_file_becomes_conflicted(
+        cx: &mut TestAppContext,
+        opening: Opening,
+    ) {
+        const STAGE: &str = "menu-item: Stage · MenuItem";
+        const ITEMS: [&str; 4] = [
+            "Stage",
+            "Ignore…, untracked files only",
+            "Discard changes…",
+            "Discard changes…, after conflict resolution",
+        ];
+        let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
+        let repository = fixture.path().join("narrow");
+        let git = |arguments: &[&str]| {
+            crate::views::tests::fixture_git_output(
+                &repository,
+                &[
+                    &[
+                        "-c",
+                        "user.name=Fixture",
+                        "-c",
+                        "user.email=fixture@example.invalid",
+                    ][..],
+                    arguments,
+                ]
+                .concat(),
+            )
+        };
+        // notes.txt changed on a side branch and on main, then edited.
+        fixture_git(&repository, &["reset", "--hard", "--quiet"]);
+        fixture_git(&repository, &["checkout", "-q", "-b", "side"]);
+        std::fs::write(repository.join("notes.txt"), "side\n").unwrap();
+        assert!(git(&["commit", "-q", "-am", "side"]).status.success());
+        fixture_git(&repository, &["checkout", "-q", "main"]);
+        std::fs::write(repository.join("notes.txt"), "main\n").unwrap();
+        assert!(git(&["commit", "-q", "-am", "main"]).status.success());
+        std::fs::write(repository.join("notes.txt"), "edited\n").unwrap();
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(1300.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        rows_arrived(&app, cx).await;
+        draw(cx);
+        cx.update(|_, cx| {
+            crate::shortcuts::bind_keys(cx);
+            crate::native_accessibility::bind_keys(cx);
+        });
+        open_row_menu_showing(&app, cx, "notes.txt", opening, STAGE);
+        // A right-click's menu opens with no cursor, a keyboard's with it on
+        // Stage; Down passes over the refused Ignore….
+        cx.simulate_keystrokes(match opening {
+            Opening::RightClick => "down down",
+            Opening::Keyboard => "down",
+        });
+        next_frame(cx);
+        assert_eq!(
+            cursor_among(cx, &ITEMS),
+            ["Discard changes…"],
+            "{opening:?}: the keys moved the cursor to Discard changes…"
+        );
+
+        fixture_git(&repository, &["checkout", "-q", "--", "notes.txt"]);
+        assert!(
+            !git(&["merge", "-q", "side"]).status.success(),
+            "the merge stops on notes.txt"
+        );
+        quietly_refreshed(&app, cx);
+        assert_eq!(
+            offered(cx, "Discard changes…, after conflict resolution"),
+            Some(false),
+            "{opening:?}: rebuilt for the conflicted file"
+        );
+        assert_eq!(
+            offered(cx, "Stage"),
+            Some(true),
+            "{opening:?}: Stage offered"
+        );
+        assert_eq!(
+            cursor_among(cx, &ITEMS),
+            Vec::<&str>::new(),
+            "{opening:?}: the cursor rests on none"
+        );
+        // A keyboard's opening selected the row, and the conflicted file's
+        // preview, built as it lands, focuses its resolution draft, which
+        // takes the keys from the menu; a right-click's keeps them.
+        if let Opening::RightClick = opening {
+            cx.simulate_keystrokes("enter");
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| (
+                    app.operation_busy,
+                    app.operation_task.is_some()
+                )),
+                (None, false),
+                "Enter started no write"
+            );
+            assert_eq!(offered(cx, "Stage"), Some(true), "the menu stays open");
+            let unmerged = git(&["ls-files", "-u", "--", "notes.txt"]);
+            assert!(
+                unmerged.status.success() && !unmerged.stdout.is_empty(),
+                "notes.txt is still conflicted"
+            );
+        }
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menus_cursor_rests_as_its_file_becomes_conflicted(
+        cx: &mut TestAppContext,
+    ) {
+        a_row_menus_cursor_rests_as_its_file_becomes_conflicted(cx, Opening::RightClick).await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_menus_cursor_rests_as_its_file_becomes_conflicted(cx: &mut TestAppContext) {
+        a_row_menus_cursor_rests_as_its_file_becomes_conflicted(cx, Opening::Keyboard).await;
     }
 
     /// A working row's keyboard menu closes, focus on the list, as soon as a

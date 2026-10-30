@@ -94,10 +94,10 @@ fn fold_rows(
     Fold::Fits
 }
 
-/// GitTurtle patch: where the keyboard's cursor stood as its menu was built
-/// again ([`PopupMenu::rebuild`]): the name of the item it was on
-/// ([`PopupMenuItem::name`]), where that item has one, and its place among
-/// the menu's entries.
+/// GitTurtle patch: the item the keyboard's cursor was on as its menu was
+/// built again ([`PopupMenu::rebuild`]): its name ([`PopupMenuItem::name`]),
+/// where it has one, and its place among the menu's entries, which follows
+/// the item while a rebuild finds it.
 #[derive(Clone, Debug, PartialEq)]
 struct KeptCursor {
     name: Option<SharedString>,
@@ -484,10 +484,12 @@ pub struct PopupMenu {
     /// into a submenu), so the item draws as the keyboard's cursor rather than
     /// the pointer's hover; the pointer entering an item clears it.
     keyboard_selection: bool,
-    /// GitTurtle patch: the keyboard's cursor that a rebuild found nowhere
-    /// to place, every item then unable to act, as while a write refuses
-    /// them: the next rebuild that offers its item places it there again
-    /// ([`PopupMenu::rebuild`]).
+    /// GitTurtle patch: the item the keyboard's cursor was on when a rebuild
+    /// found it gone or unable to act, as while a write refuses it, so the
+    /// cursor rests on nothing: a later rebuild that offers it able to act
+    /// places the cursor there again ([`PopupMenu::rebuild`]), and Up and
+    /// Down start from its place. A menu key or the pointer that moves the
+    /// selection forgets it. While it is held nothing is selected.
     kept_cursor: Option<KeptCursor>,
     /// GitTurtle patch: where the pointer rested when a wheel scrolled the
     /// rows under it, until it moves from there. Meanwhile no row draws the
@@ -942,18 +944,24 @@ impl PopupMenu {
     ///
     /// GitTurtle patch: the keyboard's cursor stays on the item it was on,
     /// found again by its name ([`PopupMenuItem::name`]) wherever the
-    /// builder now places it, as an item added above it moves it. Where that
-    /// item is gone or can no longer act, the cursor moves to the nearest
-    /// item that can, the later of two as near; with none that can, it rests
-    /// on nothing, as the menu keys leave a menu with none, and the next
-    /// rebuild that offers its item places it there again, so a write that
-    /// refuses every item while it runs leaves the cursor where it was once
-    /// it ends. The kept cursor takes the place of any selection the builder
-    /// makes ([`Self::select_first_item`]). Upstream cleared the selection,
-    /// so an open menu built again, as its content arrived or the state its
-    /// items read changed, lost its cursor, and a caller that put one back
-    /// could only put it on the first item. A selection the pointer made is
-    /// cleared, as upstream: the pointer's own place decides what it lights.
+    /// builder now places it, as an item added above it moves it, or, for an
+    /// item without a name, at its place where the item there has none
+    /// either. It never moves to another item: where its item is gone or
+    /// can no longer act, as while a write refuses it or once its name
+    /// states a condition it waits for, the cursor rests on nothing and the
+    /// menu remembers the item (`kept_cursor`), however often it is
+    /// built again, until a rebuild offers the item able to act and places
+    /// the cursor there again, or a menu key or the pointer moves the
+    /// selection. From rest, Up and Down start from the item's place. A
+    /// remembered item takes the place of any selection the builder makes
+    /// ([`Self::select_first_item`]); with none, the builder's selection
+    /// stands. Upstream cleared the selection, so an open menu built again,
+    /// as its content arrived or the state its items read changed, lost its
+    /// cursor, and a caller that put one back could only put it on the first
+    /// item; moved to the nearest item that could act, the cursor once
+    /// rested on an action the person had not chosen, which Enter then ran.
+    /// A selection the pointer made is cleared, as upstream: the pointer's
+    /// own place decides what it lights.
     pub fn rebuild(
         &mut self,
         window: &mut Window,
@@ -972,51 +980,52 @@ impl PopupMenu {
         cx.notify();
     }
 
-    /// GitTurtle patch: where the keyboard's cursor stands, for a rebuild
-    /// to keep ([`Self::rebuild`]): on its item, or where an earlier rebuild
-    /// that found nothing able to act kept it; `None` where the pointer made
-    /// the selection or nothing holds it.
+    /// GitTurtle patch: the item the keyboard's cursor is on, or the item a
+    /// rebuild found it could not place it on and remembers, for a rebuild
+    /// to keep ([`Self::rebuild`]); `None` where the pointer made the
+    /// selection or nothing holds it.
     fn keyboard_cursor(&self) -> Option<KeptCursor> {
-        if !self.keyboard_selection {
-            return None;
+        if let Some(kept) = &self.kept_cursor {
+            return Some(kept.clone());
         }
-        match self.selected_index {
-            Some(index) => Some(KeptCursor {
-                name: self
-                    .menu_items
-                    .get(index)
-                    .and_then(PopupMenuItem::name)
-                    .cloned(),
-                index,
-            }),
-            None => self.kept_cursor.clone(),
+        let index = self.selected_index.filter(|_| self.keyboard_selection)?;
+        Some(KeptCursor {
+            name: self
+                .menu_items
+                .get(index)
+                .and_then(PopupMenuItem::name)
+                .cloned(),
+            index,
+        })
+    }
+
+    /// GitTurtle patch: where `cursor`'s item stands among the items, if
+    /// anywhere: the item of its name nearest its old place, or, for an item
+    /// without a name, the entry at its place where that has none either.
+    fn find_kept(&self, cursor: &KeptCursor) -> Option<usize> {
+        match &cursor.name {
+            Some(name) => self
+                .menu_items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| item.name() == Some(name))
+                .min_by_key(|(ix, _)| ix.abs_diff(cursor.index))
+                .map(|(ix, _)| ix),
+            None => self
+                .menu_items
+                .get(cursor.index)
+                .filter(|item| item.name().is_none())
+                .map(|_| cursor.index),
         }
     }
 
     /// GitTurtle patch: places the keyboard's `cursor`, kept across a
-    /// rebuild, in the rebuilt items: on the item of its name nearest its
-    /// old place, where it can act, or else on the item that can act nearest
-    /// that item, or nearest its old place where no item has its name, the
-    /// later of two as near. With no item able to act it holds nothing and
-    /// the cursor is kept for the next rebuild.
+    /// rebuild, on its item where that item can act; otherwise nothing is
+    /// selected and the menu remembers the item, at the place it now stands
+    /// where it is still offered, for the next rebuild and the menu keys.
     fn place_kept_cursor(&mut self, cursor: KeptCursor) {
-        let anchor = cursor
-            .name
-            .as_ref()
-            .and_then(|name| {
-                self.menu_items
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, item)| item.name() == Some(name))
-                    .min_by_key(|(ix, _)| ix.abs_diff(cursor.index))
-                    .map(|(ix, _)| ix)
-            })
-            .unwrap_or(cursor.index);
-        let nearest = self
-            .clickable_menu_items()
-            .min_by_key(|(ix, _)| (ix.abs_diff(anchor), *ix < anchor))
-            .map(|(ix, _)| ix);
-        match nearest {
+        let found = self.find_kept(&cursor);
+        match found.filter(|ix| self.menu_items[*ix].is_clickable()) {
             Some(ix) => {
                 self.selected_index = Some(ix);
                 self.keyboard_selection = true;
@@ -1024,7 +1033,10 @@ impl PopupMenu {
             }
             None => {
                 self.selected_index = None;
-                self.kept_cursor = Some(cursor);
+                self.kept_cursor = Some(KeptCursor {
+                    index: found.unwrap_or(cursor.index),
+                    ..cursor
+                });
             }
         }
     }
@@ -1127,6 +1139,7 @@ impl PopupMenu {
         cx.stop_propagation();
         window.prevent_default();
         self.selected_index = Some(ix);
+        self.kept_cursor = None;
         self.confirm(&Confirm { secondary: false }, window, cx);
     }
 
@@ -1186,6 +1199,9 @@ impl PopupMenu {
     /// Select `ix` for the keyboard, this method's only caller (Up, Down, a
     /// submenu's first item and a keyboard-opened menu's).
     fn set_selected_index(&mut self, ix: usize, cx: &mut Context<Self>) {
+        // GitTurtle patch: a key that moves the cursor ends a rebuild's
+        // remembering of the item it was on ([`Self::rebuild`]).
+        self.kept_cursor = None;
         if self.selected_index != Some(ix) || !self.keyboard_selection {
             self.selected_index = Some(ix);
             self.keyboard_selection = true;
@@ -1217,11 +1233,24 @@ impl PopupMenu {
         }
     }
 
+    /// GitTurtle patch: where Up and Down start from: the cursor's item, and
+    /// `true`, or, while a rebuild rests the cursor, the place of the item it
+    /// remembers ([`Self::rebuild`]), and `false`: Up moves to the last item
+    /// that can act before that place, and Down to the first at or after it,
+    /// since the remembered item, refused there or gone, cannot take it.
+    fn cursor_place(&self) -> Option<(usize, bool)> {
+        match (self.selected_index, &self.kept_cursor) {
+            (Some(ix), _) => Some((ix, true)),
+            (None, Some(kept)) => Some((kept.index, false)),
+            (None, None) => None,
+        }
+    }
+
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         let previous = self
-            .selected_index
-            .and_then(|ix| {
+            .cursor_place()
+            .and_then(|(ix, _)| {
                 self.clickable_menu_items()
                     .filter(|(i, _)| *i < ix)
                     .last()
@@ -1236,10 +1265,10 @@ impl PopupMenu {
     fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         let next = self
-            .selected_index
-            .and_then(|ix| {
+            .cursor_place()
+            .and_then(|(ix, on_it)| {
                 self.clickable_menu_items()
-                    .find(|(i, _)| *i > ix)
+                    .find(|(i, _)| *i > ix || (!on_it && *i == ix))
                     .map(|(i, _)| i)
             })
             .or_else(|| self.first_clickable_index());
@@ -1356,6 +1385,7 @@ impl PopupMenu {
     /// The submenu is closed together with its parent, same as macOS menus.
     fn dismiss(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
         self.selected_index = None;
+        self.kept_cursor = None;
         cx.emit(DismissEvent);
 
         // Focus back to the previous focused handle, unless the item's click
@@ -1585,6 +1615,7 @@ impl PopupMenu {
         if let Some(ix) = self.hovered_index {
             self.selected_index = Some(ix);
             self.keyboard_selection = false;
+            self.kept_cursor = None;
         }
         cx.notify();
     }
@@ -1660,6 +1691,9 @@ impl PopupMenu {
                     if !still {
                         this.selected_index = Some(ix);
                         this.keyboard_selection = false;
+                        // The pointer's selection ends a rebuild's
+                        // remembering ([`PopupMenu::rebuild`]).
+                        this.kept_cursor = None;
                     }
                 } else {
                     if this.hovered_index == Some(ix) {
@@ -2037,7 +2071,7 @@ impl Render for PopupMenu {
 mod tests {
     use super::*;
     use crate::theme::Theme;
-    use gpui::{TestAppContext, VisualTestContext};
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
 
     /// A menu under a heading, as a row's menu opens with its name, of
     /// `items`, each a name and whether it can act.
@@ -2162,56 +2196,153 @@ mod tests {
         );
     }
 
-    /// Where the cursor's item can no longer act, a rebuild moves the
-    /// cursor to the nearest item that can, the later of two as near; where
-    /// the item is gone, to the item that can act nearest its place. With
-    /// none that can act, as while a write refuses every item, it rests on
-    /// nothing, however often the menu is built so, and comes back to its
-    /// item once that item can act again.
-    #[gpui::test]
-    fn a_rebuilt_menu_moves_the_cursor_to_the_nearest_item_that_can_act(cx: &mut TestAppContext) {
-        let (menu, cx) = open(cx, FOUR);
-        cx.simulate_keystrokes("down down");
+    /// Builds the open menu again with `items` as a menu opened from the
+    /// keyboard is built, its first item that can act selected
+    /// ([`PopupMenu::select_first_item`]).
+    fn rebuilt_from_keyboard(
+        menu: &Entity<PopupMenu>,
+        cx: &mut VisualTestContext,
+        items: &'static [(&'static str, bool)],
+    ) {
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, cx| {
+                    let mut menu = entries(menu, items);
+                    menu.select_first_item(cx);
+                    menu
+                })
+            })
+        });
         draw(cx);
-        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+    }
 
-        rebuilt(
-            &menu,
-            cx,
-            &[
-                ("One", true),
-                ("Two", false),
-                ("Three", true),
-                ("Four", true),
-            ],
-        );
-        assert_eq!(
-            cursor(&menu, cx).as_deref(),
-            Some("Three"),
-            "its item refused, the later of the two nearest"
-        );
+    const OPEN_RENAME: &[(&str, bool)] = &[("Open", true), ("Rename", true)];
+    const OPEN_REFUSED: &[(&str, bool)] = &[("Open", false), ("Rename", true)];
 
-        rebuilt(&menu, cx, &[("One", true), ("Two", false), ("Four", true)]);
-        assert_eq!(
-            cursor(&menu, cx).as_deref(),
-            Some("Four"),
-            "its item gone, the item that took its place"
-        );
+    /// Where the cursor's item can no longer act, a rebuild rests the
+    /// cursor on nothing, though another item can act, and the builder's
+    /// first item does not take it; built so again, it still rests; once its
+    /// item can act again, the cursor is back on it. Moved to the nearest
+    /// item that could act, the cursor of a project's menu rested on Rename
+    /// as a write refused Open, stayed there once the write ended, and Enter
+    /// renamed where the person had chosen to open.
+    #[gpui::test]
+    fn a_rebuilt_menu_rests_the_cursor_until_its_item_can_act(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, OPEN_RENAME);
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Open"), "Down");
 
-        const REFUSED: &[(&str, bool)] = &[("One", false), ("Two", false), ("Four", false)];
-        rebuilt(&menu, cx, REFUSED);
-        assert_eq!(cursor(&menu, cx).as_deref(), None, "every item refused");
-        rebuilt(&menu, cx, REFUSED);
+        rebuilt_from_keyboard(&menu, cx, OPEN_REFUSED);
+        assert_eq!(cursor(&menu, cx).as_deref(), None, "Open refused");
+        rebuilt_from_keyboard(&menu, cx, OPEN_REFUSED);
         assert_eq!(
             cursor(&menu, cx).as_deref(),
             None,
-            "built again, still refused"
+            "built again, Open still refused"
         );
-        rebuilt(&menu, cx, &[("One", true), ("Two", true), ("Four", true)]);
+        rebuilt_from_keyboard(&menu, cx, OPEN_RENAME);
         assert_eq!(
             cursor(&menu, cx).as_deref(),
-            Some("Four"),
-            "back on its item once the items can act"
+            Some("Open"),
+            "back on Open once it can act"
+        );
+
+        rebuilt(&menu, cx, &[("Rename", true)]);
+        assert_eq!(cursor(&menu, cx).as_deref(), None, "Open gone");
+        rebuilt(
+            &menu,
+            cx,
+            &[("New", true), ("Open", true), ("Rename", true)],
+        );
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Open"),
+            "back on Open once it is offered again, where it now stands"
+        );
+    }
+
+    /// From a cursor a rebuild rests, Up and Down start from the place of
+    /// the item it remembers: Up moves to the item that can act before it
+    /// and Down to the one after it, or, where the item is gone, to the item
+    /// that took its place.
+    #[gpui::test]
+    fn the_menu_keys_start_from_a_resting_cursors_item(cx: &mut TestAppContext) {
+        const TWO_REFUSED: &[(&str, bool)] = &[
+            ("One", true),
+            ("Two", false),
+            ("Three", true),
+            ("Four", true),
+        ];
+        const TWO_GONE: &[(&str, bool)] = &[("One", true), ("Three", true), ("Four", true)];
+        for (items, key, after) in [
+            (TWO_REFUSED, "down", "Three"),
+            (TWO_REFUSED, "up", "One"),
+            (TWO_GONE, "down", "Three"),
+            (TWO_GONE, "up", "One"),
+        ] {
+            let (menu, cx) = open(cx, FOUR);
+            cx.simulate_keystrokes("down down");
+            draw(cx);
+            assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+            rebuilt(&menu, cx, items);
+            assert_eq!(cursor(&menu, cx).as_deref(), None, "{items:?}: at rest");
+            cx.simulate_keystrokes(key);
+            draw(cx);
+            assert_eq!(
+                cursor(&menu, cx).as_deref(),
+                Some(after),
+                "{items:?}: {key} from rest"
+            );
+        }
+    }
+
+    /// A menu key or the pointer that moves the selection from a cursor a
+    /// rebuild rests ends the remembering: once the remembered item can act
+    /// again, the cursor stays where the key moved it, and after the
+    /// pointer's selection nothing is selected.
+    #[gpui::test]
+    fn a_key_or_the_pointer_ends_a_resting_cursors_remembering(cx: &mut TestAppContext) {
+        const TWO_REFUSED: &[(&str, bool)] = &[
+            ("One", true),
+            ("Two", false),
+            ("Three", true),
+            ("Four", true),
+        ];
+        let (menu, cx) = open(cx, FOUR);
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        rebuilt(&menu, cx, TWO_REFUSED);
+        assert_eq!(cursor(&menu, cx).as_deref(), None, "at rest");
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        rebuilt(&menu, cx, FOUR);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Three"),
+            "where Down moved it, not back on Two"
+        );
+
+        cx.simulate_keystrokes("up");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Up");
+        rebuilt(&menu, cx, TWO_REFUSED);
+        assert_eq!(cursor(&menu, cx).as_deref(), None, "at rest again");
+        let four = cx
+            .debug_bounds("menu-item: Four · MenuItem")
+            .expect("Four drawn");
+        cx.simulate_mouse_move(four.center(), None, Modifiers::default());
+        draw(cx);
+        assert_eq!(
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection)),
+            (Some(4), false),
+            "the pointer on Four"
+        );
+        rebuilt(&menu, cx, FOUR);
+        assert_eq!(
+            menu.read_with(cx, |menu, _| menu.selected_index),
+            None,
+            "nothing selected, not Two"
         );
     }
 

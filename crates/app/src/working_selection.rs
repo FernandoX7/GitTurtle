@@ -312,9 +312,10 @@ impl GitTurtle {
 
     /// Keeps the file list's keyboard menu, while it is a Working Changes
     /// row's (`file_menu_row`), with that row as installed rows move it:
-    /// drawn beside the row where it now stands, and built again, its
-    /// keyboard cursor on its first action, where the file's status changed,
-    /// so its items act on what the row now shows; or, where the row went,
+    /// drawn beside the row where it now stands, and built again where the
+    /// file's status changed, so its items act on what the row now shows,
+    /// its keyboard cursor kept on its item, or resting on none while that
+    /// item cannot act (`KeyboardMenu::rebuild`); or, where the row went,
     /// as a refresh after its file was committed, staged away, reverted or
     /// deleted outside the app takes it, closed, focus returning to the
     /// list. Kept by the row's place, the menu stayed there, beside
