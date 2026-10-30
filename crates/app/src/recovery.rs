@@ -27,6 +27,9 @@ const PAUSE_ENDED: &str = "The paused operation has ended. Review again to conti
 const RESTORE_PREPARING: &str = "Preparing…";
 /// Review restore…'s name while its own preparation runs, heard at once.
 const RESTORE_PREPARING_NAME: &str = "Review restore…, preparing the restoration";
+/// What Stashes' footer note says for a Review restore… answer whose report
+/// has no line that says anything ([`StashBrowser::restore_note`]).
+const RESTORE_UNEXPLAINED: &str = "Git could not prepare this restoration.";
 const STASH_PAGE_SIZE: usize = 40;
 /// The least height a saved file's comparison keeps in the Stashes detail,
 /// at the default interface size, where the window leaves the detail less
@@ -1611,7 +1614,12 @@ impl StashBrowser {
             // Chosen again, as a click on its row, Up on the first or Home
             // does: the stash shown, or being read, stays, and so does
             // Review restore…'s preparation, which the read again cancelled
-            // with nothing said.
+            // with nothing said. Reading it again would check nothing that
+            // acting on it does not: what it holds was read by its objects,
+            // which never change, and whether it is still saved where the
+            // list put it is checked again in core by Review restore…'s
+            // plan (`stash_apply_plan`) and Drop…'s write, each refusing in
+            // its own place once a terminal has changed the list.
             return;
         }
         self.cancel_restore(cx);
@@ -1964,7 +1972,8 @@ impl StashBrowser {
     /// took three lines there, more than the detail shows, and at two it
     /// left Review restore… cut. Any answer but the core's refusal for a
     /// paused integration, such as Git itself failing, gives the first line
-    /// of its report that says anything, and Details… beside it opens the
+    /// of its report that says anything, or [`RESTORE_UNEXPLAINED`] alone
+    /// where none does, and Details… beside it opens the
     /// whole report above Stashes, with Copy details, revealed in the
     /// `stacked` detail with its ring, `room`, as the keyboard reaches it:
     /// the whole report, its stderr line after line, filled the footer
@@ -1982,15 +1991,13 @@ impl StashBrowser {
     ) -> AnyElement {
         let p = palette(cx);
         if let Some(reason) = &self.restore_line {
-            // The first line that says anything: a report that opens with an
-            // empty line showed an empty note.
-            let first = reason
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .unwrap_or_default();
-            let report = reason != PAUSED_REFUSAL;
-            let shown = SharedString::from(first.to_owned());
+            // The first line that says anything: a report that opened with an
+            // empty line, or said nothing at all, showed an empty note. With
+            // no such line the note says that Git could not prepare the
+            // restoration, and no Details… opens an empty report.
+            let first = reason.lines().map(str::trim).find(|line| !line.is_empty());
+            let report = reason != PAUSED_REFUSAL && first.is_some();
+            let shown = SharedString::from(first.unwrap_or(RESTORE_UNEXPLAINED).to_owned());
             let tooltip = shown.clone();
             // Static text, whose node reports the part of it the stacked
             // detail draws, as the note that its pause has ended does.
@@ -4193,13 +4200,16 @@ mod tests {
     /// beside the note, whole there with its ring as Tab reaches it, opens
     /// the whole report with Copy details above Stashes, and Escape closes
     /// it back to Stashes with focus on Details… again, whole with its ring.
-    /// A report that opens with an empty line
-    /// gives its first line that says anything. The note took Git's whole
-    /// report, its stderr line after line, unclamped beside the list and
-    /// with no Details… to read or copy it; a report of one line had no
-    /// Details…, so stacked at 18 pt its rest lay only in a tooltip the
-    /// keyboard never opens; and a report that opened with an empty line
-    /// showed an empty note.
+    /// A report that opens with an empty line gives its first line that
+    /// says anything, and one that says nothing gives that Git could not
+    /// prepare the restoration, with no Details…. The stash shown, chosen
+    /// again after a terminal saved another stash, is not read again, and
+    /// Review restore…'s own plan finds the list changed. The note took
+    /// Git's whole report, its stderr line after line, unclamped beside the
+    /// list and with no Details… to read or copy it; a report of one line
+    /// had no Details…, so stacked at 18 pt its rest lay only in a tooltip
+    /// the keyboard never opens; and a report that opened with an empty
+    /// line, or said nothing, showed an empty note.
     #[gpui::test]
     async fn a_failed_restore_preparation_says_its_first_line_with_details(
         cx: &mut gpui::TestAppContext,
@@ -4209,7 +4219,7 @@ mod tests {
                 .await;
         cx.update(|_, cx| cx.set_reduce_motion(true));
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
-        let _git = two_stashes(&repository);
+        let git = two_stashes(&repository);
         // The app's palette, whose accent draws the keyboard ring.
         crate::focus_ring::sweep::prepare(&app, cx);
         let index = repository.join(".git").join("index");
@@ -4371,6 +4381,47 @@ mod tests {
             Some("Unable to read working-copy status: fatal: index file corrupt")
         );
         assert!(cx.debug_bounds("stash-restore-details").is_some());
+        // A report that says nothing still says that Git could not prepare
+        // the restoration, with no Details… to open nothing.
+        stashes.update(cx, |stashes, cx| stashes.refuse("\n  \n".into(), cx));
+        crate::views::tests::draw(cx);
+        assert_eq!(
+            note_label(&stashes, cx).as_deref(),
+            Some(RESTORE_UNEXPLAINED),
+            "a blank report gives the fallback line"
+        );
+        assert!(cx.debug_bounds("stash-restore-details").is_none());
+        drop(stashes);
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        crate::views::tests::draw(cx);
+        // Chosen again after a terminal saved another stash, the stash shown
+        // is not read again: Review restore…'s own plan finds the list
+        // changed, and the note says so.
+        open_selected_stash(&app, cx).await;
+        let stashes = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("Stashes is open");
+        std::fs::write(repository.join("notes.txt"), "third\n").unwrap();
+        git(&["stash", "push", "-q", "-m", "Saved in a terminal"]);
+        let row = cx
+            .debug_bounds("saved-stash-row-0")
+            .expect("Layout experiment's row");
+        cx.simulate_click(row.center(), Modifiers::none());
+        crate::views::tests::draw(cx);
+        assert!(
+            stashes.read_with(cx, |stashes, _| stashes.metadata_task.is_none()),
+            "chosen again, the stash shown is not read again"
+        );
+        press_review_restore(&stashes, cx);
+        recovery_lands(&app, cx);
+        assert_eq!(
+            note_label(&stashes, cx).as_deref(),
+            Some(
+                "The stash list changed. Refresh and review the selected stash again; no stash was removed."
+            ),
+            "Review restore…'s plan finds the list changed"
+        );
         drop(stashes);
         cx.update(|window, cx| window.close_all_dialogs(cx));
         crate::views::tests::draw(cx);
