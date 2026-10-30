@@ -174,6 +174,14 @@ impl GitTurtle {
             form.update(cx, |panel, cx| {
                 panel.closed = false;
                 panel.confirm = None;
+                // Reopening onto its destination field, its first part, the panel shows its
+                // body from the top, the banner above the field included. Closed with the body
+                // scrolled down, it reopened there, the field at the body's edge and what lies
+                // above it out of view, since the field alone was whole. An open PR or a new
+                // one keeps the body where it was, beside what reopening focuses.
+                if panel.pull.is_none() && !panel.create {
+                    panel.review.body_scroll.set_offset(point(px(0.), px(0.)));
+                }
                 cx.notify();
             });
             form
@@ -4995,6 +5003,68 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The panel closed with its body scrolled to its end reopens onto its destination field
+    /// with the body back at its top, at 13 and 18 pt in a 461 × 490 window: the field whole
+    /// with its ring and the banner above it in view, rather than at the offset it closed at:
+    /// at 13 pt it reopened 93 px down, the field just inside the body's top edge and the
+    /// banner above it hidden, since the field alone was whole and nothing revealed more.
+    #[gpui::test]
+    async fn reopening_after_scrolling_returns_the_body_to_its_top(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let (scroll, field) = cx.read(|cx| {
+            let panel = panel.read(cx);
+            (
+                panel.review.body_scroll.clone(),
+                panel.destination.read(cx).focus_handle(cx),
+            )
+        });
+        let room = cx.update(|_, cx| appearance::button_ring_room(cx));
+        let mut scrolled = 0;
+        for interface in [13, 18] {
+            let at = format!("{interface} pt");
+            open_notice_panel(&app, &panel, (interface, 461., 490.), cx).await;
+            if scroll.max_offset().y <= px(0.) {
+                escape(cx);
+                continue;
+            }
+            scrolled += 1;
+            scroll.set_offset(point(px(0.), -scroll.max_offset().y));
+            draw(cx);
+            draw(cx);
+            escape(cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_github(window, cx)));
+            settle_panel(&app, cx).await;
+            for _ in 0..3 {
+                draw(cx);
+            }
+            assert!(
+                cx.update(|window, _| field.is_focused(window)),
+                "{at}: the panel reopens onto its destination field"
+            );
+            assert_eq!(
+                scroll.offset().y,
+                px(0.),
+                "{at}: the body is back at its top"
+            );
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let destination = cx
+                .debug_bounds("github-destination")
+                .expect("the destination field");
+            let banner = cx.debug_bounds("github-fixture-mode").expect("the banner");
+            assert!(
+                destination.top() - room >= body.top()
+                    && destination.bottom() + room <= body.bottom()
+                    && banner.top() >= body.top(),
+                "{at}: the field {destination:?} with its ring and the banner {banner:?} lie in \
+                 view in {body:?}"
+            );
+            escape(cx);
+        }
+        assert!(scrolled > 0, "some size scrolls the body");
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// Reopening the panel onto its destination field keeps the body at its top wherever the
