@@ -1935,7 +1935,7 @@ impl GitTurtle {
             #[cfg(target_os = "linux")]
             {
                 let busy = self.operation_busy.is_some();
-                let looks_busy = self.operation_shown().is_some();
+                let looks_busy = self.operation_shown().map(|_| self.busy_reason());
                 (
                     window_chrome::controls(
                         window_chrome::Side::Left,

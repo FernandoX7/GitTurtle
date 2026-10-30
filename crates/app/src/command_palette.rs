@@ -308,7 +308,9 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
 struct Availability {
     repository: bool,
     workspace: bool,
-    busy: bool,
+    /// While the busy spell runs, why the commands it refuses wait
+    /// (`GitTurtle::busy_reason`).
+    busy: Option<&'static str>,
     branch: bool,
     file: bool,
     working_file: bool,
@@ -350,7 +352,7 @@ impl CommandId {
         // available while a write runs, as their shortcuts and the header's
         // toggle do; the palette and the Linux Main Menu once refused them.
         // Projects waits: every action it offers starts another operation.
-        if context.busy
+        if let Some(reason) = context.busy
             && !matches!(
                 self,
                 Self::History
@@ -369,7 +371,7 @@ impl CommandId {
                     | Self::MoveRepositoryTabRight
             )
         {
-            return Some(crate::workspace::BUSY_REASON);
+            return Some(reason);
         }
         if (self.workspace()
             || matches!(
@@ -574,7 +576,7 @@ impl GitTurtle {
         Availability {
             repository: self.repository.is_some(),
             workspace: self.page == AppPage::Repository,
-            busy: self.operation_busy.is_some(),
+            busy: self.operation_busy.map(|_| self.busy_reason()),
             branch: self
                 .work_status
                 .as_ref()
@@ -1199,7 +1201,7 @@ mod tests {
         assert!(CommandId::Blame.reason(&context).is_none());
         context.integration = true;
         assert!(CommandId::Rebase.reason(&context).is_some());
-        context.busy = true;
+        context.busy = Some(crate::workspace::BUSY_REASON);
         assert!(CommandId::Profiles.reason(&context).is_some());
         assert!(CommandId::Activity.reason(&context).is_none());
         // Page navigation only reads, so a write leaves it available, while
@@ -1249,7 +1251,7 @@ mod tests {
         assert!(!snapshot.allows(&original, CommandId::QuickOpen));
         assert!(snapshot.allows(&original, CommandId::History));
         snapshot.availability.workspace = true;
-        snapshot.availability.busy = true;
+        snapshot.availability.busy = Some(crate::workspace::BUSY_REASON);
         assert!(!snapshot.allows(&original, CommandId::QuickOpen));
         assert!(snapshot.allows(&original, CommandId::Activity));
     }

@@ -617,7 +617,9 @@ pub(crate) struct BusyLook {
 pub(crate) type LfsView = (FileChange, WorkspaceMode, u64);
 
 /// Why a control a running write refuses is unavailable, in its tooltip once
-/// it looks busy and in the command palette's and the Linux Main Menu's row.
+/// it looks busy and in the command palette's and the Linux Main Menu's row;
+/// a GitHub request running as the busy spell gives its own reason
+/// ([`GitTurtle::busy_reason`]).
 pub(crate) const BUSY_REASON: &str = "Wait for the current Git operation to finish";
 
 /// `control` as a busy spell leaves it: while `refused`, its own handler or
@@ -648,21 +650,22 @@ pub(crate) struct WaitingTooltip {
     pub(crate) name: SharedString,
     /// Its shortcut, which ends the tooltip.
     pub(crate) shortcut: Option<SharedString>,
-    /// Whether it looks refused, which adds why ([`BUSY_REASON`]).
+    /// Whether it looks refused, which adds why
+    /// ([`GitTurtle::busy_reason`]).
     pub(crate) dimmed: bool,
 }
 
 impl WaitingTooltip {
-    /// The name, why it waits while it looks refused, then the shortcut:
+    /// The name, `reason` while it looks refused, then the shortcut:
     /// every tooltip that names a shortcut ends with it ("History ·
     /// Primary+1") and a refusing one gives its reason after its name
     /// ("Open Projects · Wait for …"). Back to Projects once read
     /// "Back to Projects · Primary+[ · Wait for …".
-    fn text(&self) -> SharedString {
+    fn text(&self, reason: &str) -> SharedString {
         let mut text = self.name.to_string();
         if self.dimmed {
             text.push_str(" · ");
-            text.push_str(BUSY_REASON);
+            text.push_str(reason);
         }
         if let Some(shortcut) = &self.shortcut {
             text.push_str(" · ");
@@ -673,6 +676,22 @@ impl WaitingTooltip {
 }
 
 impl GitTurtle {
+    /// Why a control the running busy spell refuses waits: for the GitHub
+    /// request that runs as the spell (`github_view::REQUEST_REASON`), or
+    /// else for the Git operation ([`BUSY_REASON`]). Projects' tooltip, the
+    /// palette and the window's Close once said to wait for "the current Git
+    /// operation" while the GitHub panel loaded a PR or sent a review.
+    pub(crate) fn busy_reason(&self) -> &'static str {
+        if self
+            .operation_busy
+            .is_some_and(crate::github_view::runs_request)
+        {
+            crate::github_view::REQUEST_REASON
+        } else {
+            BUSY_REASON
+        }
+    }
+
     /// [`refusing`], with a tooltip that says why once the control looks
     /// refused, as the header's Projects and History's Back to Projects say
     /// why they wait for a write. `tooltip` reads from the app what the
@@ -692,14 +711,18 @@ impl GitTurtle {
         cx: &Context<Self>,
     ) -> Button {
         let built = tooltip(self);
-        let text = built.text();
+        let text = built.text(self.busy_reason());
         #[cfg(test)]
         refusals::record_tooltip(key.into(), text.clone());
         let owner = cx.entity().downgrade();
         refusing(control, || key.into(), refused, built.dimmed).tooltip_view(move |window, cx| {
-            let text = owner
-                .upgrade()
-                .map_or_else(|| text.clone(), |app| tooltip(app.read(cx)).text());
+            let text = owner.upgrade().map_or_else(
+                || text.clone(),
+                |app| {
+                    let app = app.read(cx);
+                    tooltip(app).text(app.busy_reason())
+                },
+            );
             Tooltip::element(move |_, _| {
                 let probe = text.clone();
                 div()

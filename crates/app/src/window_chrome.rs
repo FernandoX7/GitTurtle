@@ -60,11 +60,12 @@ pub(super) fn strip_width(window: &Window, cx: &App) -> Pixels {
 
 /// The window's controls on `side`. A write in flight, `busy`, leaves Close
 /// refused at once (`CloseWindow`) and announced so, and dimmed once its
-/// spell looks busy, `looks_busy` (`workspace::refusing`).
+/// spell looks busy, `looks_busy`, with why it waits, the spell's reason
+/// (`GitTurtle::busy_reason`), in its tooltip (`workspace::refusing`).
 pub(super) fn controls(
     side: Side,
     busy: bool,
-    looks_busy: bool,
+    looks_busy: Option<&'static str>,
     window: &Window,
     cx: &App,
 ) -> Option<AnyElement> {
@@ -94,7 +95,12 @@ pub(super) fn controls(
     )
 }
 
-fn control(kind: WindowButton, busy: bool, looks_busy: bool, maximized: bool) -> Button {
+fn control(
+    kind: WindowButton,
+    busy: bool,
+    looks_busy: Option<&'static str>,
+    maximized: bool,
+) -> Button {
     let (id, label, symbol) = match kind {
         WindowButton::Minimize => (
             "minimize-window",
@@ -115,10 +121,11 @@ fn control(kind: WindowButton, busy: bool, looks_busy: bool, maximized: bool) ->
         .icon(Icon::new(symbol).size(appearance::ui_size(16.)))
         .rounded_full()
         .accessibility_label(label)
-        .tooltip(if kind == WindowButton::Close && looks_busy {
-            "Wait for the current Git operation to finish before closing"
-        } else {
-            label
+        .tooltip(match looks_busy {
+            Some(reason) if kind == WindowButton::Close => {
+                SharedString::from(format!("{reason} before closing"))
+            }
+            _ => label.into(),
         })
         .map(|control| {
             let close = kind == WindowButton::Close;
@@ -126,7 +133,7 @@ fn control(kind: WindowButton, busy: bool, looks_busy: bool, maximized: bool) ->
                 control,
                 move || id.into(),
                 close && busy,
-                close && looks_busy,
+                close && looks_busy.is_some(),
             )
         })
         .on_click(move |_, window, cx| {

@@ -220,34 +220,37 @@ impl GitTurtle {
         });
     }
 
-    /// Submits a request of the panel over `repository`, an outbound
-    /// action when `writing` or a read, on the operation executor, where
-    /// it runs as the window's busy spell until it answers, as a write
-    /// does, labelled with the panel's busy line: Git writes and
-    /// preparations refuse meanwhile and say why, its Cancel is the
-    /// operation bar's, and a working-state read asked for meanwhile waits
-    /// for it, then runs as it ends ([`Self::read_deferred_working`]). That
-    /// holds after the panel has closed and dropped its reply, as closing
-    /// during a read does, since the executor runs the request until it
-    /// stops. Such a read once queued behind a review being sent, with
-    /// nothing saying why, for as long as GitHub took to answer. Returns
-    /// the request's control and its reply, or None, submitting nothing,
-    /// while another write or preparation runs.
+    /// Submits a request of the panel over `repository`, of `kind`, on the
+    /// operation executor, where it runs as the window's busy spell until it
+    /// answers, as a write does, labelled with the kind's busy line: Git
+    /// writes and preparations refuse meanwhile and say they wait for the
+    /// GitHub request ([`Self::busy_reason`]), its Cancel is the operation
+    /// bar's, and a working-state read asked for meanwhile waits for it,
+    /// then runs as it ends ([`Self::read_deferred_working`]). That holds
+    /// after the panel has closed and dropped its reply, as closing during a
+    /// read does, since the executor runs the request until it stops. Such a
+    /// read once queued behind a review being sent, with nothing saying why,
+    /// for as long as GitHub took to answer. Returns the request's control
+    /// and its reply, or, submitting nothing while another write,
+    /// preparation or request runs, why it waits.
     fn submit_github_request<T: Send + 'static>(
         &mut self,
-        writing: bool,
+        kind: RequestKind,
         repository: std::path::PathBuf,
         operation: impl FnOnce(OperationControl) -> anyhow::Result<T> + Send + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<(
-        OperationControl,
-        futures::channel::oneshot::Receiver<anyhow::Result<T>>,
-    )> {
+    ) -> Result<
+        (
+            OperationControl,
+            futures::channel::oneshot::Receiver<anyhow::Result<T>>,
+        ),
+        &'static str,
+    > {
         if self.operation_busy.is_some() {
-            return None;
+            return Err(self.busy_reason());
         }
-        let label = if writing { SENDING } else { LOADING };
+        let label = kind.label();
         let control = self.begin_operation_control(window, cx);
         let worker_control = control.clone();
         let response = self.operations.submit(move || operation(worker_control));
@@ -271,7 +274,7 @@ impl GitTurtle {
         })
         .detach();
         cx.notify();
-        Some((control, replied))
+        Ok((control, replied))
     }
 }
 #[derive(Clone)]
@@ -297,11 +300,56 @@ struct Presses {
     error: usize,
     issue: usize,
 }
-/// The panel's busy line while a request it sent runs, an outbound action
-/// or a read, which the window's progress label also reads
-/// ([`GitTurtle::submit_github_request`]).
-const SENDING: &str = "Sending the captured review…";
-const LOADING: &str = "Loading your requested PR context…";
+/// What a request of the panel does, which its busy line names, as the
+/// window's operation bar does while it runs as the window's busy spell
+/// ([`GitTurtle::submit_github_request`]). Connecting the account and
+/// Disconnect once read "Loading your requested PR context…" there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RequestKind {
+    /// Reads PR context: the list, a PR with its checks, files and
+    /// conversations, a submission's preparation or its templates.
+    Load,
+    /// Sends one confirmed outbound action.
+    Send,
+    /// Connects the GitHub CLI's signed-in account.
+    Connect,
+    /// Removes GitTurtle's stored authorization.
+    Disconnect,
+    /// Compares a PR's captured base and head in the local repository, for
+    /// its Changes.
+    Compare,
+}
+impl RequestKind {
+    const ALL: [Self; 5] = [
+        Self::Load,
+        Self::Send,
+        Self::Connect,
+        Self::Disconnect,
+        Self::Compare,
+    ];
+    /// Its busy line.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Load => "Loading your requested PR context…",
+            Self::Send => "Sending the captured review…",
+            Self::Connect => "Connecting your GitHub account…",
+            Self::Disconnect => "Disconnecting GitTurtle from GitHub…",
+            Self::Compare => "Comparing the PR's changes locally…",
+        }
+    }
+    /// Whether it sends an outbound action, whose outcome may be uncertain
+    /// once cancelled: the panel stays open while it runs.
+    fn writing(self) -> bool {
+        self == Self::Send
+    }
+}
+/// Whether `label`, the window's busy spell, is a request of the panel.
+pub(crate) fn runs_request(label: &str) -> bool {
+    RequestKind::ALL.iter().any(|kind| kind.label() == label)
+}
+/// Why a control the window's busy spell refuses waits while it is a
+/// request of the panel ([`GitTurtle::busy_reason`]).
+pub(crate) const REQUEST_REASON: &str = "Wait for the GitHub request to finish";
 /// What a request's reply says when none arrives.
 const INTERRUPTED: &str = "GitHub operation was interrupted. Its outcome may be uncertain; check the destination before submitting again.";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -500,7 +548,9 @@ struct Panel {
     local_loading: bool,
     local_generation: u64,
     local_task: Option<Task<()>>,
-    writing: bool,
+    /// What the request the panel sent last does, which its busy line names
+    /// while it runs.
+    request: RequestKind,
     closed: bool,
     confirm: Option<Confirmation>,
     control: Option<OperationControl>,
@@ -534,7 +584,7 @@ impl Panel {
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
             rows:vec![],page:1,has_next:false,pull:None,status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
-            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),error:None,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,writing:false,closed:false,
+            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),error:None,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
         if this.review.fixture {
@@ -885,13 +935,13 @@ impl Panel {
         self.draft_issue = Some(issue);
         self.presses.issue = self.presses.issue.wrapping_add(1);
     }
-    /// Sends `operation` as the window's busy spell
+    /// Sends `operation`, a request of `kind`, as the window's busy spell
     /// ([`GitTurtle::submit_github_request`]) and hands its reply to
     /// `receive`. Returns whether it was sent: while a request of the panel
     /// or a Git write runs, nothing is, and the panel says why.
     fn run<T: Send + 'static>(
         &mut self,
-        writing: bool,
+        kind: RequestKind,
         operation: impl FnOnce(OperationControl) -> anyhow::Result<T> + Send + 'static,
         receive: impl FnOnce(anyhow::Result<T>, &mut Self, &mut Window, &mut Context<Self>) + 'static,
         window: &mut Window,
@@ -902,25 +952,25 @@ impl Panel {
         }
         let repository = self.repo.path().to_owned();
         let submitted = self.owner.update(cx, |owner, cx| {
-            owner.submit_github_request(writing, repository, operation, window, cx)
+            owner.submit_github_request(kind, repository, operation, window, cx)
         });
         let Ok(submitted) = submitted else {
             self.refuse("The repository window is unavailable.");
             return false;
         };
-        let Some((control, response)) = submitted else {
-            self.refuse(format!(
-                "{}, then try again.",
-                crate::workspace::BUSY_REASON
-            ));
-            cx.notify();
-            return false;
+        let (control, response) = match submitted {
+            Ok(submitted) => submitted,
+            Err(reason) => {
+                self.refuse(format!("{reason}, then try again."));
+                cx.notify();
+                return false;
+            }
         };
         self.control = Some(control);
         self.request_generation = self.request_generation.wrapping_add(1);
         let generation = self.request_generation;
         self.pending = true;
-        self.writing = writing;
+        self.request = kind;
         self.error = None;
         self.notice = None;
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
@@ -932,7 +982,6 @@ impl Panel {
                     return;
                 }
                 this.pending = false;
-                this.writing = false;
                 this.control = None;
                 // The busy row goes: focus on its Cancel moves to the section
                 // the panel shows, as when it opens, before the reply moves it
@@ -960,7 +1009,7 @@ impl Panel {
             return;
         }
         self.run(
-            false,
+            RequestKind::Connect,
             |control| GhTransport::connect_existing(&control),
             |result, this, _, _| match result {
                 Ok(login) => {
@@ -986,7 +1035,7 @@ impl Panel {
         };
         let fixture = self.review.fixture;
         let moved = self.review.fixture_moved;
-        self.run(false,move|control|{let transport=UiTransport::open(fixture,moved)?;let login=transport.login().to_owned();Ok((Client(transport).list(&repository,page,&control)?,login))},|result,this,_,_|match result {Ok((page,login))=>{this.create=false;this.review.show_list=true;this.confirm=None;this.rows=page.items;this.page=page.page;this.has_next=page.has_next;this.account=Some(login);this.notice=Some("PR list refreshed. Selecting a PR explicitly loads its current review and check status.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        self.run(RequestKind::Load,move|control|{let transport=UiTransport::open(fixture,moved)?;let login=transport.login().to_owned();Ok((Client(transport).list(&repository,page,&control)?,login))},|result,this,_,_|match result {Ok((page,login))=>{this.create=false;this.review.show_list=true;this.confirm=None;this.rows=page.items;this.page=page.page;this.has_next=page.has_next;this.account=Some(login);this.notice=Some("PR list refreshed. Selecting a PR explicitly loads its current review and check status.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
     }
     fn inspect(&mut self, pull: PullRequest, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(window, cx);
@@ -999,7 +1048,7 @@ impl Panel {
         };
         let fixture = self.review.fixture;
         let moved = self.review.fixture_moved;
-        self.run(false,move|control|{
+        self.run(RequestKind::Load,move|control|{
             let mut client=Client(UiTransport::open(fixture,moved)?);
             let pull=client.pull(&repository,pull.number,&control)?;
             let captured=pull.capture(repository);
@@ -1062,7 +1111,7 @@ impl Panel {
     fn load_templates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let repo = self.repo.clone();
         let revision = self.base.read(cx).value().to_string();
-        self.run(false,move|_|github::local_templates(&repo,&revision),|result,this,_,_|match result {Ok(templates)=>{this.templates=templates;this.notice=Some("Templates came from the locally available base revision. Choose one to append its exact text; repository HTML is never executed.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
+        self.run(RequestKind::Load,move|_|github::local_templates(&repo,&revision),|result,this,_,_|match result {Ok(templates)=>{this.templates=templates;this.notice=Some("Templates came from the locally available base revision. Choose one to append its exact text; repository HTML is never executed.".into());},Err(error)=>this.error=Some(format!("{error:#}"))},window,cx);
     }
     fn review_submission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(window, cx);
@@ -1099,7 +1148,7 @@ impl Panel {
         let moved = self.review.fixture_moved;
         if let Draft::Pull(pull) = draft {
             self.run(
-                false,
+                RequestKind::Load,
                 move |control| {
                     let transport = UiTransport::open(fixture, moved)?;
                     let account = transport.login().to_owned();
@@ -1149,7 +1198,7 @@ impl Panel {
         let fixture = self.review.fixture;
         let moved = self.review.fixture_moved;
         let sent_action = confirmation.action.clone();
-        let sent = self.run(true, move |control| {
+        let sent = self.run(RequestKind::Send, move |control| {
             let transport = UiTransport::open(fixture, moved)?;
             anyhow::ensure!(transport.login() == confirmation.account, "The connected GitHub account changed. Review the destination again before submitting.");
             let destination = format!("{} · account {}", confirmation.action.destination(), confirmation.account);
@@ -1244,7 +1293,7 @@ impl Panel {
         });
     }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pending && self.writing {
+        if self.pending && self.request.writing() {
             self.refuse("A GitHub action is in progress for this captured destination. Wait for the result, or choose Cancel and inspect GitHub before resubmitting.");
             cx.notify();
             return;
@@ -1261,7 +1310,6 @@ impl Panel {
         self.review.opened.set(false);
         self.request_generation = self.request_generation.wrapping_add(1);
         self.pending = false;
-        self.writing = false;
         self.task = None;
         self.review.suspend_preparation();
         self.local_generation = self.local_generation.wrapping_add(1);
@@ -1297,7 +1345,7 @@ impl Panel {
         let repo = self.repo.clone();
         let cancellation = HistoryCancellation::default();
         self.local_control = Some(cancellation.clone());
-        self.run(false, move |_| {
+        self.run(RequestKind::Compare, move |_| {
             let comparison = repo.compare_revisions(&target.pull.base.sha, &target.pull.head.sha, gitturtle_core::ComparisonMode::SinceBranching, &cancellation)?;
             Ok((target.worktree, comparison))
         }, |result, this, window, cx| match result {
@@ -1378,14 +1426,14 @@ impl Render for Panel {
                 .child(div().flex().flex_wrap().gap_2()
                     .child(button("github-connect","Connect GitHub CLI account","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx))))
                     .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
-                    .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|{this.run(false,|_|SecureStore.remove(),|result,this,_,_|match result{Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx);}))))))
+                    .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|{this.run(RequestKind::Disconnect,|_|SecureStore.remove(),|result,this,_,_|match result{Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx);}))))))
             .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).text_color(rgb(p.muted))))
             .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
             .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
             .when(pending,|element|element.child(self.part("busy",div(),cx).flex().items_center().gap_2().pl(text_inset())
-                .child(label("github-busy",if self.writing{SENDING}else{LOADING}).role(Role::Status).live_region(gpui::accesskit::Live::Polite, true))
+                .child(label("github-busy",self.request.label()).role(Role::Status).live_region(gpui::accesskit::Live::Polite, true))
                 .child(button("github-cancel","Cancel","",false).track_focus(self.cancel_request.handle()).debug_selector(||"github-cancel".into()).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
-                    if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(if this.writing{"Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."}else{"Cancellation requested. Your review draft is retained."}.into());cx.notify();})))))
+                    if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(if this.request.writing(){"Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."}else{"Cancellation requested. Your review draft is retained."}.into());cx.notify();})))))
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
                 // The list scrolls, so it clips its rows on both axes. Its full-width rows keep
                 // their rings' room inside that clip: its sides give the room back through their
@@ -1909,7 +1957,7 @@ mod tests {
             (
                 "Refresh PRs",
                 |panel, window, cx| panel.refresh(1, window, cx),
-                LOADING,
+                RequestKind::Load.label(),
             ),
             (
                 "a review comment",
@@ -1924,7 +1972,7 @@ mod tests {
                     });
                     panel.submit(window, cx);
                 },
-                SENDING,
+                RequestKind::Send.label(),
             ),
         ];
         for (index, (request, send, label)) in requests.into_iter().enumerate() {
@@ -2088,7 +2136,7 @@ mod tests {
         });
         assert_eq!(
             app.read_with(cx, |app, _| app.operation_busy),
-            Some(SENDING)
+            Some(RequestKind::Send.label())
         );
         assert!(cx.debug_bounds("github-confirmation").is_none());
         drop(held);
@@ -2098,6 +2146,110 @@ mod tests {
             assert!(!panel.pending, "it answered");
             assert_eq!(panel.error, None, "the fixture accepted it");
         });
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+    }
+
+    /// Each kind of request the panel sends names itself in the panel's
+    /// busy line and the window's operation bar, and what the busy spell
+    /// refuses meanwhile says it waits for the GitHub request: Projects'
+    /// tooltip, and the palette's and the Linux Main Menu's rows. Connecting
+    /// the account and Disconnect once read "Loading your requested PR
+    /// context…", and the refusals said to wait for "the current Git
+    /// operation". A Git write's refusals still name the Git operation.
+    #[gpui::test]
+    async fn each_github_request_names_itself_and_what_refusals_wait_for(cx: &mut TestAppContext) {
+        use crate::command_palette::CommandId;
+        use crate::views::tests::{draw, settle};
+        use crate::workspace::{BUSY_LOOK_DELAY, BUSY_REASON, refusals};
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        // Wide enough that the header draws the busy look's progress label,
+        // and Changes, whose header has Projects, where History's root has
+        // Back to Projects.
+        cx.simulate_resize(size(px(1600.), px(900.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        // Once the spell looks busy: Projects' tooltip and Tags' row.
+        let refusals_once_busy = |cx: &mut VisualTestContext| {
+            cx.executor().advance_clock(BUSY_LOOK_DELAY);
+            draw(cx);
+            (
+                refusals::tooltip("projects").map(|tooltip| tooltip.to_string()),
+                cx.update(|window, cx| {
+                    app.read(cx)
+                        .menu_command_reason(CommandId::Tags, window, cx)
+                }),
+            )
+        };
+        let mut labels = Vec::new();
+        for kind in RequestKind::ALL {
+            // The request held as a slow network holds it.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let sent = cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.run(
+                        kind,
+                        |_| Ok(()),
+                        |_: anyhow::Result<()>, _, _, _| {},
+                        window,
+                        cx,
+                    )
+                })
+            });
+            assert!(sent, "{kind:?} is sent");
+            let (tooltip, palette) = refusals_once_busy(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_shown()),
+                Some(kind.label()),
+                "{kind:?}: the operation bar names it"
+            );
+            assert!(cx.debug_bounds("operation-progress").is_some());
+            assert_eq!(
+                panel.read_with(cx, |panel, _| panel.request.label()),
+                kind.label(),
+                "{kind:?}: so does the panel's busy line"
+            );
+            assert!(cx.debug_bounds("github-busy").is_some());
+            assert_eq!(
+                tooltip.as_deref(),
+                Some("Open Projects · Wait for the GitHub request to finish"),
+                "{kind:?}: Projects waits for it"
+            );
+            assert_eq!(palette, Some(REQUEST_REASON), "{kind:?}: so does Tags");
+            labels.push(kind.label());
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle_panel(&app, cx).await;
+            assert_eq!(app.read_with(cx, |app, _| app.operation_busy), None);
+        }
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(
+            labels.len(),
+            RequestKind::ALL.len(),
+            "each kind has its own line"
+        );
+        // Stage all, held: its refusals name the Git operation.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::StageAll,
+                    "Staging files…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        let (tooltip, palette) = refusals_once_busy(cx);
+        assert_eq!(
+            tooltip.as_deref(),
+            Some(format!("Open Projects · {BUSY_REASON}").as_str())
+        );
+        assert_eq!(palette, Some(BUSY_REASON));
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
         settle_panel(&app, cx).await;
     }

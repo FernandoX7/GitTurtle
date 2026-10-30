@@ -879,7 +879,7 @@ impl Panel {
         let fixture = self.review.fixture;
         let moved = self.review.fixture_moved;
         self.run(
-            false,
+            RequestKind::Load,
             move |control| Client(UiTransport::open(fixture, moved)?).files(&pull, page, &control),
             |result, this, _, _| match result {
                 Ok(page) => this.receive_file_page(page),

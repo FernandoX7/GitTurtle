@@ -250,7 +250,7 @@ impl Panel {
         let requested = cursor.clone();
         self.confirm = None;
         self.run(
-            false,
+            RequestKind::Load,
             move |control| {
                 Client(UiTransport::open(fixture, moved)?).review_threads(
                     &pull,
@@ -282,7 +282,7 @@ impl Panel {
         let captured = target.clone();
         self.confirm = None;
         self.run(
-            false,
+            RequestKind::Load,
             move |control| {
                 Client(UiTransport::open(fixture, moved)?).thread_comments(
                     &target,
