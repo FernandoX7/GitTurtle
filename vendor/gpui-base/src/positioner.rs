@@ -155,14 +155,32 @@ impl Positioner {
     /// side with more room. It moves in from the window's sides as a corner
     /// does, and by whole pixels away from the point, never onto it.
     /// A popup that fits on neither side is still clamped into the window,
-    /// over the point. [`Positioner::corner`] keeps the corner at the point
-    /// and only clamps, so a popup near the window's foot slid up over the
-    /// point it was opened at.
+    /// over the point, unless the caller caps it at
+    /// [`Positioner::point_room`]. [`Positioner::corner`] keeps the corner at
+    /// the point and only clamps, so a popup near the window's foot slid up
+    /// over the point it was opened at.
     pub fn point(position: Point<Pixels>) -> Self {
         Self {
             strategy: Strategy::Point { position },
             ..Self::corner(Anchor::TopLeft, position)
         }
+    }
+
+    /// GitTurtle patch: for [`Positioner::point`], the tallest the popup
+    /// may be in `window` to lie wholly below or wholly above its point,
+    /// with this positioner's margin and bottom inset: the room on the side
+    /// with more. A caller caps a scrolling popup at it so that it never
+    /// covers the point, however short the window. `None` for the other
+    /// placements.
+    pub fn point_room(&self, window: &Window) -> Option<Pixels> {
+        let Strategy::Point { position } = self.strategy else {
+            return None;
+        };
+        let (viewport, margin) = self.viewport(window);
+        // The rooms the side placement weighs ([`Strategy::as_side`]).
+        let below = viewport.height - margin - position.y.ceil();
+        let above = position.y.floor() - margin;
+        Some(below.max(above).max(px(0.)))
     }
 
     /// The viewport a popup is resolved in and the margin it keeps there:

@@ -8,8 +8,9 @@
 //! the window less 8 px and above the room an application keeps at its foot
 //! (`gpui_base::popup_bottom_inset`), and never over the point it was opened
 //! at: below the pointer where it fits, otherwise above it, its bottom edge
-//! at the pointer. GPUI's `anchored` snap kept it only inside the window, so
-//! an input's right-click menu near the window's foot ended over a status
+//! at the pointer, its items capped at the room on the side with more and
+//! scrolled past it. GPUI's `anchored` snap kept it only inside the window,
+//! so an input's right-click menu near the window's foot ended over a status
 //! bar, and kept above the bar by sliding up, it covered the line clicked.
 
 use gpui::{
@@ -30,7 +31,7 @@ pub(crate) struct FallbackMenuOverlay {
 struct ActiveMenu {
     menu: Entity<PopupMenu>,
     position: Point<Pixels>,
-    _subscription: Subscription,
+    _subscriptions: [Subscription; 2],
 }
 
 /// GitTurtle patch: how the menu opened at `position` is placed: wholly
@@ -61,34 +62,71 @@ impl FallbackMenuOverlay {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let menu = build_popup(items, action_context, window, cx);
+        // GitTurtle patch: its items are no taller than the room the point
+        // leaves on its roomier side, and scroll past that, so in a window
+        // too short to hold them below or above the point it still lies
+        // wholly on one side of it rather than clamped over it.
+        let room = placement(position, window, cx).point_room(window);
+        let menu = build_popup(items, action_context.clone(), room, window, cx);
 
-        let subscription = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+        let dismissed = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
             this.active = None;
             cx.notify();
+        });
+        // GitTurtle patch: a resized window, as a tiling compositor re-tiles
+        // it, closes the menu, as it closes the application's other menus:
+        // its side and its cap were chosen for the size it opened in, and
+        // the field it was opened on may have moved. Focus the menu holds
+        // returns to that field, which its own dismissal would have done.
+        let viewport = window.viewport_size();
+        let resized = cx.observe_window_bounds(window, move |this, window, cx| {
+            if window.viewport_size() == viewport {
+                return;
+            }
+            if let Some(active) = this.active.take() {
+                if active.menu.focus_handle(cx).contains_focused(window, cx) {
+                    if let Some(handle) = action_context.as_ref() {
+                        window.focus(handle, cx);
+                    }
+                }
+                cx.notify();
+            }
         });
         menu.focus_handle(cx).focus(window, cx);
 
         self.active = Some(ActiveMenu {
             menu,
             position,
-            _subscription: subscription,
+            _subscriptions: [dismissed, resized],
         });
         cx.notify();
     }
 }
 
 /// Recursively build a [`PopupMenu`] entity from native menu items.
+///
+/// GitTurtle patch: a menu given a `cap` scrolls its items past it, with the
+/// kit's capped-menu fold and scrollbar, unless it holds a submenu, which a
+/// scrolling menu cannot show; a submenu is never capped.
 #[allow(dead_code)] // Only used where the native menu falls back (e.g. Linux).
 fn build_popup(
     items: Vec<NativeMenuItem>,
     action_context: Option<FocusHandle>,
+    cap: Option<Pixels>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<PopupMenu> {
+    let cap = cap.filter(|_| {
+        !items
+            .iter()
+            .any(|item| matches!(item, NativeMenuItem::Submenu { .. }))
+    });
     PopupMenu::build(window, cx, move |mut menu, window, cx| {
         if let Some(handle) = action_context.clone() {
             menu = menu.action_context(handle);
+        }
+        if let Some(cap) = cap {
+            menu = menu.max_h(cap).scrollable(true);
         }
         for item in items {
             menu = match item {
@@ -119,7 +157,7 @@ fn build_popup(
                     disabled,
                     items,
                 } => {
-                    let submenu = build_popup(items, action_context.clone(), window, cx);
+                    let submenu = build_popup(items, action_context.clone(), None, window, cx);
                     menu.item(PopupMenuItem::submenu(label, submenu).disabled(disabled))
                 }
             };

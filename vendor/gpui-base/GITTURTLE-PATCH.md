@@ -214,7 +214,11 @@ side with more room, moving in from the window's sides as a corner does. One
 below the point starts at a whole pixel; one above it moves up to a whole
 pixel rather than to the nearest, since a height that ends in half a pixel,
 as on a display of scale 2, would otherwise carry its bottom half a pixel
-below the point's pixel row. The
+below the point's pixel row. A popup that fits on neither side is still
+clamped over the point, so `Positioner::point_room` gives the room on the
+side with more, with the positioner's margin and bottom inset, at which a
+caller caps a scrolling popup so that it never covers the point however short
+its window. The
 consumer is the component's `NativeMenu` fallback, the drawn menu a
 right-click in an input, text area or editor shows on Linux
 ([component patch](../gpui-component/GITTURTLE-PATCH.md)).
@@ -222,7 +226,11 @@ right-click in an input, text area or editor shows on Linux
 covers the side it takes, through
 `scripts/vendor-crate-test.sh vendor/gpui-base positioner::`;
 `cargo test --locked -p gitturtle an_inputs_menu_opens` covers it in the
-app, below the commit title's pointer and wholly above it. Remove this part
+app, below the Working Changes filter's pointer and wholly above the commit
+title's, and
+`an_editors_menu_too_tall_for_either_side_scrolls_beside_the_point` covers
+the room, capping a code editor's menu beside the point in a 461 × 330
+window. Remove this part
 of the patch when upstream places a popup at a point on the side that holds
 it, never over the point, and those tests pass without it.
 

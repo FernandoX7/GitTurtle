@@ -559,7 +559,14 @@ shows where the platform has no OS-native popup, Linux among them
 the same margin and inset and never covers the point it was opened at: the
 base `Positioner::point` places it with its top at the pointer where its
 items fit below it, and otherwise wholly above the pointer, its bottom edge
-there. GPUI's anchor kept it only inside the window, less 8 px, so a
+there. Its items are capped at the room the pointer leaves on the side with
+more (`Positioner::point_room`) and scroll past it, with the capped menu's
+fold and scrollbar, so where neither side holds them it still lies wholly on
+one side of the point; a menu that holds a submenu, which a scrolling menu
+cannot show, is not capped, and no input's menu holds one. A resized window
+closes it and returns the focus it holds to the field it was opened on, as
+the application's menus close, since its side and cap were chosen for the
+old size. GPUI's anchor kept it only inside the window, less 8 px, so a
 right-click near the foot of an editor low in the window ended over the
 status bar, and placed as a context menu is, it then slid up just far enough
 to clear the bar, over the line clicked. A popover's
@@ -608,6 +615,12 @@ clear the bar, it covered the point clicked.
 `an_inputs_menu_opens_at_the_pointer_where_it_fits_below` right-clicks in the
 Working Changes filter, with room below, and reads the menu's top at the
 pointer, never above it.
+`an_editors_menu_too_tall_for_either_side_scrolls_beside_the_point`
+right-clicks mid-window in a kit code editor at 18 pt in 461 × 330, under the
+app's status-bar inset, and reads its eight-entry menu, which fits neither
+side, capped beside the point with its scrollbar, Down scrolling Select All
+into view, and closed by a resize with focus back in the editor: clamped, it
+lay over the point.
 Remove the dropdown half of this patch (`src/popover.rs`, `src/styled.rs`)
 and the fallback menu's (`src/native_menu/fallback.rs`) when upstream lets an
 application keep popups clear of a region at the window's foot, and those

@@ -18891,6 +18891,176 @@ pub(crate) mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A kit code editor 120 px tall, `top` below the window's top, as
+    /// Compare's text and the dialogs' details are, whose right-click menu
+    /// holds a code editor's items.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    struct CodeEditorProbe {
+        editor: Entity<EditorState>,
+        top: Pixels,
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    impl Render for CodeEditorProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().pt(self.top).px(px(16.)).child(
+                div()
+                    .debug_selector(|| "code-editor-probe".into())
+                    .h(px(120.))
+                    .child(gpui_kit::component::input::Editor::new(&self.editor).h_full()),
+            )
+        }
+    }
+
+    /// At 18 pt in a 461 × 330 window, as the app keeps its menus above the
+    /// status bar, a right-click in the middle of a code editor opens its
+    /// menu (Go to Definition, Show Code Actions, Cut, Copy, Paste, Select
+    /// All), which fits neither below the pointer nor above it, on the side
+    /// with more room, its items capped at that room and scrolled past it
+    /// with the scrollbar a capped menu shows: it never covers the point
+    /// clicked, keeps its drawn edge 8 px or more above the status bar and
+    /// stays where it opened. Down reaches its last item, Select All, below
+    /// its fold, and scrolls it into view. A resized window closes it, focus
+    /// back in the editor. Clamped into the window, it lay over the point;
+    /// capped for the size it opened in, it could after a resize again.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[gpui::test]
+    async fn an_editors_menu_too_tall_for_either_side_scrolls_beside_the_point(
+        cx: &mut TestAppContext,
+    ) {
+        const LABELS: [&str; 6] = [
+            "Go to Definition",
+            "Show Code Actions",
+            "Cut",
+            "Copy",
+            "Paste",
+            "Select All",
+        ];
+        let at = "18 pt in 461 × 330";
+        let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::native_accessibility::keep_popups_above_the_status_bar(cx);
+        });
+        let editor = std::rc::Rc::new(RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let editor = editor.clone();
+            move |window, cx| {
+                let state = cx.new(|cx| {
+                    EditorState::new(window, cx).default_value("one\ntwo\nthree\nfour\nfive")
+                });
+                *editor.borrow_mut() = Some(state.clone());
+                let probe = cx.new(|_| CodeEditorProbe {
+                    editor: state,
+                    top: px(90.),
+                });
+                gpui_kit::component::Root::new(probe, window, cx)
+            }
+        });
+        let editor = editor.borrow().clone().expect("the editor");
+        cx.update(|window, cx| {
+            appearance::ThemeChoice::Midnight.apply(Some(window), cx);
+            appearance::apply_text_sizes(18, 12, window, cx);
+        });
+        cx.simulate_resize(size(px(461.), px(330.)));
+        draw(cx);
+        let field = cx.debug_bounds("code-editor-probe").expect("the editor");
+        let (status, foot) = cx.update(|window, _| {
+            (
+                crate::theme_editor::status_bar_top(window),
+                crate::native_accessibility::menu_foot(window),
+            )
+        });
+        // Half way between the window's 8 px margin and the menu's foot.
+        let pointer = point(field.center().x, ((px(8.) + foot) / 2.).floor() + px(0.5));
+        assert!(
+            field.contains(&pointer),
+            "{at}: {pointer:?} lies in {field:?}"
+        );
+        // Focus in the editor, as a click into it leaves it.
+        cx.update(|window, cx| editor.read(cx).focus_handle(cx).focus(window, cx));
+        let surface = right_click_field(cx, pointer, "Go to Definition", at);
+        let rows = menu_rows(cx, &LABELS);
+        assert_eq!(
+            rows.len(),
+            LABELS.len(),
+            "{at}: the code editor's menu {rows:?}"
+        );
+        let tall = rows[5].1.bottom() - rows[0].1.top();
+        let (below, above) = (foot - pointer.y.ceil(), pointer.y.floor() - px(8.));
+        assert!(
+            tall > below && tall > above,
+            "{at}: its rows, {tall:?} tall, fit neither the {below:?} below {pointer:?} nor the {above:?} above"
+        );
+        assert!(
+            surface.bottom() <= pointer.y || surface.top() >= pointer.y,
+            "{at}: the menu {surface:?} lies wholly on one side of the point clicked {pointer:?}"
+        );
+        assert!(
+            !surface.contains(&pointer),
+            "{at}: the menu {surface:?} covers the point clicked {pointer:?}"
+        );
+        assert!(
+            surface.top() >= px(8.) - px(0.01)
+                && surface.bottom() + edge <= status - px(8.) + px(0.01),
+            "{at}: the menu {surface:?} stays 8 px inside the window and above the bar at {status:?}"
+        );
+        // Whole rows above its fold, the rest past it, and the scrollbar
+        // that cues them.
+        for (label, row) in &rows {
+            assert!(
+                row.bottom() <= surface.bottom() + px(0.01)
+                    || row.top() >= surface.bottom() - px(0.01),
+                "{at}: the menu {surface:?} cuts {label:?} at {row:?}"
+            );
+        }
+        assert!(
+            cx.debug_bounds("popup-menu-scrollbar").is_some(),
+            "{at}: the menu shows its scrollbar"
+        );
+        assert!(
+            rows[5].1.top() >= surface.bottom() - px(0.01),
+            "{at}: Select All {:?} lies past the fold of {surface:?}",
+            rows[5].1
+        );
+        let cursor = cx.update(|_, cx| {
+            gpui_kit::Background::from(gpui_kit::component::Theme::global(cx).list_active)
+        });
+        let on_select_all = |cx: &mut VisualTestContext| {
+            let row = menu_rows(cx, &["Select All"])[0].1;
+            (row, appearance::painted_row(cx, row).0.contains(&cursor))
+        };
+        for _ in 0..LABELS.len() {
+            if on_select_all(cx).1 {
+                break;
+            }
+            cx.simulate_keystrokes("down");
+            draw(cx);
+        }
+        let (row, reached) = on_select_all(cx);
+        assert!(reached, "{at}: Down reaches Select All");
+        assert_eq!(
+            menu_surface(cx, row),
+            surface,
+            "{at}: the menu stays where it opened"
+        );
+        assert!(
+            row.top() >= surface.top() - px(0.01) && row.bottom() <= surface.bottom() + px(0.01),
+            "{at}: Select All {row:?} scrolled into the menu {surface:?}"
+        );
+        cx.simulate_resize(size(px(461.), px(360.)));
+        draw(cx);
+        assert!(
+            menu_rows(cx, &["Select All"]).is_empty(),
+            "{at}: a resized window closes the menu"
+        );
+        assert!(
+            cx.update(|window, cx| editor.read(cx).focus_handle(cx).is_focused(window)),
+            "{at}: focus is back in the editor"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The open menu's rows labelled `labels`, in order, where the last frame
     /// drew them, inside or past the menu's fold: an item's whatever its
     /// state, or a label's.
@@ -18898,11 +19068,13 @@ pub(crate) mod tests {
         cx: &mut VisualTestContext,
         labels: &[&str],
     ) -> Vec<(String, Bounds<Pixels>)> {
-        const ROLES: [&str; 5] = [
+        const ROLES: [&str; 7] = [
             "MenuItem",
             "MenuItem disabled",
             "MenuItemCheckBox True",
             "MenuItemCheckBox False",
+            "MenuItemCheckBox True disabled",
+            "MenuItemCheckBox False disabled",
             "Label",
         ];
         labels
