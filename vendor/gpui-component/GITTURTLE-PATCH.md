@@ -1013,9 +1013,11 @@ reported under the pointer (`hovered_index`); a frame's synthetic move at the
 same place does not count. A wheel that moves nothing, over a menu whose rows
 fit or at the end of its rows, changes nothing.
 
-A menu drawn elsewhere moves its rows under a still pointer too: a row's menu
-follows its row when rows arrive above it, and a menu opened above its
-button moves as its height changes. GPUI's paint compares each hover
+A menu laid out at another place or size moves its rows under a still pointer
+too: a row's menu follows its row when rows arrive above it, a menu opened
+above its button moves as its height changes, and a menu built again in place
+grows wider or taller, as History's commit menu gains Amend last commit… and
+Undo last local commit… when its commit becomes HEAD. GPUI's paint compares each hover
 listener's state with the frame's hit test and defers a hover report where
 they differ, so once the frame was drawn the row that arrived under the
 pointer took the selection: on a narrow Working row at 18 pt in a 461 px
@@ -1023,11 +1025,21 @@ window, the keys on Discard changes… and the pointer resting on it, a file
 that sorts above notes.txt changed outside the app, the menu moved down with
 its row, Stage arrived under the pointer, and Enter staged the file. The
 surface's prepaint (`surface_laid_out`, beside the bounds it records) now
-compares where the surface is laid out with the last frame's place
-(`surface_origin`); where it moved with the pointer over the surface then or
+compares the bounds the surface is laid out at with the last frame's
+(`surface`); where they differ with the pointer over the surface then or
 now, it does what a wheel does, before that frame's hover reports run: it
 records the pointer's place, a pointer selection gives the selection up and
-a keyboard one stays. The first layout moves nothing.
+a keyboard one stays. The first layout moves nothing. Compared by its origin
+alone, a menu that grew at its place under a pointer resting just beside or
+below it let the row that arrived take the selection, a keyboard's cursor
+among it, and Enter ran that row.
+
+The hover itself never moves a keyboard's cursor under a pointer that has not
+moved. The prepaint also records where the pointer was (`pointer_at_layout`);
+a hover report that finds the pointer still there while the keyboard owns
+the cursor came from rows that moved, as rows scrolled under the pointer
+inside a surface that stays put, so the pointer is still from there: the row
+only records its hover, and takes the selection once the pointer moves.
 
 The consumers are every capped menu the app opens through
 `native_accessibility::open_menu`, as the capped-menu patch lists, every
@@ -1049,8 +1061,20 @@ staged, until a 1 px move lights Stage. The crate's own
 run out of tree like the rebuild tests below, draws a menu a row lower under
 the pointer on Three and reads nothing selected, Two selected after the
 pointer moves, and a keyboard's cursor on One kept as the menu moves back up
-a row. Without `surface_laid_out` the app test reads Stage lit and the
-crate's reads Two selected. Remove this part of the patch when upstream
+a row. `a_menu_that_grows_wider_under_the_still_pointer_keeps_the_cursor`
+builds a menu again wider under a pointer resting 12 px beside it, the keys'
+cursor on Three, and reads the cursor kept and Enter running Three, with Two
+under the pointer;
+`a_menu_that_grows_taller_under_the_still_pointer_selects_nothing` builds it
+again with Five under a pointer resting 6 px below it and reads nothing
+selected and nothing run until a 1 px move selects Five; and
+`rows_scrolled_under_the_still_pointer_keep_the_keyboards_cursor` scrolls a
+capped menu a row under the pointer, the cursor on Item 0, and reads the
+cursor kept until a 1 px move selects Item 2. Without `surface_laid_out` the
+app test reads Stage lit and the crate's reads Two selected; compared by the
+origin alone, the taller menu's Five takes the selection; without the hover's
+keyboard rule, Item 2 takes the cursor; without both, the wider menu's Two
+takes it and Enter runs Two. Remove this part of the patch when upstream
 lights at most the row under the pointer after a wheel or a move of the
 menu and those tests pass without it.
 

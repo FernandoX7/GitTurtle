@@ -506,9 +506,13 @@ pub struct PopupMenu {
     /// GitTurtle patch: the item GPUI last reported under the pointer, which
     /// takes the selection once a still pointer moves.
     hovered_index: Option<usize>,
-    /// GitTurtle patch: where the surface was laid out in the last frame,
+    /// GitTurtle patch: the surface's bounds as the last frame laid it out,
     /// or `None` before its first layout ([`PopupMenu::surface_laid_out`]).
-    surface_origin: Option<Point<Pixels>>,
+    surface: Option<Bounds<Pixels>>,
+    /// GitTurtle patch: where the pointer was as the last frame laid the
+    /// surface out. A hover report with the pointer still there came from
+    /// rows that moved, not from the pointer.
+    pointer_at_layout: Option<Point<Pixels>>,
     min_width: Option<Pixels>,
     max_width: Option<Pixels>,
     max_height: Option<Pixels>,
@@ -557,7 +561,8 @@ impl PopupMenu {
             pointer_selection: false,
             still_pointer: None,
             hovered_index: None,
-            surface_origin: None,
+            surface: None,
+            pointer_at_layout: None,
             min_width: None,
             max_width: None,
             max_height: None,
@@ -1677,27 +1682,32 @@ impl PopupMenu {
     }
 
     /// GitTurtle patch: the surface was laid out at `bounds`. Where the last
-    /// frame laid it out elsewhere, with the pointer over it then or now,
-    /// its rows moved under a pointer that stayed where it was, as a row's
-    /// menu follows its row when rows arrive above it, or a menu opened
-    /// above its button changes height. Once the frame is drawn GPUI reports
-    /// the row that arrived under the pointer hovered, and upstream gave it
-    /// the selection, so Enter ran an item the person never pointed at. As
-    /// after a wheel ([`PopupMenu::rows_scrolled`]), a pointer's selection is
-    /// given up and no row takes it until the pointer moves; a keyboard's
-    /// stays where it is. The first layout moves nothing.
+    /// frame laid it out at another place or size, with the pointer over it
+    /// then or now, its rows moved under a pointer that stayed where it was,
+    /// as a row's menu follows its row when rows arrive above it, a menu
+    /// opened above its button changes height, or a menu built again in
+    /// place grows wider or taller, as History's commit menu gains its Amend
+    /// and Undo items when its commit becomes HEAD. Once the frame is drawn
+    /// GPUI reports the row that arrived under the pointer hovered, and
+    /// upstream gave it the selection, so Enter ran an item the person never
+    /// pointed at. As after a wheel ([`PopupMenu::rows_scrolled`]), a
+    /// pointer's selection is given up and no row takes it until the pointer
+    /// moves; a keyboard's stays where it is. The first layout moves
+    /// nothing. Compared by its origin alone, a menu that grew in place let
+    /// the row that arrived take the selection, a keyboard's cursor among
+    /// it.
     fn surface_laid_out(
         &mut self,
         bounds: Bounds<Pixels>,
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(before) = self.surface_origin.replace(bounds.origin) else {
+        let pointer = window.mouse_position();
+        self.pointer_at_layout = Some(pointer);
+        let Some(was) = self.surface.replace(bounds) else {
             return;
         };
-        let pointer = window.mouse_position();
-        let was = Bounds::new(before, self.bounds.size);
-        if before == bounds.origin || !(was.contains(&pointer) || bounds.contains(&pointer)) {
+        if was == bounds || !(was.contains(&pointer) || bounds.contains(&pointer)) {
             return;
         }
         self.still_pointer = Some(pointer);
@@ -1768,10 +1778,23 @@ impl PopupMenu {
             .keyboard(self.keyboard_selection)
             .checked(item.check_state())
             .still(self.still_pointer.is_some())
-            .on_hover(cx.listener(move |this, hovered, _, cx| {
-                // GitTurtle patch: a row a wheel moved under a still pointer,
-                // or out from under it, keeps the selection where it was
-                // until the pointer moves ([`PopupMenu::pointer_moved`]).
+            .on_hover(cx.listener(move |this, hovered, window, cx| {
+                // GitTurtle patch: a row a wheel or the menu's layout moved
+                // under a still pointer, or out from under it, keeps the
+                // selection where it was until the pointer moves
+                // ([`PopupMenu::pointer_moved`]). Where rows moved under a
+                // pointer that has not moved since the menu was laid out
+                // while the keyboard owns the cursor, however they moved,
+                // the pointer is still from there: the hover never moves the
+                // keyboard's cursor, so the row that arrived only records
+                // its hover.
+                let pointer = window.mouse_position();
+                if this.keyboard_selection
+                    && this.still_pointer.is_none()
+                    && this.pointer_at_layout == Some(pointer)
+                {
+                    this.still_pointer = Some(pointer);
+                }
                 let still = this.still_pointer.is_some();
                 if *hovered {
                     this.hovered_index = Some(ix);
@@ -2677,17 +2700,90 @@ mod tests {
         );
     }
 
-    /// A view that draws a menu `top` below the window's top, as a row's
-    /// menu is drawn beside its row.
+    /// A view that draws a menu `top` below the window's top and `left` in
+    /// from its left, as a row's menu is drawn beside its row, at the size
+    /// its rows give it.
     struct Placed {
         menu: Entity<PopupMenu>,
         top: Pixels,
+        left: Pixels,
     }
 
     impl Render for Placed {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().pt(self.top).child(self.menu.clone())
+            div()
+                .flex()
+                .items_start()
+                .pt(self.top)
+                .pl(self.left)
+                .child(self.menu.clone())
         }
+    }
+
+    /// The names of the items that ran, in order.
+    type Ran = Rc<std::cell::RefCell<Vec<&'static str>>>;
+
+    /// [`entries`] whose items, when they act, add their name to `ran`.
+    fn acting(menu: PopupMenu, items: &[(&'static str, bool)], ran: &Ran) -> PopupMenu {
+        items
+            .iter()
+            .fold(menu.label("Heading"), |menu, (name, enabled)| {
+                let (ran, name) = (ran.clone(), *name);
+                menu.item(
+                    PopupMenuItem::new(name)
+                        .disabled(!enabled)
+                        .on_click(move |_, _, _| ran.borrow_mut().push(name)),
+                )
+            })
+    }
+
+    /// A focused menu of `items` that run into `ran`, drawn at the window's
+    /// top left at the size its rows give it, with the menu keys bound.
+    fn placed<'a>(
+        cx: &'a mut TestAppContext,
+        items: &'static [(&'static str, bool)],
+        ran: &Ran,
+    ) -> (Entity<PopupMenu>, &'a mut VisualTestContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            init(cx);
+        });
+        let ran = ran.clone();
+        let (placed, cx) = cx.add_window_view(move |window, cx| {
+            let menu = cx.new(|cx| acting(PopupMenu::new(cx), items, &ran));
+            let focus = menu.read(cx).focus_handle.clone();
+            focus.focus(window, cx);
+            Placed {
+                menu,
+                top: px(0.),
+                left: px(0.),
+            }
+        });
+        draw(cx);
+        let menu = placed.read_with(cx, |placed, _| placed.menu.clone());
+        (menu, cx)
+    }
+
+    /// Builds the open menu again with `items` that run into `ran`.
+    fn rebuilt_acting(
+        menu: &Entity<PopupMenu>,
+        cx: &mut VisualTestContext,
+        items: &'static [(&'static str, bool)],
+        ran: &Ran,
+    ) {
+        let ran = ran.clone();
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, _| acting(menu, items, &ran))
+            })
+        });
+        draw(cx);
+    }
+
+    /// The item named `name`, as drawn.
+    fn drawn_item(cx: &mut VisualTestContext, name: &str) -> Bounds<Pixels> {
+        cx.debug_bounds(format!("menu-item: {name} · MenuItem").leak())
+            .unwrap_or_else(|| panic!("{name} drawn"))
     }
 
     /// A menu drawn elsewhere under a pointer that stays put, as a row's
@@ -2706,6 +2802,7 @@ mod tests {
         let (placed, cx) = cx.add_window_view(|_, cx| Placed {
             menu: cx.new(|cx| entries(PopupMenu::new(cx), FOUR)),
             top: px(0.),
+            left: px(0.),
         });
         draw(cx);
         let menu = placed.read_with(cx, |placed, _| placed.menu.clone());
@@ -2764,6 +2861,154 @@ mod tests {
             cursor(&menu, cx).as_deref(),
             Some("One"),
             "the keyboard's cursor stays on One"
+        );
+    }
+
+    /// A menu built again wider at its place, as History's commit menu gains
+    /// its Amend and Undo items when its commit becomes HEAD, under a pointer
+    /// resting just beside it, brings Two under the pointer: the keyboard's
+    /// cursor stays on Three and Enter runs Three. Compared by its origin
+    /// alone, the menu that grew had not moved, so Two took the selection
+    /// from the keyboard, and Enter ran Two.
+    #[gpui::test]
+    fn a_menu_that_grows_wider_under_the_still_pointer_keeps_the_cursor(cx: &mut TestAppContext) {
+        const WIDER: &[(&str, bool)] = &[
+            ("One", true),
+            ("Two", true),
+            ("Three", true),
+            ("Four", true),
+            ("Undo the last local commit on this branch…", true),
+        ];
+        let ran = Ran::default();
+        let (menu, cx) = placed(cx, FOUR, &ran);
+        cx.simulate_keystrokes("down down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Three"), "Down thrice");
+        let surface = menu.read_with(cx, |menu, _| menu.bounds);
+        let pointer = gpui::point(surface.right() + px(12.), drawn_item(cx, "Two").center().y);
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Three"),
+            "the pointer resting beside the menu"
+        );
+
+        rebuilt_acting(&menu, cx, WIDER, &ran);
+        assert!(
+            drawn_item(cx, "Two").contains(&pointer),
+            "the menu grew wider, Two under the pointer"
+        );
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Three"),
+            "the keyboard's cursor stays on Three"
+        );
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(*ran.borrow(), ["Three"], "Enter runs Three");
+    }
+
+    /// A menu built again taller at its place under a pointer resting just
+    /// below it brings the item it adds, Five, under the pointer: nothing is
+    /// selected and Enter runs nothing until the pointer moves, which
+    /// selects Five. Compared by its origin alone, the menu had not moved,
+    /// so Five took the selection and Enter ran it.
+    #[gpui::test]
+    fn a_menu_that_grows_taller_under_the_still_pointer_selects_nothing(cx: &mut TestAppContext) {
+        const FIVE: &[(&str, bool)] = &[
+            ("One", true),
+            ("Two", true),
+            ("Three", true),
+            ("Four", true),
+            ("Five", true),
+        ];
+        let ran = Ran::default();
+        let (menu, cx) = placed(cx, FOUR, &ran);
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        let surface = menu.read_with(cx, |menu, _| menu.bounds);
+        let pointer = gpui::point(drawn_item(cx, "Four").center().x, surface.bottom() + px(6.));
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx).0, None, "the pointer resting below the menu");
+
+        rebuilt_acting(&menu, cx, FIVE, &ran);
+        assert!(
+            drawn_item(cx, "Five").contains(&pointer),
+            "the menu grew taller, Five under the pointer"
+        );
+        assert_eq!(selection(cx).0, None, "nothing selected");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter runs nothing: {:?}",
+            ran.borrow()
+        );
+
+        cx.simulate_mouse_move(
+            pointer + gpui::point(px(1.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(selection(cx), (Some(5), false), "the moved pointer on Five");
+    }
+
+    /// Rows that move under a pointer that has not moved, while the
+    /// keyboard owns the cursor, leave the cursor where it is, though the
+    /// menu itself stays where it was: a capped menu scrolled a row, as a
+    /// rebuild scrolls the cursor's row into view, brings Item 2 under the
+    /// pointer resting on Item 1, and the cursor stays on Item 0 until the
+    /// pointer moves, which selects Item 2. The hover once took the
+    /// keyboard's cursor for the row that arrived.
+    #[gpui::test]
+    fn rows_scrolled_under_the_still_pointer_keep_the_keyboards_cursor(cx: &mut TestAppContext) {
+        let (menu, cx) = open(cx, TWELVE);
+        rebuilt_capped(&menu, cx, TWELVE);
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        let (one, two) = (drawn_item(cx, "Item 1"), drawn_item(cx, "Item 2"));
+        let pointer = one.center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(2), false), "the pointer on Item 1");
+        menu.update(cx, |menu, cx| menu.select_first_item(cx));
+        draw(cx);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Item 0"),
+            "the keyboard's cursor on Item 0"
+        );
+
+        let pitch = two.top() - one.top();
+        menu.update(cx, |menu, _| {
+            menu.scroll_handle.set_offset(gpui::point(px(0.), -pitch))
+        });
+        draw(cx);
+        assert!(
+            drawn_item(cx, "Item 2").contains(&pointer),
+            "scrolled a row, Item 2 under the pointer"
+        );
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Item 0"),
+            "the keyboard's cursor stays on Item 0"
+        );
+
+        cx.simulate_mouse_move(
+            pointer + gpui::point(px(1.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(
+            selection(cx),
+            (Some(3), false),
+            "the moved pointer on Item 2"
         );
     }
 
