@@ -1265,21 +1265,34 @@ the gone item or the pointer's menu; without the report, or reporting on
 every rebuild, it fails. Remove this part when upstream reports a resting
 cursor or keeps the cursor on its item by a name of its own.
 
-A click no longer straddles a rebuild. Rows are wired by their item's index
-(`MenuItemElement::new(ix, …)`, the element ID under which GPUI keeps a
-pending press across frames), and `on_click` ran whatever item stood at
-that index when the button came up: a press on Three, a rebuild without One
-that put Four at Three's index and place, and the release ran Four, which
-the person never pressed. A row's press now records its index (`pressed`,
-through the item element's `on_press` in `src/menu/menu_item.rs`, called
-from the mouse-down listener an item that acts already has), `rebuild`
-forgets it, and `on_click` acts only where its press went down on that
-index since the menu was last built. Enter and the menu keys are unchanged.
+A click acts only on the item its press went down on. Rows are wired by
+their item's index (`MenuItemElement::new(ix, …)`, the element ID under
+which GPUI keeps a pending press across frames), and `on_click` ran
+whatever item stood at that index when the button came up: a press on
+Three, a rebuild without One that put Four at Three's index and place, and
+the release ran Four, which the person never pressed. A row's press now
+records its index (`pressed`, through the item element's `on_press` in
+`src/menu/menu_item.rs`, called from the mouse-down listener an item that
+acts already has) where the row was drawn from the menu as last built
+(`builds`, which each rebuild counts) or where the item it was drawn for,
+by its name, still stands at that index and can act (`pressed_on`): GPUI
+delivers a press to the rows of the last frame drawn, which can come
+between a rebuild and the next draw, and such a press once recorded the
+old index. A rebuild keeps a recorded press only where the same item, by
+its name, stands at that index and can act, so a write's start or end that
+builds the menu again with the same items does not drop a click in
+progress, as every rebuild once did. `on_click` acts only where its press
+is recorded for that index. Enter and the menu keys are unchanged.
 `a_press_and_release_across_a_rebuild_run_nothing` presses Three, builds
-the menu again without One and releases: nothing runs, and a fresh click
-then runs Four, the row drawn under the pointer; without the check the
-release runs Four. Remove this part when upstream ties a click to the item
-it was pressed on.
+the menu again without One and releases, and
+`a_press_on_rows_drawn_before_a_rebuild_runs_nothing` delivers the press
+after that rebuild but before the next draw: nothing runs either way, and a
+fresh click then runs Four, the row drawn under the pointer; without the
+check the first release runs Four, and without the build count the second
+does. `a_press_on_an_item_a_rebuild_keeps_runs_it` presses Two before, and
+after, a rebuild with the same items and releases: Two runs both times;
+with every rebuild forgetting the press, nothing runs. Remove this part
+when upstream ties a click to the item it was pressed on.
 
 The consumers are every open menu the app builds again, in
 `crates/app/src/native_accessibility.rs`: a keyboard's row menu
