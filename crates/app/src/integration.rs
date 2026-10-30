@@ -73,7 +73,8 @@ impl GitTurtle {
     }
 
     /// Drops the branch comparison Merge… or Rebase… asked for, as a tab
-    /// switch does, and ends its busy state with it: the dropped comparison
+    /// switch, Settings and Projects do, and ends its busy state with it, as
+    /// `cancel_branch_action` ends its own: the dropped comparison
     /// never reaches its end, which ended it, so "Comparing branch tips…"
     /// once stayed for good and every later write and working read, in
     /// every tab, waited for it. Its read still ends on the operation
@@ -108,7 +109,12 @@ impl GitTurtle {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.operation_busy = None;
                 this.read_deferred_working(window, cx);
-                if this.path.as_ref() != Some(&path) { return; }
+                // Its confirmation belongs to the repository page that asked:
+                // Settings and Projects drop the comparison as they open
+                // (`cancel_integration_comparison`), and an answer that
+                // reaches another page all the same opens nothing there. It
+                // once opened its alert over Settings.
+                if this.path.as_ref() != Some(&path) || this.page != AppPage::Repository { cx.notify(); return; }
                 match result {
                     Ok(plan) => {
                         let title = if rebase { format!("Rebase {} onto {}", plan.branch, plan.target_label) } else { format!("Merge {} into {}", plan.target_label, plan.branch) };

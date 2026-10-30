@@ -2083,6 +2083,75 @@ mod tests {
         );
     }
 
+    /// Settings and Projects drop the branch comparison Merge… or Rebase…
+    /// asked for, as a tab switch does, and end its busy state with it: Git's
+    /// answer opens no confirmation over either page, and nothing stays
+    /// "Comparing branch tips…". The answer checked only the repository, so
+    /// its alert opened over Settings, and Projects waited for the
+    /// comparison as for a write. An answer that reaches another page all
+    /// the same, its comparison not dropped, opens nothing there either.
+    #[gpui::test]
+    async fn settings_and_projects_drop_the_branch_comparison(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, cx, _) = checked_out(cx).await;
+        type Leave = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+        let leave: [(&str, AppPage, Leave); 3] = [
+            ("Settings", AppPage::Settings, |app, window, cx| {
+                app.show_settings(window, cx)
+            }),
+            ("Projects", AppPage::Projects, |app, window, cx| {
+                app.show_projects(window, cx)
+            }),
+            // A way off the page that drops nothing.
+            (
+                "Another way off the page",
+                AppPage::Settings,
+                |app, _, cx| {
+                    app.page = AppPage::Settings;
+                    cx.notify();
+                },
+            ),
+        ];
+        for (index, (page, shown, leave)) in leave.into_iter().enumerate() {
+            // Merge…'s comparison, held as a slow disk holds it.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.prepare_integration("main".into(), false, window, cx)
+                })
+            });
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_busy),
+                Some("Comparing branch tips…"),
+                "{page}"
+            );
+            cx.update(|window, cx| app.update(cx, |app, cx| leave(app, window, cx)));
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.page == shown),
+                "{page} shows"
+            );
+            if index < 2 {
+                assert_eq!(
+                    app.read_with(cx, |app, _| app.operation_busy),
+                    None,
+                    "{page} ends the comparison"
+                );
+            }
+            drop(held);
+            preparation_ends(&app, cx).await;
+            assert!(!dialog_open(cx), "{page}: no confirmation opens over it");
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_busy),
+                None,
+                "{page}: nothing stays busy"
+            );
+            cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+            draw(cx);
+            assert!(app.read_with(cx, |app, _| app.page == AppPage::Repository));
+        }
+    }
+
     /// A quiet refresh refused while a write or a review's preparation ran
     /// runs as it ends. Restored in History during a Fetch in the first tab,
     /// the second tab's rescan waited for the Fetch, and with no watch to

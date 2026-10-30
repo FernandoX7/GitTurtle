@@ -394,6 +394,7 @@ impl GitTurtle {
             self.theme_editor.settings_entered();
         }
         self.capture_page_return_focus(window, cx);
+        self.cancel_integration_comparison();
         self.cancel_branch_action();
         self.cancel_interactive_rebase_action();
         self.cancel_discard_action();

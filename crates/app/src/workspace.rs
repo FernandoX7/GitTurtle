@@ -1849,6 +1849,7 @@ impl GitTurtle {
 
     pub(super) fn show_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.end_image_drag();
+        self.cancel_integration_comparison();
         self.cancel_branch_action();
         self.cancel_interactive_rebase_action();
         self.cancel_recovery_read();
