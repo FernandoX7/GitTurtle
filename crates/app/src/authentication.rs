@@ -2,7 +2,7 @@
 //! no response enters preferences, recents, operation notices or diagnostics.
 use crate::*;
 use gitturtle_core::{AuthenticationPrompt, HistoryCancellation, OperationControl};
-use gpui_kit::component::{WindowExt, dialog::DialogButtonProps, input::InputContentType};
+use gpui_kit::component::{WindowExt, input::InputContentType};
 use std::time::Duration;
 
 const HOST_GUIDANCE: &str = "Verify this host and fingerprint through a trusted source before continuing. Accepting lets SSH update its configured known-hosts file.";
@@ -314,16 +314,14 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(540.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .child(body)
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text(if confirmation {
-                            "Trust verified host"
-                        } else {
-                            "Continue"
-                        })
-                        .cancel_text("Cancel operation")
-                        .show_cancel(true),
-                )
+                .footer(crate::tags::dialog_footer(
+                    if confirmation {
+                        "Trust verified host"
+                    } else {
+                        "Continue"
+                    },
+                    Some("Cancel operation"),
+                ))
                 .on_ok(move |_, window, cx| {
                     let response = if confirmation {
                         "yes".to_owned()

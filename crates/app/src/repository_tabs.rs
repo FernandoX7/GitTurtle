@@ -1774,9 +1774,7 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(680.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .child(view.clone())
-                .button_props(
-                    gpui_kit::component::dialog::DialogButtonProps::default().ok_text("Done"),
-                )
+                .footer(crate::tags::dialog_footer("Done", None))
         });
     }
     fn open_repository_group(&mut self, group: &str, window: &mut Window, cx: &mut Context<Self>) {

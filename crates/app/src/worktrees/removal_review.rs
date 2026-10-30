@@ -274,14 +274,12 @@ impl GitTurtle {
                         .flex()
                         .justify_end()
                         .gap_2()
-                        .child(Button::new("cancel-force-worktree-removal")
+                        .child(button("cancel-force-worktree-removal", "Cancel", "", false)
                             .debug_selector(|| "cancel-force-worktree-removal".into())
-                            .label("Cancel")
                             .on_click(|_, window, cx| window.dispatch_action(Box::new(Cancel), cx)))
-                        .child(Button::new("confirm-force-worktree-removal")
+                        .child(button("confirm-force-worktree-removal", "Force remove worktree", "", false)
                             .debug_selector(|| "confirm-force-worktree-removal".into())
                             .danger()
-                            .label("Force remove worktree")
                             .on_click(|_, window, cx| window.dispatch_action(Box::new(Confirm { secondary: false }), cx))),
                 )
                 .on_ok(move |_, window, cx| {

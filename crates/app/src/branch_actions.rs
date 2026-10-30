@@ -6,7 +6,6 @@ use gitturtle_core::{BranchCommand, BranchPlan, RemoteConfig, WriteCommand};
 use gpui_kit::component::{
     WindowExt,
     checkbox::Checkbox,
-    dialog::DialogButtonProps,
     menu::{PopupMenu, PopupMenuItem},
 };
 use gpui_kit::prelude::FluentBuilder;
@@ -674,12 +673,10 @@ impl GitTurtle {
                         .max_h(appearance::dialog_max_height(window))
                         .gap(crate::tags::DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                         .child(chooser.clone())
-                        .button_props(
-                            DialogButtonProps::default()
-                                .ok_text("Use first match")
-                                .cancel_text("Cancel")
-                                .show_cancel(true),
-                        )
+                        .footer(crate::tags::dialog_footer(
+                            "Use first match",
+                            Some("Cancel"),
+                        ))
                         .on_ok(move |_, window, cx| {
                             chooser_ok.update(cx, |chooser, cx| chooser.activate_first(window, cx));
                             false
@@ -700,7 +697,7 @@ impl GitTurtle {
                         .width(appearance::dialog_width(px(580.), window))
                         .max_h(appearance::dialog_max_height(window))
                         .child(manager.clone())
-                        .button_props(DialogButtonProps::default().ok_text("Done"))
+                        .footer(crate::tags::dialog_footer("Done", None))
                 });
             }
         }
@@ -749,7 +746,7 @@ impl GitTurtle {
                 .child(div().text_size(crate::appearance::ui_text(12.)).child(deletion_note))
                 .child(actions);
             dialog.title(plan.name.clone()).width(appearance::dialog_width(px(560.), window)).max_h(appearance::dialog_max_height(window)).child(content)
-                .button_props(DialogButtonProps::default().ok_text("Done"))
+                .footer(crate::tags::dialog_footer("Done", None))
         });
     }
 
@@ -828,7 +825,7 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(540.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .child(content)
-                .button_props(DialogButtonProps::default().ok_text("Done"))
+                .footer(crate::tags::dialog_footer("Done", None))
         });
     }
 
@@ -1040,12 +1037,7 @@ fn show_branch_form(form: Entity<BranchForm>, window: &mut Window, cx: &mut App)
             .width(appearance::dialog_width(px(520.), window))
             .max_h(appearance::dialog_max_height(window))
             .child(form.clone())
-            .button_props(
-                DialogButtonProps::default()
-                    .ok_text("Review action")
-                    .cancel_text("Cancel")
-                    .show_cancel(true),
-            )
+            .footer(crate::tags::dialog_footer("Review action", Some("Cancel")))
             .on_ok(move |_, window, cx| submit.update(cx, |form, cx| form.submit(window, cx)))
     });
 }
@@ -1066,12 +1058,10 @@ fn show_remote_form(form: Entity<RemoteForm>, window: &mut Window, cx: &mut App)
             .width(appearance::dialog_width(px(580.), window))
             .max_h(appearance::dialog_max_height(window))
             .child(form.clone())
-            .button_props(
-                DialogButtonProps::default()
-                    .ok_text("Review settings")
-                    .cancel_text("Cancel")
-                    .show_cancel(true),
-            )
+            .footer(crate::tags::dialog_footer(
+                "Review settings",
+                Some("Cancel"),
+            ))
             .on_ok(move |_, window, cx| submit.update(cx, |form, cx| form.submit(window, cx)))
     });
 }

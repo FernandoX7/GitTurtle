@@ -1,7 +1,7 @@
 use crate::workspace::refusing;
 use crate::*;
 use gitturtle_core::{IntegrationCommand, OperationKind, OperationState, WriteCommand};
-use gpui_kit::component::{WindowExt, dialog::DialogButtonProps};
+use gpui_kit::component::WindowExt;
 
 /// The busy state of the comparison Merge… and Rebase… ask for.
 const COMPARING: &str = "Comparing branch tips…";
@@ -51,12 +51,7 @@ impl GitTurtle {
                     .text_size(crate::appearance::ui_text(13.))
                     .child(explanation.clone()),
                 )
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text(action)
-                        .cancel_text("Cancel")
-                        .show_cancel(true),
-                )
+                .footer(crate::tags::dialog_footer(action, Some("Cancel")))
                 .on_ok(move |_, window, cx| {
                     let _ = view.update(cx, |this, cx| {
                         if this.path == path {
@@ -383,6 +378,6 @@ pub(crate) fn show_error_details(error: &str, window: &mut Window, cx: &mut App)
                     },
                 ),
             )
-            .button_props(DialogButtonProps::default().ok_text("Close"))
+            .footer(crate::tags::dialog_footer("Close", None))
     });
 }

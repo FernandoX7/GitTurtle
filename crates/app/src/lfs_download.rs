@@ -1,10 +1,7 @@
 //! Explicit LFS preview downloads with captured pointer/source review.
 use crate::*;
 use gitturtle_core::{LfsDownloadPlan, LfsDownloadTarget, WriteCommand};
-use gpui_kit::{
-    component::{WindowExt, dialog::DialogButtonProps},
-    prelude::FluentBuilder,
-};
+use gpui_kit::{component::WindowExt, prelude::FluentBuilder};
 
 use crate::native_accessibility::text as label;
 
@@ -141,12 +138,10 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(650.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Review download")
-                        .cancel_text("Cancel")
-                        .show_cancel(true),
-                )
+                .footer(crate::tags::dialog_footer(
+                    "Review download",
+                    Some("Cancel"),
+                ))
                 .on_ok(move |_, window, cx| {
                     submit.update(cx, |this, cx| this.review(window, cx));
                     false

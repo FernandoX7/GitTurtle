@@ -467,9 +467,7 @@ impl GitTurtle {
                 .description("A native Git workspace for history inspection and everyday Git work.")
                 .width(appearance::ui_size(550.))
                 .child(details.clone())
-                .button_props(
-                    gpui_kit::component::dialog::DialogButtonProps::default().ok_text("Done"),
-                )
+                .footer(crate::tags::dialog_footer("Done", None))
         });
     }
 }

@@ -699,7 +699,7 @@ impl GitTurtle {
                                     });
                                 })
                         }))))
-                    .button_props(DialogButtonProps::default().ok_text("Cancel"))
+                    .footer(crate::tags::dialog_footer("Cancel", None))
             });
         } else {
             self.prepare_commit_recovery(kind, commit.oid.clone(), None, window, cx);
@@ -1214,12 +1214,7 @@ fn show_amend(form: Entity<AmendForm>, window: &mut Window, cx: &mut App) {
             .width(appearance::dialog_width(px(580.), window))
             .max_h(appearance::dialog_max_height(window))
             .child(form.clone())
-            .button_props(
-                DialogButtonProps::default()
-                    .ok_text("Review amend")
-                    .cancel_text("Cancel")
-                    .show_cancel(true),
-            )
+            .footer(crate::tags::dialog_footer("Review amend", Some("Cancel")))
             .on_ok(move |_, window, cx| submit.update(cx, |form, cx| form.submit(window, cx)))
     });
 }
@@ -1305,12 +1300,7 @@ fn show_stash_form(form: Entity<StashForm>, window: &mut Window, cx: &mut App) {
             .width(appearance::dialog_width(px(520.), window))
             .max_h(appearance::dialog_max_height(window))
             .child(form.clone())
-            .button_props(
-                DialogButtonProps::default()
-                    .ok_text("Review stash")
-                    .cancel_text("Cancel")
-                    .show_cancel(true),
-            )
+            .footer(crate::tags::dialog_footer("Review stash", Some("Cancel")))
             .on_ok(move |_, window, cx| submit.update(cx, |form, cx| form.submit(window, cx)))
     });
 }

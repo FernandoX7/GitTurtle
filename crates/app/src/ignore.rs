@@ -2,7 +2,7 @@
 use crate::*;
 use gitturtle_core::{IgnoreDestination, StatusEntry, WriteCommand};
 use gpui_kit::{
-    component::{WindowExt, checkbox::Checkbox, dialog::DialogButtonProps},
+    component::{WindowExt, checkbox::Checkbox},
     prelude::FluentBuilder,
 };
 
@@ -150,12 +150,7 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(560.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Preview rule")
-                        .cancel_text("Cancel")
-                        .show_cancel(true),
-                )
+                .footer(crate::tags::dialog_footer("Preview rule", Some("Cancel")))
                 .on_ok(move |_, window, cx| {
                     submit.update(cx, |form, cx| form.submit(window, cx));
                     false

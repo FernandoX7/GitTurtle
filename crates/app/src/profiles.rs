@@ -3,7 +3,7 @@
 use crate::*;
 use gitturtle_core::{ProfilePlan, WriteCommand};
 use gpui_kit::{
-    component::{WindowExt, checkbox::Checkbox, dialog::DialogButtonProps, menu::PopupMenuItem},
+    component::{WindowExt, checkbox::Checkbox, menu::PopupMenuItem},
     prelude::FluentBuilder,
 };
 #[cfg(test)]
@@ -314,7 +314,7 @@ impl GitTurtle {
                             .child(button(("edit-profile", index), "Edit…", "", false).on_click(move |_, window, cx| { let _ = edit_owner.update(cx, |this, cx| { window.close_dialog(cx); this.edit_profile(Some(edit_profile.clone()), window, cx); }); }))
                             .child(button(("delete-profile", index), "Delete…", "", false).on_click(move |_, window, cx| { let _ = delete_owner.update(cx, |this, cx| { window.close_dialog(cx); this.delete_profile(delete_profile.clone(), window, cx); }); })))
                 })));
-            dialog.title("Git profiles").width(appearance::dialog_width(px(600.), window)).max_h(appearance::dialog_max_height(window)).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
+            dialog.title("Git profiles").width(appearance::dialog_width(px(600.), window)).max_h(appearance::dialog_max_height(window)).child(content).footer(crate::tags::dialog_footer("Done", None))
         });
         window.refresh();
     }
@@ -484,12 +484,7 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(550.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
-                .button_props(
-                    DialogButtonProps::default()
-                        .ok_text("Save profile")
-                        .cancel_text("Cancel")
-                        .show_cancel(true),
-                )
+                .footer(crate::tags::dialog_footer("Save profile", Some("Cancel")))
                 .on_ok(move |_, window, cx| {
                     submit.update(cx, |form, cx| form.submit(window, cx));
                     false
@@ -520,7 +515,7 @@ impl GitTurtle {
             let dialog = dialog.max_h(appearance::dialog_max_height(window));
             let owner = owner.clone(); let definition = definition.clone(); let explanation = format!("Delete the saved '{}' profile and its app assignments? Repository Git configuration remains as it is. Repositories, keys and drafts are preserved.", definition.label);
             dialog.kind(DialogKind::Alert).title("Delete saved profile").child(label("delete-profile-consequences", explanation))
-                .button_props(DialogButtonProps::default().ok_text("Delete profile").cancel_text("Cancel").show_cancel(true))
+                .footer(crate::tags::dialog_footer("Delete profile", Some("Cancel")))
                 .on_ok(move |_, window, cx| { let _ = owner.update(cx, |this, cx| { if this.operation_busy.is_none() { this.save_profile_mutation(Mutation::Delete(definition.clone()), None, window, cx); } }); true })
         });
         window.refresh();

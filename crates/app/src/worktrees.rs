@@ -113,7 +113,7 @@ impl GitTurtle {
                 .max_h(appearance::dialog_max_height(window))
                 .gap(crate::tags::DIALOG_FOOTER_GAP - room)
                 .child(manager.clone())
-                .button_props(DialogButtonProps::default().ok_text("Done"))
+                .footer(crate::tags::dialog_footer("Done", None))
                 // Done and Escape close the dialog here, stopping the read.
                 // The kit's alert dialog never calls an `on_close` (its
                 // surface takes the alert's own button props, which hold
@@ -169,7 +169,7 @@ impl GitTurtle {
                         .child(button("open-created-worktree", "Open in GitTurtle", "", false).on_click(move |_, window, cx| { let _ = open_owner.update(cx, |this, cx| { if this.operation_busy.is_none() { window.close_dialog(cx); this.open(open_path.clone(), None, window, cx); } }); }))
                         .child(button("reveal-created-worktree", if cfg!(target_os = "macos") { "Show in Finder" } else { "Show in files" }, "", false).on_click(move |_, _, cx| cx.reveal_path(&finder)))
                         .child(button("edit-created-worktree", "Open in editor", "", false).on_click(move |_, window, cx| { let _ = editor_owner.update(cx, |this, cx| this.open_worktree_editor(editor_path.clone(), window, cx)); }))))
-                .button_props(DialogButtonProps::default().ok_text("Done"))
+                .footer(crate::tags::dialog_footer("Done", None))
         });
     }
 

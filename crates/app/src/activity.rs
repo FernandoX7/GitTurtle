@@ -1,6 +1,6 @@
 //! Bounded app activity, separate from Git's reflog and external-tool history.
 use crate::*;
-use gpui_kit::component::{WindowExt, dialog::DialogButtonProps};
+use gpui_kit::component::WindowExt;
 use gpui_kit::prelude::FluentBuilder;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -325,7 +325,7 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(760.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .child(browser.clone())
-                .button_props(DialogButtonProps::default().ok_text("Done"))
+                .footer(crate::tags::dialog_footer("Done", None))
         });
     }
 }

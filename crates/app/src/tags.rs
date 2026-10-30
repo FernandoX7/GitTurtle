@@ -5,7 +5,7 @@ use gitturtle_core::{RemoteConfig, Tag, TagCommand, TagDetails, TagList, WriteCo
 use gpui_kit::{
     component::{
         WindowExt,
-        dialog::{DialogButtonProps, DialogFooter},
+        dialog::DialogFooter,
         scroll::{Scrollbar, ScrollbarHandle, ScrollbarMode},
     },
     prelude::FluentBuilder,
@@ -16,6 +16,40 @@ const PREPARING: &str = "Reading tags…";
 /// default 16 px padding. A dialog whose body keeps the focus ring's room
 /// below its last control gives the room back by narrowing this gap.
 pub(crate) const DIALOG_FOOTER_GAP: Pixels = px(16.);
+
+/// A dialog's own footer, the kit's OK and optional Cancel built on the app's
+/// compact frame (`button_frame`, through `button`): 28 px high at the
+/// interface size, with its padding, label size and focus ring, as every
+/// other action in the app, in place of the kit's own 26 px Buttons, which
+/// stood shorter than the shared controls in the dialog above them. OK, the
+/// primary action, reads `ok`, and Cancel, where shown, `cancel`; each
+/// dispatches the kit's `Confirm` or `Cancel`, as the kit's own did, so the
+/// dialog's `on_ok` and `on_cancel` answer them, and Enter and Escape act as
+/// before. Tests find them as `dialog-ok: {ok}` and `dialog-cancel:
+/// {cancel}`.
+pub(crate) fn dialog_footer(
+    ok: impl Into<SharedString>,
+    cancel: Option<&'static str>,
+) -> DialogFooter {
+    use gpui_kit::component::dialog::{Cancel, Confirm};
+    let ok: SharedString = ok.into();
+    DialogFooter::new()
+        .when_some(cancel, |footer, cancel| {
+            footer.child(
+                button("cancel", cancel, "", false)
+                    .debug_selector(move || format!("dialog-cancel: {cancel}"))
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(Cancel), cx)),
+            )
+        })
+        .child(
+            button("ok", ok.clone(), "", false)
+                .primary()
+                .debug_selector(move || format!("dialog-ok: {ok}"))
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
+                }),
+        )
+}
 
 /// The cue a scrolling list gives the rows beyond its edge, the same for
 /// every list the app cues: the branch chooser, the remote manager, Tags,
@@ -430,7 +464,7 @@ impl GitTurtle {
                             .max_h(appearance::dialog_max_height(window))
                             .gap(DIALOG_FOOTER_GAP - room)
                             .child(browser.clone())
-                            .button_props(DialogButtonProps::default().ok_text("Done"))
+                            .footer(crate::tags::dialog_footer("Done", None))
                     });
                     // Opening the dialog focuses its shell, which draws no
                     // ring: the filter, the first field, takes focus so the
@@ -572,7 +606,7 @@ impl GitTurtle {
                         });
                     }).into_any_element())
                 })).when(remotes.is_empty(), |element| element.child(static_text("tag-remotes-empty", "No remotes configured. Add a remote from the branch menu to push a tag.").text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted)))), "tag-remote-scrollbar"));
-            dialog.title(native_accessibility::dialog_title("tag-inspector-title", details.tag.name.clone())).width(appearance::dialog_width(px(640.), window)).max_h(appearance::dialog_max_height(window)).gap(DIALOG_FOOTER_GAP - room).child(content).button_props(DialogButtonProps::default().ok_text("Done"))
+            dialog.title(native_accessibility::dialog_title("tag-inspector-title", details.tag.name.clone())).width(appearance::dialog_width(px(640.), window)).max_h(appearance::dialog_max_height(window)).gap(DIALOG_FOOTER_GAP - room).child(content).footer(crate::tags::dialog_footer("Done", None))
         });
     }
     pub(super) fn finish_tag_write(
@@ -627,8 +661,9 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(560.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .child(form.clone())
-                // The kit's own Cancel and OK, built here rather than by the
-                // kit so that Review tag can follow a write (`ReviewTag`).
+                // Cancel and OK on the compact frame, as `dialog_footer`
+                // builds them, built here so that Review tag can follow a
+                // write (`ReviewTag`).
                 .footer(
                     DialogFooter::new()
                         .child({
@@ -637,8 +672,7 @@ impl GitTurtle {
                             // to cancel missed the dialog once Settings had
                             // shown and taken focus.
                             let form = form.clone();
-                            Button::new("cancel")
-                                .label("Cancel")
+                            button("cancel", "Cancel", "", false)
                                 .debug_selector(|| "cancel-create-tag".into())
                                 .on_click(move |_, window, cx| {
                                     form.update(cx, |form, cx| form.cancel(window, cx));
@@ -990,8 +1024,7 @@ fn review_tag(form: Entity<TagForm>, cx: &App) -> Button {
     #[cfg(test)]
     REVIEW_TAG.with(|review| review.set(tooltip));
     {
-        let review = Button::new("ok")
-            .label("Review tag")
+        let review = button("ok", "Review tag", "", false)
             .primary()
             .debug_selector(|| "review-tag".into())
             .when_some(reason, |review, reason| {
@@ -1636,6 +1669,77 @@ pub(crate) mod tests {
     #[gpui::test]
     fn dialog_footer_gap_is_the_kits(cx: &mut TestAppContext) {
         assert_eq!(kit_dialog_footer_gap(cx), DIALOG_FOOTER_GAP);
+    }
+
+    /// The dialogs' own footers stand on the compact frame every other
+    /// action in the app does (`button_frame`): each footer button, OK and
+    /// Cancel as `dialog_footer` builds them and Create tag's own Cancel and
+    /// Review tag, is as tall as the frame, 28 px at the interface size, at
+    /// 13 and 18 pt. The kit's own Buttons stood 26 px at 13 pt and 36 px at
+    /// 18 pt beside the dialogs' 28 px controls.
+    #[gpui::test]
+    async fn dialog_footers_stand_on_the_compact_frame(cx: &mut TestAppContext) {
+        use crate::focus_ring::sweep::open_dialog;
+        type Open = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+        let (_fixture, app, cx) = crate::views::tests::history_window(cx).await;
+        let dialogs: [(&str, Open, &[&'static str]); 6] = [
+            (
+                "Tags",
+                |app, window, cx| app.open_tags(window, cx),
+                &["dialog-ok: Done"],
+            ),
+            (
+                "Create tag",
+                |app, window, cx| app.open_create_tag(window, cx),
+                &["cancel-create-tag", "review-tag"],
+            ),
+            (
+                "Worktrees",
+                |app, window, cx| app.open_worktree_manager(window, cx),
+                &["dialog-ok: Done"],
+            ),
+            (
+                "the Reflog",
+                |app, window, cx| drop(app.open_reflog_browser(window, cx)),
+                &["dialog-ok: Done"],
+            ),
+            (
+                "Git profiles",
+                |app, window, cx| app.open_profiles(window, cx),
+                &["dialog-ok: Done"],
+            ),
+            (
+                "Activity",
+                |app, window, cx| app.open_activity(window, cx),
+                &["dialog-ok: Done"],
+            ),
+        ];
+        cx.simulate_resize(size(px(1280.), px(800.)));
+        let mut failures = Vec::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let frame = appearance::ui_size(28.);
+            for (name, open, buttons) in &dialogs {
+                open_dialog(&app, cx, name, *open).await;
+                draw(cx);
+                for button in *buttons {
+                    match cx.debug_bounds(button) {
+                        None => failures.push(format!("{name} at {text} pt draws no {button}")),
+                        // Snapped to the test window's 2× device pixels.
+                        Some(drawn) if (drawn.size.height - frame).abs() > px(0.5) => failures
+                            .push(format!(
+                                "{name} at {text} pt: {button} is {:?} tall, not the frame's {frame:?}",
+                                drawn.size.height
+                            )),
+                        Some(_) => {}
+                    }
+                }
+                cx.update(|window, cx| window.close_all_dialogs(cx));
+                draw(cx);
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     /// The dialog clips its body to the body's bounds, and the tag list

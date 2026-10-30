@@ -252,7 +252,7 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        use gpui_kit::component::{WindowExt, dialog::DialogButtonProps};
+        use gpui_kit::component::WindowExt;
         let Some(details) = self.automatic.watch_warning.clone() else {
             return;
         };
@@ -269,7 +269,7 @@ impl GitTurtle {
                 .child(copy_feedback::copy_button(mark.clone(), "Copy details", "", cx).on_click(move |_, window, cx| {
                     copy_feedback::copy(window, cx, Some(copy_mark.clone()), "refresh details", details.clone());
                 }))
-                .button_props(DialogButtonProps::default().ok_text("Close"))
+                .footer(crate::tags::dialog_footer("Close", None))
         });
     }
 

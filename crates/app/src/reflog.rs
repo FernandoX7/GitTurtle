@@ -6,7 +6,6 @@ use gpui_kit::{
     base::ElementExt,
     component::{
         WindowExt,
-        dialog::DialogButtonProps,
         scroll::{Scrollbar, ScrollbarMode},
     },
     prelude::FluentBuilder,
@@ -304,7 +303,7 @@ impl ReflogBrowser {
                 .max_h(appearance::dialog_max_height(window))
                 .gap(DIALOG_FOOTER_GAP - appearance::button_ring_room(cx))
                 .child(browser.clone())
-                .button_props(DialogButtonProps::default().ok_text("Done"))
+                .footer(crate::tags::dialog_footer("Done", None))
                 // Done and Escape close the dialog here, stopping the read.
                 // The kit's alert dialog never calls an `on_close` (its
                 // surface takes the alert's own button props, which hold
