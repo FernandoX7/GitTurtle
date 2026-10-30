@@ -738,11 +738,14 @@ impl Render for TagForm {
     }
 }
 
-/// Review tag's name and tooltip while a write refuses it, which say why,
-/// as Create tag…'s say why it waits for a first commit.
-const REVIEW_TAG_BUSY_NAME: &str =
-    "Review tag, unavailable until the current Git operation finishes";
-const REVIEW_TAG_BUSY_REASON: &str = "Wait for the current Git operation to finish";
+/// Review tag's accessible name while the window's busy spell refuses it:
+/// unavailable, and why, in the words of the `reason` its tooltip gives
+/// once it dims (`GitTurtle::busy_reason`), as Create tag…'s name and
+/// tooltip say why it waits for a first commit. Its name and tooltip once
+/// named the current Git operation whatever the spell ran.
+fn review_tag_busy_name(reason: &str) -> String {
+    format!("Review tag, unavailable. {reason}")
+}
 
 /// Create tag's Review tag, the kit's OK as its own footer would draw it.
 /// A write refuses it at once, and assistive technology hears it unavailable
@@ -772,23 +775,27 @@ fn review_tag(form: Entity<TagForm>, cx: &App) -> Button {
     // dims it with its busy look; it gives no reason, as its status line
     // says what it does.
     let pending = state.pending(cx);
-    let (refused, dimmed, writing) = state.owner.upgrade().map_or((true, true, false), |owner| {
+    // Why the window's busy spell refuses it, while one other than the
+    // form's own runs: the spell's own reason, which names a GitHub
+    // request's work where one runs (`GitTurtle::busy_reason`).
+    let (refused, dimmed, reason) = state.owner.upgrade().map_or((true, true, None), |owner| {
         let owner = owner.read(cx);
         let (refused, dimmed) = owner.dialog_refusal(state.path.as_deref());
-        (refused, dimmed, owner.operation_busy.is_some() && !pending)
+        let busy = owner.operation_busy.is_some() && !pending;
+        (refused, dimmed, busy.then(|| owner.busy_reason()))
     });
-    let reason = (writing && dimmed).then_some(REVIEW_TAG_BUSY_REASON);
+    let tooltip = reason.filter(|_| dimmed);
     #[cfg(test)]
-    REVIEW_TAG.with(|review| review.set(reason));
+    REVIEW_TAG.with(|review| review.set(tooltip));
     {
         let review = Button::new("ok")
             .label("Review tag")
             .primary()
             .debug_selector(|| "review-tag".into())
-            .when(writing, |review| {
-                review.accessibility_label(REVIEW_TAG_BUSY_NAME)
+            .when_some(reason, |review, reason| {
+                review.accessibility_label(review_tag_busy_name(reason))
             })
-            .when_some(reason, |review, reason| review.tooltip(reason));
+            .when_some(tooltip, |review, reason| review.tooltip(reason));
         // A press submits its own form, wherever focus is: the kit's OK
         // asked the focused element to confirm, which missed the dialog
         // once Settings had shown and taken focus.
@@ -1582,6 +1589,64 @@ pub(crate) mod tests {
         );
     }
 
+    /// Create tag opened over a tagged repository in a 1480 × 980 window,
+    /// naming a lightweight tag, which needs no annotation: the window and
+    /// its form.
+    fn create_lightweight_tag<'a>(
+        cx: &'a mut TestAppContext,
+        fixture: &std::path::Path,
+    ) -> (
+        Entity<GitTurtle>,
+        Entity<TagForm>,
+        &'a mut VisualTestContext,
+    ) {
+        let repo = tagged_repository(fixture);
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_create_tag(window, cx)));
+        draw(cx);
+        let form = app
+            .read_with(cx, |app, _| app.tag_actions.draft.clone())
+            .expect("Create tag opens");
+        cx.update(|window, cx| {
+            form.update(cx, |form, cx| {
+                form.annotated = false;
+                form.name
+                    .update(cx, |name, cx| name.set_value("v9.0", window, cx))
+            })
+        });
+        draw(cx);
+        (app, form, cx)
+    }
+
+    /// Review tag's accessibility node as the window would write it now,
+    /// built inside a draw as `views::tests::input_node` builds a field's,
+    /// and the tooltip the next frame builds it with, which no node carries.
+    fn review_tag_frame(
+        form: &Entity<TagForm>,
+        cx: &mut VisualTestContext,
+    ) -> (gpui::accesskit::Node, Option<&'static str>) {
+        let form = form.clone();
+        let node = crate::views::tests::view_node(cx, move |window, cx| {
+            use gpui::Element as _;
+            let button = review_tag(form.clone(), cx).base(window, cx);
+            let element = RenderOnce::render(button, window, cx).into_element();
+            let mut node =
+                gpui::accesskit::Node::new(element.a11y_role().expect("Review tag's role"));
+            element.write_a11y_info(&mut node);
+            node
+        });
+        // What the window's frame records, as the node's build did too.
+        crate::workspace::refusals::forget();
+        REVIEW_TAG.with(|review| review.set(None));
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        (node, REVIEW_TAG.with(|review| review.get()))
+    }
+
     /// Create tag's Review tag follows a write as Tags' own actions do. A
     /// write that ends within the busy look's delay leaves it looking
     /// available in every frame, announced unavailable, by a name that says
@@ -1594,57 +1659,21 @@ pub(crate) mod tests {
     /// the form's error. Enter, after each press, changes nothing either.
     #[gpui::test]
     async fn review_tag_waits_for_the_busy_look(cx: &mut TestAppContext) {
+        use crate::workspace::BUSY_REASON;
         use crate::workspace::refusals::{self, Refusal};
         let fixture = tempfile::tempdir().unwrap();
-        let repo = tagged_repository(fixture.path());
-        let (app, cx) = window(cx, &repo);
-        cx.simulate_resize(size(px(1480.), px(980.)));
-        draw(cx);
-        cx.update(|window, cx| app.update(cx, |app, cx| app.open_create_tag(window, cx)));
-        draw(cx);
-        let form = app
-            .read_with(cx, |app, _| app.tag_actions.draft.clone())
-            .expect("Create tag opens");
-        // A lightweight tag, which needs no annotation.
-        cx.update(|window, cx| {
-            form.update(cx, |form, cx| {
-                form.annotated = false;
-                form.name
-                    .update(cx, |name, cx| name.set_value("v9.0", window, cx))
-            })
-        });
-        draw(cx);
-        // Review tag's accessibility node as the window would write it now,
-        // built inside a draw as `views::tests::input_node` builds a field's.
-        let node = |cx: &mut VisualTestContext| {
-            let form = form.clone();
-            crate::views::tests::view_node(cx, move |window, cx| {
-                use gpui::Element as _;
-                let button = review_tag(form.clone(), cx).base(window, cx);
-                let element = RenderOnce::render(button, window, cx).into_element();
-                let mut node =
-                    gpui::accesskit::Node::new(element.a11y_role().expect("Review tag's role"));
-                element.write_a11y_info(&mut node);
-                node
-            })
-        };
+        let (app, form, cx) = create_lightweight_tag(cx, fixture.path());
         // What the next frame built Review tag with: its announced and
         // drawn availability, whether its node is disabled and named by
         // why, and its tooltip.
         let frame = |cx: &mut VisualTestContext| {
-            let node = node(cx);
-            refusals::forget();
-            REVIEW_TAG.with(|review| review.set(None));
-            cx.update(|window, cx| {
-                window.simulate_next_frame(cx);
-                window.draw(cx).clear(cx);
-            });
+            let (node, tooltip) = review_tag_frame(&form, cx);
             (
                 refusals::get("review-tag"),
                 node.role(),
                 node.is_disabled(),
-                node.label() == Some(REVIEW_TAG_BUSY_NAME),
-                REVIEW_TAG.with(|review| review.get()),
+                node.label() == Some(review_tag_busy_name(BUSY_REASON).as_str()),
+                tooltip,
             )
         };
         let state = |announced, dimmed, busy, tooltip| {
@@ -1720,7 +1749,7 @@ pub(crate) mod tests {
         cx.executor().run_until_parked();
         assert_eq!(
             frame(cx),
-            state(true, true, busy, Some(REVIEW_TAG_BUSY_REASON)),
+            state(true, true, busy, Some(BUSY_REASON)),
             "once the write looks busy"
         );
         cx.simulate_click(review.center(), Modifiers::default());
@@ -1740,6 +1769,47 @@ pub(crate) mod tests {
             cx.debug_bounds("operation-consequences").is_some(),
             "Review tag opens the tag's review once the write has ended"
         );
+    }
+
+    /// Create tag's Review tag says why it waits in the window's busy
+    /// spell's own words (`GitTurtle::busy_reason`), in its name at once and
+    /// its tooltip once it dims: while a request of the GitHub panel runs,
+    /// that request's reason. It named "the current Git operation" whatever
+    /// ran. No route opens Create tag while a request runs, nor the panel
+    /// over Create tag, so the request is submitted here as the panel
+    /// submits one; the reason has one source either way.
+    #[gpui::test]
+    async fn review_tag_gives_a_github_requests_reason(cx: &mut TestAppContext) {
+        use crate::github_view::{RequestKind, submit_test_request};
+        let fixture = tempfile::tempdir().unwrap();
+        let (app, form, cx) = create_lightweight_tag(cx, fixture.path());
+        for kind in RequestKind::ALL {
+            // Held as a slow network holds it.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| submit_test_request(app, kind, window, cx))
+            });
+            let (node, tooltip) = review_tag_frame(&form, cx);
+            let named = review_tag_busy_name(kind.reason());
+            assert_eq!(
+                (node.label(), tooltip),
+                (Some(named.as_str()), None),
+                "{kind:?}: its name says why at once"
+            );
+            cx.executor()
+                .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+            cx.executor().run_until_parked();
+            let (node, tooltip) = review_tag_frame(&form, cx);
+            assert_eq!(
+                (node.label(), tooltip),
+                (Some(named.as_str()), Some(kind.reason())),
+                "{kind:?}: and its tooltip once it dims"
+            );
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            crate::views::tests::settle(&app, cx).await;
+            assert_eq!(app.read_with(cx, |app, _| app.operation_busy), None);
+        }
     }
 
     /// A plan read that lands while Settings shows is dropped, and with it

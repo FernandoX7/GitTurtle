@@ -1660,6 +1660,22 @@ impl Render for Panel {
     }
 }
 
+/// Submits a request of `kind` over `app`'s repository, as the panel sends
+/// one, that answers at once once the operation executor runs it, for a
+/// test of what the window says while a request runs: hold the executor
+/// first to keep it running.
+#[cfg(test)]
+pub(crate) fn submit_test_request(
+    app: &mut GitTurtle,
+    kind: RequestKind,
+    window: &mut Window,
+    cx: &mut Context<GitTurtle>,
+) {
+    let repository = app.path.clone().expect("a repository");
+    let submitted = app.submit_github_request(kind, repository, |_| anyhow::Ok(()), window, cx);
+    assert!(submitted.is_ok(), "{kind:?}: nothing else runs");
+}
+
 /// Opens the panel over `app`'s repository on the offline review fixture,
 /// listing its two PRs with the first one open, as the native review shows
 /// it (`width_walk`). The caller settles the window.
