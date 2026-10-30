@@ -2014,9 +2014,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// Create tag opened over a tagged repository in a 1480 × 980 window,
-    /// naming a lightweight tag, which needs no annotation: the window and
-    /// its form.
     /// Create tag's failure is said once, at once, from the window's alert,
     /// in the frame that draws its line in place: a name already taken
     /// fails the tag's read, and the frame that draws the form's error line
@@ -2068,6 +2065,9 @@ pub(crate) mod tests {
         );
     }
 
+    /// Create tag opened over a tagged repository in a 1480 × 980 window,
+    /// naming a lightweight tag, which needs no annotation: the window and
+    /// its form.
     fn create_lightweight_tag<'a>(
         cx: &'a mut TestAppContext,
         fixture: &std::path::Path,
