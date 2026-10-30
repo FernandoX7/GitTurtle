@@ -443,7 +443,8 @@ pub(super) fn pass_real_time_only(executor: &gpui_kit::BackgroundExecutor) {
 /// Tests: a stand-in for `fc-match`. It logs each query with its process id,
 /// notes a query that starts while another runs, answers the rendering
 /// defaults at once, and answers the code font query only once the test
-/// supplies a family.
+/// supplies a family. A code font query also ends once its directory is gone,
+/// so a test that fails before it answers leaves no process polling for ever.
 #[cfg(all(test, target_os = "linux"))]
 pub(super) struct StandIn(tempfile::TempDir);
 
@@ -454,7 +455,7 @@ mkdir "$d/running" 2>/dev/null || echo overlap >> "$d/overlap"
 echo "$$ $*" >> "$d/log"
 case "$*" in
 *sans-serif) printf 'True|1' ;;
-*monospace) while [ ! -e "$d/family" ]; do sleep 0.005; done; cat "$d/family" ;;
+*monospace) while [ -d "$d" ] && [ ! -e "$d/family" ]; do sleep 0.005; done; cat "$d/family" 2>/dev/null ;;
 esac
 rmdir "$d/running""#;
 
@@ -489,6 +490,12 @@ rmdir "$d/running""#;
                 (pid.parse().unwrap(), pattern)
             })
             .collect()
+    }
+
+    /// Ends a code font query left waiting: drops the directory it polls, as
+    /// a test that fails before answering does.
+    fn abandon(self) {
+        drop(self.0);
     }
 
     pub(super) fn code_font_queries(&self) -> usize {
@@ -1644,6 +1651,37 @@ mod tests {
             }
         }
         assert_eq!(faces.len(), 4, "each style has its own bundled face");
+    }
+
+    /// A code font query the test never answers ends once the stand-in's
+    /// directory goes, as it does when a test fails before answering: it once
+    /// polled for ever, and runs of failed tests left such processes behind.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unanswered_code_font_query_ends_with_its_test() {
+        let fake = StandIn::new();
+        let mut query = fake.program()()
+            .arg("monospace")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        while fake.code_font_queries() == 0 {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        fake.abandon();
+        let started = std::time::Instant::now();
+        loop {
+            if query.try_wait().unwrap().is_some() {
+                break;
+            }
+            if started.elapsed() > std::time::Duration::from_secs(10) {
+                query.kill().unwrap();
+                panic!("the query kept polling after its directory went");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     /// The interface's `.SystemUIFont` resolves, through the toolkit's
