@@ -3508,9 +3508,10 @@ mod tests {
         });
         draw(cx);
         if next.is_some() {
-            // Scrolled after the detail: the detail's scroll moves the
-            // region, which, the last input a key, reveals its focused
-            // control again.
+            // The region scrolls to its end, away from the control. The
+            // detail's scroll above moved the region whole and revealed
+            // nothing in it, so the order of the two scrolls does not
+            // matter (`focus_reveal`'s `Observation`).
             cx.update(|window, _| {
                 let end = list.scroll().max_offset().y;
                 list.scroll().set_offset(point(px(0.), -end));
@@ -4090,7 +4091,10 @@ mod tests {
     }
 
     /// The saved files cue their overflow as the detail around them does
-    /// (`tags::ScrollCue`): at 13 and 18 pt in a 1000 × 680 window, eleven
+    /// (`tags::ScrollCue`): at 13 and 18 pt in a 1000 × 680 window, each
+    /// size applied as Settings applies it (`assert_scroll_cue`,
+    /// `assert_no_scroll_cue` and the gutter's check below each call
+    /// `tags::tests::set_interface_text_size` for both), eleven
     /// unstaged files overflow their box, which shows a scrollbar in a
     /// gutter at the rows' right, its thumb following their scroll and
     /// covering no row, and the one staged file fits, drawing none, its row
