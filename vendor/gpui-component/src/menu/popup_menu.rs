@@ -505,8 +505,13 @@ pub struct PopupMenu {
     /// the person never moved to the row that arrived under it.
     still_pointer: Option<Point<Pixels>>,
     /// GitTurtle patch: the item GPUI last reported under the pointer, which
-    /// takes the selection once a still pointer moves.
+    /// takes the selection once a still pointer moves onto it
+    /// ([`PopupMenu::pointer_moved`]).
     hovered_index: Option<usize>,
+    /// GitTurtle patch: where the last frame drew each drawn row, by its
+    /// item's index, scrolled and clipped as drawn; none after a rebuild
+    /// until the next layout ([`PopupMenu::rows_laid_out`]).
+    rows: Vec<Bounds<Pixels>>,
     /// GitTurtle patch: the surface's bounds as the last frame laid it out,
     /// or `None` before its first layout ([`PopupMenu::surface_laid_out`]).
     surface: Option<Bounds<Pixels>>,
@@ -562,6 +567,7 @@ impl PopupMenu {
             pointer_selection: false,
             still_pointer: None,
             hovered_index: None,
+            rows: Vec::new(),
             surface: None,
             pointer_at_layout: None,
             min_width: None,
@@ -1045,6 +1051,11 @@ impl PopupMenu {
         if !self.keyboard_selection && self.surface.is_some_and(|surface| surface.contains(&at)) {
             self.still_pointer = Some(at);
         }
+        // The rows laid out were the old items', and GPUI reports nothing
+        // for a row no longer drawn, so the hover of one is forgotten.
+        self.rows.clear();
+        let drawn = self.drawn_items().count();
+        self.hovered_index = self.hovered_index.filter(|ix| *ix < drawn);
         cx.notify();
     }
 
@@ -1692,13 +1703,24 @@ impl PopupMenu {
     /// GitTurtle patch: the pointer moved over the menu. Once it leaves the
     /// place a wheel left it, the row under it takes the selection, as one
     /// the pointer enters does; a frame's synthetic move at the same place
-    /// does not count.
+    /// does not count. The row GPUI last reported under the pointer takes it
+    /// only where the last frame drew that row under the pointer
+    /// (`rows`): GPUI reports nothing for a row a rebuild stopped drawing,
+    /// so its index once outlived it, and the pointer's first move onto no
+    /// row, as onto the menu's padding, gave the selection to whichever item
+    /// a later rebuild put at that index, far from the pointer, a keyboard's
+    /// cursor among it, and Enter ran it.
     fn pointer_moved(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.still_pointer.is_none_or(|at| at == event.position) {
             return;
         }
         self.still_pointer = None;
-        if let Some(ix) = self.hovered_index {
+        let under = |ix: &usize| {
+            self.rows
+                .get(*ix)
+                .is_some_and(|row| row.contains(&event.position))
+        };
+        if let Some(ix) = self.hovered_index.filter(under) {
             self.selected_index = Some(ix);
             self.keyboard_selection = false;
             self.kept_cursor = None;
@@ -1752,6 +1774,24 @@ impl PopupMenu {
             self.selected_index = None;
         }
         cx.defer_in(window, |_, _, cx| cx.notify());
+    }
+
+    /// GitTurtle patch: the items column laid its rows out, `laid_out` being
+    /// their bounds as GPUI hands them to a column that does not scroll. A
+    /// scrollable column's scroll handle records them instead, before its
+    /// offset, which the column's layout has clamped by now, moves them; the
+    /// rows are recorded as drawn, moved by that offset and clipped to the
+    /// column ([`PopupMenu::pointer_moved`]).
+    fn rows_laid_out(&mut self, laid_out: Vec<Bounds<Pixels>>) {
+        self.rows = if self.scrollable {
+            let (offset, column) = (self.scroll_handle.offset(), self.scroll_handle.bounds());
+            (0..self.scroll_handle.children_count())
+                .filter_map(|ix| self.scroll_handle.bounds_for_item(ix))
+                .map(|row| Bounds::new(row.origin + offset, row.size).intersect(&column))
+                .collect()
+        } else {
+            laid_out
+        };
     }
 
     /// Calculate the anchor corner and left offset for child submenu
@@ -2109,6 +2149,7 @@ impl Render for PopupMenu {
         }
 
         let view = cx.entity().clone();
+        let rows_view = view.clone();
         let items_count = self.menu_items.len();
 
         let max_height = self.max_height.unwrap_or_else(|| {
@@ -2158,6 +2199,11 @@ impl Render for PopupMenu {
             .occlude()
             .child(
                 v_flex()
+                    // GitTurtle patch: where each row was drawn, for the
+                    // pointer's move ([`PopupMenu::rows_laid_out`]).
+                    .on_children_prepainted(move |laid_out, _, cx| {
+                        rows_view.update(cx, |menu, _| menu.rows_laid_out(laid_out));
+                    })
                     .id("items")
                     .p_1()
                     .gap_y_0p5()
@@ -3289,6 +3335,83 @@ mod tests {
             "the moved pointer on Item 9"
         );
         assert_eq!(lit_among(cx, &rows), ["Item 9"], "Item 9 drawn lit");
+    }
+
+    /// The item GPUI last reported under the pointer is known by its index,
+    /// and GPUI reports nothing for a row no longer drawn: with the pointer
+    /// on Five, a rebuild without Five, then one with a separator that puts
+    /// Four at Five's index away from the pointer, a move onto the menu's
+    /// padding, where no row lies, selects nothing and Enter runs nothing.
+    /// That move once gave the selection to the row at the index GPUI had
+    /// last reported, Four, though the pointer never went near it, and Enter
+    /// ran Four.
+    #[gpui::test]
+    fn a_move_onto_no_row_selects_no_row_the_pointer_left_by_a_rebuild(cx: &mut TestAppContext) {
+        const FIVE: &[(&str, bool)] = &[
+            ("One", true),
+            ("Two", true),
+            ("Three", true),
+            ("Four", true),
+            ("Five", true),
+        ];
+        let ran = Ran::default();
+        let (_, menu, cx) = placed(cx, FIVE, &ran);
+        let selection = |cx: &mut VisualTestContext| {
+            menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
+        };
+        let pointer = drawn_item(cx, "Five").center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(5), false), "the pointer on Five");
+
+        rebuilt_acting(&menu, cx, FOUR, &ran);
+        let r = ran.clone();
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, move |menu, _, _| {
+                    let menu = acting(menu, &FOUR[..1], &r).separator();
+                    FOUR[1..].iter().fold(menu, |menu, (name, _)| {
+                        let (r, name) = (r.clone(), *name);
+                        menu.item(
+                            PopupMenuItem::new(name)
+                                .on_click(move |_, _, _| r.borrow_mut().push(name)),
+                        )
+                    })
+                })
+            })
+        });
+        draw(cx);
+        let four = drawn_item(cx, "Four");
+        assert_eq!(
+            menu.read_with(cx, |menu, _| menu.menu_items[5].name().cloned()),
+            Some("Four".into()),
+            "Four at Five's index"
+        );
+        assert!(!four.contains(&pointer), "Four away from the pointer");
+        let surface = menu.read_with(cx, |menu, _| menu.bounds);
+        let padding = gpui::point(four.center().x, surface.top() + px(2.));
+        let heading = cx
+            .debug_bounds("menu-item: Heading · Label")
+            .expect("Heading drawn");
+        assert!(
+            ["One", "Two", "Three", "Four"]
+                .into_iter()
+                .map(|name| drawn_item(cx, name))
+                .chain([heading])
+                .all(|row| !row.contains(&padding)),
+            "no row at {padding:?}"
+        );
+
+        cx.simulate_mouse_move(padding, None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx).0, None, "on no row, nothing selected");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "Enter runs nothing: {:?}",
+            ran.borrow()
+        );
     }
 
     #[gpui::test]

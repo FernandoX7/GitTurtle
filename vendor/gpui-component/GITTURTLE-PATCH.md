@@ -1014,8 +1014,20 @@ place, no item takes the selection from GPUI's hover reports and no item draws
 the group hover, which stays registered with an empty style so that its flag
 follows the pointer (`MenuItemElement::still`). The first move elsewhere
 (`pointer_moved`, on the surface) gives the selection to the item GPUI last
-reported under the pointer (`hovered_index`); a frame's synthetic move at the
-same place does not count. A wheel that moves nothing, over a menu whose rows
+reported under the pointer (`hovered_index`), where the last frame drew that
+item's row under the pointer (`rows`, recorded as the items column is
+prepainted: a column that does not scroll hands its rows' bounds to
+`on_children_prepainted`, and a scrollable one's scroll handle records them
+before its offset, so they are moved by the offset and clipped to the
+column); a frame's synthetic move at the same place does not count. GPUI
+reports nothing for a row it no longer draws, so a rebuild without the row
+the pointer was on left that row's index behind, and a later rebuild could
+put another item there, far from the pointer: with the pointer on Five, a
+menu built again without Five and then with a separator above Two, which put
+Four at Five's index, gave Four the selection on the pointer's first move
+onto the menu's padding, where no row lies, a keyboard's cursor among it, and
+Enter ran Four. A rebuild also forgets a hovered index past its drawn rows
+and the rows laid out for the old items. A wheel that moves nothing, over a menu whose rows
 fit or at the end of its rows, changes nothing.
 
 A menu laid out at another place or size moves its rows under a still pointer
@@ -1121,7 +1133,12 @@ as the measured fold.
 scrolls a capped menu to its end, rests the pointer on Item 10 and builds the
 menu again without Item 11: the surface keeps its bounds and Item 9 comes
 under the pointer, and nothing is selected or drawn lit and Enter runs nothing
-until a 1 px move selects Item 9. Without `surface_laid_out` the app test reads Stage lit
+until a 1 px move selects Item 9.
+`a_move_onto_no_row_selects_no_row_the_pointer_left_by_a_rebuild` rests the
+pointer on Five, builds the menu again without Five and then with a separator
+that puts Four at Five's index away from the pointer, and moves the pointer
+onto the menu's top padding: nothing is selected and Enter runs nothing.
+Without `surface_laid_out` the app test reads Stage lit
 and the crate's reads Two selected; without the leaving row's report giving
 the selection up, the crate's reads Three still selected; compared by the
 origin alone, the taller menu's Five takes the selection; without the hover's
@@ -1129,8 +1146,10 @@ keyboard rule, Item 2 takes the cursor; without both, the wider menu's Two
 takes it and Enter runs Two; giving the pointer's selection up in the
 prepaint fails the sideways move, and a prepaint notify fails the moved
 menu's last step and, for the fold, the capped menu; without the rebuild's
-still pointer, Item 9 takes the selection from the menu built again shorter.
-Remove this part of the patch when upstream
+still pointer, Item 9 takes the selection from the menu built again shorter;
+without both the row check and the rebuild's forgetting of a hovered index
+past its rows, Four takes the selection on the move onto the padding, which
+either alone prevents. Remove this part of the patch when upstream
 lights at most the row under the pointer after a wheel, a move of the menu or
 a rebuild and those tests pass without it.
 
