@@ -34,32 +34,36 @@ use crate::{
 
 pub(crate) struct NodeWrapper<'a>(pub(crate) &'a Node<'a>);
 
+// GitTurtle patch (GITTURTLE-PATCH.md): the bounding box of each ancestor of
+// `node` that clips its children, nearest first, which the application
+// reports as the part of that ancestor it draws. Every clipping ancestor
+// counts: a node can overlap its nearest one and still lie past an outer
+// one's fold, where nothing of it is drawn. One walk up the ancestors,
+// without allocating, which a caller stops at the first clip that leaves
+// the node out. A clipping ancestor without bounds clips nothing.
+fn clips<'a>(node: &Node<'a>) -> impl Iterator<Item = Rect> + 'a {
+    std::iter::successors(node.parent(), |ancestor| ancestor.parent())
+        .filter(|ancestor| ancestor.clips_children())
+        .filter_map(|ancestor| ancestor.bounding_box())
+}
+
 // GitTurtle patch (GITTURTLE-PATCH.md): whether `node`'s bounding box lies
-// wholly outside that of any ancestor that clips its children, which the
-// application reports as the part of that ancestor it draws. Every clipping
-// ancestor counts: a node can overlap its nearest one and still lie past an
-// outer one's fold, where nothing of it is drawn. One walk up the
-// ancestors, which stops at the first clip that leaves the node out. A node
-// without bounds, or without a clipping ancestor, is not.
+// wholly outside that of any clipping ancestor (`clips`). A node without
+// bounds, or without a clipping ancestor, is not.
 fn clipped_out(node: &Node<'_>) -> bool {
     let Some(bounds) = node.bounding_box() else {
         return false;
     };
-    let mut ancestor = node.parent();
-    while let Some(parent) = ancestor {
-        if parent.clips_children()
-            && parent.bounding_box().is_some_and(|clip| {
-                bounds.x1 <= clip.x0
-                    || bounds.x0 >= clip.x1
-                    || bounds.y1 <= clip.y0
-                    || bounds.y0 >= clip.y1
-            })
-        {
-            return true;
-        }
-        ancestor = parent.parent();
-    }
-    false
+    clips(node).any(|clip| {
+        bounds.x1 <= clip.x0 || bounds.x0 >= clip.x1 || bounds.y1 <= clip.y0 || bounds.y0 >= clip.y1
+    })
+}
+
+// GitTurtle patch (GITTURTLE-PATCH.md): whether a clipping ancestor of
+// `node` (`clips`) leaves out `point`, in the coordinates of the tree's
+// container, as bounding boxes are: nothing of `node` is drawn there.
+fn clipped_at(node: &Node<'_>, point: Point) -> bool {
+    clips(node).any(|clip| !clip.contains(point))
 }
 
 impl NodeWrapper<'_> {
@@ -1105,16 +1109,20 @@ impl PlatformNode {
                 Some(node),
                 coord_type,
             );
-            let point = node.transform().inverse() * point;
-            // GitTurtle patch (GITTURTLE-PATCH.md): a node wholly outside a
-            // clipping ancestor is drawn nowhere, so the query passes over
-            // it, as over a node the filter passes over, to what is drawn at
-            // the point: a sibling there, or else its nearest ancestor that
-            // holds the point and shows.
-            let drawn = |node: &Node<'_>| match filter(node) {
-                FilterResult::Include if clipped_out(node) => FilterResult::ExcludeNode,
+            // GitTurtle patch (GITTURTLE-PATCH.md): a node is drawn at the
+            // point only inside every clipping ancestor, so the query passes
+            // over a node any of them leaves out there, as over a node the
+            // filter passes over: its children are still tried, and the
+            // point finds what is drawn there, a sibling or else the nearest
+            // ancestor that holds it. A node wholly outside a clip is drawn
+            // nowhere; one partly inside is drawn only there, where it once
+            // answered for pixels the clip hides too. `point` is in the
+            // tree's container's coordinates, as bounding boxes are.
+            let drawn = |candidate: &Node<'_>| match filter(candidate) {
+                FilterResult::Include if clipped_at(candidate, point) => FilterResult::ExcludeNode,
                 result => result,
             };
+            let point = node.transform().inverse() * point;
             Ok(node.node_at_point(point, &drawn).map(|node| node.id()))
         })
     }

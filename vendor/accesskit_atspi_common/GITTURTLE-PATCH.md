@@ -81,11 +81,14 @@ A GitTurtle change, not a backport. `PlatformNode::accessible_at_point`
 answers AT-SPI's `Component.GetAccessibleAtPoint` with `accesskit_consumer`'s
 hit test, which ignores clips and tries later siblings first, so a node kept
 past a scrolling body's top fold, reported where it lies under the dialog's
-title, answered for the title's pixels. The query now passes over a node
-`clipped_out` leaves out, as it passes over a node the filter passes over
-(`ExcludeNode`): its children are still tried, and the point finds what is
-drawn there, a sibling or the nearest ancestor holding it that shows. The
-extra work is the same ancestor walk for each included node the hit test
+title, answered for the title's pixels, and so did a control that fold
+cuts, at the pixels the body hides, since the hit test only skipped a node
+wholly outside its clip. The query now passes over a node wherever any of
+its clipping ancestors leaves out the point (`clipped_at`, the same walk as
+`clipped_out`, without allocating), as it passes over a node the filter
+passes over (`ExcludeNode`): its children are still tried, and the point
+finds what is drawn there, a sibling or the nearest ancestor that holds it.
+The extra work is that ancestor walk for each included node the hit test
 visits, only when a client asks for a point. macOS's hit test lives in
 `accesskit_macos` and is unchanged.
 
@@ -150,7 +153,10 @@ without `Showing` at their own extents, the others show. Its
 kept past an outer one's fold, with a row inside it: both are `Visible`
 without `Showing`. Its `a_point_query_passes_over_a_node_its_clip_leaves_out`
 asks for the point a control kept past a body's top fold shares with the
-dialog's title, and gets the title. In the
+dialog's title, and gets the title, and its
+`a_point_query_passes_over_a_control_where_its_clip_hides_it` asks for the
+title's pixels over a control that fold cuts, and gets the title, and for
+the control's drawn pixels, and gets the control. In the
 application, `github_view::tests::the_notice_reports_the_part_the_panel_draws`
 reads the GitHub panel's notice through the adapter at 13 and 18 pt in a
 461 x 490 window and at 13 pt in 1,480 x 980 (showing where the body draws
