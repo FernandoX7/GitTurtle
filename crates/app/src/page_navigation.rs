@@ -123,6 +123,9 @@ impl GitTurtle {
         self.page = return_page(self.page, self.page_origin, self.repository.is_some());
         if self.page == AppPage::Repository {
             self.resume_repository_page(window, cx);
+            // Leaving cancelled a review's preparation before its end could
+            // run the read Changes asked for meanwhile.
+            self.read_deferred_working(window, cx);
         } else {
             self.app_focus.focus(window, cx);
         }
@@ -357,6 +360,363 @@ mod tests {
             app.read_with(cx, |app, _| app.working_paths.staged_count),
             1,
             "the draft lands staged"
+        );
+    }
+
+    /// The fixture `history_window_from` imports, checked out with
+    /// `draft.txt` new beside it and its working state read, in History.
+    async fn checked_out(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &mut VisualTestContext,
+        std::path::PathBuf,
+    ) {
+        use crate::views::tests::{fixture_git, history_script, history_window_from, settle};
+        let (fixture, app, cx) = history_window_from(cx, history_script(2, 3)).await;
+        cx.update(|_, cx| crate::shortcuts::bind_keys(cx));
+        let root = fixture.path().join("narrow");
+        fixture_git(&root, &["reset", "--hard", "--quiet"]);
+        std::fs::write(root.join("draft.txt"), "draft\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        let root = app.read_with(cx, |app, _| app.path.clone()).unwrap();
+        (fixture, app, cx, root)
+    }
+
+    fn primary(keys: &str) -> String {
+        let primary = if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "ctrl"
+        };
+        format!("{primary}-{keys}")
+    }
+
+    /// The working state's paths, sorted.
+    fn entries(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Option<Vec<String>> {
+        app.read_with(cx, |app, _| {
+            app.work_status.as_ref().map(|status| {
+                let mut paths: Vec<_> = status
+                    .entries
+                    .iter()
+                    .map(|entry| entry.path.display().to_string())
+                    .collect();
+                paths.sort();
+                paths
+            })
+        })
+    }
+
+    /// The path of the file whose preview is shown.
+    fn previewed(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Option<String> {
+        app.read_with(cx, |app, _| {
+            app.content.as_ref()?;
+            Some(app.files.first()?.path().display().to_string())
+        })
+    }
+
+    /// Lets the quiet reads the window asked for land: they run on the
+    /// window's reader, a thread `run_until_parked` cannot wait for.
+    fn quiet_reads_land(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        for _ in 0..8 {
+            if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                crate::path_filter::filters_land(app, cx);
+                return;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        panic!("a quiet read asked for never ran");
+    }
+
+    /// Opening Working Changes while a write runs, in the write's tab or
+    /// another, queues no read behind the write: the read waits for the write
+    /// to end, which then reads the shown tab's working state whichever tab
+    /// it wrote in. Each Primary+2 in another tab once queued a read on the
+    /// one operation executor behind a write in the first, and with its
+    /// bounded queue full the next was refused as busy, which emptied that
+    /// tab's rows with "Background executor is busy" until something read
+    /// again; the write's end read only its own tab. A repository opened in
+    /// a new tab meanwhile says it is reading until then, not that its
+    /// changes are unavailable.
+    #[gpui::test]
+    async fn changes_opened_in_another_tab_during_a_write_reads_once_it_ends(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, fixture_git, fixture_repository, settle};
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        let other = fixture_repository(fixture.path().join("other"))
+            .path()
+            .to_owned();
+        std::fs::write(other.join("notes.txt"), "notes\n").unwrap();
+        fixture_git(&other, &["add", "notes.txt"]);
+        fixture_git(&other, &["commit", "--quiet", "-m", "Notes"]);
+        std::fs::write(other.join("draft.txt"), "draft\n").unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(other.clone(), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, _| app.path.clone()),
+            Some(other.clone())
+        );
+        assert_eq!(entries(&app, cx), Some(vec!["draft.txt".to_owned()]));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        settle(&app, cx).await;
+
+        // A write in the first tab held open, as a Fetch from an unreachable
+        // remote stays, and the other tab shown meanwhile.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::StageAll,
+                    "Staging files…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        draw(cx);
+        assert_eq!(
+            app.read_with(cx, |app, _| app.path.clone()),
+            Some(other.clone())
+        );
+        assert!(app.read_with(cx, |app, _| app.operation_busy.is_some()));
+        std::fs::write(other.join("later.txt"), "later\n").unwrap();
+        for _ in 0..10 {
+            cx.simulate_keystrokes(&primary("1"));
+            draw(cx);
+            cx.simulate_keystrokes(&primary("2"));
+            draw(cx);
+        }
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Working);
+            assert_eq!(app.operation_error, None, "no read was refused as busy");
+            assert!(app.status_task.is_none(), "no read waits behind the write");
+            assert!(!app.working_rows.is_empty(), "the tab keeps its rows");
+        });
+
+        // Held behind the write, the read its end asks for waits until
+        // looked at.
+        let reads = app.update(cx, |app, _| app.operations.hold());
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        assert!(
+            app.read_with(cx, |app, _| app.status_task.is_some()),
+            "the write's end reads the shown tab's working state"
+        );
+        drop(reads);
+        settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.path.as_ref(), Some(&other));
+            assert_eq!(app.operation_error, None);
+            assert!(!app.working_rows.is_empty());
+        });
+        assert_eq!(
+            entries(&app, cx),
+            Some(vec!["draft.txt".to_owned(), "later.txt".to_owned()]),
+            "the rows read after the write"
+        );
+
+        // A repository opened in a new tab while a write runs in another:
+        // its Changes says it is reading until the write ends, when it reads.
+        let third = fixture_repository(fixture.path().join("third"))
+            .path()
+            .to_owned();
+        std::fs::write(third.join("notes.txt"), "notes\n").unwrap();
+        fixture_git(&third, &["add", "notes.txt"]);
+        fixture_git(&third, &["commit", "--quiet", "-m", "Notes"]);
+        std::fs::write(third.join("draft.txt"), "draft\n").unwrap();
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::StageAll,
+                    "Staging files…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_repository_tab(third.clone(), window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        cx.simulate_keystrokes(&primary("2"));
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.path.as_ref(), Some(&third));
+            assert!(app.operation_busy.is_some());
+            assert!(app.work_status.is_none(), "its read waits for the write");
+            assert!(app.status_task.is_none());
+        });
+        assert!(
+            cx.debug_bounds("working-reading").is_some(),
+            "Changes says it is reading, not that it is unavailable"
+        );
+        let reads = app.update(cx, |app, _| app.operations.hold());
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        assert!(app.read_with(cx, |app, _| app.status_task.is_some()));
+        drop(reads);
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        assert_eq!(entries(&app, cx), Some(vec!["draft.txt".to_owned()]));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None
+        );
+    }
+
+    /// A review's preparation runs on the operation executor as a write
+    /// does, so Changes opened while it runs queues no read behind it either:
+    /// the preparation's end reads the working state. Each opening once
+    /// queued a read behind it, as behind a write.
+    #[gpui::test]
+    async fn changes_opened_while_a_review_is_prepared_reads_once_it_ends(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        let draft = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .unwrap()
+                .entries
+                .iter()
+                .find(|entry| entry.path == std::path::Path::new("draft.txt"))
+                .cloned()
+                .unwrap()
+        });
+        // Discard…'s review, its preparation held as a slow disk holds it.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+        assert!(app.read_with(cx, |app, _| app.operation_busy.is_some()));
+        std::fs::write(fixture.path().join("narrow/later.txt"), "later\n").unwrap();
+        for _ in 0..10 {
+            cx.simulate_keystrokes(&primary("1"));
+            draw(cx);
+            cx.simulate_keystrokes(&primary("2"));
+            draw(cx);
+        }
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Working);
+            assert_eq!(app.operation_error, None, "no read was refused as busy");
+            assert!(app.status_task.is_none(), "no read waits behind it");
+        });
+        drop(held);
+        // The preparation answers, and its end's read lands: nothing else
+        // reads the working state here.
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        assert_eq!(
+            entries(&app, cx),
+            Some(vec!["draft.txt".to_owned(), "later.txt".to_owned()]),
+            "the preparation's end reads the working state"
+        );
+    }
+
+    /// A Commit or Fetch refreshes quietly as it ends, and that quiet read
+    /// serves Changes opened while it ran: its rows land without a second,
+    /// aloud read clearing them, and the selected row gets back the preview
+    /// Changes cleared as it opened (`worker::QuietPreview::Changed`).
+    #[gpui::test]
+    async fn a_commits_quiet_refresh_serves_changes_opened_while_it_ran(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, fixture_git, settle};
+        use gitturtle_core::ChangeArea;
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        let root = fixture.path().join("narrow");
+        std::fs::write(root.join("notes.txt"), "rewritten\n").unwrap();
+        fixture_git(&root, &["add", "notes.txt"]);
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        assert_eq!(
+            entries(&app, cx),
+            Some(vec!["draft.txt".to_owned(), "notes.txt".to_owned()])
+        );
+        let draft = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .unwrap()
+                .entries
+                .iter()
+                .position(|entry| entry.path == std::path::Path::new("draft.txt"))
+                .unwrap()
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.select_working(draft, ChangeArea::Unstaged, window, cx)
+            })
+        });
+        settle(&app, cx).await;
+        assert_eq!(previewed(&app, cx).as_deref(), Some("draft.txt"));
+        cx.simulate_keystrokes(&primary("1"));
+        draw(cx);
+
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::Commit {
+                        message: "Record notes".into(),
+                    },
+                    "Creating commit…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.simulate_keystrokes(&primary("2"));
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::Working);
+            assert!(app.status_task.is_none(), "no read waits behind the commit");
+        });
+        assert_eq!(
+            previewed(&app, cx),
+            None,
+            "Changes clears the preview as it opens"
+        );
+        // Held behind the commit, an aloud read its end asked for would wait
+        // until looked at.
+        let reads = app.update(cx, |app, _| app.operations.hold());
+        drop(held);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the commit");
+        write.await;
+        assert!(
+            app.read_with(cx, |app, _| app.status_task.is_none()),
+            "no aloud read after the commit"
+        );
+        drop(reads);
+        quiet_reads_land(&app, cx);
+        draw(cx);
+        assert_eq!(entries(&app, cx), Some(vec!["draft.txt".to_owned()]));
+        assert_eq!(
+            previewed(&app, cx).as_deref(),
+            Some("draft.txt"),
+            "the selected row's preview is back"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None
         );
     }
 

@@ -92,6 +92,7 @@ impl GitTurtle {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Branch comparison was interrupted. Choose the integration target again.")));
             let _ = this.update_in(cx, |this, window, cx| {
                 this.operation_busy = None;
+                this.read_deferred_working(window, cx);
                 if this.path.as_ref() != Some(&path) { return; }
                 match result {
                     Ok(plan) => {

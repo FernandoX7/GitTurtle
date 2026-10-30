@@ -411,6 +411,10 @@ struct GitTurtle {
     /// menus refuse writes while that read runs
     /// (`GitTurtle::write_unsettled`).
     status_after_write: Option<u64>,
+    /// The repository whose working-state read was asked for while a write
+    /// or a review's preparation ran, and waits for it to end
+    /// (`GitTurtle::read_deferred_working`).
+    working_read_deferred: Option<PathBuf>,
     work_generation: u64,
     work_status: Option<Arc<gitturtle_core::RepositoryStatus>>,
     working_paths: working_selection::FilterState,
@@ -777,6 +781,7 @@ impl GitTurtle {
             operation_task: None,
             status_task: None,
             status_after_write: None,
+            working_read_deferred: None,
             work_generation: 0,
             work_status: None,
             working_paths: working_selection::FilterState::default(),

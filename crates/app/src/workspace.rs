@@ -612,6 +612,10 @@ pub(crate) struct BusyLook {
     reveal: Option<Task<()>>,
 }
 
+/// The preview an LFS download was asked from, as `write_from` captures it
+/// when the download starts: the file, the mode and the read generation.
+pub(crate) type LfsView = (FileChange, WorkspaceMode, u64);
+
 /// Why a control a running write refuses is unavailable, in its tooltip once
 /// it looks busy and in the command palette's and the Linux Main Menu's row.
 pub(crate) const BUSY_REASON: &str = "Wait for the current Git operation to finish";
@@ -1124,7 +1128,7 @@ impl GitTurtle {
             // the action keeps its label (disabled until they land).
             if self.working_filter_waiting() {
                 "Filtering working paths…"
-            } else if self.status_task.is_some() {
+            } else if self.working_read_pending() {
                 "Reading working changes…"
             } else {
                 "Changes unavailable"
@@ -1741,6 +1745,7 @@ impl GitTurtle {
                 this.operation_busy = None;
                 this.operation_repository = None;
                 this.finish_operation_control(window, cx);
+                this.read_deferred_working(window, cx);
                 this.hub.update(cx, |hub, cx| hub.set_busy(false, cx));
                 match result {
                     Ok(repo) => {
@@ -1833,14 +1838,26 @@ impl GitTurtle {
         self.loading = None;
     }
 
-    /// Reads the working state again, in place of any status read in flight.
-    /// One that replaces the read a write asked for as it ended
+    /// Reads the shown repository's working state on the operation
+    /// executor, in place of any status read in flight. While a write or a
+    /// review's preparation runs there, in this repository or another tab's,
+    /// a clone or a create included, the read waits for it to end instead
+    /// ([`Self::read_deferred_working`]): queued behind it, each read only
+    /// waited, each opening of Changes queued another, and once the
+    /// executor's bounded queue was full the next was refused as busy, which
+    /// took the shown rows away until something read again. One that
+    /// replaces the read a write asked for as it ended
     /// (`status_after_write`), as Refresh or showing Working Changes then
     /// does, reads for that write in its place, so menus keep waiting for it
     /// (`write_unsettled`): replaced unmarked, the write's read was no longer
     /// counted, and a Working row's open menu was built again from the
     /// status the write had just changed before the new read landed.
     pub(super) fn refresh_worktree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.operation_busy.is_some() {
+            self.working_read_deferred = self.path.clone();
+            return;
+        }
+        self.working_read_deferred = None;
         let Some(repo) = self.repository.clone() else {
             return;
         };
@@ -2051,12 +2068,10 @@ impl GitTurtle {
 
     /// Opens Working Changes. Switching pages only reads, so it stays
     /// available while a write runs, as History does: the page then shows
-    /// the write's own busy look on its write controls. A write in the shown
-    /// repository reads the working state again when it ends, so the switch
-    /// asks for no read of its own then: on the serial executor it would only
-    /// wait behind the write, and every switch would queue another. The
-    /// switch once returned while any write ran, from the toggle drawn and
-    /// announced available, its shortcut and the palette alike.
+    /// the write's own busy look on its write controls, and its read waits
+    /// for the write to end ([`Self::refresh_worktree`]). The switch once
+    /// returned while any write ran, from the toggle drawn and announced
+    /// available, its shortcut and the palette alike.
     pub(super) fn show_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_inspections(window, cx);
         if self.repository.is_none() {
@@ -2078,12 +2093,35 @@ impl GitTurtle {
         self.sidebar = false;
         self.pane = Pane::Files;
         window.focus(&self.file_focus, cx);
-        let writing_here = self.operation_repository.is_some()
-            && self.operation_repository.as_ref() == self.path.as_ref();
-        if !writing_here {
-            self.refresh_worktree(window, cx);
-        }
+        self.refresh_worktree(window, cx);
         cx.notify();
+    }
+
+    /// Reads the shown repository's working state if it asked for a read
+    /// while a write or a review's preparation ran
+    /// ([`Self::refresh_worktree`]) and none runs now. Every write, clone,
+    /// create and preparation calls it as it ends, whichever repository it
+    /// ran in: Changes may have been opened in another tab meanwhile, whose
+    /// rows the write's own reads never touch. Returning to the repository
+    /// page calls it too, for a preparation that leaving it cancelled. A
+    /// read another tab asked for is dropped: that tab reads quietly when it
+    /// is shown again, and the shown one did not ask.
+    pub(super) fn read_deferred_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.operation_busy.is_some() || self.working_read_deferred.is_none() {
+            return;
+        }
+        if self.working_read_deferred == self.path {
+            self.refresh_worktree(window, cx);
+        } else {
+            self.working_read_deferred = None;
+        }
+    }
+
+    /// Whether the shown repository's working state is being read, or is to
+    /// be read once a running write or preparation ends.
+    pub(super) fn working_read_pending(&self) -> bool {
+        self.status_task.is_some()
+            || (self.working_read_deferred.is_some() && self.working_read_deferred == self.path)
     }
 
     /// Records `notice`, the outcome Git reported for a write in
@@ -2687,33 +2725,66 @@ impl GitTurtle {
                 if succeeded && let Some(message) = &submitted_message {
                     this.clear_committed_draft(&path, message, window, cx);
                 }
-                if this.path.as_ref()==Some(&path) {
-                    if succeeded && submitted_branch.as_deref().is_some_and(|branch| this.branch_name.read(cx).value().trim() == branch) {
-                        this.branch_name.update(cx,|input,cx|input.set_value("",window,cx));
-                    }
-                    if refresh_history { this.refresh_after_write(path, window, cx); }
-                    else if downloading_lfs {
-                        let same_view = lfs_selection.as_ref().is_some_and(|(file, mode, generation)| this.mode == *mode && this.generation == *generation && this.selected_file.and_then(|index| this.files.get(index)) == Some(file));
-                        if succeeded && same_view {
-                            if this.mode == WorkspaceMode::Working {
-                                if let Some((index, area)) = this.working_selected { this.select_working(index, area, window, cx); }
-                            } else if !this.reload_tracked_inspection(window, cx) && let Some(index) = this.selected_file { this.load_file(index, window, cx); }
-                        } else if !same_view && this.mode == WorkspaceMode::Working {
-                            // Changes, opened while the download ran, asked for no
-                            // read of its own (`show_working`).
-                            this.refresh_worktree(window, cx);
-                        }
-                    } else {
-                        // Menus wait for this read as for a reload
-                        // (`write_unsettled`).
-                        this.refresh_worktree(window, cx);
-                        this.status_after_write = Some(this.work_generation);
-                    }
+                if this.path.as_ref()==Some(&path) && succeeded && submitted_branch.as_deref().is_some_and(|branch| this.branch_name.read(cx).value().trim() == branch) {
+                    this.branch_name.update(cx,|input,cx|input.set_value("",window,cx));
                 }
+                let download = downloading_lfs.then_some((succeeded, lfs_selection));
+                this.read_after_write(&path, refresh_history, download, window, cx);
                 cx.notify();
             });
         }));
         cx.notify();
+    }
+
+    /// The reads a write in `path` asks for as it ends: a write that
+    /// `refresh_history` names refreshes quietly, keeping what History and
+    /// Changes show; an LFS `download` reloads the preview it was asked
+    /// from, if that preview is still shown, and reads the working state for
+    /// Changes shown since; any other write reads the working state. Then
+    /// a read asked for while the write ran, in whichever repository is
+    /// shown, runs ([`Self::read_deferred_working`]).
+    pub(super) fn read_after_write(
+        &mut self,
+        path: &std::path::Path,
+        refresh_history: bool,
+        download: Option<(bool, Option<LfsView>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.path.as_deref() == Some(path) {
+            if refresh_history {
+                // The quiet read reads the working state too, and gives a
+                // selected row the preview Changes cleared as it opened
+                // (`worker::QuietPreview::Changed`).
+                self.working_read_deferred = None;
+                self.refresh_after_write(path.to_owned(), window, cx);
+            } else if let Some((succeeded, selection)) = download {
+                let same_view = selection.as_ref().is_some_and(|(file, mode, generation)| {
+                    self.mode == *mode
+                        && self.generation == *generation
+                        && self.selected_file.and_then(|index| self.files.get(index)) == Some(file)
+                });
+                if succeeded && same_view {
+                    if self.mode == WorkspaceMode::Working {
+                        if let Some((index, area)) = self.working_selected {
+                            self.select_working(index, area, window, cx);
+                        }
+                    } else if !self.reload_tracked_inspection(window, cx)
+                        && let Some(index) = self.selected_file
+                    {
+                        self.load_file(index, window, cx);
+                    }
+                } else if !same_view && self.mode == WorkspaceMode::Working {
+                    self.refresh_worktree(window, cx);
+                }
+            } else {
+                // Menus wait for this read as for a reload
+                // (`write_unsettled`).
+                self.refresh_worktree(window, cx);
+                self.status_after_write = Some(self.work_generation);
+            }
+        }
+        self.read_deferred_working(window, cx);
     }
 
     fn refresh_after_write(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -2874,7 +2945,9 @@ impl GitTurtle {
                     empty_state::working_clean_line(self.work_status.as_deref(), false),
                 )
                 .pane(cx)
-            } else if refreshing {
+            } else if self.working_read_pending() {
+                // Its read may wait for a running write
+                // (`Self::refresh_worktree`).
                 EmptyState::new("working-reading", "Reading the working tree…").pane(cx)
             } else {
                 // Refresh, in the header just above, reads it again.

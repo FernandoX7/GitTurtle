@@ -325,6 +325,7 @@ impl GitTurtle {
             let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Profile preparation was interrupted")));
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.operation_busy == Some("Reviewing Git profile…") { this.operation_busy = None; }
+                this.read_deferred_working(window, cx);
                 if this.path.as_ref() != Some(&path) || this.page == AppPage::Projects { return; }
                 match result {
                     Ok(plan) => {

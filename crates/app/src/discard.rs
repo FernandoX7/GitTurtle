@@ -57,6 +57,7 @@ impl GitTurtle {
                 if this.operation_busy == Some(PREPARING) {
                     this.operation_busy = None;
                 }
+                this.read_deferred_working(window, cx);
                 if this.path.as_ref() != Some(&repository)
                     || this.repository.as_ref().map(|repo| repo.path())
                         != Some(repository.as_path())

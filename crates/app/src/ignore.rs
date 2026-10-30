@@ -110,6 +110,7 @@ impl IgnoreForm {
                 let _ = this.update_in(cx, |this, window, cx| {
                     if this.ignore_actions.generation != generation { return; }
                     if this.operation_busy == Some(PREPARING) { this.operation_busy = None; }
+                    this.read_deferred_working(window, cx);
                     if this.path.as_ref() != Some(&repository) || this.page != AppPage::Repository { cx.notify(); return; }
                     let _ = form.update(cx, |form, cx| { form.pending = false; cx.notify(); });
                     match result {

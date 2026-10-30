@@ -426,7 +426,7 @@ impl SeriesBrowser {
             owner.operation_task = Some(cx.spawn_in(window, async move |owner, cx| {
                 let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Remote inspection ended without a result. Check it again explicitly before publishing")));
                 let _ = owner.update_in(cx, |owner, window, cx| {
-                    owner.operation_busy = None; owner.finish_operation_control(window, cx);
+                    owner.operation_busy = None; owner.finish_operation_control(window, cx); owner.read_deferred_working(window, cx);
                     let path = owner.path.clone(); let page = owner.page;
                     if let Some(form) = form.upgrade() { form.update(cx, |form, cx| {
                         form.network_pending = false; form.network_control = None;
