@@ -362,11 +362,13 @@ pub(crate) struct ReflogBrowser {
     /// reveals the entry the keyboard moves focus onto.
     entries: FocusReveal,
     /// Whether the next frame scrolls the content to show the filter, if it
-    /// holds focus: set as the dialog opens and as a read of the log or an
-    /// entry lands, since the scope's summary that a read adds above the
-    /// filter moves it down. An entry's read that fails, and the recovery
-    /// review's read, whose errors stand at the content's end, set
-    /// [`Self::reveal_error`] instead.
+    /// holds focus: set as the dialog opens and as the log's read lands,
+    /// since the scope's summary that it adds above the filter moves it
+    /// down. An entry's read and the recovery review add nothing above the
+    /// filter and never set it: a click on an entry from the filter, with
+    /// the content scrolled past it, scrolled the content back up from
+    /// under the pointer as the entry's commit landed. Their errors, which
+    /// stand at the content's end, set [`Self::reveal_error`].
     reveal_filter: bool,
     /// Whether the next frame scrolls the content by the least amount that
     /// shows the error a read just ended with, in the selected entry's
@@ -675,21 +677,24 @@ impl ReflogBrowser {
                         Err(error) => this.error = Some(format!("{error:#}")),
                     }
                 }
-                // The error an entry's read or the recovery review ends with
-                // stands at the content's end, below its fold where the
-                // content is short, as at 18 pt in a 461 × 490 half tile:
-                // it is revealed as it lands, focus staying where it is, so
-                // a failed read is never out of view. Neither read scrolls
+                // Only the log's read adds a line above the filter, the
+                // scope's summary, so only its landing scrolls back to the
+                // filter. An entry's read and the recovery review add
+                // nothing above it, landed or failed, and neither scrolls
                 // back to the filter, which the pointer's presses leave
-                // holding focus: that moved the list, and Review recovery
-                // branch… with it, from under the pointer, and took the
-                // review's error out of view. Focus that leaves an entry's
-                // Cancel for the entry, far above the error, is revealed
-                // instead, so the entry it lands on draws its ring.
+                // holding focus: that moved the list, and the entry clicked
+                // or Review recovery branch… with it, from under the
+                // pointer, and took the review's error out of view. The
+                // error either read ends with stands at the content's end,
+                // below its fold where the content is short, as at 18 pt in
+                // a 461 × 490 half tile: it is revealed as it lands, focus
+                // staying where it is, so a failed read is never out of
+                // view. Focus that leaves an entry's Cancel for the entry,
+                // far above the error, is revealed instead, so the entry it
+                // lands on draws its ring.
                 match place {
                     ReadPlace::Log => this.reveal_filter = true,
-                    ReadPlace::Entry if this.error.is_none() => this.reveal_filter = true,
-                    ReadPlace::Entry => this.reveal_error = !left_cancel,
+                    ReadPlace::Entry => this.reveal_error = this.error.is_some() && !left_cancel,
                     ReadPlace::Recovery => this.reveal_error = this.error.is_some(),
                 }
                 cx.notify();
@@ -1875,6 +1880,77 @@ mod tests {
         });
         cx.update(|window, _| window.refresh());
         draw(cx);
+    }
+
+    /// A click on an entry from the filter, with the content scrolled past
+    /// the filter to the entry list, moves nothing as the entry's commit
+    /// lands, at 18 pt in a 461 × 490 half tile: the content keeps its
+    /// offset, the clicked entry stays under the pointer and focus stays in
+    /// the filter. Only the log's read, which adds the scope's summary above
+    /// the filter, scrolls back to it; an entry's landing did too, so the
+    /// content scrolled back up to the filter and the list moved down from
+    /// under the pointer.
+    #[gpui::test]
+    async fn a_click_from_the_filter_moves_nothing_as_its_entry_lands(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (app, browser, cx) = opened_browser(cx, &repo).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        set_interface_text_size(cx, &app, 18);
+        select_newest(cx, &browser).await;
+        let filter = browser.read_with(cx, |this, cx| this.filter_focus(cx));
+        let filter_text = |cx: &mut VisualTestContext| {
+            cx.read(|cx| browser.read(cx).query.read(cx).input_bounds())
+        };
+        let offset = |cx: &mut VisualTestContext| {
+            browser.read_with(cx, |this, _| this.content.scroll().offset().y)
+        };
+        assert!(
+            cx.update(|window, _| filter.is_focused(window)),
+            "the filter holds focus"
+        );
+
+        // The content scrolled until the entry list starts at its top, the
+        // filter above it, out of view.
+        let content = rendered(cx, "reflog-browser-content");
+        let list = in_content(cx, &browser, "reflog-list");
+        let scrolled = content.top() - list.top();
+        browser.update(cx, |this, _| {
+            this.content.scroll().set_offset(point(px(0.), scrolled));
+        });
+        cx.update(|window, _| window.refresh());
+        draw(cx);
+        assert_eq!(offset(cx), scrolled, "the content scrolls to the list");
+        assert!(
+            filter_text(cx).bottom() <= content.top(),
+            "the filter {:?} lies above the content {content:?}",
+            filter_text(cx)
+        );
+        let entry = rendered(cx, "reflog-entry-2");
+        assert!(shows_whole(content, entry), "{entry:?} in {content:?}");
+
+        click_entry(cx, &browser, 2);
+        let selected = browser.read_with(cx, |this, _| {
+            let page = this.page.as_ref().expect("the log loaded");
+            (
+                this.selected.clone(),
+                this.commit.as_ref().map(|commit| commit.oid.clone()),
+            ) == (
+                Some(page.entries[2].clone()),
+                Some(page.entries[2].oid.clone()),
+            )
+        });
+        assert!(selected, "the click selects the entry and its commit lands");
+        assert_eq!(offset(cx), scrolled, "the content keeps its offset");
+        assert_eq!(
+            rendered(cx, "reflog-entry-2"),
+            entry,
+            "the clicked entry stays under the pointer"
+        );
+        assert!(
+            cx.update(|window, _| filter.is_focused(window)),
+            "focus stays in the filter"
+        );
     }
 
     /// A recovery branch name already taken fails the recovery review, whose
