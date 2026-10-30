@@ -186,8 +186,8 @@ change draws, and fails without the corner part. The crate's own
 an excluded workspace member whose dev-dependencies the workspace's lockfile
 does not resolve, so
 `scripts/vendor-crate-test.sh vendor/gpui-base popup::tests positioner::`
-runs them, and the `positioner` tests, in a copy of the crate outside any
-Cargo workspace, made its own workspace root. The copy takes every other
+runs them, and the `positioner` tests, in a copy of the crate under the
+checkout's `.local/`, made its own workspace root. The copy takes every other
 entry of the root manifest's `[patch.crates-io]`, so the AT-SPI adapter, the
 `#[gpui::test]` macro and the macOS backend come from `vendor/` as they do in
 the application; it builds with the checkout's pinned toolchain, and every
