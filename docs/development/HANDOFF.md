@@ -82,6 +82,15 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
     - **New finding (follow-up, should fix):** with a Shift-F10 Working row menu open, a file that becomes conflicted gets a conflict view whose resolution editor takes focus (`conflicts.rs:438`) while the menu stays drawn, so Enter goes to the draft.
     - No app test for the commit menu case (d).
     - Verification review and security re-review running.
+  - **F2 verified: no blocker.** Items 1–2 are fixed: no keyboard dead end at rest, the memory is cleared on every key and pointer path, and the throwaway scroll handle allocates once per rebuild.
+    - Should fix:
+      - The keyboard conflict test (`motion.rs:4473-4589`) passes only because GPUI's test window starts inactive. In the real app the editor's focus blurs the menu closed. The probe with `window.activate_window()` fails it. So F2's "open finding" is a test artifact; fix the test, its comment, `GITTURTLE-PATCH.md:1081-1084` and DESIGN.md:377's keyboard clause.
+      - "OS-native" for Editor/Textarea menus is wrong on Linux (`native_menu/mod.rs:219` → `fallback.rs`, a kit `PopupMenu` placed with `snap_to_window_with_margin(8)`, not above the status bar); `keep_popups_above_the_status_bar`'s "every menu" overclaims.
+    - Nits: nothing is announced when the cursor rests; the `build_again` doc omits the unremembered case.
+    - Pre-existing should fix:
+      - A passive status refresh landing a conflicted preview moves focus into the resolution editor (`conflicts.rs:368-372`, `:438`).
+      - The Linux fallback menu ignores the status-bar inset (`fallback.rs:121`).
+    - → **F3** (rebase F onto the head + these), after the security re-review.
   - **HB line reviewed** (`c3ba5a61..df84fd67`): all items are fixed and there is no blocker. The arrangement measures only on a cache miss, the icon Cancel's name and tooltip are correct, and `body_size` is used throughout.
     - Should fix:
       - `disabled_git_actions_keep_their_shape_on_the_toolbar` keeps HB's relative-bounds relaxation, so a page pushed down passes (confirmed by mutation).
@@ -93,6 +102,12 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
     - Simplification: the layout is computed twice per busy frame.
     - Integration risks: `views.rs` next to `operation-error-summary`; `authentication.rs` against R2k; rounding of `status_bar_top`.
     - → **HB''** (`briefs-q9/HB3.md`) once R lands: it rebases the HB line onto the head, then fixes these.
+  - **R integrated** (implementer-hard in `.local/wt-pick-e`, tip `af6328f7` on `1ae711ad`, 41 commits, fast gate green at 170 s; probe run 101 passed):
+    - Resolutions: both `main.rs` fields; `return_from_page` = head's `resume_repository_page` + `read_deferred_working`; one doc for the working read; the write-end handler keeps the head's structure, with R's `read_after_write` setting `status_after_write` on the read that runs; S's and R's recovery cancels both kept; E's `refuse`/`Heard` with R's `RequestKind`; `quiet_read_reads_working` on the head's `inspection_open`.
+    - Two compile breaks (`menu_command_reason` gained `cx`) were fixed in their commits.
+    - Follow-ups: S's Stashes `cancel_recovery_preparation` runs no noted working read; `tags.rs` `REVIEW_TAG_BUSY_REASON` (already R2m item 1).
+    - Landed as `…35628d02` (tree equal to `af6328f7` except HANDOFF.md); gate log `.local/gate-R-35628d02.log`.
+  - **J rebase brief** written: `briefs-q9/J-int.md` (implementer-hard; the J line `b7f643d2..d389b8e6`, 25 commits, onto the head after S2g, plus J3e's nits). HB'' runs in parallel; R2m waits for HB'' (both touch the operation Cancel).
   - **R2k verified: no blocker.** Item 1 is confirmed by the reviewer's own mutation under the probe (exactly the 3 plus the create test fail). `busy_reason()` cannot confuse a write with a request, the local cancellation cannot hit a later operation, and `close_blame`'s read goes through `can_start`.
     - Should fix (reachability uncertain): Create tag's Review tag (`tags.rs:710-712`, `:747`) still says "current Git operation" during a GitHub request, against DESIGN.md:284; use `busy_reason()`.
     - Nits:
