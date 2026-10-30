@@ -38,21 +38,44 @@ pub(crate) const DIALOG_FOOTER_GAP: Pixels = px(16.);
 /// neither, so a thumb never paints over a row.
 pub(crate) struct ScrollCue {
     rows: RowColumn,
+    /// The shortest list that draws the gutter and the scrollbar
+    /// ([`ScrollCue::where_a_thumb_moves`]).
+    shortest: Pixels,
     /// Whether this frame draws the gutter and the scrollbar.
     cued: bool,
 }
+
+/// The shortest track a scrollbar's thumb moves along: the kit's shortest
+/// thumb, an unscaled 48 px (`MIN_THUMB_SIZE` in `gpui-base`'s scrollbar),
+/// and its 4 px inset at each of the track's ends (`THUMB_INSET`). Along a
+/// shorter track the kit's thumb ran out of the track against the scroll,
+/// or moved a few pixels at most, and a drag divided by the track's length
+/// less the thumb's, at most zero.
+pub(crate) const SHORTEST_SCROLL_TRACK: Pixels = px(48. + 4. * 2.);
 
 impl ScrollCue {
     /// The cue for the list `scroll` tracks, which keeps `room` around its
     /// rows for their rings, for the frame being rendered.
     pub(crate) fn new(scroll: &ScrollHandle, room: Pixels) -> Self {
+        let rows = RowColumn {
+            scroll: scroll.clone(),
+            room,
+        };
         Self {
-            rows: RowColumn {
-                scroll: scroll.clone(),
-                room,
-            },
-            cued: overflows(scroll),
+            cued: cues(&rows, Pixels::ZERO),
+            rows,
+            shortest: Pixels::ZERO,
         }
+    }
+
+    /// The cue for a list that can shrink below the shortest track a
+    /// scrollbar's thumb moves along ([`SHORTEST_SCROLL_TRACK`]), as a side's
+    /// foot does (`system_preview::SideHeader::foot`): shorter, the list
+    /// still scrolls but keeps no gutter and draws no scrollbar.
+    pub(crate) fn where_a_thumb_moves(mut self) -> Self {
+        self.shortest = SHORTEST_SCROLL_TRACK;
+        self.cued = cues(&self.rows, self.shortest);
+        self
     }
 
     /// For the list's `on_children_prepainted`: runs `prepainted`, then draws
@@ -62,11 +85,10 @@ impl ScrollCue {
         &self,
         prepainted: impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static,
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
-        let scroll = self.rows.scroll.clone();
-        let cued = self.cued;
+        let (rows, shortest, cued) = (self.rows.clone(), self.shortest, self.cued);
         move |bounds, window, cx| {
             prepainted(bounds, window, cx);
-            if overflows(&scroll) != cued {
+            if cues(&rows, shortest) != cued {
                 window.defer(cx, |window, _| window.refresh());
             }
         }
@@ -128,6 +150,13 @@ impl ScrollbarHandle for RowColumn {
 /// kit's scrollbar judges it before painting a thumb.
 fn overflows(scroll: &ScrollHandle) -> bool {
     scroll.max_offset().y > Pixels::ZERO
+}
+
+/// Whether the list `rows` reads draws its gutter and scrollbar: where it
+/// overflowed when last laid out, at least `shortest` tall, the track the
+/// scrollbar lies along (the kit lays it over the list's whole height).
+fn cues(rows: &RowColumn, shortest: Pixels) -> bool {
+    overflows(&rows.scroll) && rows.scroll.bounds().size.height >= shortest
 }
 
 use crate::native_accessibility::text as static_text;

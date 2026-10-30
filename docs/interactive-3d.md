@@ -23,7 +23,10 @@ Each side groups Fit/Reset, zoom and edges beside the standard-view menu and
 camera-link toggle, wrapping as space requires. The menu retains all seven named
 views and a checked current view; custom orbit is labelled Custom view. Geometry
 counts and the applicable appearance/shading disclosure lead the scrollable details footer,
-which holds four of its lines before it scrolls.
+which holds four of its lines at the interface size before it scrolls, so at the default
+text size a wide side shows the usual details whole with no scrollbar; at 18 pt they may
+wrap past it and scroll. Where the side gives the footer less room than the toolkit's
+shortest scrollbar thumb and its insets, it still scrolls but draws no scrollbar.
 Updating status overlays the canvas without reserving an empty row. Unsupported
 and missing sides use the same labelled comparison surface; errors are accessible,
 bounded and scrollable, and a usable opposite side keeps its controls. Orientation

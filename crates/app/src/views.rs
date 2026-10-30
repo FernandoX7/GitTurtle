@@ -11907,8 +11907,13 @@ pub(crate) mod tests {
     /// Capped at an unscaled 48 px, the kit's shortest thumb, the thumb
     /// filled its track and never moved. Their scroll area, shrunk to a
     /// sliver where the side gave them part of their room, once showed part
-    /// of their lines with no sign that the rest scrolled. That a foot draws
-    /// none where its lines fit is also
+    /// of their lines with no sign that the rest scrolled. Where the side
+    /// gives them less than the shortest track a thumb moves along
+    /// ([`crate::tags::SHORTEST_SCROLL_TRACK`]), they draw no scrollbar, and
+    /// any thumb drawn lies within its track: between about 16 and 56 px the
+    /// kit's 48 px thumb once ran out of its track against the scroll, or
+    /// barely moved (at 13 pt in a 461 × 688 window, a 52.5 px room drew
+    /// one). That a foot draws none where its lines fit is also
     /// `system_preview::tests::a_side_s_foot_cues_its_scroll_only_while_it_overflows`.
     #[cfg(target_os = "linux")]
     #[gpui::test]
@@ -11949,7 +11954,7 @@ pub(crate) mod tests {
             });
             draw(cx);
         };
-        let (mut moved, mut rooms) = (0, Vec::new());
+        let (mut moved, mut short, mut rooms) = (0, 0, Vec::new());
         for text in [13, 18] {
             cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
             let sizes = (490..=980)
@@ -11979,13 +11984,22 @@ pub(crate) mod tests {
                     continue;
                 }
                 whole = whole.max(area.size.height);
-                // A thumb needs more than its insets; a sliver draws none.
-                if area.size.height < px(16.) {
+                // Too short for a thumb that moves, they draw no scrollbar.
+                if area.size.height < crate::tags::SHORTEST_SCROLL_TRACK {
+                    assert!(
+                        thumb(area, cx).is_none(),
+                        "{at}: the details' room {area:?}, too short for a thumb that moves, draws no scrollbar"
+                    );
+                    short += usize::from(area.size.height >= px(16.));
                     continue;
                 }
                 let top = thumb(area, cx).unwrap_or_else(|| {
                     panic!("{at}: the details {area:?} cue the rest of their lines {lines:?} with a scrollbar")
                 });
+                assert!(
+                    top.top() >= area.top() && top.bottom() <= area.bottom(),
+                    "{at}: the thumb {top:?} lies within its track {area:?}"
+                );
                 if area.size.height < whole - px(0.5) {
                     continue;
                 }
@@ -12010,6 +12024,10 @@ pub(crate) mod tests {
         assert!(
             moved >= 2,
             "the walk meets details with their whole room that overflow"
+        );
+        assert!(
+            short >= 1,
+            "the walk meets details partly given way to a room too short for a thumb that moves"
         );
         // Their room holds the same lines at either size, so it scales.
         let scale = rooms[1] / rooms[0];

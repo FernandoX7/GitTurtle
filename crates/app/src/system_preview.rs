@@ -1161,11 +1161,13 @@ impl SideHeader {
     /// the foot to nothing and its lines, with the padding `area` keeps
     /// inside it, stay within its reach, and cued while they overflow by
     /// the always-visible scrollbar `scrollbar`, as a comparable bounded
-    /// area's is ([`crate::tags::ScrollCue`]). Shrunk to a sliver, the
-    /// model's details once showed a part of their lines with no sign that
-    /// the rest scrolled.
+    /// area's is ([`crate::tags::ScrollCue`]), where it is tall enough for
+    /// a thumb that moves ([`crate::tags::SHORTEST_SCROLL_TRACK`]). Shrunk to
+    /// a sliver, the model's details once showed a part of their lines with
+    /// no sign that the rest scrolled, and a little taller, a thumb that ran
+    /// out of its track against the scroll.
     pub(crate) fn foot(&self, area: Stateful<Div>, scrollbar: &'static str) -> Div {
-        let cue = crate::tags::ScrollCue::new(&self.foot, px(0.));
+        let cue = crate::tags::ScrollCue::new(&self.foot, px(0.)).where_a_thumb_moves();
         let observe = cue.observe(|_, _, _| {});
         let area = area.min_h_0().overflow_y_scroll().track_scroll(&self.foot);
         cue.list(area, scrollbar)
