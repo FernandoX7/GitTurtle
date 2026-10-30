@@ -1206,7 +1206,12 @@ mod tests {
         fixture_git(&root, &["add", "notes.txt"]);
         cx.simulate_keystrokes(&primary("2"));
         settle(&app, cx).await;
-        crate::path_filter::filters_land(&app, cx);
+        // Nothing may read the working state before the Commit. The rescan
+        // the window asks for as its watch registers, restarted by each
+        // read before it lands, runs again as Changes' status lands: still
+        // running, it says Changes is reading, and landing later, it reads
+        // back the status cleared below.
+        quiet_reads_land(&app, cx);
         // No status shown, as a status read that failed leaves Changes.
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
