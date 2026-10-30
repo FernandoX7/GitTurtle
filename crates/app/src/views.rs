@@ -1197,16 +1197,16 @@ impl GitTurtle {
         if let Some((name, remote)) = contextual_branch {
             element
                 .app_context_menu(move |menu, _, cx| {
-                    let disabled = branch_owner
+                    let (gone, wait) = branch_owner
                         .upgrade()
-                        .is_none_or(|owner| owner.read(cx).write_unsettled());
+                        .map_or((true, None), |owner| (false, owner.read(cx).menu_wait()));
                     branch_row_menu(
                         menu,
                         branch_owner.clone(),
                         branch_repository.clone(),
                         name.clone(),
                         remote,
-                        disabled,
+                        (gone, wait),
                     )
                 })
                 // A write's start or end builds the open menu again.
@@ -1215,18 +1215,19 @@ impl GitTurtle {
         } else if let Some(tree) = contextual_worktree {
             element
                 .app_context_menu(move |menu, _, cx| {
-                    let disabled = branch_owner.upgrade().is_none_or(|owner| {
+                    let refusal = branch_owner.upgrade().map_or((true, None), |owner| {
                         let owner = owner.read(cx);
-                        owner.write_unsettled()
-                            || owner.path != branch_repository
-                            || owner.page != AppPage::Repository
+                        (
+                            owner.path != branch_repository || owner.page != AppPage::Repository,
+                            owner.menu_wait(),
+                        )
                     });
                     worktree_row_menu(
                         menu,
                         branch_owner.clone(),
                         branch_repository.clone(),
                         tree.clone(),
-                        disabled,
+                        refusal,
                     )
                 })
                 // A write's start or end builds the open menu again.
@@ -1267,7 +1268,7 @@ impl GitTurtle {
                             repository.clone(),
                             name.clone(),
                             remote,
-                            app.write_unsettled(),
+                            (false, app.menu_wait()),
                         )
                     }),
                     Box::new(move |app: &GitTurtle| {
@@ -1285,15 +1286,13 @@ impl GitTurtle {
                 (
                     0,
                     Box::new(move |menu, app: &GitTurtle| {
-                        let disabled = app.write_unsettled()
-                            || app.path != repository
-                            || app.page != AppPage::Repository;
+                        let elsewhere = app.path != repository || app.page != AppPage::Repository;
                         worktree_row_menu(
                             menu,
                             owner.clone(),
                             repository.clone(),
                             tree.clone(),
-                            disabled,
+                            (elsewhere, app.menu_wait()),
                         )
                     }),
                     Box::new(move |app: &GitTurtle| {
@@ -3752,38 +3751,41 @@ impl FilesHeader {
 /// A navigator branch's menu, which a right-click on its row and Shift-F10
 /// or the Menu key on the cursor row open alike: its name, then Branch
 /// actions…, which acts only while the repository the menu was built for is
-/// still the one shown.
+/// still the one shown. `refusal` is whether it is unavailable for a reason
+/// of its own and why a write refuses it, which it then states
+/// (`native_accessibility::waiting_item`).
 fn branch_row_menu(
     menu: PopupMenu,
     owner: WeakEntity<GitTurtle>,
     repository: Option<PathBuf>,
     name: String,
     remote: bool,
-    disabled: bool,
+    (refused, wait): (bool, Option<native_accessibility::MenuWait>),
 ) -> PopupMenu {
     menu.label(name.clone()).item(
-        PopupMenuItem::new("Branch actions…")
-            .disabled(disabled)
-            .on_click(move |_, window, cx| {
+        native_accessibility::waiting_item("Branch actions…", refused, wait).on_click(
+            move |_, window, cx| {
                 let _ = owner.update(cx, |this, cx| {
                     if this.path == repository && this.page == AppPage::Repository {
                         this.open_contextual_branch(name.clone(), remote, window, cx);
                     }
                 });
-            }),
+            },
+        ),
     )
 }
 
 /// A navigator worktree's menu, which a right-click on its row and
 /// Shift-F10 or the Menu key on the cursor row open alike: its path, then
 /// its actions and removals, which act only while the repository the menu
-/// was built for is still the one shown.
+/// was built for is still the one shown. `refusal` is as for
+/// [`branch_row_menu`].
 fn worktree_row_menu(
     menu: PopupMenu,
     owner: WeakEntity<GitTurtle>,
     repository: Option<PathBuf>,
     tree: Worktree,
-    disabled: bool,
+    (refused, wait): (bool, Option<native_accessibility::MenuWait>),
 ) -> PopupMenu {
     let mut menu = menu.label(tree.path.display().to_string());
     for (label, removal) in [
@@ -3797,15 +3799,17 @@ fn worktree_row_menu(
         let owner = owner.clone();
         let repository = repository.clone();
         let tree = tree.clone();
-        menu = menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
-            move |_, window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    if this.path == repository && this.page == AppPage::Repository {
-                        this.open_worktree_actions(tree.clone(), removal, window, cx);
-                    }
-                });
-            },
-        ));
+        menu = menu.item(
+            native_accessibility::waiting_item(label, refused, wait).on_click(
+                move |_, window, cx| {
+                    let _ = owner.update(cx, |this, cx| {
+                        if this.path == repository && this.page == AppPage::Repository {
+                            this.open_worktree_actions(tree.clone(), removal, window, cx);
+                        }
+                    });
+                },
+            ),
+        );
     }
     menu
 }

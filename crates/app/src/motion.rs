@@ -1762,9 +1762,9 @@ mod tests {
             "Amend last commit…",
             "Undo last local commit…",
         ] {
-            assert!(
-                cx.debug_bounds(format!("menu-item: {item} · MenuItem disabled").leak())
-                    .is_some(),
+            assert_eq!(
+                offered(cx, item),
+                Some(false),
                 "{item} disabled in the menu opened while the write runs"
             );
         }
@@ -1795,9 +1795,9 @@ mod tests {
         let held = held_write(&app, cx);
         cx.simulate_click(actions.center(), Modifiers::default());
         frame(cx);
-        assert!(
-            cx.debug_bounds("menu-item: Browse stashes… · MenuItem disabled")
-                .is_some(),
+        assert_eq!(
+            offered(cx, "Browse stashes…"),
+            Some(false),
             "Browse stashes… disabled while the write runs"
         );
         release(&app, held, cx).await;
@@ -2505,15 +2505,19 @@ mod tests {
     }
 
     /// Whether the open menu offers `item`: drawn available, drawn
-    /// disabled, or not drawn.
+    /// disabled, by its command alone or stating the write it waits for
+    /// (`native_accessibility::waiting_item`), or not drawn.
     fn offered(cx: &mut VisualTestContext, item: &str) -> Option<bool> {
-        let drawn = |cx: &mut VisualTestContext, role: &str| {
-            cx.debug_bounds(format!("menu-item: {item} · {role}").leak())
+        let drawn = |cx: &mut VisualTestContext, name: &str, role: &str| {
+            cx.debug_bounds(format!("menu-item: {name} · {role}").leak())
                 .is_some()
         };
-        if drawn(cx, "MenuItem") {
+        let waiting = crate::native_accessibility::waiting_names::of(item);
+        if drawn(cx, item, "MenuItem") {
             Some(true)
-        } else if drawn(cx, "MenuItem disabled") {
+        } else if drawn(cx, item, "MenuItem disabled")
+            || waiting.is_some_and(|name| drawn(cx, &name, "MenuItem disabled"))
+        {
             Some(false)
         } else {
             None
@@ -3486,6 +3490,134 @@ mod tests {
             );
             assert!(dialog_open(cx), "the amend form opens for {moved}");
             close_dialog(cx);
+            drop(fixture);
+        }
+
+        /// The label a Fetch runs under, as the window's progress line
+        /// shows it.
+        const FETCHING: &str = "Fetching remote…";
+
+        /// Starts a Fetch and holds it, as a slow network write.
+        fn held_fetch(
+            app: &Entity<GitTurtle>,
+            cx: &mut VisualTestContext,
+        ) -> crate::operations::Held {
+            let held = app.update(cx, |app, _| app.operations.hold());
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    let fetch = gitturtle_core::WriteCommand::Fetch {
+                        remote: "origin".into(),
+                    };
+                    app.write(fetch, FETCHING, window, cx)
+                })
+            });
+            next_frame(cx);
+            held
+        }
+
+        /// Asserts that the open menu draws each of `items` refused for the
+        /// running Fetch and saying so: its accessible name names the Fetch,
+        /// and the Fetch's label stands after the command at the row's end
+        /// in secondary text.
+        fn wait_for_the_fetch(cx: &mut VisualTestContext, items: &[&str], when: &str) {
+            let muted = cx.update(|_, cx| {
+                gpui::Rgba::from(gpui_kit::component::Theme::global(cx).muted_foreground)
+            });
+            for item in items {
+                let name = format!(
+                    "menu-item: {item}, available when fetching remote finishes · MenuItem disabled"
+                );
+                let row = cx
+                    .debug_bounds(name.clone().leak())
+                    .unwrap_or_else(|| panic!("{when}: {name}"));
+                let command = cx
+                    .debug_bounds(format!("menu-command: {item}").leak())
+                    .unwrap_or_else(|| panic!("{when}: {item}'s command"));
+                let detail = cx
+                    .debug_bounds(format!("menu-detail: {FETCHING} · {muted:?}").leak())
+                    .unwrap_or_else(|| panic!("{when}: {item}'s reason"));
+                assert!(
+                    command.right() < detail.left() && detail.right() <= row.right(),
+                    "{when}: {item}'s reason {detail:?} after {command:?} in {row:?}"
+                );
+            }
+        }
+
+        /// Every menu that refuses items while a write runs says why by its
+        /// cause, through one helper (`native_accessibility::waiting_item`):
+        /// during a Fetch, a History commit's menu, opened before it
+        /// started and built again as it did, and a navigator branch's and
+        /// worktree's and the Changes Actions menu, opened while it runs,
+        /// read each item the Fetch refuses as "<item>, available when
+        /// fetching remote finishes", with "Fetching remote…" at the row's
+        /// end. An item refused for a reason of its own, as Save changes to
+        /// stash… with nothing to stash, says nothing of the Fetch. Only a
+        /// Working row's menu said why; the others refused their items with
+        /// nothing to say why. (A project row's menu is covered in
+        /// `project_pane::tests`.)
+        #[gpui::test]
+        async fn menus_name_the_fetch_their_items_wait_for(cx: &mut TestAppContext) {
+            let (fixture, app, cx) = clean_history_for_menus(cx).await;
+            let branch = app.read_with(cx, |app, _| {
+                app.nav_rows
+                    .iter()
+                    .position(|row| matches!(row, crate::NavRow::Branch(..)))
+                    .expect("a branch in the navigator")
+            });
+            let branch: &'static str = format!("nav-row-{branch}").leak();
+
+            right_click(cx, "history-row-0");
+            assert_eq!(offered(cx, "Revert this commit…"), Some(true), "at rest");
+            let held = held_fetch(&app, cx);
+            next_frame(cx);
+            wait_for_the_fetch(cx, &COMMIT_ITEMS, "HEAD's commit menu");
+            cx.simulate_keystrokes("escape");
+            next_frame(cx);
+
+            right_click(cx, branch);
+            wait_for_the_fetch(cx, &["Branch actions…"], "a branch's menu");
+            cx.simulate_keystrokes("escape");
+            next_frame(cx);
+
+            let worktree = app.update(cx, |app, cx| {
+                app.nav_mode = crate::NavMode::Worktrees;
+                app.rebuild_navigation(cx);
+                app.nav_rows
+                    .iter()
+                    .position(|row| matches!(row, crate::NavRow::Worktree(_)))
+                    .expect("the repository's own worktree in the navigator")
+            });
+            next_frame(cx);
+            right_click(cx, format!("nav-row-{worktree}").leak());
+            wait_for_the_fetch(cx, &WORKTREE_ITEMS, "a worktree's menu");
+            cx.simulate_keystrokes("escape");
+            next_frame(cx);
+            release(&app, held, cx).await;
+            app.update(cx, |app, _| app.operation_error = None);
+
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+            crate::views::tests::settle(&app, cx).await;
+            next_frame(cx);
+            let held = held_fetch(&app, cx);
+            press(cx, "working-recovery-menu");
+            next_frame(cx);
+            wait_for_the_fetch(
+                cx,
+                &[
+                    "Browse stashes…",
+                    "Amend last commit…",
+                    "Undo last local commit…",
+                ],
+                "the Changes Actions menu",
+            );
+            assert!(
+                cx.debug_bounds("menu-item: Save changes to stash… · MenuItem disabled")
+                    .is_some(),
+                "Save changes to stash…, with nothing to stash, says nothing of the Fetch"
+            );
+            cx.simulate_keystrokes("escape");
+            next_frame(cx);
+            release(&app, held, cx).await;
             drop(fixture);
         }
     }

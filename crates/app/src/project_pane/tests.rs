@@ -448,7 +448,7 @@ fn a_project_rows_keyboard_menu_follows_writes(cx: &mut TestAppContext) {
     };
     let open = |cx: &mut VisualTestContext, disabled: bool| {
         let selector = if disabled {
-            "menu-item: Open project · MenuItem disabled"
+            "menu-item: Open project, available when testing finishes · MenuItem disabled"
         } else {
             "menu-item: Open project · MenuItem"
         };
@@ -504,6 +504,74 @@ fn a_project_rows_keyboard_menu_follows_writes(cx: &mut TestAppContext) {
     }
 }
 
+/// A project row's menu says why a running write refuses Open project, as
+/// every menu that refuses items for a write does
+/// (`native_accessibility::waiting_item`): during a Fetch it reads "Open
+/// project, available when fetching remote finishes", with the Fetch's label
+/// at the row's end in secondary text, and Rename project…, which no write
+/// refuses, stays a plain available item. It refused Open project with
+/// nothing to say why.
+#[gpui::test]
+fn a_project_rows_menu_names_the_write_open_project_waits_for(cx: &mut TestAppContext) {
+    let (library, _, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    cx.update(|_, cx| native_accessibility::bind_keys(cx));
+    // The last row, beta, a project.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.move_project_cursor(true, true, window, cx);
+            window.focus(&app.project_pane.focus, cx);
+        })
+    });
+    settle(cx);
+    cx.simulate_keystrokes("shift-f10");
+    settle(cx);
+    assert!(
+        cx.debug_bounds("menu-item: Open project · MenuItem")
+            .is_some(),
+        "Open project at rest"
+    );
+    app.update(cx, |app, cx| {
+        app.operation_busy = Some("Fetching remote…");
+        cx.notify();
+    });
+    settle(cx);
+    let muted = cx
+        .update(|_, cx| gpui::Rgba::from(gpui_kit::component::Theme::global(cx).muted_foreground));
+    let row = cx
+        .debug_bounds(
+            "menu-item: Open project, available when fetching remote finishes · MenuItem disabled",
+        )
+        .expect("Open project names the Fetch it waits for");
+    let command = cx
+        .debug_bounds("menu-command: Open project")
+        .expect("Open project's command");
+    let detail = cx
+        .debug_bounds(format!("menu-detail: Fetching remote… · {muted:?}").leak())
+        .expect("the Fetch's label in secondary text");
+    assert!(
+        command.right() < detail.left() && detail.right() <= row.right(),
+        "the reason {detail:?} after the command {command:?} in {row:?}"
+    );
+    assert!(
+        cx.debug_bounds("menu-item: Rename project… · MenuItem")
+            .is_some(),
+        "Rename project… stays available"
+    );
+    app.update(cx, |app, cx| {
+        app.operation_busy = None;
+        cx.notify();
+    });
+    settle(cx);
+    assert!(
+        cx.debug_bounds("menu-item: Open project · MenuItem")
+            .is_some(),
+        "Open project once the write ends"
+    );
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+}
+
 /// A project row's actions button, the control a hover reveals at the row's
 /// end, opens the menu its right-click and Shift-F10 open, and it follows
 /// writes as they do: Open project, which a write refuses, is disabled in
@@ -525,7 +593,7 @@ fn a_project_rows_actions_button_menu_follows_writes(cx: &mut TestAppContext) {
     settle(cx);
     let open = |cx: &mut VisualTestContext, disabled: bool| {
         let selector = if disabled {
-            "menu-item: Open project · MenuItem disabled"
+            "menu-item: Open project, available when testing finishes · MenuItem disabled"
         } else {
             "menu-item: Open project · MenuItem"
         };

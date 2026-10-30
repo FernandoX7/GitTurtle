@@ -945,8 +945,19 @@ fn open_menu_in(
 /// selectors (`menu-command: <label>`, `menu-detail: <detail> · <colour>`),
 /// as the scene does not expose glyphs.
 pub(crate) fn detailed_item(label: &'static str, detail: &'static str) -> PopupMenuItem {
+    detail_row(
+        label.into(),
+        detail.into(),
+        format!("{label}, {}", detail.to_lowercase()).into(),
+    )
+}
+
+/// [`detailed_item`]'s row: `label`, then `detail` at its trailing edge,
+/// announced as `name`.
+fn detail_row(label: SharedString, detail: SharedString, name: SharedString) -> PopupMenuItem {
     PopupMenuItem::element(move |_, cx| {
         let color = gpui_kit::component::Theme::global(cx).muted_foreground;
+        let (command, condition) = (label.clone(), detail.clone());
         div()
             .flex()
             .flex_1()
@@ -958,20 +969,124 @@ pub(crate) fn detailed_item(label: &'static str, detail: &'static str) -> PopupM
                 div()
                     .min_w_0()
                     .truncate()
-                    .debug_selector(move || format!("menu-command: {label}"))
-                    .child(label),
+                    .debug_selector({
+                        let command = command.clone();
+                        move || format!("menu-command: {command}")
+                    })
+                    .child(command),
             )
             .child(
                 div()
                     .flex_shrink_0()
                     .text_color(color)
-                    .debug_selector(move || {
-                        format!("menu-detail: {detail} · {:?}", gpui::Rgba::from(color))
+                    .debug_selector({
+                        let condition = condition.clone();
+                        move || format!("menu-detail: {condition} · {:?}", gpui::Rgba::from(color))
                     })
-                    .child(detail),
+                    .child(condition),
             )
     })
-    .accessibility_label(format!("{label}, {}", detail.to_lowercase()))
+    .accessibility_label(name)
+}
+
+/// Why the items a write refuses wait, in every menu that refuses items
+/// while a write runs or its reload has yet to land (the commit, branch,
+/// worktree and project rows' menus and the Changes Actions menu): the
+/// write or request that runs, by the label it runs under, as the window's
+/// progress line shows it ("Fetching remote…"), or, once it has ended and
+/// the reload it asked for has yet to land,
+/// [`crate::workspace::REFRESHING_ROWS`]. Each item it refuses states it
+/// ([`waiting_item`]), as a Working row's menu states why its items wait
+/// while its rows are prepared; those menus once refused their items with
+/// nothing to say why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MenuWait(&'static str);
+
+impl MenuWait {
+    /// What an item's accessible name adds after its command, "available
+    /// when fetching remote finishes": the label the write runs under, read
+    /// as what finishes. A review another tab left to finish ("Finishing
+    /// another tab's review…") is named by the review, "available when
+    /// another tab's review finishes".
+    pub(crate) fn spoken(self) -> String {
+        let label = self.0.trim_end_matches('…').trim_end();
+        let label = label.strip_prefix("Finishing ").unwrap_or(label);
+        let mut chars = label.chars();
+        let cause: String = match (chars.next(), chars.clone().next()) {
+            // The capital that starts a sentence, not a name such as "PR".
+            (Some(first), Some(second)) if !second.is_uppercase() => {
+                first.to_lowercase().chain(chars).collect()
+            }
+            _ => label.to_owned(),
+        };
+        format!("available when {cause} finishes")
+    }
+}
+
+/// `label`'s menu item, unavailable while `refused`, for a reason of the
+/// item's own, or while `wait` holds a write's reason, which it then states:
+/// the command, with the write's label at the row's trailing edge in
+/// secondary text, as [`detailed_item`] states a condition, and the
+/// accessible name "<command>, available when <the write> finishes" ("Open
+/// project, available when fetching remote finishes"). An item refused for
+/// a reason of its own states no wait, since the write's end would not make
+/// it available.
+pub(crate) fn waiting_item(
+    label: impl Into<SharedString>,
+    refused: bool,
+    wait: Option<MenuWait>,
+) -> PopupMenuItem {
+    let label = label.into();
+    match wait.filter(|_| !refused) {
+        Some(wait) => {
+            let name: SharedString = format!("{label}, {}", wait.spoken()).into();
+            #[cfg(test)]
+            waiting_names::record(&label, &name);
+            detail_row(label, wait.0.into(), name).disabled(true)
+        }
+        None => PopupMenuItem::new(label).disabled(refused),
+    }
+}
+
+/// The accessible name each item [`waiting_item`] last built stating its
+/// wait had, by its command, for tests, which find a menu's item by the
+/// accessible name its debug selector carries.
+#[cfg(test)]
+pub(crate) mod waiting_names {
+    use std::{cell::RefCell, collections::HashMap};
+
+    thread_local! {
+        static NAMES: RefCell<HashMap<String, String>> = RefCell::default();
+    }
+
+    pub(super) fn record(label: &str, name: &str) {
+        NAMES.with(|names| names.borrow_mut().insert(label.to_owned(), name.to_owned()));
+    }
+
+    /// The name `label`'s item was last built with while it waited.
+    pub(crate) fn of(label: &str) -> Option<String> {
+        NAMES.with(|names| names.borrow().get(label).cloned())
+    }
+}
+
+impl crate::GitTurtle {
+    /// Why the items a write refuses wait now ([`MenuWait`]): the running
+    /// write's label, or the refresh after it while its reload has yet to
+    /// land, for as long as `write_unsettled` refuses them; `None` when
+    /// nothing does.
+    pub(crate) fn menu_wait(&self) -> Option<MenuWait> {
+        self.operation_busy.map(MenuWait).or_else(|| {
+            self.write_unsettled()
+                .then_some(MenuWait(crate::workspace::REFRESHING_ROWS))
+        })
+    }
+
+    /// [`Self::menu_wait`] for an item only a running write refuses, as a
+    /// project row's Open project, which reads nothing the reload after the
+    /// write changes.
+    pub(crate) fn running_wait(&self) -> Option<MenuWait> {
+        self.operation_busy.map(MenuWait)
+    }
 }
 
 /// A menu's builder, run each time its menu opens.
@@ -1010,7 +1125,9 @@ pub(crate) struct AppDropdown {
 /// [`KeyboardMenu::following`]'s `commit`), whether its commit is HEAD,
 /// which adds Amend and Undo, and, for the Changes Actions menu alone
 /// ([`AppDropdown::follows_head`]), whose Amend and Undo act on HEAD
-/// itself, which commit HEAD is.
+/// itself, which commit HEAD is; and why the items a write refuses wait
+/// ([`MenuWait`]), which they state, the write's label or the refresh after
+/// it.
 /// The menu is built again when any of them changes; built again only for
 /// the write, a menu open as a cherry-pick stopped on conflicts offered
 /// those items once the write had ended, until it was opened again, one
@@ -1030,6 +1147,8 @@ struct MenuInputs {
     running: bool,
     writing: bool,
     paused: bool,
+    /// Why the items a write refuses wait, which they state.
+    wait: Option<MenuWait>,
     /// Whether a commit's menu's commit is HEAD; `None` for every other
     /// menu.
     head: Option<bool>,
@@ -1051,6 +1170,7 @@ impl MenuInputs {
             running: app.operation_busy.is_some(),
             writing: app.write_unsettled(),
             paused: app.integration_state.is_some(),
+            wait: app.menu_wait(),
             head: commit.map(|commit| {
                 app.work_status
                     .as_ref()

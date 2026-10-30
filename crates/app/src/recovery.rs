@@ -402,9 +402,10 @@ impl GitTurtle {
     ) -> AnyElement {
         let (staged, unstaged) = self.selection_counts();
         let grouped = self.working_selection.grouped;
-        let selection_unavailable = self.operation_busy.is_some()
-            || self.working_paths.pending
-            || self.working_paths.error.is_some();
+        // A running write refuses them too, and they say why then
+        // (`native_accessibility::waiting_item`).
+        let selection_unavailable =
+            self.working_paths.pending || self.working_paths.error.is_some();
         let refreshing = self.status_task.is_some();
         let owner = cx.entity().downgrade();
         let repository = self.path.clone();
@@ -427,6 +428,8 @@ impl GitTurtle {
                 // each is disabled then from the moment the write starts,
                 // though the trigger opens the menu until the write looks
                 // busy: an assistive technology heard each one available.
+                // Each says why, the write by its label, unless a reason of
+                // its own refuses it as well (`GitTurtle::menu_wait`).
                 // A paused integration, read here too, disables Save changes
                 // to stash…, Amend and Undo, as the menu is built again when
                 // one pauses or ends (`native_accessibility::MenuInputs`).
@@ -435,23 +438,26 @@ impl GitTurtle {
                 // as the menu opened, they reviewed the commit a `git reset`
                 // outside the app had moved HEAD off, which the review then
                 // refused.
-                let (busy, paused, head) = owner.upgrade().map_or((true, true, None), |owner| {
-                    let owner = owner.read(cx);
-                    (
-                        owner.write_unsettled(),
-                        owner.integration_state.is_some(),
-                        owner
-                            .work_status
-                            .as_ref()
-                            .and_then(|status| status.head.clone()),
-                    )
-                });
+                let (gone, wait, paused, head) =
+                    owner.upgrade().map_or((true, None, true, None), |owner| {
+                        let owner = owner.read(cx);
+                        (
+                            false,
+                            owner.menu_wait(),
+                            owner.integration_state.is_some(),
+                            owner
+                                .work_status
+                                .as_ref()
+                                .and_then(|status| status.head.clone()),
+                        )
+                    });
                 if let Some(refresh) = tight {
                     menu = menu
                         .item(
                             working_item(
                                 "Directories",
-                                busy,
+                                gone,
+                                wait,
                                 &owner,
                                 &repository,
                                 |this, window, cx| {
@@ -464,14 +470,16 @@ impl GitTurtle {
                         )
                         .item(working_item(
                             format!("Stage {unstaged} selected"),
-                            unstaged == 0 || selection_unavailable || busy,
+                            gone || unstaged == 0 || selection_unavailable,
+                            wait,
                             &owner,
                             &repository,
                             |this, window, cx| this.apply_selected_files(false, window, cx),
                         ))
                         .item(working_item(
                             format!("Unstage {staged} selected"),
-                            staged == 0 || selection_unavailable || busy,
+                            gone || staged == 0 || selection_unavailable,
+                            wait,
                             &owner,
                             &repository,
                             |this, window, cx| this.apply_selected_files(true, window, cx),
@@ -479,7 +487,8 @@ impl GitTurtle {
                     if refresh {
                         menu = menu.item(working_item(
                             "Refresh working changes",
-                            refreshing || busy,
+                            gone || refreshing,
+                            wait,
                             &owner,
                             &repository,
                             |this, window, cx| this.refresh_worktree(window, cx),
@@ -491,7 +500,8 @@ impl GitTurtle {
                 let menu = working_menu_item(
                     menu,
                     "Ignore selected untracked file…",
-                    ignore_entry.is_none() || busy,
+                    gone || ignore_entry.is_none(),
+                    wait,
                     &owner,
                     &repository,
                     move |this, window, cx| {
@@ -503,7 +513,8 @@ impl GitTurtle {
                 let menu = working_menu_item(
                     menu,
                     "Save changes to stash…",
-                    !has_changes || paused || busy,
+                    gone || !has_changes || paused,
+                    wait,
                     &owner,
                     &repository,
                     |this, window, cx| this.open_stash_form(window, cx),
@@ -511,7 +522,8 @@ impl GitTurtle {
                 let menu = working_menu_item(
                     menu,
                     "Browse stashes…",
-                    busy,
+                    gone,
+                    wait,
                     &owner,
                     &repository,
                     |this, window, cx| this.open_stashes(window, cx),
@@ -524,7 +536,8 @@ impl GitTurtle {
                 let menu = working_menu_item(
                     menu.separator(),
                     "Amend last commit…",
-                    paused || busy,
+                    gone || paused,
+                    wait,
                     &owner,
                     &repository,
                     move |this, window, cx| {
@@ -540,7 +553,8 @@ impl GitTurtle {
                 working_menu_item(
                     menu,
                     "Undo last local commit…",
-                    paused || busy,
+                    gone || paused,
+                    wait,
                     &owner,
                     &repository,
                     move |this, window, cx| {
@@ -597,8 +611,8 @@ impl GitTurtle {
         let Some(this) = owner.upgrade() else {
             return menu;
         };
-        let (disabled, current) = this.read(cx).commit_menu_state(commit);
-        commit_menu(menu, owner, repository, commit, disabled, current)
+        let (paused, wait, current) = this.read(cx).commit_menu_state(commit);
+        commit_menu(menu, owner, repository, commit, (paused, wait), current)
     }
 
     /// The commit's menu as a right-click builds it, for the keyboard to
@@ -612,8 +626,8 @@ impl GitTurtle {
         commit: Arc<CommitTarget>,
     ) -> impl Fn(PopupMenu, &GitTurtle) -> PopupMenu + 'static {
         move |menu, app| {
-            let (disabled, current) = app.commit_menu_state(&commit);
-            commit_menu(menu, &owner, &repository, &commit, disabled, current)
+            let (paused, wait, current) = app.commit_menu_state(&commit);
+            commit_menu(menu, &owner, &repository, &commit, (paused, wait), current)
         }
     }
 
@@ -629,17 +643,21 @@ impl GitTurtle {
         self.refuse_while_paused(None, window, cx);
     }
 
-    /// Whether a commit's menu offers nothing while a write or an
-    /// integration runs, and whether the commit is HEAD, which adds Amend
-    /// and Undo.
-    fn commit_menu_state(&self, commit: &CommitTarget) -> (bool, bool) {
-        let disabled = self.write_unsettled() || self.integration_state.is_some();
+    /// Whether a commit's menu offers nothing while an integration is
+    /// paused, why its items wait while a write runs or its reload has yet
+    /// to land, which they state (`native_accessibility::MenuWait`), and
+    /// whether the commit is HEAD, which adds Amend and Undo.
+    fn commit_menu_state(
+        &self,
+        commit: &CommitTarget,
+    ) -> (bool, Option<native_accessibility::MenuWait>, bool) {
+        let paused = self.integration_state.is_some();
         let current = self
             .work_status
             .as_ref()
             .and_then(|status| status.head.as_ref())
             == Some(&commit.oid);
-        (disabled, current)
+        (paused, self.menu_wait(), current)
     }
 
     /// A commit menu's Revert, Cherry-pick, Amend or Undo. Each refuses while
@@ -924,37 +942,42 @@ pub(super) fn commit_actions_trigger(labelled: bool) -> Button {
 fn working_menu_item(
     menu: PopupMenu,
     label: &'static str,
-    disabled: bool,
+    refused: bool,
+    wait: Option<native_accessibility::MenuWait>,
     owner: &WeakEntity<GitTurtle>,
     repository: &Option<PathBuf>,
     action: impl Fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) + 'static,
 ) -> PopupMenu {
-    menu.item(working_item(label, disabled, owner, repository, action))
+    menu.item(working_item(
+        label, refused, wait, owner, repository, action,
+    ))
 }
 
-/// A Working Changes menu item that acts only on the repository it was
-/// built for, on the repository page, while no operation runs.
+/// A Working Changes or commit menu item that acts only on the repository
+/// it was built for, on the repository page, while no operation runs:
+/// unavailable while `refused` for a reason of its own, or while `wait`
+/// says a write refuses it, which it then states
+/// (`native_accessibility::waiting_item`).
 fn working_item(
     label: impl Into<SharedString>,
-    disabled: bool,
+    refused: bool,
+    wait: Option<native_accessibility::MenuWait>,
     owner: &WeakEntity<GitTurtle>,
     repository: &Option<PathBuf>,
     action: impl Fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>) + 'static,
 ) -> PopupMenuItem {
     let owner = owner.clone();
     let repository = repository.clone();
-    PopupMenuItem::new(label)
-        .disabled(disabled)
-        .on_click(move |_, window, cx| {
-            let _ = owner.update(cx, |this, cx| {
-                if this.path == repository
-                    && this.page == AppPage::Repository
-                    && this.operation_busy.is_none()
-                {
-                    action(this, window, cx);
-                }
-            });
-        })
+    native_accessibility::waiting_item(label, refused, wait).on_click(move |_, window, cx| {
+        let _ = owner.update(cx, |this, cx| {
+            if this.path == repository
+                && this.page == AppPage::Repository
+                && this.operation_busy.is_none()
+            {
+                action(this, window, cx);
+            }
+        });
+    })
 }
 
 fn commit_menu(
@@ -962,7 +985,7 @@ fn commit_menu(
     owner: &WeakEntity<GitTurtle>,
     repository: &Option<PathBuf>,
     commit: &Arc<CommitTarget>,
-    disabled: bool,
+    (paused, wait): (bool, Option<native_accessibility::MenuWait>),
     current: bool,
 ) -> PopupMenu {
     for (label, kind) in [
@@ -973,7 +996,8 @@ fn commit_menu(
         menu = working_menu_item(
             menu,
             label,
-            disabled,
+            paused,
+            wait,
             owner,
             repository,
             move |this, window, cx| {
@@ -991,7 +1015,8 @@ fn commit_menu(
             menu = working_menu_item(
                 menu,
                 label,
-                disabled,
+                paused,
+                wait,
                 owner,
                 repository,
                 move |this, window, cx| {

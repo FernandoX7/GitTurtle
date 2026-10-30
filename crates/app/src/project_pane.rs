@@ -1219,7 +1219,8 @@ impl GitTurtle {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuSnapshot {
     pub name: String,
-    pub busy: bool,
+    /// Why a running write refuses Open project, which it then states.
+    pub busy: Option<native_accessibility::MenuWait>,
     pub destinations: Vec<Destination>,
 }
 
@@ -1237,7 +1238,7 @@ impl GitTurtle {
             name,
             // Opening another project reads nothing the window's repository
             // reloads after a write, so only a running write refuses it.
-            busy: self.operation_busy.is_some(),
+            busy: self.running_wait(),
             destinations: move_destinations(&self.project_library, key),
         }
     }
@@ -1288,14 +1289,16 @@ fn row_menu(
             let rename = owner.clone();
             let rename_path = path.clone();
             menu.label(name)
-                .item(PopupMenuItem::new("Open project").disabled(busy).on_click(
-                    move |_, window, cx| {
-                        let target = open_path.clone();
-                        let _ = open.update(cx, |this, cx| {
-                            this.open_project_from_pane(target, window, cx)
-                        });
-                    },
-                ))
+                .item(
+                    native_accessibility::waiting_item("Open project", false, busy).on_click(
+                        move |_, window, cx| {
+                            let target = open_path.clone();
+                            let _ = open.update(cx, |this, cx| {
+                                this.open_project_from_pane(target, window, cx)
+                            });
+                        },
+                    ),
+                )
                 .item(
                     PopupMenuItem::new("Rename project…").on_click(move |_, window, cx| {
                         let target = rename_path.clone();
