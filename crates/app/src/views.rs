@@ -21,6 +21,17 @@ fn reveal_resized_selection(
     if previous.replace(next).is_none() {
         return false;
     }
+    // A scroll the list has yet to apply was asked for on purpose, as Center
+    // for a file chosen with the keyboard or one that arrives, or Top for a
+    // changed path filter, and the list applies only the last one asked
+    // for. The changed files' probe reveals before the list in the frame,
+    // so a reveal made now would replace that request with a Nearest one and
+    // leave the selection where the reveal put it. The new size is recorded
+    // either way: a later frame finds no change to reveal and leaves the
+    // request's position alone.
+    if scroll.0.borrow().deferred_scroll_to_item.is_some() {
+        return false;
+    }
     if let Some(selected) = selected {
         scroll.scroll_to_item(selected, ScrollStrategy::Nearest);
         true
@@ -9553,6 +9564,162 @@ pub(crate) mod tests {
         );
         assert!(moved, "the shorter window reveals the selected file");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A hundred changed files in Compare in a 1,480 × 980 window, the
+    /// forty-first selected, with the app's keys bound. Keep the returned
+    /// directory until the test ends.
+    async fn a_hundred_files_in_compare(
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, Entity<GitTurtle>, &mut VisualTestContext) {
+        let paths: Vec<String> = (0..100).map(|index| format!("f-{index:03}.txt")).collect();
+        let files: Vec<(&str, &[u8])> = paths
+            .iter()
+            .map(|path| (path.as_str(), &b"line\n"[..]))
+            .collect();
+        let input = file_commits(&[("files", files.as_slice())]);
+        let (fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| shortcuts::bind_keys(cx));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(40, window, cx)));
+        settle(&app, cx).await;
+        (fixture, app, cx)
+    }
+
+    /// Starts the changed files' view at row `top`, then makes `request` in
+    /// the update that steps the inspector to `width`, and returns the
+    /// list's view in the one frame that draws them, which lays the list
+    /// out at a new width.
+    fn request_as_the_file_list_resizes(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        top: usize,
+        width: f32,
+        request: impl FnOnce(&Entity<GitTurtle>, &mut Window, &mut App),
+    ) -> Bounds<Pixels> {
+        let list = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| app.file_scroll.0.borrow().base_handle.bounds())
+        };
+        app.update(cx, |app, _| {
+            app.file_scroll.scroll_to_item(top, ScrollStrategy::Top)
+        });
+        draw(cx);
+        let before = list(cx);
+        let panels = app.read_with(cx, |app, _| app.content_panels.clone());
+        cx.update(|window, cx| {
+            request(app, window, cx);
+            panels.update(cx, |panels, cx| {
+                panels.resize_panel(1, px(width), window, cx)
+            });
+        });
+        let after = list(cx);
+        assert_ne!(
+            before.size, after.size,
+            "the frame lays the list out at a new size"
+        );
+        after
+    }
+
+    /// Asserts the selected changed file is drawn at the centre of `list`.
+    fn assert_file_centred(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        list: Bounds<Pixels>,
+        at: &str,
+    ) {
+        let row = app.read_with(cx, |app, _| px(app.settings.density.file_row_height()));
+        let selected = cx
+            .debug_bounds("selected-changed-file")
+            .unwrap_or_else(|| panic!("{at}: the selected file is drawn"));
+        assert!(
+            (selected.center().y - list.center().y).abs() <= row / 2.,
+            "{at}: the selected file {selected:?} at the centre of the list's view {list:?}"
+        );
+    }
+
+    /// A scroll the changed files' list has yet to apply wins over the
+    /// reveal its viewport probe makes when the list is laid out at a new
+    /// size in the same frame. The probe reveals the selected file as it is
+    /// prepainted, before the list, and the list applies only the last
+    /// request it was given, so the probe's Nearest replaced the request: a
+    /// file chosen with Up from the one that starts the list's view, which
+    /// the keyboard's Center brings from above the view to its centre,
+    /// started the view instead. The two tests after this one check a file
+    /// that arrives and a cleared path filter the same way.
+    #[gpui::test]
+    async fn a_file_chosen_with_the_keyboard_is_centred_in_the_frame_that_resizes_its_list(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = a_hundred_files_in_compare(cx).await;
+        // Up in the list, which Tab or a click gives the keyboard.
+        let list = request_as_the_file_list_resizes(&app, cx, 40, 360., |app, window, cx| {
+            window.focus(&app.read(cx).file_focus.clone(), cx);
+            window.dispatch_keystroke(Keystroke::parse("up").unwrap(), cx);
+        });
+        assert_eq!(app.read_with(cx, |app, _| app.selected_file), Some(39));
+        assert_file_centred(&app, cx, list, "a file chosen with Up");
+    }
+
+    /// The commit's files arriving again, with a file below the list's view
+    /// preferred, select it at the list's centre in a frame that lays the
+    /// list out at a new size, where the probe's reveal left it at the
+    /// view's foot
+    /// ([`a_file_chosen_with_the_keyboard_is_centred_in_the_frame_that_resizes_its_list`]).
+    #[gpui::test]
+    async fn a_preferred_file_that_arrives_is_centred_in_the_frame_that_resizes_its_list(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = a_hundred_files_in_compare(cx).await;
+        let list = request_as_the_file_list_resizes(&app, cx, 0, 360., |app, window, cx| {
+            app.update(cx, |app, cx| {
+                app.preferred_file = Some(app.files[70].path().to_owned());
+                let files = app.files.clone();
+                app.receive(
+                    Output::Changes(files, std::time::Duration::ZERO),
+                    window,
+                    cx,
+                );
+            })
+        });
+        assert_eq!(app.read_with(cx, |app, _| app.selected_file), Some(70));
+        assert_file_centred(&app, cx, list, "a preferred file that arrives");
+    }
+
+    /// Clearing the path filter starts the list at its first file in a frame
+    /// that lays the list out at a new size, past the selection it showed,
+    /// where the probe's reveal kept the selection in view
+    /// ([`a_file_chosen_with_the_keyboard_is_centred_in_the_frame_that_resizes_its_list`]).
+    #[gpui::test]
+    async fn clearing_the_path_filter_starts_the_list_at_its_top_in_the_frame_that_resizes_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = a_hundred_files_in_compare(cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.file_filter
+                    .update(cx, |input, cx| input.set_value("f-", window, cx));
+                app.change_file_filter(window, cx);
+            })
+        });
+        crate::path_filter::filters_land(&app, cx);
+        let list = request_as_the_file_list_resizes(&app, cx, 35, 360., |app, window, cx| {
+            app.update(cx, |app, cx| {
+                app.file_filter
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                app.change_file_filter(window, cx);
+            })
+        });
+        let first = cx
+            .debug_bounds("changed-file-0")
+            .expect("the first file is drawn");
+        assert!(
+            (first.top() - list.top()).abs() <= px(0.5),
+            "the first file {first:?} starts the list's view {list:?}"
+        );
+        assert!(
+            cx.debug_bounds("selected-changed-file").is_none(),
+            "the selection, below the list's view, is not revealed over the request"
+        );
     }
 
     /// Every choice the repository page's width makes reads one width: the
