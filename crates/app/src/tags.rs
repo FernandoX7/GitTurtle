@@ -2476,6 +2476,46 @@ pub(crate) mod tests {
         );
     }
 
+    /// A list too short for a thumb leaves no scrollbar behind: 40 px tall
+    /// with ten rows that overflow it, it draws no scrollbar element, so no
+    /// hidden bar stands at its edge for a pointer or an assistive
+    /// technology to meet, and it still reports itself, as it does 80 px
+    /// tall with its scrollbar, as a scroll view that clips its rows, at
+    /// its own bounds.
+    #[gpui::test]
+    fn a_list_too_short_for_a_thumb_leaves_no_scrollbar_behind_and_reports_a_scroll_view(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::native_accessibility::written;
+        let (list, cx) = cued_window(cx, 80., Pixels::ZERO, 10);
+        for (height, bar) in [(80., true), (40., false), (80., true)] {
+            list.update(cx, |list, cx| {
+                list.height = px(height);
+                cx.notify();
+            });
+            draw(cx);
+            written::forget();
+            draw(cx);
+            assert_eq!(
+                cx.debug_bounds("cued-list/scrollbar").is_some(),
+                bar,
+                "{height} px: a scrollbar element only along a track a thumb moves on"
+            );
+            let region = cx.debug_bounds("cued-list").expect("the list");
+            let written = written::get("cued-list").expect("the list writes its node");
+            let (node, layout) = (written.node, written.layout.expect("laid out"));
+            let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+            assert!(
+                node.role() == gpui::accesskit::Role::ScrollView
+                    && node.clips_children()
+                    && (layout.y1 - layout.y0 - f64::from(f32::from(region.size.height)) * scale)
+                        .abs()
+                        < 0.5,
+                "{height} px: the list {region:?} reports itself as a scroll view that clips its rows, not {node:?} at {layout:?}"
+            );
+        }
+    }
+
     /// A short list's fades follow what it shows in the frame that shows it,
     /// and catch no pointer. Rows that arrive in a list that fit fade its
     /// bottom edge in the first frame that draws them: decided as the cue
