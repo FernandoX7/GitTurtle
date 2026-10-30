@@ -18,9 +18,21 @@ pub(super) struct DroppedPreparation {
     /// Counts the waits begun and ended, so the end of one acts only while
     /// the window still holds that wait.
     generation: u64,
-    /// The running wait: the dropped preparation's label, which the busy
-    /// state shows until it ends, and the wait for its marker.
-    running: Option<(&'static str, Task<()>)>,
+    /// The running wait.
+    running: Option<RunningWait>,
+}
+
+/// A running [`DroppedPreparation`].
+struct RunningWait {
+    /// The dropped preparation's label, which the busy state shows until
+    /// the wait ends.
+    label: &'static str,
+    /// The repository whose tab asked for the preparation: opened again
+    /// in place, it ends the wait as it cancels its own preparations, while
+    /// another tab's holds it ([`GitTurtle::end_own_dropped_preparation`]).
+    repository: Option<PathBuf>,
+    /// The wait for the marker queued behind the preparation's read.
+    _wait: Task<()>,
 }
 
 /// Where a page switch goes, which decides what becomes of the reviews
@@ -161,8 +173,9 @@ impl GitTurtle {
     /// The wait is keyed on its generation, not on the label: nothing
     /// starts while it holds the busy state, and whatever ends that state
     /// meanwhile ends the wait with it (Settings, Projects and `open` in
-    /// place, [`Self::end_dropped_preparation`]) or takes it back for the wait
-    /// ([`Self::hold_dropped_preparation`]). So a wait already running holds
+    /// place of the repository that asked, [`Self::end_dropped_preparation`])
+    /// or takes it back for the wait ([`Self::hold_dropped_preparation`]).
+    /// So a wait already running holds
     /// the very preparation dropped again, as each switch back and forth
     /// drops it, and goes on rather than queue another marker, and its end
     /// ends only its own busy state. Keyed on the label, a wait that a tab
@@ -195,39 +208,72 @@ impl GitTurtle {
                 cx.notify();
             });
         });
-        self.dropped_preparation.running = Some((label, wait));
+        self.dropped_preparation.running = Some(RunningWait {
+            label,
+            repository: self.path.clone(),
+            _wait: wait,
+        });
     }
 
     /// Gives a running wait for a dropped preparation
     /// ([`Self::wait_for_dropped_preparation`]) back the busy state it
     /// holds, which a cancel run meanwhile ended by its label, and says
     /// whether one runs. Every switch that drops (`end_preparations`), a
-    /// tab switch and a tab close among them, cancels each kind first, by
-    /// labels a wait may hold: the read it waits for still runs on the
-    /// executor every tab shares, so the wait goes on, into the tab shown
-    /// next too, and that tab's reads are noted for its end rather than
-    /// queued behind the read.
+    /// tab switch and a tab close among them, and `open` in place in a tab
+    /// that did not ask ([`Self::end_own_dropped_preparation`]) cancel each
+    /// kind first, by labels a wait may hold: the read it waits for still
+    /// runs on the executor every tab shares, so the wait goes on, into the
+    /// tab shown next too, and that tab's reads are noted for its end rather
+    /// than queued behind the read.
     fn hold_dropped_preparation(&mut self) -> bool {
-        let Some((label, _)) = &self.dropped_preparation.running else {
+        let Some(running) = &self.dropped_preparation.running else {
             return false;
         };
-        self.operation_busy = Some(*label);
+        self.operation_busy = Some(running.label);
         true
     }
 
     /// Ends the wait for a dropped preparation
     /// ([`Self::wait_for_dropped_preparation`]) with its busy state, as a
     /// cancel ends a preparation's: Settings, Projects, the last tab's
-    /// close and opening the shown repository again in place cancel what
-    /// it waits for. A later generation leaves the end of the wait it
-    /// replaces nothing to do.
-    pub(super) fn end_dropped_preparation(&mut self) {
+    /// close and opening again in place the repository whose tab asked for
+    /// it ([`Self::end_own_dropped_preparation`]) cancel what it waits for.
+    /// A later generation leaves the end of the wait it replaces nothing to
+    /// do.
+    fn end_dropped_preparation(&mut self) {
         let waits = &mut self.dropped_preparation;
         waits.generation = waits.generation.wrapping_add(1);
-        if let Some((label, _)) = waits.running.take()
-            && self.operation_busy == Some(label)
+        if let Some(running) = waits.running.take()
+            && self.operation_busy == Some(running.label)
         {
             self.operation_busy = None;
+        }
+    }
+
+    /// What `open` does with a wait for a dropped preparation as it opens
+    /// the shown repository again in place, as History's Refresh does,
+    /// after cancelling that repository's own preparations: it ends a wait
+    /// that repository's tab asked for, as it cancels them
+    /// ([`Self::end_dropped_preparation`]), and holds one another tab asked
+    /// for, as a tab switch does ([`Self::hold_dropped_preparation`]), since
+    /// the read it waits for still runs on the executor every tab shares and
+    /// was never this tab's to cancel. Held, the wait notes the working read
+    /// the snapshot asks for, which its end then runs once. Ended there, it
+    /// let each Refresh in that other tab queue a status read behind the
+    /// read, each keeping its slot of the executor's bounded queue until it
+    /// reached the front though the next Refresh had dropped it, so a few
+    /// presses filled the queue, the next read was refused as busy and
+    /// Changes lost its rows.
+    pub(super) fn end_own_dropped_preparation(&mut self) {
+        let asked_here = self
+            .dropped_preparation
+            .running
+            .as_ref()
+            .is_some_and(|running| running.repository == self.path);
+        if asked_here {
+            self.end_dropped_preparation();
+        } else {
+            self.hold_dropped_preparation();
         }
     }
 
@@ -2668,6 +2714,89 @@ mod tests {
             assert_eq!(app.read_with(cx, |app, _| app.operation_busy), None);
             close_dialogs(cx);
         }
+    }
+
+    /// History's Refresh in a tab that did not ask for a dropped review holds
+    /// the wait for its read, as the tab switch that dropped it does
+    /// (`end_own_dropped_preparation`): the read still runs on the executor
+    /// every tab shares, so each Refresh's snapshot notes its working read
+    /// for the wait's end, which reads once. Ended by the first Refresh, the
+    /// wait let each snapshot queue a status read behind that read, each
+    /// keeping its slot of the executor's bounded queue though the next
+    /// Refresh dropped it, until one was refused as busy and the tab's
+    /// Changes lost its rows.
+    #[gpui::test]
+    async fn historys_refresh_in_another_tab_holds_a_dropped_reviews_wait(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx, _, other) = beside_another_tab(cx).await;
+        // Discard…'s review in the first tab's Changes, held as a slow disk
+        // holds it, dropped as the second tab shows, in History.
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        let draft = entry(&app, "draft.txt", cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        cx.simulate_keystrokes(&primary("1"));
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.path.as_ref(), Some(&other));
+            assert!(app.mode == WorkspaceMode::History);
+            assert!(app.operation_busy.is_some(), "the dropped review's wait");
+        });
+        let rows = entries(&app, cx);
+        assert_eq!(rows, Some(vec!["draft.txt".to_owned()]));
+        let reads = app.read_with(cx, |app, _| app.work_generation);
+        std::fs::write(other.join("later.txt"), "later\n").unwrap();
+
+        for press in 1..=9 {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+            // Its snapshot lands, which asks for the working state. `settle`
+            // would also wait for a status read queued behind the held read.
+            let snapshot = app.update(cx, |app, _| app.task.take());
+            if let Some(snapshot) = snapshot {
+                snapshot.await;
+            }
+            draw(cx);
+            app.read_with(cx, |app, _| {
+                assert!(
+                    app.operation_busy.is_some(),
+                    "Refresh {press} holds the wait"
+                );
+                assert_eq!(
+                    app.operation_error, None,
+                    "Refresh {press}: no read was refused as busy"
+                );
+            });
+            assert_eq!(entries(&app, cx), rows, "Refresh {press} keeps the rows");
+        }
+        assert_eq!(
+            app.read_with(cx, |app, _| app.work_generation),
+            reads,
+            "no status read queues behind the dropped review"
+        );
+
+        drop(held);
+        preparation_ends(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.path.as_ref(), Some(&other));
+            assert_eq!(app.operation_busy, None, "the wait ends with the read");
+            assert_eq!(app.operation_error, None);
+            assert_eq!(
+                app.work_generation,
+                reads.wrapping_add(1),
+                "the wait's end reads the tab once"
+            );
+            assert!(!status_read_pending(app), "no read stays noted");
+        });
+        assert_eq!(
+            entries(&app, cx),
+            Some(vec!["draft.txt".to_owned(), "later.txt".to_owned()]),
+            "the wait's end reads the tab's working state"
+        );
+        assert!(!dialog_open(cx), "the dropped review opens nothing");
     }
 
     /// Settings and Projects drop the branch comparison Merge… or Rebase…
