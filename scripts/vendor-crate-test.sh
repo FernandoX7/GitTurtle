@@ -25,9 +25,12 @@
 # under this checkout's `vendor/`, so the tests build against the same
 # patched graph, with the same pinned toolchain, as the application does.
 # The root manifest may patch only through single-line
-# `name = { path = "..." }` entries of `[patch.crates-io]` that resolve inside
-# `vendor/`; any other patch or replace form stops the run. Each run copies
-# the workspace's `Cargo.lock` in, resolves what that lock lacks (the crate's
+# `name = { path = "..." }` entries of a `[patch.crates-io]` header written
+# plainly, that resolve inside `vendor/`; any other patch or replace form,
+# any spelling of that header with quotes, escapes or inner spaces, and any
+# table header or key with an escape sequence, which could spell `patch`
+# where this script cannot see it, stops the run. Each run copies the
+# workspace's `Cargo.lock` in, resolves what that lock lacks (the crate's
 # dev-dependencies), lists every package it resolved beyond the lock,
 # refuses a registry or git copy of any package the workspace takes from a
 # path (a member, a vendored patch or this crate), and runs
@@ -69,32 +72,38 @@ done
 dir=$(basename -- "$crate")
 
 # The root manifest's `[patch.crates-io]` entries, one `name path` per line.
-# Only single-line `name = { path = "..." }` entries are understood; anything
-# else in the table, and any other patch or replace table or key in the
-# manifest, stops the run rather than being left out of the copy's table and
-# the registry check. Headers and keys are compared without whitespace and
-# quotes, so `["patch"."crates-io"]` is the same table.
+# Only single-line `name = { path = "..." }` entries under a plainly written
+# `[patch.crates-io]` header are understood; anything else in the table, and
+# any other patch or replace table or key in the manifest, stops the run
+# rather than being left out of the copy's table and the registry check.
+# Other headers and keys are compared without whitespace and quotes, so
+# `["patch"."crates-io".x]` is a patch table too, and one with an escape
+# sequence stops the run, since `"\u0070atch"` is `patch` to cargo.
 patches=$(awk -v quote="'" '
   function bare(text) { gsub(/[[:space:]"]/, "", text); gsub(quote, "", text); return text }
+  function trim(text) { sub(/^[[:space:]]+/, "", text); sub(/[[:space:]]+$/, "", text); return text }
+  function refuse(what, line, why) { print "unsupported " what ": " line " (" why ")" > "/dev/stderr"; bad = 1 }
   /^[[:space:]]*\[/ {
-    header = $0; sub(/#.*/, "", header); header = bare(header)
+    header = $0; sub(/#.*/, "", header); header = trim(header)
     in_table = (header == "[patch.crates-io]")
-    if (!in_table && header ~ /^\[+(patch|replace)([].]|$)/) {
-      print "unsupported table: " $0 > "/dev/stderr"; bad = 1
-    }
+    if (in_table) next
+    if (index(header, "\\")) refuse("table header", $0, "an escape sequence can hide which table it names")
+    else if (bare(header) == "[patch.crates-io]") refuse("table header", $0, "write [patch.crates-io] plainly, without quotes or inner spaces")
+    else if (bare(header) ~ /^\[+(patch|replace)([].]|$)/) refuse("table", $0, "only [patch.crates-io] is read")
     next
   }
   /^[[:space:]]*(#|$)/ { next }
-  in_table && /^[A-Za-z0-9_-]+[[:space:]]*=[[:space:]]*\{[[:space:]]*path[[:space:]]*=[[:space:]]*"[^"]+"[[:space:]]*\}[[:space:]]*$/ {
+  in_table && /^[A-Za-z0-9_-]+[[:space:]]*=[[:space:]]*\{[[:space:]]*path[[:space:]]*=[[:space:]]*"[^"\\]+"[[:space:]]*\}[[:space:]]*$/ {
     name = $0; sub(/[[:space:]]*=.*/, "", name)
     path = $0; sub(/^[^"]*"/, "", path); sub(/".*/, "", path)
     print name " " path
     next
   }
-  in_table { print "unsupported [patch.crates-io] entry: " $0 > "/dev/stderr"; bad = 1; next }
+  in_table { refuse("[patch.crates-io] entry", $0, "only name = { path = \"...\" } without escapes is read"); next }
   /=/ {
-    key = $0; sub(/=.*/, "", key); key = bare(key)
-    if (key ~ /^(patch|replace)(\.|$)/) { print "unsupported key: " $0 > "/dev/stderr"; bad = 1 }
+    key = $0; sub(/=.*/, "", key)
+    if (index(key, "\\")) refuse("key", $0, "an escape sequence can hide which key it is")
+    else if (bare(key) ~ /^(patch|replace)(\.|$)/) refuse("key", $0, "only a [patch.crates-io] table is read")
   }
   END { exit bad }
 ' "$root/Cargo.toml") || fail "cannot read the patch table of $root/Cargo.toml"
