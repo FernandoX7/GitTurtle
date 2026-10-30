@@ -31,11 +31,19 @@ const RESTORE_PREPARING_NAME: &str = "Review restore…, preparing the restorati
 /// has no line that says anything ([`StashBrowser::restore_note`]).
 const RESTORE_UNEXPLAINED: &str = "Git could not prepare this restoration.";
 
-/// The first line of a Review restore… answer that says anything, which
-/// Stashes' footer note shows and the window's alert says
-/// ([`StashBrowser::refuse`]); `None` where no line does.
+/// The first line of a Review restore… answer that says anything; `None`
+/// where no line does.
 fn first_line(answer: &str) -> Option<&str> {
     answer.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
+/// What Stashes' footer note shows and the window's alert says for the
+/// Review restore… answer `answer`: its [`first_line`], or
+/// [`RESTORE_UNEXPLAINED`] where no line says anything. [`StashBrowser::refuse`]
+/// and [`StashBrowser::restore_note`] both take it from here, so what is
+/// said and what is drawn stay in step.
+fn restore_said(answer: &str) -> SharedString {
+    SharedString::from(first_line(answer).unwrap_or(RESTORE_UNEXPLAINED).to_owned())
 }
 
 const STASH_PAGE_SIZE: usize = 40;
@@ -2030,9 +2038,7 @@ impl StashBrowser {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let said = first_line(&message)
-            .unwrap_or(RESTORE_UNEXPLAINED)
-            .to_owned();
+        let said = restore_said(&message);
         self.restore_alert = Some(crate::copy_feedback::alert(window, cx, said));
         self.restore_line = Some(message);
         self.pause_ended = false;
@@ -2097,9 +2103,8 @@ impl StashBrowser {
             // empty line, or said nothing at all, showed an empty note. With
             // no such line the note says that Git could not prepare the
             // restoration, and no Details… opens an empty report.
-            let first = first_line(reason);
-            let report = reason != PAUSED_REFUSAL && first.is_some();
-            let shown = SharedString::from(first.unwrap_or(RESTORE_UNEXPLAINED).to_owned());
+            let report = reason != PAUSED_REFUSAL && first_line(reason).is_some();
+            let shown = restore_said(reason);
             let tooltip = shown.clone();
             // Static text, whose node reports the part of it the stacked
             // detail draws, as the note that its pause has ended does.
