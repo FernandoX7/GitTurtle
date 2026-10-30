@@ -3934,6 +3934,122 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A window whose edge is dragged keeps the focused control whole
+    /// through every step of the drag, not only its first: stacked beneath
+    /// the list at 18 pt, with Tab on Review restore… at the foot of the
+    /// Stashes detail and the pointer since moved, the window shrinks from
+    /// 461 × 640 to 461 × 490 in 15 px steps, each step's next resize laid
+    /// out before the frame that shows that step's reveal is drawn. Judged
+    /// at the offset its frame was painted at, before the reveal it
+    /// requested had applied, the step counted Review restore… as cut, so
+    /// the next resize revealed nothing and left it cut for the rest of the
+    /// drag.
+    ///
+    /// GPUI's test build draws a dirty window as soon as its effects are
+    /// flushed, so a resize's reveal is always drawn before the next resize
+    /// arrives. Each step is sequenced by hand instead: one update resizes
+    /// the window and draws that frame, which requests its reveal, and
+    /// queues the next resize behind the reveal, so the next frame is laid
+    /// out at the smaller size with the reveal applied but never drawn at
+    /// the size it was made for. The test shows that the reveal holds
+    /// across such frames; it cannot show how a platform paces a real
+    /// drag's resizes against its frames, which a native drag settles.
+    #[gpui::test]
+    async fn a_dragged_window_keeps_the_focused_control_whole_at_every_step(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::focus_reveal::tests::Painted;
+        use crate::tags::tests::{draw, git, rendered, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "first\n").unwrap();
+        git(repo.path(), &["add", "notes.txt"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add notes"]);
+        std::fs::write(repo.path().join("notes.txt"), "second\n").unwrap();
+        git(repo.path(), &["stash", "push", "-m", "kept for later"]);
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(640.)));
+        draw(cx);
+        let browser = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
+            .expect("Stashes opens");
+        landed(cx, "saved-stash-row-0");
+        let row = cx.debug_bounds("saved-stash-row-0").unwrap();
+        cx.simulate_click(row.center(), Modifiers::none());
+        landed(cx, "stash-file-0");
+        let detail = browser.read_with(cx, |browser, _| browser.detail.clone());
+        let room = cx.read(appearance::button_ring_room);
+        let slack = px(0.01);
+        let whole = move |control: Bounds<Pixels>, view: Bounds<Pixels>| {
+            let ring = control.dilate(room);
+            ring.top() + slack >= view.top() && ring.bottom() <= view.bottom() + slack
+        };
+        let cut = |frame: &Painted| {
+            !frame
+                .control
+                .is_some_and(|control| whole(control, frame.viewport))
+        };
+        tab_to(&browser, "restore-saved-stash", cx);
+        draw(cx);
+        assert!(
+            whole(
+                rendered(cx, "restore-saved-stash"),
+                rendered(cx, "stash-detail")
+            ),
+            "Tab reveals Review restore…"
+        );
+        // The pointer moves, as it does to drag the window's edge.
+        let list = rendered(cx, "stash-list").center();
+        cx.simulate_mouse_move(list, None, Modifiers::default());
+        draw(cx);
+        let mut height: f32 = 640.;
+        let mut held = 0;
+        while height > 490. {
+            let (step, next) = (height - 15., (height - 30.).max(490.));
+            detail.take_painted();
+            cx.update(|window, cx| {
+                window.resize(size(px(461.), px(step)));
+                window.bounds_changed(cx);
+                window.draw(cx).clear(cx);
+                window.defer(cx, move |window, cx| {
+                    window.resize(size(px(461.), px(next)));
+                    window.bounds_changed(cx);
+                });
+            });
+            draw(cx);
+            let frames = detail.take_painted();
+            // The step's frame cut Review restore…, and the next resize cut
+            // it again before the step's reveal was drawn.
+            if let [stepped, resized, ..] = frames.as_slice()
+                && cut(stepped)
+                && cut(resized)
+                && resized.viewport.size.height < stepped.viewport.size.height
+            {
+                held += 1;
+            }
+            assert_eq!(
+                cx.update(|window, _| detail.focused(window)),
+                Some("restore-saved-stash".into()),
+                "at 461 × {next} focus stays on Review restore…"
+            );
+            assert!(
+                whole(
+                    rendered(cx, "restore-saved-stash"),
+                    rendered(cx, "stash-detail")
+                ),
+                "dragged to 461 × {next}, the window shows Review restore… whole with its \
+                 ring: {frames:?}"
+            );
+            height = next;
+        }
+        assert!(
+            held > 0,
+            "a step's next resize cut Review restore… before the step's reveal was drawn"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The saved files cue their overflow as the detail around them does
     /// (`tags::ScrollCue`): at 13 and 18 pt in a 1000 × 680 window, eleven
     /// unstaged files overflow their box, which shows a scrollbar in a

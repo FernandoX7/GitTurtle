@@ -17,6 +17,11 @@
 //!
 //! A resize is revealed in the frame after the one that lays the container
 //! out at its new size, since no frame knows that size before its layout.
+//! Dragging a window's edge resizes it again and again, and the next resize
+//! can be laid out before that reveal's frame is drawn, so a frame that
+//! requests a reveal counts the control as shown where the reveal will put
+//! it: the next resize that cuts it reveals it again, and the control stays
+//! in view through the whole drag rather than only its first step.
 //!
 //! The reveal lands in the frame that first draws the new focus. GPUI lays a
 //! frame out, prepaints and paints it, so a control's bounds are known only
@@ -116,8 +121,19 @@ pub(crate) struct FocusReveal {
     /// has been since.
     placed: Rc<Cell<bool>>,
     /// Whether the last frame showed the control holding focus whole in the
-    /// container's view, so a resize that cuts it is what cut it.
+    /// container's view, so a resize that cuts it is what cut it: judged at
+    /// the offset a reveal the frame requested sets once the frame is
+    /// painted (`pending`).
     shown: Rc<Cell<bool>>,
+    /// The offset a reveal requested in the frame being prepainted sets
+    /// once that frame is painted ([`Self::request`]), which the frame's
+    /// end judges `shown` at. Judged at the offset the frame was painted
+    /// at, the control a resize had just cut counted as cut though the
+    /// reveal shows it whole before another frame is drawn, so where a
+    /// drag's next resize was laid out before the reveal's own frame, that
+    /// resize revealed nothing and the control stayed cut for the rest of
+    /// the drag.
+    pending: Rc<Cell<Option<Pixels>>>,
     controls: Rc<RefCell<HashMap<ElementId, FocusHandle>>>,
     /// The controls reported so far in the frame being prepainted.
     drawing: Rc<RefCell<Vec<Drawn>>>,
@@ -136,6 +152,7 @@ impl FocusReveal {
             observed: Rc::default(),
             placed: Rc::default(),
             shown: Rc::default(),
+            pending: Rc::default(),
             controls: Rc::default(),
             drawing: Rc::default(),
             drawn: Rc::default(),
@@ -433,7 +450,13 @@ impl FocusReveal {
         } else if self.observed.borrow().focus != observed.focus {
             self.placed.set(self.revealing(window));
         }
-        let (viewport, offset) = (self.scroll.bounds(), self.scroll.offset().y);
+        // Where a reveal this frame requested will leave the container: it
+        // shows the control whole there before any later resize is drawn.
+        let offset = self
+            .pending
+            .take()
+            .unwrap_or_else(|| self.scroll.offset().y);
+        let viewport = self.scroll.bounds();
         let slack = px(0.01);
         self.shown
             .set(self.drawn_focus(window, cx).is_some_and(|(bounds, _)| {
@@ -531,6 +554,7 @@ impl FocusReveal {
         };
         let scroll = self.scroll.clone();
         let previous = scroll.offset();
+        self.pending.set(Some(offset.y));
         // Apply one reveal after painting, unless focus or a user's scroll
         // has already superseded this request.
         window.defer(cx, move |window, cx| {
