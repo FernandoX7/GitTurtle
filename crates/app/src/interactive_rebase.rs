@@ -1020,10 +1020,13 @@ mod tests {
         // The verb the hints name Escape by, and whether the open dialog
         // draws its own button with that label.
         let escape = |cx: &mut VisualTestContext, hints: &str| {
+            // Up to the next hint: Keyboard Shortcuts' spare hints follow
+            // Escape.
             let verb = hints
                 .rsplit_once("Esc ")
-                .map(|(_, verb)| verb.to_owned())
-                .unwrap_or_default();
+                .and_then(|(_, rest)| rest.split(" · ").next())
+                .unwrap_or_default()
+                .to_owned();
             let button = cx
                 .debug_bounds(format!("dialog-dismiss: {verb}").leak())
                 .is_some();

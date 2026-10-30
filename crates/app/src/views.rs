@@ -5958,6 +5958,9 @@ thread_local! {
     static COMPACT_COUNT: TextWidth = const { RefCell::new(None) };
     /// A fresh outcome in the status line (`GitTurtle::fit_status_bar`).
     static STATUS_OUTCOME: TextWidth = const { RefCell::new(None) };
+    /// The status line's whole text, measured where spare keyboard hints
+    /// ask whether it keeps it (`GitTurtle::fit_status_bar`).
+    static STATUS_TEXT: TextWidth = const { RefCell::new(None) };
     /// [`StatusWidths`] for the status bar's current keyboard hints.
     static STATUS_WIDTHS: RefCell<Option<(LineKey, shortcuts::KeyHints, StatusWidths)>> = const { RefCell::new(None) };
     /// The changed-file filter's placeholder as it fits the width its field
@@ -6013,6 +6016,9 @@ fn watch_control_height(cx: &App) -> Pixels {
 /// gaps between; and the ellipsis the status line keeps at least.
 struct StatusWidths {
     forms: Vec<(String, Pixels)>,
+    /// The whole form with the spare hints after the others, where there
+    /// are any (`shortcuts::KeyHints::spare`).
+    spare: Option<(String, Pixels)>,
     warning: Pixels,
     warning_compact: Pixels,
     ellipsis: Pixels,
@@ -6740,6 +6746,17 @@ impl GitTurtle {
             .into_any_element()
     }
 
+    /// What the status line says on this page before it gives way: the
+    /// status bar draws it and its fitting measures it
+    /// ([`Self::fit_status_bar`]).
+    fn status_text(&self) -> &str {
+        match self.page {
+            AppPage::Projects => "Open a project or start a new repository",
+            AppPage::Settings => "Appearance and layout preferences",
+            AppPage::Repository => self.status_line(),
+        }
+    }
+
     /// The keyboard hints as the status bar draws them
     /// ([`Self::fit_status_bar`]), or none where they gave way.
     #[cfg(test)]
@@ -6773,7 +6790,7 @@ impl GitTurtle {
                 .map(shortcuts::DialogKeys::key_hints);
         }
         let key = |key: &str, action| (key.to_owned(), action);
-        Some(shortcuts::KeyHints(match self.page {
+        Some(shortcuts::KeyHints::new(match self.page {
             AppPage::Settings => vec![key("Tab", "Move between controls"), key("Esc", "Back")],
             AppPage::Projects => vec![
                 (format!("{}O", primary_label()), "Open repository"),
@@ -6803,7 +6820,10 @@ impl GitTurtle {
     /// place ([`OperationPlace::StatusBar`]), kept only in a Repository frame
     /// whose `plan` lets a write's status come there
     /// ([`HeaderPlan::bar_room`]); the keyboard hints, whole, else their keys
-    /// alone ("↑↓ · Enter"), else the leading keys that fit, else none; and
+    /// alone ("↑↓ · Enter"), else the leading keys that fit, else none, with
+    /// any spare hints after them, whole, only where the status line keeps
+    /// its whole text beside them (Keyboard Shortcuts' page and end keys,
+    /// `shortcuts::KeyHints::spare`); and
     /// Details… keeps its label unless the labelled warning would leave the
     /// status line, beside any room kept for Cancel, less than it keeps with
     /// every hint gone, where it becomes its icon. At 18 pt in a 461 × 490
@@ -6833,7 +6853,7 @@ impl GitTurtle {
     ) -> StatusFit {
         let hints = self
             .key_hints(window, cx)
-            .unwrap_or(shortcuts::KeyHints(Vec::new()));
+            .unwrap_or(shortcuts::KeyHints::new(Vec::new()));
         let warning = self.page == AppPage::Repository && self.automatic.watch_warning().is_some();
         let rem = window.rem_size();
         // The bar's `px_3` and `gap_2`, and its 5 px dot.
@@ -6873,11 +6893,26 @@ impl GitTurtle {
                         widths.warning
                     };
             }
+            // Spare hints come whole, before the others' whole form, only
+            // where the status line keeps its whole text beside them and no
+            // write's status takes its place: they give way first.
+            let spare = widths.spare.as_ref().filter(|(_, width)| {
+                self.operation_shown().is_none() && {
+                    let text = self.status_text();
+                    let whole = cached_text_width(&STATUS_TEXT, text, window, || {
+                        line_widths(&[(text, appearance::ui_text(10.))], window)
+                    });
+                    whole + gap + *width <= room
+                }
+            });
             StatusFit {
-                hints: widths
-                    .forms
-                    .iter()
-                    .find(|(_, width)| line + gap + *width <= room)
+                hints: spare
+                    .or_else(|| {
+                        widths
+                            .forms
+                            .iter()
+                            .find(|(_, width)| line + gap + *width <= room)
+                    })
                     .map(|(form, _)| form.clone()),
                 details_icon,
             }
@@ -6893,22 +6928,21 @@ impl GitTurtle {
             + self.labelled_width(text(WATCH_REFRESH), false, window)
             + gap;
         let mut forms = Vec::new();
-        if !hints.0.is_empty() {
-            forms.push(hints.whole());
+        if !hints.keys.is_empty() {
+            forms.push(shortcuts::KeyHints::new(hints.keys.clone()).whole());
             forms.extend(
-                (1..=hints.0.len())
+                (1..=hints.keys.len())
                     .rev()
-                    .map(|shown| shortcuts::KeyHints(hints.0[..shown].to_vec()).keys()),
+                    .map(|shown| shortcuts::KeyHints::new(hints.keys[..shown].to_vec()).keys()),
             );
         }
+        let measured = |form: String| {
+            let width = text(&form);
+            (form, width)
+        };
         StatusWidths {
-            forms: forms
-                .into_iter()
-                .map(|form| {
-                    let width = text(&form);
-                    (form, width)
-                })
-                .collect(),
+            spare: (!hints.spare.is_empty()).then(|| measured(hints.whole())),
+            forms: forms.into_iter().map(measured).collect(),
             warning: lead + self.labelled_width(text(WATCH_DETAILS), false, window),
             warning_compact: lead + window.pixel_snap(appearance::ui_size(WATCH_CONTROL)),
             ellipsis: text("…"),
@@ -7258,13 +7292,7 @@ impl Render for GitTurtle {
                                         .px(crate::appearance::ui_size(2.))
                                         .h(watch_control_height(cx))
                                 })),
-                            None => line.truncate().child(match self.page {
-                                AppPage::Projects => {
-                                    "Open a project or start a new repository".to_owned()
-                                }
-                                AppPage::Settings => "Appearance and layout preferences".to_owned(),
-                                AppPage::Repository => self.status_line().to_owned(),
-                            }),
+                            None => line.truncate().child(self.status_text().to_owned()),
                         }
                     })
                     .when(watch_warning, |footer| {

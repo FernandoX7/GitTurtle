@@ -653,59 +653,90 @@ pub(super) enum DialogKeys {
 
 /// Keyboard hints for the status bar: each key and what it does.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct KeyHints(pub(super) Vec<(String, &'static str)>);
+pub(super) struct KeyHints {
+    /// The hints the strip keeps first, giving way as
+    /// `GitTurtle::fit_status_bar` describes.
+    pub(super) keys: Vec<(String, &'static str)>,
+    /// Hints that follow them, whole, only where the status line keeps its
+    /// whole text beside them, so they give way before the status line does.
+    pub(super) spare: Vec<(String, &'static str)>,
+}
 
 impl KeyHints {
-    /// The whole form, `Key Action · Key Action`.
+    /// `keys`, with none spare.
+    pub(super) fn new(keys: Vec<(String, &'static str)>) -> Self {
+        Self {
+            keys,
+            spare: Vec::new(),
+        }
+    }
+
+    /// The whole form of every hint, the spare ones last: `Key Action · Key
+    /// Action`.
     pub(super) fn whole(&self) -> String {
-        self.join(|(key, action)| format!("{key} {action}"))
+        Self::join(self.keys.iter().chain(&self.spare), |(key, action)| {
+            format!("{key} {action}")
+        })
     }
 
-    /// The keys alone, `Key · Key`: the form the hints take where the status
-    /// line or the refresh warning needs their room (`GitTurtle::fit_status_bar`).
+    /// The keys alone of the hints kept first, `Key · Key`: the form they
+    /// take where the status line or the refresh warning needs their room
+    /// (`GitTurtle::fit_status_bar`).
     pub(super) fn keys(&self) -> String {
-        self.join(|(key, _)| key.clone())
+        Self::join(self.keys.iter(), |(key, _)| key.clone())
     }
 
-    fn join(&self, phrase: impl Fn(&(String, &'static str)) -> String) -> String {
-        self.0.iter().map(phrase).collect::<Vec<_>>().join(" · ")
+    fn join<'a>(
+        hints: impl Iterator<Item = &'a (String, &'static str)>,
+        phrase: impl Fn(&(String, &'static str)) -> String,
+    ) -> String {
+        hints.map(phrase).collect::<Vec<_>>().join(" · ")
     }
 }
+
+/// Page Up and Page Down as the status bar's hints name them: the toolkit
+/// spells them out, which took the strip's room from the status line.
+const PAGE_KEYS: &str = "PgUp / PgDn";
 
 impl DialogKeys {
     /// The hints the status bar names, each key with what it does. Escape
     /// is named by the dialog's own button it stands for ([`Self::dismiss`]):
     /// the palette's hints said "Esc Close" beside its Cancel button, while
     /// Quick Open's said "Esc Cancel".
+    ///
+    /// Keyboard Shortcuts keeps "↑↓ Browse · Esc Close" first, Escape kept
+    /// longest after browsing, and names its page and end keys as spare
+    /// hints after them, which give way before the status line does: named
+    /// with the rest, they took 358 px at 18 pt in a 461 × 490 window and
+    /// cut "Up to date with origin · nothing new" to about 53 px. Its inline
+    /// help names every key.
     pub(super) fn key_hints(self) -> KeyHints {
         let escape = ("Esc".to_owned(), self.dismiss());
-        KeyHints(match self {
-            Self::Palette | Self::QuickOpen => {
-                vec![("↑↓".into(), "Select"), (ENTER.into(), "Open"), escape]
-            }
-            // Every key the list takes, Escape last as in every dialog's
-            // hints: they named Up and Down alone.
-            Self::Shortcuts => vec![
-                ("↑↓".into(), "Browse"),
-                (
-                    format!("{} / {}", key_label("pageup"), key_label("pagedown")),
-                    "Page",
-                ),
-                (
-                    format!("{} / {}", key_label("home"), key_label("end")),
-                    "First / Last",
-                ),
+        match self {
+            Self::Palette | Self::QuickOpen => KeyHints::new(vec![
+                ("↑↓".into(), "Select"),
+                (ENTER.into(), "Open"),
                 escape,
-            ],
-            Self::RebaseSequence => vec![
+            ]),
+            Self::Shortcuts => KeyHints {
+                keys: vec![("↑↓".into(), "Browse"), escape],
+                spare: vec![
+                    (PAGE_KEYS.into(), "Page"),
+                    (
+                        format!("{} / {}", key_label("home"), key_label("end")),
+                        "Ends",
+                    ),
+                ],
+            },
+            Self::RebaseSequence => KeyHints::new(vec![
                 ("↑↓".into(), "Select"),
                 (
                     format!("{} / {}", key_label("alt-up"), key_label("alt-down")),
                     "Reorder",
                 ),
                 escape,
-            ],
-        })
+            ]),
+        }
     }
 
     /// The verb of the dialog's button that Escape stands for, as the button
@@ -2683,9 +2714,10 @@ mod list_tests {
     }
 
     /// Keyboard Shortcuts names the keys its list takes wherever it names
-    /// its own: its inline help, and the status bar's hints while its search
-    /// holds focus, name Page Up / Page Down and Home / End beside Up and
-    /// Down, in the platform's key labels, at 13 pt in a 1200 × 800 window.
+    /// its own: its inline help names Page Up / Page Down and Home / End
+    /// beside Up and Down, in the platform's key labels, and the status
+    /// bar's hints, while its search holds focus, name PgUp / PgDn and
+    /// Home / End where they have the room, at 13 pt in a 1200 × 800 window.
     /// Both named Up and Down alone.
     #[gpui::test]
     async fn the_help_and_the_status_bar_name_every_key_the_list_takes(cx: &mut TestAppContext) {
@@ -2705,10 +2737,68 @@ mod list_tests {
             .expect("the status bar names the search's keys");
         for key in ["pageup", "pagedown", "home", "end"].map(key_label) {
             assert!(
-                help.contains(&key) && hints.contains(&key),
-                "{key} is named in the inline help, {help:?}, and the status bar, {hints:?}"
+                help.contains(&key),
+                "{key} is named in the inline help, {help:?}"
+            );
+        }
+        let ends = format!("{} / {}", key_label("home"), key_label("end"));
+        for key in [PAGE_KEYS, &ends] {
+            assert!(
+                hints.contains(key),
+                "{key} is named in the status bar, {hints:?}"
             );
         }
         close(cx);
+    }
+
+    /// The status bar's hints under Keyboard Shortcuts give way before the
+    /// status line does: at 18 pt in 461 and 600 px wide windows, the wider
+    /// one with room for every hint beside the line's ellipsis but not
+    /// beside its whole text, they keep "↑↓ Browse · Esc Close" and the
+    /// status line is drawn whole, and at 13 pt in a 1480 × 980 window, with
+    /// room left after the whole status line, they name the page and end
+    /// keys after Escape. Named with the rest, they took 358 px at 18 pt in a
+    /// 461 × 490 window and cut the status line to about 53 px.
+    #[gpui::test]
+    async fn the_status_line_stays_whole_beside_the_lists_hints(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        // A status line the strip holds whole at 18 pt in a 461 × 490
+        // window beside "↑↓ Browse · Esc Close", about 183 px of the 236 px
+        // left to it there.
+        app.update(cx, |app, cx| {
+            app.status = "Up to date with origin".into();
+            cx.notify();
+        });
+        let keys = DialogKeys::Shortcuts.key_hints();
+        for (text, size, spare) in [
+            (18, (461., 490.), false),
+            // Room for every hint beside the line's ellipsis, not beside
+            // its whole text.
+            (18, (600., 490.), false),
+            (13, (1480., 980.), true),
+        ] {
+            open(&app, cx, text, size);
+            let at = format!("{text} pt in a {size:?} window");
+            let (hints, line, whole) = cx.update(|window, cx| {
+                let hints = app.update(cx, |app, cx| app.status_hints(window, cx));
+                let line = app.read(cx).status_line().to_owned();
+                let whole = crate::views::line_widths(&[(&line, appearance::ui_text(10.))], window);
+                (hints, line, whole)
+            });
+            let drawn = cx.debug_bounds("status-line").expect("the status line");
+            assert!(
+                drawn.size.width >= whole - px(0.5),
+                "{at}: the status line {line:?}, {whole:?} wide, is drawn whole: {drawn:?}"
+            );
+            let expected = if spare {
+                keys.whole()
+            } else {
+                KeyHints::new(keys.keys.clone()).whole()
+            };
+            assert_eq!(hints, Some(expected), "{at}: the status bar's hints");
+            close(cx);
+        }
     }
 }

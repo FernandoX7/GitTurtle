@@ -68,9 +68,11 @@ and each shows its entry even where the selection is already on it, as after
 the wheel. The search field keeps focus and keeps Shift-Home and Shift-End;
 the list takes the four keys from it, bound in the field's context inside the
 dialog (`LIST_KEYS`), as macOS's single-line fields leave them to the view
-beside them. The dialog's inline help and, while the field holds focus, the
-status bar's hints name all six keys (`DialogKeys::key_hints`), Escape last
-as in every dialog's hints. Each press reads the
+beside them. The dialog's inline help names all six keys. While the field
+holds focus, the status bar's hints keep “↑↓ Browse · Esc Close” first and
+name “PgUp / PgDn Page · Home / End Ends” after them only where the status
+line keeps its whole text beside them (`DialogKeys::key_hints`,
+`KeyHints::spare`). Each press reads the
 scroll the press before it, or the wheel, left, since a press sets the scroll
 at once; the list's height it reads is current too, as GPUI draws a pending
 frame before it dispatches a key. Escape, Return or Done dismisses help and restores the preceding
