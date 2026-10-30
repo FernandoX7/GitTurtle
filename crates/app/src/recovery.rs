@@ -1342,7 +1342,8 @@ pub(crate) struct StashBrowser {
     /// it appears, even in the words of the one before.
     refusals: usize,
     /// The next frame scrolls the stacked detail to the footer note: a
-    /// refusal or its end has just replaced it.
+    /// refusal or its end has just replaced it. It scrolls nothing while
+    /// another of the detail's controls holds focus ([`reveal_note`]).
     reveal_note: std::rc::Rc<std::cell::Cell<bool>>,
     /// The lines a refusal keeps in the stacked footer note: two, or one
     /// where the detail cannot hold two beneath Review restore… whole with
@@ -1577,6 +1578,13 @@ impl StashBrowser {
             return;
         };
         window.focus(&self.stash_focus, cx);
+        if self.selected == Some(index) && self.error.is_none() {
+            // Chosen again, as a click on its row, Up on the first or Home
+            // does: the stash shown, or being read, stays, and so does
+            // Review restore…'s preparation, which the read again cancelled
+            // with nothing said.
+            return;
+        }
         self.cancel_restore(cx);
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
@@ -2182,23 +2190,30 @@ impl StashBrowser {
 /// For the stacked Stashes detail's actions, the row with Review restore…
 /// and the footer note beneath it, as each frame prepaints them. It keeps
 /// `lines`, the lines a refusal keeps in the note, at two, or one where the
-/// detail, `scroll`, cannot hold two beneath Review restore…, at `restore`,
-/// whole with its ring, `margin`, each `line` tall: at 18 pt in a 461 × 490
+/// `detail` cannot hold two beneath Review restore…, at `restore`, whole
+/// with its ring, `margin`, each `line` tall: at 18 pt in a 461 × 490
 /// window the detail is about 60 px tall. A change lays the detail out
 /// again. Once `due`, when a refusal or its end has just replaced the note,
 /// it scrolls the detail by the least that shows Review restore… and the
 /// note `margin` clear of its edges, or, where both still do not fit,
 /// Review restore… whole at the top with what of the note the rest shows:
-/// the focused control the press left stays whole. It scrolls after the
-/// frame the note is laid out in, as a focus reveal does for a control it
-/// has not drawn ([`crate::focus_reveal`]). A note the detail had scrolled
-/// below its fold, beneath the Review restore… just pressed, showed
-/// nothing, and one revealed whole at two lines cut Review restore…'s ring.
+/// the focused control the press left stays whole. It scrolls only while
+/// Review restore…, `pressed`, holds focus or nothing in the detail does:
+/// with focus on another of its controls, such as the saved files or a
+/// file's text, the detail stays where it is, and the note is heard, not
+/// shown. It scrolls after the frame the note is laid out in, as a focus
+/// reveal does for a control it has not drawn ([`crate::focus_reveal`]).
+/// A note the detail had scrolled below its fold, beneath the Review
+/// restore… just pressed, showed nothing, one revealed whole at two lines
+/// cut Review restore…'s ring, and a merge finished in a terminal
+/// scrolled the focused saved files out of view, to Review restore… and
+/// the note that it had ended.
 fn reveal_note(
     due: std::rc::Rc<std::cell::Cell<bool>>,
     lines: std::rc::Rc<std::cell::Cell<usize>>,
     restore: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
-    scroll: ScrollHandle,
+    pressed: FocusHandle,
+    detail: crate::focus_reveal::FocusReveal,
     margin: Pixels,
     line: Pixels,
 ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
@@ -2209,6 +2224,7 @@ fn reveal_note(
         let Some(control) = restore.get() else {
             return;
         };
+        let scroll = detail.scroll();
         let viewport = scroll.bounds();
         let top = control.top() - margin;
         // The note's lines that fit beneath Review restore… and its ring.
@@ -2222,6 +2238,10 @@ fn reveal_note(
             return;
         }
         if !due.replace(false) {
+            return;
+        }
+        if !pressed.is_focused(window) && detail.holds_focus(window, cx) {
+            // The control focused elsewhere in the detail stays in view.
             return;
         }
         let bottom = note.bottom() + margin;
@@ -2492,7 +2512,8 @@ impl Render for StashBrowser {
                         self.reveal_note.clone(),
                         self.note_lines.clone(),
                         self.restore_at.clone(),
-                        self.detail.scroll().clone(),
+                        restore.clone(),
+                        self.detail.clone(),
                         room,
                         note_line,
                     ))
@@ -2562,7 +2583,7 @@ impl Render for StashBrowser {
                     .child(div().flex().flex_wrap().items_center().gap_1().on_children_prepainted(self.detail.controls(areas.iter().cloned().map(Some).collect(), room)).children([StashArea::Staged, StashArea::Unstaged, StashArea::Untracked].into_iter().zip(areas).map(|(area, focus)| {
                         button(("stash-area", area as usize), format!("{} ({})", area.label(), area.files(&snapshot).len()), "", self.area == area).track_focus(&focus).debug_selector(move || format!("stash-area-{}", area as usize)).on_click(cx.listener(move |this, _, _, cx| this.choose_area(area, cx)))
                     })))
-                    .child(div().flex().flex_col().flex_shrink_0().on_children_prepainted(self.detail.control(self.file_focus.clone(), room)).child(crate::native_accessibility::clips_children(div().id("stash-files-focus").role(Role::ListBox).aria_label("Saved files").tab_stop(true).track_focus(&self.file_focus).h(px(if narrow { 85. } else { 130. })).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden()
+                    .child(div().flex().flex_col().flex_shrink_0().on_children_prepainted(self.detail.control(self.file_focus.clone(), room)).child(crate::native_accessibility::clips_children(div().id("stash-files-focus").debug_selector(|| "stash-files".into()).role(Role::ListBox).aria_label("Saved files").tab_stop(true).track_focus(&self.file_focus).h(px(if narrow { 85. } else { 130. })).flex_shrink_0().border_1().border_color(rgb(p.border)).rounded(px(5.)).overflow_hidden()
                         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                             if let Some(index) = list_key_selection(event.keystroke.key.as_str(), this.selected_file, this.files().len()) {
                                 cx.stop_propagation();
@@ -3331,8 +3352,11 @@ mod tests {
     /// experiment", then "Index only" chosen: the preparation is cancelled
     /// at once, Review restore… can be pressed again, and once Git would
     /// have answered no review of "Layout experiment" opens; pressed again,
-    /// it reviews "Index only". The list read again meanwhile, as Refresh
-    /// reads it: cancelled at once, and no review opens. Restore staged
+    /// it reviews "Index only". "Layout experiment" chosen again meanwhile,
+    /// by a click on its row, Up on the first row and Home: nothing is read
+    /// again and its review opens, where each read it again and cancelled
+    /// the preparation with nothing said. The list read again meanwhile, as
+    /// Refresh reads it: cancelled at once, and no review opens. Restore staged
     /// state chosen meanwhile: no review of the restoration without it
     /// opens, and pressed again the review restores it. Stashes closed with
     /// Escape: its browser's release cancels, and nothing opens or is said.
@@ -3410,6 +3434,46 @@ mod tests {
         let review = reviewed(cx).expect("Index only's review opens");
         assert!(
             review.starts_with("Restore “On main: Index only”"),
+            "{review}"
+        );
+        drop(stashes);
+        close(cx);
+
+        // The stash shown chosen again while Git prepares, by a click on its
+        // row, then Up on the first row and Home: nothing is read again, the
+        // preparation goes on and its review opens.
+        open_selected_stash(&app, cx).await;
+        let stashes = browser(cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        press_review_restore(&stashes, cx);
+        let generation = stashes.read_with(cx, |stashes, _| stashes.generation);
+        let row = cx
+            .debug_bounds("saved-stash-row-0")
+            .expect("Layout experiment's row");
+        cx.simulate_click(row.center(), Modifiers::none());
+        crate::views::tests::draw(cx);
+        for key in ["up", "home"] {
+            cx.simulate_keystrokes(key);
+            crate::views::tests::draw(cx);
+        }
+        assert!(
+            preparing(cx),
+            "choosing Layout experiment again cancels nothing"
+        );
+        assert_eq!(
+            stashes.read_with(cx, |stashes, _| (
+                stashes.generation,
+                stashes.metadata_task.is_none(),
+                stashes.selected
+            )),
+            (generation, true, Some(0)),
+            "nothing is read again"
+        );
+        drop(held);
+        recovery_lands(&app, cx);
+        let review = reviewed(cx).expect("Layout experiment's review opens");
+        assert!(
+            review.starts_with("Restore “On main: Layout experiment”"),
             "{review}"
         );
         drop(stashes);
@@ -4073,6 +4137,141 @@ mod tests {
             Some("Unable to read working-copy status: fatal: index file corrupt")
         );
         assert!(cx.debug_bounds("stash-restore-details").is_some());
+        drop(stashes);
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        crate::views::tests::draw(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        drop(fixture);
+    }
+
+    /// Stacked at 18 pt in a 461 × 490 window, where the detail is about
+    /// 60 px tall, the note that a merge has ended scrolls the detail only
+    /// while nothing else in it holds focus. Review restore… refused while
+    /// the merge pauses, focus moves to the saved files, as a click on one
+    /// moves it, and the merge is aborted in a terminal: once a read finds
+    /// it ended, the note says so, and the detail stays where it is, with
+    /// the saved files focused and in its view. Refused again with focus on
+    /// the saved-work list instead, outside the detail, and the detail
+    /// scrolled to its top: the end reveals Review restore… and the note
+    /// whole beneath it. The detail jumped to Review restore… and the note
+    /// on any read that found the merge ended, scrolling the focused saved
+    /// files out of view.
+    #[gpui::test]
+    async fn the_end_of_a_pause_leaves_focus_in_view_in_stashes(cx: &mut gpui::TestAppContext) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let git = two_stashes(&repository);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let slack = px(0.5);
+        let inside = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            inner.left() >= outer.left() - slack
+                && inner.right() <= outer.right() + slack
+                && inner.top() >= outer.top() - slack
+                && inner.bottom() <= outer.bottom() + slack
+        };
+        let ended = |stashes: &Entity<StashBrowser>, cx: &mut gpui::VisualTestContext| {
+            stashes.read_with(cx, |stashes, _| {
+                stashes.restore_line.is_none() && stashes.pause_ended
+            }) && cx.debug_bounds("stash-restore-ended").is_some()
+        };
+
+        // Refused while the merge pauses, unread, which the refusal has the
+        // window read.
+        git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        open_selected_stash(&app, cx).await;
+        let stashes = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("Stashes is open");
+        press_review_restore(&stashes, cx);
+        recovery_lands(&app, cx);
+        quiet_reads_land(&app, cx);
+        assert_eq!(
+            stashes.read_with(cx, |stashes, _| stashes.restore_line.clone()),
+            Some(PAUSED_REFUSAL.to_owned())
+        );
+        assert!(app.read_with(cx, |app, _| app.integration_state.is_some()));
+        // Focus moves to the saved files, as a click on one moves it, and
+        // they scroll into the detail's view.
+        let files = stashes.read_with(cx, |stashes, _| stashes.file_focus.clone());
+        cx.update(|window, cx| window.focus(&files, cx));
+        crate::views::tests::draw(cx);
+        let scroll = stashes.read_with(cx, |stashes, _| stashes.detail.scroll().clone());
+        let kept = scroll.offset();
+        let in_view = |cx: &mut gpui::VisualTestContext| {
+            let [files, view] =
+                ["stash-files", "stash-detail"].map(|name| cx.debug_bounds(name).expect(name));
+            // Taller than the detail, they show what of them it holds.
+            (
+                files.bottom() > view.top() + slack && files.top() < view.bottom() - slack,
+                files,
+                view,
+            )
+        };
+        let (shown, files_at, view) = in_view(cx);
+        assert!(
+            shown,
+            "the saved files {files_at:?} are in view {view:?} at {kept:?}"
+        );
+        // The merge ends in a terminal; the next read says so in the note.
+        git(&["merge", "--abort"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        crate::views::tests::draw(cx);
+        assert!(ended(&stashes, cx), "the note says the merge ended");
+        assert_eq!(
+            scroll.offset(),
+            kept,
+            "the detail stays where the keyboard left it"
+        );
+        assert!(
+            cx.update(|window, _| files.is_focused(window)) && in_view(cx).0,
+            "the saved files keep focus in view"
+        );
+
+        // Refused again, the keyboard on the saved-work list, outside the
+        // detail, and the detail at its top.
+        git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        read_pause(&app, cx).await;
+        press_review_restore(&stashes, cx);
+        recovery_lands(&app, cx);
+        assert_eq!(
+            stashes.read_with(cx, |stashes, _| stashes.restore_line.clone()),
+            Some(PAUSED_REFUSAL.to_owned())
+        );
+        let list = stashes.read_with(cx, |stashes, _| stashes.stash_focus.clone());
+        cx.update(|window, cx| window.focus(&list, cx));
+        scroll.set_offset(Point::default());
+        crate::views::tests::draw(cx);
+        let restore = cx
+            .debug_bounds("restore-saved-stash")
+            .expect("Review restore…");
+        let view = cx.debug_bounds("stash-detail").expect("the detail");
+        assert!(
+            !inside(restore, view),
+            "Review restore… {restore:?} lies below the detail's view {view:?}"
+        );
+        git(&["merge", "--abort"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        crate::views::tests::draw(cx);
+        assert!(ended(&stashes, cx), "the note says the merge ended");
+        let [note, restore, view] = ["stash-restore-ended", "restore-saved-stash", "stash-detail"]
+            .map(|name| cx.debug_bounds(name).expect(name));
+        assert!(
+            inside(restore, view) && inside(note, view),
+            "Review restore… {restore:?} and the note {note:?} are revealed in {view:?}"
+        );
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "the saved-work list keeps focus"
+        );
         drop(stashes);
         cx.update(|window, cx| window.close_all_dialogs(cx));
         crate::views::tests::draw(cx);

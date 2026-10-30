@@ -127,6 +127,14 @@ impl FocusReveal {
         self.next_focus.set(true);
     }
 
+    /// Whether focus lies on one of the controls the container last drew,
+    /// or inside one, as on a list's row or an editor's text: a view that
+    /// scrolls the container for another reason leaves it where it is
+    /// rather than scroll the focused control out of view.
+    pub(crate) fn holds_focus(&self, window: &Window, cx: &App) -> bool {
+        self.drawn_focus(window, cx).is_some()
+    }
+
     /// The control holding focus among those [`Self::focus`] handed out.
     #[cfg(test)]
     pub(crate) fn focused(&self, window: &Window) -> Option<ElementId> {
