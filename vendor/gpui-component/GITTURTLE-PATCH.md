@@ -1013,16 +1013,46 @@ reported under the pointer (`hovered_index`); a frame's synthetic move at the
 same place does not count. A wheel that moves nothing, over a menu whose rows
 fit or at the end of its rows, changes nothing.
 
+A menu drawn elsewhere moves its rows under a still pointer too: a row's menu
+follows its row when rows arrive above it, and a menu opened above its
+button moves as its height changes. GPUI's paint compares each hover
+listener's state with the frame's hit test and defers a hover report where
+they differ, so once the frame was drawn the row that arrived under the
+pointer took the selection: on a narrow Working row at 18 pt in a 461 px
+window, the keys on Discard changes… and the pointer resting on it, a file
+that sorts above notes.txt changed outside the app, the menu moved down with
+its row, Stage arrived under the pointer, and Enter staged the file. The
+surface's prepaint (`surface_laid_out`, beside the bounds it records) now
+compares where the surface is laid out with the last frame's place
+(`surface_origin`); where it moved with the pointer over the surface then or
+now, it does what a wheel does, before that frame's hover reports run: it
+records the pointer's place, a pointer selection gives the selection up and
+a keyboard one stays. The first layout moves nothing.
+
 The consumers are every capped menu the app opens through
-`native_accessibility::open_menu`, as the capped-menu patch lists, and the
-app's own rule for rows that move under a still pointer (`motion::StillPointer`,
-`DESIGN.md`).
+`native_accessibility::open_menu`, as the capped-menu patch lists, every
+row's menu (`KeyboardMenu`, `PointerMenu`) and Button dropdown that can move
+while open, and the app's own rule for rows that move under a still pointer
+(`motion::StillPointer`, `DESIGN.md`).
 `cargo test --locked -p gitturtle a_wheel_over_a_capped_menu_lights_no_row_under_the_still_pointer`
 rests the pointer on the Working Actions menu's last whole row at 13 and 18
 pt in 461 × 490, scrolls one notch and reads no row with a fill of its own,
 then none after a move to the same place, and only the row under the pointer
-after a 1 px move. Remove this part of the patch when upstream lights at most
-the row under the pointer after a wheel and that test passes without it.
+after a 1 px move.
+`cargo test --locked -p gitturtle a_menu_that_moves_under_the_resting_pointer_selects_nothing`
+opens that narrow Working row's keyboard menu, moves its cursor to Discard
+changes… and rests the pointer there, then has a file above notes.txt change
+outside the app: the menu moves down a row with its row, Stage under the
+pointer, and no item draws a fill, Enter starts no write and nothing is
+staged, until a 1 px move lights Stage. The crate's own
+`menu::popup_menu::tests::a_menu_that_moves_under_the_still_pointer_selects_nothing`,
+run out of tree like the rebuild tests below, draws a menu a row lower under
+the pointer on Three and reads nothing selected, Two selected after the
+pointer moves, and a keyboard's cursor on One kept as the menu moves back up
+a row. Without `surface_laid_out` the app test reads Stage lit and the
+crate's reads Two selected. Remove this part of the patch when upstream
+lights at most the row under the pointer after a wheel or a move of the
+menu and those tests pass without it.
 
 The menu-rebuild patch modifies `src/menu/popup_menu.rs`. Upstream's
 `PopupMenu::rebuild`, which builds an open menu's items again in place,

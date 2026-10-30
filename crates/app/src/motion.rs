@@ -4741,6 +4741,134 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A working row's keyboard menu in [`narrow_notes`], its cursor moved
+    /// down to Discard changes… and the pointer resting on that item, moves
+    /// down with its row as a file outside the app that sorts above
+    /// notes.txt changes and its row arrives above it, so Stage comes under
+    /// the pointer, which never moved: nothing lights and Enter starts no
+    /// write until the pointer moves, which lights Stage. The list shows
+    /// three of its rows here and keeps the row at its top in place as rows
+    /// arrive, so it is scrolled to its end, the Unstaged heading at its top
+    /// and notes.txt's row below it, where the row has room to move down;
+    /// at the list's bottom edge the row would be revealed there again.
+    /// GPUI reports the item that arrives under a still pointer hovered,
+    /// and Stage once took the selection there, so Enter staged the file,
+    /// an action the person had never pointed at.
+    #[gpui::test]
+    async fn a_menu_that_moves_under_the_resting_pointer_selects_nothing(cx: &mut TestAppContext) {
+        const DISCARD: &str = "menu-item: Discard changes… · MenuItem";
+        // Tracked files that sort above notes.txt in its Unstaged group, and
+        // below it.
+        const TRACKED: [&str; 2] = ["a1.txt", "z1.txt"];
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        cx.update(|window, cx| crate::appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+        let change = |name: &str, text: &str| std::fs::write(repository.join(name), text).unwrap();
+        for name in TRACKED {
+            change(name, "tracked\n");
+        }
+        fixture_git(&repository, &[&["add", "--"][..], &TRACKED[..]].concat());
+        assert!(
+            committing_git(&repository, &["commit", "-q", "-m", "tracked"])
+                .status
+                .success()
+        );
+        change("z1.txt", "changed outside the app\n");
+        quietly_refreshed(&app, cx);
+        let notes_row = |cx: &mut VisualTestContext| {
+            let selector: &'static str = format!(
+                "working-row-{}",
+                position_of(&app, cx, "notes.txt", ChangeArea::Unstaged)
+            )
+            .leak();
+            cx.debug_bounds(selector).expect("notes.txt's row drawn")
+        };
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        let bottom = notes_row(cx);
+        cx.simulate_click(bottom.center(), Modifiers::default());
+        cx.update(|window, cx| list.focus(window, cx));
+        cx.simulate_keystrokes("down up");
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        let row = notes_row(cx);
+        let pitch = row.size.height;
+        assert_eq!(
+            bottom.top() - row.top(),
+            pitch,
+            "the list scrolled to its end, notes.txt's row a row higher"
+        );
+
+        let (opened, discard) =
+            open_row_menu_showing(&app, cx, "notes.txt", Opening::Keyboard, DISCARD);
+        assert_eq!(opened, row, "the menu opened beside notes.txt's row");
+        cx.simulate_keystrokes("down");
+        next_frame(cx);
+        assert_eq!(
+            cursor_among(cx, &NOTES_ITEMS),
+            ["Discard changes…"],
+            "Down moved the cursor to Discard changes…"
+        );
+        let pointer = discard.center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        next_frame(cx);
+        // The items that draw a fill of their own: the pointer's or the
+        // keyboard's highlight.
+        let lit = |cx: &mut VisualTestContext| -> Vec<String> {
+            crate::views::tests::menu_rows(cx, &NOTES_ITEMS)
+                .into_iter()
+                .filter(|(_, item)| !crate::appearance::painted_row(cx, *item).0.is_empty())
+                .map(|(label, _)| label)
+                .collect()
+        };
+        assert_eq!(lit(cx), ["Discard changes…"], "the pointer lights Discard");
+        let stage = cx.debug_bounds(NOTES_STAGE).expect("Stage drawn");
+        assert!(
+            stage.top() + pitch <= pointer.y && pointer.y < stage.bottom() + pitch,
+            "a row of {pitch:?} arriving above brings Stage {stage:?} under the pointer {pointer:?}"
+        );
+
+        change("a1.txt", "changed outside the app\n");
+        quietly_refreshed(&app, cx);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert_eq!(
+            notes_row(cx).top() - row.top(),
+            pitch,
+            "notes.txt's row moved down a row"
+        );
+        let moved = cx.debug_bounds(NOTES_STAGE).expect("Stage drawn");
+        assert_eq!(
+            moved.top() - stage.top(),
+            pitch,
+            "the menu moved down with its row"
+        );
+        assert!(
+            moved.contains(&pointer),
+            "Stage {moved:?} under the pointer"
+        );
+        assert_eq!(
+            lit(cx),
+            Vec::<String>::new(),
+            "nothing lights under the still pointer"
+        );
+        cx.simulate_keystrokes("enter");
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(!writing(&app, cx), "Enter started no write");
+        assert_eq!(offered(cx, "Stage"), Some(true), "the menu stays open");
+        let staged = committing_git(&repository, &["diff", "--cached", "--name-only"]);
+        assert!(
+            staged.status.success() && staged.stdout.is_empty(),
+            "nothing staged: {}",
+            String::from_utf8_lossy(&staged.stdout)
+        );
+
+        let pointer = pointer + point(px(1.), px(0.));
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        next_frame(cx);
+        assert_eq!(lit(cx), ["Stage"], "the moved pointer lights Stage");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A working row's keyboard menu closes, focus on the list, as soon as a
     /// status read moves the selection off its row, as one that finds gamma
     /// staged outside the app moves it to gamma's Staged row; a read that
