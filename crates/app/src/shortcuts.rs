@@ -2053,4 +2053,86 @@ mod list_tests {
             close(cx);
         }
     }
+
+    /// Down to the list's last entry leaves it whole at the list's foot: the
+    /// centring Down asks for there lies past the list's end, which holds it,
+    /// and Down again there moves nothing. At 13 and 18 pt in a 1200 × 800
+    /// window.
+    #[gpui::test]
+    async fn down_to_the_last_entry_leaves_it_whole_at_the_lists_foot(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let last = entries[entries.len() - 1];
+            for presses in [entries.len() - 1, 1] {
+                for _ in 0..presses {
+                    press(cx, "down");
+                }
+                let drawn = shown.at(cx, last);
+                assert!(
+                    (drawn.bottom() - shown.foot).abs() <= PIXEL && drawn.top() >= shown.top,
+                    "{text} pt: {presses} Down presses leave the last entry, {last}, whole \
+                     at the list's foot, {:?}: {drawn:?}",
+                    shown.foot
+                );
+            }
+            close(cx);
+        }
+    }
+
+    /// Down past the list's foot onto a group's first entry brings the
+    /// group's heading with it, the two centred together: at 13 and 18 pt in
+    /// a 1200 × 800 window, with the last entry of the group above selected
+    /// and the wheel leaving it at the list's foot, Down shows the next
+    /// group's heading and first entry whole, centred together. Centred
+    /// alone, the entry stood half a heading's height below the list's
+    /// centre.
+    #[gpui::test]
+    async fn down_past_the_foot_onto_a_groups_first_entry_shows_its_heading(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            // The first heading at or below the list's foot as it opens, so
+            // the wheel can bring the entry above it to the foot.
+            let heading = shown
+                .headings()
+                .into_iter()
+                .find(|&heading| {
+                    shown
+                        .drawn(cx, heading)
+                        .is_none_or(|row| row.top() >= shown.foot - PIXEL)
+                })
+                .expect("a heading below the list's first screen");
+            let (above, first) = (heading - 1, heading + 1);
+            for _ in 0..entries.iter().position(|&entry| entry == above).unwrap() {
+                press(cx, "down");
+            }
+            let by = shown.at(cx, above).bottom() - shown.foot;
+            shown.wheel(cx, by, above);
+            assert!(
+                shown.whole(cx, above) && !shown.whole(cx, heading) && !shown.whole(cx, first),
+                "{text} pt: the wheel leaves entry {above} at the list's foot, group \
+                 {heading} below it"
+            );
+            assert!(
+                shown.heading(first) == Some(heading),
+                "{text} pt: the list holds a heading and an entry"
+            );
+            press(cx, "down");
+            let what =
+                format!("{text} pt: Down past the list's foot onto group {heading}'s first entry");
+            shown.centred(cx, first, &what);
+            close(cx);
+        }
+    }
 }
