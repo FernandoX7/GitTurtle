@@ -519,9 +519,13 @@ impl Panel {
     /// looking. A refused reply's failure once stood below the body's clip, at 13 pt in a
     /// 461 × 490 window under a notice pinned above the body, with nothing to show it.
     fn reveal_outcome(&self) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
-        let outcome = self
-            .answers_in_reply()
-            .then(|| (self.error.clone(), self.cancelled, self.presses.error));
+        // Only an outcome the composer draws: a request starting from the composer, as Send
+        // does, clears the last one and has nothing new to show, and once scrolled the body
+        // back to the draft, away from what the person had just pressed. Recorded as nothing,
+        // the next outcome to appear is new.
+        let outcome = (self.answers_in_reply()
+            && (self.error.is_some() || self.cancelled.is_some()))
+        .then(|| (self.error.clone(), self.cancelled, self.presses.error));
         let shown = self.conversations.outcome_shown.clone();
         let scroll = self.review.body_scroll.clone();
         let blocks = self.review.body_blocks.clone();

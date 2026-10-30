@@ -5231,6 +5231,105 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Send to GitHub starting from a reply's confirmation shows nothing new in the composer,
+    /// so the body does not scroll to its draft: the conversation stays where the person
+    /// pressed, the draft partly above the body's top, at 13 pt in a 461 × 490 window. A
+    /// request starting from the composer clears its last outcome, and that once counted as an
+    /// outcome to reveal, scrolling the body back to the draft as Send started.
+    #[gpui::test]
+    async fn send_from_a_reply_scrolls_nothing_as_it_starts(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        let pull = github::review::fixture_pull(false);
+        let identity = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+                // Earlier attempts under the composer, so the body scrolls on past it.
+                panel.review.recovery_open = true;
+                panel.attempts = (0..10)
+                    .map(|index| drafts::Attempt {
+                        destination: format!("github.com/gitturtle-fixture/native-review #{index}"),
+                        outcome: "Sent".into(),
+                        completed_reply_sha256: None,
+                    })
+                    .collect();
+            })
+        });
+        open_notice_panel(&app, &panel, (13, 461., 490.), cx).await;
+        // Reply, written, then Review reply…, which opens its confirmation.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.begin_reply(target.clone(), window, cx);
+                panel
+                    .conversations
+                    .input
+                    .update(cx, |input, cx| input.set_value("Exact reply", window, cx));
+                panel.review_reply(window, cx);
+            })
+        });
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.confirm.is_some()),
+            "the reply is ready to send"
+        );
+        // The draft partly above the body's top, as the confirmation's reveal leaves it.
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let context = cx
+            .debug_bounds("github-reply-context")
+            .expect("the draft's context");
+        scroll.set_offset(point(
+            px(0.),
+            (scroll.offset().y - (context.bottom() + px(30.) - body.top()))
+                .clamp(-scroll.max_offset().y, px(0.)),
+        ));
+        draw(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let composer = cx
+            .debug_bounds("github-reply-composer")
+            .expect("the composer");
+        assert!(
+            composer.top() < body.top() && composer.bottom() > body.top(),
+            "the draft {composer:?} lies partly above the body {body:?}"
+        );
+
+        // Send to GitHub, held as a slow request is.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.submit(window, cx)));
+        draw(cx);
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.pending),
+            "Send is under way"
+        );
+        assert_eq!(
+            cx.debug_bounds("github-reply-composer"),
+            Some(composer),
+            "the composer stays where it was as Send starts"
+        );
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.conversations.active = None;
+                panel.attempts.clear();
+                panel.review.recovery_open = false;
+            })
+        });
+    }
+
     /// Each press the panel refuses is said again, with a fresh alert node, though it refuses
     /// it as it refused the one before: Review submission… pressed twice with no pull request
     /// chosen. The lines alone stay the same, so the second press was silent.
