@@ -3858,74 +3858,94 @@ fn wrapped_height(items: &[(Pixels, Pixels)], room: Pixels, gap: Pixels) -> Pixe
     height + *last
 }
 
-/// The window's size inside a client-decorated frame: the toolkit's
-/// `window_paddings` and its 1 px border on each untiled side, as the theme
-/// editor measures it. Server decorations have neither.
-fn content_size(window: &Window) -> Size<Pixels> {
-    let viewport = window.viewport_size();
-    let Decorations::Client { tiling } = window.window_decorations() else {
-        return viewport;
-    };
-    let paddings = gpui_kit::component::window_paddings(window);
-    let border = |tiled: bool| if tiled { px(0.) } else { px(1.) };
-    size(
-        viewport.width
-            - paddings.left
-            - paddings.right
-            - border(tiling.left)
-            - border(tiling.right),
-        viewport.height
-            - paddings.top
-            - paddings.bottom
-            - border(tiling.top)
-            - border(tiling.bottom),
-    )
-}
-
-/// The width the window's body is laid out at in a window `viewport` wide,
-/// for this window's scale factor and decorations ([`laid_out_width`]): the
-/// width the project pane's group is fitted to.
-fn body_width(viewport: Pixels, window: &Window) -> Pixels {
-    laid_out_width(
-        viewport,
-        window.scale_factor(),
+/// The window's decorations and the toolkit's `window_paddings` for them,
+/// which inset the window's body. A test window has only the platform's own
+/// decorations, so a test that lays its window out in a copy of the
+/// client-decorated frame sets that frame here ([`TEST_FRAME`]).
+fn window_frame(window: &Window) -> (Decorations, Edges<Pixels>) {
+    #[cfg(test)]
+    if let Some(frame) = TEST_FRAME.with(std::cell::Cell::get) {
+        return frame;
+    }
+    (
         window.window_decorations(),
         gpui_kit::component::window_paddings(window),
     )
 }
 
-/// The width the window's content is laid out at, as the layout rounds it:
-/// the viewport, less, inside a client-decorated frame, the toolkit's
-/// `window_paddings` and its 1 px border on each untiled side, each rounded
-/// to device pixels as the layout rounds it (a padding to the nearest, the
-/// border as a stroke, never under one), and the far edge at the device
-/// pixel it is snapped to. At scale factor 1.5 an untiled frame's 20 px
-/// padding is 30 device pixels and its border 1, not the 1.5 that
-/// [`content_size`] subtracts, so in a 1,061 px window the body is laid out
-/// at 1,529 device pixels where the content snapped would be 1,528.
-fn laid_out_width(
-    viewport: Pixels,
+/// The size the window's body is laid out at in this window
+/// ([`laid_out_size`]). The header, the tab strip and the status bar span
+/// it, so their forms and the chrome's are decided from it.
+fn body_size(window: &Window) -> Size<Pixels> {
+    let (decorations, paddings) = window_frame(window);
+    laid_out_size(
+        window.viewport_size(),
+        window.scale_factor(),
+        decorations,
+        paddings,
+    )
+}
+
+/// The width the window's body is laid out at in a window `viewport` wide,
+/// for this window's scale factor and decorations ([`laid_out_size`]): the
+/// width the project pane's group is fitted to.
+fn body_width(viewport: Pixels, window: &Window) -> Pixels {
+    let (decorations, paddings) = window_frame(window);
+    laid_out_size(
+        size(viewport, window.viewport_size().height),
+        window.scale_factor(),
+        decorations,
+        paddings,
+    )
+    .width
+}
+
+/// The size the window's content is laid out at, as the layout rounds it:
+/// on each axis the viewport, less, inside a client-decorated frame, the
+/// toolkit's `window_paddings` and its 1 px border on each untiled side,
+/// each rounded to device pixels as the layout rounds it (a padding to the
+/// nearest, the border as a stroke, never under one), and the far edge at
+/// the device pixel it is snapped to. At scale factor 1.5 an untiled
+/// frame's 20 px padding is 30 device pixels and its border 1, not 1.5, so
+/// in a 1,061 px window the body is laid out 1,529 device pixels wide where
+/// the window less the insets unrounded, snapped, would be 1,528.
+fn laid_out_size(
+    viewport: Size<Pixels>,
     scale: f32,
     decorations: Decorations,
     paddings: Edges<Pixels>,
-) -> Pixels {
+) -> Size<Pixels> {
     // To the nearest device pixel, halves toward zero, as the layout rounds.
     let device = |length: f32| (length.abs() - 0.5).ceil().copysign(length);
-    let (left, right) = match decorations {
-        Decorations::Server => (0., 0.),
+    // Each side's inset in device pixels: inside a client-decorated frame,
+    // its padding and, unless the frame is tiled against that side, its
+    // border.
+    let insets = match decorations {
+        Decorations::Server => Edges::default(),
         Decorations::Client { tiling } => {
-            let border = |tiled: bool| if tiled { 0. } else { device(scale).max(1.) };
-            (
-                device(f32::from(paddings.left) * scale) + border(tiling.left),
-                device(f32::from(paddings.right) * scale) + border(tiling.right),
-            )
+            let inset = |padding: Pixels, tiled: bool| {
+                let border = if tiled { 0. } else { device(scale).max(1.) };
+                device(f32::from(padding) * scale) + border
+            };
+            Edges {
+                top: inset(paddings.top, tiling.top),
+                right: inset(paddings.right, tiling.right),
+                bottom: inset(paddings.bottom, tiling.bottom),
+                left: inset(paddings.left, tiling.left),
+            }
         }
     };
-    // Each inset is a whole number of device pixels, so the content's left
-    // edge lies on one, and its right edge is snapped where the layout snaps
+    // Each inset is a whole number of device pixels, so the content's near
+    // edge lies on one, and its far edge is snapped where the layout snaps
     // it.
-    let far = device(f32::from(viewport) * scale - right);
-    px((far - left).max(0.) / scale)
+    let length = |viewport: Pixels, near: f32, far: f32| {
+        let far = device(f32::from(viewport) * scale - far);
+        px((far - near).max(0.) / scale)
+    };
+    size(
+        length(viewport.width, insets.left, insets.right),
+        length(viewport.height, insets.top, insets.bottom),
+    )
 }
 
 impl GitTurtle {
@@ -3935,19 +3955,19 @@ impl GitTurtle {
     /// font at the interface size and its fixed padding, icon and gaps, the
     /// rows its header and action bar wrap to, and each row's tallest
     /// control, every length snapped to device pixels as layout snaps it.
-    /// Where the window less the tab strip, the status bar and those
-    /// heights leaves History less than `history_minimum`, the chrome is
-    /// compact. Notices, banners, a running operation's progress and an
-    /// expanded Targets take their room from the content in either form and
-    /// do not decide it, so opening Targets never changes the form of the
-    /// control that opened it.
+    /// Where the window's body as it is laid out ([`body_size`]) less the
+    /// tab strip, the status bar and those heights leaves History less than
+    /// `history_minimum`, the chrome is compact. Notices, banners, a running
+    /// operation's progress and an expanded Targets take their room from the
+    /// content in either form and do not decide it, so opening Targets never
+    /// changes the form of the control that opened it.
     pub(super) fn chrome(&self, window: &Window, cx: &App) -> Chrome {
         let viewport = window.viewport_size();
         let narrow = viewport.width < appearance::ui_size(COMPACT_HEADER_WIDTH);
         if self.page != AppPage::Repository {
             return Chrome::Full { narrow };
         }
-        let content = content_size(window);
+        let body = body_size(window);
         let widths = self.chrome_widths(window);
         let (header, actions) = self.full_chrome_heights(&widths, window, cx);
         let full = header + actions;
@@ -3958,7 +3978,7 @@ impl GitTurtle {
         let need = self
             .history_minimum(window)
             .max(self.compare_minimum(window, cx));
-        if content.height - tabs - status - full >= need {
+        if body.height - tabs - status - full >= need {
             return Chrome::Full { narrow };
         }
         // The turtle shows where the name keeps the full header's minimum
@@ -3975,7 +3995,7 @@ impl GitTurtle {
                 + self.labelled_width(widths.compact_pull_requests, false, window);
             items += 2.;
         }
-        let name = content.width - window.pixel_snap(rem * 0.75) * 2. - fixed - gap * (items - 1.);
+        let name = body.width - window.pixel_snap(rem * 0.75) * 2. - fixed - gap * (items - 1.);
         let app_icon = name - control - gap >= window.pixel_snap(appearance::ui_size(100.));
         Chrome::Compact {
             app_icon,
@@ -4014,13 +4034,13 @@ impl GitTurtle {
 
     /// The room the tab strip leaves its tab list in this window, with Menu
     /// and Workspaces `labelled` or as their 28 px icons: the strip spans
-    /// the window inside its `px_2`, its controls `gap_1` apart, and holds
-    /// the window controls (`window_chrome::strip_width`), Menu, the list,
-    /// the 28 px New tab and Workspaces, every length snapped to device
-    /// pixels as layout snaps it. Labels are measured rounded up to a whole
-    /// pixel, as the chrome's are, so the labelled room is less than a pixel
-    /// per label short of what layout gives: the labels give way that much
-    /// early, never late.
+    /// the window's body ([`body_size`]) inside its `px_2`, its controls
+    /// `gap_1` apart, and holds the window controls
+    /// (`window_chrome::strip_width`), Menu, the list, the 28 px New tab and
+    /// Workspaces, every length snapped to device pixels as layout snaps
+    /// it. Labels are measured rounded up to a whole pixel, as the chrome's
+    /// are, so the labelled room is less than a pixel per label short of
+    /// what layout gives: the labels give way that much early, never late.
     pub(super) fn tab_list_room(&self, labelled: bool, window: &Window, cx: &App) -> Pixels {
         let rem = window.rem_size();
         let gap = window.pixel_snap(rem * 0.25);
@@ -4037,7 +4057,7 @@ impl GitTurtle {
             let _ = (cx, menu);
             (px(0.), px(0.))
         };
-        content_size(window).width
+        body_size(window).width
             - window.pixel_snap(rem * 0.5) * 2.
             - decorations
             - menu
@@ -4046,20 +4066,19 @@ impl GitTurtle {
     }
 
     /// The full header's and action bar's heights in this window: the header
-    /// spans the window, the action bar the repository page beside the
-    /// project pane.
+    /// spans the window's body ([`body_size`]), the action bar the repository
+    /// page beside the project pane.
     fn full_chrome_heights(
         &self,
         widths: &ChromeWidths,
         window: &Window,
         cx: &App,
     ) -> (Pixels, Pixels) {
-        let content = content_size(window);
         let narrow = window.viewport_size().width < appearance::ui_size(COMPACT_HEADER_WIDTH);
         let page = self.full_actions_page(window, cx);
         (
             self.full_header_height(
-                content.width,
+                body_size(window).width,
                 narrow,
                 self.back_label() != "Back to Projects",
                 widths,
@@ -4371,16 +4390,17 @@ impl GitTurtle {
     /// ([`Trailing::OwnRow`]) the slot would only open that row with an
     /// empty space, so `render_header` asks only when they share a row.
     fn keeps_projects_slot(&self, narrow: bool, widths: &ChromeWidths, window: &Window) -> bool {
-        let width = content_size(window).width;
+        let width = body_size(window).width;
         self.full_header_height(width, narrow, true, widths, window)
             <= self.full_header_height(width, narrow, false, widths, window)
     }
 
     /// How the full header lays out its trailing controls in this window,
-    /// decided from the other modes' controls, Projects among them, so
-    /// History's root lays them out alike.
+    /// across the body as it is laid out ([`body_size`]), decided from the
+    /// other modes' controls, Projects among them, so History's root lays
+    /// them out alike.
     fn trailing(&self, narrow: bool, widths: &ChromeWidths, window: &Window) -> Trailing {
-        let width = content_size(window).width;
+        let width = body_size(window).width;
         self.full_header_items(width, narrow, true, widths, window)
             .1
     }
@@ -5307,6 +5327,7 @@ struct StatusWidths {
 /// How the status bar lays out in a window (`GitTurtle::fit_status_bar`):
 /// the form of the keyboard hints it has room for, if any, and whether the
 /// watch warning's Details… is drawn as its icon.
+#[derive(Debug, PartialEq, Eq)]
 struct StatusFit {
     hints: Option<String>,
     details_icon: bool,
@@ -5390,6 +5411,12 @@ thread_local! {
     /// window draws it otherwise
     /// (`the_project_pane_is_fitted_to_the_body_it_is_drawn_in`).
     static BODY_INSET: std::cell::Cell<f32> = const { std::cell::Cell::new(0.) };
+    /// The client-decorated frame, its decorations and paddings, a test lays
+    /// its window out in, for what is decided from the body's size
+    /// ([`window_frame`]), as no test window has client decorations
+    /// (`the_header_and_status_bar_fit_the_body_they_are_drawn_in`).
+    static TEST_FRAME: std::cell::Cell<Option<(Decorations, Edges<Pixels>)>> =
+        const { std::cell::Cell::new(None) };
     /// The accessible name each control of a compact layout was given since
     /// the map was last cleared, by debug selector
     /// (`compact_controls_carry_their_accessible_names`).
@@ -6076,8 +6103,14 @@ impl GitTurtle {
     /// half tile the whole hints cut "Up to date with origin · nothing new"
     /// to "Up to date with ori…", and with the watcher unable to start the
     /// warning pushed them past the window's edge, cut mid-glyph at 18 pt in
-    /// windows up to 821 px wide.
+    /// windows up to 821 px wide. The bar spans the window's body as it is
+    /// laid out ([`body_size`]).
     fn fit_status_bar(&self, window: &mut Window, cx: &mut App) -> StatusFit {
+        self.fit_status_bar_in(body_size(window).width, window, cx)
+    }
+
+    /// [`Self::fit_status_bar`] for a bar `width` wide.
+    fn fit_status_bar_in(&self, width: Pixels, window: &mut Window, cx: &mut App) -> StatusFit {
         let hints = self
             .key_hints(window, cx)
             .unwrap_or(shortcuts::KeyHints(Vec::new()));
@@ -6085,7 +6118,7 @@ impl GitTurtle {
         let rem = window.rem_size();
         // The bar's `px_3` and `gap_2`, and its 5 px dot.
         let (inset, gap) = (window.pixel_snap(rem * 0.75), window.pixel_snap(rem * 0.5));
-        let mut room = content_size(window).width - inset * 2. - px(5.) - gap;
+        let mut room = width - inset * 2. - px(5.) - gap;
         STATUS_WIDTHS.with(|cache| {
             let mut cache = cache.borrow_mut();
             let key = LineKey::current(window);
@@ -6445,6 +6478,7 @@ impl Render for GitTurtle {
             .child(div().flex_1().min_h_0().child(body))
             .child(
                 div()
+                    .debug_selector(|| "status-bar".into())
                     .h(crate::appearance::ui_size(26.))
                     .flex_shrink_0()
                     .flex()
@@ -9456,8 +9490,8 @@ pub(crate) mod tests {
         cx.update(|window, _| window.set_scale_factor(2.));
     }
 
-    /// The body's width is predicted at the width the layout draws it
-    /// ([`laid_out_width`]), with the platform's own decorations and inside
+    /// The body's size is predicted at the size the layout draws it
+    /// ([`laid_out_size`]), with the platform's own decorations and inside
     /// a client-decorated frame, which a test window cannot have: the frame
     /// is laid out here as the toolkit's `window_border` lays it out, its
     /// 20 px shadow padding, then its 1 px border, on each untiled side. At
@@ -9466,9 +9500,11 @@ pub(crate) mod tests {
     /// 1,529 device pixels; its content less 42 px and snapped, 1,528. The
     /// scale factors include Wayland's 1.2 and 4/3 (n/120), where the
     /// padding is not a whole number of device pixels until rounded: 26.67
-    /// at 4/3, laid out at 27.
+    /// at 4/3, laid out at 27. The window's height changes with its width,
+    /// so both of the body's far edges are snapped from every fraction of a
+    /// device pixel the scale factors give.
     #[gpui::test]
-    fn the_body_is_predicted_at_the_width_it_is_laid_out(cx: &mut TestAppContext) {
+    fn the_body_is_predicted_at_the_size_it_is_laid_out(cx: &mut TestAppContext) {
         struct Frame {
             decorations: Decorations,
             paddings: Edges<Pixels>,
@@ -9484,14 +9520,19 @@ pub(crate) mod tests {
                     .size_full()
                     .flex()
                     .flex_col()
-                    .pl(self.paddings.left)
+                    .pt(self.paddings.top)
                     .pr(self.paddings.right)
+                    .pb(self.paddings.bottom)
+                    .pl(self.paddings.left)
                     .child(
                         div()
                             .flex_1()
+                            .min_h_0()
                             .min_w_0()
-                            .when(untiled(|t| t.left), |frame| frame.border_l(px(1.)))
+                            .when(untiled(|t| t.top), |frame| frame.border_t(px(1.)))
                             .when(untiled(|t| t.right), |frame| frame.border_r(px(1.)))
+                            .when(untiled(|t| t.bottom), |frame| frame.border_b(px(1.)))
+                            .when(untiled(|t| t.left), |frame| frame.border_l(px(1.)))
                             .child(div().size_full().debug_selector(|| "body".into())),
                     )
             }
@@ -9499,8 +9540,11 @@ pub(crate) mod tests {
         let untiled = Decorations::Client {
             tiling: Tiling::default(),
         };
-        let tiled_left = Decorations::Client {
+        // A window snapped into a screen's top-left corner: the toolkit
+        // gives it no padding on those sides either.
+        let tiled = Decorations::Client {
             tiling: Tiling {
+                top: true,
                 left: true,
                 ..Tiling::default()
             },
@@ -9510,8 +9554,9 @@ pub(crate) mod tests {
             (Decorations::Server, Edges::default()),
             (untiled, paddings),
             (
-                tiled_left,
+                tiled,
                 Edges {
+                    top: px(0.),
                     left: px(0.),
                     ..paddings
                 },
@@ -9529,24 +9574,166 @@ pub(crate) mod tests {
             });
             for scale in [1., 1.2, 1.25, 4. / 3., 1.5, 1.75, 2.] {
                 for width in [1000., 1001., 1002., 1060., 1061.] {
-                    cx.simulate_resize(size(px(width), px(600.)));
+                    let viewport = size(px(width), px(width - 400.));
+                    cx.simulate_resize(viewport);
                     cx.update(|window, cx| {
                         window.set_scale_factor(scale);
                         window.draw(cx).clear(cx);
                     });
-                    let drawn = cx.debug_bounds("body").expect("the body").size.width;
+                    let drawn = cx.debug_bounds("body").expect("the body").size;
                     assert_eq!(
-                        laid_out_width(px(width), scale, decorations, paddings),
+                        laid_out_size(viewport, scale, decorations, paddings),
                         drawn,
-                        "a {width} px window at scale factor {scale} in {decorations:?}"
+                        "a {viewport:?} window at scale factor {scale} in {decorations:?}"
                     );
                 }
             }
         }
         assert_eq!(
-            laid_out_width(px(1061.), 1.5, untiled, paddings),
-            px(1529. / 1.5)
+            laid_out_size(size(px(1061.), px(661.)), 1.5, untiled, paddings),
+            size(px(1529. / 1.5), px(929. / 1.5))
         );
+    }
+
+    /// The full header and the status bar choose their forms for the width
+    /// they are drawn at, the body's as it is laid out ([`body_size`]), in a
+    /// client-decorated frame at a fractional scale factor too. The window is
+    /// laid out in a copy of the toolkit's untiled frame, its 20 px padding
+    /// and 1 px border, which the app takes for its own ([`TEST_FRAME`]), at
+    /// scale factor 1.5, where the frame takes 31 device pixels a side. It is
+    /// taken a device pixel at a time across a breakpoint of the header's
+    /// trailing controls and, with the local watch unable to start, one of
+    /// the status bar beside its warning. At every step the header's height,
+    /// its trailing controls and History's Projects slot, and the bar's hints
+    /// and Details…, are the forms a header and a bar as wide as they are
+    /// drawn have room for. Decided from the window less the frame's insets
+    /// unrounded, as the window's content once was, a device pixel narrower
+    /// than the body is drawn, each kept its narrower form at its breakpoint,
+    /// where the wider one fit.
+    #[gpui::test]
+    async fn the_header_and_status_bar_fit_the_body_they_are_drawn_in(cx: &mut TestAppContext) {
+        let paddings = Edges::all(px(20.));
+        let frame = (
+            Decorations::Client {
+                tiling: Tiling::default(),
+            },
+            paddings,
+        );
+        let (_fixture, app, cx) =
+            styled_history_window(cx, history_script(2, 3).as_bytes(), move |root| {
+                root.p(paddings.left).border_1()
+            })
+            .await;
+        let _frame = Seam::new(&TEST_FRAME, Some(frame));
+        let scale = 1.5;
+        // The window whose body is laid out `device` device pixels wide: the
+        // frame's insets are whole device pixels.
+        let insets =
+            px(1000.) - laid_out_size(size(px(1000.), px(980.)), scale, frame.0, frame.1).width;
+        let viewport = move |device: u32| size(px(device as f32 / scale) + insets, px(980.));
+        let narrow =
+            move |device: u32| viewport(device).width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+        let step = move |device: u32, cx: &mut VisualTestContext| {
+            cx.simulate_resize(viewport(device));
+            cx.update(|window, _| window.set_scale_factor(scale));
+            draw(cx);
+            let body = px(device as f32 / scale);
+            assert_eq!(
+                cx.update(|window, _| body_size(window).width),
+                body,
+                "the body predicted at {device} device pixels"
+            );
+            (body, format!("a body {device} device pixels wide"))
+        };
+
+        // The full header's height, its trailing controls and whether
+        // History's root keeps the Projects slot, for a header `width` wide.
+        let header = |app: &GitTurtle, width: Pixels, narrow: bool, window: &Window| {
+            let widths = app.chrome_widths(window);
+            let height =
+                |projects| app.full_header_height(width, narrow, projects, &widths, window);
+            (
+                height(app.back_label() != "Back to Projects"),
+                app.full_header_items(width, narrow, true, &widths, window)
+                    .1,
+                height(true) <= height(false),
+            )
+        };
+        // The narrowest body from 461 px whose trailing controls are laid out
+        // unlike a body's a device pixel narrower, measured at this scale.
+        step(1500, cx);
+        let breakpoint = cx
+            .update(|window, cx| {
+                let app = app.read(cx);
+                let trailing =
+                    |device: u32| header(app, px(device as f32 / scale), narrow(device), window).1;
+                (692..2220).find(|&device| {
+                    narrow(device) == narrow(device - 1) && trailing(device) != trailing(device - 1)
+                })
+            })
+            .expect("the trailing controls change between 461 and 1,480 px");
+        let mut seen = Vec::new();
+        for device in breakpoint - 2..breakpoint + 2 {
+            let (body, at) = step(device, cx);
+            let drawn = cx.debug_bounds("repository-header").expect("the header");
+            assert_eq!(drawn.size.width, body, "{at}: the header spans the body");
+            let (chosen, fits) = cx.update(|window, cx| {
+                let app = app.read(cx);
+                let widths = app.chrome_widths(window);
+                assert!(!app.chrome(window, cx).is_compact(), "{at}");
+                (
+                    (
+                        app.full_chrome_heights(&widths, window, cx).0,
+                        app.trailing(narrow(device), &widths, window),
+                        app.keeps_projects_slot(narrow(device), &widths, window),
+                    ),
+                    header(app, drawn.size.width, narrow(device), window),
+                )
+            });
+            assert_eq!(chosen, fits, "{at}: the header");
+            seen.push(chosen.1);
+        }
+        seen.dedup();
+        assert!(seen.len() > 1, "the walk crosses a breakpoint: {seen:?}");
+
+        crate::width_walk::unwatch(&app, cx);
+        step(1500, cx);
+        let breakpoint = cx
+            .update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    let mut fit =
+                        |device: u32| app.fit_status_bar_in(px(device as f32 / scale), window, cx);
+                    let mut narrower = fit(691);
+                    (692..2220).find(|&device| {
+                        let wider = fit(device);
+                        let changed = wider != narrower;
+                        narrower = wider;
+                        changed
+                    })
+                })
+            })
+            .expect("the status bar changes form between 461 and 1,480 px");
+        let mut seen = Vec::new();
+        for device in breakpoint - 2..breakpoint + 2 {
+            let (body, at) = step(device, cx);
+            let drawn = cx.debug_bounds("status-bar").expect("the status bar");
+            assert_eq!(
+                drawn.size.width, body,
+                "{at}: the status bar spans the body"
+            );
+            let (chosen, fits) = cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    (
+                        app.fit_status_bar(window, cx),
+                        app.fit_status_bar_in(drawn.size.width, window, cx),
+                    )
+                })
+            });
+            assert_eq!(chosen, fits, "{at}: the status bar");
+            seen.push(chosen);
+        }
+        seen.dedup();
+        assert!(seen.len() > 1, "the walk crosses a breakpoint: {seen:?}");
     }
 
     /// The project pane's group is fitted to the width its body is drawn at,
@@ -9562,7 +9749,7 @@ pub(crate) mod tests {
     async fn the_project_pane_is_fitted_to_the_body_it_is_drawn_in(cx: &mut TestAppContext) {
         use crate::in_frame::probe;
         let (_fixture, app, cx) = history_window(cx).await;
-        let _inset = BodyInset::new(100.);
+        let _inset = Seam::new(&BODY_INSET, 100.);
         cx.simulate_resize(size(px(1200.), px(980.)));
         app.update(cx, |app, cx| {
             app.settings.project_pane = true;
@@ -9598,20 +9785,22 @@ pub(crate) mod tests {
         probe::stop();
     }
 
-    /// [`BODY_INSET`] for as long as it lives, and none once it is dropped,
-    /// as a failing test unwinds too, so no inset outlives its test.
-    struct BodyInset;
+    /// A test's value for one of the layout's test seams, [`BODY_INSET`] or
+    /// [`TEST_FRAME`], for as long as it lives, and the seam's default once
+    /// it is dropped, as a failing test unwinds too, so no seam outlives its
+    /// test.
+    struct Seam<T: Copy + Default + 'static>(&'static std::thread::LocalKey<std::cell::Cell<T>>);
 
-    impl BodyInset {
-        fn new(inset: f32) -> Self {
-            BODY_INSET.with(|cell| cell.set(inset));
-            Self
+    impl<T: Copy + Default + 'static> Seam<T> {
+        fn new(seam: &'static std::thread::LocalKey<std::cell::Cell<T>>, value: T) -> Self {
+            seam.with(|cell| cell.set(value));
+            Self(seam)
         }
     }
 
-    impl Drop for BodyInset {
+    impl<T: Copy + Default + 'static> Drop for Seam<T> {
         fn drop(&mut self) {
-            BODY_INSET.with(|cell| cell.set(0.));
+            self.0.with(|cell| cell.set(T::default()));
         }
     }
 
@@ -9625,7 +9814,7 @@ pub(crate) mod tests {
     #[test]
     fn the_body_inset_ends_with_a_failing_test() {
         let failed = std::panic::catch_unwind(|| {
-            let _inset = BodyInset::new(100.);
+            let _inset = Seam::new(&BODY_INSET, 100.);
             assert_eq!(BODY_INSET.with(std::cell::Cell::get), 100.);
             panic!("a test fails with the body inset");
         });
@@ -12663,7 +12852,7 @@ pub(crate) mod tests {
             ));
             let status = window.pixel_snap(appearance::ui_size(26.));
             (
-                content_size(window).height - tabs - status - header - actions,
+                body_size(window).height - tabs - status - header - actions,
                 app.read(cx).history_minimum(window),
             )
         });
