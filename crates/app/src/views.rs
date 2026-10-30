@@ -11552,7 +11552,8 @@ pub(crate) mod tests {
     /// room before the controls were cut, where at 18 pt they kept 48 px and
     /// left After's open control 10 px. Tab moves through every control of
     /// the model's and the page view's header and Shift+Tab back, each
-    /// revealed whole with its ring in the region (they were focused undrawn).
+    /// revealed whole with its ring in the region (they were focused undrawn),
+    /// the model's in every frame painted after the key.
     /// The page view's position, a polite live region, lies outside the
     /// region that can scroll it out of reach. A header scrolled down starts
     /// at its top again in the next showing, as a new file's does.
@@ -11561,7 +11562,7 @@ pub(crate) mod tests {
     async fn a_narrow_side_header_keeps_its_content_and_reveals_its_controls(
         cx: &mut TestAppContext,
     ) {
-        use crate::focus_reveal::tests::{assert_tab_reveals, control};
+        use crate::focus_reveal::tests::{assert_every_frame_reveals, control};
         use crate::native_accessibility::written;
         let obj = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
         let pdf = |text: &str| {
@@ -11629,14 +11630,21 @@ pub(crate) mod tests {
             details.size.height < slack,
             "the details {details:?} give way before the header's controls are cut"
         );
-        // Tab moves through the header's controls, each revealed whole.
+        // Tab moves through the header's controls, each revealed whole with
+        // its ring in every frame painted after the key, the first that
+        // draws the new focus included. The walk starts on Copy source as a
+        // page that opens on it does, revealed: focused without a reveal it
+        // lay partly outside the region, and the frame GPUI draws before it
+        // dispatches a key to a window that has changed still showed it
+        // there, which read as Tab's reveal landing a frame late.
         let list = reveal("model-side-1", &app, cx);
+        list.reveal_next_focus();
         cx.update(|window, cx| list.focus(("model-source", 1usize), cx).focus(window, cx));
         draw(cx);
         // The views' menu, wider than the 88 px side, ends the walk short.
         let mut controls = vec![control("model-external", 1)];
         controls.extend((5..10).map(|index| control("model-camera", index)));
-        assert_tab_reveals(cx, &list, "model-side-1/header", &controls);
+        assert_every_frame_reveals(cx, &list, "model-side-1/header", &controls);
         // The next showing starts at the header's top.
         let top = bounds("model-side-1/header", cx).top();
         assert!(
