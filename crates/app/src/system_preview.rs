@@ -557,8 +557,11 @@ impl Target {
     /// side. In either form it is named in one form on every platform
     /// ([`accessible_name`]): that label, the side, and what the click hands
     /// over, the type the application receives on Linux, as the tooltip
-    /// names it, and on macOS what the surface shows.
-    pub(crate) fn button(&self, form: Form, cx: &App) -> Button {
+    /// names it, and on macOS what the surface shows. A comparison places it
+    /// with [`Self::control`] or [`Self::held_control`], so wherever the
+    /// comparison lies in a container that reveals its controls, it is one
+    /// of them.
+    fn button(&self, form: Form, cx: &App) -> Button {
         let label = self.offer.label();
         let (shown, tooltip) = match form {
             Form::Labelled => (label, self.offer.tooltip()),

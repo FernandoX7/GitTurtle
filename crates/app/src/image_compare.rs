@@ -1820,9 +1820,13 @@ impl Captions<'_> {
                     .filter(|index| !self.source || *index == 1)
                     .map(|i| {
                         let (name, details) = (self.names[i], self.details[i].clone());
+                        // Placed as a document's open control is
+                        // (`Target::control`): where the comparison lies in
+                        // a container that reveals its controls, the
+                        // keyboard reveals it there with its ring.
                         let control = self.controls[i]
                             .as_ref()
-                            .map(|(target, form)| target.button(*form, cx));
+                            .map(|(target, form)| target.control(*form, cx));
                         // Beneath the names, a side without a control keeps
                         // its line, so both sides' details stay level.
                         let keep_place = (!self.inline && offered && control.is_none())
