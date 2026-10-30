@@ -470,11 +470,11 @@ struct GitTurtle {
     task: Option<Task<()>>,
     generation: u64,
     /// The generation of the preview read that the person's explicit choice
-    /// of its file started or waits on: a click on its row, or an arrow key
-    /// moving onto it. Only its landing activates the preview, where a
+    /// of its file started or waits on: a click on its row, or Enter on the
+    /// row selected. Only its landing activates the preview, where a
     /// conflict's result draft takes focus ([`Self::ensure_conflict_view`]);
-    /// any other landing, as a write's status read selecting the row again,
-    /// leaves focus where it is.
+    /// any other landing, as a write's status read selecting the row again
+    /// or an arrow key moving the selection, leaves focus where it is.
     preview_activation: Option<u64>,
     repository: Option<GitRepository>,
     path: Option<PathBuf>,

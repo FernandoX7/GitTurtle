@@ -785,11 +785,14 @@ fn resolution_textarea(editor: &Entity<TextareaState>, cx: &App) -> Textarea {
 impl GitTurtle {
     /// Builds the conflict view for `presentation` unless one is open.
     /// `activated` says the preview answers the person's explicit choice of
-    /// the file, a click on its row or the keys that select it
+    /// the file, a click on its row or Enter on it
     /// ([`GitTurtle::activate_working_preview`]): the view's result draft,
-    /// where it opens, takes focus. A preview a passive read lands, as a
-    /// quiet refresh or a write's status read does finding the selected file
-    /// conflicted, shows the view and leaves focus where it is.
+    /// where it opens, takes focus. Any other preview shows the view and
+    /// leaves focus where it is: one a passive read lands, as a quiet
+    /// refresh or a write's status read does finding the selected file
+    /// conflicted, and one an arrow key's selection lands, which selects
+    /// rather than activates, so the next arrow moves on through the list
+    /// rather than the draft's caret.
     pub(super) fn ensure_conflict_view(
         &mut self,
         presentation: Arc<Presentation>,

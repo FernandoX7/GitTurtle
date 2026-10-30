@@ -2425,10 +2425,10 @@ impl GitTurtle {
     }
 
     /// The person's explicit choice of the selected working file, a click on
-    /// its row or an arrow key moving onto it: its conflict's result draft
-    /// takes focus, at once where its view is open, else as the preview read
-    /// under way lands ([`GitTurtle::preview_activation`]). A write's status
-    /// read or a refresh selects the row again without choosing it and
+    /// its row or Enter on it: its conflict's result draft takes focus, at
+    /// once where its view is open, else as the preview read under way lands
+    /// ([`GitTurtle::preview_activation`]). Selecting a row is not choosing
+    /// it: an arrow key, a write's status read or a refresh selects it and
     /// leaves focus where it is (`select_working`). Returns whether anything
     /// was activated.
     pub(super) fn activate_working_preview(
@@ -2479,10 +2479,6 @@ impl GitTurtle {
         };
         let (position, index, area) = files[next];
         self.choose_working_selection(index, area, false, false, window, cx);
-        // The arrow keys choose the file they move onto, as a click does.
-        if self.working_selected == Some((index, area)) {
-            self.activate_working_preview(window, cx);
-        }
         self.working_scroll
             .scroll_to_item(position, ScrollStrategy::Center);
     }
@@ -3405,6 +3401,14 @@ impl GitTurtle {
                     this.open_working_row_menu(forms.file_action, window, cx)
                 },
             ))
+            // Enter chooses the selected row's file, as a click on it does,
+            // where the arrow keys only select it; with nothing to activate,
+            // the window's Open Selected List Item takes it.
+            .on_action(cx.listener(|this, _: &NextPane, window, cx| {
+                if !this.activate_working_preview(window, cx) {
+                    cx.propagate();
+                }
+            }))
             .border_1()
             .border_color(rgb(p.border))
             .when(self.focus_ring.shows(&self.file_focus), |pane| {

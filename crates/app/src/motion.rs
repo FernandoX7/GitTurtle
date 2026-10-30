@@ -4813,6 +4813,54 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// An arrow key onto a conflicted working file selects it: its conflict
+    /// view opens and focus stays on the list, so the next arrow moves on
+    /// through the list, as a macOS list selects without opening. Enter then
+    /// chooses the file, as a click on its row does, and its resolution
+    /// draft takes focus. The arrow's selection focused the draft, so the
+    /// next Down moved the draft's caret instead.
+    #[gpui::test]
+    async fn an_arrow_selects_a_conflicted_file_and_enter_chooses_it(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        std::fs::write(repository.join("another.txt"), "another\n").unwrap();
+        merge_stopping_on_notes(&repository);
+        quietly_refreshed(&app, cx);
+        preview_landed(&app, cx);
+        let another = position_of(&app, cx, "another.txt", ChangeArea::Unstaged);
+        let notes = position_of(&app, cx, "notes.txt", ChangeArea::Unstaged);
+        let selector: &'static str = format!("working-row-{another}").leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        preview_landed(&app, cx);
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| list.focus(window, cx));
+        next_frame(cx);
+        assert_eq!(conflict_shown(&app, cx), None, "another.txt is no conflict");
+
+        cx.simulate_keystrokes(if notes > another { "down" } else { "up" });
+        preview_landed(&app, cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(false),
+            "the arrow's selection opens the view without focusing its draft"
+        );
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus stays on the list"
+        );
+
+        cx.simulate_keystrokes("enter");
+        next_frame(cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(true),
+            "Enter chooses the file: its resolution draft takes focus"
+        );
+        assert!(!writing(&app, cx), "no write started");
+        assert!(notes_unmerged(&repository), "notes.txt is still conflicted");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A working row's keyboard menu in [`narrow_notes`], its cursor moved
     /// down to Discard changes… and the pointer then moved onto that item,
     /// is built again as a change outside the app changes its file, here
