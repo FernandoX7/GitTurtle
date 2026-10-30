@@ -4079,8 +4079,9 @@ enum OperationPlace {
     After,
     /// In the status bar, in the status line's place, where the header's
     /// rows hold not even the barest form beside their controls: the bar
-    /// keeps Cancel's room beside its line ([`GitTurtle::fit_status_bar`]),
-    /// so neither the header, the content nor the bar's other parts move.
+    /// keeps Cancel's room beside its line wherever a write's status can
+    /// come there ([`HeaderPlan::bar_room`]), so neither the header, the
+    /// content nor the bar's other parts move.
     StatusBar,
 }
 
@@ -4184,6 +4185,19 @@ impl OperationStatus {
     fn cancel(&self, form: OperationForm) -> Pixels {
         if form.icon { self.icon } else { self.labelled }
     }
+
+    /// The status a write with the widest label brings, in every form at
+    /// the label's limit: the labels are a finite set of `&'static str`, a
+    /// GitHub request's (`github_view::request_labels`) among them, which
+    /// already reaches the limit at 13 and 18 pt, so none starts wider
+    /// (`tests::the_status_bar_keeps_cancels_room_only_where_a_write_can_take_it`).
+    fn widest(self) -> Self {
+        Self {
+            own: self.limit,
+            named: self.limit,
+            ..self
+        }
+    }
 }
 
 /// How a running write's status draws: Cancel as its icon or labelled, and
@@ -4225,8 +4239,8 @@ struct OperationLayout {
 }
 
 /// How a Repository frame's header is arranged, worked out once per frame
-/// before layout ([`GitTurtle::header_plan`]): the header and a running
-/// write's status both read it.
+/// before layout ([`GitTurtle::header_plan`]): the header, the status bar's
+/// room and a running write's status all read it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct HeaderPlan {
     /// The full header's trailing controls ([`Trailing`]) and whether
@@ -4238,6 +4252,12 @@ struct HeaderPlan {
     /// The width the compact row gives the status where it goes there
     /// ([`GitTurtle::compact_operation_width`]).
     width: Option<Pixels>,
+    /// Whether a write's status can come to the status bar in this frame:
+    /// where the widest label's barest form ([`OperationStatus::widest`])
+    /// goes there. Only then does the bar keep Cancel's room beside its
+    /// line ([`GitTurtle::fit_status_bar`]); elsewhere every write's status
+    /// stays in the header, and the bar's hints and Details… keep that room.
+    bar_room: bool,
 }
 
 /// The full header's controls laid out in a window as `render_header` lays
@@ -4248,6 +4268,9 @@ struct HeaderLayout {
     trailing: Trailing,
     /// Where a running write's status goes, whether or not one runs.
     operation: OperationLayout,
+    /// Whether the widest label's barest form goes to the status bar
+    /// ([`HeaderPlan::bar_room`]).
+    bar_room: bool,
     /// The room the controls wrap in, `gap` apart.
     room: Pixels,
     gap: Pixels,
@@ -4891,10 +4914,11 @@ impl GitTurtle {
     /// How a full header `width` wide is arranged ([`HeaderPlan`]): its
     /// trailing controls ([`Self::trailing`]), whether History's root keeps
     /// the Projects slot among them ([`Self::keeps_projects_slot`], asked
-    /// only where they share a row), and where a running write's status
-    /// goes beside the controls this mode draws ([`OperationPlace`]), for
-    /// the write's label. The controls' arrangement never depends on whether
-    /// a write runs, and the status's place moves none of them, so the busy
+    /// only where they share a row), where a running write's status goes
+    /// beside the controls this mode draws ([`OperationPlace`]), for the
+    /// write's label, and whether the widest label's status would go to the
+    /// status bar. The controls' arrangement never depends on whether a
+    /// write runs, and the status's place moves none of them, so the busy
     /// look's coming and going moves nothing.
     fn header_arrangement(
         &self,
@@ -4914,6 +4938,7 @@ impl GitTurtle {
             full: Some((trailing, slot)),
             operation: layout.operation,
             width: None,
+            bar_room: layout.bar_room,
         }
     }
 
@@ -4945,6 +4970,8 @@ impl GitTurtle {
                 },
             },
             width: fit.map(|(width, _)| width),
+            bar_room: Self::compact_operation_width(status.widest(), name, widths, window)
+                .is_none(),
         }
     }
 
@@ -5114,7 +5141,8 @@ impl GitTurtle {
         // either place holds as it starts, the spacer first: in the spacer,
         // laid out empty, or after the trailing controls in the room their
         // line leaves, so it moves nothing; where neither holds even the
-        // barest, the status bar draws it.
+        // barest, the status bar draws it, which keeps Cancel's room only
+        // where the widest label's barest goes there too.
         let status = self.operation_status_size(widths, window);
         let identity = (scaled(100.), scaled(200.));
         let spacer_room = spacer_at.map(|at| spacer_width(&items, at, 2, identity, room, gap));
@@ -5129,18 +5157,22 @@ impl GitTurtle {
             (OperationPlace::Spacer, spacer_room),
             (OperationPlace::After, after),
         ];
-        let operation_layout = OperationForm::ORDER
-            .into_iter()
-            .find_map(|form| {
-                places
-                    .iter()
-                    .find(|(_, fits)| fits.is_some_and(|fits| status.width(form) <= fits))
-                    .map(|&(place, _)| OperationLayout { place, form })
-            })
-            .unwrap_or(OperationLayout {
-                place: OperationPlace::StatusBar,
-                form: OperationForm::ORDER[2],
-            });
+        let place = |status: OperationStatus| {
+            OperationForm::ORDER
+                .into_iter()
+                .find_map(|form| {
+                    places
+                        .iter()
+                        .find(|(_, fits)| fits.is_some_and(|fits| status.width(form) <= fits))
+                        .map(|&(place, _)| OperationLayout { place, form })
+                })
+                .unwrap_or(OperationLayout {
+                    place: OperationPlace::StatusBar,
+                    form: OperationForm::ORDER[2],
+                })
+        };
+        let operation_layout = place(status);
+        let bar_room = place(status.widest()).place == OperationPlace::StatusBar;
         if operation && operation_layout.place == OperationPlace::After {
             let form = operation_layout.form;
             items.push((status.width(form), status.height(form)));
@@ -5149,6 +5181,7 @@ impl GitTurtle {
             items,
             trailing,
             operation: operation_layout,
+            bar_room,
             room,
             gap,
         }
@@ -6699,7 +6732,16 @@ impl GitTurtle {
     /// ([`Self::fit_status_bar`]), or none where they gave way.
     #[cfg(test)]
     pub(super) fn status_hints(&self, window: &mut Window, cx: &mut App) -> Option<String> {
-        self.fit_status_bar(window, cx).hints
+        let plan = self.frame_plan(window, cx);
+        self.fit_status_bar(plan, window, cx).hints
+    }
+
+    /// The header plan this window's frame works out
+    /// ([`Self::header_plan`]), none off the Repository page.
+    #[cfg(test)]
+    fn frame_plan(&self, window: &Window, cx: &App) -> Option<HeaderPlan> {
+        (self.page == AppPage::Repository)
+            .then(|| self.header_plan(self.chrome(window, cx), window))
     }
 
     /// The keyboard hints at the status bar's right, each key with what it
@@ -6744,24 +6786,39 @@ impl GitTurtle {
     /// no frame shows a part of it cut. What keeps its room, first to last:
     /// the local refresh warning and its Refresh, whole; a write's fresh
     /// outcome ([`Self::fresh_outcome`]), whole in the status line, or else
-    /// the status line's ellipsis, so the line is never cut, and in a
-    /// repository the room of the Cancel a running write's status brings
-    /// where it takes the line's place ([`OperationPlace::StatusBar`]); the
-    /// keyboard hints, whole, else their keys alone ("↑↓ · Enter"), else the
-    /// leading keys that fit, else none; and Details… keeps its label unless
-    /// the labelled warning would leave the status line less than it keeps
-    /// with every hint gone, where it becomes its icon. At 18 pt in a 461 × 490
+    /// the status line's ellipsis, so the line is never cut, and the room of
+    /// the Cancel a running write's status brings where it takes the line's
+    /// place ([`OperationPlace::StatusBar`]), kept only in a Repository frame
+    /// whose `plan` lets a write's status come there
+    /// ([`HeaderPlan::bar_room`]); the keyboard hints, whole, else their keys
+    /// alone ("↑↓ · Enter"), else the leading keys that fit, else none; and
+    /// Details… keeps its label unless the labelled warning would leave the
+    /// status line, beside any room kept for Cancel, less than it keeps with
+    /// every hint gone, where it becomes its icon. At 18 pt in a 461 × 490
     /// half tile the whole hints cut "Up to date with origin · nothing new"
     /// to "Up to date with ori…", and with the watcher unable to start the
     /// warning pushed them past the window's edge, cut mid-glyph at 18 pt in
     /// windows up to 821 px wide. The bar spans the window's body as it is
     /// laid out ([`body_size`]).
-    fn fit_status_bar(&self, window: &mut Window, cx: &mut App) -> StatusFit {
-        self.fit_status_bar_in(body_size(window).width, window, cx)
+    fn fit_status_bar(
+        &self,
+        plan: Option<HeaderPlan>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> StatusFit {
+        let bar_room = plan.is_some_and(|plan| plan.bar_room);
+        self.fit_status_bar_in(body_size(window).width, bar_room, window, cx)
     }
 
-    /// [`Self::fit_status_bar`] for a bar `width` wide.
-    fn fit_status_bar_in(&self, width: Pixels, window: &mut Window, cx: &mut App) -> StatusFit {
+    /// [`Self::fit_status_bar`] for a bar `width` wide that keeps Cancel's
+    /// room beside its line where `bar_room`.
+    fn fit_status_bar_in(
+        &self,
+        width: Pixels,
+        bar_room: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> StatusFit {
         let hints = self
             .key_hints(window, cx)
             .unwrap_or(shortcuts::KeyHints(Vec::new()));
@@ -6770,10 +6827,11 @@ impl GitTurtle {
         // The bar's `px_3` and `gap_2`, and its 5 px dot.
         let (inset, gap) = (window.pixel_snap(rem * 0.75), window.pixel_snap(rem * 0.5));
         let mut room = width - inset * 2. - px(5.) - gap;
-        // In a repository the line keeps Cancel's room beside it, whether or
-        // not a write runs, for a write's status the header has no room for
-        // (`OperationPlace::StatusBar`): its coming moves nothing.
-        if self.page == AppPage::Repository {
+        // Where a write's status can come to the bar, as one the header has
+        // no room for does (`OperationPlace::StatusBar`), the line keeps
+        // Cancel's room beside it, whether or not a write runs: its coming
+        // moves nothing. Elsewhere the hints and Details… keep that room.
+        if bar_room {
             room -= gap + window.pixel_snap(appearance::ui_size(WATCH_CONTROL));
         }
         STATUS_WIDTHS.with(|cache| {
@@ -6987,9 +7045,9 @@ impl Render for GitTurtle {
         let watch_warning =
             self.page == AppPage::Repository && self.automatic.watch_warning().is_some();
         // The header's arrangement, worked out once for the frame: the
-        // header and a running write's status read it.
+        // header, the status bar's room and a running write's status read it.
         let plan = (self.page == AppPage::Repository).then(|| self.header_plan(chrome, window));
-        let status = self.fit_status_bar(window, cx);
+        let status = self.fit_status_bar(plan, window, cx);
         // A running write's status, where the header's rows have no room for
         // it ([`OperationPlace::StatusBar`]).
         let bar_operation = self
@@ -11120,11 +11178,20 @@ pub(crate) mod tests {
 
         crate::width_walk::unwatch(&app, cx);
         step(1500, cx);
+        // The bar `width` wide, keeping Cancel's room where a full header
+        // as wide sends the widest label's status there.
+        let bar = |app: &GitTurtle, width: Pixels, window: &mut Window, cx: &mut App| {
+            let widths = app.chrome_widths(window);
+            let narrow = width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+            let room = app
+                .header_arrangement(width, narrow, &widths, window)
+                .bar_room;
+            app.fit_status_bar_in(width, room, window, cx)
+        };
         let breakpoint = cx
             .update(|window, cx| {
                 app.update(cx, |app, cx| {
-                    let mut fit =
-                        |device: u32| app.fit_status_bar_in(px(device as f32 / scale), window, cx);
+                    let mut fit = |device: u32| bar(app, px(device as f32 / scale), window, cx);
                     let mut narrower = fit(691);
                     (692..2220).find(|&device| {
                         let wider = fit(device);
@@ -11145,9 +11212,10 @@ pub(crate) mod tests {
             );
             let (chosen, fits) = cx.update(|window, cx| {
                 app.update(cx, |app, cx| {
+                    let plan = app.frame_plan(window, cx);
                     (
-                        app.fit_status_bar(window, cx),
-                        app.fit_status_bar_in(drawn.size.width, window, cx),
+                        app.fit_status_bar(plan, window, cx),
+                        bar(app, drawn.size.width, window, cx),
                     )
                 })
             });
@@ -15032,17 +15100,17 @@ pub(crate) mod tests {
 
     /// Where the header's rows hold not even the barest form of a running
     /// write's status, the status bar draws it in its line's place, and the
-    /// line keeps Cancel's room beside it on every repository frame, so the
-    /// status's coming moves nothing in the bar (DESIGN.md, "Shared
-    /// repository header"). With the local watch's warning crowding the
-    /// bar, at 13 and 18 pt, in Changes and History, in a short and a tall
-    /// window at the narrowest width from 461 px of each form the bar's
-    /// hints and Details… take, where the line has the least room, wherever
-    /// the status goes to the bar: its label keeps at least the line's
-    /// ellipsis, Cancel stays inside the line, and the warning and the
-    /// hints, after Cancel, keep the bounds they had before the write. Where
-    /// the line kept no room for Cancel the hints took it, and Cancel ran
-    /// over the warning.
+    /// line keeps Cancel's room beside it wherever a write's status can come
+    /// there, whether or not a write runs, so the status's coming moves
+    /// nothing in the bar (DESIGN.md, "Shared repository header"). With the
+    /// local watch's warning crowding the bar, at 13 and 18 pt, in Changes
+    /// and History, in a short and a tall window at the narrowest width from
+    /// 461 px of each form the bar's hints and Details… take, where the line
+    /// has the least room, wherever the status goes to the bar: its label
+    /// keeps at least the line's ellipsis, Cancel stays inside the line, and
+    /// the warning and the hints, after Cancel, keep the bounds they had
+    /// before the write. Where the line kept no room for Cancel the hints
+    /// took it, and Cancel ran over the warning.
     #[gpui::test]
     async fn a_write_in_the_status_bar_moves_nothing_there(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = working_window(cx).await;
@@ -15069,11 +15137,14 @@ pub(crate) mod tests {
                     cx.notify();
                 });
                 draw(cx);
-                // The narrowest bar of each form from 461 px.
+                // The narrowest bar of each form from 461 px, keeping
+                // Cancel's room: a bar the status comes to keeps it.
                 let mut forms: Vec<(f32, StatusFit)> = Vec::new();
                 for width in (461..=1480).map(|width| width as f32) {
                     let fit = cx.update(|window, cx| {
-                        app.update(cx, |app, cx| app.fit_status_bar_in(px(width), window, cx))
+                        app.update(cx, |app, cx| {
+                            app.fit_status_bar_in(px(width), true, window, cx)
+                        })
                     });
                     if forms.last().is_none_or(|(_, last)| *last != fit) {
                         forms.push((width, fit));
@@ -15156,6 +15227,181 @@ pub(crate) mod tests {
             assert!(
                 checked.contains(&text),
                 "{text} pt: a write in the status bar is checked"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The status bar keeps Cancel's room beside its line only where a
+    /// write's status can come to it ([`HeaderPlan::bar_room`]): where the
+    /// widest label's barest form, at the label's limit, which a GitHub
+    /// request's label reaches at 13 and 18 pt, finds no room in the header.
+    /// In History, without and with the local watch's warning, at 13 and
+    /// 18 pt, at the narrowest width from 461 px where keeping that room
+    /// changes the hints' form, both where the header holds every label's
+    /// status and where the widest's goes to the bar: with no write running
+    /// the hints are drawn in the form the bar has without the room where
+    /// the header holds every status, and with it where it does not; and
+    /// the widest label's status, once it looks busy, goes to the bar only
+    /// where the room is kept, moving neither the hints nor the warning.
+    /// The bar once kept the room on every repository frame, so its hints
+    /// and Details… gave way about 28 px early with no write running.
+    #[gpui::test]
+    async fn the_status_bar_keeps_cancels_room_only_where_a_write_can_take_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        let parts = |cx: &mut VisualTestContext| {
+            ["local-refresh-warning", "status-hints"].map(|part| cx.debug_bounds(part))
+        };
+        let mut found = Vec::new();
+        for warning in [false, true] {
+            if warning {
+                crate::width_walk::unwatch(&app, cx);
+            }
+            for text in [13, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(1480.), px(980.)));
+                cx.update(|window, cx| app.update(cx, |app, cx| app.show_history(window, cx)));
+                settle(&app, cx).await;
+                // The last outcome goes first: the line's least is its
+                // ellipsis.
+                app.update(cx, |app, cx| {
+                    app.operation_notice = None;
+                    app.status_outcome = None;
+                    cx.notify();
+                });
+                draw(cx);
+                let (widest, limit) = cx.update(|window, _| {
+                    let widest = crate::github_view::request_labels()
+                        .map(|label| {
+                            (
+                                label,
+                                line_widths(&[(label, appearance::ui_text(11.))], window),
+                            )
+                        })
+                        .into_iter()
+                        .fold(
+                            ("", px(0.)),
+                            |wider, label| if label.1 > wider.1 { label } else { wider },
+                        );
+                    (
+                        widest,
+                        window.pixel_snap(appearance::ui_size(OPERATION_PROGRESS_WIDTH)),
+                    )
+                });
+                assert!(
+                    widest.1 >= limit,
+                    "{text} pt: {widest:?} reaches the label's limit, {limit:?}"
+                );
+                let insets =
+                    cx.update(|window, _| window.viewport_size().width - body_size(window).width);
+                // The narrowest width where keeping the room changes the
+                // hints' form, where the header holds every label's status
+                // and where the widest's goes to the bar.
+                let mut cases: [Option<f32>; 2] = [None, None];
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        let widths = app.chrome_widths(window);
+                        for width in (461..=1480).map(|width| width as f32) {
+                            let narrow = px(width) < appearance::ui_size(COMPACT_HEADER_WIDTH);
+                            let room = app
+                                .header_arrangement(px(width), narrow, &widths, window)
+                                .bar_room;
+                            if cases[usize::from(room)].is_none()
+                                && app.fit_status_bar_in(px(width), true, window, cx)
+                                    != app.fit_status_bar_in(px(width), false, window, cx)
+                            {
+                                cases[usize::from(room)] = Some(width);
+                            }
+                        }
+                    })
+                });
+                for (room, width) in [false, true].into_iter().zip(cases) {
+                    let Some(width) = width else { continue };
+                    let at = format!("{text} pt, warning {warning}, {width} px, room {room}");
+                    cx.simulate_resize(size(px(width) + insets, px(980.)));
+                    draw(cx);
+                    let (plan, kept, other) = cx.update(|window, cx| {
+                        app.update(cx, |app, cx| {
+                            let width = body_size(window).width;
+                            (
+                                app.frame_plan(window, cx),
+                                app.fit_status_bar_in(width, room, window, cx).hints,
+                                app.fit_status_bar_in(width, !room, window, cx).hints,
+                            )
+                        })
+                    });
+                    let plan = plan.expect("a Repository frame");
+                    assert!(plan.full.is_some(), "{at}: the full header");
+                    assert_eq!(plan.bar_room, room, "{at}: the frame's plan");
+                    let measured = |hints: Option<String>, cx: &mut VisualTestContext| {
+                        hints.map(|hints| {
+                            cx.update(|window, _| {
+                                line_widths(&[(&hints, appearance::ui_text(10.))], window)
+                            })
+                        })
+                    };
+                    let (kept, other) = (measured(kept, cx), measured(other, cx));
+                    let drawn = cx
+                        .debug_bounds("status-hints")
+                        .map(|hints| hints.size.width);
+                    let near = |a: Option<Pixels>, b: Option<Pixels>| match (a, b) {
+                        (Some(a), Some(b)) => (a - b).abs() < px(1.),
+                        (a, b) => a == b,
+                    };
+                    assert!(
+                        near(drawn, kept) && !near(drawn, other),
+                        "{at}: the hints {drawn:?} take the form {kept:?}, not {other:?}"
+                    );
+                    found.push(room);
+                    // The widest label's status goes to the bar only where
+                    // the room is kept, and moves nothing there.
+                    let rest = parts(cx);
+                    app.update(cx, |app, cx| {
+                        app.operation_busy = Some(widest.0);
+                        cx.notify()
+                    });
+                    draw(cx);
+                    cx.executor()
+                        .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+                    draw(cx);
+                    let place = cx.update(|window, cx| {
+                        app.read(cx)
+                            .frame_plan(window, cx)
+                            .map(|plan| plan.operation.place)
+                    });
+                    assert_eq!(
+                        place == Some(OperationPlace::StatusBar),
+                        room,
+                        "{at}: {widest:?} goes to {place:?}"
+                    );
+                    assert!(
+                        cx.debug_bounds("operation-progress").is_some(),
+                        "{at}: the status is drawn"
+                    );
+                    assert_eq!(
+                        parts(cx),
+                        rest,
+                        "{at}: the warning and the hints keep their place"
+                    );
+                    app.update(cx, |app, cx| {
+                        app.operation_busy = None;
+                        cx.notify()
+                    });
+                    draw(cx);
+                }
+            }
+        }
+        for room in [false, true] {
+            assert!(
+                found.contains(&room),
+                "a width where the room {} the hints is checked: {found:?}",
+                if room {
+                    "is kept and changes"
+                } else {
+                    "would change"
+                }
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));

@@ -347,6 +347,11 @@ impl RequestKind {
 pub(crate) fn runs_request(label: &str) -> bool {
     RequestKind::ALL.iter().any(|kind| kind.label() == label)
 }
+/// Each request's busy line, the window's busy label while it runs.
+#[cfg(test)]
+pub(crate) fn request_labels() -> [&'static str; RequestKind::ALL.len()] {
+    RequestKind::ALL.map(RequestKind::label)
+}
 /// Why a control the window's busy spell refuses waits while it is a
 /// request of the panel ([`GitTurtle::busy_reason`]).
 pub(crate) const REQUEST_REASON: &str = "Wait for the GitHub request to finish";
