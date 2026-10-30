@@ -10245,15 +10245,27 @@ pub(crate) mod tests {
             // Its room, less its padding, which the drawn line can pass by
             // its snapping to a device pixel.
             let room = ((right - left) - rem * 1.5).max(said.size.width);
-            // An absent side's two lines join on the one line a room that
-            // holds no more draws.
-            let (_, line) = wraps(text, room, cx);
-            let drawn = if area.size.height - rem + slack < line * 2. {
-                text.replace('\n', " · ")
-            } else {
-                text.to_owned()
+            // An absent side draws its two lines where the room holds them
+            // whole, and otherwise its one short line, whole where that
+            // fits: the cause is said either way.
+            let (whole_lines, _) = wraps(text, room, cx);
+            let brief = (text == absent).then_some("No image: file added");
+            let drawn = match brief {
+                Some(brief)
+                    if cx
+                        .debug_bounds(format!("image-side-empty-{side}: {brief}").leak())
+                        .is_some() =>
+                {
+                    brief
+                }
+                _ => text,
             };
-            let (lines, line) = wraps(&drawn, room, cx);
+            assert!(
+                cx.debug_bounds(format!("image-side-empty-{side}: {drawn}").leak())
+                    .is_some(),
+                "{at}: the line draws {drawn:?}"
+            );
+            let (lines, line) = wraps(drawn, room, cx);
             let shown = (said.size.height / line).round() as usize;
             assert!(
                 (said.size.height - line * shown as f32).abs() <= slack && shown >= 1,
@@ -10272,6 +10284,14 @@ pub(crate) mod tests {
                     "{at}: the line shows all of its {lines} lines"
                 );
             }
+            if brief.is_some() {
+                assert!(!cut, "{at}: {drawn:?} says the cause whole");
+                assert!(
+                    drawn == text || line * whole_lines as f32 > area.size.height - rem + slack,
+                    "{at}: the short line only where the {whole_lines} lines do not fit {area:?}"
+                );
+            }
+            let cut = cut || drawn != text;
             assert!(
                 cx.debug_bounds(details_id).is_none(),
                 "{at}: the caption does not repeat it"
@@ -10363,6 +10383,12 @@ pub(crate) mod tests {
                         crate::native_accessibility::written::forget();
                         draw(cx);
                         let cut = said_in_its_place(0, text, true, &at, cx);
+                        if cx
+                            .debug_bounds("image-side-empty-0: No image: file added")
+                            .is_some()
+                        {
+                            met.insert("short in its place");
+                        }
                         if cut {
                             met.insert("cut in its place");
                             assert!(
@@ -10474,6 +10500,48 @@ pub(crate) mod tests {
             }
         }
 
+        // Where the room holds one line, Before draws its short line, the
+        // cause whole, with both sentences in its tooltip and its read.
+        edit_image_sides(&app, cx, |side, image| {
+            if side == 0 {
+                image.message = None;
+            }
+        });
+        app.update(cx, |app, cx| {
+            app.set_image_mode(crate::image_compare::Mode::SideBySide);
+            cx.notify();
+        });
+        for (font, width, height) in [(13, 640., 340.), (18, 1061., 400.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(font, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            crate::native_accessibility::written::forget();
+            draw(cx);
+            let at = format!("one line, at {font} pt in {width} × {height}");
+            let said = bounds("image-side-empty-0", cx);
+            let line = cx.update(|window, _| {
+                crate::image_compare::text_line(appearance::ui_text(11.), window)
+            });
+            assert!(
+                (said.size.height - line).abs() <= slack,
+                "{at}: the room holds one line: {said:?}"
+            );
+            assert!(
+                said_in_its_place(0, absent, true, &at, cx),
+                "{at}: the line stands for both sentences"
+            );
+            assert!(
+                cx.debug_bounds("image-side-empty-0: No image: file added")
+                    .is_some(),
+                "{at}: the short line, whole"
+            );
+            assert!(
+                shows_tooltip(cx, "image-side-empty-0"),
+                "{at}: its tooltip keeps both sentences"
+            );
+            met.insert("one line");
+        }
+
         // A source image says why it could not be shown across its room.
         app.update(cx, |app, cx| {
             app.set_image_mode(crate::image_compare::Mode::SideBySide);
@@ -10537,6 +10605,8 @@ pub(crate) mod tests {
                 "dimensions stay",
                 "kept cut",
                 "kept whole",
+                "one line",
+                "short in its place",
                 "source area named",
                 "source cut",
             ],

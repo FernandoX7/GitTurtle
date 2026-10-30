@@ -767,6 +767,8 @@ impl GitTurtle {
             ["Before", "After"]
         };
         let details = [0, 1].map(|index| side_details(index, [old, new][index]));
+        // The one short line an absent side draws where its two do not fit.
+        let shorts = [0, 1].map(|index| absent_short(index, [old, new][index]));
         // A side without an image says why where its image would be, in its
         // half side by side or across a source image's room; overlaid or
         // wiped, where it has no room of its own, beneath its name whatever
@@ -999,16 +1001,24 @@ impl GitTurtle {
                     .flex()
                     .children([0, 1].into_iter().filter(|i| drawn(*i)).map(|i| {
                         let empty = said[i].then(|| {
-                            // An absent side's two lines, or one where the
-                            // room holds only one.
+                            // An absent side's two lines where the room holds
+                            // both whole, and otherwise its one short line,
+                            // whole where it fits and only then ending in an
+                            // ellipsis; the tooltip and the side's line read
+                            // keep both sentences.
                             let text = details[i].clone();
-                            let drawn = if empty_lines == 1 {
-                                one_line(&text)
-                            } else {
-                                text.clone()
+                            let drawn = match shorts[i] {
+                                Some(short)
+                                    if wrapped_lines(&text, band_size, caption_text, window)
+                                        > empty_lines =>
+                                {
+                                    short.to_owned()
+                                }
+                                _ => text.clone(),
                             };
-                            let cut = wrapped_lines(&drawn, band_size, caption_text, window)
-                                > empty_lines;
+                            let cut = drawn != text
+                                || wrapped_lines(&drawn, band_size, caption_text, window)
+                                    > empty_lines;
                             let whole = text.clone();
                             native_accessibility::static_text(
                                 div()
@@ -1028,7 +1038,14 @@ impl GitTurtle {
                                         .build(window, cx)
                                 })
                             })
-                            .child(drawn)
+                            .child(
+                                div()
+                                    .debug_selector({
+                                        let drawn = drawn.clone();
+                                        move || format!("image-side-empty-{i}: {drawn}")
+                                    })
+                                    .child(drawn),
+                            )
                         });
                         div()
                             .flex_1()
@@ -1475,8 +1492,23 @@ pub(crate) fn absent_side(index: usize) -> &'static str {
     }
 }
 
-/// `details` on the one line a side's reason takes where its room holds no
-/// more: its lines joined.
+/// The one short line side `index` draws where its file is absent and its
+/// two lines ([`absent_side`]) cannot both be drawn whole: the cause is the
+/// point of the second line, so it is said in the fewest words, and only
+/// this line ends in an ellipsis where even it does not fit (two lines once
+/// lost the cause at 461 × 490, "No image on / this side / The file…").
+/// `None` for a side with an image or one that says why it could not be
+/// shown.
+fn absent_short(index: usize, side: &worker::ImageSide) -> Option<&'static str> {
+    (side.image.is_none() && side.message.is_none()).then_some(if index == 0 {
+        "No image: file added"
+    } else {
+        "No image: file deleted"
+    })
+}
+
+/// `details` on one line, as an absent side keeps it beneath its name in
+/// Overlay and Wipe where that line holds it: its lines joined.
 fn one_line(details: &str) -> String {
     details.replace('\n', " · ")
 }
@@ -2474,6 +2506,11 @@ mod tests {
         assert_eq!(
             super::one_line(&super::side_details(1, &absent)),
             "No image on this side · The file was deleted"
+        );
+        // Where both lines cannot be drawn whole, one short line carries both.
+        assert_eq!(
+            [0, 1].map(|index| super::absent_short(index, &absent)),
+            [Some("No image: file added"), Some("No image: file deleted")]
         );
         let unreadable = crate::worker::ImageSide {
             message: Some("Could not read the image".into()),
