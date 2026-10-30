@@ -4741,26 +4741,51 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// A working row's keyboard menu in [`narrow_notes`], its cursor moved
-    /// down to Discard changes… and the pointer resting on that item, moves
-    /// down with its row as a file outside the app that sorts above
-    /// notes.txt changes and its row arrives above it, so Stage comes under
-    /// the pointer, which never moved: nothing lights and Enter starts no
-    /// write until the pointer moves, which lights Stage. The list shows
-    /// three of its rows here and keeps the row at its top in place as rows
-    /// arrive, so it is scrolled to its end, the Unstaged heading at its top
-    /// and notes.txt's row below it, where the row has room to move down;
-    /// at the list's bottom edge the row would be revealed there again.
-    /// GPUI reports the item that arrives under a still pointer hovered,
-    /// and Stage once took the selection there, so Enter staged the file,
-    /// an action the person had never pointed at.
-    #[gpui::test]
-    async fn a_menu_that_moves_under_the_resting_pointer_selects_nothing(cx: &mut TestAppContext) {
+    /// notes.txt's row in [`narrow_notes`], drawn.
+    fn notes_row(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> Bounds<Pixels> {
+        let selector: &'static str = format!(
+            "working-row-{}",
+            position_of(app, cx, "notes.txt", ChangeArea::Unstaged)
+        )
+        .leak();
+        cx.debug_bounds(selector).expect("notes.txt's row drawn")
+    }
+
+    /// The items of notes.txt's menu that draw a fill of their own: the
+    /// pointer's or the keyboard's highlight.
+    fn notes_lit(cx: &mut VisualTestContext) -> Vec<String> {
+        crate::views::tests::menu_rows(cx, &NOTES_ITEMS)
+            .into_iter()
+            .filter(|(_, item)| !crate::appearance::painted_row(cx, *item).0.is_empty())
+            .map(|(label, _)| label)
+            .collect()
+    }
+
+    /// [`narrow_notes`] in Midnight with tracked files that sort above
+    /// notes.txt in its Unstaged group, a1.txt, and below it, z1.txt, which
+    /// is changed, and notes.txt's keyboard menu open with its cursor moved
+    /// down to Discard changes…; a1.txt changed outside the app then brings
+    /// its row above notes.txt's, which moves the menu down with notes.txt's
+    /// row. The list shows three of its rows here and keeps the row at its
+    /// top in place as rows arrive, so it is scrolled to its end, the
+    /// Unstaged heading at its top and notes.txt's row below it, where the
+    /// row has room to move down; at the list's bottom edge the row would be
+    /// revealed there again. Returns notes.txt's row and its height, the
+    /// pitch the menu moves by, with the bounds of Discard changes….
+    async fn notes_menu_on_discard(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &mut VisualTestContext,
+        PathBuf,
+        Bounds<Pixels>,
+        Pixels,
+        Bounds<Pixels>,
+    ) {
         const DISCARD: &str = "menu-item: Discard changes… · MenuItem";
-        // Tracked files that sort above notes.txt in its Unstaged group, and
-        // below it.
         const TRACKED: [&str; 2] = ["a1.txt", "z1.txt"];
-        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        let (fixture, app, cx, repository) = narrow_notes(cx).await;
         cx.update(|window, cx| crate::appearance::ThemeChoice::Midnight.apply(Some(window), cx));
         let change = |name: &str, text: &str| std::fs::write(repository.join(name), text).unwrap();
         for name in TRACKED {
@@ -4774,22 +4799,14 @@ mod tests {
         );
         change("z1.txt", "changed outside the app\n");
         quietly_refreshed(&app, cx);
-        let notes_row = |cx: &mut VisualTestContext| {
-            let selector: &'static str = format!(
-                "working-row-{}",
-                position_of(&app, cx, "notes.txt", ChangeArea::Unstaged)
-            )
-            .leak();
-            cx.debug_bounds(selector).expect("notes.txt's row drawn")
-        };
         let list = app.read_with(cx, |app, _| app.file_focus.clone());
-        let bottom = notes_row(cx);
+        let bottom = notes_row(&app, cx);
         cx.simulate_click(bottom.center(), Modifiers::default());
         cx.update(|window, cx| list.focus(window, cx));
         cx.simulate_keystrokes("down up");
         cx.executor().run_until_parked();
         next_frame(cx);
-        let row = notes_row(cx);
+        let row = notes_row(&app, cx);
         let pitch = row.size.height;
         assert_eq!(
             bottom.top() - row.top(),
@@ -4807,31 +4824,26 @@ mod tests {
             ["Discard changes…"],
             "Down moved the cursor to Discard changes…"
         );
-        let pointer = discard.center();
-        cx.simulate_mouse_move(pointer, None, Modifiers::default());
-        next_frame(cx);
-        // The items that draw a fill of their own: the pointer's or the
-        // keyboard's highlight.
-        let lit = |cx: &mut VisualTestContext| -> Vec<String> {
-            crate::views::tests::menu_rows(cx, &NOTES_ITEMS)
-                .into_iter()
-                .filter(|(_, item)| !crate::appearance::painted_row(cx, *item).0.is_empty())
-                .map(|(label, _)| label)
-                .collect()
-        };
-        assert_eq!(lit(cx), ["Discard changes…"], "the pointer lights Discard");
-        let stage = cx.debug_bounds(NOTES_STAGE).expect("Stage drawn");
-        assert!(
-            stage.top() + pitch <= pointer.y && pointer.y < stage.bottom() + pitch,
-            "a row of {pitch:?} arriving above brings Stage {stage:?} under the pointer {pointer:?}"
-        );
+        (fixture, app, cx, repository, row, pitch, discard)
+    }
 
-        change("a1.txt", "changed outside the app\n");
-        quietly_refreshed(&app, cx);
+    /// Changes a1.txt outside the app in [`notes_menu_on_discard`], so its
+    /// row arrives above notes.txt's and the menu moves down a row with
+    /// notes.txt's row, and returns where Stage then lies.
+    fn a1_arrives_above(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        repository: &Path,
+        row: Bounds<Pixels>,
+        pitch: Pixels,
+    ) -> Bounds<Pixels> {
+        let stage = cx.debug_bounds(NOTES_STAGE).expect("Stage drawn");
+        std::fs::write(repository.join("a1.txt"), "changed outside the app\n").unwrap();
+        quietly_refreshed(app, cx);
         cx.executor().run_until_parked();
         next_frame(cx);
         assert_eq!(
-            notes_row(cx).top() - row.top(),
+            notes_row(app, cx).top() - row.top(),
             pitch,
             "notes.txt's row moved down a row"
         );
@@ -4841,12 +4853,40 @@ mod tests {
             pitch,
             "the menu moved down with its row"
         );
+        moved
+    }
+
+    /// A working row's keyboard menu in [`notes_menu_on_discard`], the
+    /// pointer then resting on Discard changes…, moves down with its row, so
+    /// Stage comes under the pointer, which never moved: nothing lights and
+    /// Enter starts no write until the pointer moves, which lights Stage.
+    /// GPUI reports the item that arrives under a still pointer hovered,
+    /// and Stage once took the selection there, so Enter staged the file,
+    /// an action the person had never pointed at.
+    #[gpui::test]
+    async fn a_menu_that_moves_under_the_resting_pointer_selects_nothing(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, repository, row, pitch, discard) = notes_menu_on_discard(cx).await;
+        let pointer = discard.center();
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        next_frame(cx);
+        assert_eq!(
+            notes_lit(cx),
+            ["Discard changes…"],
+            "the pointer lights Discard"
+        );
+        let stage = cx.debug_bounds(NOTES_STAGE).expect("Stage drawn");
+        assert!(
+            stage.top() + pitch <= pointer.y && pointer.y < stage.bottom() + pitch,
+            "a row of {pitch:?} arriving above brings Stage {stage:?} under the pointer {pointer:?}"
+        );
+
+        let moved = a1_arrives_above(&app, cx, &repository, row, pitch);
         assert!(
             moved.contains(&pointer),
             "Stage {moved:?} under the pointer"
         );
         assert_eq!(
-            lit(cx),
+            notes_lit(cx),
             Vec::<String>::new(),
             "nothing lights under the still pointer"
         );
@@ -4865,7 +4905,84 @@ mod tests {
         let pointer = pointer + point(px(1.), px(0.));
         cx.simulate_mouse_move(pointer, None, Modifiers::default());
         next_frame(cx);
-        assert_eq!(lit(cx), ["Stage"], "the moved pointer lights Stage");
+        assert_eq!(notes_lit(cx), ["Stage"], "the moved pointer lights Stage");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The keyboard's cursor on Discard changes… in
+    /// [`notes_menu_on_discard`], the pointer then resting on the menu where
+    /// no row lies, between two rows or below the last, and where Stage
+    /// arrives as the menu moves down with its row: the cursor stays on
+    /// Discard changes… and Enter opens its confirmation. The pointer that
+    /// moved after the keys lets GPUI report the row that arrives under it
+    /// hovered, and upstream gave that row the selection, taking it from the
+    /// keyboard's cursor on the discard the keys had chosen.
+    #[gpui::test]
+    async fn a_menu_that_moves_under_the_resting_pointer_keeps_the_keyboards_cursor(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, repository, row, pitch, _) = notes_menu_on_discard(cx).await;
+        let stage = cx.debug_bounds(NOTES_STAGE).expect("Stage drawn");
+        let rows = crate::views::tests::menu_rows(cx, &NOTES_ITEMS);
+        let x = stage.center().x;
+        let pointer = (0..)
+            .map(|step| point(x, stage.top() + pitch + px(step as f32 * 0.5)))
+            .take_while(|at| at.y < stage.bottom() + pitch)
+            .find(|at| rows.iter().all(|(_, item)| !item.contains(at)))
+            .unwrap_or_else(|| {
+                panic!("a place on no row where Stage arrives: {rows:?}, a pitch of {pitch:?}")
+            });
+        let last =
+            rows.iter()
+                .map(|(_, item)| item.bottom())
+                .fold(
+                    stage.bottom(),
+                    |last, bottom| if bottom > last { bottom } else { last },
+                );
+        assert!(
+            pointer.y < last + px(4.),
+            "the pointer {pointer:?} on the menu, above its padding's end below {last:?}"
+        );
+        cx.simulate_mouse_move(pointer, None, Modifiers::default());
+        next_frame(cx);
+        assert_eq!(
+            cursor_among(cx, &NOTES_ITEMS),
+            ["Discard changes…"],
+            "the pointer resting on no row leaves the cursor on Discard changes…"
+        );
+
+        let moved = a1_arrives_above(&app, cx, &repository, row, pitch);
+        assert!(
+            moved.contains(&pointer),
+            "Stage {moved:?} under the pointer {pointer:?}"
+        );
+        assert_eq!(
+            cursor_among(cx, &NOTES_ITEMS),
+            ["Discard changes…"],
+            "the cursor stays on Discard changes…"
+        );
+        assert_eq!(
+            notes_lit(cx),
+            ["Discard changes…"],
+            "only the cursor lights"
+        );
+        cx.simulate_keystrokes("enter");
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        // Discard changes… reads the change before its confirmation asks,
+        // so Enter leaves that review preparing or its dialog shown.
+        let busy = app.read_with(cx, |app, _| app.operation_busy);
+        let shown = cx.update(|window, cx| window.has_active_dialog(cx));
+        assert!(
+            busy == Some("Reviewing file changes…") || shown,
+            "Enter opened Discard changes…'s confirmation, busy with {busy:?}"
+        );
+        let staged = committing_git(&repository, &["diff", "--cached", "--name-only"]);
+        assert!(
+            staged.status.success() && staged.stdout.is_empty(),
+            "nothing staged: {}",
+            String::from_utf8_lossy(&staged.stdout)
+        );
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
