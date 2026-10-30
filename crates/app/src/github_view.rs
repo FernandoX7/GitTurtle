@@ -1048,6 +1048,30 @@ impl Panel {
             cx,
         );
     }
+    /// Removes GitTurtle's stored authorization, unless Cancel came before
+    /// the removal began: then it keeps the authorization and says so. Its
+    /// removal once ignored Cancel.
+    fn disconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.run(
+            RequestKind::Disconnect,
+            |control| {
+                anyhow::ensure!(
+                    !control.is_cancelled(),
+                    "Disconnect was cancelled; GitTurtle's authorization was kept."
+                );
+                SecureStore.remove()
+            },
+            |result, this, _, _| match result {
+                Ok(()) => {
+                    this.account = None;
+                    this.notice = Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());
+                }
+                Err(error) => this.error = Some(error.to_string()),
+            },
+            window,
+            cx,
+        );
+    }
     fn refresh(&mut self, page: u32, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(window, cx);
         let repository = match self.destination(cx) {
@@ -1456,9 +1480,9 @@ impl Render for Panel {
                 .child(label("github-worktree",format!("Local worktree: {}",self.repo.path().display())).text_color(rgb(p.muted)))
                 .child(label("github-connection-help","Connect uses your current GitHub CLI account and saves GitTurtle authorization in secure storage. Refresh and PR selection are explicit network reads.").text_color(rgb(p.muted)))
                 .child(div().flex().flex_wrap().gap_2()
-                    .child(button("github-connect","Connect GitHub CLI account","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx))))
+                    .child(button("github-connect","Connect GitHub CLI account","",false).debug_selector(||"github-connect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx))))
                     .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
-                    .child(button("github-disconnect","Disconnect GitTurtle","",false).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|{this.run(RequestKind::Disconnect,|_|SecureStore.remove(),|result,this,_,_|match result{Ok(())=>{this.account=None;this.notice=Some("GitTurtle authorization removed. GitHub CLI and ordinary Git authentication retain their settings.".into());},Err(error)=>this.error=Some(error.to_string())},window,cx);}))))))
+                    .child(button("github-disconnect","Disconnect GitTurtle","",false).debug_selector(||"github-disconnect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.disconnect(window,cx)))))))
             .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).text_color(rgb(p.muted))))
             .when_some(self.error.as_ref().filter(|_|self.conversations.active.is_none()),|element,error|element.child(label("github-error",error.clone()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
             .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
@@ -2376,6 +2400,69 @@ mod tests {
                 "{name} ended"
             );
         }
+    }
+
+    /// Connect GitHub CLI account and Disconnect GitTurtle, pressed in the
+    /// panel, each name themselves in the window's operation bar and the
+    /// panel's busy line: their own buttons choose the request's kind, which
+    /// a test sending each kind through `Panel::run` cannot tell. Both once
+    /// read "Loading your requested PR context…". Cancelled from the panel
+    /// before they run, neither reaches the GitHub CLI or the stored
+    /// authorization: the account stays and the panel says why, where
+    /// Disconnect's removal once ignored Cancel.
+    #[gpui::test]
+    async fn connect_and_disconnect_name_themselves_from_their_buttons(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::click;
+        use crate::views::tests::draw;
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        // Dialogs slide in on the wall clock, which the test clock does not
+        // hold; opened at rest, every frame draws the panel in place. The
+        // offline fixture leaves Connect and Disconnect unavailable.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| panel.review.fixture = false);
+        });
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+        click(cx, "github-account-options");
+        cx.run_until_parked();
+        draw(cx);
+        for (button, kind) in [
+            ("github-connect", RequestKind::Connect),
+            ("github-disconnect", RequestKind::Disconnect),
+        ] {
+            // Held as a slow GitHub CLI or secure store holds it.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            click(cx, button);
+            draw(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_busy),
+                Some(kind.label()),
+                "{button}: the operation bar names it"
+            );
+            assert_eq!(
+                panel.read_with(cx, |panel, _| panel.request.label()),
+                kind.label(),
+                "{button}: so does the panel's busy line"
+            );
+            click(cx, "github-cancel");
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle_panel(&app, cx).await;
+            draw(cx);
+            panel.read_with(cx, |panel, _| {
+                assert!(!panel.pending, "{button}: it answered");
+                assert_eq!(
+                    panel.account.as_deref(),
+                    Some("offline-reviewer"),
+                    "{button}: the account stays"
+                );
+                assert!(panel.error.is_some(), "{button}: the panel says why");
+            });
+        }
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
     }
 
     /// The operation bar's Cancel (`GitTurtle::cancel_operation`) stops a
