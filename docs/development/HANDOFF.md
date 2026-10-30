@@ -158,7 +158,9 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
       - **Code verification clean.** The rebased line is identical to `17bfd002`. The reviewer's own mutations fail the two new tests. Keys still work after a cursorless rebuild.
         - Nit (design review): a fallback menu that slides up to clear the bar now covers the clicked point, unlike row menus (DESIGN.md:377).
         - Nit (pre-existing): the fallback menu has no height cap in very short windows.
-      - Security re-review running.
+      - **Security re-review: pass with fixes.** The delta is sound, and the Low is fixed on every rebuild path.
+        - Pre-existing Low: row menus follow their row, so an outside change that moves the menu puts another item under a resting pointer. GPUI hover selects it, and Enter runs it.
+        - → **F4** (`briefs-q9/F4.md`, after F lands): in prepaint, when the origin moves, treat the pointer as still.
     - **HB'' done** (`worktree-agent-a8b414e5…` tip `9a440e8b`, 8 commits on `f1973206`; the HB line picked cleanly as `9e7af654` `2b224ba6` `c74ecd98`; fast gate green at 105 s; mutations caught):
       - `96a55ebd`: toolbar test on window bounds.
       - `77bc4e1f`: one `HeaderPlan` per frame.
@@ -167,7 +169,9 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
       - `9a440e8b`: DESIGN.md:284.
       - Note: `c74ecd98`'s message still says "on every repository frame".
       - The placement table is in the agent report. Native QA: before = during for Settings' x, header height and row top at 1480/1000/800/461 × 13/18 pt; the 461 × 980 18 pt hints whole with no write.
-      - Short verification running.
+      - **Verified: can land.** The plan reads `body_size`; the 180 px proxy is sound (labels are capped at the limit); the room never flips as a write starts (the reviewer's compact-path mutation was caught); the rebased line is identical to `df84fd67`.
+        - Nit: reword `c74ecd98`'s message at landing.
+        - Design note: the idle bar's room can depend on header label widths at a boundary width.
     - **J-int done** (`worktree-agent-ad0a45c7…` tip `ccfb5ba0`, 29 commits on `f1973206`; fast gate green at 151 s; it hit the turn limit once and was resumed).
       - Hand resolutions:
         - `9c6d5929`: new `Target::held_control`; the open control keeps the side header's focus handle while a wrapper tracks the Stashes detail's container.
@@ -179,7 +183,10 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
         - `e8369bd3` the labels measured;
         - `ccfb5ba0` the side header forms change in the frame Compare draws: a mutation fails it, so J adds no frame back.
       - Open: no Stashes test drives Tab onto a stashed model's open control.
-      - Short verification running.
+      - **Verified: can land.** The resolutions match their originals; `held_control` adds no tab stop, node or leak; `render_preview` is the head's; the reviewer's mutations failed `ccfb5ba0`'s and `08841f99`'s tests. Should fix → **J4** after landing:
+        - a test of the Stashes detail half of `held_control` (focus `model-external` with the detail scrolled away, assert `holds_focus` and that it lies in `stash-detail`);
+        - uncertain: nested reveals working from the previous frame's bounds can leave the focused control below the detail; if that test fails with the region scrolled, re-run the detail's reveal next frame.
+        - Pre-existing: an image side's open control in Stashes uses `target.button`.
       - Native QA: forms switch in the resize's frame (model open controls at 1121 px, page view at 881 px); Stashes and the rewrite review at 461 × 490 18 pt with a stashed model or PDF (Tab to the open control is shown whole in both containers).
     - **Landing order:** J (short verification first) → HB'' (short verification; re-pick onto J with `cp.sh`) → F3 (code + security verification; re-pick) → R2m (`briefs-q9/R2m.md`, from the head after HB''). Each: `cp.sh`, gate on `.local/target-coord`, push, remove its worktrees (old J chain `a09d62b7 a135ded6 a27ae44c a4a30150 a82de15a a99ebc5b aa73aff2 afc6bcd1`, HB `a7d9d968 ac703f2e`, F `a9211ca3`, R2k `a3fa8572` after R2m).
     - **Follow-ups found this session** (on top of the earlier list in the "Session 2026-10-30" bullet):
