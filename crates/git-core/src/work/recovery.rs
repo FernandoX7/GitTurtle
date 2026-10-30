@@ -477,21 +477,23 @@ impl GitRepository {
         let status = self.status()?;
         let paused =
             if status.operation.is_some() || status.entries.iter().any(|entry| entry.conflicted) {
-                // Named from the full operation read where it answers, and from
-                // the status's own marker otherwise; conflicts with neither, as
-                // a stash restoration leaves, refuse in their own words.
+                // Named from the status's own marker, which a merge, rebase,
+                // cherry-pick or revert leaves, and otherwise from the full
+                // operation read (a sequencer step without its HEAD file);
+                // conflicts with neither, as a stash restoration leaves,
+                // refuse in their own words. The full read, a second status
+                // read among others, runs only where the marker is missing.
                 let named = status.operation.as_deref().and_then(|label| {
                     OperationKind::ALL
                         .into_iter()
                         .find(|kind| kind.label() == label)
                 });
-                Some(
+                Some(named.or_else(|| {
                     self.operation_state()
                         .ok()
                         .flatten()
                         .map(|operation| operation.kind)
-                        .or(named),
-                )
+                }))
             } else {
                 self.operation_state()?
                     .map(|operation| Some(operation.kind))
