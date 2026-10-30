@@ -62,14 +62,20 @@ outer one's fold as the child past that edge, so a node inside the inner one
 can lie wholly outside the outer one, the one place nothing of it is drawn.
 The work is one walk up the node's ancestors, ending at the first clip that
 leaves the node out, when a client reads its state or the adapter compares a
-changed node's states; a change of `Showing` reaches
-clients as the existing state-change event. macOS has no showing state and
-uses `accesskit_macos`, which this does not touch: there a node AccessKit
-keeps past a fold, which GitTurtle reports at its layout, has nothing marking
-it off screen, and VoiceOver's cursor may outline what lies there, as the
-GitHub panel's notice below its body's fold over Back to repository. That is
-an open item, not yet checked with VoiceOver; a list the window draws none
-of reports its strip there too, so none of its rows is reachable.
+changed node's states. The adapter sends the existing state-change event for
+a change of `Showing` only when the node's own data, or its place under its
+parent, changes in an update: `accesskit_consumer` 0.38 reports no other node
+as updated (`tree.rs`). A change of a clipping ancestor alone, such as a fold
+a resized window moves across rows that stay where they lie, sends no event;
+a client sees the node's new state when it next reads it. That is an open
+item for the Orca check (`docs/native-accessibility.md`). macOS has no
+showing state and uses `accesskit_macos`, which this does not touch: there a
+node AccessKit keeps past a fold, which GitTurtle reports at its layout, has
+nothing marking it off screen, and VoiceOver's cursor may outline what lies
+there, as the GitHub panel's notice below its body's fold over Back to
+repository. That is an open item, not yet checked with VoiceOver; a list the
+window draws none of reports its strip there too, so none of its rows is
+reachable.
 
 Upstream status: not proposed upstream. The published 0.19.1 source inserts
 both states for every included node; whether a later release tells an
@@ -92,7 +98,8 @@ The extra work is that ancestor walk for each included node the hit test
 visits, only when a client asks for a point. macOS's hit test lives in
 `accesskit_macos` and is unchanged.
 
-Upstream status: not proposed upstream; it depends on the off-screen change.
+Upstream status: not proposed upstream. It shares the off-screen change's
+ancestor walk (`clips`), which stays while either change does.
 
 ### A page shown again after a modal dialog (`src/adapter.rs`)
 
@@ -177,9 +184,11 @@ the adapter GitTurtle uses handles a node that moves between `ExcludeNode` and
 `ExcludeSubtree`; until then carry it onto the newer source. The off-screen
 change can go once the adapter GitTurtle uses withholds `Showing` from a node
 wholly outside a clipping ancestor, or AccessKit offers an off-screen
-property that GitTurtle sets instead; until then carry it too, and the
-point-query change with it, which can go with it or once AccessKit's hit
-test passes over a clipped-out node. Retire this
-patch, the `[patch.crates-io]` entry, the workspace exclusion and the
-`vendor/AGENTS.md` row when no change remains. Keep the application
-tests; they then cover the upstream crate.
+property that GitTurtle sets instead; until then carry it too. The
+point-query change can go only once AccessKit's own hit test passes over a
+node its clips leave out at the queried point, not with the off-screen
+change: an adapter that withholds `Showing` can still answer a point query
+with a node nothing is drawn of there. Retire this patch, the
+`[patch.crates-io]` entry, the workspace exclusion and the `vendor/AGENTS.md`
+row when no change remains. Keep the application tests; they then cover the
+upstream crate.
