@@ -366,7 +366,8 @@ pub(crate) struct ReflogBrowser {
     /// this is `None` meanwhile ([`Self::reading_over_details`]). Cleared at
     /// once, the details shrank to nothing for the read's duration, so the
     /// content's scroll moved the list above them and everything below
-    /// them moved twice.
+    /// them moved twice. Where set, it is the selected entry: a selection
+    /// or Read log clears it, and only the selected entry's read sets it.
     details: Option<ReflogEntry>,
     commit: Option<Commit>,
     changes: Vec<FileChange>,
@@ -529,8 +530,8 @@ impl ReflogBrowser {
     fn read_place(&self) -> ReadPlace {
         match (&self.selected, &self.details) {
             (None, _) => ReadPlace::Log,
-            (Some(entry), Some(details)) if entry == details => ReadPlace::Recovery,
-            (Some(_), _) => ReadPlace::Entry,
+            (Some(_), None) => ReadPlace::Entry,
+            (Some(_), Some(_)) => ReadPlace::Recovery,
         }
     }
     /// The entry, among the first `count` the list draws, that holds focus.
@@ -860,16 +861,12 @@ impl ReflogBrowser {
         );
     }
     fn recover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // The selected entry's own commit, never the last entry's that its
-        // read leaves drawn.
-        if self.pending
-            || self.details.is_none()
-            || self.details != self.selected
-            || !self.current(cx)
-        {
+        // The entry whose details landed, the selected entry's own, never
+        // the last entry's that a read in progress leaves drawn.
+        if self.pending || !self.current(cx) {
             return;
         }
-        let Some(entry) = self.selected.clone() else {
+        let Some(entry) = self.details.clone() else {
             return;
         };
         let name = self.name.read(cx).value().trim().to_owned();
