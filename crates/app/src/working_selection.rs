@@ -312,12 +312,21 @@ impl GitTurtle {
     /// which builds the menu again from the row's file as it then stands:
     /// built again from the file as the menu opened, it brought back Delete
     /// untracked file… for a file a refresh had found added. While rows are
-    /// being prepared there is none to act on, and the rows landing run it.
+    /// being prepared there is none to act on, and the rows landing run it;
+    /// a write that starts meanwhile builds the menu again at once, from the
+    /// file as it last found it, every item refused, where it once kept
+    /// offering what that write refused until the rows landed.
     pub(super) fn follow_working_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(followed) = &self.file_menu_row else {
             return;
         };
         if self.working_paths.pending {
+            if !followed.busy && self.write_unsettled() {
+                let items = self.working_menu_items(cx);
+                if let (Some(items), Some(menu)) = (items, &mut self.file_menu) {
+                    menu.rebuild(items, window, cx);
+                }
+            }
             return;
         }
         let target = &followed.target;
@@ -326,7 +335,8 @@ impl GitTurtle {
             return;
         };
         let changed = (*entry != target.entry).then(|| entry.clone());
-        let rebuild = changed.is_some() || followed.busy != self.write_unsettled();
+        let rebuild =
+            changed.is_some() || followed.busy != self.write_unsettled() || followed.preparing;
         if let (Some(entry), Some(followed)) = (changed, self.file_menu_row.as_mut()) {
             followed.target.entry = entry;
         }

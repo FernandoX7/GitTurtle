@@ -4215,11 +4215,12 @@ impl GitTurtle {
                         // the open menu again. Opened on rows the filter is
                         // replacing, it refuses its items until the new rows
                         // land and build it again (`waits_while`), as a
-                        // click on those rows refuses.
-                        let busy = ignore_owner.upgrade().is_none_or(|owner| {
-                            let owner = owner.read(cx);
-                            owner.write_unsettled() || owner.working_paths.pending
-                        });
+                        // click on those rows refuses, each item saying so.
+                        let (busy, preparing) =
+                            ignore_owner.upgrade().map_or((true, false), |owner| {
+                                let owner = owner.read(cx);
+                                (owner.write_unsettled(), owner.working_paths.pending)
+                            });
                         working_row_menu(
                             menu,
                             ignore_owner.clone(),
@@ -4230,6 +4231,7 @@ impl GitTurtle {
                             },
                             forms.file_action,
                             busy,
+                            preparing,
                         )
                     })
                     // A file whose status changes under its open menu, as
@@ -4239,7 +4241,8 @@ impl GitTurtle {
                     // through `follows_writes` alone, once for each. While
                     // the rows of a newer status are prepared, the rows
                     // drawn are the previous status's, and the menu waits
-                    // for the new ones before it is built again.
+                    // for the new ones before it is built again, but for a
+                    // write that starts meanwhile, which builds it refused.
                     .built_from(menu_entry)
                     .follows_writes(cx.entity().downgrade())
                     .waits_while(|app| app.working_paths.pending)
@@ -4298,6 +4301,7 @@ impl GitTurtle {
             },
             stage_control,
             busy: false,
+            preparing: false,
         });
         let Some(items) = self.working_menu_items(cx) else {
             return;
@@ -4318,17 +4322,28 @@ impl GitTurtle {
 
     /// The items of the Working Changes row's keyboard menu
     /// (`file_menu_row`), from its file as the menu last found it, refusing
-    /// writes as the window does now.
+    /// writes as the window does now, and everything while its rows are
+    /// prepared.
     pub(super) fn working_menu_items(
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<impl FnOnce(PopupMenu) -> PopupMenu + 'static> {
-        let busy = self.write_unsettled();
+        let (busy, preparing) = (self.write_unsettled(), self.working_paths.pending);
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         let followed = self.file_menu_row.as_mut()?;
-        followed.busy = busy;
+        (followed.busy, followed.preparing) = (busy, preparing);
         let (target, stage_control) = (followed.target.clone(), followed.stage_control);
-        Some(move |menu| working_row_menu(menu, owner, repository, target, stage_control, busy))
+        Some(move |menu| {
+            working_row_menu(
+                menu,
+                owner,
+                repository,
+                target,
+                stage_control,
+                busy,
+                preparing,
+            )
+        })
     }
 
     /// Closes the file list's keyboard menu. A press outside it leaves focus
@@ -4792,6 +4807,9 @@ pub(super) struct WorkingMenu {
     pub(super) stage_control: bool,
     /// Whether the items were built refusing writes.
     pub(super) busy: bool,
+    /// Whether the items were built while the rows were prepared, refused
+    /// and saying so, which the rows' landing builds again.
+    pub(super) preparing: bool,
 }
 
 /// A Working Changes file row's element ID: its group and its path's bytes,
@@ -4854,13 +4872,20 @@ impl WorkingRowIds {
     }
 }
 
+/// What a Working row's menu item states beside it while the rows of a newer
+/// status are prepared, the Changes header's word for that read.
+pub(super) const PREPARING_ROWS: &str = "Refreshing…";
+
 /// A Working Changes file row's menu, which a right-click on the row and
 /// Shift-F10 or the Menu key on the list's cursor row open alike. Without its
 /// Stage or Unstage control (`stage_control`) the row's menu leads with that
 /// action. Each item acts only on the repository the menu was built for, and
 /// on its file by path: a Stage or Unstage departs from where the file's row
 /// stands when it acts, which rows coming or going before it may have moved
-/// since the menu opened.
+/// since the menu opened. `busy`, a write or what it reads after it, refuses
+/// every item; so does `preparing`, while the rows of a newer status are
+/// prepared, each item then stating why apart from it ([`PREPARING_ROWS`]),
+/// as an item a row cannot take states its condition.
 pub(super) fn working_row_menu(
     menu: PopupMenu,
     owner: WeakEntity<GitTurtle>,
@@ -4868,8 +4893,19 @@ pub(super) fn working_row_menu(
     target: MenuRow,
     stage_control: bool,
     busy: bool,
+    preparing: bool,
 ) -> PopupMenu {
     let MenuRow { entry, staged } = target;
+    // Refused with nothing to say why, a menu opened as the rows were
+    // prepared showed every item dim and was announced so.
+    let item = |label: &'static str| {
+        if preparing {
+            native_accessibility::detailed_item(label, PREPARING_ROWS)
+        } else {
+            PopupMenuItem::new(label)
+        }
+    };
+    let busy = busy || preparing;
     let discard_owner = owner.clone();
     let discard_repository = repository.clone();
     let discard_entry = entry.clone();
@@ -4880,7 +4916,7 @@ pub(super) fn working_row_menu(
         let paths = entry.paths();
         let path = entry.path.clone();
         menu.item(
-            PopupMenuItem::new(if staged { "Unstage" } else { "Stage" })
+            item(if staged { "Unstage" } else { "Stage" })
                 .disabled(busy)
                 .on_click(move |_, window, cx| {
                     let _ = owner.update(cx, |this, cx| {
@@ -4900,18 +4936,19 @@ pub(super) fn working_row_menu(
         )
     };
     // An action the row cannot take reads as its command with the condition
-    // it waits for apart from it, not as one phrase.
-    let ignore = if entry.untracked {
-        PopupMenuItem::new("Ignore…")
+    // it waits for apart from it, not as one phrase; while the rows are
+    // prepared, that is their landing, whatever else it waits for.
+    let ignore = if entry.untracked || preparing {
+        item("Ignore…")
     } else {
         native_accessibility::detailed_item("Ignore…", "Untracked files only")
     };
-    let discard = if discard_entry.conflicted {
+    let discard = if discard_entry.conflicted && !preparing {
         native_accessibility::detailed_item("Discard changes…", "After conflict resolution")
     } else if discard_entry.untracked {
-        PopupMenuItem::new("Delete untracked file…")
+        item("Delete untracked file…")
     } else {
-        PopupMenuItem::new("Discard changes…")
+        item("Discard changes…")
     };
     menu.item(
         ignore

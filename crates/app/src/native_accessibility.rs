@@ -996,6 +996,13 @@ impl MenuInputs {
                 .and_then(|status| status.head.clone()),
         }
     }
+
+    /// Whether a write started, or its reload or status read began to
+    /// refuse, since `before`: what a menu waiting for its rows is built
+    /// again for at once ([`PointerMenu::waits_while`]).
+    fn starts_a_write(&self, before: &Self) -> bool {
+        (self.running && !before.running) || (self.writing && !before.writing)
+    }
 }
 
 impl AppDropdown {
@@ -1266,15 +1273,17 @@ impl<E> PointerMenu<E> {
     /// replaced in the app the menu follows ([`Self::follows_writes`]), as
     /// Working Changes' rows are while those of a newer status are prepared:
     /// the rows still drawn then are the previous status's, held in place,
-    /// and nothing acts on them. While `preparing` holds, the open menu is
-    /// built again neither from the row's inputs nor as a write starts or
-    /// ends; once the new rows are drawn, it is built again from them, once,
-    /// where either changed meanwhile or it opened meanwhile, which its
-    /// builder answers by refusing its items until then. A Working row's
-    /// menu built again as a Stage's status read landed, before the read's
-    /// rows had, offered Delete untracked file… for a file the read had
-    /// found added, as the previous rows still showed it, until the rows
-    /// landed.
+    /// and a click or key on them acts on nothing. While `preparing` holds,
+    /// the open menu is built again neither from the row's inputs nor as a
+    /// write ends, but it is as a write starts, which its builder answers by
+    /// refusing its items, as it does every build until the new rows are
+    /// drawn; once they are, it is built again from them, once, where either
+    /// changed meanwhile or it opened meanwhile. A Working row's menu built
+    /// again as a Stage's status read landed, before the read's rows had,
+    /// offered Delete untracked file… for a file the read had found added,
+    /// as the previous rows still showed it, until the rows landed; one that
+    /// waited as a write started kept offering the items that write refused
+    /// until the rows landed.
     pub(crate) fn waits_while(mut self, preparing: fn(&crate::GitTurtle) -> bool) -> Self {
         self.preparing = Some(preparing);
         self
@@ -1654,15 +1663,22 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                         cx.observe_in(&app, window, move |menu, app, window, cx| {
                             let now = MenuInputs::of(app.read(cx));
                             if now != inputs {
+                                let started = now.starts_a_write(&inputs);
                                 inputs = now;
                                 // Its rows being replaced, the builder would
                                 // read the rows the window no longer acts
-                                // on: the rows' landing builds it again.
+                                // on: the rows' landing builds it again. A
+                                // write that starts meanwhile builds it now,
+                                // its builder refusing every item while the
+                                // rows are prepared, so it never offers what
+                                // that write refuses.
                                 if preparing.is_some_and(|preparing| preparing(app.read(cx))) {
                                     if let Some(state) = waiting.upgrade() {
                                         state.borrow_mut().waited = true;
                                     }
-                                    return;
+                                    if !started {
+                                        return;
+                                    }
                                 }
                                 menu.rebuild(window, cx, |menu, window, cx| open(menu, window, cx));
                             }

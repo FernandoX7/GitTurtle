@@ -4537,9 +4537,10 @@ mod tests {
     /// file as the previous rows, still drawn, show it, and once the rows
     /// land it offers Discard changes…. A menu opened on the previous rows
     /// while new ones are prepared refuses its items, as a click on those
-    /// rows refuses, until the rows land and build it again. Built again as
-    /// the read landed, the menu offered Delete untracked file… for a file
-    /// the read had found added, until the rows landed.
+    /// rows refuses, each saying why ("Refreshing…"), until the rows land
+    /// and build it again; it once showed them refused with no reason.
+    /// Built again as the read landed, the menu offered Delete untracked
+    /// file… for a file the read had found added, until the rows landed.
     #[gpui::test]
     async fn a_right_click_working_menu_waits_for_its_rows(cx: &mut TestAppContext) {
         let (_fixture, app, cx) = six_files_for_menus(cx).await;
@@ -4601,16 +4602,97 @@ mod tests {
         quietly_read_while_rows_held(&app, cx);
         right_click(cx, gamma);
         assert_eq!(
-            discard(cx),
+            offered(cx, "Discard changes…, refreshing…"),
             Some(false),
-            "a menu opened on rows being replaced refuses its items"
+            "a menu opened on rows being replaced refuses its items, each saying why"
         );
+        assert_eq!(discard(cx), None, "none refused with nothing to say why");
         drop(rows);
         crate::path_filter::filters_land(&app, cx);
         next_frame(cx);
         assert_eq!(discard(cx), Some(true), "available once the rows land");
         cx.simulate_keystrokes("escape");
         next_frame(cx);
+    }
+
+    /// A working row's menu, opened as `opening` opens it at rest, keeps
+    /// its items while the rows of a newer status are prepared, and is
+    /// built again at once, every item refused and saying why, as a write
+    /// starts meanwhile; once the rows land it is built from them, refusing
+    /// what the write refuses, and once the write's reload lands it offers
+    /// its items again. Waiting for the rows, it kept offering Delete
+    /// untracked file… through the write until the rows landed.
+    async fn a_row_menu_refuses_a_write_started_while_its_rows_are_prepared(
+        cx: &mut TestAppContext,
+        opening: Opening,
+    ) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        open_row_menu(&app, cx, "gamma.txt", opening);
+        let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
+        let waiting =
+            |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…, refreshing…");
+        assert_eq!(delete(cx), Some(true), "{opening:?}: at rest");
+        let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+        std::fs::write(repository.join("omega.txt"), "omega\n").unwrap();
+        quietly_read_while_rows_held(&app, cx);
+        assert_eq!(
+            delete(cx),
+            Some(true),
+            "{opening:?}: kept as it was built while the rows are prepared"
+        );
+        let write = held(
+            &app,
+            cx,
+            gitturtle_core::WriteCommand::CreateBranch {
+                name: "side-q9".into(),
+                start_point: None,
+            },
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_some()
+                && app.working_paths.pending),
+            "{opening:?}: a write runs while the rows are prepared"
+        );
+        assert_eq!(
+            waiting(cx),
+            Some(false),
+            "{opening:?}: refused at once as the write starts, saying why"
+        );
+        assert_eq!(delete(cx), None, "{opening:?}: offered no more");
+        drop(rows);
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert_eq!(
+            delete(cx),
+            Some(false),
+            "{opening:?}: built from the new rows, refused while the write runs"
+        );
+        assert_eq!(waiting(cx), None, "{opening:?}: the rows have landed");
+        release(&app, write, cx).await;
+        quiet_reads_land(&app, cx);
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert_eq!(
+            delete(cx),
+            Some(true),
+            "{opening:?}: offered once the write's reload lands"
+        );
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menu_refuses_a_write_started_while_its_rows_are_prepared(
+        cx: &mut TestAppContext,
+    ) {
+        a_row_menu_refuses_a_write_started_while_its_rows_are_prepared(cx, Opening::RightClick)
+            .await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_menu_refuses_a_write_started_while_its_rows_are_prepared(
+        cx: &mut TestAppContext,
+    ) {
+        a_row_menu_refuses_a_write_started_while_its_rows_are_prepared(cx, Opening::Keyboard).await;
     }
 
     /// A History window on a clean worktree, wide enough for the action bar
