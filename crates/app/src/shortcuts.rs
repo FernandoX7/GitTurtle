@@ -989,6 +989,61 @@ enum Reveal {
     Nearest,
 }
 
+/// A key that moves the list's selection through its entries, passing over
+/// group headings.
+#[derive(Clone, Copy)]
+enum Step {
+    /// Up: the entry above.
+    Previous,
+    /// Down: the entry below.
+    Next,
+    /// Page Up: a page of entries above ([`ShortcutHelpView::page`]).
+    PageUp,
+    /// Page Down: a page of entries below.
+    PageDown,
+    /// Home: the list's first entry.
+    First,
+    /// End: the list's last entry.
+    Last,
+}
+
+gpui_kit::actions!(
+    shortcut_help,
+    [
+        FirstShortcut,
+        LastShortcut,
+        PreviousShortcutPage,
+        NextShortcutPage
+    ]
+);
+
+/// Where Home, End, Page Up and Page Down move the list's selection: in the
+/// search field, which holds focus while the dialog is open. Bound at the
+/// field's own depth and later than the toolkit binds the field's keys, they
+/// come before its Home and End, which would move its caret, as macOS's
+/// single-line fields leave those keys to the list or view beside them;
+/// Shift-Home and Shift-End still select in the field. Up and Down, which a
+/// single-line field passes on, reach the view's key handler.
+const LIST_KEYS: &str = "GitTurtleShortcuts > Input";
+
+/// Marks [`bind_list_keys`] done for the application.
+struct ListBindings;
+impl gpui_kit::Global for ListBindings {}
+
+/// Binds the list's keys ([`LIST_KEYS`]) once, as the dialog first opens.
+fn bind_list_keys(cx: &mut App) {
+    if cx.try_global::<ListBindings>().is_some() {
+        return;
+    }
+    cx.set_global(ListBindings);
+    cx.bind_keys([
+        KeyBinding::new("home", FirstShortcut, Some(LIST_KEYS)),
+        KeyBinding::new("end", LastShortcut, Some(LIST_KEYS)),
+        KeyBinding::new("pageup", PreviousShortcutPage, Some(LIST_KEYS)),
+        KeyBinding::new("pagedown", NextShortcutPage, Some(LIST_KEYS)),
+    ]);
+}
+
 impl Span {
     /// How far past the list's edge a row may lie and still count as whole:
     /// the toolkit scrolls a row to an edge in window coordinates, so a row
@@ -1046,6 +1101,7 @@ struct ShortcutHelpView {
 
 impl ShortcutHelpView {
     fn new(return_focus: Option<FocusHandle>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        bind_list_keys(cx);
         let query =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search shortcuts or groups…"));
         let subscription = cx.subscribe(&query, |this, _, event, cx| {
@@ -1123,6 +1179,49 @@ impl ShortcutHelpView {
         if let Some(to) = span.reveal(-offset.y, view, self.layout.content(), how) {
             self.scroll.set_offset(point(offset.x, -to));
         }
+    }
+
+    /// How many entries Page Up and Page Down move: as many as the list's
+    /// height holds whole rows, at least one, as a page in a macOS list. A
+    /// heading's shorter row is not counted: the selection passes over it.
+    fn page(&self) -> usize {
+        let view = self.scroll.bounds().size.height;
+        ((view / appearance::ui_size(SHORTCUT_ROW)).floor() as usize).max(1)
+    }
+
+    /// Moves the selection by `step` and brings the entry it reaches into
+    /// view by Up's and Down's rules (`reveal_selected`): an entry outside
+    /// the list or cut by its edge is centred, a group's first entry with
+    /// its heading, and the list's ends hold it, so End leaves the last entry
+    /// whole at the list's foot and Home the first heading at its top. Up and
+    /// Down at either end move nothing; Home, End, Page Up and Page Down,
+    /// which name a place rather than a neighbour, show their entry even
+    /// where the selection is already on it, as after the wheel moved the
+    /// list away from it.
+    fn step(&mut self, step: Step, cx: &mut Context<Self>) {
+        let entries: Vec<usize> = (0..self.rows.len())
+            .filter(|&row| matches!(self.rows[row], HelpRow::Entry(_)))
+            .collect();
+        let (Some(last), Some(at)) = (
+            entries.len().checked_sub(1),
+            entries.iter().position(|&row| row == self.selected),
+        ) else {
+            return;
+        };
+        let to = match step {
+            Step::Previous => at.saturating_sub(1),
+            Step::Next => (at + 1).min(last),
+            Step::PageUp => at.saturating_sub(self.page()),
+            Step::PageDown => (at + self.page()).min(last),
+            Step::First => 0,
+            Step::Last => last,
+        };
+        if to == at && matches!(step, Step::Previous | Step::Next) {
+            return;
+        }
+        self.selected = entries[to];
+        self.reveal_selected(Reveal::Centre);
+        cx.notify();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1254,19 +1353,14 @@ impl Render for ShortcutHelpView {
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.modifiers.modified() { return; }
-                let forward = match event.keystroke.key.as_str() { "down" => true, "up" => false, _ => return };
-                let next = if forward {
-                    (this.selected + 1..this.rows.len()).find(|index| matches!(this.rows[*index], HelpRow::Entry(_)))
-                } else {
-                    (0..this.selected).rev().find(|index| matches!(this.rows[*index], HelpRow::Entry(_)))
-                };
-                if let Some(index) = next {
-                    this.selected = index;
-                    this.reveal_selected(Reveal::Centre);
-                    cx.notify();
-                }
+                let step = match event.keystroke.key.as_str() { "down" => Step::Next, "up" => Step::Previous, _ => return };
+                this.step(step, cx);
                 cx.stop_propagation();
             }))
+            .on_action(cx.listener(|this, _: &FirstShortcut, _, cx| this.step(Step::First, cx)))
+            .on_action(cx.listener(|this, _: &LastShortcut, _, cx| this.step(Step::Last, cx)))
+            .on_action(cx.listener(|this, _: &PreviousShortcutPage, _, cx| this.step(Step::PageUp, cx)))
+            .on_action(cx.listener(|this, _: &NextShortcutPage, _, cx| this.step(Step::PageDown, cx)))
             .child(Input::new(&self.query).aria_label("Search keyboard shortcuts").cleanable(true))
             // A status read by the line it draws: it was named "61 matching
             // shortcuts" while it drew "61 shortcuts · Ctrl, Alt and Shift".
@@ -1711,6 +1805,16 @@ mod list_tests {
                 "{what}: entry {entry} and what comes with it lie {above:?} below the \
                  list's top and {below:?} above its foot"
             );
+        }
+
+        /// The entry drawn as the keyboard's cursor, with the selection's
+        /// fill, if one is drawn.
+        fn selected(&self, cx: &mut VisualTestContext) -> Option<usize> {
+            let fill = cx.update(|_, cx| Background::from(Hsla::from(rgb(palette(cx).selected))));
+            self.entries().into_iter().find(|&entry| {
+                self.drawn(cx, entry)
+                    .is_some_and(|row| appearance::painted_row(cx, row).0.contains(&fill))
+            })
         }
 
         /// Wheels the list `by` down it (up where negative), checking that row
@@ -2319,6 +2423,153 @@ mod list_tests {
             let what =
                 format!("{text} pt: Down past the list's foot onto group {heading}'s first entry");
             shown.centred(cx, first, &what);
+            close(cx);
+        }
+    }
+
+    /// End selects the list's last entry and leaves it whole at the list's
+    /// foot, and Home selects the first and brings the first group's heading
+    /// to the list's top with it, from the search field, which keeps focus:
+    /// at 13 and 18 pt in a 1200 × 800 window, and again with the wheel
+    /// having moved the list away from an entry already selected. The field
+    /// took both keys to move its caret, and the selection stayed put.
+    #[gpui::test]
+    async fn home_and_end_reach_the_first_heading_and_the_last_entry_whole(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let (first, last) = (entries[0], entries[entries.len() - 1]);
+            let heading = shown.headings()[0];
+            assert_eq!(
+                shown.selected(cx),
+                Some(first),
+                "{text} pt: the list opens on its first entry"
+            );
+            // End, then End again after the wheel moved the list two
+            // entries up from its foot.
+            for again in [false, true] {
+                if again {
+                    shown.wheel(cx, -shown.entry * 2., entries[entries.len() - 4]);
+                    assert!(
+                        !shown.whole(cx, last),
+                        "{text} pt: the wheel moves entry {last} below the list's foot"
+                    );
+                }
+                press(cx, "end");
+                let drawn = shown.drawn(cx, last);
+                assert!(
+                    shown.selected(cx) == Some(last)
+                        && drawn.is_some_and(|row| (row.bottom() - shown.foot).abs() <= EDGE)
+                        && shown.whole(cx, last),
+                    "{text} pt: End selects the last entry, {last}, whole at the list's foot, \
+                     {:?}: it is drawn at {drawn:?}, the selection on {:?}",
+                    shown.foot,
+                    shown.selected(cx)
+                );
+            }
+            for again in [false, true] {
+                if again {
+                    shown.wheel(cx, shown.entry * 2., entries[3]);
+                    assert!(
+                        !shown.whole(cx, heading) && !shown.whole(cx, first),
+                        "{text} pt: the wheel moves group {heading} above the list's top"
+                    );
+                }
+                press(cx, "home");
+                let drawn = shown.drawn(cx, heading).map(|row| row.top());
+                assert!(
+                    shown.selected(cx) == Some(first)
+                        && drawn.is_some_and(|top| (top - shown.top).abs() <= EDGE)
+                        && shown.whole(cx, heading)
+                        && shown.whole(cx, first),
+                    "{text} pt: Home selects the first entry, {first}, with group {heading}'s \
+                     heading whole at the list's top, {:?}: the heading is drawn at {drawn:?}, \
+                     the selection on {:?}",
+                    shown.top,
+                    shown.selected(cx)
+                );
+            }
+            assert_eq!(
+                cx.update(|window, cx| app.read(cx).dialog_hints.focused(window)),
+                Some(DialogKeys::Shortcuts),
+                "{text} pt: the search field keeps focus"
+            );
+            close(cx);
+        }
+    }
+
+    /// Page Down and Page Up move the selection by as many entries as the
+    /// list's height holds whole rows, passing over headings, as a macOS
+    /// list does, and bring the entry they reach into view by Up's and
+    /// Down's rules: left where it lies whole, otherwise centred with its
+    /// group's heading where it is the group's first, the list's ends
+    /// holding it. At 13 and 18 pt in a 1200 × 800 window, Page Down from the
+    /// first entry to the last, which it leaves whole at the list's foot and
+    /// keeps there, and Page Up back to the first, with the first heading at
+    /// the list's top. Neither key moved the selection.
+    #[gpui::test]
+    async fn page_down_and_page_up_move_by_the_whole_rows_the_list_shows(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let rows = shown.view() / shown.entry;
+            let page = rows.floor() as usize;
+            assert!(
+                page >= 2 && (0.02..0.98).contains(&rows.fract()),
+                "{text} pt: the list holds {rows} entry rows, a page of {page} clear of the \
+                 rounding of a row's drawn height"
+            );
+            let mut at = 0;
+            for (key, back) in [("pagedown", false), ("pageup", true)] {
+                loop {
+                    let to = if back {
+                        at - page.min(at)
+                    } else {
+                        (at + page).min(entries.len() - 1)
+                    };
+                    let entry = entries[to];
+                    let inside = shown.shown(cx, entry);
+                    let before = shown.drawn(cx, entry).map(|row| row.top());
+                    press(cx, key);
+                    let what = format!("{text} pt: {key} from entry {} to {entry}", entries[at]);
+                    assert_eq!(shown.selected(cx), Some(entry), "{what} selects it");
+                    if inside {
+                        let now = shown.at(cx, entry).top();
+                        assert!(
+                            before.is_some_and(|before| (now - before).abs() <= EDGE),
+                            "{what}, whole in the list, moved it from {before:?} to {now:?}"
+                        );
+                    } else {
+                        shown.centred(cx, entry, &what);
+                    }
+                    if to == at {
+                        break;
+                    }
+                    at = to;
+                }
+                let (end, drawn) = if back {
+                    let heading = shown.headings()[0];
+                    (heading, shown.at(cx, heading).top() - shown.top)
+                } else {
+                    let last = entries[entries.len() - 1];
+                    (last, shown.at(cx, last).bottom() - shown.foot)
+                };
+                assert!(
+                    drawn.abs() <= EDGE && shown.whole(cx, end),
+                    "{text} pt: {key} to the list's end leaves row {end} whole at it, \
+                     {drawn:?} off"
+                );
+            }
             close(cx);
         }
     }
