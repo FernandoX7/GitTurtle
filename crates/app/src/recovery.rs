@@ -2812,7 +2812,15 @@ impl Render for StashBrowser {
         // A control the keyboard moves focus onto scrolls into the detail's
         // view in this frame with its ring; each reports where it lies.
         self.detail.reveal(window, cx);
-        let cue = crate::tags::ScrollCue::new(self.detail.scroll(), room);
+        // Where the detail is too short for its scrollbar's thumb to move,
+        // as stacked at 18 pt in a 461 × 490 window, it fades the edges its
+        // content continues past, and a fade stops short of the ring of the
+        // control focus is on (`ScrollCue::revealing`): a control the
+        // keyboard reveals lies its ring's room from an edge, inside the
+        // fade's height, and the fade once lay over its ring. The saved
+        // files' own cue needs no reveal: the box, one Tab stop, draws its
+        // ring on its own edge, outside the rows it scrolls.
+        let cue = crate::tags::ScrollCue::revealing(&self.detail, room);
         let areas: Vec<_> = (0..3_usize)
             .map(|area| self.detail.focus(("stash-area", area), cx))
             .collect();
@@ -4317,6 +4325,104 @@ mod tests {
             held > 0,
             "a step's next resize cut Review restore… before the step's reveal was drawn"
         );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The Stashes detail's fades never lie over the ring of the control
+    /// focus is on, as every cue whose controls a reveal scrolls into view
+    /// (`tags::ScrollCue::revealing`): stacked beneath the list at 13 and
+    /// 18 pt, in a 461 px wide window at the height where the detail is too
+    /// short for a thumb that moves (461 × 490 at 18 pt), so it fades the
+    /// edges its content continues past, Tab through the detail's controls
+    /// reveals each, some at an edge where a whole fade would lie, and no
+    /// frame paints a fade band over the focused control's ring. The
+    /// detail's cue once took no notice of focus, and its fade lay over the
+    /// ring of a control the keyboard had just revealed at its edge.
+    #[gpui::test]
+    async fn the_stashes_detail_fades_stop_short_of_the_focused_ring(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::tags::tests::{draw, git, painted_fades, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        std::fs::write(repo.path().join("notes.txt"), "first\n").unwrap();
+        git(repo.path(), &["add", "notes.txt"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add notes"]);
+        std::fs::write(repo.path().join("notes.txt"), "second\n").unwrap();
+        git(repo.path(), &["stash", "push", "-m", "kept for later"]);
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let browser = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
+            .expect("Stashes opens");
+        landed(cx, "saved-stash-row-0");
+        let row = cx.debug_bounds("saved-stash-row-0").unwrap();
+        cx.simulate_click(row.center(), Modifiers::none());
+        landed(cx, "stash-file-0");
+        let file = cx.debug_bounds("stash-file-0").unwrap();
+        cx.simulate_click(file.center(), Modifiers::none());
+        landed(cx, "stash-comparison");
+        let detail = browser.read_with(cx, |browser, _| browser.detail.clone());
+        let slack = px(0.01);
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            let room = cx.read(appearance::button_ring_room);
+            // The tallest window, from 461 × 490 down, whose detail fades.
+            let floor = (0..20)
+                .map(|step| 490. - 10. * step as f32)
+                .find(|height| {
+                    cx.simulate_resize(size(px(461.), px(*height)));
+                    draw(cx);
+                    let list = detail.scroll().bounds();
+                    list.size.height - room * 2. < crate::tags::SHORTEST_SCROLL_TRACK
+                        && detail.scroll().max_offset().y > px(0.)
+                })
+                .unwrap_or_else(|| panic!("{text} pt: the detail fades in a window 461 px wide"));
+            let at = format!("{text} pt in 461 × {floor}");
+            let fade = cx
+                .update(|_, _| appearance::ui_size(8.))
+                .min(detail.scroll().bounds().size.height / 4.);
+            cx.update(|window, cx| {
+                let list = browser.read(cx).stash_focus.clone();
+                window.focus(&list, cx);
+            });
+            draw(cx);
+            let mut at_edge = 0;
+            for step in 0..16 {
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+                let Some(control) = cx.update(|window, cx| detail.focused_bounds(window, cx))
+                else {
+                    continue;
+                };
+                let ring = control.dilate(room);
+                let list = detail.scroll().bounds();
+                let scrolled = -detail.scroll().offset().y;
+                let reach = detail.scroll().max_offset().y;
+                if (scrolled > px(0.5) && ring.top() < list.top() + fade)
+                    || (scrolled < reach - px(0.5) && ring.bottom() > list.bottom() - fade)
+                {
+                    at_edge += 1;
+                }
+                let (top, bottom) = painted_fades(cx, list);
+                assert!(
+                    top.is_none_or(|top| {
+                        list.top() + top <= ring.top() + slack || ring.bottom() <= list.top()
+                    }) && bottom.is_none_or(|bottom| {
+                        list.bottom() - bottom >= ring.bottom() - slack
+                            || ring.top() >= list.bottom()
+                    }),
+                    "{at}, Tab {step}: the fades {top:?} and {bottom:?} of the detail {list:?} \
+                     lie over the focused control's ring {ring:?}"
+                );
+            }
+            assert!(
+                at_edge > 0,
+                "{at}: Tab reveals a control within a fade's height of an edge"
+            );
+        }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
