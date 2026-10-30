@@ -3564,6 +3564,16 @@ mod tests {
                     "{item} drawn whole, {command:?}, as at rest {text:?}"
                 );
             }
+            // No row has room for "Checking…" after its command: no part of
+            // the reason is drawn, the accessible name saying it whole.
+            let rows: Vec<_> = rest.iter().map(|(row, _)| *row).collect();
+            for item in COMMIT_ITEMS {
+                assert_eq!(
+                    reason_drawn(cx, item, LONGEST, &rows),
+                    None,
+                    "{item}: no part of the reason is drawn"
+                );
+            }
             busy(cx, None);
             for (item, (row, _)) in COMMIT_ITEMS.iter().zip(&rest) {
                 assert_eq!(
@@ -3885,7 +3895,7 @@ mod tests {
             let held = held_fetch(&app, cx);
             press(cx, "working-recovery-menu");
             next_frame(cx);
-            wait_for_the_fetch(
+            let drawn = wait_for_the_fetch(
                 cx,
                 &[
                     "Browse stashes…",
@@ -3893,6 +3903,12 @@ mod tests {
                     "Undo last local commit…",
                 ],
                 "the Changes Actions menu",
+            );
+            // At 13 pt in a 1,480 px window, Browse stashes…, far shorter
+            // than the menu's widest command, has the room for it.
+            assert!(
+                drawn.contains(&"Browse stashes…"),
+                "Browse stashes…'s reason is drawn: {drawn:?}"
             );
             assert!(
                 cx.debug_bounds("menu-item: Save changes to stash… · MenuItem disabled")
