@@ -1529,16 +1529,15 @@ mod tests {
     /// still offers the first entry past an edge, for an assistive technology
     /// to move into, which AT-SPI reports visible but not showing. At 640 ×
     /// 400 the content's fold lies above the list, which the dialog draws none
-    /// of, and cuts the filter before it: the list reports a strip a pixel
-    /// across beside its left edge, along its own height past the fold,
-    /// outside which every entry lies, where its layout kept every entry
-    /// inside it. So it does at the height where the list starts exactly on
-    /// that fold (about 640 × 423.5), where a pixel against the fold lay
-    /// inside the list and one against its foot met the entries it runs on
-    /// with past it. Each is walked with the filter the content draws before
-    /// the list, beside which AccessKit keeps the list as the child past the
-    /// fold, visible but not showing and holding no entry, and without it,
-    /// where AccessKit leaves the list out.
+    /// of, and cuts the filter before it: the list reports a pixel beyond a
+    /// corner, past the fold, outside which every entry lies, where its
+    /// layout kept every entry inside it. So it does at the height
+    /// where the list starts exactly on that fold (about 640 × 423.5), where
+    /// a pixel against the fold lay inside the list and one against its foot
+    /// met the entries it runs on with past it. Each is walked with the
+    /// filter the content draws before the list, beside which AccessKit keeps
+    /// the list as the child past the fold, visible but not showing and
+    /// holding no entry, and without it, where AccessKit leaves the list out.
     ///
     /// The test platform builds no accessibility tree, so the test builds the
     /// part GPUI would: the window, each clipping container's node as it
@@ -1548,7 +1547,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn assistive_technology_reaches_only_the_entries_drawn(cx: &mut TestAppContext) {
-        use crate::native_accessibility::{atspi_state_tests::reached, clipping_node};
+        use crate::native_accessibility::{
+            atspi_state_tests::reached, beyond_a_corner, clipping_node,
+        };
         use accesskit_atspi_common::State;
         use gpui::accesskit::{Node, NodeId, Rect, Role as A11yRole, Tree, TreeId, TreeUpdate};
 
@@ -1802,24 +1803,20 @@ mod tests {
             }
 
             // The list reports the part of itself the dialog shows, and where
-            // it shows none of it, a strip a pixel across beside its left
-            // edge, along its own height past the content's fold: outside
-            // itself and the content, which leaves every entry outside it,
-            // those it runs on with past its foot included.
+            // it shows none of it, a pixel beyond a corner, past the content's
+            // fold: outside itself and the content, which leaves every entry
+            // outside it, those it runs on with past its foot included.
             if hidden {
                 let reported = clipping_node("reflog-list")
                     .and_then(|node| node.bounds())
                     .expect("the list clips its entries");
                 let (layout, content) = (physical(list), physical(content));
                 assert!(
-                    (reported.x1 - reported.x0 - scale).abs() < 0.01
-                        && (reported.x1 - layout.x0).abs() < 0.01
-                        && (reported.y0, reported.y1) == (layout.y0, layout.y1)
-                        && reported.intersect(layout).is_empty()
+                    beyond_a_corner(reported, layout, scale)
                         && reported.intersect(content).is_empty(),
                     "at 640 × {height} the list {layout:?} the content draws none of, below \
-                     {content:?}, reports {reported:?}, not a strip a pixel across beside its \
-                     left edge"
+                     {content:?}, reports {reported:?}, not a pixel beyond a corner, outside \
+                     the content"
                 );
                 assert!(
                     entries.iter().any(|entry| entry.y0 >= layout.y1),

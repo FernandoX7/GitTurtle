@@ -54,9 +54,9 @@ bounding box of none of its ancestors that clip their children
 partly drawn node, a node without bounds and a node with no clipping
 ancestor keep `Showing`. GitTurtle's clipping nodes report the part of
 themselves the window draws (`native_accessibility::clips_children`), and
-one the window draws none of reports a strip a pixel across beside its
-leading edge, along its own extent past the fold, outside itself and what is
-drawn, so its children lie outside it. Every clipping ancestor counts, not
+one the window draws none of reports a pixel beyond one of its corners,
+outside its extent along both axes and outside what is drawn, so its
+children lie outside it. Every clipping ancestor counts, not
 the nearest alone: AccessKit's filter keeps an inner clipping node past an
 outer one's fold as the child past that edge, so a node inside the inner one
 can lie wholly outside the outer one, the one place nothing of it is drawn.
@@ -74,8 +74,8 @@ node AccessKit keeps past a fold, which GitTurtle reports at its layout, has
 nothing marking it off screen, and VoiceOver's cursor may outline what lies
 there, as the GitHub panel's notice below its body's fold over Back to
 repository. That is an open item, not yet checked with VoiceOver; a list the
-window draws none of reports its strip there too, so none of its rows is
-reachable.
+window draws none of reports its pixel beyond a corner there too, so none of
+its rows is reachable.
 
 Upstream status: not proposed upstream. The published 0.19.1 source inserts
 both states for every included node; whether a later release tells an
