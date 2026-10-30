@@ -150,6 +150,10 @@ pub enum PopupMenuItem {
         /// GitTurtle patch: the name assistive technology reads; an element
         /// item has no label of its own.
         accessibility_label: Option<SharedString>,
+        /// GitTurtle patch: the name a menu built again finds the item by,
+        /// where its accessible name says more than the command it is
+        /// ([`PopupMenuItem::named`]).
+        name: Option<SharedString>,
         action: Option<Box<dyn Action>>,
         render: Box<dyn Fn(&mut Window, &mut App) -> AnyElement + 'static>,
         handler: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
@@ -198,6 +202,7 @@ impl PopupMenuItem {
             checked: false,
             checkable: false,
             accessibility_label: None,
+            name: None,
             action: None,
             render: Box::new(move |window, cx| builder(window, cx).into_any_element()),
             handler: None,
@@ -329,6 +334,19 @@ impl PopupMenuItem {
                 ..
             } => *accessibility_label = Some(label.into()),
             _ => {}
+        }
+        self
+    }
+
+    /// GitTurtle patch: the name a menu built again finds an element item
+    /// by ([`PopupMenu::rebuild`]), its command, where its accessible name
+    /// says more, as an item that states the condition it waits for does:
+    /// found by that name, the refused item is the one the keyboard's
+    /// cursor was on, and the cursor rests while it waits
+    /// ([`CursorRests`]). Other entries are found by their label.
+    pub fn named(mut self, name: impl Into<SharedString>) -> Self {
+        if let PopupMenuItem::ElementItem { name: own, .. } = &mut self {
+            *own = Some(name.into());
         }
         self
     }
@@ -465,11 +483,28 @@ impl PopupMenuItem {
             PopupMenuItem::Item { label, .. } | PopupMenuItem::Submenu { label, .. } => Some(label),
             PopupMenuItem::ElementItem {
                 accessibility_label,
+                name,
                 ..
-            } => accessibility_label.as_ref(),
+            } => name.as_ref().or(accessibility_label.as_ref()),
             PopupMenuItem::Label(_) | PopupMenuItem::Separator => None,
         }
     }
+}
+
+/// GitTurtle patch: a menu built again left the keyboard's cursor resting
+/// because the item it was on is still offered but can no longer act, as
+/// while a write refuses it ([`PopupMenu::rebuild`]). Emitted once, as the
+/// rest begins, not again for each rebuild while it lasts, and never for a
+/// menu whose selection the pointer owns, which keeps no cursor to rest. An
+/// application can say why the item waits, as an item that states its
+/// condition does in its accessible name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CursorRests {
+    /// The item's name, by which the menu finds it ([`PopupMenuItem::named`]).
+    pub name: SharedString,
+    /// The item's accessible name, which says why it waits where the item
+    /// states it.
+    pub label: SharedString,
 }
 
 pub struct PopupMenu {
@@ -1028,6 +1063,7 @@ impl PopupMenu {
     ) {
         let cursor = self.keyboard_cursor();
         let row = self.selected_index;
+        let resting = self.kept_cursor.is_some();
         let pointer = cursor.is_none() && self.pointer_selection;
         let mut menu = std::mem::replace(self, Self::new(cx));
         menu.menu_items.clear();
@@ -1044,7 +1080,14 @@ impl PopupMenu {
             self.scroll_handle = scroll;
         }
         if let Some(cursor) = cursor {
-            self.place_kept_cursor(cursor, row);
+            // A rest that begins here, its item still offered but refused,
+            // is reported once; a rest that goes on is not reported again.
+            if let Some(waiting) = self.place_kept_cursor(cursor, row).filter(|_| !resting)
+                && let Some(item) = self.menu_items.get(waiting)
+                && let (Some(name), Some(label)) = (item.name().cloned(), item.a11y_label())
+            {
+                cx.emit(CursorRests { name, label });
+            }
         } else if pointer {
             // The builder's selection cleared the flag; the pointer still
             // owns the selection, for the next rebuild as well.
@@ -1122,8 +1165,9 @@ impl PopupMenu {
     /// menu to it only where that is not `row`, the cursor's row before the
     /// rebuild; otherwise nothing is selected and the menu remembers the
     /// item, at the place it now stands where it is still offered, for the
-    /// next rebuild and the menu keys.
-    fn place_kept_cursor(&mut self, cursor: KeptCursor, row: Option<usize>) {
+    /// next rebuild and the menu keys. Returns the item's index where the
+    /// cursor rests because the item is offered but refused.
+    fn place_kept_cursor(&mut self, cursor: KeptCursor, row: Option<usize>) -> Option<usize> {
         let found = self.find_kept(&cursor);
         match found.filter(|ix| self.menu_items[*ix].is_clickable()) {
             Some(ix) => {
@@ -1132,6 +1176,7 @@ impl PopupMenu {
                 if row != Some(ix) {
                     self.scroll_handle.scroll_to_item(ix);
                 }
+                None
             }
             None => {
                 self.selected_index = None;
@@ -1139,6 +1184,7 @@ impl PopupMenu {
                     index: found.unwrap_or(cursor.index),
                     ..cursor
                 });
+                found
             }
         }
     }
@@ -2143,6 +2189,7 @@ impl PopupMenu {
 
 impl FluentBuilder for PopupMenu {}
 impl EventEmitter<DismissEvent> for PopupMenu {}
+impl EventEmitter<CursorRests> for PopupMenu {}
 impl Focusable for PopupMenu {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -3599,6 +3646,101 @@ mod tests {
         cx.simulate_click(pointer, Modifiers::default());
         draw(cx);
         assert_eq!(*ran.borrow(), ["Four"], "a fresh click runs Four");
+    }
+
+    /// A rebuild that rests the keyboard's cursor because its item is still
+    /// offered but refused reports that item once, as the rest begins: its
+    /// name and its accessible name, which an element item that states why
+    /// it waits carries apart from the name it is found by. A rebuild while
+    /// the rest goes on reports nothing more, a rest after the item could
+    /// act again is reported again, an item that is gone reports nothing,
+    /// and a menu whose selection the pointer owns reports nothing.
+    #[gpui::test]
+    fn a_rebuild_that_rests_the_cursor_reports_the_waiting_item_once(cx: &mut TestAppContext) {
+        const ONE_REFUSED: &[(&str, bool)] = &[
+            ("One", false),
+            ("Two", true),
+            ("Three", true),
+            ("Four", true),
+        ];
+        const WITHOUT_ONE: &[(&str, bool)] = &[("Two", true), ("Three", true), ("Four", true)];
+        let (menu, cx) = open(cx, FOUR);
+        let reports = Rc::new(std::cell::RefCell::new(Vec::<CursorRests>::new()));
+        cx.update(|_, cx| {
+            let reports = reports.clone();
+            cx.subscribe(&menu, move |_, rest: &CursorRests, _| {
+                reports.borrow_mut().push(rest.clone())
+            })
+            .detach();
+        });
+        let taken = |reports: &Rc<std::cell::RefCell<Vec<CursorRests>>>| {
+            std::mem::take(&mut *reports.borrow_mut())
+                .into_iter()
+                .map(|rest| (rest.name.to_string(), rest.label.to_string()))
+                .collect::<Vec<_>>()
+        };
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "Down");
+
+        rebuilt(&menu, cx, ONE_REFUSED);
+        assert_eq!(cursor(&menu, cx), None, "at rest");
+        assert_eq!(
+            taken(&reports),
+            [("One".to_string(), "One".to_string())],
+            "the rest begins"
+        );
+        rebuilt(&menu, cx, ONE_REFUSED);
+        assert!(taken(&reports).is_empty(), "the rest goes on");
+
+        rebuilt(&menu, cx, FOUR);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "back on One");
+        assert!(taken(&reports).is_empty(), "no rest");
+        // An element item stating why it waits, found by its command.
+        cx.update(|window, cx| {
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, _, _| {
+                    FOUR[1..].iter().fold(
+                        menu.label("Heading").item(
+                            PopupMenuItem::element(|_, _| div().child("One"))
+                                .named("One")
+                                .accessibility_label("One, available when the write finishes")
+                                .disabled(true),
+                        ),
+                        |menu, (name, _)| menu.item(PopupMenuItem::new(*name)),
+                    )
+                })
+            })
+        });
+        draw(cx);
+        assert_eq!(
+            taken(&reports),
+            [(
+                "One".to_string(),
+                "One, available when the write finishes".to_string()
+            )],
+            "a new rest, on the item that says why"
+        );
+
+        rebuilt(&menu, cx, FOUR);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("One"), "back on One");
+        rebuilt(&menu, cx, WITHOUT_ONE);
+        assert!(taken(&reports).is_empty(), "One gone, nothing waits");
+
+        // The pointer takes the selection: nothing rests.
+        rebuilt(&menu, cx, FOUR);
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        let two = cx
+            .debug_bounds("menu-item: Two · MenuItem")
+            .expect("Two drawn");
+        cx.simulate_mouse_move(two.center(), None, Modifiers::default());
+        draw(cx);
+        rebuilt(&menu, cx, &[("One", true), ("Two", false), ("Three", true), ("Four", true)]);
+        assert!(
+            taken(&reports).is_empty(),
+            "the pointer's selection reports nothing"
+        );
     }
 
     #[gpui::test]

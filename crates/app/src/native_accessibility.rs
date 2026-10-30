@@ -3,7 +3,7 @@
 //! and on workspace display-change notifications, then applied to the toolkit's
 //! motion policy. Foreground activation remains a fallback read.
 use crate::*;
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{CursorRests, PopupMenu, PopupMenuItem};
 
 #[cfg(any(target_os = "macos", test))]
 mod display_changes;
@@ -443,6 +443,7 @@ impl KeyboardMenu {
         let menu = PopupMenu::build(window, cx, |menu, window, cx| {
             Self::finish(build(menu), focus.clone(), cap, window, cx)
         });
+        announces_resting(&menu, window, cx);
         let dismiss = cx.subscribe_in(
             &menu,
             window,
@@ -953,8 +954,11 @@ pub(crate) fn detailed_item(label: &'static str, detail: &'static str) -> PopupM
 }
 
 /// [`detailed_item`]'s row: `label`, then `detail` at its trailing edge,
-/// announced as `name`.
+/// announced as `name`, and found as `label` when its menu is built again,
+/// so the keyboard's cursor rests while the item it was on waits rather
+/// than taking the item for one that has gone ([`announces_resting`]).
 fn detail_row(label: SharedString, detail: SharedString, name: SharedString) -> PopupMenuItem {
+    let command = label.clone();
     PopupMenuItem::element(move |_, cx| {
         let color = gpui_kit::component::Theme::global(cx).muted_foreground;
         let (command, condition) = (label.clone(), detail.clone());
@@ -986,7 +990,29 @@ fn detail_row(label: SharedString, detail: SharedString, name: SharedString) -> 
                     .child(condition),
             )
     })
+    .named(command)
     .accessibility_label(name)
+}
+
+/// Says once, politely, why the item the keyboard's cursor was on waits,
+/// as `menu` is built again and leaves the cursor resting because that item
+/// is still offered but refused (the kit's `CursorRests`): "Open project,
+/// available when fetching remote finishes", the item's accessible name,
+/// from the window's polite announcement node (`copy_feedback::announce`).
+/// Decided by the owner: the cursor rests on no item rather than moving to
+/// another, and the rest itself shows nothing, so a screen reader heard
+/// nothing of why Enter now does nothing. Once per rest, however often the
+/// menu is built again while it lasts; never for a menu the pointer owns,
+/// which keeps no cursor to rest; and nothing for an item that states no
+/// reason, whose name alone would only repeat the item.
+fn announces_resting(menu: &Entity<PopupMenu>, window: &mut Window, cx: &mut App) {
+    window
+        .subscribe(menu, cx, |_, rest: &CursorRests, window, cx| {
+            if rest.label != rest.name {
+                crate::copy_feedback::announce(window, cx, rest.label.clone());
+            }
+        })
+        .detach();
 }
 
 /// Why the items a write refuses wait, in every menu that refuses items
@@ -1350,6 +1376,7 @@ impl RenderOnce for AppDropdown {
                 .detach();
                 let keyboard = window.last_input_was_keyboard();
                 let menu = open(menu, keyboard, window, cx);
+                announces_resting(&cx.entity(), window, cx);
                 if let Some(app) = writes.as_ref().and_then(WeakEntity::upgrade) {
                     let commit = commit.clone();
                     let read = move |app: &crate::GitTurtle| {
@@ -1895,6 +1922,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                 let waited = Self::wait(wait, writes.as_ref(), cx).is_some();
                 let waiting = std::rc::Rc::downgrade(&shared);
                 let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
+                    announces_resting(&cx.entity(), window, cx);
                     let viewport = window.viewport_size();
                     cx.observe_window_bounds(window, move |_, window, cx| {
                         if window.viewport_size() != viewport {

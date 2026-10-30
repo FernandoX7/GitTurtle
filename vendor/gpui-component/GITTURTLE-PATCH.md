@@ -1239,6 +1239,32 @@ refused Open project, and after the write; Discard changes… once Ignore… was
 refused; Stage once a file became conflicted, where Enter marked the file
 resolved; Cherry-pick once HEAD left a commit and took Amend and Undo away.
 
+A rebuild that rests the keyboard's cursor because the item it was on is
+still offered but refused now reports that item to the application, once,
+as the rest begins: `PopupMenu` emits `CursorRests` (exported from
+`menu`), carrying the item's name and its accessible name, which an item
+that states why it waits says apart from the command. A rebuild while the
+rest goes on emits nothing more, an item that is gone emits nothing, and a
+menu whose selection the pointer owns keeps no cursor to rest and emits
+nothing. An element item's accessible name is also the name a rebuild
+found it by, so an item whose accessible name states its condition ("Open
+project, available when fetching remote finishes") read as a different
+item from the plain one before it, and its refusal as the item having
+gone; `PopupMenuItem::named` gives an element item the name it is found
+by, its command, apart from its accessible name. The app subscribes in
+`crates/app/src/native_accessibility.rs` (`announces_resting`, for every
+button's, right-click's and keyboard's menu) and announces the accessible
+name politely where it says more than the name. The kit has no
+announcement of its own, which belongs to the application's live regions.
+`a_rebuild_that_rests_the_cursor_reports_the_waiting_item_once` rests the
+cursor on a refused One, builds the menu again in that rest, returns the
+cursor, rests it on an element item named One that states why, and then
+rebuilds without One and with the pointer's selection: one report for each
+rest, the second carrying the element item's accessible name, and none for
+the gone item or the pointer's menu; without the report, or reporting on
+every rebuild, it fails. Remove this part when upstream reports a resting
+cursor or keeps the cursor on its item by a name of its own.
+
 A click no longer straddles a rebuild. Rows are wired by their item's index
 (`MenuItemElement::new(ix, …)`, the element ID under which GPUI keeps a
 pending press across frames), and `on_click` ran whatever item stood at

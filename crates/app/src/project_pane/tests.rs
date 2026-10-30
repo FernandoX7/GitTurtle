@@ -572,6 +572,109 @@ fn a_project_rows_menu_names_the_write_open_project_waits_for(cx: &mut TestAppCo
     settle(cx);
 }
 
+/// The window's polite announcements, each by its node and its text: the
+/// node a fresh one for each announcement, so one heard again shows as a
+/// new node.
+fn polite_announcements(cx: &mut VisualTestContext) -> Option<(ElementId, String)> {
+    let announced = crate::copy_feedback::tests::announced(cx)?;
+    let live = native_accessibility::written::announced_from("copy-announcement");
+    assert!(
+        !live.is_empty()
+            && live
+                .iter()
+                .all(|(_, how)| how.live == gpui::accesskit::Live::Polite),
+        "announced politely, not as an alert: {live:?}"
+    );
+    Some(announced)
+}
+
+/// A project row's keyboard menu whose cursor a write leaves resting, Open
+/// project refused under it, says once, politely, why Open project waits:
+/// "Open project, available when fetching remote finishes". Built again
+/// while the rest goes on, as another write's label replaces the Fetch's, it
+/// says nothing more; resting again after the write, it says why again. A
+/// menu the pointer owns says nothing. The cursor rested on no item with
+/// nothing to say why Enter then did nothing.
+#[gpui::test]
+fn a_resting_menu_cursor_says_once_why_its_item_waits(cx: &mut TestAppContext) {
+    const WAITS: &str = "Open project, available when fetching remote finishes";
+    let (library, _, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    cx.update(|_, cx| native_accessibility::bind_keys(cx));
+    let busy = |cx: &mut VisualTestContext, busy: Option<&'static str>| {
+        app.update(cx, |app, cx| {
+            app.operation_busy = busy;
+            cx.notify();
+        });
+        settle(cx);
+    };
+    // The last row, beta, a project.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.move_project_cursor(true, true, window, cx);
+            window.focus(&app.project_pane.focus, cx);
+        })
+    });
+    settle(cx);
+    cx.simulate_keystrokes("shift-f10");
+    settle(cx);
+    assert_eq!(
+        crate::native_accessibility::menu_tests::cursor_among(cx, &["Open project"]),
+        ["Open project"],
+        "the cursor on Open project as the menu opens"
+    );
+    assert_eq!(polite_announcements(cx), None, "nothing said at rest");
+
+    busy(cx, Some("Fetching remote…"));
+    let (first, said) = polite_announcements(cx).expect("the rest is announced");
+    assert_eq!(said, WAITS, "it says why Open project waits");
+    busy(cx, Some("Pulling fast-forward…"));
+    assert_eq!(
+        polite_announcements(cx),
+        Some((first.clone(), WAITS.to_string())),
+        "built again while the rest goes on, it says nothing more"
+    );
+    busy(cx, None);
+    assert_eq!(
+        crate::native_accessibility::menu_tests::cursor_among(cx, &["Open project"]),
+        ["Open project"],
+        "the cursor back on Open project once the write ends"
+    );
+    busy(cx, Some("Fetching remote…"));
+    let (again, said) = polite_announcements(cx).expect("the new rest is announced");
+    assert!(
+        again != first && said == WAITS,
+        "resting again, it says why again: {again:?} {said}"
+    );
+    busy(cx, None);
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+
+    // The actions button's menu, its selection the pointer's.
+    let beta = app.read_with(cx, |app, _| app.project_pane.rows.len() - 1);
+    let button = cx
+        .debug_bounds(format!("project-row-menu-{beta}").leak())
+        .expect("beta's actions button");
+    cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+    settle(cx);
+    cx.simulate_click(button.center(), Modifiers::default());
+    settle(cx);
+    let open = cx
+        .debug_bounds("menu-item: Open project · MenuItem")
+        .expect("Open project at rest");
+    cx.simulate_mouse_move(open.center(), None, Modifiers::default());
+    settle(cx);
+    busy(cx, Some("Fetching remote…"));
+    assert_eq!(
+        polite_announcements(cx).map(|(node, _)| node),
+        Some(again),
+        "the pointer's menu says nothing"
+    );
+    busy(cx, None);
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+}
+
 /// A project row's actions button, the control a hover reveals at the row's
 /// end, opens the menu its right-click and Shift-F10 open, and it follows
 /// writes as they do: Open project, which a write refuses, is disabled in
