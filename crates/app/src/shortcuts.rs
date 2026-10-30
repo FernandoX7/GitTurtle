@@ -1603,6 +1603,27 @@ mod list_tests {
             self.foot - self.top
         }
 
+        /// The least height of the 1200 px wide window whose list is `view`
+        /// tall inside its border or more, found by resizing the window,
+        /// halving between a 300 px tall one, whose list is at its floor, and
+        /// an 800 px one: the dialog's height cap takes a tenth of the
+        /// window's height, snapped to the half pixel, besides the chrome.
+        fn size_to(&mut self, cx: &mut VisualTestContext, view: Pixels) -> f32 {
+            let (mut short, mut tall) = (300., 800.);
+            for _ in 0..16 {
+                let height = (short + tall) / 2.;
+                cx.simulate_resize(size(px(1200.), px(height)));
+                draw(cx);
+                self.relist(cx);
+                if self.view() < view {
+                    short = height;
+                } else {
+                    tall = height;
+                }
+            }
+            tall
+        }
+
         /// The entries, in the list's order.
         fn entries(&self) -> Vec<usize> {
             (0..self.rows.len())
@@ -2004,6 +2025,72 @@ mod list_tests {
                 }
             }
             close(cx);
+        }
+    }
+
+    /// Whether the list holds a group's heading with its first entry is
+    /// judged at the list's height to the pixel: at 13 and 18 pt, with the
+    /// wheel leaving the second group's first entry 5 px above a 1200 × 800
+    /// window's list, a window whose list is a pixel taller than the heading
+    /// and the entry brings the heading back to its top with the entry whole
+    /// below it, and one whose list is a pixel shorter brings the entry back
+    /// whole to its top without the heading. Judged 2 px short, the taller
+    /// list brought the entry alone, its heading above the list; judged 2 px
+    /// long, the shorter one brought the heading and cut the entry at its
+    /// foot. No other list test's list lies within 2 px of both.
+    #[gpui::test]
+    async fn a_list_a_pixel_past_a_heading_and_an_entry_holds_both_and_one_a_pixel_short_the_entry(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        for text in [13, 18] {
+            open(&app, cx, text, (1200., 800.));
+            let mut shown = Shown::read(cx, "");
+            let both = shown.heading + shown.entry;
+            let windows = [(px(1.), "taller"), (px(-1.), "shorter")]
+                .map(|(by, list)| (shown.size_to(cx, both + by), both + by, list));
+            close(cx);
+            let entries = shown.entries();
+            let heading = shown.headings()[1];
+            let first = heading + 1;
+            for (height, view, list) in windows {
+                open(&app, cx, text, (1200., 800.));
+                shown.relist(cx);
+                for _ in 0..entries.iter().position(|&entry| entry == first).unwrap() {
+                    press(cx, "down");
+                }
+                let by = shown.at(cx, first).bottom() - shown.top + px(5.);
+                shown.wheel(cx, by, first + 1);
+                cx.simulate_resize(size(px(1200.), px(height)));
+                draw(cx);
+                shown.relist(cx);
+                assert!(
+                    (shown.view() - view).abs() < EDGE,
+                    "{text} pt: a {height} px tall window gives the list {view:?}, a pixel \
+                     {list} than a heading and an entry, {both:?}: {:?}",
+                    shown.view()
+                );
+                // The row the list brings to its top: the heading where the
+                // list holds it with the entry, else the entry.
+                let holds = view > both;
+                let top = if holds { heading } else { first };
+                let drawn = shown.drawn(cx, top).map(|row| row.top());
+                assert!(
+                    drawn.is_some_and(|drawn| (drawn - shown.top).abs() <= EDGE)
+                        && shown.whole(cx, first)
+                        && shown.whole(cx, heading) == holds,
+                    "{text} pt: a list a pixel {list} than group {heading}'s heading and \
+                     entry {first} brings row {top} to its top, {:?}, with the entry whole \
+                     and the heading {}: row {top} is drawn at {drawn:?}, entry {first} at \
+                     {:?}",
+                    shown.top,
+                    if holds { "whole" } else { "cut" },
+                    shown.drawn(cx, first)
+                );
+                close(cx);
+            }
         }
     }
 
