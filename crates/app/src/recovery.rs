@@ -28,9 +28,10 @@ const STASH_PAGE_SIZE: usize = 40;
 /// than its inspection and it scrolls: about six lines of a patch.
 const STASH_CONTENT_FLOOR: f32 = 120.;
 type Failure = Box<dyn FnOnce(String, &mut Window, &mut Context<GitTurtle>)>;
-/// What runs as a prepared recovery action's review opens, before it does:
+/// What runs as a prepared recovery action's review would open, before it
+/// does: whether it still answers what was asked, false dropping it.
 /// Stashes closes for Restore stash's.
-type Reviewing = Box<dyn FnOnce(&mut Window, &mut Context<GitTurtle>)>;
+type Reviewing = Box<dyn FnOnce(&mut Window, &mut Context<GitTurtle>) -> bool>;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -81,6 +82,18 @@ impl GitTurtle {
         self.recovery.task = None;
         if self.operation_busy == Some(PREPARING) {
             self.operation_busy = None;
+        }
+    }
+
+    /// Cancels the recovery read `read` while it is still the one
+    /// preparing ([`Self::cancel_recovery_read`]), never a later one: Stashes'
+    /// Review restore… once what it asked for is no longer shown. Its job is
+    /// skipped if it has not started, its answer dropped, and the window is
+    /// free for another action at once.
+    fn cancel_recovery_preparation(&mut self, read: u64, cx: &mut Context<Self>) {
+        if self.recovery.generation == read && self.recovery.task.is_some() {
+            self.cancel_recovery_read();
+            cx.notify();
         }
     }
 
@@ -207,8 +220,10 @@ impl GitTurtle {
 
     /// Prepares a recovery action, as [`Self::read_recovery`] does, without
     /// refusing first from the pause the window read last: the core's plan
-    /// reads the pause itself. `reviewing` runs as the review opens, before
-    /// it does. Where the core's answer and the window's pause disagree, a
+    /// reads the pause itself. `reviewing` runs as the review would open,
+    /// before it does, and drops it if it no longer answers what was asked;
+    /// `failure` likewise decides where a refusal goes, if anywhere. Where
+    /// the core's answer and the window's pause disagree, a
     /// refusal for a pause the window has not read or a plan where it reads
     /// one, the window reads its working state again, quietly
     /// ([`Self::read_pause_again`]).
@@ -260,17 +275,16 @@ impl GitTurtle {
                         action,
                         command,
                     }) => {
-                        if let Some(reviewing) = reviewing {
-                            reviewing(window, cx);
+                        if reviewing.is_none_or(|reviewing| reviewing(window, cx)) {
+                            this.confirm_git_write(
+                                title,
+                                explanation,
+                                action,
+                                WriteCommand::Recovery(command),
+                                window,
+                                cx,
+                            );
                         }
-                        this.confirm_git_write(
-                            title,
-                            explanation,
-                            action,
-                            WriteCommand::Recovery(command),
-                            window,
-                            cx,
-                        );
                     }
                     Err(error) => {
                         let message = format!("{error:#}");
@@ -681,6 +695,10 @@ impl GitTurtle {
         let opened = browser.clone();
         self.recovery.browser = Some(browser.downgrade());
         window.open_alert_dialog(cx, move |dialog, window, _| {
+            // Closed by Escape, Close or its backdrop, Stashes stops
+            // preparing a Review restore… nobody is waiting for; closed any
+            // other way, its release does (`StashBrowser::new`).
+            let closing = browser.downgrade();
             dialog
                 .title(native_accessibility::dialog_title(
                     "stashes-title",
@@ -689,6 +707,9 @@ impl GitTurtle {
                 .width(appearance::dialog_width(px(1060.), window))
                 .max_h(appearance::dialog_max_height(window))
                 .button_props(DialogButtonProps::default().ok_text("Close"))
+                .on_close(move |_, _, cx| {
+                    let _ = closing.update(cx, |browser, cx| browser.cancel_restore(cx));
+                })
                 // In the dialog's content rather than its scrolling body,
                 // whose scroller lays the browser out at the height it asks
                 // for and cut its lines mid-line where the cap left less:
@@ -1306,6 +1327,13 @@ pub(crate) struct StashBrowser {
     error: Option<String>,
     preview_error: Option<String>,
     restore_index: bool,
+    /// What Review restore… asked the core to prepare and the window's
+    /// recovery read preparing it, until it answers. Choosing another stash
+    /// or page, the other Restore staged state, or closing Stashes cancels
+    /// it ([`Self::cancel_restore`]), and an answer to anything else is
+    /// dropped ([`Self::answered`]): a review or refusal once landed for the
+    /// stash or choice shown before.
+    restoring: Option<(RestoreRequest, u64)>,
     /// Why Review restore… was refused, which the footer note beside it
     /// says in place of its explanation until another stash is chosen.
     restore_line: Option<String>,
@@ -1324,6 +1352,16 @@ impl Drop for StashBrowser {
     fn drop(&mut self) {
         crate::model_view::pause(self.content.as_deref());
     }
+}
+
+/// What Stashes' Review restore… asked the core to prepare: the stash, by
+/// its object, whether to restore its staged state, and the browser's
+/// generation, which choosing a stash or reading the list again moves on.
+#[derive(Clone, Debug, PartialEq)]
+struct RestoreRequest {
+    stash: String,
+    restore_index: bool,
+    generation: u64,
 }
 
 /// Opens `app`'s Stashes, reads its list, selects its newest stash and reads
@@ -1405,11 +1443,15 @@ impl StashBrowser {
             error: None,
             preview_error: None,
             restore_index: false,
+            restoring: None,
             restore_line: None,
             pause_ended: false,
             refusals: 0,
             reveal_note: Default::default(),
         };
+        // Released however its dialog closed, Stashes stops preparing a
+        // Review restore… nobody is waiting for.
+        cx.on_release(|this, cx| this.cancel_restore(cx)).detach();
         this.load_page(0, window, cx);
         this
     }
@@ -1458,6 +1500,7 @@ impl StashBrowser {
     }
 
     fn load_page(&mut self, offset: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_restore(cx);
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.clear_preview();
@@ -1516,6 +1559,7 @@ impl StashBrowser {
             return;
         };
         window.focus(&self.stash_focus, cx);
+        self.cancel_restore(cx);
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         self.clear_preview();
@@ -1659,8 +1703,11 @@ impl StashBrowser {
     /// core prepares the restoration and reads the pause itself, never the
     /// one the window read last, which a merge finished in a terminal can
     /// have ended unseen. Its review opens in place of Stashes; a refusal
-    /// stays in Stashes, in the footer note beside Review restore…, and in
-    /// the window's error only once Stashes has closed.
+    /// stays in Stashes, in the footer note beside Review restore…. Either
+    /// answers only what was asked while Stashes still shows it: choosing
+    /// another stash or page, the other Restore staged state, or closing
+    /// Stashes cancels the preparation, and Review restore… can be pressed
+    /// again at once.
     fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(snapshot) = &self.snapshot else {
             return;
@@ -1668,35 +1715,81 @@ impl StashBrowser {
         let stash = snapshot.stash.clone();
         let restore_index = self.restore_index;
         let repository = self.repository.path().to_owned();
+        let request = RestoreRequest {
+            stash: stash.oid.clone(),
+            restore_index,
+            generation: self.generation,
+        };
         let browser = cx.entity().downgrade();
         let shown = browser.clone();
+        let refused = request.clone();
         let failure: Failure = Box::new(move |message, window, cx| {
-            match browser.upgrade().filter(|_| window.has_active_dialog(cx)) {
-                Some(browser) => browser.update(cx, |browser, cx| browser.refuse(message, cx)),
-                None => cx.defer_in(window, move |this, _, cx| {
-                    this.operation_error = Some(message);
-                    cx.notify();
-                }),
+            if let Some(browser) = browser.upgrade().filter(|_| window.has_active_dialog(cx)) {
+                browser.update(cx, |browser, cx| {
+                    if browser.answered(&refused) {
+                        browser.refuse(message, cx);
+                    }
+                });
             }
         });
+        let asked = request.clone();
         let reviewing: Reviewing = Box::new(move |window, cx| {
-            if shown.upgrade().is_some() && window.has_active_dialog(cx) {
+            let answers = shown
+                .upgrade()
+                .filter(|_| window.has_active_dialog(cx))
+                .is_some_and(|browser| browser.update(cx, |browser, _| browser.answered(&asked)));
+            if answers {
                 window.close_dialog(cx);
             }
+            answers
         });
         let started = self.owner.update(cx, |this, cx| {
-            if this.path.as_ref() != Some(&repository) { return false; }
+            if this.path.as_ref() != Some(&repository) { return None; }
             this.prepare_recovery(move |repo| {
                 let plan = repo.stash_apply_plan(&stash, restore_index)?;
                 let mut explanation = format!("Restore “{}” ({}) onto {} at {}.\n\n{}\n\nThe stash remains saved after restoration. Conflicts leave the applied work in place for review in Changes.", stash.name, short_oid(&stash.oid), plan.current.branch, short_oid(&plan.current.head),
                     if restore_index { "Restore the original staged state as well as working files. Git may refuse if that staged state cannot be recreated safely." } else { "Restore tracked changes into the working files without recreating the stash's staged state. Saved untracked files are restored when present." });
                 append_paths(&mut explanation, &plan.affected_paths);
                 Ok(Prepared::Confirmation { title: "Restore stash".into(), explanation, action: "Restore stash", command: RecoveryCommand::ApplyStash { plan }.into() })
-            }, Some(failure), Some(reviewing), window, cx)
+            }, Some(failure), Some(reviewing), window, cx).then_some(this.recovery.generation)
         });
-        if started.unwrap_or(false) {
+        if let Ok(Some(read)) = started {
+            self.restoring = Some((request, read));
             self.forget_restore_line();
             cx.notify();
+        }
+    }
+
+    /// Whether an answer to `request` still answers what Stashes shows: it
+    /// is what Review restore… is preparing, for the stash, Restore staged
+    /// state and selection shown. If so, Review restore… has its answer and
+    /// prepares nothing more; if not, the answer is dropped.
+    fn answered(&mut self, request: &RestoreRequest) -> bool {
+        let answers = self
+            .restoring
+            .as_ref()
+            .is_some_and(|(asked, _)| asked == request)
+            && self.generation == request.generation
+            && self.restore_index == request.restore_index
+            && self
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.stash.oid == request.stash);
+        if answers {
+            self.restoring = None;
+        }
+        answers
+    }
+
+    /// Stops preparing Review restore…'s restoration, which no longer
+    /// answers what Stashes shows, or Stashes has closed: the window's read
+    /// is cancelled ([`GitTurtle::cancel_recovery_preparation`]), so its
+    /// answer never lands and Review restore… can be pressed again at once.
+    fn cancel_restore(&mut self, cx: &mut App) {
+        if let Some((_, read)) = self.restoring.take() {
+            let _ = self
+                .owner
+                .update(cx, |owner, cx| owner.cancel_recovery_preparation(read, cx));
         }
     }
 
@@ -1710,10 +1803,13 @@ impl StashBrowser {
         cx.notify();
     }
 
-    /// The footer note says again what restoring does.
+    /// The footer note says again what restoring does, and no longer
+    /// scrolls the detail to a refusal that has gone: a reveal still due
+    /// scrolled the next stash's detail to its foot.
     fn forget_restore_line(&mut self) {
         self.restore_line = None;
         self.pause_ended = false;
+        self.reveal_note.set(false);
     }
 
     /// The footer note beside Review restore…: why it was refused, a line
@@ -2240,6 +2336,9 @@ impl Render for StashBrowser {
                         .checked(self.restore_index)
                         .on_click(cx.listener(|this, checked, _, cx| {
                             this.restore_index = *checked;
+                            // A restoration prepared for the other choice
+                            // no longer answers.
+                            this.cancel_restore(cx);
                             cx.notify();
                         })),
                 )
@@ -3077,24 +3176,206 @@ mod tests {
         crate::views::tests::draw(cx);
     }
 
-    /// Moves focus with Tab onto the open Stashes' Review restore…, which
-    /// the stacked detail scrolls into view, and presses it with the pointer.
-    /// Focus always moves, so a Review restore… that a refusal's note has
-    /// scrolled partly out of view is revealed again.
-    fn press_review_restore(browser: &Entity<StashBrowser>, cx: &mut gpui::VisualTestContext) {
+    /// Moves focus with Tab onto the open Stashes' control `id`, which the
+    /// stacked detail scrolls into view with its ring.
+    fn tab_to(browser: &Entity<StashBrowser>, id: &'static str, cx: &mut gpui::VisualTestContext) {
         for _ in 0..40 {
             cx.simulate_keystrokes("tab");
             crate::views::tests::draw(cx);
             let focused = cx.update(|window, cx| browser.read(cx).detail.focused(window));
-            if focused == Some("restore-saved-stash".into()) {
-                let restore = cx
-                    .debug_bounds("restore-saved-stash")
-                    .expect("Review restore… is drawn");
-                cx.simulate_click(restore.center(), Modifiers::none());
+            if focused == Some(id.into()) {
                 return;
             }
         }
-        panic!("Tab never reached Review restore…");
+        panic!("Tab never reached {id}");
+    }
+
+    /// A whole press of Space on the focused control: GPUI's keyboard click
+    /// waits for the key up.
+    fn space(cx: &mut gpui::VisualTestContext) {
+        let keystroke = gpui::Keystroke::parse("space").expect("a keystroke");
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+    }
+
+    /// Moves focus with Tab onto the open Stashes' Review restore…, which
+    /// the stacked detail scrolls into view, and presses it with Space, as
+    /// the keyboard does: Enter would confirm the dialog, closing it.
+    fn press_review_restore(browser: &Entity<StashBrowser>, cx: &mut gpui::VisualTestContext) {
+        tab_to(browser, "restore-saved-stash", cx);
+        space(cx);
+    }
+
+    /// Review restore… answers only what Stashes still shows, with the
+    /// window's operations held so Git has not answered. Pressed on "Layout
+    /// experiment", then "Index only" chosen: the preparation is cancelled
+    /// at once, Review restore… can be pressed again, and once Git would
+    /// have answered no review of "Layout experiment" opens; pressed again,
+    /// it reviews "Index only". Restore staged state chosen meanwhile: no
+    /// review of the restoration without it opens, and pressed again the
+    /// review restores it. Stashes closed with Escape: nothing opens and
+    /// nothing is said. Stacked at 18 pt in a 461 × 490 window, with a merge
+    /// paused: no refusal lands under the stash chosen meanwhile. Each
+    /// answered what had been asked once
+    /// it landed: the old stash's review opened, the refusal lay under the
+    /// other stash, the review restored without the staged state, and the
+    /// review popped up after Stashes had closed.
+    #[gpui::test]
+    async fn review_restore_answers_only_what_stashes_still_shows(cx: &mut gpui::TestAppContext) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let git = two_stashes(&repository);
+        let browser = |cx: &mut gpui::VisualTestContext| {
+            app.read_with(cx, |app, _| app.recovery.browser.clone())
+                .and_then(|browser| browser.upgrade())
+                .expect("Stashes is open")
+        };
+        let preparing = |cx: &mut gpui::VisualTestContext| {
+            app.read_with(cx, |app, _| app.operation_busy == Some(PREPARING))
+        };
+        let pressable = || {
+            crate::workspace::refusals::get("restore-saved-stash")
+                .is_some_and(|refusal| !refusal.announced && !refusal.dimmed)
+        };
+        // The review open, by its explanation.
+        let reviewed = |cx: &mut gpui::VisualTestContext| {
+            cx.debug_bounds("operation-consequences").map(|_| {
+                crate::native_accessibility::written::get("operation-consequences")
+                    .and_then(|text| text.node.value().map(str::to_owned))
+                    .unwrap_or_default()
+            })
+        };
+        let close = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            crate::views::tests::draw(cx);
+        };
+        cx.simulate_resize(size(px(1480.), px(980.)));
+
+        // Another stash chosen while Git prepares.
+        open_selected_stash(&app, cx).await;
+        let stashes = browser(cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        press_review_restore(&stashes, cx);
+        assert!(
+            preparing(cx),
+            "Git prepares Layout experiment's restoration"
+        );
+        let row = cx
+            .debug_bounds("saved-stash-row-1")
+            .expect("Index only's row");
+        cx.simulate_click(row.center(), Modifiers::none());
+        StashBrowser::lands(&stashes, cx);
+        assert!(!preparing(cx), "choosing Index only cancels it");
+        assert!(pressable(), "Review restore… can be pressed again at once");
+        drop(held);
+        recovery_lands(&app, cx);
+        assert_eq!(reviewed(cx), None, "no review of Layout experiment opens");
+        assert_eq!(
+            stashes.read_with(cx, |stashes, _| stashes.selected),
+            Some(1)
+        );
+        press_review_restore(&stashes, cx);
+        recovery_lands(&app, cx);
+        let review = reviewed(cx).expect("Index only's review opens");
+        assert!(
+            review.starts_with("Restore “On main: Index only”"),
+            "{review}"
+        );
+        drop(stashes);
+        close(cx);
+
+        // The other Restore staged state chosen while Git prepares.
+        open_selected_stash(&app, cx).await;
+        let stashes = browser(cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        press_review_restore(&stashes, cx);
+        assert!(preparing(cx), "Git prepares the restoration");
+        tab_to(&stashes, "stash-restore-index", cx);
+        space(cx);
+        crate::views::tests::draw(cx);
+        assert!(stashes.read_with(cx, |stashes, _| stashes.restore_index));
+        assert!(!preparing(cx), "choosing Restore staged state cancels it");
+        assert!(pressable(), "Review restore… can be pressed again at once");
+        drop(held);
+        recovery_lands(&app, cx);
+        assert_eq!(
+            reviewed(cx),
+            None,
+            "no review without the staged state opens"
+        );
+        press_review_restore(&stashes, cx);
+        recovery_lands(&app, cx);
+        let review = reviewed(cx).expect("the review opens");
+        assert!(
+            review.contains("Restore the original staged state"),
+            "{review}"
+        );
+        drop(stashes);
+        close(cx);
+
+        // Stashes closed while Git prepares.
+        open_selected_stash(&app, cx).await;
+        let stashes = browser(cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        press_review_restore(&stashes, cx);
+        drop(stashes);
+        cx.simulate_keystrokes("escape");
+        crate::views::tests::draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape closes Stashes"
+        );
+        assert!(!preparing(cx), "closing Stashes cancels it");
+        drop(held);
+        recovery_lands(&app, cx);
+        assert_eq!(
+            reviewed(cx),
+            None,
+            "no review opens once Stashes has closed"
+        );
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_error.clone()),
+            None,
+            "and nothing is said"
+        );
+
+        // Stacked, with a merge paused: another stash chosen while Git
+        // prepares, then a refusal landed but not drawn.
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        open_selected_stash(&app, cx).await;
+        let stashes = browser(cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        press_review_restore(&stashes, cx);
+        cx.update(|window, cx| {
+            stashes.update(cx, |stashes, cx| stashes.select_stash(1, window, cx))
+        });
+        StashBrowser::lands(&stashes, cx);
+        assert!(!preparing(cx), "choosing Index only cancels it");
+        drop(held);
+        recovery_lands(&app, cx);
+        assert_eq!(
+            stashes.read_with(cx, |stashes, _| (
+                stashes.selected,
+                stashes.restore_line.clone()
+            )),
+            (Some(1), None),
+            "no refusal lands under Index only"
+        );
+        assert!(cx.debug_bounds("stash-restore-refusal").is_none());
+        git(&["merge", "--abort"]);
+        drop(stashes);
+        close(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        drop(fixture);
     }
 
     /// Review restore… in Stashes reads the pause in the core rather than
