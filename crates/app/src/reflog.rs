@@ -1791,6 +1791,216 @@ mod tests {
         focus_ring::assert_input_ringed(cx, text, "the Reflog's filter");
     }
 
+    /// Read log pressed while the recovery review reads opens no recovery
+    /// plan, even where the review's read has answered with its plan before
+    /// the press comes up: the press cancels the review's read and waits for
+    /// it, whose reply, superseded, starts the log's read and lands nothing.
+    /// The Reflog stays open on the log, read again with no entry selected.
+    /// A superseded reply that landed would close the Reflog and ask to
+    /// confirm a recovery branch for the entry Read log took away.
+    #[gpui::test]
+    async fn read_log_during_the_recovery_review_opens_no_plan(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        select_newest(cx, &browser).await;
+        let content = rendered(cx, "reflog-browser-content");
+
+        // Review, at the content's end, its read held as a slow read is.
+        content_to_end(cx, &browser);
+        let review = rendered(cx, "review-reflog-recovery");
+        assert!(shows_whole(content, review), "{review:?} in {content:?}");
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        cx.simulate_click(review.center(), Modifiers::default());
+        draw(cx);
+        assert!(
+            browser.read_with(cx, |this, _| this.pending),
+            "the review reads"
+        );
+
+        // Read log, at the content's start, goes down while the review reads
+        // and comes up once its read has answered with the plan, before that
+        // reply lands.
+        content_to_top(cx, &browser);
+        let read_log = rendered(cx, "refresh-reflog");
+        assert!(
+            shows_whole(content, read_log),
+            "{read_log:?} in {content:?}"
+        );
+        cx.simulate_event(MouseDownEvent {
+            position: read_log.center(),
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        drop(held);
+        browser.read_with(cx, |this, _| this.reader.drain());
+        cx.simulate_event(MouseUpEvent {
+            position: read_log.center(),
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+        settle_reads(cx, &browser);
+
+        assert_eq!(
+            browser.read_with(cx, |this, _| this.superseded.clone()),
+            [None],
+            "the review's read answered with its plan, which Read log superseded"
+        );
+        assert!(
+            cx.debug_bounds("operation-consequences").is_none(),
+            "no recovery plan opens"
+        );
+        assert!(
+            cx.debug_bounds("reflog-browser-content").is_some(),
+            "the Reflog stays open"
+        );
+        let (page, selected) =
+            browser.read_with(cx, |this, _| (this.page.is_some(), this.selected.is_some()));
+        assert!(
+            page && !selected,
+            "on the log, read again with no entry selected"
+        );
+    }
+
+    /// A recovery review that fails while keyboard focus is on its loading
+    /// row's Cancel takes the row away and hands focus to Review recovery
+    /// branch…, the stop above the row, which draws its ring whole with the
+    /// error in view below it, and Escape still closes the Reflog. No test
+    /// held focus on the review's Cancel, so its focus could have gone
+    /// anywhere, such as to the filter far above the review.
+    #[gpui::test]
+    async fn a_recovery_review_landing_on_its_cancel_returns_focus_to_review(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        git(repo.path(), &["branch", "recovery/taken"]);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        cx.simulate_resize(size(px(1000.), px(980.)));
+        draw(cx);
+        select_newest(cx, &browser).await;
+        let name = cx.update(|window, cx| {
+            browser.update(cx, |this, cx| {
+                this.name.update(cx, |input, cx| {
+                    input.set_value("recovery/taken", window, cx);
+                });
+                this.name.read(cx).focus_handle(cx)
+            })
+        });
+        let in_content = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| browser.read(cx).content.focused(window))
+        };
+        let review = Some(ElementId::from("review-reflog-recovery"));
+
+        // From the name, Tab reaches Review recovery branch…, Space reviews,
+        // its read held as a slow read is, and Tab reaches the review's
+        // Cancel below it.
+        cx.update(|window, cx| window.focus(&name, cx));
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(in_content(cx), review, "Tab from the name");
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        let space = Keystroke::parse("space").unwrap();
+        cx.simulate_event(KeyDownEvent {
+            keystroke: space.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(KeyUpEvent { keystroke: space });
+        draw(cx);
+        assert!(
+            browser.read_with(cx, |this, _| this.pending),
+            "Space reviews"
+        );
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let cancel = browser.read_with(cx, |this, _| this.cancel_read.handle().clone());
+        assert!(
+            cx.update(|window, _| cancel.is_focused(window)),
+            "Tab reaches the review's Cancel"
+        );
+
+        drop(held);
+        settle_reads(cx, &browser);
+        park_pointer(cx);
+        let error = browser
+            .read_with(cx, |this, _| this.error.clone())
+            .expect("the review fails");
+        assert!(error.contains("already exists"), "{error}");
+        assert!(
+            cx.debug_bounds("cancel-reflog-read").is_none(),
+            "the reply takes the loading row away"
+        );
+        assert_eq!(in_content(cx), review, "focus moves from Cancel to Review");
+        crate::tags::tests::assert_rings_whole(cx, &["review-reflog-recovery"]);
+        let content = rendered(cx, "reflog-browser-content");
+        let shown = rendered(cx, "reflog-error");
+        assert!(shows_whole(content, shown), "{shown:?} in {content:?}");
+
+        cx.simulate_keystrokes("escape");
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape closes the Reflog"
+        );
+    }
+
+    /// Read log takes away the selected entry's commit as well as its
+    /// details: its message, the recovery branch's name and Review recovery
+    /// branch…. Pressed with the pointer while the keyboard is on any of
+    /// them it moves focus to the filter, which the frame draws with its
+    /// ring. No test pressed it from them, so focus could have stayed on a
+    /// control no frame drew, where keys and Escape reached nothing.
+    #[gpui::test]
+    async fn read_log_moves_focus_off_the_selected_commit(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        let focused = |cx: &mut VisualTestContext, on: &str| {
+            cx.update(|window, cx| {
+                let this = browser.read(cx);
+                match on {
+                    "message" => this.message.as_ref().is_some_and(|message| {
+                        message.read(cx).focus_handle(cx).is_focused(window)
+                    }),
+                    "name" => this.name.read(cx).focus_handle(cx).is_focused(window),
+                    _ => {
+                        this.content.focused(window)
+                            == Some(ElementId::from("review-reflog-recovery"))
+                    }
+                }
+            })
+        };
+        for (tabs, on) in [
+            ("tab tab", "message"),
+            ("tab tab tab", "name"),
+            ("tab tab tab tab", "review"),
+        ] {
+            // From the filter, Tab and Down select the second entry, whose
+            // commit lands, and Tab goes on past Copy commit ID.
+            cx.simulate_keystrokes("tab down");
+            settle_reads(cx, &browser);
+            cx.simulate_keystrokes(tabs);
+            draw(cx);
+            assert!(focused(cx, on), "the keyboard is on the commit's {on}");
+            content_to_top(cx, &browser);
+            let held = press_read_log(cx, &browser);
+            assert!(
+                cx.debug_bounds("review-reflog-recovery").is_none(),
+                "Read log takes the commit away"
+            );
+            assert_filter_holds_drawn_focus(cx, &browser, &format!("from the {on}"));
+            drop(held);
+            settle_reads(cx, &browser);
+        }
+    }
+
     /// A click on an entry takes the keyboard's place with it. From the
     /// first entry, a click on the fourth selects it and moves focus onto
     /// it, so Down goes on to the fifth; a Button takes no focus on a press,
