@@ -100,7 +100,14 @@ impl GitTurtle {
                     this.operation_busy = None;
                 }
                 this.read_deferred_working(window, cx);
-                if this.path.as_ref() != Some(&repository) || this.page != AppPage::Repository {
+                // The repository resolved now, not only the path asked for,
+                // as Discard…'s review checks: a requested path can lag the
+                // resolved repository during navigation.
+                if this.path.as_ref() != Some(&repository)
+                    || this.repository.as_ref().map(|repo| repo.path())
+                        != Some(repository.as_path())
+                    || this.page != AppPage::Repository
+                {
                     cx.notify();
                     return;
                 }
@@ -497,6 +504,33 @@ pub(crate) mod tests {
             cx.debug_bounds("operation-consequences").is_some(),
             "Preview rule previews the rule"
         );
+    }
+
+    /// Ignore…'s review of the file opens its form only while the
+    /// repository it reviewed is the one resolved, not only the path asked
+    /// for, as Discard…'s review checks
+    /// (`discard::tests::discard_requires_the_reviewed_resolved_repository`):
+    /// it checked the path alone, so a form could open for a repository the
+    /// window no longer showed.
+    #[gpui::test]
+    async fn ignore_opens_its_form_only_in_the_repository_it_reviewed(cx: &mut TestAppContext) {
+        let (fixture, app, cx, _, scratch) = untracked_scratch(cx).await;
+        let other = crate::views::tests::fixture_repository(fixture.path().join("other"));
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_ignore(scratch, window, cx)));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            Some(PREPARING)
+        );
+        // Requested paths can lag the resolved repository during navigation.
+        app.update(cx, |app, _| app.repository = Some(other));
+        drop(held);
+        ignore_lands(&app, cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "no form opens for another repository"
+        );
+        assert_eq!(app.read_with(cx, |app, _| app.operation_busy), None);
     }
 
     /// Ignore… reads the file's status again before its form opens, as
