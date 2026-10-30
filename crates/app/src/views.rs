@@ -19714,12 +19714,16 @@ pub(crate) mod tests {
     /// field's menu, taller than the room below the pointer, wholly above
     /// the pointer's pixel row: its drawn edge ends on the row above the
     /// pointer's, so neither fill nor ring holds the point, for a pointer
-    /// on a whole pixel and part way into one; and its drawn edge stays
-    /// 8 px or more above the status bar, as the app's other menus keep
-    /// theirs. Kept only inside the window, it ended over the bar; then
-    /// moved up only far enough to clear the bar, it covered the line
-    /// clicked; with its fill's bottom at the pointer, its ring lay on the
-    /// row clicked.
+    /// on a whole pixel, early in one, as 0.3 px in, where a fill moved
+    /// half a pixel down to the nearest pixel would bring its ring over the
+    /// point, and late in one; and its drawn edge stays 8 px or more above
+    /// the status bar, as the app's other menus keep theirs. (These menus
+    /// are whole pixels tall, so the kit's
+    /// `a_popup_above_a_point_moves_up_to_a_whole_pixel` covers that move
+    /// for one whose height ends in half a pixel.) Kept only
+    /// inside the window, it ended over the bar; then moved up only far
+    /// enough to clear the bar, it covered the line clicked; with its
+    /// fill's bottom at the pointer, its ring lay on the row clicked.
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[gpui::test]
     async fn an_inputs_menu_opens_wholly_above_the_pointer_where_it_does_not_fit_below(
@@ -19741,7 +19745,7 @@ pub(crate) mod tests {
                     .debug_bounds("commit-title")
                     .unwrap_or_else(|| panic!("{text} pt: the commit title"));
                 let status = crate::theme_editor::tests::status_bar_top(cx);
-                for into in [0., 0.6] {
+                for into in [0.3, 0., 0.6] {
                     let at = format!("{text} pt in 461 × 490 at scale {scale}, {into} px in");
                     let pointer = point(
                         editor.left() + px(16.),
@@ -19802,14 +19806,15 @@ pub(crate) mod tests {
     }
 
     /// At 18 pt in a 461 × 330 window, as the app keeps its menus above the
-    /// status bar, a right-click in the middle of a code editor opens its
-    /// menu (Go to Definition, Show Code Actions, Cut, Copy, Paste, Select
-    /// All), which fits neither below the pointer nor above it, on the side
-    /// with more room, its items capped at that room and scrolled past it
-    /// with the scrollbar a capped menu shows: it never covers the point
-    /// clicked, keeps its drawn edge 8 px or more above the status bar and
-    /// stays where it opened. Down reaches its last item, Select All, below
-    /// its fold, and scrolls it into view. A resized window closes it, focus
+    /// status bar, a right-click low in a code editor, with more room above
+    /// the pointer than below, opens its menu (Go to Definition, Show Code
+    /// Actions, Cut, Copy, Paste, Select All), which fits neither below the
+    /// pointer nor above it, above it, the side with more room, its items
+    /// capped at that room, taller than the room below, and scrolled past it
+    /// with the scrollbar a capped menu shows: its drawn edge never covers
+    /// the point clicked, stays 8 px or more above the status bar and stays
+    /// where it opened. Down reaches its last item, Select All, below its
+    /// fold, and scrolls it into view. A resized window closes it, focus
     /// back in the editor. Clamped into the window, it lay over the point;
     /// capped for the size it opened in, it could after a resize again.
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -19860,8 +19865,12 @@ pub(crate) mod tests {
                 crate::native_accessibility::menu_foot(window),
             )
         });
-        // Half way between the window's 8 px margin and the menu's foot.
-        let pointer = point(field.center().x, ((px(8.) + foot) / 2.).floor() + px(0.5));
+        // Below the middle of the room between the window's 8 px margin and
+        // the menu's foot, so more of it lies above the pointer.
+        let pointer = point(
+            field.center().x,
+            (px(8.) + (foot - px(8.)) * 0.6).floor() + px(0.3),
+        );
         assert!(
             field.contains(&pointer),
             "{at}: {pointer:?} lies in {field:?}"
@@ -19876,18 +19885,33 @@ pub(crate) mod tests {
             "{at}: the code editor's menu {rows:?}"
         );
         let tall = rows[5].1.bottom() - rows[0].1.top();
-        let (below, above) = (foot - pointer.y.ceil(), pointer.y.floor() - px(8.));
+        // The rooms either side of the device pixel row the pointer lies in,
+        // at the test window's scale, 2, past the band of the menu's drawn
+        // edge, rounded out to whole pixels.
+        let device = (f32::from(pointer.y) * 2.).floor();
+        let (row_top, row_bottom) = (px(device / 2.), px((device + 1.) / 2.));
+        let below = foot - (row_bottom + edge).ceil();
+        let above = (row_top - edge).floor() - px(8.);
         assert!(
             tall > below && tall > above,
             "{at}: its rows, {tall:?} tall, fit neither the {below:?} below {pointer:?} nor the {above:?} above"
         );
         assert!(
-            surface.bottom() <= pointer.y || surface.top() >= pointer.y,
-            "{at}: the menu {surface:?} lies wholly on one side of the point clicked {pointer:?}"
+            above > below,
+            "{at}: {pointer:?} leaves more room above, {above:?}, than below, {below:?}"
+        );
+        let drawn = surface.dilate(edge);
+        assert!(
+            drawn.bottom() <= row_top + px(0.01),
+            "{at}: the menu {surface:?} draws wholly above the point clicked {pointer:?}, the side with more room"
         );
         assert!(
-            !surface.contains(&pointer),
-            "{at}: the menu {surface:?} covers the point clicked {pointer:?}"
+            surface.size.height > below,
+            "{at}: the menu {surface:?} takes the room above, more than the {below:?} below holds"
+        );
+        assert!(
+            !drawn.contains(&pointer),
+            "{at}: the menu {surface:?} draws over the point clicked {pointer:?}"
         );
         assert!(
             surface.top() >= px(8.) - px(0.01)

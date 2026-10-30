@@ -641,8 +641,12 @@ reports one, lay inside the fill's top edge.
 `an_inputs_menu_opens_at_the_pointer_where_it_fits_below` and
 `an_inputs_menu_opens_wholly_above_the_pointer_where_it_does_not_fit_below`
 read the drawn edge clear of the pointer's row at scales 1 and 2, for a
-pointer on a whole pixel and part way into one. Remove this part with the
-fallback menu's placement.
+pointer on a whole pixel and part way into one.
+`an_editors_menu_too_tall_for_either_side_scrolls_beside_the_point` now
+right-clicks low in the code editor, where the room above the pointer is the
+larger, and reads the capped menu drawn wholly above the point and taller
+than the room below, so a cap at the smaller room fails it. Remove this part
+with the fallback menu's placement.
 
 The menu-confirm patch modifies `src/menu/popup_menu.rs`. Upstream's
 `confirm`, which Enter and a click run, acted on whatever entry was selected.

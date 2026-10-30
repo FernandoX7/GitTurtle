@@ -797,6 +797,80 @@ mod tests {
         }
     }
 
+    /// GitTurtle patch: the room a point leaves is the room on its side with
+    /// more, past its gap, so a popup capped there lies wholly on that side:
+    /// below a point high in the window, above one low in it.
+    #[test]
+    fn point_room_is_the_room_on_the_side_with_more() {
+        for (y, room, side) in [
+            // 396 - 102 below, 99 - 4 above.
+            (100.5, 294., Placement::Bottom),
+            // 396 - 302 below, 299 - 4 above.
+            (300.5, 295., Placement::Top),
+        ] {
+            let strategy = point_at(y, 1., 1.);
+            assert_eq!(
+                strategy.point_room(viewport(), MARGIN),
+                Some(px(room)),
+                "{y}"
+            );
+            let capped = resolve(strategy, Size::new(px(40.), px(room)), viewport(), MARGIN);
+            assert_eq!(capped.placement, Some(side), "{y}");
+            assert!(
+                !capped
+                    .bounds
+                    .dilate(px(1.))
+                    .contains(&point(px(100.), px(y))),
+                "{y}: {capped:?}"
+            );
+        }
+        let corner = Strategy::Corner {
+            anchor: Anchor::TopLeft,
+            position: point(px(100.), px(100.)),
+        };
+        assert_eq!(corner.point_room(viewport(), MARGIN), None);
+    }
+
+    /// GitTurtle patch: a popup above a point whose height ends in half a
+    /// pixel, as on a display of scale 2, moves up to a whole pixel as it
+    /// is prepainted, never down toward the point: moved to the nearest
+    /// pixel, it went half a pixel down, and the ring in its gap reached the
+    /// row of a pointer early in its pixel.
+    #[gpui::test]
+    fn a_popup_above_a_point_moves_up_to_a_whole_pixel(cx: &mut gpui::TestAppContext) {
+        use gpui::{InteractiveElement as _, Styled as _};
+
+        struct Harness;
+        impl gpui::Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                gpui::div().size_full().child(
+                    Positioner::point(point(px(100.), px(350.3)))
+                        .offset(px(1.))
+                        .child(
+                            gpui::div()
+                                .debug_selector(|| "point-popup".into())
+                                .w(px(40.))
+                                .h(px(100.5)),
+                        ),
+                )
+            }
+        }
+
+        let (_, cx) = cx.add_window_view(|_, _| Harness);
+        cx.simulate_resize(Size::new(px(500.), px(400.)));
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
+        });
+        let popup = cx.debug_bounds("point-popup").expect("the popup");
+        // The point's device row, at the test window's scale of 2, is 350 to
+        // 350.5; its 1 px gap ends at 349, a whole pixel. The popup, 100.5 px
+        // tall, ends half a pixel higher still, so its top is whole, and its
+        // ring ends at 349.5, clear of the point's row.
+        assert_eq!(popup.bottom(), px(348.5), "{popup:?}");
+        assert_eq!(popup.top(), px(248.), "{popup:?}");
+    }
+
     // Migrated from the tooltip module when its private positioning logic was
     // merged into this one. They passed unchanged across that move, which is
     // what proves the merge preserved tooltip placement behavior.

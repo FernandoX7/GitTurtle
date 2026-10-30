@@ -235,16 +235,20 @@ right-click in an input, text area or editor shows on Linux
 ([component patch](../gpui-component/GITTURTLE-PATCH.md)), which sets the
 gap to its ring's width.
 `positioner::tests::point_positioning_opens_below_or_wholly_above_the_point`
-covers the side it takes and
+covers the side it takes,
 `point_positioning_keeps_its_ring_off_the_pointers_device_row` the gap at
-scales 1, 2, 1.25 and 1.5, through
+scales 1, 2, 1.25 and 1.5, `point_room_is_the_room_on_the_side_with_more`
+the room, and `a_popup_above_a_point_moves_up_to_a_whole_pixel` a popup
+100.5 px tall prepainted above a point at scale 2, through
 `scripts/vendor-crate-test.sh vendor/gpui-base positioner::`;
 `cargo test --locked -p gitturtle an_inputs_menu_opens` covers it in the
 app at scales 1 and 2, the drawn edge on the row below the Working Changes
 filter's pointer and on the row above the commit title's, and
 `an_editors_menu_too_tall_for_either_side_scrolls_beside_the_point` covers
 the room, capping a code editor's menu beside the point in a 461 × 330
-window. Remove this part
+window on the side with more room, above a pointer low in the editor, and
+taller than the room below. The app's input menus are whole pixels tall, so
+only the kit test reaches the move up to a whole pixel. Remove this part
 of the patch when upstream places a popup at a point on the side that holds
 it, never over the point, and those tests pass without it.
 
