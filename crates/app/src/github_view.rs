@@ -759,6 +759,9 @@ struct Panel {
     /// What the panel last said through the window's announcements ([`Panel::announce`]),
     /// cleared as it closes, so that it says again what it reopens with.
     heard: Heard,
+    /// What the top line said in the last frame: when that changes, its text scrolls back to
+    /// its first sentence ([`Panel::pin_top_line`]).
+    top_line_said: Heard,
     error: Option<String>,
     /// That Cancel stopped the last request ([`RequestKind::cancelled`]),
     /// said in `error`'s place until the next request.
@@ -813,7 +816,7 @@ impl Panel {
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
             rows:vec![],page:1,has_next:false,pull:None,status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
-            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),error:None,cancelled:None,origin:Origin::Panel,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
+            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),top_line_said:Heard::default(),error:None,cancelled:None,origin:Origin::Panel,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
         if this.review.fixture {
@@ -1879,6 +1882,21 @@ impl Render for Panel {
         // above the body ([`Self::pin_top_line`]); otherwise among the content, under the
         // toolbar.
         let pinned = self.conversations.active.is_some();
+        // A new line, or a press answered again, shows from its first sentence: a new long
+        // failure once opened where the last one had been scrolled to.
+        let said = Heard {
+            notice: self.notice.clone(),
+            error: self.error.clone(),
+            cancelled: self.cancelled,
+            issue: self.draft_issue,
+            presses: self.presses,
+        };
+        if said != self.top_line_said {
+            self.review
+                .top_line_scroll
+                .set_offset(point(px(0.), px(0.)));
+            self.top_line_said = said;
+        }
         let mut lines = Vec::new();
         lines.extend(self.notice.as_ref().map(|notice| {
             label("github-notice", notice.clone())
@@ -5409,6 +5427,77 @@ mod tests {
         draw(cx);
         assert_eq!(scroll.offset(), left, "the failure is not shown again");
         escape(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The top line's text, taller than its room above an open conversation and scrolled to
+    /// its end, shows a new failure from its first sentence, and the same failure answering a
+    /// press again too, at 18 pt in a 461 × 490 window. A new long failure once opened where
+    /// the last one had been scrolled to, its start out of view.
+    #[gpui::test]
+    async fn a_new_top_line_shows_from_its_first_sentence(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        const FAILURE: &str = "PR changes need their captured head, base, and common ancestor \
+                               locally. Use an explicit Fetch if needed, then reopen the PR. \
+                               The comparison could not find the captured base revision in \
+                               the local repository, nor the captured head revision.";
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let pull = github::review::fixture_pull(false);
+        let identity = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+                panel.conversations.active = Some(target);
+                panel.refuse(FAILURE);
+            })
+        });
+        open_notice_panel(&app, &panel, (18, 461., 490.), cx).await;
+        let text = panel.read_with(cx, |panel, _| panel.review.top_line_scroll.clone());
+        let to_end = |cx: &mut VisualTestContext| {
+            assert!(
+                text.max_offset().y > px(0.),
+                "the line's text is taller than its room"
+            );
+            text.set_offset(point(px(0.), -text.max_offset().y));
+            draw(cx);
+            assert!(
+                text.offset().y < px(0.),
+                "the line's text is scrolled to its end"
+            );
+        };
+        for (press, failure) in [
+            (
+                "a new failure",
+                "The repository window is unavailable. Reopen it and try again.",
+            ),
+            (
+                "the same failure again",
+                "The repository window is unavailable. Reopen it and try again.",
+            ),
+        ] {
+            to_end(cx);
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.refuse(format!("{failure} {FAILURE}"));
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            assert_eq!(
+                text.offset().y,
+                px(0.),
+                "{press}: the line's text shows from its first sentence"
+            );
+        }
+        escape(cx);
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.error = None));
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
