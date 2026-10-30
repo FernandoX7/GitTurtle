@@ -309,6 +309,20 @@ struct Presses {
     error: usize,
     issue: usize,
 }
+/// The control a request or refusal of the panel started from, where its failure, or that
+/// Cancel stopped it, answers ([`Panel::outcome`]): feedback answers on the control the person
+/// touched. The panel records it as the request starts or the press is refused, and restores it
+/// as the request answers. While a conversation was open, every outcome once answered in the
+/// reply's composer, a comparison's cancel from Overview included.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Origin {
+    /// The reply's composer: Review reply… and Send for a reply. Its outcome stands in the
+    /// composer, under the draft, while the reply is open.
+    Reply,
+    /// Every other control (Open captured local comparison, Connect, Disconnect, Resolve and
+    /// Reopen, Refresh PRs, the templates): its outcome stands on the panel's top line.
+    Panel,
+}
 /// What a request of the panel does, which its busy line names, as the
 /// window's operation bar does while it runs as the window's busy spell
 /// ([`GitTurtle::submit_github_request`]), and why the controls it refuses
@@ -706,6 +720,9 @@ struct Panel {
     /// That Cancel stopped the last request ([`RequestKind::cancelled`]),
     /// said in `error`'s place until the next request.
     cancelled: Option<&'static str>,
+    /// Where `error` or `cancelled` answers: the control the request or refusal they answer
+    /// started from ([`Origin`]).
+    origin: Origin,
     /// The presses answered with `error` and `draft_issue` ([`Presses`]).
     presses: Presses,
     pending: bool,
@@ -753,7 +770,7 @@ impl Panel {
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
             rows:vec![],page:1,has_next:false,pull:None,status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
-            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),error:None,cancelled:None,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
+            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),error:None,cancelled:None,origin:Origin::Panel,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,request:RequestKind::Load,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
         if this.review.fixture {
@@ -903,7 +920,7 @@ impl Panel {
                         }
                         match attempts {
                             Ok(attempts) => this.attempts = attempts,
-                            Err(error) => this.error = Some(format!("{error:#}")),
+                            Err(error) => this.local_read_failed(format!("{error:#}")),
                         }
                         match saved {
                             Ok(mut saved) => {
@@ -914,13 +931,11 @@ impl Panel {
                                 }
                                 this.saved = saved;
                             }
-                            Err(error) => this.error = Some(format!("{error:#}")),
+                            Err(error) => this.local_read_failed(format!("{error:#}")),
                         }
                     }
-                    _ => {
-                        this.error =
-                            Some("Could not read repository remotes and saved drafts.".into())
-                    }
+                    _ => this
+                        .local_read_failed("Could not read repository remotes and saved drafts."),
                 }
                 cx.notify();
             });
@@ -1093,10 +1108,26 @@ impl Panel {
         cx.notify();
     }
     /// Answers a press with `error` on the failure line, said at once however often the same
-    /// refusal repeats ([`Presses`]).
+    /// refusal repeats ([`Presses`]): on the panel's top line ([`Origin::Panel`]).
     fn refuse(&mut self, error: impl Into<String>) {
+        self.refuse_at(Origin::Panel, error);
+    }
+    /// Says that the panel's own local read as it opens failed, on the panel's top line: no
+    /// control asked for it.
+    fn local_read_failed(&mut self, error: impl Into<String>) {
         self.error = Some(error.into());
+        self.origin = Origin::Panel;
+    }
+    /// [`Self::refuse`] for a press on the control `origin`, where the failure line answers.
+    fn refuse_at(&mut self, origin: Origin, error: impl Into<String>) {
+        self.error = Some(error.into());
+        self.origin = origin;
         self.presses.error = self.presses.error.wrapping_add(1);
+    }
+    /// Whether the failure line answers in the open reply's composer, rather than on the
+    /// panel's top line: only for what was asked from that composer ([`Origin`]).
+    fn answers_in_reply(&self) -> bool {
+        self.origin == Origin::Reply && self.conversations.active.is_some()
     }
     /// Answers a press with `issue` on the refused-input line, said at once however often it
     /// repeats ([`Presses`]).
@@ -1113,9 +1144,24 @@ impl Panel {
     /// Nothing is sent either while the window's busy spell runs a Git
     /// write, a preparation or a request the panel left running as it
     /// closed, and then the panel's failure line says why, in the spell's
-    /// own reason ([`GitTurtle::busy_reason`]).
+    /// own reason ([`GitTurtle::busy_reason`]). Its outcome answers on the panel's top line
+    /// ([`Origin::Panel`]).
     fn run<T: Send + 'static>(
         &mut self,
+        kind: RequestKind,
+        operation: impl FnOnce(OperationControl) -> anyhow::Result<T> + Send + 'static,
+        receive: impl FnOnce(anyhow::Result<T>, &mut Self, &mut Window, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.run_from(Origin::Panel, kind, operation, receive, window, cx)
+    }
+    /// [`Self::run`] for a request started from the control `origin`, which it records as it
+    /// starts, so its failure, or that Cancel stopped it, answers there whatever the panel
+    /// said meanwhile.
+    fn run_from<T: Send + 'static>(
+        &mut self,
+        origin: Origin,
         kind: RequestKind,
         operation: impl FnOnce(OperationControl) -> anyhow::Result<T> + Send + 'static,
         receive: impl FnOnce(anyhow::Result<T>, &mut Self, &mut Window, &mut Context<Self>) + 'static,
@@ -1130,13 +1176,13 @@ impl Panel {
             owner.submit_github_request(kind, repository, operation, window, cx)
         });
         let Ok(submitted) = submitted else {
-            self.refuse("The repository window is unavailable.");
+            self.refuse_at(origin, "The repository window is unavailable.");
             return false;
         };
         let (control, response) = match submitted {
             Ok(submitted) => submitted,
             Err(reason) => {
-                self.refuse(format!("{reason}, then try again."));
+                self.refuse_at(origin, format!("{reason}, then try again."));
                 cx.notify();
                 return false;
             }
@@ -1148,6 +1194,7 @@ impl Panel {
         self.request = kind;
         self.error = None;
         self.cancelled = None;
+        self.origin = origin;
         self.notice = None;
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response
@@ -1165,6 +1212,8 @@ impl Panel {
                 if !this.closed && this.cancel_request.holds_focus(window) {
                     this.focus_visible_section(window, cx);
                 }
+                // It answers where it started, though a refusal meanwhile answered elsewhere.
+                this.origin = origin;
                 if !this.closed {
                     // Cancel stopped it: the panel says so where a failure
                     // would stand, in place of what asked for the cancel. A
@@ -1420,7 +1469,13 @@ impl Panel {
         let fixture = self.review.fixture;
         let moved = self.review.fixture_moved;
         let sent_action = confirmation.action.clone();
-        let sent = self.run(RequestKind::Send, move |control| {
+        // A reply's Send answers in the reply's composer, where the reply was written; every
+        // other action's, a conversation's Resolve or Reopen included, on the panel's top line.
+        let origin = match confirmation.action {
+            Action::Reply { .. } => Origin::Reply,
+            _ => Origin::Panel,
+        };
+        let sent = self.run_from(origin, RequestKind::Send, move |control| {
             let transport = UiTransport::open(fixture, moved)?;
             anyhow::ensure!(transport.login() == confirmation.account, "The connected GitHub account changed. Review the destination again before submitting.");
             let destination = format!("{} · account {}", confirmation.action.destination(), confirmation.account);
@@ -1688,7 +1743,7 @@ impl Render for Panel {
                     .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
                     .child(button("github-disconnect","Disconnect GitTurtle","",false).debug_selector(||"github-disconnect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.disconnect(window,cx)))))))
             .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).text_color(rgb(p.muted))))
-            .when_some(self.outcome("github-error","github-cancelled",cx).filter(|_|self.conversations.active.is_none()),|element,line|element.child(line.ml(text_inset())))
+            .when_some(self.outcome("github-error","github-cancelled",cx).filter(|_|!self.answers_in_reply()),|element,line|element.child(line.ml(text_inset())))
             .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
             .when(pending,|element|element.child(self.part("busy",div(),cx).flex().items_center().gap_2().pl(text_inset())
                 .child(label("github-busy",self.request.label()).role(Role::Status).live_region(gpui::accesskit::Live::Polite, true))
@@ -3936,18 +3991,18 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// While a reply is open, the panel's failure, or that Cancel stopped its request, stands
-    /// in the reply's own composer, under the draft and above Review reply…, where the reader
-    /// writing the reply looks and where a sent reply's refusal answers: beside the draft,
-    /// never over it, whole in view with it wherever the composer fits the body, at 13 pt in
-    /// a 461 × 490 window and 18 pt in a 1,480 × 800 one. The line at the panel's top, far
-    /// above the conversation, is not drawn then. The window says the failure once, as an
-    /// alert, and the cancel politely.
+    /// While a reply is open, the failure of what was asked from its composer, or that Cancel
+    /// stopped it ([`Origin::Reply`]), stands in the reply's own composer, under the draft and
+    /// above Review reply…, where the reader writing the reply looks and where a sent reply's
+    /// refusal answers: beside the draft, never over it, whole in view with it wherever the
+    /// composer fits the body, at 13 pt in a 461 × 490 window and 18 pt in a 1,480 × 800 one.
+    /// The line at the panel's top, far above the conversation, is not drawn then. The window
+    /// says the failure once, as an alert, and the cancel politely.
     #[gpui::test]
     async fn a_failure_stands_in_the_reply_composer(cx: &mut TestAppContext) {
         use crate::copy_feedback::tests::{alerted, announced};
         use crate::tags::tests::draw;
-        const FAILURE: &str = "Conversations could not be loaded.";
+        const FAILURE: &str = "The captured reply context is unavailable or changed.";
         let (_fixture, app, panel, cx) = notice_panel(cx);
         let pull = github::review::fixture_pull(false);
         let identity = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
@@ -3967,6 +4022,8 @@ mod tests {
         let set = |cx: &mut VisualTestContext, error: Option<&str>, cancelled| {
             cx.update(|_, cx| {
                 panel.update(cx, |panel, cx| {
+                    // As a request from the reply's composer answers.
+                    panel.origin = Origin::Reply;
                     panel.error = error.map(str::to_owned);
                     panel.cancelled = cancelled;
                     cx.notify();
@@ -4045,6 +4102,117 @@ mod tests {
             set(cx, None, None);
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// While a reply is open, an outcome answers on the control the person touched
+    /// ([`Origin`]): a PR's Changes, asked for from Overview's Open captured local comparison
+    /// and stopped by the panel's Cancel, says it was cancelled on the panel's top line, above
+    /// the conversation, where every outcome once answered under the reply's draft while a
+    /// conversation was open; a reply's Send that is refused still answers in the reply's
+    /// composer, under its draft.
+    #[gpui::test]
+    async fn outcomes_answer_where_they_were_asked_for_while_a_reply_is_open(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::copy_feedback::tests::click;
+        use crate::views::tests::draw;
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        // Opened at rest, so a click lands where the last frame drew its button.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        let pull = local_pull(&app, cx);
+        let identity = github::review::fixture_pull(false)
+            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, cx| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+                panel.conversations.active = Some(target.clone());
+                panel
+                    .conversations
+                    .input
+                    .update(cx, |input, cx| input.set_value("Exact reply", window, cx));
+            })
+        });
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+        let composer = cx
+            .debug_bounds("github-reply-composer")
+            .expect("the reply is open");
+
+        // Open captured local comparison, held as a large comparison holds it, then the
+        // panel's Cancel.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.changes(window, cx)));
+        draw(cx);
+        click(cx, "github-cancel");
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            panel.read_with(cx, |panel, _| (panel.error.clone(), panel.cancelled)),
+            (None, RequestKind::Compare.cancelled()),
+            "Changes was cancelled"
+        );
+        let line = cx
+            .debug_bounds("github-cancelled")
+            .expect("the cancel answers on the panel's top line");
+        assert!(
+            line.bottom() <= composer.top(),
+            "the line {line:?} stands above the conversation, not in the reply {composer:?}"
+        );
+        assert!(
+            cx.debug_bounds("github-reply-cancelled").is_none(),
+            "nothing answers under the draft"
+        );
+
+        // The reply's Send, refused: the fixture's head moved.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.review.fixture_moved = true;
+                panel.confirm = Some(Confirmation {
+                    account: target.account.clone(),
+                    action: Action::Reply {
+                        target: target.clone(),
+                        body: "Exact reply".into(),
+                    },
+                });
+                panel.submit(window, cx);
+            })
+        });
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        draw(cx);
+        draw(cx);
+        assert!(
+            panel.read_with(cx, |panel, _| panel.error.is_some()),
+            "the reply is refused"
+        );
+        let composer = cx
+            .debug_bounds("github-reply-composer")
+            .expect("the reply stays open");
+        let line = cx
+            .debug_bounds("github-reply-error")
+            .expect("the refusal answers in the reply's composer");
+        assert!(
+            composer.top() <= line.top() && line.bottom() <= composer.bottom(),
+            "the refusal {line:?} stands in the composer {composer:?}"
+        );
+        assert!(
+            cx.debug_bounds("github-error").is_none()
+                && cx.debug_bounds("github-cancelled").is_none(),
+            "the panel's top line is not drawn"
+        );
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
     }
 
     /// Each press the panel refuses is said again, with a fresh alert node, though it refuses

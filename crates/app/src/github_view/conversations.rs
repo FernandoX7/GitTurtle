@@ -349,8 +349,9 @@ impl Panel {
         let Some(Draft::Reply(reply)) = self.reply_snapshot(cx) else {
             return;
         };
+        // Review reply… is pressed in the reply's composer, where its refusal answers.
         if let Err(error) = github::validate_text(&reply.body, true) {
-            self.refuse(error.to_string());
+            self.refuse_at(Origin::Reply, error.to_string());
             cx.notify();
             return;
         }
@@ -360,7 +361,7 @@ impl Panel {
             .iter()
             .any(|thread| reply_matches(thread, &reply.target, self.account.as_deref()))
         {
-            self.refuse("The captured reply context is unavailable or changed. Refresh this conversation explicitly; the original draft remains available to copy.");
+            self.refuse_at(Origin::Reply, "The captured reply context is unavailable or changed. Refresh this conversation explicitly; the original draft remains available to copy.");
             cx.notify();
             return;
         }
@@ -479,7 +480,7 @@ impl Panel {
             .child(label("github-reply-context", format!("{} · #{} · {} · captured head {}",target.account,target.pull.number,target.pull.repository.label(),target.pull.head.sha)).text_color(rgb(p.muted)))
             .when(!valid,|element|element.child(label("github-reply-unavailable","Original context is unavailable on this page. Refresh or return to its conversation before sending. Your exact draft remains local.").text_color(rgb(p.warning))))
             .child(Textarea::new(&self.conversations.input).h(appearance::ui_size(100.)).aria_label("Reply to captured GitHub conversation, saved locally").disabled(self.pending))
-            .when_some(self.outcome("github-reply-error","github-reply-cancelled",cx),|element,line|element.child(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().child(line)))
+            .when_some(self.outcome("github-reply-error","github-reply-cancelled",cx).filter(|_|self.answers_in_reply()),|element,line|element.child(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().child(line)))
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(button("github-review-reply","Review reply…","",true).disabled(self.pending||!valid).on_click(cx.listener(|this,_,window,cx|this.review_reply(window,cx))))
                 .child(button("github-close-reply","Save and close reply","",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|{this.save_reply(window,cx);this.conversations.active=None;this.confirm=None;this.focus_visible_section(window,cx);cx.notify();})))
