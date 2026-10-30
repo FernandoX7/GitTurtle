@@ -5069,6 +5069,242 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Enter on a conflicted working file whose preview is still being read
+    /// chooses it: its resolution draft takes focus as the preview lands,
+    /// once, and the next read of the file moves no focus. Where the person
+    /// moved on before it landed, to another row and back with the arrows,
+    /// or out of the list to the filter field, no draft takes focus, which
+    /// stays where they put it.
+    #[gpui::test]
+    async fn enter_before_a_conflicts_preview_lands_focuses_its_draft_once(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        std::fs::write(repository.join("another.txt"), "another\n").unwrap();
+        merge_stopping_on_notes(&repository);
+        quietly_refreshed(&app, cx);
+        preview_landed(&app, cx);
+        let another = position_of(&app, cx, "another.txt", ChangeArea::Unstaged);
+        let notes = position_of(&app, cx, "notes.txt", ChangeArea::Unstaged);
+        let (toward, back) = if notes > another {
+            ("down", "up")
+        } else {
+            ("up", "down")
+        };
+        let selector: &'static str = format!("working-row-{another}").leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        preview_landed(&app, cx);
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        let on_list = |cx: &mut VisualTestContext| cx.update(|window, _| list.is_focused(window));
+        assert!(on_list(cx), "the click focuses the list");
+
+        // Enter while notes.txt's preview is read, held on the reader.
+        let reader = app.read_with(cx, |app, _| app.worker.hold());
+        cx.simulate_keystrokes(toward);
+        cx.simulate_keystrokes("enter");
+        next_frame(cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            None,
+            "notes.txt's preview is still read"
+        );
+        assert!(on_list(cx), "focus stays on the list meanwhile");
+        drop(reader);
+        preview_landed(&app, cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(true),
+            "the draft takes focus as the preview lands"
+        );
+
+        // Once: the next read of the file, a Refresh's, moves no focus.
+        cx.update(|window, cx| list.focus(window, cx));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        rows_arrived(&app, cx).await;
+        preview_landed(&app, cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(false),
+            "the next read focuses no draft"
+        );
+        assert!(on_list(cx), "focus stays on the list");
+
+        // Moved on to another.txt before the preview landed, and back.
+        cx.simulate_keystrokes(back);
+        preview_landed(&app, cx);
+        let reader = app.read_with(cx, |app, _| app.worker.hold());
+        cx.simulate_keystrokes(toward);
+        cx.simulate_keystrokes("enter");
+        cx.simulate_keystrokes(back);
+        cx.simulate_keystrokes(toward);
+        drop(reader);
+        preview_landed(&app, cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(false),
+            "the arrows' return to notes.txt focuses no draft"
+        );
+        assert!(on_list(cx), "focus stays on the list");
+
+        // Moved out of the list, to the filter field, before it landed.
+        cx.simulate_keystrokes(back);
+        preview_landed(&app, cx);
+        let reader = app.read_with(cx, |app, _| app.worker.hold());
+        cx.simulate_keystrokes(toward);
+        cx.simulate_keystrokes("enter");
+        let field = cx.update(|window, cx| {
+            let filter = app.read(cx).working_filter.clone();
+            let field = filter.focus_handle(cx);
+            window.focus(&field, cx);
+            field
+        });
+        next_frame(cx);
+        drop(reader);
+        preview_landed(&app, cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(false),
+            "the preview that lands once the person moved out of the list focuses no draft"
+        );
+        assert!(
+            cx.update(|window, _| field.is_focused(window)),
+            "focus stays in the filter field"
+        );
+        assert!(!writing(&app, cx), "no write started");
+        assert!(notes_unmerged(&repository), "notes.txt is still conflicted");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A Stage or Unstage in the app, of another file, whose status read
+    /// selects a conflicted working file again, finding it still conflicted
+    /// after a Merge in the app stopped on it, opens its conflict view and
+    /// leaves focus where it is, on the list or in the file's keyboard menu:
+    /// the write's own read is no choice of the file, though the file was
+    /// chosen before the write.
+    #[gpui::test]
+    async fn a_write_in_the_app_reopens_a_conflict_without_moving_focus(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        // notes.txt's edit set aside, so the merge can run, and another.txt
+        // to stage meanwhile.
+        fixture_git(&repository, &["checkout", "-q", "--", "notes.txt"]);
+        std::fs::write(repository.join("another.txt"), "another\n").unwrap();
+        quietly_refreshed(&app, cx);
+
+        let plan = app
+            .read_with(cx, |app, _| app.repository.clone())
+            .expect("a repository")
+            .integration_plan("side")
+            .expect("a plan to merge side");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::Integration(
+                        gitturtle_core::IntegrationCommand::Merge { plan },
+                    ),
+                    "Merging…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        let merge = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the merge");
+        merge.await;
+        for _ in 0..8 {
+            if !app.read_with(cx, |app, _| app.automatic.quiet_read_requested()) {
+                break;
+            }
+            app.read_with(cx, |app, _| app.worker.wait_idle());
+            cx.executor().run_until_parked();
+        }
+        rows_arrived(&app, cx).await;
+        next_frame(cx);
+        assert!(
+            notes_unmerged(&repository),
+            "the merge stopped on notes.txt"
+        );
+
+        // notes.txt chosen with a click, its draft focused, then the list.
+        let selector: &'static str = format!(
+            "working-row-{}",
+            position_of(&app, cx, "notes.txt", ChangeArea::Unstaged)
+        )
+        .leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        preview_landed(&app, cx);
+        assert_eq!(conflict_shown(&app, cx), Some(true), "the click chose it");
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| list.focus(window, cx));
+        next_frame(cx);
+
+        let write = |cx: &mut VisualTestContext, command, label| {
+            cx.update(|window, cx| app.update(cx, |app, cx| app.write(command, label, window, cx)));
+            app.update(cx, |app, _| app.operation_task.take())
+                .expect("the write")
+        };
+        let stage = write(
+            cx,
+            gitturtle_core::WriteCommand::Stage {
+                paths: vec![PathBuf::from("another.txt")],
+            },
+            "Staging file…",
+        );
+        stage.await;
+        crate::views::tests::settle(&app, cx).await;
+        rows_arrived(&app, cx).await;
+        preview_landed(&app, cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(false),
+            "the Stage's status read opens the conflict view without focusing its draft"
+        );
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "focus stays on the list"
+        );
+
+        cx.simulate_keystrokes("shift-f10");
+        next_frame(cx);
+        next_frame(cx);
+        let menu_focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                app.read(cx)
+                    .file_menu
+                    .as_ref()
+                    .is_some_and(|menu| menu.has_focus(window, cx))
+            })
+        };
+        assert!(menu_focused(cx), "notes.txt's keyboard menu holds focus");
+        let unstage = write(
+            cx,
+            gitturtle_core::WriteCommand::Unstage {
+                paths: vec![PathBuf::from("another.txt")],
+            },
+            "Unstaging file…",
+        );
+        unstage.await;
+        crate::views::tests::settle(&app, cx).await;
+        rows_arrived(&app, cx).await;
+        preview_landed(&app, cx);
+        next_frame(cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(false),
+            "the Unstage's status read opens the conflict view without focusing its draft"
+        );
+        assert_eq!(
+            offered(cx, "Stage"),
+            Some(true),
+            "notes.txt's keyboard menu stays open"
+        );
+        assert!(menu_focused(cx), "focus stays in the menu");
+        assert!(notes_unmerged(&repository), "notes.txt is still conflicted");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The selected working file's preview that lands conflicted while
     /// Settings shows opens its conflict view as the window returns to the
     /// repository, without its draft taking focus even for a frame: focus

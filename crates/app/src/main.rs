@@ -1445,7 +1445,12 @@ impl GitTurtle {
                     // activates it. A write's status read selecting the row
                     // again took focus into a conflict's draft, closing a
                     // row's keyboard menu that the selection had kept open.
-                    let activated = self.preview_activation.take() == Some(self.generation);
+                    // And only while focus stays on the list, where the
+                    // choice left it: moved on before the read landed, into
+                    // the filter field or the row's menu, it lost focus to
+                    // the draft.
+                    let activated = self.preview_activation.take() == Some(self.generation)
+                        && self.file_focus.is_focused(window);
                     self.prepare_editor(activated, window, cx);
                     self.restore_tab_documents(cx);
                     self.trace_frame(
