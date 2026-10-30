@@ -1331,7 +1331,9 @@ pub(crate) struct StashBrowser {
     /// stash or choice shown before.
     restoring: Option<(RestoreRequest, u64)>,
     /// Why Review restore… was refused, which the footer note beside it
-    /// says in place of its explanation until another stash is chosen.
+    /// says in place of its explanation until another stash is chosen:
+    /// the core's refusal for a paused integration, or any other answer,
+    /// such as Git's report, which Details… opens whole.
     restore_line: Option<String>,
     /// Whether that note says the integration Review restore… was last
     /// refused for has ended ([`PAUSE_ENDED`]).
@@ -1837,11 +1839,17 @@ impl StashBrowser {
     /// ([`reveal_note`]), the last ending in an ellipsis where it needs
     /// more, with its whole text in its tooltip as in its name: unclamped it
     /// took three lines there, more than the detail shows, and at two it
-    /// left Review restore… cut. Where Git itself failed, its report runs
-    /// past its first line, which the note gives, and Details… beside it
-    /// opens the whole report above Stashes, revealed in the `stacked`
-    /// detail with its ring, `room`, as the keyboard reaches it: the whole
-    /// report, its stderr line after line, filled the footer unclamped.
+    /// left Review restore… cut. Any answer but the core's refusal for a
+    /// paused integration, such as Git itself failing, gives the first line
+    /// of its report that says anything, and Details… beside it opens the
+    /// whole report above Stashes, with Copy details, revealed in the
+    /// `stacked` detail with its ring, `room`, as the keyboard reaches it:
+    /// the whole report, its stderr line after line, filled the footer
+    /// unclamped, and a report of one line, as Git's stderr often is, had no
+    /// Details…, its rest in a tooltip the keyboard never opens. The paused
+    /// refusal's words are the core's, whole in its tooltip and name, and
+    /// its end replaces it, so a Details… beside it would go from under the
+    /// keyboard.
     fn restore_note(
         &self,
         lines: usize,
@@ -1851,8 +1859,14 @@ impl StashBrowser {
     ) -> AnyElement {
         let p = palette(cx);
         if let Some(reason) = &self.restore_line {
-            let first = reason.lines().next().unwrap_or_default().trim_end();
-            let report = reason.trim_end().len() > first.len();
+            // The first line that says anything: a report that opens with an
+            // empty line showed an empty note.
+            let first = reason
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or_default();
+            let report = reason != PAUSED_REFUSAL;
             let shown = SharedString::from(first.to_owned());
             let tooltip = shown.clone();
             // Static text, whose node reports the part of it the stacked
@@ -3864,14 +3878,20 @@ mod tests {
     }
 
     /// When Git itself fails to prepare Review restore…'s restoration, as a
-    /// status read of a corrupt index does, Stashes stays open and its note
+    /// status read of a damaged index does, Stashes stays open and its note
     /// gives the first line of Git's report, in 1480 × 980 and 461 × 490
-    /// windows at 13 and 18 pt: one line beside the list, and no more than
-    /// the stacked detail keeps beneath it, whole in the browser, and not in
-    /// the window's error. Details… beside it opens the whole report above
-    /// Stashes, which Escape closes back to Stashes. The note took Git's
-    /// whole report, its stderr line after line, unclamped beside the list
-    /// and with no Details… to read or copy it.
+    /// windows at 13 and 18 pt, whether the report runs past that line, as
+    /// a corrupt index's does, or is that one line, as a truncated index's
+    /// is: one line beside the list, and no more than the stacked detail
+    /// keeps beneath it, whole in the browser, and not in the window's
+    /// error. Details… beside it opens the whole report above Stashes, which
+    /// Escape closes back to Stashes. A report that opens with an empty line
+    /// gives its first line that says anything. The note took Git's whole
+    /// report, its stderr line after line, unclamped beside the list and
+    /// with no Details… to read or copy it; a report of one line had no
+    /// Details…, so stacked at 18 pt its rest lay only in a tooltip the
+    /// keyboard never opens; and a report that opened with an empty line
+    /// showed an empty note.
     #[gpui::test]
     async fn a_failed_restore_preparation_says_its_first_line_with_details(
         cx: &mut gpui::TestAppContext,
@@ -3891,76 +3911,118 @@ mod tests {
                 && inner.top() >= outer.top() - slack
                 && inner.bottom() <= outer.bottom() + slack
         };
+        let note_label = |stashes: &Entity<StashBrowser>, cx: &mut gpui::VisualTestContext| {
+            let refusals = stashes.read_with(cx, |stashes, _| stashes.refusals);
+            crate::native_accessibility::written::get(&format!("stash-restore-refusal-{refusals}"))
+                .and_then(|note| note.node.label().map(str::to_owned))
+        };
+        // Git cannot read the status of a corrupt index, and says so on two
+        // lines, or of a truncated one, and says so on one.
+        let damaged: [(&str, &[u8], bool); 2] = [
+            ("a corrupt index", &[b'x'; 128], true),
+            ("a truncated index", b"DIRC", false),
+        ];
         for (width, height) in [(1480., 980.), (461., 490.)] {
             for interface in [13, 18] {
-                let at = format!("{interface} pt in {width} × {height}");
-                cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
-                cx.simulate_resize(size(px(width), px(height)));
-                open_selected_stash(&app, cx).await;
-                let stashes = app
-                    .read_with(cx, |app, _| app.recovery.browser.clone())
-                    .and_then(|browser| browser.upgrade())
-                    .expect("Stashes is open");
-                // The index is corrupt, so Git cannot read the status.
-                std::fs::write(&index, [b'x'; 128]).unwrap();
-                press_review_restore(&stashes, cx);
-                recovery_lands(&app, cx);
-                std::fs::write(&index, &kept).unwrap();
-                let report = stashes
-                    .read_with(cx, |stashes, _| stashes.restore_line.clone())
-                    .unwrap_or_else(|| panic!("{at}: Review restore… is refused"));
-                assert!(
-                    report.trim_end().lines().count() > 1,
-                    "{at}: Git's report runs past its first line: {report}"
-                );
-                assert_eq!(
-                    app.read_with(cx, |app, _| app.operation_error.clone()),
-                    None,
-                    "{at}: Stashes says it, not the window"
-                );
-                let [note, browser] = ["stash-restore-refusal", "stash-browser"].map(|name| {
-                    cx.debug_bounds(name)
-                        .unwrap_or_else(|| panic!("{at}: no {name}"))
-                });
-                let one = cx.update(|window, _| {
-                    crate::image_compare::text_line(appearance::ui_text(10.), window)
-                });
-                let lines = (f32::from(note.size.height) / f32::from(one)).round() as usize;
-                let keeps = if width < 800. {
-                    stashes.read_with(cx, |stashes, _| stashes.note_lines.get())
-                } else {
-                    1
-                };
-                assert!(
-                    lines <= keeps && inside(note, browser),
-                    "{at}: the note {note:?} keeps {lines} lines, at most {keeps}, whole in {browser:?}"
-                );
-                // Details… opens the whole report above Stashes.
-                tab_to(&stashes, "stash-restore-details", cx);
-                let details = cx
-                    .debug_bounds("stash-restore-details")
-                    .unwrap_or_else(|| panic!("{at}: no Details…"));
-                assert!(
-                    inside(details, browser),
-                    "{at}: Details… {details:?} is whole"
-                );
-                space(cx);
-                crate::views::tests::draw(cx);
-                cx.simulate_keystrokes("escape");
-                crate::views::tests::draw(cx);
-                assert!(
-                    cx.update(|window, cx| window.has_active_dialog(cx))
-                        && cx.debug_bounds("stash-browser").is_some(),
-                    "{at}: Escape closes the report back to Stashes"
-                );
-                drop(stashes);
-                cx.update(|window, cx| window.close_all_dialogs(cx));
-                crate::views::tests::draw(cx);
+                for (damage, bytes, more) in damaged {
+                    let at = format!("{damage} at {interface} pt in {width} × {height}");
+                    cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+                    cx.simulate_resize(size(px(width), px(height)));
+                    open_selected_stash(&app, cx).await;
+                    let stashes = app
+                        .read_with(cx, |app, _| app.recovery.browser.clone())
+                        .and_then(|browser| browser.upgrade())
+                        .expect("Stashes is open");
+                    std::fs::write(&index, bytes).unwrap();
+                    press_review_restore(&stashes, cx);
+                    recovery_lands(&app, cx);
+                    std::fs::write(&index, &kept).unwrap();
+                    let report = stashes
+                        .read_with(cx, |stashes, _| stashes.restore_line.clone())
+                        .unwrap_or_else(|| panic!("{at}: Review restore… is refused"));
+                    assert_eq!(
+                        report.trim_end().lines().count() > 1,
+                        more,
+                        "{at}: Git's report: {report}"
+                    );
+                    assert_eq!(
+                        note_label(&stashes, cx).as_deref(),
+                        report.lines().next(),
+                        "{at}: the note gives the report's first line"
+                    );
+                    assert_eq!(
+                        app.read_with(cx, |app, _| app.operation_error.clone()),
+                        None,
+                        "{at}: Stashes says it, not the window"
+                    );
+                    let [note, browser] = ["stash-restore-refusal", "stash-browser"].map(|name| {
+                        cx.debug_bounds(name)
+                            .unwrap_or_else(|| panic!("{at}: no {name}"))
+                    });
+                    let one = cx.update(|window, _| {
+                        crate::image_compare::text_line(appearance::ui_text(10.), window)
+                    });
+                    let lines = (f32::from(note.size.height) / f32::from(one)).round() as usize;
+                    // Beside the list the note keeps two lines.
+                    let keeps = if width < 800. {
+                        stashes.read_with(cx, |stashes, _| stashes.note_lines.get())
+                    } else {
+                        2
+                    };
+                    assert!(
+                        lines <= keeps && inside(note, browser),
+                        "{at}: the note {note:?} keeps {lines} lines, at most {keeps}, whole in {browser:?}"
+                    );
+                    // Details… opens the whole report above Stashes.
+                    tab_to(&stashes, "stash-restore-details", cx);
+                    let details = cx
+                        .debug_bounds("stash-restore-details")
+                        .unwrap_or_else(|| panic!("{at}: no Details…"));
+                    assert!(
+                        inside(details, browser),
+                        "{at}: Details… {details:?} is whole"
+                    );
+                    space(cx);
+                    crate::views::tests::draw(cx);
+                    cx.simulate_keystrokes("escape");
+                    crate::views::tests::draw(cx);
+                    assert!(
+                        cx.update(|window, cx| window.has_active_dialog(cx))
+                            && cx.debug_bounds("stash-browser").is_some(),
+                        "{at}: Escape closes the report back to Stashes"
+                    );
+                    drop(stashes);
+                    cx.update(|window, cx| window.close_all_dialogs(cx));
+                    crate::views::tests::draw(cx);
+                }
             }
         }
+        // A report that opens with an empty line gives the first line that
+        // says anything, with Details… beside it.
+        open_selected_stash(&app, cx).await;
+        let stashes = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("Stashes is open");
+        stashes.update(cx, |stashes, cx| {
+            stashes.refuse(
+                "\n  \nUnable to read working-copy status: fatal: index file corrupt\n".into(),
+                cx,
+            )
+        });
+        crate::views::tests::draw(cx);
+        assert_eq!(
+            note_label(&stashes, cx).as_deref(),
+            Some("Unable to read working-copy status: fatal: index file corrupt")
+        );
+        assert!(cx.debug_bounds("stash-restore-details").is_some());
+        drop(stashes);
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        crate::views::tests::draw(cx);
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         drop(fixture);
     }
+
     /// A recovery action refuses while an integration is paused from the
     /// pause the window read last, which a change outside the app can end
     /// unseen, as it does here: the test's local watch reports nothing,
