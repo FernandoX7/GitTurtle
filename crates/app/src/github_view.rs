@@ -369,6 +369,24 @@ macro_rules! after_stopped_connect {
         }
     };
 }
+/// The connection pane's help: what Connect does, from whether the platform's store holds
+/// GitTurtle's authorization ([`SecureStore::HOLDS`]), as a stopped Connect is worded
+/// (`after_stopped_connect`): on a Mac it saves the authorization in the store
+/// [`SecureStore::NAME`] names; elsewhere the store saves none, so Connect cannot finish
+/// there. Linux once said Connect saved it in secure storage, where nothing can be stored.
+fn connection_help() -> String {
+    let connect = if SecureStore::HOLDS {
+        format!(
+            "Connect uses your current GitHub CLI account and saves GitTurtle authorization in {}.",
+            SecureStore::NAME
+        )
+    } else {
+        "Connect uses your current GitHub CLI account, but GitTurtle stores no authorization on \
+         this platform, so Connect cannot finish here yet."
+            .to_owned()
+    };
+    format!("{connect} Refresh and PR selection are explicit network reads.")
+}
 impl RequestKind {
     pub(crate) const ALL: [Self; 6] = [
         Self::Load,
@@ -1768,7 +1786,7 @@ impl Render for Panel {
                 .child(div().flex_1()).child(self.part("account",div(),cx).child(button("github-account-options",self.account.as_ref().map(|account|format!("Account · {account}")).unwrap_or_else(||"Connect account".into()),"",self.review.connection_open).debug_selector(||"github-account-options".into()).toggled(self.review.connection_open).disabled(pending).on_click(cx.listener(|this,_,_,cx|{this.review.connection_open= !this.review.connection_open;cx.notify();})))))
             .when(self.review.connection_open,|element|element.child(self.part("connection",div(),cx).p_3().border_1().border_color(rgb(p.border)).rounded(px(6.)).flex().flex_col().gap_2()
                 .child(label("github-worktree",format!("Local worktree: {}",self.repo.path().display())).text_color(rgb(p.muted)))
-                .child(label("github-connection-help","Connect uses your current GitHub CLI account and saves GitTurtle authorization in secure storage. Refresh and PR selection are explicit network reads.").text_color(rgb(p.muted)))
+                .child(label("github-connection-help",connection_help()).text_color(rgb(p.muted)))
                 .child(div().flex().flex_wrap().gap_2()
                     .child(button("github-connect","Connect GitHub CLI account","",false).debug_selector(||"github-connect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx))))
                     .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
@@ -4476,6 +4494,49 @@ mod tests {
             cx.debug_bounds("github-reply-error").is_none(),
             "nothing answers under the reply's draft"
         );
+        escape(cx);
+    }
+
+    /// The connection pane's help says what Connect does on this platform, from whether its
+    /// store holds GitTurtle's authorization (`SecureStore::HOLDS`): on a Mac it saves it in
+    /// macOS Keychain; elsewhere, where the store saves none, it names no storage and says
+    /// Connect cannot finish there. Linux once said Connect saved it in secure storage.
+    #[gpui::test]
+    async fn the_connection_help_says_what_connect_keeps(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::click;
+        use crate::native_accessibility::written;
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+        click(cx, "github-account-options");
+        draw(cx);
+        draw(cx);
+        let help = written::get("github-connection-help")
+            .map(|line| line.node)
+            .and_then(|node| node.label().or(node.value()).map(str::to_owned))
+            .expect("the connection pane says what Connect does");
+        assert!(
+            help.starts_with("Connect uses your current GitHub CLI account"),
+            "{help}"
+        );
+        #[cfg(target_os = "macos")]
+        assert!(
+            help.contains("saves GitTurtle authorization in macOS Keychain."),
+            "Connect saves the authorization where it says: {help}"
+        );
+        #[cfg(not(target_os = "macos"))]
+        {
+            for storage in ["saves", "storage", "Keychain"] {
+                assert!(
+                    !help.contains(storage),
+                    "no storage where nothing is stored ({storage}): {help}"
+                );
+            }
+            assert!(
+                help.contains("GitTurtle stores no authorization on this platform"),
+                "it says nothing is stored: {help}"
+            );
+        }
         escape(cx);
     }
 
