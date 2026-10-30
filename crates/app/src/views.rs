@@ -11914,6 +11914,69 @@ pub(crate) mod tests {
         assert!(met, "the walk meets the details giving way in part");
     }
 
+    /// A 3D model's details cue the lines beyond their room with a visible
+    /// scrollbar at their edge while they overflow, as a comparable bounded
+    /// scroll area does (the commit inspector's message). Their room is
+    /// capped at 48 px, which even a triangle's details overflow: down a
+    /// 461 px window at 13 pt, from 980 to 490 px tall, where the 88 px side
+    /// wraps them to 669 px, and in 1,000 and 1,480 px windows 980 px tall.
+    /// Their scroll area, shrunk to a sliver where the side gave them part
+    /// of their room, once showed part of their lines with no sign that the
+    /// rest scrolled. That a foot draws none where its lines fit is
+    /// `system_preview::tests::a_side_s_foot_cues_its_scroll_only_while_it_overflows`.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_model_s_details_cue_their_scroll_while_they_overflow(cx: &mut TestAppContext) {
+        let obj = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        let input = file_commits(&[
+            ("first", &[("note.txt", b"first\n".as_slice())]),
+            ("second", &[("shape.obj", obj.as_slice())]),
+        ]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let index = app.read_with(cx, |app, _| {
+            app.files
+                .iter()
+                .position(|file| file.path() == std::path::Path::new("shape.obj"))
+                .expect("the commit adds the model")
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
+        settle(&app, cx).await;
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        let bounds = |selector: &'static str, cx: &mut VisualTestContext| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"))
+        };
+        let bar = gpui_kit::component::scroll::Scrollbar::width();
+        let mut cued = false;
+        let sizes = (490..=980)
+            .rev()
+            .step_by(4)
+            .map(|height| (461., height as f32))
+            .chain([(1000., 980.), (1480., 980.)]);
+        for (width, height) in sizes {
+            cx.simulate_resize(size(px(width), px(height)));
+            draw(cx);
+            let at = format!("13 pt in {width} × {height}");
+            let area = bounds("model-details-1", cx);
+            let lines = bounds("model-details-lines-1", cx);
+            // A thumb needs more than its insets; a sliver draws none.
+            if lines.size.height <= area.size.height + px(0.005) || area.size.height < px(16.) {
+                continue;
+            }
+            cued = true;
+            let track = Bounds::new(
+                point(area.right() - bar - px(4.), area.top()),
+                size(bar + px(4.), area.size.height),
+            );
+            assert!(
+                crate::tags::tests::painted_thumb(cx, track).is_some(),
+                "{at}: the details {area:?} cue the rest of their lines {lines:?} with a scrollbar"
+            );
+        }
+        assert!(cued, "the walk meets details that overflow");
+    }
+
     /// [`history_window`] on the repository `input` imports.
     pub(crate) async fn history_window_from(
         cx: &mut TestAppContext,

@@ -1160,42 +1160,49 @@ fn render_side<T: 'static>(
                 padding,
                 // The details, a label, give way before the header's
                 // controls do, their own scroll area shrinking with them
-                // to nothing: its padding scrolls with its lines, since a
-                // box never shrinks below its own padding.
+                // to nothing, a scrollbar cueing their lines while they
+                // overflow: its padding scrolls with its lines, since a box
+                // never shrinks below its own padding.
                 foot: Some(
-                    div()
-                        .id(("model-details", index))
-                        .debug_selector(move || format!("model-details-{index}"))
-                        .role(Role::Label)
-                        .aria_value(native_accessibility::bounded_accessible_text(format!(
-                            "{label} model details: {details}"
-                        )))
-                        .max_h(px(48.))
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .text_size(appearance::ui_text(10.))
-                        .text_color(rgb(colors.muted))
-                        .child(
-                            div()
-                                .p_2()
-                                .child(
-                                    div()
-                                        .id(("model-summary", index))
-                                        .role(Role::Label)
-                                        .aria_value(format!(
-                                            "{label}: {} · {summary}",
-                                            document.scene.appearance_label()
-                                        ))
-                                        .child(format!(
-                                            "{} · {} triangles · {}",
-                                            document.scene.appearance_label(),
-                                            document.scene.triangle_count(),
-                                            document.scene.units.label()
-                                        )),
-                                )
-                                .child(details),
-                        )
-                        .into_any_element(),
+                    held.foot(
+                        div()
+                            .id(("model-details", index))
+                            .debug_selector(move || format!("model-details-{index}"))
+                            .role(Role::Label)
+                            .aria_value(native_accessibility::bounded_accessible_text(format!(
+                                "{label} model details: {details}"
+                            )))
+                            .max_h(px(48.))
+                            .text_size(appearance::ui_text(10.))
+                            .text_color(rgb(colors.muted))
+                            .child(
+                                div()
+                                    .debug_selector(move || format!("model-details-lines-{index}"))
+                                    .p_2()
+                                    .child(
+                                        div()
+                                            .id(("model-summary", index))
+                                            .role(Role::Label)
+                                            .aria_value(format!(
+                                                "{label}: {} · {summary}",
+                                                document.scene.appearance_label()
+                                            ))
+                                            .child(format!(
+                                                "{} · {} triangles · {}",
+                                                document.scene.appearance_label(),
+                                                document.scene.triangle_count(),
+                                                document.scene.units.label()
+                                            )),
+                                    )
+                                    .child(details),
+                            ),
+                        if index == 0 {
+                            "model-details-0/scrollbar"
+                        } else {
+                            "model-details-1/scrollbar"
+                        },
+                    )
+                    .into_any_element(),
                 ),
                 held,
             }),

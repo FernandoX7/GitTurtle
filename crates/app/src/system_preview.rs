@@ -868,9 +868,8 @@ pub(crate) fn header_line_room(side: Pixels, inset: Pixels) -> Pixels {
 /// `p_2`, the model's `py_1`), which its floor counts as GPUI snaps it, and
 /// the header's scrolling state. The foot gives way before the header,
 /// shrinking as a column's child, so a foot that can hold more than it
-/// shows is a scroll area of its own with no minimum height (`min_h_0`) and
-/// its padding inside, which keeps its lines within its reach as it shrinks
-/// to nothing.
+/// shows is a scroll area of its own ([`SideHeader::foot`]), which keeps its
+/// lines within its reach as it shrinks to nothing.
 pub(crate) struct OwnHeader {
     pub(crate) header: AnyElement,
     pub(crate) foot: Option<AnyElement>,
@@ -878,24 +877,27 @@ pub(crate) struct OwnHeader {
     pub(crate) held: SideHeader,
 }
 
-/// The scrolling state of a side's own header: it reveals the control Tab
-/// moves onto ([`crate::focus_reveal`]), and it is made again for each
-/// showing, so the next file's header starts at its top.
+/// The scrolling state of a side's own header, and of its foot: the header
+/// reveals the control Tab moves onto ([`crate::focus_reveal`]), and both
+/// are made again for each showing, so the next file's header and foot
+/// start at their top.
 #[derive(Clone)]
 pub(crate) struct SideHeader {
     reveal: crate::focus_reveal::FocusReveal,
+    foot: ScrollHandle,
     scrollbar: &'static str,
 }
 
-/// Each side header's state, by the view drawing it and the side's region,
-/// with the showing it was made for.
+/// One side header's state, with the showing it was made for.
+struct HeldSide {
+    showing: Showing,
+    reveal: crate::focus_reveal::FocusReveal,
+    foot: ScrollHandle,
+}
+
+/// Each side header's state, by the view drawing it and the side's region.
 #[derive(Default)]
-struct SideHeaders(
-    std::collections::HashMap<
-        (EntityId, &'static str),
-        (Showing, crate::focus_reveal::FocusReveal),
-    >,
-);
+struct SideHeaders(std::collections::HashMap<(EntityId, &'static str), HeldSide>);
 impl Global for SideHeaders {}
 
 impl SideHeader {
@@ -910,20 +912,41 @@ impl SideHeader {
         window: &Window,
         cx: &mut App,
     ) -> Self {
-        let fresh = || {
-            (
-                showing,
-                crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
-            )
+        let fresh = || HeldSide {
+            showing,
+            reveal: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
+            foot: ScrollHandle::new(),
         };
         let headers = &mut cx.default_global::<SideHeaders>().0;
         let held = headers.entry((view, name)).or_insert_with(fresh);
-        if held.0 != showing {
+        if held.showing != showing {
             *held = fresh();
         }
-        let reveal = held.1.clone();
+        let (reveal, foot) = (held.reveal.clone(), held.foot.clone());
         reveal.reveal(window, cx);
-        Self { reveal, scrollbar }
+        Self {
+            reveal,
+            foot,
+            scrollbar,
+        }
+    }
+
+    /// `area`, what lies beneath the side's content and gives way before
+    /// its header (the model's details), as the scroll area of its own that
+    /// [`OwnHeader`]'s foot is: with no minimum height, so it shrinks with
+    /// the foot to nothing and its lines, with the padding `area` keeps
+    /// inside it, stay within its reach, and cued while they overflow by
+    /// the always-visible scrollbar `scrollbar`, as a comparable bounded
+    /// area's is ([`crate::tags::ScrollCue`]). Shrunk to a sliver, the
+    /// model's details once showed a part of their lines with no sign that
+    /// the rest scrolled.
+    pub(crate) fn foot(&self, area: Stateful<Div>, scrollbar: &'static str) -> Div {
+        let cue = crate::tags::ScrollCue::new(&self.foot, px(0.));
+        let observe = cue.observe(|_, _, _| {});
+        let area = area.min_h_0().overflow_y_scroll().track_scroll(&self.foot);
+        cue.list(area, scrollbar)
+            .on_children_prepainted(observe)
+            .min_h_0()
     }
 
     /// `button`, which Tab reveals in the header's region, its focus tracked
@@ -949,7 +972,7 @@ pub(crate) fn side_header(
 ) -> Option<crate::focus_reveal::FocusReveal> {
     cx.try_global::<SideHeaders>()
         .and_then(|headers| headers.0.get(&(view, name)))
-        .map(|(_, reveal)| reveal.clone())
+        .map(|held| held.reveal.clone())
 }
 
 /// The ends [`header_ends`] draws beneath the headers' controls, with the
@@ -1318,6 +1341,111 @@ pub(crate) mod tests {
                 "{at}: the control {control:?} lies whole in the region {held:?}"
             );
         });
+    }
+
+    /// A side 240 px wide and 400 px tall whose own header holds one
+    /// control, above content that keeps no room of its own and a foot of
+    /// `lines` lines in a scroll area at most 48 px tall, as a model's
+    /// details are.
+    #[cfg(target_os = "linux")]
+    struct FootSide {
+        lines: usize,
+        showing: Showing,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Render for FootSide {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let held = SideHeader::new(
+                "foot-side",
+                "foot-side/scrollbar",
+                cx.entity_id(),
+                self.showing,
+                window,
+                cx,
+            );
+            let control = crate::button("foot-control", "", "plus", false);
+            let header = div()
+                .px_2()
+                .py(rems(0.25))
+                .child(held.track("foot-control", control, cx));
+            let area = div()
+                .id("foot-area")
+                .debug_selector(|| "foot-area".into())
+                .max_h(px(48.))
+                .child(
+                    div()
+                        .debug_selector(|| "foot-lines".into())
+                        .p_2()
+                        .children((0..self.lines).map(|line| div().child(format!("Line {line}")))),
+                );
+            let end = HeaderEnd {
+                inset: window.rem_size() * 0.5,
+                bottom: window.rem_size() * 0.5,
+                right_rule: false,
+                border: palette(cx).border,
+            };
+            div()
+                .w(px(240.))
+                .h(px(400.))
+                .flex()
+                .flex_col()
+                .child(header_ends(
+                    "foot-side",
+                    Some(OwnHeader {
+                        header: header.into_any_element(),
+                        foot: Some(
+                            held.foot(area, "foot-side/foot-scrollbar")
+                                .into_any_element(),
+                        ),
+                        padding: rems(0.25),
+                        held,
+                    }),
+                    vec![None],
+                    end,
+                    div().size_full().into_any_element(),
+                ))
+        }
+    }
+
+    /// A side's foot, the model's details, draws an always-visible
+    /// scrollbar at its edge only while its lines overflow its room, and
+    /// none where they fit, as they come and go: a foot that showed a part
+    /// of its lines once gave no sign that the rest scrolled.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn a_side_s_foot_cues_its_scroll_only_while_it_overflows(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let (side, cx) = cx.add_window_view(|_, _| FootSide {
+            lines: 1,
+            showing: Showing::next(),
+        });
+        let bar = gpui_kit::component::scroll::Scrollbar::width();
+        for (lines, overflows) in [(1, false), (12, true), (1, false)] {
+            side.update(cx, |side, cx| {
+                side.lines = lines;
+                cx.notify();
+            });
+            crate::tags::tests::draw(cx);
+            let area = cx.debug_bounds("foot-area").expect("the foot's area");
+            let shown = cx.debug_bounds("foot-lines").expect("its lines");
+            assert_eq!(
+                shown.size.height > area.size.height + px(0.005),
+                overflows,
+                "{lines} lines, {shown:?}, in the foot {area:?}"
+            );
+            let track = Bounds::new(
+                point(area.right() - bar - px(4.), area.top()),
+                size(bar + px(4.), area.size.height),
+            );
+            let thumb = crate::tags::tests::painted_thumb(cx, track);
+            assert_eq!(
+                thumb.is_some(),
+                overflows,
+                "{lines} lines in the foot {area:?}: a scrollbar ({thumb:?}) only while they overflow"
+            );
+        }
     }
 
     /// Side `name`'s own header, which `view` draws in a box its content
