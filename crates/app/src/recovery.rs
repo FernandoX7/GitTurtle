@@ -1354,7 +1354,8 @@ pub(crate) struct StashBrowser {
     /// failure, has just replaced it, which shows while focus stays where
     /// the press found it, or the end of the pause it was refused for;
     /// either scrolls nothing while focus has moved onto another of the
-    /// detail's controls ([`reveal_note`]).
+    /// detail's controls ([`reveal_note`]). The next frame that draws
+    /// Stashes takes it as it renders, so it never outlives that frame.
     reveal_note: std::rc::Rc<std::cell::Cell<Option<NoteReveal>>>,
     /// The lines a refusal keeps in the stacked footer note: two, or one
     /// where the detail cannot hold two beneath Review restore… whole with
@@ -1401,6 +1402,23 @@ enum NoteReveal {
     /// focus, so a merge finished in a terminal never scrolls the control
     /// the keyboard left focused out of view.
     PauseEnded,
+}
+
+impl NoteReveal {
+    /// Has the next frame that draws Stashes reveal the note for `cause`,
+    /// beside any reveal already due in it, `next`. A press's answer due in
+    /// that frame keeps its reveal over the end of its pause, which shows in
+    /// fewer places. Neither outlives that frame: Stashes takes it as it
+    /// renders ([`reveal_note`]), so a press's answer that frame did not
+    /// scroll to, beside the list, never wins over an end of its pause that
+    /// comes later.
+    fn due_in(next: &std::cell::Cell<Option<Self>>, cause: Self) {
+        let cause = match next.take() {
+            Some(pressed @ Self::Pressed(_)) if cause == Self::PauseEnded => pressed,
+            _ => cause,
+        };
+        next.set(Some(cause));
+    }
 }
 
 /// Opens `app`'s Stashes, reads its list, selects its newest stash and reads
@@ -1962,15 +1980,10 @@ impl StashBrowser {
         cx.notify();
     }
 
-    /// Has the next frame reveal the footer note for `cause`. A press's
-    /// answer still due keeps its reveal, which shows in more places than
-    /// the end of its pause does.
+    /// Has the next frame that draws Stashes reveal the footer note for
+    /// `cause` ([`NoteReveal::due_in`]).
     fn reveal_note_for(&self, cause: NoteReveal) {
-        let cause = match self.reveal_note.take() {
-            Some(pressed @ NoteReveal::Pressed(_)) if cause == NoteReveal::PauseEnded => pressed,
-            _ => cause,
-        };
-        self.reveal_note.set(Some(cause));
+        NoteReveal::due_in(&self.reveal_note, cause);
     }
 
     /// The footer note says again what restoring does, and no longer
@@ -2331,44 +2344,55 @@ impl StashBrowser {
 }
 
 /// For the stacked Stashes detail's actions, the row with Review restore…
-/// and the footer note beneath it, as each frame prepaints them. It keeps
-/// `lines`, the lines a refusal keeps in the note, at two, or one where the
-/// `detail` cannot hold two beneath Review restore…, at `restore`, whole
-/// with its ring, `margin`, each `line` tall: at 18 pt in a 461 × 490
-/// window the detail is about 60 px tall. A change lays the detail out
-/// again. Once `due`, when a refusal or its end has just replaced the note,
-/// it scrolls the detail by the least that shows Review restore… and the
-/// note `margin` clear of its edges, or, where both still do not fit,
-/// Review restore… whole at the top with what of the note the rest shows:
-/// the Review restore… just pressed stays whole. Either note scrolls while
-/// Review restore…, `pressed`, holds focus or nothing in the detail does;
-/// the note due for a press ([`NoteReveal::Pressed`]) also while focus
-/// stays where the press found it: a click focuses no Button, so focus
-/// stays where it was, on the saved files or a document's open control,
-/// and the answer to the click would otherwise lie below the fold. With
-/// focus moved onto another of the detail's controls, such as the saved
-/// files, a file's text or a document's open control, whether by the
-/// keyboard while Git prepared the press's answer or before the end of its
-/// pause ([`NoteReveal::PauseEnded`]), which no press asked for, the
-/// detail stays where it is, and the note is heard, not shown. It scrolls
-/// after the frame the note is laid out in, as a focus reveal does for a
-/// control it has not drawn ([`crate::focus_reveal`]). A note the detail
-/// had scrolled below its fold, beneath the Review restore… just pressed,
-/// showed nothing, one revealed whole at two lines cut Review restore…'s
-/// ring, a merge finished in a terminal scrolled the focused saved files
-/// out of view, to Review restore… and the note that it had ended, a click
-/// on Review restore… with focus in the detail showed its answer nowhere,
-/// and its answer landing after Tab had reached the saved files scrolled
-/// them out of view.
+/// and the footer note beneath it, as each frame of `browser` prepaints
+/// them. It keeps its `note_lines`, the lines a refusal keeps in the note,
+/// at two, or one where its `detail` cannot hold two beneath Review
+/// restore…, at its `restore_at`, whole with its ring, `margin`, each `line`
+/// tall: at 18 pt in a 461 × 490 window the detail is about 60 px tall. A
+/// change lays the detail out again. With a reveal `due` in this frame,
+/// taken as Stashes rendered it, when a refusal or its end has just replaced
+/// the note, it scrolls the detail by the least that shows Review restore…
+/// and the note `margin` clear of its edges, or, where both still do not
+/// fit, Review restore… whole at the top with what of the note the rest
+/// shows: the Review restore… just pressed stays whole. Either note scrolls
+/// while Review restore…, `pressed`, holds focus or nothing in the detail
+/// does; the note due for a press ([`NoteReveal::Pressed`]) also while focus
+/// stays where the press found it: a click focuses no Button, so focus stays
+/// where it was, on the saved files or a document's open control, and the
+/// answer to the click would otherwise lie below the fold. With focus moved
+/// onto another of the detail's controls, such as the saved files, a file's
+/// text or a document's open control, whether by the keyboard while Git
+/// prepared the press's answer or before the end of its pause
+/// ([`NoteReveal::PauseEnded`]), which no press asked for, the detail stays
+/// where it is, and the note is heard, not shown. It scrolls after the frame
+/// the note is laid out in, as a focus reveal does for a control it has not
+/// drawn ([`crate::focus_reveal`]). A note the detail had scrolled below its
+/// fold, beneath the Review restore… just pressed, showed nothing, one
+/// revealed whole at two lines cut Review restore…'s ring, a merge finished
+/// in a terminal scrolled the focused saved files out of view, to Review
+/// restore… and the note that it had ended, a click on Review restore… with
+/// focus in the detail showed its answer nowhere, and its answer landing
+/// after Tab had reached the saved files scrolled them out of view. The
+/// reveal is spent in this frame, or, where the note is laid out again with
+/// the lines that fit, carried to the next once, through the browser's
+/// `reveal_note`; otherwise it expires with this frame, as beside the list,
+/// where the footer is always in view. Only a frame beside the list dropped
+/// one before, so a reveal any other frame left unspent would have stayed
+/// due, to scroll the stacked detail whenever a later frame drew it,
+/// whatever focus had done since, and win over any end of its pause
+/// meanwhile.
 fn reveal_note(
-    due: std::rc::Rc<std::cell::Cell<Option<NoteReveal>>>,
-    lines: std::rc::Rc<std::cell::Cell<usize>>,
-    restore: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    browser: &StashBrowser,
+    due: Option<NoteReveal>,
     pressed: FocusHandle,
-    detail: crate::focus_reveal::FocusReveal,
     margin: Pixels,
     line: Pixels,
 ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+    let due = std::cell::Cell::new(due);
+    let next = browser.reveal_note.clone();
+    let lines = browser.note_lines.clone();
+    let restore = browser.restore_at.clone();
+    let detail = browser.detail.clone();
     move |bounds, window, cx| {
         let [_, note] = bounds[..] else {
             return;
@@ -2386,6 +2410,9 @@ fn reveal_note(
             .clamp(1., 2.) as usize;
         if lines.replace(fit) != fit {
             // Laid out again with the lines that fit; revealed then.
+            if let Some(cause) = due.take() {
+                NoteReveal::due_in(&next, cause);
+            }
             window.defer(cx, |window, _| window.refresh());
             return;
         }
@@ -2592,6 +2619,12 @@ impl Render for StashBrowser {
         // One line of the footer note, which a refusal keeps two or one of
         // in the stacked detail.
         let note_line = crate::image_compare::text_line(crate::appearance::ui_text(10.), window);
+        // The note's reveal is due in this frame alone: taken now, it is
+        // spent by the stacked footer this frame prepaints, or carried once
+        // to the next where the note is laid out again, and otherwise it
+        // expires, as beside the list, where the footer is always in view
+        // ([`reveal_note`]).
+        let due = self.reveal_note.take();
         let actions = self.snapshot.is_some().then(|| {
             let row = div()
                 .debug_selector(|| "stash-actions".into())
@@ -2667,11 +2700,9 @@ impl Render for StashBrowser {
                     // focus, and for a press's answer while focus stays
                     // where the press found it.
                     actions.on_children_prepainted(reveal_note(
-                        self.reveal_note.clone(),
-                        self.note_lines.clone(),
-                        self.restore_at.clone(),
+                        self,
+                        due,
                         restore.clone(),
-                        self.detail.clone(),
                         room,
                         note_line,
                     ))
@@ -2684,10 +2715,6 @@ impl Render for StashBrowser {
                     cx,
                 ))
         });
-        if pinned {
-            // The footer is always in view.
-            self.reveal_note.set(None);
-        }
         let (footer, inline) = if pinned {
             (actions, None)
         } else {
@@ -4825,6 +4852,124 @@ mod tests {
             );
         }
         git(&["merge", "--abort"]);
+        drop(stashes);
+        cx.update(|window, cx| window.close_all_dialogs(cx));
+        crate::views::tests::draw(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        drop(fixture);
+    }
+
+    /// The reveal of a press's answer expires with the frame that draws it.
+    /// At 18 pt in a 1480 × 980 window, Stashes beside the list, the saved
+    /// files focused, a click on Review restore… while a merge pauses is
+    /// refused in the footer, always in view. The window narrowed to 461 ×
+    /// 490 afterwards, the detail stacked beneath the list is not scrolled
+    /// to the refusal; Tab and Shift+Tab back onto the saved files reveal
+    /// them whole, and once a read finds the merge ended the note says so
+    /// with the saved files still focused and whole in view. A press's
+    /// reveal left due past the frame beside the list scrolls the first
+    /// stacked frame to Review restore… and the note, whatever focus has
+    /// done since, and wins over any end of the pause before that frame.
+    #[gpui::test]
+    async fn a_press_answer_beside_the_list_expires_with_its_frame(cx: &mut gpui::TestAppContext) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let git = two_stashes(&repository);
+        cx.update(|window, cx| appearance::apply_text_sizes(18, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        let slack = px(0.5);
+        let inside = |inner: Bounds<Pixels>, outer: Bounds<Pixels>| {
+            inner.left() >= outer.left() - slack
+                && inner.right() <= outer.right() + slack
+                && inner.top() >= outer.top() - slack
+                && inner.bottom() <= outer.bottom() + slack
+        };
+        git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+        open_selected_stash(&app, cx).await;
+        let stashes = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("Stashes is open");
+        let files = stashes.read_with(cx, |stashes, _| stashes.file_focus.clone());
+        let on_files =
+            |cx: &mut gpui::VisualTestContext| cx.update(|window, _| files.is_focused(window));
+        // Focus on the saved files, as a click on one moves it.
+        cx.update(|window, cx| window.focus(&files, cx));
+        crate::views::tests::draw(cx);
+
+        // Beside the list, a click on Review restore… in the footer, which
+        // leaves focus on the saved files, is refused there.
+        let restore = cx
+            .debug_bounds("restore-saved-stash")
+            .expect("Review restore…");
+        cx.simulate_click(restore.center(), Modifiers::none());
+        recovery_lands(&app, cx);
+        quiet_reads_land(&app, cx);
+        crate::views::tests::draw(cx);
+        assert_eq!(
+            stashes.read_with(cx, |stashes, _| stashes.restore_line.clone()),
+            Some(PAUSED_REFUSAL.to_owned()),
+            "the click is refused"
+        );
+        assert!(
+            cx.debug_bounds("stash-restore-refusal").is_some() && on_files(cx),
+            "the refusal is in the footer, the saved files focused"
+        );
+
+        // Narrowed, the detail stacks beneath the list and is not scrolled
+        // to the refusal answered beside it.
+        cx.simulate_resize(size(px(461.), px(490.)));
+        for _ in 0..3 {
+            crate::views::tests::draw(cx);
+        }
+        let scroll = stashes.read_with(cx, |stashes, _| stashes.detail.scroll().clone());
+        let [note, view] = ["stash-restore-refusal", "stash-detail"]
+            .map(|name| cx.debug_bounds(name).expect(name));
+        assert!(
+            on_files(cx) && !inside(note, view),
+            "stacked, the saved files keep focus and the refusal {note:?} is not revealed \
+             in {view:?} at {:?}",
+            scroll.offset()
+        );
+        // The keyboard moves off the saved files and back, which the detail
+        // reveals whole.
+        for key in ["tab", "shift-tab"] {
+            cx.simulate_keystrokes(key);
+            crate::views::tests::draw(cx);
+        }
+        let files_in_view = |cx: &mut gpui::VisualTestContext| {
+            let [files, view] =
+                ["stash-files", "stash-detail"].map(|name| cx.debug_bounds(name).expect(name));
+            (inside(files, view), files, view)
+        };
+        let (shown, files_at, view) = files_in_view(cx);
+        assert!(
+            on_files(cx) && shown,
+            "the saved files {files_at:?} are focused, whole in {view:?}"
+        );
+        let kept = scroll.offset();
+
+        // The merge ends in a terminal; the next read says so in the note.
+        git(&["merge", "--abort"]);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        crate::views::tests::settle(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        crate::views::tests::draw(cx);
+        assert!(
+            stashes.read_with(cx, |stashes, _| stashes.pause_ended)
+                && cx.debug_bounds("stash-restore-ended").is_some(),
+            "the note says the merge ended"
+        );
+        let (shown, files_at, view) = files_in_view(cx);
+        assert!(
+            on_files(cx) && shown && scroll.offset() == kept,
+            "the saved files {files_at:?} keep focus, whole in {view:?}, the detail kept at \
+             {kept:?}, not {:?}",
+            scroll.offset()
+        );
         drop(stashes);
         cx.update(|window, cx| window.close_all_dialogs(cx));
         crate::views::tests::draw(cx);
