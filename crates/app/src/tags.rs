@@ -153,10 +153,14 @@ fn overflows(scroll: &ScrollHandle) -> bool {
 }
 
 /// Whether the list `rows` reads draws its gutter and scrollbar: where it
-/// overflowed when last laid out, at least `shortest` tall, the track the
-/// scrollbar lies along (the kit lays it over the list's whole height).
+/// overflowed when last laid out, with the track the scrollbar lies along
+/// at least `shortest` tall. The kit lays that track over the scrollbar's
+/// viewport, the list less the room it keeps around its rows
+/// (`RowColumn::viewport_bounds`); judged by the list's whole height, a
+/// list keeping room drew a thumb along a track up to twice that room
+/// shorter than `shortest`.
 fn cues(rows: &RowColumn, shortest: Pixels) -> bool {
-    overflows(&rows.scroll) && rows.scroll.bounds().size.height >= shortest
+    overflows(&rows.scroll) && rows.viewport_bounds().size.height >= shortest
 }
 
 use crate::native_accessibility::text as static_text;
@@ -2061,6 +2065,80 @@ pub(crate) mod tests {
             .read_with(cx, |app, _| app.tag_actions.list.clone())
             .expect("the Push to… list");
         (app, list, cx)
+    }
+
+    /// A list that keeps room around its rows and is cued only where a thumb
+    /// moves ([`ScrollCue::where_a_thumb_moves`]) judges that by the track
+    /// its scrollbar lies along, the list less that room, which is where
+    /// the kit lays it: 60 px tall with 8 px around its rows, a 44 px track
+    /// shorter than [`SHORTEST_SCROLL_TRACK`], it draws no scrollbar and
+    /// keeps no gutter, and 80 px tall, a 64 px track, it draws both. Judged
+    /// by the list's whole height, the 60 px list drew a thumb along a track
+    /// shorter than the thumb.
+    #[gpui::test]
+    fn a_cue_where_a_thumb_moves_judges_the_track_its_scrollbar_lies_along(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        const ROOM: Pixels = px(8.);
+        struct Cued {
+            scroll: ScrollHandle,
+            height: Pixels,
+        }
+        impl Render for Cued {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let cue = ScrollCue::new(&self.scroll, ROOM).where_a_thumb_moves();
+                let observe = cue.observe(|_, _, _| {});
+                let list = div()
+                    .id("cued-list")
+                    .debug_selector(|| "cued-list".into())
+                    .h(self.height)
+                    .p(ROOM)
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .children((0..20).map(|row| {
+                        div()
+                            .debug_selector(move || format!("cued-row-{row}"))
+                            .h(px(20.))
+                            .child(format!("Row {row}"))
+                    }));
+                div().w(px(200.)).child(
+                    cue.list(list, "cued-list/scrollbar")
+                        .on_children_prepainted(observe),
+                )
+            }
+        }
+        cx.update(gpui_kit::init);
+        cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        let (list, cx) = cx.add_window_view(|_, _| Cued {
+            scroll: ScrollHandle::new(),
+            height: px(60.),
+        });
+        let bar = Scrollbar::width();
+        for (height, cued) in [(60., false), (80., true), (60., false)] {
+            list.update(cx, |list, cx| {
+                list.height = px(height);
+                cx.notify();
+            });
+            draw(cx);
+            let bounds = cx.debug_bounds("cued-list").expect("the list");
+            let row = cx.debug_bounds("cued-row-0").expect("its first row");
+            assert_eq!(
+                row.right() < bounds.right() - ROOM - px(0.5),
+                cued,
+                "{height} px: the row {row:?} keeps a gutter in {bounds:?} only where cued"
+            );
+            // The scrollbar's viewport, which its track fills.
+            let track = Bounds::new(
+                point(bounds.right() - ROOM - bar - px(4.), bounds.top() + ROOM),
+                size(bar + px(4.), bounds.size.height - ROOM * 2.),
+            );
+            let thumb = painted_thumb(cx, track);
+            assert_eq!(
+                thumb.is_some(),
+                cued,
+                "{height} px: a scrollbar ({thumb:?}) only along a track a thumb moves on"
+            );
+        }
     }
 
     /// Tags' 30 rows overflow its list at 1000 × 680, and its scrollbar's
