@@ -41,7 +41,7 @@ impl GitTurtle {
             path: entry.path,
             directory: false,
             local: false,
-            pending: false,
+            preparing: None,
             error: None,
         });
         window.open_alert_dialog(cx, move |dialog, window, _| {
@@ -67,7 +67,7 @@ impl GitTurtle {
                 })
                 .on_cancel(move |_, window, cx| {
                     cancel.update(cx, |form, cx| {
-                        form.pending = false;
+                        form.preparing = None;
                         let _ = form.owner.update(cx, |this, cx| {
                             this.cancel_ignore_action();
                             // The cancelled preparation's end never runs.
@@ -86,12 +86,30 @@ struct IgnoreForm {
     path: PathBuf,
     directory: bool,
     local: bool,
-    pending: bool,
+    /// The generation of the window's ignore read this form started
+    /// (`IgnoreForm::pending`).
+    preparing: Option<u64>,
     error: Option<String>,
 }
 impl IgnoreForm {
+    /// Whether the read this form started still runs: the window's ignore
+    /// read of its generation, which ends when it lands or is cancelled, as
+    /// a page switch cancels it (`GitTurtle::end_preparations`), as
+    /// Create tag's form reads its own (`TagForm::pending`). A flag only the
+    /// read's reply cleared stayed set once Settings cancelled the read, so
+    /// Preview rule refused every later press. A form whose window has gone
+    /// keeps what it started.
+    fn pending(&self, cx: &App) -> bool {
+        self.preparing.is_some_and(|generation| {
+            self.owner.upgrade().is_none_or(|owner| {
+                let owner = owner.read(cx);
+                owner.ignore_actions.generation == generation
+                    && owner.operation_busy == Some(PREPARING)
+            })
+        })
+    }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pending {
+        if self.pending(cx) {
             return;
         }
         let path = self.path.clone();
@@ -103,8 +121,8 @@ impl IgnoreForm {
         };
         let form = cx.entity().downgrade();
         let accepted = self.owner.update(cx, |this, cx| {
-            if this.path != self.repository || this.operation_busy.is_some() || this.page != AppPage::Repository { return false; }
-            let Some(repo) = this.repository.clone() else { return false; };
+            if this.path != self.repository || this.operation_busy.is_some() || this.page != AppPage::Repository { return None; }
+            let repo = this.repository.clone()?;
             let repository = repo.path().to_owned(); this.cancel_ignore_action();
             let generation = this.ignore_actions.generation;
             this.operation_busy = Some(PREPARING); this.operation_error = None;
@@ -116,7 +134,7 @@ impl IgnoreForm {
                     if this.operation_busy == Some(PREPARING) { this.operation_busy = None; }
                     this.read_deferred_working(window, cx);
                     if this.path.as_ref() != Some(&repository) || this.page != AppPage::Repository { cx.notify(); return; }
-                    let _ = form.update(cx, |form, cx| { form.pending = false; cx.notify(); });
+                    let _ = form.update(cx, |form, cx| { form.preparing = None; cx.notify(); });
                     match result {
                         Ok(plan) => {
                             window.close_dialog(cx);
@@ -128,10 +146,10 @@ impl IgnoreForm {
                     }
                     cx.notify();
                 });
-            })); cx.notify(); true
-        }).unwrap_or(false);
-        self.pending = accepted;
-        if !accepted {
+            })); cx.notify(); Some(generation)
+        }).ok().flatten();
+        self.preparing = accepted;
+        if accepted.is_none() {
             self.error = Some("The repository changed or another operation is running. Reopen Ignore after it finishes.".into());
         }
         cx.notify();
@@ -140,6 +158,7 @@ impl IgnoreForm {
 impl Render for IgnoreForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
+        let pending = self.pending(cx);
         let parent = self
             .path
             .parent()
@@ -147,11 +166,11 @@ impl Render for IgnoreForm {
         div().flex().flex_col().gap_3()
             .child(static_text("ignore-selected-path", format!("Selected untracked file: {}", self.path.display())).text_size(crate::appearance::ui_text(12.)))
             .child(static_text("ignore-destination-label", "Save rule in").text_size(crate::appearance::ui_text(12.)).font_weight(FontWeight::MEDIUM))
-            .child(div().flex().gap_2().children([(false, "Shared .gitignore"), (true, "Local excludes")].map(|(local, label)| button(label, label, "", self.local == local).toggled(self.local == local).disabled(self.pending).on_click(cx.listener(move |this, _, _, cx| { this.local = local; this.error = None; cx.notify(); })))))
+            .child(div().flex().gap_2().children([(false, "Shared .gitignore"), (true, "Local excludes")].map(|(local, label)| button(label, label, "", self.local == local).toggled(self.local == local).disabled(pending).on_click(cx.listener(move |this, _, _, cx| { this.local = local; this.error = None; cx.notify(); })))))
             .child(static_text("ignore-destination-help", if self.local { "For this repository's local setup. Stored in Git's info/exclude, including linked worktrees." } else { "For patterns the project should share. Changes to .gitignore remain unstaged for review." }).text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
-            .when_some(parent, |element, parent| element.child(Checkbox::new("ignore-containing-directory").label(format!("Ignore containing directory: {}/", parent.display())).checked(self.directory).disabled(self.pending).on_click(cx.listener(|this, checked, _, cx| { this.directory = *checked; this.error = None; cx.notify(); }))))
+            .when_some(parent, |element, parent| element.child(Checkbox::new("ignore-containing-directory").label(format!("Ignore containing directory: {}/", parent.display())).checked(self.directory).disabled(pending).on_click(cx.listener(|this, checked, _, cx| { this.directory = *checked; this.error = None; cx.notify(); }))))
             .child(static_text("ignore-tracked-explanation", "The next step previews the exact escaped rule and destination. Ignore rules affect untracked content; they never remove tracked files from Git.").text_size(crate::appearance::ui_text(11.)).text_color(rgb(p.muted)))
-            .when(self.pending, |element| element.child(static_text("ignore-preparation-status", "Preparing exact rule and checking current content…").text_size(crate::appearance::ui_text(12.))))
+            .when(pending, |element| element.child(static_text("ignore-preparation-status", "Preparing exact rule and checking current content…").text_size(crate::appearance::ui_text(12.))))
             .children(self.error.as_ref().map(|error| static_text("ignore-preparation-error", error.clone()).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.warning))))
     }
 }
@@ -192,7 +211,7 @@ mod tests {
 
     /// The containing-directory Checkbox turns disabled while it holds focus
     /// once the rule's preparation starts, as `IgnoreForm::submit` sets
-    /// `pending`, with the destination buttons before it. Tab and Shift+Tab,
+    /// `preparing`, with the destination buttons before it. Tab and Shift+Tab,
     /// as keystrokes through the window, still leave it for the nearest tab
     /// stops that stay enabled, and skip it while it is disabled.
     #[gpui::test]
@@ -211,7 +230,7 @@ mod tests {
                     path: PathBuf::from("build/output.log"),
                     directory: false,
                     local: false,
-                    pending: false,
+                    preparing: None,
                     error: None,
                 }),
                 after: cx.focus_handle(),
@@ -241,7 +260,7 @@ mod tests {
         let pending = |cx: &mut VisualTestContext, pending: bool| {
             cx.update(|_, cx| {
                 form.update(cx, |form, cx| {
-                    form.pending = pending;
+                    form.preparing = pending.then_some(0);
                     cx.notify();
                 })
             });
@@ -293,6 +312,92 @@ mod tests {
             press(cx, "shift-tab"),
             before,
             "Shift+Tab leaves the disabled Checkbox past the disabled buttons"
+        );
+    }
+
+    /// `checked_out`-like Changes: a repository with an untracked
+    /// `scratch.txt`, read, and its entry.
+    pub(super) async fn untracked_scratch(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &mut VisualTestContext,
+        PathBuf,
+        StatusEntry,
+    ) {
+        use crate::views::tests::{history_script, history_window_from, settle};
+        let (fixture, app, cx) = history_window_from(cx, history_script(2, 3)).await;
+        let root = app
+            .read_with(cx, |app, _| app.path.clone())
+            .expect("a repository");
+        std::fs::write(root.join("scratch.txt"), "scratch\n").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        let scratch = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .and_then(|status| {
+                    status
+                        .entries
+                        .iter()
+                        .find(|entry| entry.path == std::path::Path::new("scratch.txt"))
+                        .cloned()
+                })
+                .expect("scratch.txt is listed")
+        });
+        assert!(scratch.untracked);
+        (fixture, app, cx, root, scratch)
+    }
+
+    /// Asks the open Ignore form for Preview rule, as its OK does.
+    fn preview_rule(cx: &mut VisualTestContext) {
+        use gpui_kit::component::dialog::Confirm;
+        cx.update(|window, cx| window.dispatch_action(Box::new(Confirm { secondary: false }), cx));
+    }
+
+    /// Preview rule asked for again once Settings has cancelled the rule's
+    /// preparation (`GitTurtle::end_preparations`) previews the rule: the
+    /// form reads its preparation from the window's, which the cancel
+    /// ended (`IgnoreForm::pending`). A flag only the read's reply cleared
+    /// kept the form saying it was preparing, and refusing every later
+    /// Preview rule, as Create tag's form once did.
+    #[gpui::test]
+    async fn preview_rule_works_again_once_settings_cancels_it(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx, _, scratch) = untracked_scratch(cx).await;
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_ignore(scratch, window, cx)));
+        draw(cx);
+        // Preview rule, its read held as a slow disk holds it, and Settings.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        preview_rule(cx);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("ignore-preparation-status").is_some(),
+            "the rule is prepared"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the form stays open"
+        );
+        assert!(
+            cx.debug_bounds("ignore-preparation-status").is_none(),
+            "Settings ended the form's preparation"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
+        draw(cx);
+        preview_rule(cx);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        draw(cx);
+        assert!(
+            cx.debug_bounds("operation-consequences").is_some(),
+            "Preview rule previews the rule"
         );
     }
 }

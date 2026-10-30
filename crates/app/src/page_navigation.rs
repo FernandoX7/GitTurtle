@@ -10,7 +10,142 @@ pub(super) fn return_page(page: AppPage, origin: AppPage, repository: bool) -> A
     }
 }
 
+/// Where a page switch goes, which decides what becomes of the reviews
+/// being prepared as the window leaves the view that asked for them
+/// ([`GitTurtle::end_preparations`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum PageSwitch {
+    /// To Settings or Projects, off the repository page.
+    Away,
+    /// To Changes, over History or Compare (`show_working`).
+    ToChanges,
+    /// To History, from Changes (`back_to_history`, which `show_history`
+    /// runs).
+    ToHistory,
+}
+
 impl GitTurtle {
+    /// Ends the reviews being prepared as a page switch leaves the view
+    /// that asked for them, so none opens its form or confirmation over the
+    /// view shown next, which once took focus from where the person had
+    /// put it: the one set every switch applies, Settings and Projects
+    /// (`show_settings`, `show_projects`), Changes opened over History or
+    /// Compare (`show_working`) and History shown again from Changes
+    /// (`back_to_history`). Each preparation is cancelled, dismissed or
+    /// dropped:
+    ///
+    /// | Preparation | Settings, Projects | History to Changes | Changes to History |
+    /// | --- | --- | --- | --- |
+    /// | Merge…/Rebase… branch comparison | cancelled | dropped | dropped |
+    /// | Tags, a tag's details, Create tag's review | cancelled | dropped | dropped |
+    /// | Ignore…'s review, Preview rule | cancelled | dropped | dropped |
+    /// | Discard…, Delete untracked file…'s review | cancelled | dropped | dropped |
+    /// | Recovery plans: Amend…, Revert…, Review restore… | cancelled | dismissed | wanted again |
+    /// | Edit local commits, a paused rebase's Continue | cancelled | dismissed | wanted again |
+    /// | Branch actions | cancelled | dismissed | wanted again |
+    ///
+    /// A cancel drops the preparation and ends its busy state at once. Its
+    /// end, which reads the working state asked for meanwhile, never runs,
+    /// so this reads it ([`Self::read_noted_working`]): off the repository
+    /// page nothing else reads, and Projects never waits for a review.
+    ///
+    /// A dismissal drops only the plan: the read, which the executor cannot
+    /// stop, ends as it would, keeping the busy state until then, and its
+    /// end reads; History shown again wants a plan it asked for back, which
+    /// then opens there ([`Self::dismiss_history_plans`]). Only those three
+    /// carry a dismissal of their own. The rest are dropped: cancelled, so
+    /// nothing they bring opens, while the window keeps their busy state
+    /// until the executor reaches a marker queued behind their read, whose
+    /// end reads ([`Self::wait_for_dropped_preparation`]). Cancelled
+    /// outright, each switch to Changes during a slow read queued a status
+    /// read behind it, until the executor's bounded queue refused one and
+    /// Changes lost its rows.
+    ///
+    /// Settings once left the recovery, Tags and Ignore preparations, and
+    /// Merge…'s comparison, to open over it, Projects waited for them as
+    /// for a write, Changes let Tags and Merge…'s confirmation open over
+    /// the working list, and History, shown from Changes, let Discard…'s
+    /// open over the history.
+    pub(super) fn end_preparations(
+        &mut self,
+        switch: PageSwitch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let busy = self.operation_busy;
+        self.cancel_integration_comparison();
+        self.cancel_tag_action();
+        self.cancel_ignore_action();
+        self.cancel_discard_action();
+        match switch {
+            PageSwitch::Away => {
+                self.cancel_recovery_read();
+                self.cancel_interactive_rebase_action();
+                self.cancel_branch_action();
+                self.end_dropped_preparation();
+                self.read_noted_working(window, cx);
+            }
+            PageSwitch::ToChanges | PageSwitch::ToHistory => {
+                self.dismiss_history_plans(switch == PageSwitch::ToChanges);
+                // A preparation cancelled above ended its busy state with it.
+                if let Some(label) = busy
+                    && self.operation_busy.is_none()
+                {
+                    self.wait_for_dropped_preparation(label, window, cx);
+                }
+            }
+        }
+    }
+
+    /// Keeps the window busy as `label`, the preparation a switch between
+    /// History and Changes just dropped, until the operation executor
+    /// reaches a marker queued behind that preparation's read, which may
+    /// still run, and then ends the busy state and reads what was asked for
+    /// meanwhile ([`Self::read_deferred_working`]), as a dismissed
+    /// preparation's end does. A wait already running for the same
+    /// preparation, as each switch back and forth drops it again, goes on
+    /// rather than queue another marker.
+    fn wait_for_dropped_preparation(
+        &mut self,
+        label: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.operation_busy = Some(label);
+        if self
+            .dropped_preparation
+            .as_ref()
+            .is_some_and(|(waiting, _)| *waiting == label)
+        {
+            return;
+        }
+        let reached = self.operations.submit_read(|| Ok(()));
+        let wait = cx.spawn_in(window, async move |this, cx| {
+            let _ = reached.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.dropped_preparation = None;
+                if this.operation_busy == Some(label) {
+                    this.operation_busy = None;
+                }
+                this.read_deferred_working(window, cx);
+                cx.notify();
+            });
+        });
+        self.dropped_preparation = Some((label, wait));
+    }
+
+    /// Ends the wait for a dropped preparation
+    /// ([`Self::wait_for_dropped_preparation`]) with its busy state, as a
+    /// cancel ends a preparation's: Settings, Projects and opening a
+    /// repository cancel what it waits for.
+    pub(super) fn end_dropped_preparation(&mut self) {
+        if let Some((label, _)) = self.dropped_preparation.take()
+            && self.operation_busy == Some(label)
+        {
+            self.operation_busy = None;
+        }
+    }
+
     pub(super) fn update_modal_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let modal_open = window.has_active_dialog(cx) || window.has_active_sheet(cx);
         if self.modal_was_open != modal_open {
@@ -2149,6 +2284,143 @@ mod tests {
             cx.update(|window, cx| app.update(cx, |app, cx| app.return_from_page(window, cx)));
             draw(cx);
             assert!(app.read_with(cx, |app, _| app.page == AppPage::Repository));
+        }
+    }
+
+    /// Every page switch ends the same reviews being prepared
+    /// (`GitTurtle::end_preparations`): Tags, Discard…'s review and Merge…'s
+    /// comparison open nothing over the view shown next, and the working
+    /// read Refresh asked for meanwhile runs. Settings and Projects cancel
+    /// them at once and read; Changes opened over History and History shown
+    /// again from Changes drop them, the window busy until the dropped read
+    /// ends, which then reads, so no read queues behind it. Settings left
+    /// Tags to open over it, Projects waited for it as for a write, Changes
+    /// let Tags and Merge…'s confirmation open over the working list, and
+    /// History, shown from Changes, let Discard…'s open over the history.
+    #[gpui::test]
+    async fn every_page_switch_ends_the_same_preparations(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        let root = fixture.path().join("narrow");
+        type Switch = fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>);
+        // Each switch, the mode it leaves and the page and mode it shows.
+        let switches: [(&str, WorkspaceMode, AppPage, Option<WorkspaceMode>, Switch); 4] = [
+            (
+                "Settings",
+                WorkspaceMode::Working,
+                AppPage::Settings,
+                None,
+                |app, window, cx| app.show_settings(window, cx),
+            ),
+            (
+                "Projects",
+                WorkspaceMode::Working,
+                AppPage::Projects,
+                None,
+                |app, window, cx| app.show_projects(window, cx),
+            ),
+            (
+                "Changes",
+                WorkspaceMode::History,
+                AppPage::Repository,
+                Some(WorkspaceMode::Working),
+                |app, window, cx| app.show_working(window, cx),
+            ),
+            (
+                "History",
+                WorkspaceMode::Working,
+                AppPage::Repository,
+                Some(WorkspaceMode::History),
+                |app, window, cx| app.show_history(window, cx),
+            ),
+        ];
+        let preparations: [(&str, Switch); 3] = [
+            ("Tags", |app, window, cx| app.open_tags(window, cx)),
+            ("Discard…", |app, window, cx| {
+                let draft = app
+                    .work_status
+                    .as_ref()
+                    .and_then(|status| {
+                        status
+                            .entries
+                            .iter()
+                            .find(|entry| entry.path == std::path::Path::new("draft.txt"))
+                            .cloned()
+                    })
+                    .expect("draft.txt is listed");
+                app.open_discard(draft, window, cx)
+            }),
+            ("Merge…", |app, window, cx| {
+                app.prepare_integration("main".into(), false, window, cx)
+            }),
+        ];
+        let mut index = 0;
+        for (switch, from, page, mode, leave) in switches {
+            for (preparation, start) in preparations {
+                index += 1;
+                let case = format!("{preparation} then {switch}");
+                // Shown where it is asked for, its preparation held as a
+                // slow disk holds it, and Refresh asked for meanwhile.
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        if app.page != AppPage::Repository {
+                            app.return_from_page(window, cx);
+                        }
+                        if from == WorkspaceMode::Working {
+                            app.show_working(window, cx)
+                        } else {
+                            app.show_history(window, cx)
+                        }
+                    })
+                });
+                settle(&app, cx).await;
+                crate::path_filter::filters_land(&app, cx);
+                let held = app.update(cx, |app, _| app.operations.hold());
+                cx.update(|window, cx| app.update(cx, |app, cx| start(app, window, cx)));
+                assert!(
+                    app.read_with(cx, |app, _| app.operation_busy.is_some()),
+                    "{case}: it is prepared"
+                );
+                let later = format!("later-{index}.txt");
+                std::fs::write(root.join(&later), "later\n").unwrap();
+                cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+                assert!(app.read_with(cx, |app, _| app.working_read_deferred.is_some()));
+
+                cx.update(|window, cx| app.update(cx, |app, cx| leave(app, window, cx)));
+                draw(cx);
+                app.read_with(cx, |app, _| {
+                    assert!(app.page == page, "{case}: {switch} shows");
+                    if let Some(mode) = mode {
+                        assert!(app.mode == mode, "{case}: {switch} shows");
+                        assert!(
+                            app.operation_busy.is_some(),
+                            "{case}: busy until the dropped read ends"
+                        );
+                        assert!(
+                            app.status_task.is_none(),
+                            "{case}: no read queues behind it"
+                        );
+                    } else {
+                        assert_eq!(app.operation_busy, None, "{case}: cancelled at once");
+                        assert_eq!(
+                            app.working_read_deferred, None,
+                            "{case}: the read Refresh asked for is taken up"
+                        );
+                    }
+                });
+                drop(held);
+                preparation_ends(&app, cx).await;
+                assert!(!dialog_open(cx), "{case}: nothing opens over it");
+                app.read_with(cx, |app, _| {
+                    assert_eq!(app.operation_busy, None, "{case}");
+                    assert!(!status_read_pending(app), "{case}: no read stays noted");
+                });
+                assert!(
+                    entries(&app, cx).is_some_and(|entries| entries.contains(&later)),
+                    "{case}: Refresh ran"
+                );
+                close_dialogs(cx);
+            }
         }
     }
 

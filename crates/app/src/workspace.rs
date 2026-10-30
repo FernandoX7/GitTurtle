@@ -1849,20 +1849,16 @@ impl GitTurtle {
 
     pub(super) fn show_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.end_image_drag();
-        self.cancel_integration_comparison();
-        self.cancel_branch_action();
-        self.cancel_interactive_rebase_action();
-        self.cancel_recovery_read();
-        self.cancel_discard_action();
+        // Cancels every review being prepared, which are reads, ended
+        // rather than waited for, and runs the read Changes asked for
+        // meanwhile, which their ends would have run.
+        self.end_preparations(page_navigation::PageSwitch::Away, window, cx);
         if self.operation_busy.is_some() {
             return;
         }
         self.capture_page_return_focus(window, cx);
         self.page = AppPage::Projects;
         self.page_origin = AppPage::Repository;
-        // A preparation cancelled above never reaches its end, which would
-        // have run the read Changes asked for meanwhile.
-        self.read_noted_working(window, cx);
         self.hub.update(cx, |hub, cx| {
             hub.set_busy(false, cx);
             hub.set_error(None, cx);
@@ -2150,10 +2146,11 @@ impl GitTurtle {
     /// returned while any write ran, from the toggle drawn and announced
     /// available, its shortcut and the palette alike.
     ///
-    /// Leaving History or Compare drops the plan a recovery, rebase or
-    /// branch action is being prepared for there, as leaving the page does,
-    /// while the preparation's read still ends and then reads the working
-    /// state this page asked for ([`Self::dismiss_history_plans`]). Its form
+    /// Leaving History or Compare ends the reviews being prepared there, as
+    /// every page switch does ([`Self::end_preparations`]): nothing they
+    /// bring opens over the working list, while their read still ends, the
+    /// window busy until then, and then reads the working state this page
+    /// asked for ([`Self::dismiss_history_plans`]). Their forms and dialogs
     /// once opened over the working list.
     pub(super) fn show_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_inspections(window, cx);
@@ -2162,7 +2159,7 @@ impl GitTurtle {
             return;
         }
         if self.mode != WorkspaceMode::Working {
-            self.dismiss_history_plans(true);
+            self.end_preparations(page_navigation::PageSwitch::ToChanges, window, cx);
             if self.mode == WorkspaceMode::History {
                 self.history_sidebar = self.sidebar;
             }
@@ -2189,7 +2186,8 @@ impl GitTurtle {
     /// dropped, History's action did nothing. Each preparation's start wants
     /// its plan again too (`cancel_recovery_read`,
     /// `cancel_interactive_rebase_action`, `cancel_branch_action`), so one
-    /// Changes asks for opens there.
+    /// Changes asks for opens there. Part of every page switch's set
+    /// ([`Self::end_preparations`]).
     pub(super) fn dismiss_history_plans(&mut self, dismissed: bool) {
         self.dismiss_recovery_read(dismissed);
         self.dismiss_interactive_rebase_action(dismissed);
@@ -2205,7 +2203,9 @@ impl GitTurtle {
     /// its repository leaves both to `open`, which drops the read, and whose
     /// snapshot reads afresh. Whatever cancels a preparation, whose end then
     /// never runs, reads it too: a form's Cancel, and Settings and Projects
-    /// through [`Self::read_noted_working`]. A tab switch or close drops the
+    /// through [`Self::read_noted_working`] ([`Self::end_preparations`]),
+    /// while a switch between History and Changes waits for the cancelled
+    /// read to end and reads then. A tab switch or close drops the
     /// read instead (`retain_active_tab`, `close_repository_tab`), the tab
     /// reading quietly when it is shown again, and so does `open`, as
     /// History's Refresh calls it, whose snapshot reads the working state
@@ -2226,8 +2226,9 @@ impl GitTurtle {
 
     /// The working read of [`Self::read_deferred_working`] without its
     /// quiet refresh, for Settings and Projects as they cancel a
-    /// preparation: off the repository page a quiet refresh is refused, and
-    /// the return there starts it (`return_from_page`).
+    /// preparation ([`Self::end_preparations`]): off the repository page a
+    /// quiet refresh is refused, and the return there starts it
+    /// (`return_from_page`).
     pub(super) fn read_noted_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.operation_busy.is_none() && self.working_read_deferred.is_some() {
             if self.working_read_deferred == self.path {

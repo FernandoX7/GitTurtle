@@ -394,15 +394,11 @@ impl GitTurtle {
             self.theme_editor.settings_entered();
         }
         self.capture_page_return_focus(window, cx);
-        self.cancel_integration_comparison();
-        self.cancel_branch_action();
-        self.cancel_interactive_rebase_action();
-        self.cancel_discard_action();
         self.page = AppPage::Settings;
-        // A preparation cancelled above never reaches its end, which would
-        // have run the read Changes asked for meanwhile: clicking the tab
-        // back, which reads nothing, once left Refresh unrun.
-        self.read_noted_working(window, cx);
+        // Cancels every review being prepared, and runs the read Changes
+        // asked for meanwhile, which their ends would have run: clicking the
+        // tab back, which reads nothing, once left Refresh unrun.
+        self.end_preparations(page_navigation::PageSwitch::Away, window, cx);
         self.column_menu = false;
         self.column_drag = None;
         self.image_drag = None;

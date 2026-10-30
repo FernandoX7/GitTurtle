@@ -420,6 +420,12 @@ struct GitTurtle {
     working_paths: working_selection::FilterState,
     integration_state: Option<gitturtle_core::OperationState>,
     integration_task: Option<Task<()>>,
+    /// The busy state of a review's preparation that a switch between
+    /// History and Changes cancelled while its read may still run on the
+    /// operation executor, and the wait for a marker queued behind that
+    /// read (`GitTurtle::end_preparations`): reads asked for meanwhile are
+    /// noted rather than queued behind it, and the marker's end reads them.
+    dropped_preparation: Option<(&'static str, Task<()>)>,
     profile: Option<gitturtle_core::GitProfile>,
     profiles: profiles::State,
     theme_editor: theme_editor::State,
@@ -787,6 +793,7 @@ impl GitTurtle {
             working_paths: working_selection::FilterState::default(),
             integration_state: None,
             integration_task: None,
+            dropped_preparation: None,
             profile: None,
             profiles: profiles::State::default(),
             theme_editor: theme_editor::State::default(),
@@ -1141,6 +1148,7 @@ impl GitTurtle {
         self.cancel_interactive_rebase_action();
         self.cancel_ignore_action();
         self.cancel_discard_action();
+        self.end_dropped_preparation();
         // The working read Changes asked for while a preparation cancelled
         // above ran is dropped: the snapshot opened below reads the working
         // state too. As History's Refresh cancelled Discard…'s review, the
@@ -1694,9 +1702,6 @@ impl GitTurtle {
             self.sidebar = self.history_sidebar;
         }
         if was_working {
-            // A plan History asked for that Changes dropped as it opened
-            // opens here as its preparation ends: it once stayed dropped.
-            self.dismiss_history_plans(false);
             self.invalidate_read();
             self.clear_preview();
             let (files, selected) = self.retained_history_files.take().unwrap_or_default();
@@ -1704,6 +1709,11 @@ impl GitTurtle {
             self.refresh_file_filter(window, cx);
             self.selected_file = selected;
             self.status = changed_files(self.files.len());
+            // A plan History asked for that Changes dropped as it opened
+            // opens here as its preparation ends: it once stayed dropped.
+            // What Changes was preparing, such as Discard…'s review, is
+            // dropped: its confirmation once opened over History.
+            self.end_preparations(page_navigation::PageSwitch::ToHistory, window, cx);
         }
         if was_working
             && self.files.is_empty()
