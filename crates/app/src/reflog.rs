@@ -401,6 +401,34 @@ impl ReflogBrowser {
     fn reading_entry(&self) -> bool {
         self.pending && self.awaiting_entry()
     }
+    /// The entry, among the first `count` the list draws, that holds focus.
+    fn focused_entry(&self, count: usize, window: &Window, cx: &mut App) -> Option<usize> {
+        (0..count).find(|&index| {
+            self.entries
+                .focus(("reflog-entry", index), cx)
+                .is_focused(window)
+        })
+    }
+    /// Whether focus is on a control that only the selected entry's loaded
+    /// commit draws: its message, the recovery branch's name or Review
+    /// recovery branch….
+    fn focus_on_commit(&self, window: &Window, cx: &mut App) -> bool {
+        let review = self.content.focus("review-reflog-recovery", cx);
+        let name = self.name.read(cx).focus_handle(cx);
+        let message = (self.message.as_ref()).map(|message| message.read(cx).focus_handle(cx));
+        [Some(review), Some(name), message]
+            .into_iter()
+            .flatten()
+            .any(|focus| focus.contains_focused(window, cx))
+    }
+    /// Whether focus is on a control that only a loaded log draws: an entry,
+    /// or the selected entry's details.
+    fn focus_on_log(&self, window: &Window, cx: &mut App) -> bool {
+        let count = self.matches(cx).len().min(100);
+        self.focused_entry(count, window, cx).is_some()
+            || self.content.focus("copy-reflog-oid", cx).is_focused(window)
+            || self.focus_on_commit(window, cx)
+    }
     /// Up, Down, Home and End on the entry list select the entry they reach
     /// and move focus, the list's one Tab stop, onto it, as History's list
     /// and the Stashes list select with them; Space and Enter on the entry
@@ -411,11 +439,7 @@ impl ReflogBrowser {
         }
         let matches = self.matches(cx);
         let count = matches.len().min(100);
-        let Some(current) = (0..count).find(|&index| {
-            self.entries
-                .focus(("reflog-entry", index), cx)
-                .is_focused(window)
-        }) else {
+        let Some(current) = self.focused_entry(count, window, cx) else {
             return;
         };
         let target = match event.keystroke.key.as_str() {
@@ -518,6 +542,17 @@ impl ReflogBrowser {
         cx.notify();
     }
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Until the log lands, its read takes away the entries and the
+        // selected entry's details. Focus on one of them, where the keyboard
+        // left it before the pointer pressed Read log (a Button takes no
+        // focus on a press), stayed on a control no frame drew, which keys
+        // and Escape no longer reached: it moves to the filter, the first
+        // stop below Read log that every state of the browser draws.
+        if self.focus_on_log(window, cx) {
+            let filter = self.query.read(cx).focus_handle(cx);
+            window.focus(&filter, cx);
+            self.reveal_filter = true;
+        }
         let scope = self.scope.read(cx).value().trim().to_owned();
         let reference = if scope == "HEAD" || scope.starts_with("refs/heads/") {
             scope
@@ -1177,6 +1212,104 @@ mod tests {
             Some(last.oid),
             "the last entry's commit lands"
         );
+    }
+
+    /// Read log takes away the entries and the selected entry's details until
+    /// the log lands. Pressed with the pointer while the keyboard is on an
+    /// entry, or on Copy commit ID below the list, it moves focus to the
+    /// filter, which the frame draws with its ring, and Escape still closes
+    /// the Reflog. Focus stayed on the sixth entry, which no frame drew, and
+    /// keys and Escape reached nothing.
+    #[gpui::test]
+    async fn read_log_moves_focus_off_what_it_takes_away(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        for _ in 0..5 {
+            cx.simulate_keystrokes("down");
+            settle_reads(cx, &browser);
+        }
+        assert_eq!(
+            cx.update(|window, cx| browser.read(cx).entries.focused(window)),
+            Some(ElementId::from(("reflog-entry", 5_usize))),
+            "the keyboard is on the sixth entry"
+        );
+        let held = press_read_log(cx, &browser);
+        assert!(
+            cx.debug_bounds("reflog-entry-5").is_none(),
+            "Read log takes the entries away"
+        );
+        assert_filter_holds_drawn_focus(cx, &browser, "from the entry");
+        drop(held);
+        settle_reads(cx, &browser);
+
+        cx.simulate_keystrokes("tab down");
+        settle_reads(cx, &browser);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            cx.update(|window, cx| browser.read(cx).content.focused(window)),
+            Some(ElementId::from("copy-reflog-oid")),
+            "the keyboard is on Copy commit ID"
+        );
+        let held = press_read_log(cx, &browser);
+        assert!(
+            cx.debug_bounds("reflog-selected-object").is_none(),
+            "Read log takes the selected entry's details away"
+        );
+        assert_filter_holds_drawn_focus(cx, &browser, "from Copy commit ID");
+
+        cx.simulate_keystrokes("escape");
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(400));
+        draw(cx);
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "Escape closes the Reflog while its log is read"
+        );
+        drop(held);
+    }
+
+    /// Presses Read log with the pointer, whose press moves no focus, while
+    /// the browser's thread is held, as by a slow read, so the log's read
+    /// stays in progress until the returned hold drops.
+    fn press_read_log(
+        cx: &mut VisualTestContext,
+        browser: &Entity<ReflogBrowser>,
+    ) -> crate::operations::Held {
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        let read_log = rendered(cx, "refresh-reflog");
+        cx.simulate_click(read_log.center(), Modifiers::default());
+        draw(cx);
+        assert!(
+            browser.read_with(cx, |this, _| this.pending),
+            "the log is read"
+        );
+        held
+    }
+
+    /// The Reflog's filter holds focus, `from` where it was, and the frame
+    /// draws it: keys dispatch from it, and its ring is whole.
+    fn assert_filter_holds_drawn_focus(
+        cx: &mut VisualTestContext,
+        browser: &Entity<ReflogBrowser>,
+        from: &str,
+    ) {
+        let (filter, text) = cx.read(|cx| {
+            let query = browser.read(cx).query.read(cx);
+            (query.focus_handle(cx), query.input_bounds())
+        });
+        assert!(
+            cx.update(|window, _| filter.is_focused(window)),
+            "focus moves to the filter {from}"
+        );
+        assert!(
+            !cx.update(|window, _| window.context_stack().is_empty()),
+            "the frame draws the stop that holds focus, {from}"
+        );
+        focus_ring::assert_input_ringed(cx, text, "the Reflog's filter");
     }
 
     /// In a 461 × 490 half tile, at 13 and 18 pt, every Tab stop of the
