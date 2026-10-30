@@ -1812,8 +1812,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// A plan read that lands while Settings shows is dropped, and with it
-    /// the form's preparation: back on the repository, Review tag is
+    /// A plan read Settings cancels as it opens (`end_preparations`) ends
+    /// the form's preparation with it: back on the repository, Review tag is
     /// announced and drawn available, and a press reads the plan again and
     /// opens the tag's review. The form kept a flag only the dropped reply
     /// cleared, so Review tag looked available and refused every press.
@@ -1853,10 +1853,15 @@ pub(crate) mod tests {
             Some(true),
             "Review tag is refused while its read runs"
         );
-        // Settings opens over the dialog before the read lands.
+        // Settings opens over the dialog before the read lands, and
+        // cancels it.
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_settings(window, cx)));
+        assert!(
+            app.read_with(cx, |app, _| app.tag_actions.task.is_none()),
+            "Settings cancels the plan read"
+        );
         drop(held);
-        read_lands(&app, cx).await;
+        app.read_with(cx, |app, _| app.operations.drain());
         draw(cx);
         assert!(
             !form.read_with(cx, |form, cx| form.pending(cx)),
