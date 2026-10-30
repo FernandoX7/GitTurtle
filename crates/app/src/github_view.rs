@@ -2024,9 +2024,14 @@ mod tests {
                 use crate::native_accessibility::atspi_state_tests::{next_frame, reached};
                 use accesskit_atspi_common::State;
                 let found = reached(next_frame(cx));
+                // The notice's own node, not the window's announcement of it,
+                // which the test's tree records without bounds.
                 let shown = found
                     .iter()
-                    .find(|found| found.name == OFFLINE)
+                    .find(|found| {
+                        found.name == OFFLINE
+                            && found.extents != accesskit_atspi_common::Rect::INVALID
+                    })
                     .unwrap_or_else(|| panic!("{at}: AT-SPI reaches the notice"));
                 assert_eq!(
                     (shown.extents.y, shown.extents.y + shown.extents.height),
@@ -2105,9 +2110,13 @@ mod tests {
                     use crate::native_accessibility::atspi_state_tests::{next_frame, reached};
                     use accesskit_atspi_common::State;
                     let found = reached(next_frame(cx));
+                    // The notice's own node, not the window's announcement.
                     let shown = found
                         .iter()
-                        .find(|found| found.name == OFFLINE)
+                        .find(|found| {
+                            found.name == OFFLINE
+                                && found.extents != accesskit_atspi_common::Rect::INVALID
+                        })
                         .unwrap_or_else(|| panic!("{at}: AT-SPI reaches the notice"));
                     assert_eq!(
                         (shown.extents.y, shown.extents.y + shown.extents.height),
@@ -2180,9 +2189,11 @@ mod tests {
             });
             open_notice_panel(&app, &panel, sizes, cx).await;
             let found = reach(cx, &format!("{at}, with the notice"));
-            let notice = found
-                .iter()
-                .find(|node| node.name.as_deref() == Some(OFFLINE));
+            // The notice's own line, no live region, not the window's
+            // announcement of it.
+            let notice = found.iter().find(|node| {
+                node.name.as_deref() == Some(OFFLINE) && node.live == gpui::accesskit::Live::Off
+            });
             if interface == 18 {
                 let notice = notice.unwrap_or_else(|| panic!("{at}: AccessKit keeps the notice"));
                 assert!(

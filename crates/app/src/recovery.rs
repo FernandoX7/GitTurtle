@@ -30,6 +30,14 @@ const RESTORE_PREPARING_NAME: &str = "Review restore…, preparing the restorati
 /// What Stashes' footer note says for a Review restore… answer whose report
 /// has no line that says anything ([`StashBrowser::restore_note`]).
 const RESTORE_UNEXPLAINED: &str = "Git could not prepare this restoration.";
+
+/// The first line of a Review restore… answer that says anything, which
+/// Stashes' footer note shows and the window's alert says
+/// ([`StashBrowser::refuse`]); `None` where no line does.
+fn first_line(answer: &str) -> Option<&str> {
+    answer.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
 const STASH_PAGE_SIZE: usize = 40;
 /// The least height a saved file's comparison keeps in the Stashes detail,
 /// at the default interface size, where the window leaves the detail less
@@ -156,8 +164,11 @@ impl GitTurtle {
     /// Stashes dialog, whose line refuses because one was paused says it has
     /// ended instead, and the window's error stops refusing so. The refusal
     /// may be the window's or the core's, which share their words; any later
-    /// reason stays.
-    pub(super) fn integration_ended(&mut self, cx: &mut Context<Self>) {
+    /// reason stays. Stashes' note is said from the window's announcement
+    /// node, once, politely: its detail can have scrolled the note out of
+    /// view, where AccessKit's filter leaves out a line of its own
+    /// ([`StashBrowser::refuse`]).
+    pub(super) fn integration_ended(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let path = self.path.clone();
         if let Some(browser) = self.recovery.browser.as_ref().and_then(WeakEntity::upgrade)
             && path.as_deref() == Some(browser.read(cx).repository.path())
@@ -165,6 +176,7 @@ impl GitTurtle {
             browser.update(cx, |browser, cx| {
                 if pause_ended(&mut browser.restore_line, &mut browser.pause_ended) {
                     browser.reveal_note_for(NoteReveal::PauseEnded);
+                    crate::copy_feedback::announce(window, cx, PAUSE_ENDED);
                     cx.notify();
                 }
             });
@@ -1346,9 +1358,6 @@ pub(crate) struct StashBrowser {
     /// Whether that note says the integration Review restore… was last
     /// refused for has ended ([`PAUSE_ENDED`]).
     pause_ended: bool,
-    /// Counts the refusals, each a fresh node, so each is announced once as
-    /// it appears, even in the words of the one before.
-    refusals: usize,
     /// The next frame scrolls the stacked detail to the footer note, for
     /// why it changed: an answer to Review restore…'s press, a refusal or
     /// failure, has just replaced it, which shows while focus stays where
@@ -1393,8 +1402,9 @@ enum NoteReveal {
     /// document's open control, and the answer below the fold showed
     /// nothing. Once the keyboard has moved focus onto another of the
     /// detail's controls while Git prepared, as on a large stash, the
-    /// answer is heard, as the end of a pause is, and the control the
-    /// keyboard reached stays in view: the late answer scrolled it away.
+    /// answer is heard from the window's alert, as the end of a pause is
+    /// from its announcement, and the control the keyboard reached stays in
+    /// view: the late answer scrolled it away.
     Pressed(Option<WeakFocusHandle>),
     /// A status read found the pause it was refused for ended
     /// ([`GitTurtle::integration_ended`]), which no press asked for: the
@@ -1512,7 +1522,6 @@ impl StashBrowser {
             restoring: None,
             restore_line: None,
             pause_ended: false,
-            refusals: 0,
             reveal_note: Default::default(),
             note_lines: std::rc::Rc::new(std::cell::Cell::new(2)),
             restore_at: Default::default(),
@@ -1817,7 +1826,7 @@ impl StashBrowser {
             if let Some(browser) = browser.upgrade().filter(|_| window.has_active_dialog(cx)) {
                 browser.update(cx, |browser, cx| {
                     if browser.answered(&refused) {
-                        browser.refuse(message, held, cx);
+                        browser.refuse(message, held, window, cx);
                     }
                 });
             }
@@ -1970,12 +1979,30 @@ impl StashBrowser {
     }
 
     /// Says why Review restore… was refused in the footer note beside it,
-    /// a fresh line announced once, for the press that found focus on
-    /// `held` ([`NoteReveal::Pressed`]).
-    fn refuse(&mut self, message: String, held: Option<WeakFocusHandle>, cx: &mut Context<Self>) {
+    /// for the press that found focus on `held` ([`NoteReveal::Pressed`]),
+    /// and has the window's alert say the note's line at once, a fresh node
+    /// for each answer, so one in the words of the one before is heard
+    /// again (`copy_feedback::alert`). The note is no live region of its
+    /// own: AccessKit's filter leaves out a node wholly outside the detail
+    /// that clips it with nothing beside it in view, as the note is once
+    /// focus has moved onto the saved files while Git prepared, at 18 pt in
+    /// a 461 × 490 window, so its alert was never heard there; and the
+    /// vendored AT-SPI adapter reports a line's `showing` change as the
+    /// detail scrolls it in and out, which Orca presents for an alert, so an
+    /// alert line could be said again.
+    fn refuse(
+        &mut self,
+        message: String,
+        held: Option<WeakFocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let said = first_line(&message)
+            .unwrap_or(RESTORE_UNEXPLAINED)
+            .to_owned();
+        crate::copy_feedback::alert(window, cx, said);
         self.restore_line = Some(message);
         self.pause_ended = false;
-        self.refusals = self.refusals.wrapping_add(1);
         self.reveal_note_for(NoteReveal::Pressed(held));
         cx.notify();
     }
@@ -1995,27 +2022,29 @@ impl StashBrowser {
         self.reveal_note.set(None);
     }
 
-    /// The footer note beside Review restore…: why it was refused, a line
-    /// announced at once as it appears; or, once the integration it was
-    /// refused for has ended, that it has, a status heard once speech
-    /// pauses; or else what restoring does. The reason keeps `lines`, two
-    /// beside the list and two or one stacked beneath it, where the detail
-    /// can be about 60 px tall (18 pt in a 461 × 490 window)
-    /// ([`reveal_note`]), the last ending in an ellipsis where it needs
-    /// more, with its whole text in its tooltip as in its name: unclamped it
-    /// took three lines there, more than the detail shows, and at two it
-    /// left Review restore… cut. Any answer but the core's refusal for a
-    /// paused integration, such as Git itself failing, gives the first line
-    /// of its report that says anything, or [`RESTORE_UNEXPLAINED`] alone
-    /// where none does, and Details… beside it opens the
-    /// whole report above Stashes, with Copy details, revealed in the
-    /// `stacked` detail with its ring, `room`, as the keyboard reaches it:
-    /// the whole report, its stderr line after line, filled the footer
-    /// unclamped, and a report of one line, as Git's stderr often is, had no
-    /// Details…, its rest in a tooltip the keyboard never opens. The paused
-    /// refusal's words are the core's, whole in its tooltip and name, and
-    /// its end replaces it, so a Details… beside it would go from under the
-    /// keyboard.
+    /// The footer note beside Review restore…: why it was refused, which the
+    /// window's alert says at once as it lands ([`Self::refuse`]); or, once the
+    /// integration it was refused for has ended, that it has, which the
+    /// window's announcement says once speech pauses
+    /// ([`GitTurtle::integration_ended`]); or else what restoring does. Either
+    /// line is a status, no live region of its own, read where it lies by
+    /// whoever moves there, as the GitHub panel's lines are. The reason keeps
+    /// `lines`, two beside the list and two or one stacked beneath it, where
+    /// the detail can be about 60 px tall (18 pt in a 461 × 490 window)
+    /// ([`reveal_note`]), the last ending in an ellipsis where it needs more,
+    /// with its whole text in its tooltip as in its name: unclamped it took
+    /// three lines there, more than the detail shows, and at two it left Review
+    /// restore… cut. Any answer but the core's refusal for a paused
+    /// integration, such as Git itself failing, gives the first line of its
+    /// report that says anything, or [`RESTORE_UNEXPLAINED`] alone where none
+    /// does, and Details… beside it opens the whole report above Stashes, with
+    /// Copy details, revealed in the `stacked` detail with its ring, `room`, as
+    /// the keyboard reaches it: the whole report, its stderr line after line,
+    /// filled the footer unclamped, and a report of one line, as Git's stderr
+    /// often is, had no Details…, its rest in a tooltip the keyboard never
+    /// opens. The paused refusal's words are the core's, whole in its tooltip
+    /// and name, and its end replaces it, so a Details… beside it would go from
+    /// under the keyboard.
     fn restore_note(
         &self,
         lines: usize,
@@ -2029,7 +2058,7 @@ impl StashBrowser {
             // empty line, or said nothing at all, showed an empty note. With
             // no such line the note says that Git could not prepare the
             // restoration, and no Details… opens an empty report.
-            let first = reason.lines().map(str::trim).find(|line| !line.is_empty());
+            let first = first_line(reason);
             let report = reason != PAUSED_REFUSAL && first.is_some();
             let shown = SharedString::from(first.unwrap_or(RESTORE_UNEXPLAINED).to_owned());
             let tooltip = shown.clone();
@@ -2037,11 +2066,10 @@ impl StashBrowser {
             // detail draws, as the note that its pause has ended does.
             let note = native_accessibility::static_text(
                 div()
-                    .id(("stash-restore-refusal", self.refusals))
+                    .id("stash-restore-refusal")
                     .debug_selector(|| "stash-restore-refusal".into())
-                    .role(Role::Alert)
+                    .role(Role::Status)
                     .aria_label(shown.clone())
-                    .assertive()
                     .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(p.warning))
                     .line_clamp(lines)
@@ -2084,11 +2112,10 @@ impl StashBrowser {
         if self.pause_ended {
             return native_accessibility::static_text(
                 div()
-                    .id(("stash-restore-ended", self.refusals))
+                    .id("stash-restore-ended")
                     .debug_selector(|| "stash-restore-ended".into())
                     .role(Role::Status)
                     .aria_label(PAUSE_ENDED)
-                    .polite()
                     .text_size(crate::appearance::ui_text(10.))
                     .text_color(rgb(p.muted))
                     // As the refusal it replaces keeps its lines.
@@ -2364,23 +2391,24 @@ impl StashBrowser {
 /// text or a document's open control, whether by the keyboard while Git
 /// prepared the press's answer or before the end of its pause
 /// ([`NoteReveal::PauseEnded`]), which no press asked for, the detail stays
-/// where it is, and the note is heard, not shown. It scrolls after the frame
-/// the note is laid out in, as a focus reveal does for a control it has not
-/// drawn ([`crate::focus_reveal`]). A note the detail had scrolled below its
-/// fold, beneath the Review restore… just pressed, showed nothing, one
-/// revealed whole at two lines cut Review restore…'s ring, a merge finished
-/// in a terminal scrolled the focused saved files out of view, to Review
-/// restore… and the note that it had ended, a click on Review restore… with
-/// focus in the detail showed its answer nowhere, and its answer landing
-/// after Tab had reached the saved files scrolled them out of view. The
-/// reveal is spent in this frame, or, where the note is laid out again with
-/// the lines that fit, carried to the next once, through the browser's
-/// `reveal_note`; otherwise it expires with this frame, as beside the list,
-/// where the footer is always in view. Only a frame beside the list dropped
-/// one before, so a reveal any other frame left unspent would have stayed
-/// due, to scroll the stacked detail whenever a later frame drew it,
-/// whatever focus had done since, and win over any end of its pause
-/// meanwhile.
+/// where it is, and the note is heard, not shown: the window's alert or
+/// announcement says it, outside the detail, which can have scrolled it out
+/// of reach. It scrolls after the frame the note is laid out in, as a focus
+/// reveal does for a control it has not drawn ([`crate::focus_reveal`]). A
+/// note the detail had scrolled below its fold, beneath the Review restore…
+/// just pressed, showed nothing, one revealed whole at two lines cut Review
+/// restore…'s ring, a merge finished in a terminal scrolled the focused saved
+/// files out of view, to Review restore… and the note that it had ended, a
+/// click on Review restore… with focus in the detail showed its answer
+/// nowhere, and its answer landing after Tab had reached the saved files
+/// scrolled them out of view. The reveal is spent in this frame, or, where
+/// the note is laid out again with the lines that fit, carried to the next
+/// once, through the browser's `reveal_note`; otherwise it expires with this
+/// frame, as beside the list, where the footer is always in view. Only a
+/// frame beside the list dropped one before, so a reveal any other frame
+/// left unspent would have stayed due, to scroll the stacked detail whenever
+/// a later frame drew it, whatever focus had done since, and win over any
+/// end of its pause meanwhile.
 fn reveal_note(
     browser: &StashBrowser,
     due: Option<NoteReveal>,
@@ -3640,6 +3668,90 @@ mod tests {
         space(cx);
     }
 
+    /// Every node an assistive technology reaches in the window's tree as
+    /// the next frame writes it, through AccessKit's filter, under the
+    /// dialog's own node: Stashes' footer note in the detail that clips it,
+    /// and the window's alert and announcement beside the dialog layer.
+    fn reached(cx: &mut gpui::VisualTestContext) -> Vec<crate::native_accessibility::Reachable> {
+        use crate::native_accessibility::{reachable, written};
+        written::forget();
+        crate::views::tests::draw(cx);
+        let (size, scale) =
+            cx.update(|window, _| (window.viewport_size(), f64::from(window.scale_factor())));
+        let edge = |value: Pixels| f64::from(f32::from(value)) * scale;
+        let mut dialog = gpui::accesskit::Node::new(Role::Dialog);
+        dialog.set_modal();
+        let window = gpui::accesskit::Rect {
+            x0: 0.,
+            y0: 0.,
+            x1: edge(size.width),
+            y1: edge(size.height),
+        };
+        let tree = written::Assembly::default()
+            .node("dialog", dialog, None)
+            .everything(Some("dialog"))
+            .tree(window, None);
+        reachable(tree)
+    }
+
+    /// How many live regions in `found` say `text`, announced as `live`,
+    /// outside every node that clips its children, as the window's alert
+    /// and announcement are, wherever Stashes' detail has scrolled.
+    fn said_from_the_window(
+        found: &[crate::native_accessibility::Reachable],
+        text: &str,
+        live: gpui::accesskit::Live,
+    ) -> usize {
+        found
+            .iter()
+            .filter(|node| {
+                node.name.as_deref() == Some(text) && node.live == live && node.clip.is_none()
+            })
+            .count()
+    }
+
+    /// What the window's AT-SPI adapter announces as it is fed the
+    /// window's frames, as GPUI's Linux backend feeds it; no adapter runs
+    /// elsewhere.
+    struct Heard {
+        #[cfg(target_os = "linux")]
+        bus: crate::native_accessibility::atspi_state_tests::Bus,
+    }
+
+    impl Heard {
+        /// The adapter as it starts on the window's next frame.
+        fn start(cx: &mut gpui::VisualTestContext) -> Self {
+            #[cfg(target_os = "linux")]
+            {
+                use crate::native_accessibility::atspi_state_tests::{Bus, next_frame};
+                Self {
+                    bus: Bus::new(next_frame(cx)),
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                crate::views::tests::draw(cx);
+                Self {}
+            }
+        }
+
+        /// Feeds the adapter the window's next frame and returns what it
+        /// announced since the last on Linux, `None` elsewhere.
+        fn next(&mut self, cx: &mut gpui::VisualTestContext) -> Option<Vec<String>> {
+            #[cfg(target_os = "linux")]
+            {
+                use crate::native_accessibility::atspi_state_tests::next_frame;
+                self.bus.update(next_frame(cx));
+                Some(self.bus.announced())
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                crate::views::tests::draw(cx);
+                None
+            }
+        }
+    }
+
     /// Review restore… answers only what Stashes still shows, with the
     /// window's operations held so Git has not answered. Pressed on "Layout
     /// experiment", then "Index only" chosen: the preparation is cancelled
@@ -3926,7 +4038,7 @@ mod tests {
         // ends, so the choice is made from an observer, which runs first.
         let held = app.update(cx, |app, _| app.operations.hold());
         press_review_restore(&stashes, cx);
-        let refusals = stashes.read_with(cx, |stashes, _| stashes.refusals);
+        let alerted = crate::copy_feedback::tests::alerted(cx).map(|(id, _)| id);
         let chooses = cx.update(|window, cx| {
             window.observe(&stashes, cx, |stashes, window, cx| {
                 let refused = stashes.read(cx);
@@ -3938,15 +4050,17 @@ mod tests {
         drop(held);
         recovery_lands(&app, cx);
         drop(chooses);
+        let refused = crate::copy_feedback::tests::alerted(cx)
+            .filter(|(id, text)| Some(id) != alerted.as_ref() && text == PAUSED_REFUSAL);
         assert_eq!(
             stashes.read_with(cx, |stashes, _| (
-                stashes.refusals,
                 stashes.selected,
                 stashes.restore_line.clone()
             )),
-            (refusals + 1, Some(0), None),
-            "Index only is refused, then Layout experiment chosen"
+            (Some(0), None),
+            "Layout experiment chosen"
         );
+        assert!(refused.is_some(), "Index only is refused first");
         StashBrowser::lands(&stashes, cx);
         assert_eq!(
             stashes.read_with(cx, |stashes, _| stashes.detail.scroll().offset().y),
@@ -3997,9 +4111,10 @@ mod tests {
     /// refuses it in place, in 461 × 490 and 1480 × 980 windows at 13 and
     /// 18 pt: Stashes stays open with its stash selected, the footer note
     /// beside Review restore… says why, whole in the detail's view and
-    /// beneath the control, announced at once as a fresh line on each
-    /// refusal and nowhere else, and once a read finds the merge ended the
-    /// note says so, a status heard once speech pauses. Refused from the
+    /// beneath the control, a status that the window's alert says at once
+    /// on each refusal, and nowhere else, and once a read finds the merge
+    /// ended the note says so, which the window's announcement says once
+    /// speech pauses. Refused from the
     /// window's cache, Stashes closed and the window's error that said why
     /// went with the quiet read that found the merge ended, within 0.3 s
     /// natively, so nothing showed and the selection was lost. Pressed from
@@ -4060,6 +4175,7 @@ mod tests {
         crate::views::tests::draw(cx);
 
         // Paused: refused in place, and the pause's end said there.
+        let mut last_alert = None;
         for (width, height) in [(461., 490.), (1480., 980.)] {
             for interface in [13, 18] {
                 let at = format!("{interface} pt in {width} × {height}");
@@ -4072,7 +4188,6 @@ mod tests {
                 let stashes = browser(cx).expect("Stashes is open");
                 press_review_restore(&stashes, cx);
                 recovery_lands(&app, cx);
-                let refusals = stashes.read_with(cx, |stashes, _| stashes.refusals);
                 assert!(
                     cx.update(|window, cx| window.has_active_dialog(cx))
                         && cx.debug_bounds("operation-consequences").is_none(),
@@ -4121,12 +4236,16 @@ mod tests {
                 if width < 800. && interface == 18 {
                     assert_eq!(lines, 1, "{at}: the refusal {line:?} keeps one line");
                 }
+                let (alert, said) = crate::copy_feedback::tests::alerted(cx)
+                    .unwrap_or_else(|| panic!("{at}: the window's alert says the refusal"));
+                assert!(
+                    said == PAUSED_REFUSAL && last_alert.as_ref() != Some(&alert),
+                    "{at}: the window's alert says the refusal at once, not {said:?}"
+                );
                 assert_eq!(
-                    crate::native_accessibility::written::announced(&format!(
-                        "stash-restore-refusal-{refusals}"
-                    )),
-                    Some(crate::native_accessibility::written::Announced::ASSERTIVE),
-                    "{at}: the refusal is announced at once"
+                    crate::native_accessibility::written::announced_from("stash-restore-"),
+                    Vec::new(),
+                    "{at}: the note is no live region of its own"
                 );
                 assert_eq!(
                     app.read_with(cx, |app, _| app.operation_error.clone()),
@@ -4141,11 +4260,12 @@ mod tests {
                 let scale = f64::from(cx.update(|window, _| window.scale_factor()));
                 let physical = |edge: Pixels| f64::from(f32::from(edge)) * scale;
                 let node = || {
-                    let written = crate::native_accessibility::written::get(&format!(
-                        "stash-restore-refusal-{refusals}"
-                    ))
-                    .unwrap_or_else(|| panic!("{at}: the refusal writes its node as static text"));
-                    assert_eq!(written.node.role(), Role::Alert, "{at}");
+                    let written =
+                        crate::native_accessibility::written::get("stash-restore-refusal")
+                            .unwrap_or_else(|| {
+                                panic!("{at}: the refusal writes its node as static text")
+                            });
+                    assert_eq!(written.node.role(), Role::Status, "{at}");
                     assert_eq!(written.node.label(), Some(PAUSED_REFUSAL), "{at}");
                     written.node.bounds().expect("bounds")
                 };
@@ -4191,23 +4311,18 @@ mod tests {
                     app.read_with(cx, |app, _| app.integration_state.is_some()),
                     "{at}: the refusal has the window read the pause"
                 );
-                // Pressed again where it is, a fresh line is announced once
-                // more.
+                // Pressed again where it is, the window's alert says it once
+                // more, a fresh node in the same words.
                 space(cx);
                 recovery_lands(&app, cx);
-                assert_eq!(
-                    stashes.read_with(cx, |stashes, _| stashes.refusals),
-                    refusals + 1,
-                    "{at}: each refusal is a fresh line"
+                let again = crate::copy_feedback::tests::alerted(cx);
+                assert!(
+                    again
+                        .as_ref()
+                        .is_some_and(|(id, said)| *id != alert && said == PAUSED_REFUSAL),
+                    "{at}: each refusal is said again, not {again:?} after {alert:?}"
                 );
-                assert_eq!(
-                    crate::native_accessibility::written::announced(&format!(
-                        "stash-restore-refusal-{}",
-                        refusals + 1
-                    )),
-                    Some(crate::native_accessibility::written::Announced::ASSERTIVE),
-                    "{at}: announced again"
-                );
+                last_alert = again.map(|(id, _)| id);
                 // The merge ends; the next read says so in the note.
                 git(&["merge", "--abort"]);
                 cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
@@ -4229,13 +4344,16 @@ mod tests {
                     "{at}: Review restore… {restore:?} keeps its ring whole"
                 );
                 assert_eq!(
-                    crate::native_accessibility::written::announced(&format!(
-                        "stash-restore-ended-{}",
-                        refusals + 1
-                    ))
-                    .map(|announced| announced.live),
-                    Some(gpui::accesskit::Live::Polite),
-                    "{at}: a status, heard once speech pauses"
+                    crate::copy_feedback::tests::announced(cx)
+                        .map(|(_, said)| said)
+                        .as_deref(),
+                    Some(PAUSE_ENDED),
+                    "{at}: the window's announcement says so, heard once speech pauses"
+                );
+                assert_eq!(
+                    crate::native_accessibility::written::announced_from("stash-restore-"),
+                    Vec::new(),
+                    "{at}: the note is no live region of its own"
                 );
                 drop(stashes);
                 cx.update(|window, cx| window.close_all_dialogs(cx));
@@ -4290,9 +4408,8 @@ mod tests {
                 && inner.top() >= outer.top() - slack
                 && inner.bottom() <= outer.bottom() + slack
         };
-        let note_label = |stashes: &Entity<StashBrowser>, cx: &mut gpui::VisualTestContext| {
-            let refusals = stashes.read_with(cx, |stashes, _| stashes.refusals);
-            crate::native_accessibility::written::get(&format!("stash-restore-refusal-{refusals}"))
+        let note_label = || {
+            crate::native_accessibility::written::get("stash-restore-refusal")
                 .and_then(|note| note.node.label().map(str::to_owned))
         };
         // Git cannot read the status of a corrupt index, and says so on two
@@ -4325,9 +4442,16 @@ mod tests {
                         "{at}: Git's report: {report}"
                     );
                     assert_eq!(
-                        note_label(&stashes, cx).as_deref(),
+                        note_label().as_deref(),
                         report.lines().next(),
                         "{at}: the note gives the report's first line"
+                    );
+                    assert_eq!(
+                        crate::copy_feedback::tests::alerted(cx)
+                            .map(|(_, said)| said)
+                            .as_deref(),
+                        report.lines().next(),
+                        "{at}: the window's alert says that line, not the whole report"
                     );
                     assert_eq!(
                         app.read_with(cx, |app, _| app.operation_error.clone()),
@@ -4428,27 +4552,35 @@ mod tests {
             .read_with(cx, |app, _| app.recovery.browser.clone())
             .and_then(|browser| browser.upgrade())
             .expect("Stashes is open");
-        stashes.update(cx, |stashes, cx| {
-            stashes.refuse(
-                "\n  \nUnable to read working-copy status: fatal: index file corrupt\n".into(),
-                None,
-                cx,
-            )
-        });
-        crate::views::tests::draw(cx);
-        assert_eq!(
-            note_label(&stashes, cx).as_deref(),
-            Some("Unable to read working-copy status: fatal: index file corrupt")
+        let refuse = |message: &str, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                stashes.update(cx, |stashes, cx| {
+                    stashes.refuse(message.into(), None, window, cx)
+                })
+            });
+            crate::views::tests::draw(cx);
+            crate::copy_feedback::tests::alerted(cx).map(|(_, said)| said)
+        };
+        let said = refuse(
+            "\n  \nUnable to read working-copy status: fatal: index file corrupt\n",
+            cx,
         );
+        let first = "Unable to read working-copy status: fatal: index file corrupt";
+        assert_eq!(note_label().as_deref(), Some(first));
+        assert_eq!(said.as_deref(), Some(first), "the window's alert says it");
         assert!(cx.debug_bounds("stash-restore-details").is_some());
         // A report that says nothing still says that Git could not prepare
         // the restoration, with no Details… to open nothing.
-        stashes.update(cx, |stashes, cx| stashes.refuse("\n  \n".into(), None, cx));
-        crate::views::tests::draw(cx);
+        let said = refuse("\n  \n", cx);
         assert_eq!(
-            note_label(&stashes, cx).as_deref(),
+            note_label().as_deref(),
             Some(RESTORE_UNEXPLAINED),
             "a blank report gives the fallback line"
+        );
+        assert_eq!(
+            said.as_deref(),
+            Some(RESTORE_UNEXPLAINED),
+            "the window's alert says it"
         );
         assert!(cx.debug_bounds("stash-restore-details").is_none());
         drop(stashes);
@@ -4476,7 +4608,7 @@ mod tests {
         press_review_restore(&stashes, cx);
         recovery_lands(&app, cx);
         assert_eq!(
-            note_label(&stashes, cx).as_deref(),
+            note_label().as_deref(),
             Some(
                 "The stash list changed. Refresh and review the selected stash again; no stash was removed."
             ),
@@ -4495,7 +4627,12 @@ mod tests {
     /// the merge pauses, focus moves to the saved files, as a click on one
     /// moves it, and the merge is aborted in a terminal: once a read finds
     /// it ended, the note says so, and the detail stays where it is, with
-    /// the saved files focused and whole in its view. Refused again with
+    /// the saved files focused and whole in its view; the note below its
+    /// fold, out of AccessKit's reach, is said once by the window's
+    /// announcement, through AccessKit's filter and, on Linux, the AT-SPI
+    /// adapter, and scrolled to, it is a status in reach that no one hears
+    /// again. A polite note of its own there was left out by the filter
+    /// and heard by no one. Refused again with
     /// focus on the saved-work list instead, outside the detail, and the
     /// detail scrolled to its top: the end reveals Review restore… and the
     /// note whole beneath it. The detail jumped to Review restore… and the note
@@ -4558,6 +4695,7 @@ mod tests {
             shown,
             "the saved files {files_at:?} are whole in view {view:?} at {kept:?}"
         );
+        let mut heard = Heard::start(cx);
         // The merge ends in a terminal; the next read says so in the note.
         git(&["merge", "--abort"]);
         cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
@@ -4574,6 +4712,49 @@ mod tests {
             cx.update(|window, _| files.is_focused(window)) && in_view(cx).0,
             "the saved files keep focus, whole in view"
         );
+        // Below the fold, the note is out of reach; the window's
+        // announcement says it, once, as the read lands.
+        let found = reached(cx);
+        assert!(
+            !found
+                .iter()
+                .any(|node| node.clip.is_some() && node.name.as_deref() == Some(PAUSE_ENDED)),
+            "the note below the fold is out of reach: {found:?}"
+        );
+        assert_eq!(
+            said_from_the_window(&found, PAUSE_ENDED, gpui::accesskit::Live::Polite),
+            1,
+            "the window's announcement says the merge ended, in reach: {found:?}"
+        );
+        assert_eq!(
+            crate::native_accessibility::written::announced_from("stash-restore-"),
+            Vec::new(),
+            "the note is no live region of its own"
+        );
+        if let Some(heard) = heard.next(cx) {
+            assert_eq!(
+                heard.iter().filter(|said| *said == PAUSE_ENDED).count(),
+                1,
+                "AT-SPI announces the end once as the read lands: {heard:?}"
+            );
+        }
+        // Scrolled to the note, it is in reach, read where it lies, and
+        // nothing says it again.
+        scroll.set_offset(point(kept.x, -scroll.max_offset().y));
+        let found = reached(cx);
+        assert!(
+            found.iter().any(|node| node.role == Role::Status
+                && node.clip.is_some()
+                && node.live == gpui::accesskit::Live::Off
+                && node.name.as_deref() == Some(PAUSE_ENDED)),
+            "the note scrolled into view is a status in reach: {found:?}"
+        );
+        if let Some(heard) = heard.next(cx) {
+            assert!(
+                !heard.iter().any(|said| said == PAUSE_ENDED),
+                "AT-SPI says the end once, not again on scroll: {heard:?}"
+            );
+        }
 
         // Refused again, the keyboard on the saved-work list, outside the
         // detail, and the detail at its top.
@@ -4728,11 +4909,16 @@ mod tests {
     /// merge paused and the window's operations held, so Git has not
     /// answered, a click on Review restore…, focus on the saved-work list,
     /// then Tab onto the saved files, which the detail reveals whole: once
-    /// the refusal lands it is announced, and the detail stays where it is,
-    /// the saved files focused and whole in its view. Pressed with Space
-    /// instead, then Shift+Tab back onto the saved files: the same. The
-    /// press's answer scrolled the detail to Review restore… and the note
-    /// wherever focus lay, taking the saved files out of view.
+    /// the refusal lands, the detail stays where it is, the saved files
+    /// focused and whole in its view, and the note below its fold, out of
+    /// AccessKit's reach, is said once by the window's alert, through
+    /// AccessKit's filter and, on Linux, the AT-SPI adapter; scrolled to
+    /// the note, the detail brings it into reach, a status no one hears
+    /// again. Pressed with Space instead, then Shift+Tab back onto the
+    /// saved files: the same. The press's answer scrolled the detail to
+    /// Review restore… and the note wherever focus lay, taking the saved
+    /// files out of view; then, left where it was, the note was an alert
+    /// that AccessKit's filter left out below the fold, heard by no one.
     #[gpui::test]
     async fn a_late_restore_answer_leaves_the_control_tabbed_to_in_view(
         cx: &mut gpui::TestAppContext,
@@ -4824,7 +5010,7 @@ mod tests {
             // The keyboard moves on to the saved files while Git prepares.
             move_to_files(if press == "click" { "tab" } else { "shift-tab" }, cx);
             let kept = scroll.offset();
-            let refusals = stashes.read_with(cx, |stashes, _| stashes.refusals);
+            let mut heard = Heard::start(cx);
 
             drop(held);
             recovery_lands(&app, cx);
@@ -4835,14 +5021,6 @@ mod tests {
                 Some(PAUSED_REFUSAL.to_owned()),
                 "{press}: the press is refused"
             );
-            assert_eq!(
-                crate::native_accessibility::written::announced(&format!(
-                    "stash-restore-refusal-{}",
-                    refusals + 1
-                )),
-                Some(crate::native_accessibility::written::Announced::ASSERTIVE),
-                "{press}: the refusal is announced"
-            );
             let (shown, files_at, view) = files_in_view(cx);
             assert!(
                 on_files(cx) && shown && scroll.offset() == kept,
@@ -4850,6 +5028,51 @@ mod tests {
                  the detail kept at {kept:?}, not {:?}",
                 scroll.offset()
             );
+            // Below the fold, the note is out of reach; the window's alert
+            // says it, once, as it lands.
+            let found = reached(cx);
+            assert!(
+                !found
+                    .iter()
+                    .any(|node| node.clip.is_some() && node.name.as_deref() == Some(PAUSED_REFUSAL)),
+                "{press}: the note below the fold is out of reach: {found:?}"
+            );
+            assert_eq!(
+                said_from_the_window(&found, PAUSED_REFUSAL, gpui::accesskit::Live::Assertive),
+                1,
+                "{press}: the window's alert says the refusal, in reach: {found:?}"
+            );
+            assert_eq!(
+                crate::native_accessibility::written::announced_from("stash-restore-"),
+                Vec::new(),
+                "{press}: the note is no live region of its own"
+            );
+            if let Some(heard) = heard.next(cx) {
+                assert_eq!(
+                    heard.iter().filter(|said| *said == PAUSED_REFUSAL).count(),
+                    1,
+                    "{press}: AT-SPI announces the refusal once as it lands: {heard:?}"
+                );
+            }
+            // Scrolled to the note, it is in reach, read where it lies, and
+            // nothing says it again.
+            scroll.set_offset(point(kept.x, -scroll.max_offset().y));
+            let found = reached(cx);
+            assert!(
+                found.iter().any(|node| node.role == Role::Status
+                    && node.clip.is_some()
+                    && node.live == gpui::accesskit::Live::Off
+                    && node.name.as_deref() == Some(PAUSED_REFUSAL)),
+                "{press}: the note scrolled into view is a status in reach: {found:?}"
+            );
+            if let Some(heard) = heard.next(cx) {
+                assert!(
+                    !heard.iter().any(|said| said == PAUSED_REFUSAL),
+                    "{press}: AT-SPI says the refusal once, not again on scroll: {heard:?}"
+                );
+            }
+            scroll.set_offset(kept);
+            crate::views::tests::draw(cx);
         }
         git(&["merge", "--abort"]);
         drop(stashes);

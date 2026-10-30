@@ -1892,7 +1892,7 @@ impl GitTurtle {
             }
         };
         if ended {
-            self.integration_ended(cx);
+            self.integration_ended(window, cx);
         }
         let preferred = self.working_selected.and_then(|(index, area)| {
             self.work_status

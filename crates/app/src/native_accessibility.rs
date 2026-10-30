@@ -3292,6 +3292,9 @@ pub(crate) struct Reachable {
     pub bounds: Option<gpui::accesskit::Rect>,
     /// The bounds of the nearest node around it that clips its children.
     pub clip: Option<gpui::accesskit::Rect>,
+    /// How the adapters announce it, its own or the nearest node's around
+    /// it that says (`accesskit_consumer::Node::live`).
+    pub live: gpui::accesskit::Live,
 }
 
 /// Every node an assistive technology reaches walking `update`'s tree from
@@ -3311,6 +3314,7 @@ pub(crate) fn reachable(update: gpui::accesskit::TreeUpdate) -> Vec<Reachable> {
             },
             bounds: node.bounding_box(),
             clip,
+            live: node.live(),
         });
         let clip = if node.clips_children() {
             node.bounding_box()

@@ -9,8 +9,11 @@
 //! Its announcement node also says what no control confirms ([`announce`]),
 //! and an alert node beside it says a failure at once ([`alert`]): the GitHub
 //! panel's notice, and its failures and refused input, as the panel opens
-//! with them and as they change, from wherever its body has scrolled them.
-//! Neither ends the confirmation a control reads, nor shortens its time.
+//! with them and as they change, from wherever its body has scrolled them;
+//! and Stashes' answer to Review restore…, and the end of the pause it was
+//! refused for, from wherever its detail has scrolled the note that says
+//! them. Neither ends the confirmation a control reads, nor shortens its
+//! time.
 //!
 //! Every copy a person asks for goes through [`copy`]: it writes the
 //! clipboard, marks the copy button it came from, if any, and posts one polite
@@ -533,18 +536,20 @@ pub(crate) fn announcement(window: &Window, cx: &App) -> Option<Stateful<Div>> {
         .flatten()
         .filter(|made| made.window == window.window_handle())
         .max_by_key(|made| made.generation)?;
-    Some(
-        div()
-            .id(("copy-announcement", latest.generation))
-            .debug_selector(|| "copy-announcement".into())
-            .role(Role::Status)
-            .polite()
-            .aria_label(latest.announcement.clone())
-            .aria_value(latest.announcement.clone())
-            .absolute()
-            .size(px(1.))
-            .overflow_hidden(),
-    )
+    let node = div()
+        .id(("copy-announcement", latest.generation))
+        .debug_selector(|| "copy-announcement".into())
+        .role(Role::Status)
+        .polite()
+        .aria_label(latest.announcement.clone())
+        .aria_value(latest.announcement.clone())
+        .absolute()
+        .size(px(1.))
+        .overflow_hidden();
+    // Tests assemble the window's tree from what they record.
+    #[cfg(test)]
+    crate::native_accessibility::written::built(&node);
+    Some(node)
 }
 
 /// The alert node announcing the latest [`alert`] in `window`, drawn once
