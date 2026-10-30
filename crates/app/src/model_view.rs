@@ -683,13 +683,16 @@ fn render_side<T: 'static>(
     cx: &mut Context<T>,
 ) -> AnyElement {
     let colors = palette(cx);
+    // The header's padding above and below, which its floor in
+    // `system_preview::header_ends` counts.
+    let padding = rems(0.25);
     let mut header = div()
         .debug_selector(move || format!("model-side-header-{index}"))
         .flex()
         .flex_col()
         .gap_1()
         .px_2()
-        .py_1();
+        .py(padding);
     let format = if side.model.is_some() {
         side.metadata.format.clone()
     } else {
@@ -837,8 +840,7 @@ fn render_side<T: 'static>(
                 Some(crate::system_preview::OwnHeader {
                     header: header.into_any_element(),
                     foot: None,
-                    // The header's `py_1` above and below.
-                    padding: window.rem_size() * 0.5,
+                    padding,
                     held,
                 }),
                 vec![answer],
@@ -1155,7 +1157,7 @@ fn render_side<T: 'static>(
             name,
             Some(crate::system_preview::OwnHeader {
                 header: header.into_any_element(),
-                padding: window.rem_size() * 0.5,
+                padding,
                 // The details, a label, give way before the header's
                 // controls do, their own scroll area shrinking with them
                 // to nothing: its padding scrolls with its lines, since a

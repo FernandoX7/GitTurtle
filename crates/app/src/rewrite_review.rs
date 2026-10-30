@@ -1011,4 +1011,145 @@ mod tests {
             "the walk meets both forms"
         );
     }
+
+    /// A rewritten commit's 3D model and PDF, in the series review's file
+    /// box, which keeps 100 px, keep each side's own header at its floor,
+    /// one control whole with the larger of its ring's room and the
+    /// header's padding above and below, beneath which the model or page
+    /// gives way, and Tab reveals each of the header's controls whole with
+    /// its ring there, in a 461 × 490 window: the model's at 13 pt, the
+    /// page view's at 13 and 18 pt. The floor once counted the ring's room
+    /// and the padding together, about 6 px more than either needed. At
+    /// 18 pt the box, an unscaled 100 px, leaves the model's side 44 px,
+    /// less than its floor and rule, so its header takes the side.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn an_inspected_side_header_keeps_its_floor_in_the_file_box(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::focus_reveal::tests::control;
+        use crate::system_preview::tests::assert_a_header_keeps_its_floor;
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let document = repo.path().join("document.pdf");
+        let model = repo.path().join("shape.obj");
+        for (text, scale, message) in [("first", "2", "Add them"), ("second", "1", "Rewrite them")]
+        {
+            std::fs::write(&document, pdf(text)).unwrap();
+            std::fs::write(
+                &model,
+                format!("v 0 0 0\nv {scale} 0 0\nv 0 {scale} 0\nf 1 2 3\n"),
+            )
+            .unwrap();
+            git(repo.path(), &["add", "document.pdf", "shape.obj"]);
+            git(repo.path(), &["commit", "--quiet", "-m", message]);
+        }
+        // A fresh repository keeps its branch as a loose reference.
+        let head = std::fs::read_to_string(repo.path().join(".git/refs/heads/main")).unwrap();
+        let files = repo.changes_with_renames(head.trim(), 0).unwrap();
+        let index = |path: &str| {
+            files
+                .iter()
+                .position(|file| file.path() == std::path::Path::new(path))
+                .expect("the commit changes it")
+        };
+        let (document, model) = (index("document.pdf"), index("shape.obj"));
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        draw(cx);
+        let browser = cx.update(|window, cx| {
+            let repo = app
+                .read(cx)
+                .repository
+                .clone()
+                .expect("the window's repository");
+            let browser = cx.new(|cx| {
+                SeriesBrowser::new(
+                    app.downgrade(),
+                    repo,
+                    "origin".into(),
+                    "main".into(),
+                    window,
+                    cx,
+                )
+            });
+            open_series_dialog(browser.clone(), window, cx);
+            browser
+        });
+        cx.update(|_, cx| {
+            browser.update(cx, |browser, _| {
+                browser.inspecting = true;
+                browser.inspect_label = "Rewritten".into();
+                browser.files = files;
+            })
+        });
+        let open = |cx: &mut gpui_kit::VisualTestContext, index: usize, selector: &'static str| {
+            cx.update(|window, cx| {
+                browser.update(cx, |browser, cx| browser.file(index, window, cx))
+            });
+            for _ in 0..400 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(50));
+                draw(cx);
+                if cx.debug_bounds(selector).is_some() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("{selector} never drawn");
+        };
+        let view = browser.entity_id();
+        let mut cameras = vec![control("model-external", 1)];
+        cameras.extend((5..10).map(|index| control("model-camera", index)));
+        cameras.extend([control("model-views", 1), control("model-link", 1)]);
+        open(cx, model, "model-side-1/header");
+        assert_a_header_keeps_its_floor(
+            cx,
+            "the model's After at 13 pt",
+            (view, "model-side-1"),
+            px(34.),
+            &control("model-source", 1),
+            &cameras,
+        );
+        open(cx, document, "system-preview-1");
+        browser.update(cx, |browser, cx| {
+            let Some(Content::Rich(preview)) = browser.content.as_deref() else {
+                panic!("a changed PDF is a document comparison");
+            };
+            browser.content = Some(Arc::new(crate::pdf_view::tests::paged(preview)));
+            cx.notify();
+        });
+        draw(cx);
+        crate::pdf_view::tests::drain_pages();
+        draw(cx);
+        for (text, floor) in [(13, 41.), (18, 57.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            draw(cx);
+            for (side, page) in [(0, "pdf-read-text"), (1, "pdf-retry")] {
+                let mut controls = [page, "pdf-forward", "pdf-page-number", "pdf-link"]
+                    .map(|name| control(name, side))
+                    .to_vec();
+                controls.extend([1, 0, 2].map(|zoom| control("pdf-zoom", side * 3 + zoom)));
+                let name = if side == 0 {
+                    "pdf-side-0"
+                } else {
+                    "pdf-side-1"
+                };
+                assert_a_header_keeps_its_floor(
+                    cx,
+                    &format!("{name} at {text} pt"),
+                    (view, name),
+                    px(floor),
+                    &control("pdf-system", side),
+                    &controls,
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
 }

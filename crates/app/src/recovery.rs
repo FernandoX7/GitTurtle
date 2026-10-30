@@ -3401,6 +3401,135 @@ mod tests {
         );
     }
 
+    /// A stashed 3D model and PDF, at the floor the Stashes dialog keeps
+    /// its comparison (a scaled 120 px), keep each side's own header at its
+    /// floor, one control whole with the larger of its ring's room and the
+    /// header's padding above and below, beneath which the model or page
+    /// gives way, and Tab reveals each of the header's controls whole with
+    /// its ring there, at 13 and 18 pt in a 1000 × 560 window with the
+    /// detail scrolled to the comparison. The floor once counted the ring's
+    /// room and the padding together, about 6 px more than either needed.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_stashed_side_header_keeps_its_floor(cx: &mut gpui_kit::TestAppContext) {
+        use crate::focus_reveal::tests::control;
+        use crate::system_preview::tests::assert_a_header_keeps_its_floor;
+        use crate::tags::tests::{draw, git, scroll_down, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+        };
+        let document = repo.path().join("document.pdf");
+        let model = repo.path().join("shape.obj");
+        for (text, scale) in [("first", "2"), ("second", "1")] {
+            std::fs::write(&document, pdf(text)).unwrap();
+            std::fs::write(
+                &model,
+                format!("v 0 0 0\nv {scale} 0 0\nv 0 {scale} 0\nf 1 2 3\n"),
+            )
+            .unwrap();
+            if text == "first" {
+                git(repo.path(), &["add", "document.pdf", "shape.obj"]);
+                git(repo.path(), &["commit", "--quiet", "-m", "Add them"]);
+            }
+        }
+        git(repo.path(), &["stash", "push", "-m", "kept for later"]);
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.simulate_resize(size(px(1000.), px(560.)));
+        draw(cx);
+        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
+            for _ in 0..400 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(50));
+                draw(cx);
+                if cx.debug_bounds(selector).is_some() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("{selector} never drawn");
+        };
+        let browser = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
+            .expect("Stashes opens");
+        landed(cx, "saved-stash-row-0");
+        let row = cx.debug_bounds("saved-stash-row-0").unwrap();
+        cx.simulate_click(row.center(), Modifiers::none());
+        landed(cx, "stash-file-1");
+        // The detail scrolls; at its end the comparison is in view.
+        let to_the_comparison = |cx: &mut VisualTestContext| {
+            let middle = cx.debug_bounds("stash-detail").unwrap().center();
+            scroll_down(cx, middle, ScrollDelta::Pixels(point(px(0.), px(-10_000.))));
+            draw(cx);
+        };
+        let view = browser.entity_id();
+        let mut cameras = vec![control("model-external", 1)];
+        cameras.extend((5..10).map(|index| control("model-camera", index)));
+        cameras.extend([control("model-views", 1), control("model-link", 1)]);
+        // The stash's files in path order: the document, then the model.
+        let file = cx.debug_bounds("stash-file-1").unwrap();
+        cx.simulate_click(file.center(), Modifiers::none());
+        landed(cx, "model-side-1/header");
+        for (text, floor) in [(13, 34.), (18, 48.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            draw(cx);
+            to_the_comparison(cx);
+            assert_a_header_keeps_its_floor(
+                cx,
+                &format!("the stashed model's After at {text} pt"),
+                (view, "model-side-1"),
+                px(floor),
+                &control("model-source", 1),
+                &cameras,
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        draw(cx);
+        let middle = cx.debug_bounds("stash-detail").unwrap().center();
+        scroll_down(cx, middle, ScrollDelta::Pixels(point(px(0.), px(10_000.))));
+        draw(cx);
+        let file = cx.debug_bounds("stash-file-0").unwrap();
+        cx.simulate_click(file.center(), Modifiers::none());
+        landed(cx, "system-preview-1");
+        browser.update(cx, |browser, cx| {
+            let Some(Content::Rich(preview)) = browser.content.as_deref() else {
+                panic!("a changed PDF is a document comparison");
+            };
+            browser.content = Some(Arc::new(crate::pdf_view::tests::paged(preview)));
+            cx.notify();
+        });
+        draw(cx);
+        crate::pdf_view::tests::drain_pages();
+        draw(cx);
+        for (text, floor) in [(13, 41.), (18, 57.)] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            draw(cx);
+            to_the_comparison(cx);
+            for (side, page) in [(0, "pdf-read-text"), (1, "pdf-retry")] {
+                let mut controls = [page, "pdf-forward", "pdf-page-number", "pdf-link"]
+                    .map(|name| control(name, side))
+                    .to_vec();
+                controls.extend([1, 0, 2].map(|zoom| control("pdf-zoom", side * 3 + zoom)));
+                let name = if side == 0 {
+                    "pdf-side-0"
+                } else {
+                    "pdf-side-1"
+                };
+                assert_a_header_keeps_its_floor(
+                    cx,
+                    &format!("the stashed {name} at {text} pt"),
+                    (view, name),
+                    px(floor),
+                    &control("pdf-system", side),
+                    &controls,
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Lets every quiet read the window has asked for land: each runs on
     /// the window's reader, a thread `run_until_parked` cannot wait for.
     fn quiet_reads_land(app: &Entity<GitTurtle>, cx: &mut gpui::VisualTestContext) {

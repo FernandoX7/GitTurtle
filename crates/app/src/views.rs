@@ -11321,9 +11321,10 @@ pub(crate) mod tests {
     /// with one more line cutting into it where the line shows fewer than it
     /// wraps to; every frame after the answer, and after a 40 px resize, lays
     /// the line and the page out as the frame they settle in. Each control
-    /// Tab reaches lies whole with its ring in the header's region, which
-    /// keeps its floor where the page gives way, as at 18 pt in a 461 × 490
-    /// window. Linux renders
+    /// Tab reaches lies whole with its ring in the header's region. At 18 pt
+    /// in a 461 × 490 window the page keeps its minimum beneath the header's
+    /// floor, where the floor once counted its ring's room and its padding
+    /// together and took 5.5 px of it. Linux renders
     /// no pages, so the test gives After a one-page document by hand, whose
     /// page request fails there as on any build without PDFKit; Before is the
     /// side Linux prepares, with no pages, which the view's other call site
@@ -11371,7 +11372,7 @@ pub(crate) mod tests {
         let short = "Seen as an SVG document, so not opened";
         let slack = px(0.5);
         let (mut shown_every, mut shown_fewer, mut scrolled) = (false, false, false);
-        let mut floor_walked = false;
+        let mut kept_at_18 = false;
         crate::in_frame::probe::watch();
         for (control, note, region, body, header) in [
             (
@@ -11453,10 +11454,18 @@ pub(crate) mod tests {
                 }
                 let held = format!("{region}/header").leak();
                 scrolled |= side_header_scrolls(cx, &at, held, header, line, content);
-                // The header's region, at its floor where the page gives
-                // way, shows each control Tab reaches whole with its ring.
-                floor_walked |=
-                    (text, width, height) == (18, 461., 490.) && body.size.height < minimum - slack;
+                // At 18 pt in 461 × 490 the header's floor leaves the page
+                // its minimum: counting the ring's room and the padding
+                // together, it once took 5.5 px of it.
+                if (text, width, height) == (18, 461., 490.) {
+                    kept_at_18 = true;
+                    assert!(
+                        body.size.height >= minimum - slack,
+                        "{at}: the page {body:?} keeps its minimum {minimum:?} beneath the header's floor"
+                    );
+                }
+                // The header's region shows each control Tab reaches whole
+                // with its ring.
                 let side = if region == "pdf-side-0" { 0 } else { 1 };
                 let controls: Vec<_> = [
                     ("pdf-system", side),
@@ -11497,10 +11506,7 @@ pub(crate) mod tests {
             shown_every && shown_fewer && scrolled,
             "lines shown whole, lines the room cuts short, and a header that scrolls above its line"
         );
-        assert!(
-            floor_walked,
-            "at 18 pt in 461 × 490 the header keeps only its floor"
-        );
+        assert!(kept_at_18, "the walk draws the page at 18 pt in 461 × 490");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

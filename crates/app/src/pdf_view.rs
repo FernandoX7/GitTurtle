@@ -499,7 +499,9 @@ pub(super) fn render_comparison<T: 'static>(
         // saying why a click opened nothing, laid out with the header and the
         // page for the side's room, where controls taller than the room above
         // the line scroll (`system_preview::header_ends`).
-        let mut header = div().debug_selector(move || format!("pdf-side-header-{index}")).flex().flex_wrap().items_center().gap_2().p_2().child(div().min_h(appearance::ui_size(28.)).flex().items_center().font_weight(FontWeight::SEMIBOLD).child(heading));
+        // The header's padding, which its floor in `header_ends` counts.
+        let padding = rems(0.5);
+        let mut header = div().debug_selector(move || format!("pdf-side-header-{index}")).flex().flex_wrap().items_center().gap_2().p(padding).child(div().min_h(appearance::ui_size(28.)).flex().items_center().font_weight(FontWeight::SEMIBOLD).child(heading));
         let end = crate::system_preview::HeaderEnd { inset: window.rem_size() * 0.5, bottom: window.rem_size() * 0.5, right_rule: false, border: colors.border };
         let name = if index == 0 { "pdf-side-0" } else { "pdf-side-1" };
         // The header scrolls where a narrow side cannot hold its controls,
@@ -514,7 +516,7 @@ pub(super) fn render_comparison<T: 'static>(
         let mut body = div().id(("pdf-scroll",index)).flex_1().min_h_0().min_w_0().overflow_scroll().p_3();
         let Some(document) = side.pdf.clone() else {
             let body = body.child(side.error.clone().unwrap_or_else(|| if side.present {"PDF preview unavailable"} else {"No file on this side"}.into()));
-            return div().flex_1().min_w_0().h_full().flex().flex_col().child(crate::system_preview::header_ends(name, Some(crate::system_preview::OwnHeader { header: header.into_any_element(), foot: None, padding: window.rem_size(), held }), vec![answer], end, body.into_any_element())).into_any_element();
+            return div().flex_1().min_w_0().h_full().flex().flex_col().child(crate::system_preview::header_ends(name, Some(crate::system_preview::OwnHeader { header: header.into_any_element(), foot: None, padding, held }), vec![answer], end, body.into_any_element())).into_any_element();
         };
         let partner = if quick { None } else { other.pdf.clone() };
         let (page, zoom, pending, error, cached) = {
@@ -596,7 +598,7 @@ pub(super) fn render_comparison<T: 'static>(
         }
         let view=cx.entity().downgrade();
         // Why the last open opened nothing, as the header's last line.
-        div().relative().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(crate::system_preview::header_ends(name, Some(crate::system_preview::OwnHeader { header: header.into_any_element(), foot: None, padding: window.rem_size(), held }), vec![answer], end, body.into_any_element())).child(status)
+        div().relative().flex_1().min_w_0().h_full().flex().flex_col().border_r_1().border_color(rgb(colors.border)).child(crate::system_preview::header_ends(name, Some(crate::system_preview::OwnHeader { header: header.into_any_element(), foot: None, padding, held }), vec![answer], end, body.into_any_element())).child(status)
             .on_prepaint(move |_,window,cx| { let _=view.update(cx,|_,cx|document.request(window,cx)); }).into_any_element()
     })).into_any_element()
 }
@@ -611,6 +613,29 @@ pub(crate) mod tests {
     pub(crate) fn drain_pages() {
         renderer().drain();
     }
+
+    /// `preview`, a changed PDF's comparison, as the page view draws it
+    /// where a build renders pages (macOS, with PDFKit): each side has three
+    /// pages, Before's first prepared, so it offers Read page text, and
+    /// After's failed, as Linux renders none, so it offers Retry page. Each
+    /// side offers to link their pages.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn paged(preview: &rich_preview::Comparison) -> crate::worker::Content {
+        let side = |side: &rich_preview::Side, first| {
+            let bytes = side.captured.clone().expect("the side's bytes");
+            let mut paged = rich_preview::Side::prepare(bytes.to_vec(), &side.name, || Ok(()))
+                .expect("the side prepares");
+            paged.pdf = Some(Arc::new(
+                Document::new(bytes, 3, first, || Ok(())).expect("a document"),
+            ));
+            Arc::new(paged)
+        };
+        crate::worker::Content::Rich(rich_preview::Comparison {
+            old: side(&preview.old, Some(page())),
+            new: side(&preview.new, None),
+        })
+    }
+
     fn page() -> rich_preview::Page {
         rich_preview::Page {
             render: None,
