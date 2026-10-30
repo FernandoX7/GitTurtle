@@ -102,6 +102,45 @@ pub(crate) fn accessible_name(label: &str, side: Option<&str>, copy: &str) -> St
     }
 }
 
+/// The heading of a document's or model's one side where it is shown alone,
+/// as a comparison's sides are headed Before and After.
+pub(crate) const ONE_SIDE: &str = "Source";
+
+/// The accessible name of a control a comparison draws once on each side,
+/// labelled `label`: led by the side's `heading`, "Before: Copy source" and
+/// "After: Copy source", as the side's own heading leads what it shows, so
+/// the two are told apart where a screen reader lists them together or
+/// speech input names one. A side shown alone ([`ONE_SIDE`]) has nothing to
+/// tell it from: its control is named `label`.
+pub(crate) fn side_control_name(heading: &str, label: &str) -> String {
+    if heading == ONE_SIDE {
+        label.to_owned()
+    } else {
+        format!("{heading}: {label}")
+    }
+}
+
+/// A side's Copy source, labelled `label` ("Copy source", or "Copy
+/// pointer" for an LFS pointer's text), in the `labelled` form or as its
+/// icon with `label` as its tooltip, and named by its side's `heading`
+/// ([`side_control_name`]): the model's header and a document's body each
+/// draw one per side.
+pub(crate) fn copy_source_button(
+    mark: Mark,
+    heading: &str,
+    label: &'static str,
+    labelled: bool,
+    cx: &App,
+) -> Button {
+    copy_feedback::copy_button(
+        mark,
+        if labelled { label } else { "" },
+        if labelled { "" } else { label },
+        cx,
+    )
+    .accessibility_label(side_control_name(heading, label))
+}
+
 /// What a click hands Quick Look, for a control on a surface that shows
 /// `what` ("image", "PDF", "model", or "file" for any other document):
 /// "a read-only copy of the captured image". Linux builds it only for the
@@ -2839,5 +2878,46 @@ pub(crate) mod tests {
             );
             assert_eq!(name, *expected);
         }
+    }
+
+    /// Each side's Copy source, the model header's and a document's, is
+    /// named by its side first, "Before: Copy source" beside "After: Copy
+    /// source", labelled or drawn as its icon, and an LFS pointer's Copy
+    /// pointer too; a side shown alone keeps its label as its name. The
+    /// document's two were both named "Copy source", and the model's "Copy
+    /// exact After model source", which neither led with the side nor held
+    /// the label shown.
+    #[gpui::test]
+    fn each_sides_copy_source_is_named_by_its_side_first(cx: &mut gpui_kit::TestAppContext) {
+        let (_app, cx) = crate::copy_feedback::tests::history(cx, Vec::new());
+        let cases = [
+            ("Before", "Copy source", true, "Before: Copy source"),
+            ("After", "Copy source", true, "After: Copy source"),
+            ("Before", "Copy source", false, "Before: Copy source"),
+            ("After", "Copy pointer", false, "After: Copy pointer"),
+            (ONE_SIDE, "Copy source", true, "Copy source"),
+            (ONE_SIDE, "Copy source", false, "Copy source"),
+        ];
+        let buttons = cx.update(|_, cx| {
+            cases
+                .iter()
+                .enumerate()
+                .map(|(index, (heading, label, labelled, _))| {
+                    let mark = Mark::new(("copy-source-name", index), "captured");
+                    copy_source_button(mark, heading, label, *labelled, cx)
+                })
+                .collect::<Vec<_>>()
+        });
+        let names = crate::worktrees::ring_room_tests::row_nodes(cx, buttons)
+            .into_iter()
+            .map(|node| node.label().map(str::to_owned))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            cases
+                .iter()
+                .map(|(.., expected)| Some((*expected).to_owned()))
+                .collect::<Vec<_>>()
+        );
     }
 }

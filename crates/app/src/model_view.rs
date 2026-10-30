@@ -569,7 +569,11 @@ pub(super) fn render_comparison<T: 'static>(
                 [
                     ("Before", &preview.old, &preview.new),
                     (
-                        if quick { "Source" } else { "After" },
+                        if quick {
+                            crate::system_preview::ONE_SIDE
+                        } else {
+                            "After"
+                        },
                         &preview.new,
                         &preview.old,
                     ),
@@ -815,22 +819,17 @@ fn render_side<T: 'static>(
         // The control's id names the side; the mark adds its path.
         let mark = copy_feedback::Mark::new(("model-source", index), &side.name);
         let copy_mark = mark.clone();
-        let copy = copy_feedback::copy_button(
-            mark,
-            if copy_labelled { copy_label } else { "" },
-            if copy_labelled { "" } else { copy_label },
-            cx,
-        )
-        .accessibility_label(format!("Copy exact {label} {content}"))
-        .on_click(move |_, window, cx| {
-            copy_feedback::copy(
-                window,
-                cx,
-                Some(copy_mark.clone()),
-                &format!("{label} {content}"),
-                source.to_string(),
-            )
-        });
+        let copy =
+            crate::system_preview::copy_source_button(mark, label, copy_label, copy_labelled, cx)
+                .on_click(move |_, window, cx| {
+                    copy_feedback::copy(
+                        window,
+                        cx,
+                        Some(copy_mark.clone()),
+                        &format!("{label} {content}"),
+                        source.to_string(),
+                    )
+                });
         source_actions = source_actions.child(held.track(("model-source", index), copy, cx));
     }
     // Why the last open opened nothing, as the header's last line, beneath

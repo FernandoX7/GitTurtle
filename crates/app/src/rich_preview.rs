@@ -378,7 +378,14 @@ pub(super) fn render_comparison<T: 'static>(
     let side_width = width / if quick { 1. } else { 2. };
     let (headers, bodies): (Vec<_>, Vec<_>) = [
         ("Before", &preview.old),
-        (if quick { "Source" } else { "After" }, &preview.new),
+        (
+            if quick {
+                crate::system_preview::ONE_SIDE
+            } else {
+                "After"
+            },
+            &preview.new,
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -583,8 +590,8 @@ pub(super) fn render_comparison<T: 'static>(
             let mark = copy_feedback::Mark::new(("copy-decoded-source", index), &side.name);
             let copy_mark = mark.clone();
             body = body.child(
-                copy_feedback::copy_button(mark, "Copy source", "", cx).on_click(
-                    move |_, window, cx| {
+                crate::system_preview::copy_source_button(mark, label, "Copy source", true, cx)
+                    .on_click(move |_, window, cx| {
                         copy_feedback::copy(
                             window,
                             cx,
@@ -592,8 +599,7 @@ pub(super) fn render_comparison<T: 'static>(
                             &what,
                             copied.to_string(),
                         )
-                    },
-                ),
+                    }),
             );
             let mut end = source.len().min(16 * 1024);
             while !source.is_char_boundary(end) {
