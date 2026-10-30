@@ -252,6 +252,10 @@ impl GitTurtle {
                 if this.interactive_rebase.generation != generation {
                     return;
                 }
+                // Ended, it no longer runs: Changes opened after it drops no
+                // plan (`dismiss_interactive_rebase_action`), as a recovery's
+                // end does.
+                this.interactive_rebase.task = None;
                 if this.operation_busy == Some(PREPARING) {
                     this.operation_busy = None;
                 }
@@ -1122,6 +1126,43 @@ mod tests {
                 .key_hints()
                 .whole()
                 .contains(shortcuts::ENTER)
+        );
+    }
+
+    /// Edit local commits' Load commits that has ended no longer runs, so
+    /// Changes opened after it drops no plan: a plan is dropped only while
+    /// its preparation runs (`dismiss_interactive_rebase_action`), as a
+    /// recovery's is. The ended task stayed, and each later Changes marked a
+    /// plan dropped that nothing was preparing.
+    #[gpui::test]
+    async fn changes_after_load_commits_ends_drops_no_plan(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(directory.path());
+        let (app, cx) = window(cx, &repo);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.open_interactive_rebase(None, window, cx))
+        });
+        let form = app.read_with(cx, |app, _| {
+            app.interactive_rebase.draft.clone().expect("the form")
+        });
+        cx.update(|window, cx| form.update(cx, |form, cx| form.load(window, cx)));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            Some(PREPARING)
+        );
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::settle(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.operation_busy, None, "the preparation ended");
+            assert!(app.interactive_rebase.task.is_none(), "it no longer runs");
+        });
+        form.read_with(cx, |form, _| {
+            assert!(form.plan.is_some(), "the plan loaded")
+        });
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+        assert!(
+            !app.read_with(cx, |app, _| app.interactive_rebase.dismissed),
+            "Changes drops no plan"
         );
     }
 }

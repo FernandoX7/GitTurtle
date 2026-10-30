@@ -388,3 +388,34 @@ async fn a_reopened_branch_or_remote_form_announces_why_afresh(cx: &mut TestAppC
         "Edit remote: a fresh node announces it again"
     );
 }
+
+/// A branch preparation that has ended no longer runs, so Changes opened
+/// after it drops no plan: a plan is dropped only while its preparation runs
+/// (`dismiss_branch_action`), as a recovery's is. The ended task stayed, and
+/// each later Changes marked a plan dropped that nothing was preparing.
+#[gpui::test]
+async fn changes_after_a_branch_preparation_ends_drops_no_plan(cx: &mut TestAppContext) {
+    let fixture = tempfile::tempdir().unwrap();
+    let repo = tagged_repository(fixture.path());
+    let (app, cx) = window(cx, &repo);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.choose_branch(ChoicePurpose::Manage, window, cx)
+        })
+    });
+    assert_eq!(
+        app.read_with(cx, |app, _| app.operation_busy),
+        Some(PREPARING)
+    );
+    app.read_with(cx, |app, _| app.operations.drain());
+    crate::views::tests::settle(&app, cx).await;
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.operation_busy, None, "the preparation ended");
+        assert!(app.branch_actions.task.is_none(), "it no longer runs");
+    });
+    cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+    assert!(
+        !app.read_with(cx, |app, _| app.branch_actions.dismissed),
+        "Changes drops no plan"
+    );
+}

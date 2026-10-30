@@ -590,6 +590,9 @@ impl GitTurtle {
                 if this.branch_actions.generation != generation {
                     return;
                 }
+                // Ended, it no longer runs: Changes opened after it drops no
+                // plan (`dismiss_branch_action`), as a recovery's end does.
+                this.branch_actions.task = None;
                 if this.operation_busy == Some(PREPARING) {
                     this.operation_busy = None;
                 }
