@@ -1705,6 +1705,16 @@ impl ToolbarWidths {
     /// zooms keep their labels only where the Pan menu fits beside them so,
     /// at Fit too, so choosing a zoom never changes their form. Each form
     /// changes at one width, so a wider toolbar is never less labelled.
+    ///
+    /// A known choice follows: the modes, and overlaid or wiped the
+    /// adjustment, are counted labelled whatever form they take, the modes
+    /// even where they are drawn as their narrower menu. So below the
+    /// labelled modes, the zoom menu and the Pan menu with their gaps, about
+    /// 356 px of toolbar side by side at 13 pt (616.5 px overlaid or wiped,
+    /// with the labelled adjustment), the pan always takes the zoom menu's
+    /// items, even where the mode menu would leave the Pan menu room beside
+    /// the zooms; counting the forms drawn instead would change the pan's
+    /// form with the width the mode menu reads or the amount.
     fn forms(&self, panning: bool) -> ToolbarForms {
         let [labelled, menu] = self.zooms;
         let zooms_labelled = match self.pan {
