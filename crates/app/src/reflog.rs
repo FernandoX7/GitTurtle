@@ -1014,6 +1014,20 @@ impl Render for ReflogBrowser {
             (loading_below, None)
         };
         let fade = |element: Div| element.when(kept, |element| element.opacity(READING_FADE));
+        // The kept details hold their room and nothing more: no assistive
+        // technology reaches them and the keyboard passes over them, so
+        // nothing reads or acts on the last entry's commit under the selected
+        // entry's heading. `invisible` hid the metadata from sight only, as
+        // GPUI writes an element's node as it prepaints and checks
+        // visibility only as it paints, and the message, still a Tab stop,
+        // and the changed files were read as the selected entry's. The
+        // metadata is drawn without a node, and the message, the changed
+        // files and their limit each leave the tree while kept, as a node
+        // hidden with all it holds (`native_accessibility::beneath_modal`:
+        // the read covers them as a dialog covers the page); kept or not,
+        // each stays a generic container, which AccessKit passes over.
+        let out_of_reach =
+            |element: Stateful<Div>| native_accessibility::beneath_modal(element, kept);
         // So does the error such a read ends with, as for a commit pruned
         // since Git logged it or a recovery branch name already taken: it
         // stood above the list, which moved down by its height with each
@@ -1065,24 +1079,26 @@ impl Render for ReflogBrowser {
                     .children(loading_below)
                     .children(error_below)
             })
-            .when_some(self.commit.as_ref(), |element, commit| element
-                .child(div().relative().child(label("reflog-commit-metadata", format!("{} · {}\n{} parent{} · {} against {}", commit.author, full_date(commit.timestamp), commit.parents.len(), if commit.parents.len() == 1 { "" } else { "s" }, crate::changed_files(self.changes.len()), if commit.parents.len() > 1 { "first parent" } else { "parent or empty tree" })).text_size(crate::appearance::ui_text(12.)).when(kept, |metadata| metadata.invisible())).children(loading_over.map(|row| row.absolute().top_0().left_0().right_0())))
+            .when_some(self.commit.as_ref(), |element, commit| { let metadata = format!("{} · {}\n{} parent{} · {} against {}", commit.author, full_date(commit.timestamp), commit.parents.len(), if commit.parents.len() == 1 { "" } else { "s" }, crate::changed_files(self.changes.len()), if commit.parents.len() > 1 { "first parent" } else { "parent or empty tree" }); element
+                .child(div().relative().child(if kept { div().debug_selector(|| "reflog-commit-metadata".into()).ml(TEXT_INSET).text_size(crate::appearance::ui_text(12.)).invisible().child(metadata).into_any_element() } else { label("reflog-commit-metadata", metadata).text_size(crate::appearance::ui_text(12.)).into_any_element() }).children(loading_over.map(|row| row.absolute().top_0().left_0().right_0())))
                 // The read-only editor draws no edge of its own: holding
                 // keyboard focus, it rings its own edge over its lines, as
-                // Compare's text does, where it showed no focus at all.
-                .when_some(self.message.as_ref(), |element, message| { let focus = message.read(cx).focus_handle(cx); let ring = self.owner.upgrade().and_then(|owner| owner.read(cx).focus_ring.edge(&focus, rgb(p.accent))); element.child(fade(shown(focus)).debug_selector(|| "reflog-commit-message".into()).relative().flex_shrink_0().child(crate::editor_find::Editor::new(message).readonly(true).h(px(110.)).aria_label("Reflog commit message")).children(ring)) })
+                // Compare's text does, where it showed no focus at all. Kept,
+                // it is no Tab stop: its handle says so for every clone the
+                // editor tracks, and the next entry's editor is a new one.
+                .when_some(self.message.as_ref(), |element, message| { let focus = message.read(cx).focus_handle(cx).clone().tab_stop(!kept); let ring = self.owner.upgrade().and_then(|owner| owner.read(cx).focus_ring.edge(&focus, rgb(p.accent))); element.child(out_of_reach(fade(shown(focus)).id("reflog-commit-message").debug_selector(|| "reflog-commit-message".into()).relative().flex_shrink_0().child(crate::editor_find::Editor::new(message).readonly(true).h(px(110.)).aria_label("Reflog commit message")).children(ring))) })
                 // Whole rows of one line each, so the list's bound cuts no
                 // row; past that bound its scrollbar, in a gutter of its own,
                 // cues the rest.
-                .child(fade(div()).relative().flex_shrink_0().child(native_accessibility::clips_children(div().id("reflog-commit-files").debug_selector(|| "reflog-commit-files".into()).max_h(file_row * files_shown as f32).overflow_y_scroll().track_scroll(&self.files_scroll).flex().flex_col().when(files_scroll, |list| list.pr(Scrollbar::width())).children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); native_accessibility::static_text(div().id(("reflog-commit-file", index)).debug_selector(move || format!("reflog-commit-file-{index}")), text.clone()).ml(TEXT_INSET).flex_shrink_0().h(file_row).text_size(crate::appearance::ui_text(FILE_ROW_TEXT)).line_height(file_row).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text) })))).when(files_scroll, |list| list.child(Scrollbar::vertical(&self.files_scroll).id("reflog-files-scrollbar").mode(ScrollbarMode::Always))))
-                .when(self.changes.len() > 100, |element| element.child(fade(div()).child(label("reflog-file-limit", "Showing the first 100 changed paths.").text_size(crate::appearance::ui_text(12.)))))
+                .child(out_of_reach(fade(div()).id("reflog-commit-files-pane").relative().flex_shrink_0().child(native_accessibility::clips_children(div().id("reflog-commit-files").debug_selector(|| "reflog-commit-files".into()).max_h(file_row * files_shown as f32).overflow_y_scroll().track_scroll(&self.files_scroll).flex().flex_col().when(files_scroll, |list| list.pr(Scrollbar::width())).children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); native_accessibility::static_text(div().id(("reflog-commit-file", index)).debug_selector(move || format!("reflog-commit-file-{index}")), text.clone()).ml(TEXT_INSET).flex_shrink_0().h(file_row).text_size(crate::appearance::ui_text(FILE_ROW_TEXT)).line_height(file_row).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text) })))).when(files_scroll, |list| list.child(Scrollbar::vertical(&self.files_scroll).id("reflog-files-scrollbar").mode(ScrollbarMode::Always)))))
+                .when(self.changes.len() > 100, |element| element.child(out_of_reach(fade(div()).id("reflog-file-limit-pane").child(label("reflog-file-limit", "Showing the first 100 changed paths.").text_size(crate::appearance::ui_text(12.))))))
                 .child(fade(div()).child(label("reflog-recovery-name-label", "Create a new branch at this commit to keep it reachable").text_size(crate::appearance::ui_text(12.))))
                 .child(fade(shown(name)).child(Input::new(&self.name).aria_label("New recovery branch name")))
                 .child(fade(shown(review.clone())).flex().flex_col().child(button("review-reflog-recovery", "Review recovery branch…", "", false).track_focus(&review).debug_selector(|| "review-reflog-recovery".into()).map(|review| crate::workspace::refusing(review, || "review-reflog-recovery".into(), unavailable, dimmed)).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx)))))
                 // The review's loading row and error stand below the button
                 // that asked for it, the content's last children.
                 .children(loading_after_review)
-                .children(error_after_review));
+                .children(error_after_review) });
         div()
             .relative()
             .min_h_0()
@@ -2782,6 +2798,148 @@ mod tests {
             submitted(cx),
             reads,
             "Review reviews nothing without its details"
+        );
+    }
+
+    /// While an entry's read runs over the last entry's details, kept drawn
+    /// and faded, an assistive technology reaches none of that entry's
+    /// text, its metadata, message or changed files, and Tab from the read's
+    /// Cancel passes over the kept message to the recovery branch's name;
+    /// once the entry's own details land, they are what it reaches, and the
+    /// message is a Tab stop again. `invisible` hid the kept metadata from
+    /// sight only, GPUI writing a node as an element prepaints, and the
+    /// message, still a Tab stop, and the changed files were read under the
+    /// new entry's heading as its own.
+    ///
+    /// The test platform builds no accessibility tree, so the test builds
+    /// what GPUI would: the dialog's own node, the nodes the wrappers wrote
+    /// in the Reflog's content, each where it was drawn, and the message
+    /// editor's, which the kit writes itself, under the nearest of them
+    /// around it, walked through AccessKit's filter.
+    #[gpui::test]
+    async fn kept_details_are_out_of_reach_until_their_entry_lands(cx: &mut TestAppContext) {
+        use crate::native_accessibility::{reachable, written};
+        use gpui::accesskit::{Node, Rect, Role as A11yRole};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        // Entry 0 changes file-0.txt; entry 1, an empty commit, none.
+        select_newest(cx, &browser).await;
+        content_to_end(cx, &browser);
+        let reached = |cx: &mut VisualTestContext| -> Vec<String> {
+            written::forget();
+            draw(cx);
+            let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+            let size = cx.update(|window, _| window.viewport_size());
+            let window = Rect {
+                x0: 0.,
+                y0: 0.,
+                x1: f64::from(f32::from(size.width)) * scale,
+                y1: f64::from(f32::from(size.height)) * scale,
+            };
+            let mut tree =
+                written::Assembly::default().node("dialog", Node::new(A11yRole::Dialog), None);
+            let mut inside: Vec<(u64, String)> = written::inside("reflog-browser-content")
+                .into_iter()
+                .filter_map(|id| Some((written::get(&id)?.order, id)))
+                .collect();
+            inside.sort();
+            for (_, id) in inside {
+                tree = tree.written(&id, Some("dialog"));
+            }
+            if cx.debug_bounds("reflog-commit-message").is_some() {
+                let around = ["reflog-commit-message", "reflog-browser-content"]
+                    .into_iter()
+                    .find(|id| written::get(id).is_some());
+                let mut editor = Node::new(A11yRole::MultilineTextInput);
+                editor.set_label("Reflog commit message");
+                tree = tree.node("reflog-commit-message-editor", editor, around);
+            }
+            reachable(tree.tree(window, None))
+                .into_iter()
+                .filter_map(|node| node.name)
+                .collect()
+        };
+        let metadata = || {
+            written::get("reflog-commit-metadata")
+                .and_then(|written| written.node.value().map(str::to_owned))
+        };
+        let focused = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let this = browser.read(cx);
+                let message = this
+                    .message
+                    .as_ref()
+                    .map(|message| message.read(cx).focus_handle(cx));
+                (
+                    message.is_some_and(|message| message.is_focused(window)),
+                    this.name.read(cx).focus_handle(cx).is_focused(window),
+                )
+            })
+        };
+        const MESSAGE: &str = "Reflog commit message";
+
+        let landed = reached(cx);
+        let first = metadata().expect("entry 0's metadata is a node");
+        for name in [first.as_str(), "file-0.txt", MESSAGE] {
+            assert!(
+                landed.iter().any(|reached| reached.contains(name)),
+                "entry 0's {name:?} is reached: {landed:?}"
+            );
+        }
+
+        // Entry 1, its read held as a slow read is.
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        let entry = browser.read_with(cx, |this, _| this.page.as_ref().unwrap().entries[1].clone());
+        cx.update(|window, cx| browser.update(cx, |this, cx| this.select(entry, window, cx)));
+        let reading = reached(cx);
+        assert!(
+            browser.read_with(cx, |this, _| this.reading_over_details()),
+            "entry 0's details are kept while entry 1's read runs"
+        );
+        assert_eq!(metadata(), None, "the kept metadata writes no node");
+        for name in [first.as_str(), "file-0.txt", MESSAGE] {
+            assert!(
+                !reading.iter().any(|reached| reached.contains(name)),
+                "entry 0's {name:?} is out of reach under entry 1's heading: {reading:?}"
+            );
+        }
+        let cancel = browser.read_with(cx, |this, _| this.cancel_read.handle().clone());
+        cx.update(|window, cx| window.focus(&cancel, cx));
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            focused(cx),
+            (false, true),
+            "Tab from Cancel passes over the kept message to the branch name"
+        );
+
+        drop(held);
+        settle_reads(cx, &browser);
+        let second = reached(cx);
+        let own = metadata().expect("entry 1's metadata is a node");
+        assert_ne!(own, first, "entry 1's metadata swapped in");
+        assert!(
+            second.contains(&own),
+            "entry 1's metadata is reached: {second:?}"
+        );
+        assert!(
+            second.iter().any(|reached| reached == MESSAGE),
+            "entry 1's message is reached: {second:?}"
+        );
+        assert!(
+            !second.iter().any(|reached| reached.contains("file-0.txt")),
+            "entry 1 changes no file: {second:?}"
+        );
+        let copy = browser.update(cx, |this, cx| this.content.focus("copy-reflog-oid", cx));
+        cx.update(|window, cx| window.focus(&copy, cx));
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            focused(cx),
+            (true, false),
+            "Tab from Copy commit ID reaches entry 1's message"
         );
     }
 
