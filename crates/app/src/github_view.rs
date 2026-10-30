@@ -5330,6 +5330,88 @@ mod tests {
         });
     }
 
+    /// A reply refused in its composer shows its failure within the body, though the body was
+    /// scrolled to leave the draft's bottom at its edge, the failure's place below the clip,
+    /// at 18 pt in a 461 × 490 window with no notice above the body: the body scrolls it into
+    /// view with the draft, and focus stays in the draft. Scrolled away after, the body stays
+    /// where the wheel left it. With nothing to show the failure, it stood below the clip.
+    #[gpui::test]
+    async fn a_refused_reply_scrolls_into_view_below_the_draft(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let pull = github::review::fixture_pull(false);
+        let identity = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+                panel.notice = None;
+            })
+        });
+        open_notice_panel(&app, &panel, (18, 461., 490.), cx).await;
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.begin_reply(target.clone(), window, cx)
+            })
+        });
+        draw(cx);
+        let wheel = |cx: &mut VisualTestContext, by: Pixels| {
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            cx.simulate_event(ScrollWheelEvent {
+                position: body.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), by)),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            draw(cx);
+        };
+        // The draft's bottom at the body's bottom edge.
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let draft = cx.debug_bounds("github-reply-draft").expect("the draft");
+        wheel(cx, body.bottom() - draft.bottom());
+        let draft = cx.debug_bounds("github-reply-draft").expect("the draft");
+        assert!(
+            (draft.bottom() - body.bottom()).abs() < px(1.),
+            "the draft {draft:?} ends at the body's edge {body:?}"
+        );
+
+        // Review reply… with nothing written: refused under the draft.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.review_reply(window, cx)));
+        draw(cx);
+        draw(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let line = cx
+            .debug_bounds("github-reply-error")
+            .expect("the refusal answers in the composer");
+        assert!(
+            body.top() <= line.top() && line.bottom() <= body.bottom(),
+            "the refusal {line:?} stands within the body {body:?}"
+        );
+        assert!(
+            cx.update(|window, cx| {
+                let input = panel.read(cx).conversations.input.read(cx).focus_handle(cx);
+                input.is_focused(window)
+            }),
+            "focus stays in the draft"
+        );
+
+        // Scrolled away, the body stays where the wheel leaves it.
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        wheel(cx, px(80.));
+        let left = scroll.offset();
+        draw(cx);
+        draw(cx);
+        assert_eq!(scroll.offset(), left, "the failure is not shown again");
+        escape(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// Each press the panel refuses is said again, with a fresh alert node, though it refuses
     /// it as it refused the one before: Review submission… pressed twice with no pull request
     /// chosen. The lines alone stay the same, so the second press was silent.

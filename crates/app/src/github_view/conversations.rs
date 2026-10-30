@@ -557,7 +557,7 @@ impl Panel {
             .child(label("github-reply-context", format!("{} · #{} · {} · captured head {}",target.account,target.pull.number,target.pull.repository.label(),target.pull.head.sha)).text_color(rgb(p.muted)))
             .when(!valid,|element|element.child(label("github-reply-unavailable","Original context is unavailable on this page. Refresh or return to its conversation before sending. Your exact draft remains local.").text_color(rgb(p.warning))))
             // The draft and the outcome under it, which the body shows together as it appears.
-            .child(div().flex().flex_col().gap_2().on_children_prepainted(self.reveal_outcome())
+            .child(div().debug_selector(||"github-reply-draft".into()).flex().flex_col().gap_2().on_children_prepainted(self.reveal_outcome())
                 .child(Textarea::new(&self.conversations.input).h(appearance::ui_size(100.)).aria_label("Reply to captured GitHub conversation, saved locally").disabled(self.pending))
                 .when_some(self.outcome("github-reply-error","github-reply-cancelled",cx).filter(|_|self.answers_in_reply()),|element,line|element.child(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().child(line))))
             .child(div().flex().flex_wrap().items_center().gap_2()
