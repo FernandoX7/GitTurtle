@@ -3429,9 +3429,10 @@ mod tests {
         );
     }
 
-    /// The open control `open` of a stashed side lies in the side's own
-    /// header, `list` drawn as `region`, and in the Stashes detail around
-    /// it, `detail` (`system_preview::Target::held_control`). With the
+    /// The control `open` of a stashed side, its open control or another of
+    /// its header's, lies in the side's own header, `list` drawn as
+    /// `region`, and in the Stashes detail around it, `detail`
+    /// (`system_preview::SideHeader::within`). With the
     /// detail scrolled to its top, away from the comparison, focus moves
     /// onto the control: through the header's list with the region showing
     /// the control, or, where `next` names the control after it, by
@@ -3534,6 +3535,172 @@ mod tests {
             }
             assert!(whole(cx, name), "{at}: {name} shows {open} whole");
         }
+    }
+
+    /// Stashes, open on a stash of `files`, each committed with its first
+    /// bytes and stashed with its second, in a `width` × `height` window at
+    /// `text` pt, with the stash chosen and its file `chosen`, in path
+    /// order, once `drawn` is drawn.
+    #[cfg(target_os = "linux")]
+    fn stashed<'a>(
+        cx: &'a mut gpui_kit::TestAppContext,
+        fixture: &std::path::Path,
+        files: &[(&str, Vec<u8>, Vec<u8>)],
+        (width, height, text): (f32, f32, u8),
+        (chosen, drawn): (usize, &'static str),
+    ) -> (Entity<StashBrowser>, &'a mut VisualTestContext) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let repo = tagged_repository(fixture);
+        for (name, first, _) in files {
+            std::fs::write(repo.path().join(name), first).unwrap();
+            git(repo.path(), &["add", name]);
+        }
+        git(repo.path(), &["commit", "--quiet", "-m", "Add them"]);
+        for (name, _, second) in files {
+            std::fs::write(repo.path().join(name), second).unwrap();
+        }
+        git(repo.path(), &["stash", "push", "-m", "kept for later"]);
+        let (app, cx) = window(cx, &repo);
+        cx.update(|_, cx| appearance::ThemeChoice::Midnight.apply(None, cx));
+        cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+        cx.simulate_resize(size(px(width), px(height)));
+        draw(cx);
+        let browser = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
+            .expect("Stashes opens");
+        landed(cx, "saved-stash-row-0");
+        let row = cx.debug_bounds("saved-stash-row-0").unwrap();
+        cx.simulate_click(row.center(), Modifiers::none());
+        landed(cx, "stash-file-0");
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| browser.select_file(chosen, window, cx))
+        });
+        landed(cx, drawn);
+        (browser, cx)
+    }
+
+    /// Draws until `selector` is drawn, as the worker's reads land.
+    fn landed(cx: &mut VisualTestContext, selector: &'static str) {
+        for _ in 0..400 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            crate::tags::tests::draw(cx);
+            if cx.debug_bounds(selector).is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("{selector} never drawn");
+    }
+
+    /// A stashed 3D model's header controls, the camera's, the views' and
+    /// the link, are the Stashes detail's controls too, as its open control
+    /// is: stacked beneath the list at 18 pt in a 461 × 490 window, with
+    /// the detail scrolled to its top, away from the comparison, focus moved
+    /// onto each shows it whole with its ring in the detail and in the
+    /// header's region from the first frame, the detail holding focus
+    /// ([`assert_the_detail_reveals_an_open_control`]). Only the open
+    /// control was the detail's, so focus on the others left the detail
+    /// where it was, the control below its fold.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_stashed_models_controls_are_the_details(cx: &mut gpui_kit::TestAppContext) {
+        use crate::focus_reveal::tests::control;
+        let fixture = tempfile::tempdir().unwrap();
+        let model = |scale: &str| format!("v 0 0 0\nv {scale} 0 0\nv 0 {scale} 0\nf 1 2 3\n");
+        let shape = (
+            "shape.obj",
+            model("2").into_bytes(),
+            model("1").into_bytes(),
+        );
+        let (browser, cx) = stashed(
+            cx,
+            fixture.path(),
+            &[shape],
+            (461., 490., 18),
+            (0, "model-side-1/header"),
+        );
+        let view = browser.entity_id();
+        let detail = browser.read_with(cx, |browser, _| browser.detail.clone());
+        let list = cx
+            .update(|_, cx| crate::system_preview::side_header(view, "model-side-1", cx))
+            .expect("After's header");
+        for camera in [
+            control("model-camera", 5),
+            control("model-camera", 9),
+            control("model-views", 1),
+            control("model-link", 1),
+        ] {
+            assert_the_detail_reveals_an_open_control(
+                cx,
+                &format!("{} at 18 pt in 461 × 490", camera.1),
+                (&detail, &list),
+                "model-side-1/header",
+                &camera,
+                None,
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A stashed PDF's page arrows and page number are the Stashes detail's
+    /// controls too, as its open control is: stacked beneath the list at
+    /// 18 pt in a 461 × 490 window, with the detail scrolled to its top,
+    /// away from the comparison, focus moved onto each of either side's
+    /// shows it whole with its ring in the detail and in the header's region
+    /// from the first frame, the detail holding focus
+    /// ([`assert_the_detail_reveals_an_open_control`]). Only the open
+    /// control was the detail's, so focus on the others left the detail
+    /// where it was, the control below its fold.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_stashed_pdfs_page_controls_are_the_details(cx: &mut gpui_kit::TestAppContext) {
+        use crate::focus_reveal::tests::control;
+        use crate::tags::tests::draw;
+        let fixture = tempfile::tempdir().unwrap();
+        let pdf = |text: &str| {
+            format!("%PDF-1.4\n% {text}\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+                .into_bytes()
+        };
+        let document = ("document.pdf", pdf("first"), pdf("second"));
+        let (browser, cx) = stashed(
+            cx,
+            fixture.path(),
+            &[document],
+            (461., 490., 18),
+            (0, "system-preview-1"),
+        );
+        // The second of three pages, so both arrows step.
+        browser.update(cx, |browser, cx| {
+            let Some(Content::Rich(preview)) = browser.content.as_deref() else {
+                panic!("a changed PDF is a document comparison");
+            };
+            browser.content = Some(Arc::new(crate::pdf_view::tests::paged_at(preview, 3, 1)));
+            cx.notify();
+        });
+        draw(cx);
+        crate::pdf_view::tests::drain_pages();
+        draw(cx);
+        let view = browser.entity_id();
+        let detail = browser.read_with(cx, |browser, _| browser.detail.clone());
+        for (side, name) in [(0, "pdf-side-0"), (1, "pdf-side-1")] {
+            let list = cx
+                .update(|_, cx| crate::system_preview::side_header(view, name, cx))
+                .expect("the side's header");
+            let region: &'static str = format!("{name}/header").leak();
+            for page in ["pdf-back", "pdf-forward", "pdf-page-number"] {
+                let page = control(page, side);
+                assert_the_detail_reveals_an_open_control(
+                    cx,
+                    &format!("{} at 18 pt in 461 × 490", page.1),
+                    (&detail, &list),
+                    region,
+                    &page,
+                    None,
+                );
+            }
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// A stashed 3D model and PDF, at the floor the Stashes dialog keeps

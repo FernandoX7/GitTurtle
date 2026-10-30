@@ -605,24 +605,16 @@ impl Target {
     }
 
     /// [`Self::control`] in a side's own header, whose region also reveals
-    /// it ([`SideHeader::track`]): the button keeps the header's focus
-    /// handle, and where the opener's container reveals its controls too
-    /// (a narrow model or PDF page side in Stashes), the wrapper tracks the
-    /// container's handle around it, so focus on the button lies in both
+    /// it, as it does each of the header's controls ([`SideHeader::track`]):
+    /// where the opener's container reveals its controls too (a narrow
+    /// model or PDF page side in Stashes), focus on the button lies in both
     /// and each reveals it in its own scroll, the container where the
     /// header's region has scrolled it in the same frame
-    /// ([`crate::focus_reveal::FocusReveal::control_within`]).
+    /// ([`SideHeader::within`]).
     pub(crate) fn held_control(&self, form: Form, held: &SideHeader, cx: &mut App) -> AnyElement {
-        let button = held.track(self.control.clone(), self.button(form, cx), cx);
-        let Some((reveal, margin)) = &self.opener.reveal else {
-            return button.into_any_element();
-        };
-        let focus = reveal.focus(self.control.clone(), cx);
-        div()
-            .flex_shrink_0()
-            .track_focus(&focus)
-            .on_children_prepainted(reveal.control_within(focus, *margin, &held.reveal))
-            .child(button)
+        held.clone()
+            .within(&self.opener)
+            .track(self.control.clone(), self.button(form, cx), cx)
             .into_any_element()
     }
 
@@ -1120,6 +1112,9 @@ pub(crate) struct SideHeader {
     reveal: crate::focus_reveal::FocusReveal,
     foot: ScrollHandle,
     scrollbar: &'static str,
+    /// The scrolling container the side lies in, where it reveals the
+    /// comparison's controls, and its margin ([`Self::within`]).
+    container: Option<(crate::focus_reveal::FocusReveal, Pixels)>,
 }
 
 /// One side header's state, with the showing it was made for.
@@ -1177,7 +1172,23 @@ impl SideHeader {
             reveal,
             foot,
             scrollbar,
+            container: None,
         }
+    }
+
+    /// The header of a side of the comparison `opener` places. Where the
+    /// comparison lies in a scrolling container that reveals its controls
+    /// ([`Opener::revealed_by`]), as the Stashes detail does, every control
+    /// the header tracks ([`Self::track`]) is one of the container's too:
+    /// focus on it lies in both, and each reveals it in its own scroll, the
+    /// container where the header's region has scrolled it in the same
+    /// frame ([`crate::focus_reveal::FocusReveal::control_within`]). Only
+    /// the open control was the detail's, so Tab onto a PDF's page arrows
+    /// or page number, or a model's camera, views or clip controls, left
+    /// the detail where it was, the control below its fold.
+    pub(crate) fn within(mut self, opener: &Opener) -> Self {
+        self.container = opener.reveal.clone();
+        self
     }
 
     /// `area`, what lies beneath the side's content and gives way before
@@ -1201,16 +1212,25 @@ impl SideHeader {
             .min_h_0()
     }
 
-    /// `button`, which Tab reveals in the header's region, its focus tracked
-    /// as `id`.
+    /// `button`, which Tab reveals in the header's region, and in the
+    /// container the side lies in where that reveals its controls
+    /// ([`Self::within`]), its focus tracked as `id`.
     pub(crate) fn track(&self, id: impl Into<ElementId>, button: Button, cx: &mut App) -> Button {
         let focus = self.reveal.focus(id, cx);
         let report = self
             .reveal
             .control(focus.clone(), appearance::button_ring_room(cx));
+        let container = self.container.as_ref().map(|(container, margin)| {
+            container.control_within(focus.clone(), *margin, &self.reveal)
+        });
         gpui_kit::base::ElementExt::on_prepaint(
             button.track_focus(&focus),
-            move |bounds, window, cx| report(vec![bounds], window, cx),
+            move |bounds, window, cx| {
+                report(vec![bounds], window, cx);
+                if let Some(container) = &container {
+                    container(vec![bounds], window, cx);
+                }
+            },
         )
     }
 }

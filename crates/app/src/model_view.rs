@@ -778,7 +778,9 @@ fn render_side<T: 'static>(
         "model-side-1"
     };
     // The header scrolls where a narrow side cannot hold its controls,
-    // revealing the one Tab moves onto (`system_preview::header_ends`).
+    // revealing the one Tab moves onto (`system_preview::header_ends`), as
+    // the Stashes detail around it does each of them, the camera's, the
+    // views' and the clip's among them.
     let held = crate::system_preview::SideHeader::new(
         name,
         if index == 0 {
@@ -789,7 +791,8 @@ fn render_side<T: 'static>(
         opener.showing(),
         window,
         cx,
-    );
+    )
+    .within(&opener);
     let mut source_actions = div().flex().flex_wrap().items_center().gap_2().child(
         div()
             .id(("model-source-label", index))

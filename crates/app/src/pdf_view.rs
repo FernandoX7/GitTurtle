@@ -577,8 +577,9 @@ pub(super) fn render_comparison<T: 'static>(
         let end = crate::system_preview::HeaderEnd { inset: window.rem_size() * 0.5, bottom: window.rem_size() * 0.5, right_rule: false, border: colors.border };
         let name = if index == 0 { "pdf-side-0" } else { "pdf-side-1" };
         // The header scrolls where a narrow side cannot hold its controls,
-        // revealing the one Tab moves onto (`system_preview::header_ends`).
-        let held = crate::system_preview::SideHeader::new(name, if index == 0 { "pdf-side-0/scrollbar" } else { "pdf-side-1/scrollbar" }, opener.showing(), window, cx);
+        // revealing the one Tab moves onto (`system_preview::header_ends`),
+        // as the Stashes detail around it does each of them.
+        let held = crate::system_preview::SideHeader::new(name, if index == 0 { "pdf-side-0/scrollbar" } else { "pdf-side-1/scrollbar" }, opener.showing(), window, cx).within(&opener);
         let mut answer = None;
         if let (Some(offer), Some(bytes)) = (side.system_preview, &side.captured) {
             let target = opener.target(("pdf-system",index), label, bytes, &side.name, "PDF", offer);
