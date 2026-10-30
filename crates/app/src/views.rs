@@ -3849,8 +3849,9 @@ fn files_label_width(window: &Window) -> Pixels {
 /// The inspector's file list heading.
 const FILES_LABEL_TEXT: &str = "Changed files";
 
-/// Below this window width, at the interface text size, the header drops the
-/// Projects and profile labels so it stays on one row.
+/// Below this width of the window's body ([`narrow_header`]), at the
+/// interface text size, the header drops the Projects and profile labels so
+/// it stays on one row.
 const COMPACT_HEADER_WIDTH: f32 = 800.;
 /// Pull requests' label in the header's compact row.
 const COMPACT_PULL_REQUESTS: &str = "PRs";
@@ -4198,15 +4199,29 @@ fn window_frame(window: &Window) -> (Decorations, Edges<Pixels>) {
 
 /// The size the window's body is laid out at in this window
 /// ([`laid_out_size`]). The header, the tab strip and the status bar span
-/// it, so their forms and the chrome's are decided from it.
-fn body_size(window: &Window) -> Size<Pixels> {
+/// it, so their forms and the chrome's, and every page's own breakpoints,
+/// are decided from it, never from the window's width: inside a
+/// client-decorated frame the body is the frame's insets narrower.
+pub(crate) fn body_size(window: &Window) -> Size<Pixels> {
+    body_bounds(window).size
+}
+
+/// Where the window's body is laid out in this window ([`laid_out_bounds`]):
+/// the status bar ends at its foot.
+pub(crate) fn body_bounds(window: &Window) -> Bounds<Pixels> {
     let (decorations, paddings) = window_frame(window);
-    laid_out_size(
+    laid_out_bounds(
         window.viewport_size(),
         window.scale_factor(),
         decorations,
         paddings,
     )
+}
+
+/// Whether the full header drops the Projects and profile labels in this
+/// window: below the scaled `COMPACT_HEADER_WIDTH` of the body it spans.
+fn narrow_header(window: &Window) -> bool {
+    body_size(window).width < appearance::ui_size(COMPACT_HEADER_WIDTH)
 }
 
 /// The width the window's body is laid out at in a window `viewport` wide,
@@ -4238,6 +4253,21 @@ fn laid_out_size(
     decorations: Decorations,
     paddings: Edges<Pixels>,
 ) -> Size<Pixels> {
+    laid_out_bounds(viewport, scale, decorations, paddings).size
+}
+
+/// Where the window's content is laid out, as the layout rounds it: its
+/// near edges at the frame's insets, each a whole number of device pixels,
+/// and its size as [`laid_out_size`] gives it. At scale factor 1.5 an
+/// untiled frame's foot is 31 device pixels, so in a 980 px tall window the
+/// content ends at 959⅓ px, where the window less the frame's 21 px
+/// unrounded ends at 959.
+fn laid_out_bounds(
+    viewport: Size<Pixels>,
+    scale: f32,
+    decorations: Decorations,
+    paddings: Edges<Pixels>,
+) -> Bounds<Pixels> {
     // To the nearest device pixel, halves toward zero, as the layout rounds.
     let device = |length: f32| (length.abs() - 0.5).ceil().copysign(length);
     // Each side's inset in device pixels: inside a client-decorated frame,
@@ -4265,9 +4295,12 @@ fn laid_out_size(
         let far = device(f32::from(viewport) * scale - far);
         px((far - near).max(0.) / scale)
     };
-    size(
-        length(viewport.width, insets.left, insets.right),
-        length(viewport.height, insets.top, insets.bottom),
+    Bounds::new(
+        point(px(insets.left / scale), px(insets.top / scale)),
+        size(
+            length(viewport.width, insets.left, insets.right),
+            length(viewport.height, insets.top, insets.bottom),
+        ),
     )
 }
 
@@ -4285,8 +4318,7 @@ impl GitTurtle {
     /// content in either form and do not decide it, so opening Targets never
     /// changes the form of the control that opened it.
     pub(super) fn chrome(&self, window: &Window, cx: &App) -> Chrome {
-        let viewport = window.viewport_size();
-        let narrow = viewport.width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+        let narrow = narrow_header(window);
         if self.page != AppPage::Repository {
             return Chrome::Full { narrow };
         }
@@ -4397,7 +4429,7 @@ impl GitTurtle {
         window: &Window,
         cx: &App,
     ) -> (Pixels, Pixels) {
-        let narrow = window.viewport_size().width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+        let narrow = narrow_header(window);
         let page = self.full_actions_page(window, cx);
         (
             // A running write's status takes its room from the content and
@@ -10824,8 +10856,11 @@ pub(crate) mod tests {
         let insets =
             px(1000.) - laid_out_size(size(px(1000.), px(980.)), scale, frame.0, frame.1).width;
         let viewport = move |device: u32| size(px(device as f32 / scale) + insets, px(980.));
-        let narrow =
-            move |device: u32| viewport(device).width < appearance::ui_size(COMPACT_HEADER_WIDTH);
+        // The header's narrow form, as the body `device` device pixels wide
+        // decides it.
+        let narrow = move |device: u32| {
+            px(device as f32 / scale) < appearance::ui_size(COMPACT_HEADER_WIDTH)
+        };
         let step = move |device: u32, cx: &mut VisualTestContext| {
             cx.simulate_resize(viewport(device));
             cx.update(|window, _| window.set_scale_factor(scale));
@@ -10927,6 +10962,123 @@ pub(crate) mod tests {
         }
         seen.dedup();
         assert!(seen.len() > 1, "the walk crosses a breakpoint: {seen:?}");
+    }
+
+    /// The breakpoints decided from a width read the body as it is laid out
+    /// ([`body_size`]), and the status bar's top edge, which dialogs and
+    /// menus keep above, is where the bar is drawn. In the client-decorated
+    /// frame at scale factor 1.5 ([`TEST_FRAME`]), whose insets take 41⅓ px
+    /// of the window's width and 31 device pixels at its foot, a body a
+    /// device pixel narrower than the header's `COMPACT_HEADER_WIDTH`, or
+    /// than the project hub's 900 or 640 px, takes the narrower form and one
+    /// at the breakpoint the wider, though both windows are wider than it.
+    /// Decided from the window, the header kept its labels, and the hub its
+    /// columns side by side and its wider inset, in a body up to the insets
+    /// narrower, and the bar's top, taken from the frame's unrounded insets,
+    /// was a third of a pixel above the bar.
+    #[gpui::test]
+    async fn breakpoints_read_the_body_inside_the_frame(cx: &mut TestAppContext) {
+        let paddings = Edges::all(px(20.));
+        let frame = (
+            Decorations::Client {
+                tiling: Tiling::default(),
+            },
+            paddings,
+        );
+        let (_fixture, app, cx) =
+            styled_history_window(cx, history_script(2, 3).as_bytes(), move |root| {
+                root.p(paddings.left).border_1()
+            })
+            .await;
+        let _frame = Seam::new(&TEST_FRAME, Some(frame));
+        let scale = 1.5;
+        let insets =
+            px(1000.) - laid_out_size(size(px(1000.), px(980.)), scale, frame.0, frame.1).width;
+        // The window whose body is laid out `device` device pixels wide: the
+        // frame's insets are whole device pixels.
+        let step = move |device: u32, cx: &mut VisualTestContext| {
+            let body = px(device as f32 / scale);
+            cx.simulate_resize(size(body + insets, px(980.)));
+            cx.update(|window, _| window.set_scale_factor(scale));
+            draw(cx);
+            assert_eq!(
+                cx.update(|window, _| body_size(window).width),
+                body,
+                "the body at {device} device pixels"
+            );
+            let at = format!(
+                "a body {device} device pixels wide in a {:?} window",
+                body + insets
+            );
+            (body, at)
+        };
+        let status_bar = |cx: &mut VisualTestContext, at: &str| {
+            let bar = cx.debug_bounds("status-bar").expect("the status bar");
+            assert_eq!(
+                cx.update(|window, _| crate::theme_editor::status_bar_top(window)),
+                bar.top(),
+                "{at}: the status bar's top edge"
+            );
+        };
+        // The bodies a device pixel under `breakpoint` and at it.
+        let across = |breakpoint: Pixels| {
+            let device = (f32::from(breakpoint) * scale).ceil() as u32;
+            [device - 1, device]
+        };
+        let header = appearance::ui_size(COMPACT_HEADER_WIDTH);
+        for device in across(header) {
+            let (body, at) = step(device, cx);
+            assert!(body + insets >= header, "{at}: wider than the breakpoint");
+            let narrow = body < header;
+            assert_eq!(
+                predicted_chrome(&app, cx).1,
+                Chrome::Full { narrow },
+                "{at}"
+            );
+            let profile = cx.debug_bounds("profile-button").expect("the profile");
+            assert_eq!(
+                profile.size.width == appearance::ui_size(36.),
+                narrow,
+                "{at}: the profile {profile:?}"
+            );
+            status_bar(cx, &at);
+        }
+        cx.update(|window, cx| app.update(cx, |app, cx| app.show_projects(window, cx)));
+        settle(&app, cx).await;
+        for device in across(px(900.)) {
+            let (body, at) = step(device, cx);
+            assert!(body + insets >= px(900.), "{at}: wider than the breakpoint");
+            let action = cx
+                .debug_bounds("project-hub-action")
+                .expect("the hub's actions");
+            let recent = cx
+                .debug_bounds("project-hub-recent")
+                .expect("the hub's projects");
+            assert_eq!(
+                action.bottom() <= recent.top(),
+                body < px(900.),
+                "{at}: the hub's actions {action:?} above its projects {recent:?}"
+            );
+            status_bar(cx, &at);
+        }
+        for device in across(px(640.)) {
+            let (body, at) = step(device, cx);
+            assert!(body + insets >= px(640.), "{at}: wider than the breakpoint");
+            let edge = cx
+                .debug_bounds("status-bar")
+                .expect("the status bar")
+                .left();
+            let action = cx
+                .debug_bounds("project-hub-action")
+                .expect("the hub's actions");
+            let rem = cx.update(|window, _| window.rem_size());
+            let inset = if body < px(640.) { rem } else { rem * 1.5 };
+            assert!(
+                (action.left() - edge - inset).abs() < px(0.5),
+                "{at}: the hub's inset {:?}, not {inset:?}",
+                action.left() - edge
+            );
+        }
     }
 
     /// The project pane's group is fitted to the width its body is drawn at,
@@ -14212,9 +14364,7 @@ pub(crate) mod tests {
         let trailing = |cx: &mut VisualTestContext| {
             cx.update(|window, cx| {
                 let app = app.read(cx);
-                let narrow =
-                    window.viewport_size().width < appearance::ui_size(COMPACT_HEADER_WIDTH);
-                app.trailing(narrow, &app.chrome_widths(window), window)
+                app.trailing(narrow_header(window), &app.chrome_widths(window), window)
             })
         };
         let controls = |cx: &mut VisualTestContext| {

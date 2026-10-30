@@ -1029,8 +1029,11 @@ impl Render for ProjectHub {
                 .update(cx, |input, cx| input.set_value(branch, window, cx));
         }
         let colors = Theme::global(cx).colors;
-        let compact = window.viewport_size().width < px(900.);
-        let narrow = window.viewport_size().width < px(640.);
+        // The hub spans the window's body, which inside a client-decorated
+        // frame is the frame's insets narrower than the window.
+        let width = crate::views::body_size(window).width;
+        let compact = width < px(900.);
+        let narrow = width < px(640.);
         div()
             .size_full()
             .bg(colors.background)

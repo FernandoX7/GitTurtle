@@ -495,15 +495,19 @@ struct WindowFrame {
     border_bottom: Pixels,
 }
 
-/// The status bar's top edge in `window`: the window's foot less the
-/// client-decoration frame and the bar, drawn at a whole device pixel. A menu
-/// stays above it (`native_accessibility::open_menu`).
+/// The status bar's top edge in `window`: the foot of the window's body,
+/// inside the client-decoration frame with its insets rounded to device
+/// pixels as the layout rounds them (`views::body_bounds`), less the bar,
+/// drawn at a whole device pixel. A menu stays above it
+/// (`native_accessibility::open_menu`). At scale factor 1.5 an untiled
+/// frame's foot is 31 device pixels, not the 31.5 its 21 px make, so the
+/// bar's top is a third of a pixel lower than the window less the frame's
+/// unrounded insets puts it.
 pub(crate) fn status_bar_top(window: &Window) -> Pixels {
-    let frame = WindowFrame::of(window);
-    window.viewport_size().height
-        - frame.padding_bottom
-        - frame.border_bottom
-        - window.pixel_snap(appearance::ui_size(STATUS_BAR_HEIGHT))
+    window.pixel_snap(
+        crate::views::body_bounds(window).bottom()
+            - window.pixel_snap(appearance::ui_size(STATUS_BAR_HEIGHT)),
+    )
 }
 
 impl WindowFrame {
