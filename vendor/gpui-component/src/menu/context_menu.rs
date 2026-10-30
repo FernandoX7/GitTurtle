@@ -459,4 +459,147 @@ mod tests {
             assert_eq!(window.focused(cx).as_ref(), Some(&content_focus));
         });
     }
+
+    /// A row with a context menu, drawn while `shown` holds. Its menu's
+    /// item holds `token`, as an item holds what it acts on, and each menu
+    /// the row builds is recorded weakly in `built`.
+    struct OwnerRoot {
+        shown: bool,
+        token: Rc<()>,
+        built: Rc<RefCell<Vec<gpui::WeakEntity<PopupMenu>>>>,
+    }
+
+    impl Render for OwnerRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let (token, built) = (self.token.clone(), self.built.clone());
+            div().size_full().when(self.shown, |this| {
+                this.child(div().id("owner").h(px(40.)).w_full().context_menu(
+                    move |menu, _, cx| {
+                        built.borrow_mut().push(cx.entity().downgrade());
+                        let token = token.clone();
+                        menu.item(crate::menu::PopupMenuItem::new("Act").on_click(
+                            move |_, _, _| {
+                                let _held = &token;
+                            },
+                        ))
+                    },
+                ))
+            })
+        }
+    }
+
+    const ACT: &str = "menu-item: Act · MenuItem";
+
+    fn draw(cx: &mut VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            _ = window.draw(cx);
+        });
+        cx.run_until_parked();
+    }
+
+    /// A right-click on the row, `x` from its leading edge.
+    fn right_click(cx: &mut VisualTestContext, x: f32) {
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Right,
+            position: point(px(x), px(20.)),
+            modifiers: Default::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        // Built in a deferred callback, then drawn, and focused, in the
+        // frame after.
+        draw(cx);
+        draw(cx);
+    }
+
+    /// The owner's window, drawn, its row shown.
+    fn owner(cx: &mut TestAppContext) -> (Entity<OwnerRoot>, &mut VisualTestContext) {
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            super::super::popup_menu::init(cx);
+        });
+        let (root, cx) = cx.add_window_view(|_, _| OwnerRoot {
+            shown: true,
+            token: Rc::new(()),
+            built: Default::default(),
+        });
+        draw(cx);
+        (root, cx)
+    }
+
+    /// Takes the owner's row away and draws the frames after it.
+    fn drop_owner(root: &Entity<OwnerRoot>, cx: &mut VisualTestContext) {
+        root.update(cx, |root, cx| {
+            root.shown = false;
+            cx.notify();
+        });
+        draw(cx);
+        draw(cx);
+    }
+
+    /// Whether every menu the row built is gone, with what its item held:
+    /// only the owner still holds the token.
+    fn released(root: &Entity<OwnerRoot>, cx: &mut VisualTestContext) -> bool {
+        root.read_with(cx, |root, _| {
+            root.built
+                .borrow()
+                .iter()
+                .all(|menu| menu.upgrade().is_none())
+                && Rc::strong_count(&root.token) == 1
+        })
+    }
+
+    /// A context menu closes when it is dismissed, and once its owner, the
+    /// element it was opened on, is no longer drawn, the menu it built goes
+    /// with what its items hold, whether the menu was dismissed first or was
+    /// still open; a menu opened in place of an earlier one lets that one go.
+    /// Upstream's dismiss callback held the element's shared state, which
+    /// holds the menu and the subscription that holds the callback, so the
+    /// menu outlived its owner for the rest of the app's life.
+    #[gpui::test]
+    fn a_context_menu_goes_with_its_owner(cx: &mut TestAppContext) {
+        // Dismissed, then its owner gone.
+        let (root, cx) = owner(cx);
+        right_click(cx, 50.);
+        assert!(cx.debug_bounds(ACT).is_some(), "the right-click opened it");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds(ACT).is_none(), "Escape closed it");
+        drop_owner(&root, cx);
+        assert_eq!(root.read_with(cx, |root, _| root.built.borrow().len()), 1);
+        assert!(released(&root, cx), "the dismissed menu outlived its owner");
+
+        // Open as its owner goes.
+        root.update(cx, |root, cx| {
+            root.shown = true;
+            root.built.borrow_mut().clear();
+            cx.notify();
+        });
+        draw(cx);
+        right_click(cx, 50.);
+        assert!(cx.debug_bounds(ACT).is_some(), "opened again");
+        drop_owner(&root, cx);
+        assert!(cx.debug_bounds(ACT).is_none(), "it closed with its owner");
+        assert!(released(&root, cx), "the open menu outlived its owner");
+
+        // Opened again in place of the first.
+        root.update(cx, |root, cx| {
+            root.shown = true;
+            root.built.borrow_mut().clear();
+            cx.notify();
+        });
+        draw(cx);
+        right_click(cx, 50.);
+        // Beside the first menu, which covers the row where it opened.
+        right_click(cx, 400.);
+        let built = root.read_with(cx, |root, _| root.built.borrow().clone());
+        assert_eq!(built.len(), 2, "two right-clicks built two menus");
+        assert!(
+            built[0].upgrade().is_none(),
+            "the first went with the second"
+        );
+        assert!(built[1].upgrade().is_some(), "the second is open");
+        assert!(cx.debug_bounds(ACT).is_some(), "and drawn");
+    }
 }

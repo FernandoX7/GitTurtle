@@ -145,12 +145,14 @@ only its margin, as upstream; tooltips and the component's Select, Combobox
 and DatePicker dropdowns, which build their own positioners, take no inset.
 The component's context menu takes the same inset
 ([component patch](../gpui-component/GITTURTLE-PATCH.md)), which also lists
-the consumers.
+the consumers: every app dropdown, through this host; no app menu opens
+through the context menu.
 `cargo test --locked -p gitturtle kit_menus_stay_above_the_bottom_inset_an_application_sets`
 opens a kit dropdown and a kit right-click menu at the foot of a window under
 an inset of 120.5 px and reads each above it; without the whole-pixel rule the
 right-click menu ended half a pixel past it.
-`menus_keep_their_edge_8_px_above_the_status_bar` reads the app's menus 8 px
+`menus_keep_their_edge_8_px_above_the_status_bar` reads the Working Actions
+menu, a dropdown this host places, its edge 8 px
 or more above the status bar. Remove this part of the patch when upstream lets
 an application keep popups clear of a region at the window's foot, and those
 tests pass without it.

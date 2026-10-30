@@ -561,21 +561,35 @@ names the 1 px band outside a popup's fill in which `popover_shadow` draws its
 ring, so an application keeps the drawn edge, not only the fill, clear of
 what it protects.
 
-The consumers are every app dropdown (`AppMenu`) and right-click menu
-(`AppContextMenu`) in `crates/app/src/native_accessibility.rs`, whose
+The consumers are every app dropdown (`AppMenu`, built as `AppDropdown` on
+the kit's dropdown menu and popover, which the base popup host places) in
+`crates/app/src/native_accessibility.rs`, whose
 `keep_popups_above_the_status_bar` sets the inset to the status bar, the 8 px
-above it and the edge band.
+above it and the edge band, and `menu_foot` there, which takes the edge band
+from `POPOVER_EDGE_WIDTH` as it caps the app's menus. No app menu opens
+through the kit's context menu: the app's right-click menus
+(`AppContextMenu`, which builds a `PointerMenu`) and its keyboard row menus
+(`KeyboardMenu`) place themselves beside their row (`RowMenu`, inside
+`menu_bounds`), so the context-menu half reaches only the kit's own callers
+(`Tree`, `Table`, the sidebar menu and the `Editor` and `Textarea`
+context-menu builders), none of which the app uses, and the regression below,
+which opens a kit right-click menu directly.
 `cargo test --locked -p gitturtle kit_menus_stay_above_the_bottom_inset_an_application_sets`
 sets an inset of 120.5 px and opens a kit dropdown and a kit right-click menu
 at the foot of a 400 × 320 window: the host moves each up so that it ends
 above the inset, the right-click menu up from the pointer. Without the margin
 the dropdown ended 3.5 px past the inset.
 `menus_keep_their_edge_8_px_above_the_status_bar` opens the Working Actions
-menu and a right-click menu on History's lowest whole row at 13 and 18 pt in
-461 × 490 and reads each drawn edge 8 px or more above the status bar. Remove
-this part of the patch when upstream lets an application keep popups clear of
-a region at the window's foot and places a context menu as it places a
-dropdown, and those tests pass without it.
+menu, a dropdown, at 13 and 18 pt in 461 × 490 and reads its drawn edge 8 px
+or more above the status bar; the right-click menu it opens on History's
+lowest whole row there is the app's own `PointerMenu`, placed by `RowMenu`.
+Remove the dropdown half of this patch (`src/popover.rs`, `src/styled.rs`)
+when upstream lets an application keep popups clear of a region at the
+window's foot, and those tests pass without it. Remove the context-menu half
+(`src/menu/context_menu.rs`) when upstream places a context menu as it places
+a dropdown, and the first test passes without it; since no app menu uses the
+kit's context menu, a kit update may instead drop that half rather than carry
+it forward, with that test's right-click case.
 
 The menu-confirm patch modifies `src/menu/popup_menu.rs`. Upstream's
 `confirm`, which Enter and a click run, acted on whatever entry was selected.
@@ -1095,12 +1109,31 @@ strongly, so the set, the callback, the shared state and the subscription
 formed a cycle that no drop broke: once its element was gone, a context menu's
 last menu stayed alive with everything its builder captured, for the rest of
 the app's life and past it. The callback now holds the shared state weakly and
-does nothing once the state is gone; opening, dismissing and replacing a menu
-are unchanged. The consumers are every app right-click menu, which the app
-builds through `AppContextMenu::app_context_menu`, among them the History and
-Working Changes rows' menus.
+closes the menu only while that state lives. Opening, dismissing and replacing
+a menu are unchanged: a dismissal (Escape, an item chosen, a press outside)
+closes the menu, which the element keeps, closed, until its next right-click
+replaces it or the element goes, and a right-click that opens a menu in place
+of another lets the other go.
+
+No app menu opens through the kit's context menu. The app's right-click menus,
+the History and Working Changes rows' among them, are built by
+`AppContextMenu::app_context_menu` as a `PointerMenu`
+(`crates/app/src/native_accessibility.rs`), which keeps its own shared state
+and holds it weakly from its dismissal the same way (`PointerMenuState`);
 `cargo test --locked -p gitturtle native_accessibility::menu_tests::a_context_menu_goes_with_its_row`
-opens a row's menu with a right-click, closes it with Escape, takes the row
-away and checks that the menu was released; it failed before this change.
-Remove this part of the patch when upstream's dismiss callback no longer holds
-the shared state strongly, and that test passes without it.
+covers that path, not this one. This part reaches the kit's own `Tree` and
+the kit's other `ContextMenuExt` callers (`Table`, the sidebar menu and the
+`Editor` and `Textarea` context-menu builders), none of which the app uses; in
+the app it reaches only the probe of
+`kit_menus_stay_above_the_bottom_inset_an_application_sets`.
+The crate's own `menu::context_menu::tests::a_context_menu_goes_with_its_owner`,
+run out of tree with the workspace's patch table, opens an element's menu
+with a right-click, closes it with Escape and takes the element away, then
+opens it again and takes the element away while it is open, and reads each
+menu released with the value its item held; a right-click beside an open menu
+opens another and lets the first go. With the shared state held strongly
+again, as upstream held it, the menu dismissed first outlived its element.
+Remove this part of the patch when upstream's dismiss callback no longer
+holds the shared state strongly, and that test passes without it; since no
+app menu uses the kit's context menu, a kit update may instead drop it rather
+than carry it forward.
