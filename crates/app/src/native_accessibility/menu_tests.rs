@@ -615,6 +615,68 @@ fn kit_menus_stay_above_the_bottom_inset_an_application_sets(cx: &mut TestAppCon
     );
 }
 
+/// A kit dropdown's button centred 40 px below the window's top, which a
+/// change of the window's width moves.
+struct CentredMenuProbe;
+
+impl Render for CentredMenuProbe {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().flex().justify_center().pt(px(40.)).child(
+            Button::new("centred-dropdown")
+                .debug_selector(|| "centred-dropdown".into())
+                .label("Open")
+                .dropdown_menu(|menu, _, _| {
+                    ["One", "Two", "Three"]
+                        .into_iter()
+                        .fold(menu, |menu, name| menu.item(PopupMenuItem::new(name)))
+                }),
+        )
+    }
+}
+
+/// A kit dropdown left open follows its button in the frame a width change
+/// draws. Its popup host placed the menu at the corner its button had in
+/// the frame before, so the menu stayed where the button had been until
+/// some other change drew a frame: a Compare width step draws one frame,
+/// and the frame it once asked for after it hid this. The host now reads
+/// the corner its button's prepaint records in the same frame (a gpui-base
+/// patch, `Positioner::corner_following`).
+#[gpui::test]
+fn an_open_kit_dropdown_follows_its_button_when_the_window_changes_width(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let probe = cx.new(|_| CentredMenuProbe);
+        Root::new(probe, window, cx)
+    });
+    cx.simulate_resize(size(px(600.), px(400.)));
+    draw(cx);
+    let trigger = cx.debug_bounds("centred-dropdown").expect("the dropdown");
+    cx.simulate_click(trigger.center(), Modifiers::default());
+    draw(cx);
+    draw(cx);
+    let item = cx
+        .debug_bounds("menu-item: One · MenuItem")
+        .expect("the open menu's first item");
+    let beside = item.origin - trigger.origin;
+    for width in [500., 540., 440.] {
+        // The frame the window's resize draws, and no other.
+        cx.simulate_resize(size(px(width), px(400.)));
+        let moved = cx.debug_bounds("centred-dropdown").expect("the dropdown");
+        let followed = cx
+            .debug_bounds("menu-item: One · MenuItem")
+            .expect("the menu stays open");
+        assert!(
+            (moved.left() - trigger.left()).abs() >= px(20.),
+            "{width} px moves the button from {trigger:?} to {moved:?}"
+        );
+        let at = followed.origin - moved.origin;
+        assert!(
+            (at.x - beside.x).abs() <= px(1.) && (at.y - beside.y).abs() <= px(1.),
+            "{width} px: the menu's first item {followed:?} keeps its place {beside:?} from the button {moved:?}, not {at:?}"
+        );
+    }
+}
+
 /// The app's dropdown (`AppMenu`) on a button `lead` below the window's top,
 /// opening sixteen items, the first "One", and recording what is chosen.
 struct AppDropdownProbe {

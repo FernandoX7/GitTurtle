@@ -4,6 +4,8 @@
 //! alignment, and viewport clamping cannot drift apart between popups,
 //! tooltips, and menus.
 
+use std::{cell::Cell, rc::Rc};
+
 use gpui::{
     Anchor, AnyElement, App, Bounds, Display, Element, GlobalElementId, Half as _, HitboxBehavior,
     InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Point, Position, Size, Style,
@@ -65,6 +67,9 @@ pub struct Positioner {
     /// GitTurtle patch: the room kept clear at the viewport's foot
     /// ([`Positioner::bottom_inset`]).
     bottom_inset: Pixels,
+    /// GitTurtle patch: where a corner popup's position is read as it is
+    /// prepainted ([`Positioner::corner_following`]).
+    following: Option<Rc<Cell<Point<Pixels>>>>,
     occlude: bool,
     children: Vec<AnyElement>,
 }
@@ -86,6 +91,7 @@ impl Positioner {
             },
             margin: px(4.),
             bottom_inset: px(0.),
+            following: None,
             occlude: false,
             children: Vec::new(),
         }
@@ -101,9 +107,21 @@ impl Positioner {
             strategy: Strategy::Corner { anchor, position },
             margin: px(4.),
             bottom_inset: px(0.),
+            following: None,
             occlude: false,
             children: Vec::new(),
         }
+    }
+
+    /// GitTurtle patch: places `anchor`'s corner of the popup at the point
+    /// `position` holds when the popup is prepainted, not when it is built.
+    /// A [`crate::Popup`] records its trigger's corner there as the trigger
+    /// is prepainted, which is before any deferred content is, so an open
+    /// popup follows a trigger in the frame that moves it.
+    pub fn corner_following(anchor: Anchor, position: Rc<Cell<Point<Pixels>>>) -> Self {
+        let mut positioner = Self::corner(anchor, position.get());
+        positioner.following = Some(position);
+        positioner
     }
 
     /// Sets the preferred side. Only meaningful for [`Positioner::side`].
@@ -356,7 +374,14 @@ impl Element for Positioner {
         // margin then ends at the inset.
         let mut viewport = window.viewport_size();
         viewport.height -= (self.bottom_inset - margin).max(px(0.));
-        let position = resolve(self.strategy, popup_size, viewport, margin);
+        // GitTurtle patch: a followed corner as it stands now.
+        let mut strategy = self.strategy;
+        if let (Strategy::Corner { position, .. }, Some(following)) =
+            (&mut strategy, &self.following)
+        {
+            *position = following.get();
+        }
+        let position = resolve(strategy, popup_size, viewport, margin);
         // Ahead of the children so it blocks what is behind the popup without
         // blocking the popup's own content.
         if self.occlude {

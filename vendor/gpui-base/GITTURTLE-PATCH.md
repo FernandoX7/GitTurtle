@@ -155,22 +155,44 @@ or more above the status bar. Remove this part of the patch when upstream lets
 an application keep popups clear of a region at the window's foot, and those
 tests pass without it.
 
-The popup-frame patch also modifies `src/popup.rs`. Upstream a `Popup` asks
-for the next frame (`request_animation_frame`) the first time its trigger is
-prepainted, so content it holds back until the trigger's bounds are known is
-drawn then. It asked whether or not it held any: a `Popover` hands it content
-only while open, so a menu trigger first drawn closed asked for a frame that
-drew nothing new. GitTurtle's text Compare folds its review options into such
-a menu in a narrower window, and Compare chooses that form in the frame it
-draws at a new width, so on Wayland every such width step drew a second
-frame. A popup now asks for the frame only while content waits for its
-trigger's bounds; that content still appears in the next frame, and a popup
-opened later is placed from the bounds its trigger recorded as it was drawn.
+The popup-frame patch also modifies `src/popup.rs` and `src/positioner.rs`.
+Upstream a `Popup` asks for the next frame (`request_animation_frame`) the
+first time its trigger is prepainted, so content it holds back until the
+trigger's bounds are known is drawn then. It asked whether or not it held
+any: a `Popover` hands it content only while open, so a menu trigger first
+drawn closed asked for a frame that drew nothing new. GitTurtle's text
+Compare folds its review options into such a menu in a narrower window, and
+Compare chooses that form in the frame it draws at a new width, so on
+Wayland every such width step drew a second frame. A popup now asks for the
+frame only while content waits for its trigger's bounds; that content still
+appears in the next frame, and a popup opened later is placed from the
+bounds its trigger recorded as it was drawn. Upstream an open popup is
+placed at the corner its trigger had in the frame before, as the popup is
+built: a width step that moved the trigger left the popup where the trigger
+had been until some other change drew a frame, which Compare's own refresh
+after a width step once did. `Positioner::corner_following` reads the corner
+as the popup is prepainted instead, from the cell the trigger's prepaint
+fills before any deferred content is prepainted, so an open popup follows
+its trigger in the frame that moves it and asks for no frame to do so.
 `cargo test --locked -p gitturtle a_compare_width_step_draws_one_frame_where_it_settles`
-delivers only the frames a width step asks for, and fails without this part
-at 13 pt as the window narrows from 1,480 to 1,000 px. Remove it when upstream
-asks for that frame only for content waiting on the trigger's bounds, and the
-test passes without it.
+delivers only the frames a width step asks for, and fails without the frame
+part at 13 pt as the window narrows from 1,480 to 1,000 px;
+`an_open_kit_dropdown_follows_its_button_when_the_window_changes_width`
+reads a kit dropdown left open beside its button in the frame each width
+change draws, and fails without the corner part. The crate's own
+`popup::tests::an_open_popup_follows_its_trigger_in_the_frame_that_moves_it`
+covers the corner part in the toolkit. The crate is
+an excluded workspace member whose dev-dependencies the workspace's lockfile
+does not resolve, so the crate's tests run in a copy of it as its own root:
+copied to `crates/gpui-base` in a directory outside any Cargo workspace,
+beside a `README.md` (an upstream text-view test includes the upstream
+repository's README from there), with the workspace's `Cargo.lock` copied in
+to seed its resolution, which adds the dev-dependencies (`indoc` is fetched
+once), `cargo test --lib popup::tests` runs there in a target directory of
+its own. Remove these parts when upstream asks for that frame only for
+content waiting on the trigger's bounds and places an open popup at its
+trigger's corner in the frame that lays the trigger out, and the tests pass
+without them.
 
 The panel-fit patch modifies `src/resizable/mod.rs`. Upstream a
 `ResizablePanelGroup` learns its size only as it is prepainted, after its
