@@ -149,6 +149,38 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
       - **J-int** (`briefs-q9/J-int.md`): J's 25 commits plus J3e's nits.
       - **HB''** (`briefs-q9/HB3.md`): HB's 3 commits plus the review's fixes.
       - **F3** (`briefs-q9/F3.md`): F/F2's 5 commits plus the security Low and the F2 findings.
+    - **F3 done** (`worktree-agent-ab6c3a38…`, 8 commits on `f1973206`; fast gate green at 141 s):
+      - F/F2 rebased as `d25394f0`…`4f6c40e5` (`vendor/AGENTS.md` for `30188c63` by hand, word diff equal).
+      - `fd57677e`: the keyboard conflict test runs in an active window (menu closes, focus in the draft).
+      - `64808f4c`: `pointer_selection`: a rebuild after the pointer owned the selection selects nothing. The app test at 461 px 18 pt shows Enter stages nothing.
+      - `c3fa67a3`: the Linux fallback `NativeMenu` is kept 8 px above the status bar (`fallback.rs:130`).
+      - Mutations caught, except the defensive flag clear in `set_selected_index`.
+      - **Code verification clean.** The rebased line is identical to `17bfd002`. The reviewer's own mutations fail the two new tests. Keys still work after a cursorless rebuild.
+        - Nit (design review): a fallback menu that slides up to clear the bar now covers the clicked point, unlike row menus (DESIGN.md:377).
+        - Nit (pre-existing): the fallback menu has no height cap in very short windows.
+      - Security re-review running.
+    - **HB'' done** (`worktree-agent-a8b414e5…` tip `9a440e8b`, 8 commits on `f1973206`; the HB line picked cleanly as `9e7af654` `2b224ba6` `c74ecd98`; fast gate green at 105 s; mutations caught):
+      - `96a55ebd`: toolbar test on window bounds.
+      - `77bc4e1f`: one `HeaderPlan` per frame.
+      - `8ac32b79`: the bar keeps Cancel's room only where the widest label (the 180 px limit) would go there. In practice it is still kept at most widths ≤ 1000 px at 13 pt and almost everywhere at 18 pt.
+      - `5cb1b61a`: the labelled Cancel keeps its width when pressed.
+      - `9a440e8b`: DESIGN.md:284.
+      - Note: `c74ecd98`'s message still says "on every repository frame".
+      - The placement table is in the agent report. Native QA: before = during for Settings' x, header height and row top at 1480/1000/800/461 × 13/18 pt; the 461 × 980 18 pt hints whole with no write.
+      - Short verification running.
+    - **J-int done** (`worktree-agent-ad0a45c7…` tip `ccfb5ba0`, 29 commits on `f1973206`; fast gate green at 151 s; it hit the turn limit once and was resumed).
+      - Hand resolutions:
+        - `9c6d5929`: new `Target::held_control`; the open control keeps the side header's focus handle while a wrapper tracks the Stashes detail's container.
+        - `7edff938`: both sides' tests kept.
+        - `60cf74b9` and `d4045b41`: J's foot with the head's `native_accessibility::bounded_accessible_text`.
+      - Follow-ups:
+        - `08841f99` `cues` along `viewport_bounds()`;
+        - `8e0853b8` a wheel check of the hidden-bar room;
+        - `e8369bd3` the labels measured;
+        - `ccfb5ba0` the side header forms change in the frame Compare draws: a mutation fails it, so J adds no frame back.
+      - Open: no Stashes test drives Tab onto a stashed model's open control.
+      - Short verification running.
+      - Native QA: forms switch in the resize's frame (model open controls at 1121 px, page view at 881 px); Stashes and the rewrite review at 461 × 490 18 pt with a stashed model or PDF (Tab to the open control is shown whole in both containers).
     - **Landing order:** J (short verification first) → HB'' (short verification; re-pick onto J with `cp.sh`) → F3 (code + security verification; re-pick) → R2m (`briefs-q9/R2m.md`, from the head after HB''). Each: `cp.sh`, gate on `.local/target-coord`, push, remove its worktrees (old J chain `a09d62b7 a135ded6 a27ae44c a4a30150 a82de15a a99ebc5b aa73aff2 afc6bcd1`, HB `a7d9d968 ac703f2e`, F `a9211ca3`, R2k `a3fa8572` after R2m).
     - **Follow-ups found this session** (on top of the earlier list in the "Session 2026-10-30" bullet):
       - narrow (461 ↔ 980) Compare and History width steps still draw 2 frames: trace them;
