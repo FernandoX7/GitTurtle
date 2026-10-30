@@ -753,7 +753,6 @@ fn render_side<T: 'static>(
         } else {
             "model-side-1/scrollbar"
         },
-        cx.entity_id(),
         opener.showing(),
         window,
         cx,

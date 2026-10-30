@@ -896,33 +896,48 @@ struct HeldSide {
 }
 
 /// Each side header's state, by the view drawing it and the side's region.
+/// A view's entries go when the view does ([`SideHeader::new`]): they once
+/// stayed for the application's life, each closed Stashes dialog or rewrite
+/// review leaving its sides' scroll and focus handles behind.
 #[derive(Default)]
 struct SideHeaders(std::collections::HashMap<(EntityId, &'static str), HeldSide>);
 impl Global for SideHeaders {}
 
 impl SideHeader {
-    /// The header of side `name` that `view` draws in `showing`, revealing
-    /// in this frame the control focus has moved onto; its scrollbar is
-    /// `scrollbar`.
-    pub(crate) fn new(
+    /// The header of side `name` that the view rendering with `cx` draws in
+    /// `showing`, revealing in this frame the control focus has moved onto;
+    /// its scrollbar is `scrollbar`. The view's headers go when it is
+    /// released, as a dialog's view is when the dialog closes.
+    pub(crate) fn new<T: 'static>(
         name: &'static str,
         scrollbar: &'static str,
-        view: EntityId,
         showing: Showing,
         window: &Window,
-        cx: &mut App,
+        cx: &mut Context<T>,
     ) -> Self {
+        let view = cx.entity_id();
         let fresh = || HeldSide {
             showing,
             reveal: crate::focus_reveal::FocusReveal::new(crate::focus_reveal::Trigger::Keyboard),
             foot: ScrollHandle::new(),
         };
         let headers = &mut cx.default_global::<SideHeaders>().0;
+        let first = !headers.keys().any(|(held, _)| *held == view);
         let held = headers.entry((view, name)).or_insert_with(fresh);
         if held.showing != showing {
             *held = fresh();
         }
         let (reveal, foot) = (held.reveal.clone(), held.foot.clone());
+        if first {
+            cx.on_release(move |_, cx| {
+                if cx.has_global::<SideHeaders>() {
+                    cx.global_mut::<SideHeaders>()
+                        .0
+                        .retain(|(held, _), _| *held != view);
+                }
+            })
+            .detach();
+        }
         reveal.reveal(window, cx);
         Self {
             reveal,
@@ -1195,7 +1210,6 @@ pub(crate) mod tests {
             let held = SideHeader::new(
                 "floor-side",
                 "floor-side/scrollbar",
-                cx.entity_id(),
                 self.showing,
                 window,
                 cx,
@@ -1356,14 +1370,8 @@ pub(crate) mod tests {
     #[cfg(target_os = "linux")]
     impl Render for FootSide {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let held = SideHeader::new(
-                "foot-side",
-                "foot-side/scrollbar",
-                cx.entity_id(),
-                self.showing,
-                window,
-                cx,
-            );
+            let held =
+                SideHeader::new("foot-side", "foot-side/scrollbar", self.showing, window, cx);
             let control = crate::button("foot-control", "", "plus", false);
             let header = div()
                 .px_2()

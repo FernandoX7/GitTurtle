@@ -3530,6 +3530,69 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// The side headers the Stashes dialog draws for a stashed 3D model go
+    /// with the dialog: their scroll and focus state, held by the view that
+    /// draws them, once stayed in an application-wide table after the
+    /// dialog closed, a model's two sides for every dialog opened.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_closed_stash_dialog_takes_its_side_headers(cx: &mut gpui_kit::TestAppContext) {
+        use crate::tags::tests::{draw, git, tagged_repository, window};
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let model = repo.path().join("shape.obj");
+        std::fs::write(&model, b"v 0 0 0\nv 2 0 0\nv 0 2 0\nf 1 2 3\n").unwrap();
+        git(repo.path(), &["add", "shape.obj"]);
+        git(repo.path(), &["commit", "--quiet", "-m", "Add a model"]);
+        std::fs::write(&model, b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").unwrap();
+        git(repo.path(), &["stash", "push", "-m", "kept for later"]);
+        let (app, cx) = window(cx, &repo);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        draw(cx);
+        let landed = |cx: &mut VisualTestContext, selector: &'static str| {
+            for _ in 0..400 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(50));
+                draw(cx);
+                if cx.debug_bounds(selector).is_some() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("{selector} never drawn");
+        };
+        let browser = cx
+            .update(|window, cx| app.update(cx, |app, cx| app.open_stash_browser(window, cx)))
+            .expect("Stashes opens");
+        landed(cx, "saved-stash-row-0");
+        let row = cx.debug_bounds("saved-stash-row-0").unwrap();
+        cx.simulate_click(row.center(), Modifiers::none());
+        landed(cx, "stash-file-0");
+        let file = cx.debug_bounds("stash-file-0").unwrap();
+        cx.simulate_click(file.center(), Modifiers::none());
+        landed(cx, "model-side-1/header");
+        let view = browser.entity_id();
+        let held = |cx: &mut VisualTestContext| {
+            ["model-side-0", "model-side-1"]
+                .into_iter()
+                .filter(|name| {
+                    cx.update(|_, cx| crate::system_preview::side_header(view, name, cx))
+                        .is_some()
+                })
+                .count()
+        };
+        assert_eq!(held(cx), 2, "the dialog draws the model's two side headers");
+        let weak = browser.downgrade();
+        drop(browser);
+        cx.update(|window, cx| window.close_dialog(cx));
+        draw(cx);
+        assert!(
+            weak.upgrade().is_none(),
+            "the closed dialog's view is released"
+        );
+        assert_eq!(held(cx), 0, "the closed dialog's side headers go with it");
+    }
+
     /// Lets every quiet read the window has asked for land: each runs on
     /// the window's reader, a thread `run_until_parked` cannot wait for.
     fn quiet_reads_land(app: &Entity<GitTurtle>, cx: &mut gpui::VisualTestContext) {
