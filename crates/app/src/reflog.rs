@@ -335,6 +335,10 @@ pub(crate) struct ReflogBrowser {
     /// the recovery review's, else the filter.
     cancel_read: focus_ring::LoadingCancel,
     error: Option<String>,
+    /// What each reply a later read superseded answered with, oldest first:
+    /// its error, or `None` for a value.
+    #[cfg(test)]
+    superseded: Vec<Option<String>>,
     _subscriptions: Vec<Subscription>,
 }
 impl Drop for ReflogBrowser {
@@ -399,6 +403,8 @@ impl ReflogBrowser {
             pending: false,
             cancel_read: focus_ring::LoadingCancel::new(cx),
             error: None,
+            #[cfg(test)]
+            superseded: Vec::new(),
             _subscriptions: vec![scope_subscription, query_subscription],
         }
     }
@@ -558,6 +564,9 @@ impl ReflogBrowser {
                 }
                 // A later read waits: this reply is superseded, and starts it.
                 if let Some(waiting) = this.waiting.take() {
+                    #[cfg(test)]
+                    this.superseded
+                        .push(result.err().map(|error| format!("{error:#}")));
                     waiting(this, window, cx);
                     return;
                 }
@@ -1287,6 +1296,103 @@ mod tests {
             commit.map(|commit| commit.oid),
             Some(last.oid),
             "the last entry's commit lands"
+        );
+    }
+
+    /// While a commit's read runs, the next press cancels it, so its Git
+    /// work stops: the read answers that it was cancelled, and the entry the
+    /// press reached is read after it. Cancel, clicked while one entry's read
+    /// runs and another's waits behind it, drops both: neither commit lands,
+    /// and the next entry selected is read at once and its own commit lands.
+    /// No test cancelled a read with a later one waiting, so Cancel could
+    /// leave the browser reading forever, or start the read it dropped once
+    /// the next one answered and land that entry's commit under another.
+    #[gpui::test]
+    async fn cancel_drops_the_running_and_the_waiting_read(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        // Tall enough to show the entry's loading row, to click its Cancel.
+        cx.simulate_resize(size(px(1000.), px(980.)));
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let entries = browser.read_with(cx, |this, _| {
+            this.page.as_ref().expect("the log loaded").entries.clone()
+        });
+        let state = |cx: &mut VisualTestContext| {
+            browser.read_with(cx, |this, _| {
+                (
+                    this.selected.as_ref().map(|entry| entry.oid.clone()),
+                    this.commit.as_ref().map(|commit| commit.oid.clone()),
+                    this.error.clone(),
+                )
+            })
+        };
+        // Entry `index` selected, with its commit landed and no error.
+        let landed = |index: usize| {
+            let oid = Some(entries[index].oid.clone());
+            (oid.clone(), oid, None)
+        };
+
+        // Down twice while the reader is held, as by a slow read: the first
+        // entry's read runs, and the second press cancels it and waits.
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        let running = browser.read_with(cx, |this, _| this.cancellation.clone());
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert!(
+            running.is_cancelled(),
+            "the next press cancels the running read"
+        );
+        drop(held);
+        settle_reads(cx, &browser);
+        assert_eq!(
+            browser.read_with(cx, |this, _| this.superseded.clone()),
+            [Some("Repository inspection cancelled".to_owned())],
+            "the cancelled read answers that it was cancelled"
+        );
+        assert_eq!(
+            state(cx),
+            landed(2),
+            "the entry the second press reached is read after it"
+        );
+
+        // Again, and click Cancel while the third entry's read runs and the
+        // fourth's waits.
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        let cancel = rendered(cx, "cancel-reflog-read");
+        let content = rendered(cx, "reflog-browser-content");
+        assert!(shows_whole(content, cancel), "{cancel:?} in {content:?}");
+        cx.simulate_click(cancel.center(), Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("cancel-reflog-read").is_none());
+        assert!(!browser.read_with(cx, |this, _| this.pending));
+        drop(held);
+        browser.read_with(cx, |this, _| this.reader.drain());
+        cx.executor().run_until_parked();
+        draw(cx);
+        assert_eq!(
+            state(cx),
+            (Some(entries[4].oid.clone()), None, None),
+            "neither dropped read lands"
+        );
+
+        // Down selects again: its read starts at once, and only its commit
+        // lands, after every read the reader has answered.
+        cx.simulate_keystrokes("down");
+        settle_reads(cx, &browser);
+        browser.read_with(cx, |this, _| this.reader.drain());
+        cx.executor().run_until_parked();
+        draw(cx);
+        assert_eq!(
+            state(cx),
+            landed(5),
+            "the entry selected after Cancel is read, and no other commit lands"
         );
     }
 
