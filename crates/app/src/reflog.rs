@@ -2943,6 +2943,66 @@ mod tests {
         );
     }
 
+    /// A read that fails over kept details takes them with it: with the
+    /// newest entry's commit landed, the pruned commit's entry selected
+    /// keeps that commit drawn, faded, while its read runs, and as the read
+    /// fails no commit stands under the pruned entry's heading, no loading
+    /// row stays, and the error stands in the details' place, where their
+    /// metadata began.
+    #[gpui::test]
+    async fn a_failed_read_over_kept_details_leaves_its_error_in_their_place(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = pruned_repository(fixture.path());
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        let entries = browser.read_with(cx, |this, _| this.page.as_ref().unwrap().entries.clone());
+        let select = |cx: &mut VisualTestContext, entry: &ReflogEntry| {
+            let entry = entry.clone();
+            cx.update(|window, cx| browser.update(cx, |this, cx| this.select(entry, window, cx)));
+            draw(cx);
+        };
+        select(cx, &entries[0]);
+        settle_reads(cx, &browser);
+        let metadata = in_content(cx, &browser, "reflog-commit-metadata");
+
+        // HEAD@{1}, the pruned commit, its read held as a slow read is.
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        select(cx, &entries[1]);
+        assert!(
+            browser.read_with(cx, |this, _| this.reading_over_details()),
+            "the newest entry's details are kept while the read runs"
+        );
+        assert_eq!(
+            in_content(cx, &browser, "reflog-commit-metadata"),
+            metadata,
+            "the kept details stand where they stood"
+        );
+        drop(held);
+        settle_reads(cx, &browser);
+        for selector in [
+            "reflog-commit-metadata",
+            "reflog-commit-message",
+            "reflog-commit-files",
+            "reflog-loading",
+        ] {
+            assert!(
+                cx.debug_bounds(selector).is_none(),
+                "{selector} is gone as the read fails"
+            );
+        }
+        assert!(
+            browser.read_with(cx, |this, _| this.commit.is_none()
+                && this.message.is_none()),
+            "no commit stands under the pruned entry's heading"
+        );
+        let error = in_content(cx, &browser, "reflog-error");
+        assert!(
+            (error.top() - metadata.top()).abs() <= px(0.5),
+            "the error {error:?} stands where the metadata began, {metadata:?}"
+        );
+    }
+
     /// A recovery branch name already taken fails the recovery review, whose
     /// error stands below Review recovery branch…, the button that asked for
     /// it, as its loading row does while it reads, and the content, scrolled
