@@ -1020,11 +1020,13 @@ impl Render for ReflogBrowser {
         // and the changed files were read as the selected entry's. The
         // metadata is drawn without a node, and the message, the changed
         // files and their limit each leave the tree while kept, as a node
-        // hidden with all it holds (`native_accessibility::beneath_modal`:
-        // the read covers them as a dialog covers the page); kept or not,
-        // each stays a generic container, which AccessKit passes over.
-        let out_of_reach =
-            |element: Stateful<Div>| native_accessibility::beneath_modal(element, kept);
+        // hidden with all it holds
+        // (`native_accessibility::hidden_from_assistive_technology`); kept
+        // or not, each stays a generic container, which AccessKit passes
+        // over.
+        let out_of_reach = |element: Stateful<Div>| {
+            native_accessibility::hidden_from_assistive_technology(element, kept)
+        };
         // So does the error such a read ends with, as for a commit pruned
         // since Git logged it or a recovery branch name already taken: it
         // stood above the list, which moved down by its height with each

@@ -2176,28 +2176,47 @@ impl<E: Element> Element for ClipsChildren<E> {
 /// before. Focus and the Tab order do not change: the wrapper adds no
 /// dispatch node, focus handle or listener, and a dialog that closes returns
 /// focus to its opener as before.
-pub(crate) fn beneath_modal<E: IntoElement>(page: E, covered: bool) -> BeneathModal<E::Element> {
-    BeneathModal {
-        inner: page.into_element(),
-        covered,
+pub(crate) fn beneath_modal<E: IntoElement>(
+    page: E,
+    covered: bool,
+) -> HiddenFromAssistiveTechnology<E::Element> {
+    hidden_from_assistive_technology(page, covered)
+}
+
+/// `element` as a node that leaves the accessibility tree, with all it
+/// holds, while `hidden`: every AccessKit adapter leaves out a hidden node.
+/// It is drawn, laid out and reached by the pointer as before, and it adds
+/// no dispatch node, focus handle or listener, so a control inside it that
+/// the keyboard should pass over leaves the Tab order on its own. Shown, the
+/// node is a generic container, which AccessKit's filter passes over, so the
+/// tree is the one the element writes alone. The page beneath a modal dialog
+/// ([`beneath_modal`]) and the Reflog's details kept in place while the next
+/// entry's are read are hidden this way.
+pub(crate) fn hidden_from_assistive_technology<E: IntoElement>(
+    element: E,
+    hidden: bool,
+) -> HiddenFromAssistiveTechnology<E::Element> {
+    HiddenFromAssistiveTechnology {
+        inner: element.into_element(),
+        hidden,
     }
 }
 
-/// The element [`beneath_modal`] returns.
-pub(crate) struct BeneathModal<E> {
+/// The element [`hidden_from_assistive_technology`] returns.
+pub(crate) struct HiddenFromAssistiveTechnology<E> {
     inner: E,
-    /// Whether an open dialog covers the page.
-    covered: bool,
+    /// Whether the node leaves the accessibility tree.
+    hidden: bool,
 }
 
-impl<E: Element> IntoElement for BeneathModal<E> {
+impl<E: Element> IntoElement for HiddenFromAssistiveTechnology<E> {
     type Element = Self;
     fn into_element(self) -> Self {
         self
     }
 }
 
-impl<E: Element> Element for BeneathModal<E> {
+impl<E: Element> Element for HiddenFromAssistiveTechnology<E> {
     type RequestLayoutState = E::RequestLayoutState;
     type PrepaintState = E::PrepaintState;
 
@@ -2258,7 +2277,7 @@ impl<E: Element> Element for BeneathModal<E> {
 
     fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
         self.inner.write_a11y_info(node);
-        if self.covered {
+        if self.hidden {
             node.set_hidden();
         }
     }
