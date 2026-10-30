@@ -64,6 +64,35 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
     - Neither the GitHub notice nor the refusal is spoken twice. The pause-ended line shares the polite node with copy confirmations, which predates this delta and rarely meets.
     - → S lands now; these three go to **S2g** on the branch afterwards.
   - **S landed and pushed:** `ce15f480..11d2aee3` cherry-picked cleanly as 23 commits ending at `e629eccf`; the diff equals the line's own (19 files, +3420/−174). Fast gate green at 125 s (`.local/gate-S-e629eccf.log`). **S2g started** (`briefs-q9/S2g.md`, from `e629eccf`, in a new worktree).
+  - **R landing note:** both R lines descend from `bf809b96`, which with `29a0252e` sits on `3f7bf2b6` and is not on the branch (`git cherry`). So the whole R line to land is `3f7bf2b6..<combined tip>`: 2 + 16 (workspace line incl. R2k) + 15 (Reflog line) + R2l. The earlier "`bf809b96..`" would drop R's first two commits.
+  - **R2k done** (`a3fa8572…` tip `3700316d` on `2b276379`, 7 commits; fast gate `--base 9ccd7ab2` green at 200 s; mutations caught; probe kept out, `.local/q9/slow.diff`):
+    - `43b6ea54`: a `status_read_pending` helper. The three assertions pass 6 runs of 6 under the probe; without the fix the same 3 fail.
+    - `dfaae724`: a refused GitHub confirmation is kept.
+    - `73b9ff26`: `RequestKind` busy labels, and `busy_reason()` names the GitHub request.
+    - `ed2eb6a4`: the bar's Cancel stops PR Changes.
+    - `947224c4`: a read an open inspection holds no longer shows "Reading…" forever (reachable with attribution open after a failed status read), and `close_blame` starts it.
+    - `bf52a917`: the branch and rebase preparation tasks are cleared at their end.
+    - `3700316d`: the create-end test.
+    - Open: a cancelled PR Changes shows the Fetch error, not a cancelled notice; the bar's Cancel tooltip says "Git operation" during a GitHub request.
+    - Verification review running.
+  - **R2k verified: no blocker.** Item 1 is confirmed by the reviewer's own mutation under the probe (exactly the 3 plus the create test fail). `busy_reason()` cannot confuse a write with a request, the local cancellation cannot hit a later operation, and `close_blame`'s read goes through `can_start`.
+    - Should fix (reachability uncertain): Create tag's Review tag (`tags.rs:710-712`, `:747`) still says "current Git operation" during a GitHub request, against DESIGN.md:284; use `busy_reason()`.
+    - Nits:
+      - the bar's Cancel name and tooltip say "Git" during a request (`authentication.rs:152-154`);
+      - `REQUEST_REASON` says "GitHub request" for the local Compare/templates load (`github_view.rs:334`);
+      - the label test calls `panel.run` directly instead of the real `connect`/Disconnect (`:2070`);
+      - `run`'s doc overstates the pending/closed return (`:903-917`).
+    - Pre-existing: `github-error` is hidden while a conversation is active (`github_view.rs:1340`).
+    - → **R2m** on the branch after R lands (`briefs-q9/R2m.md`).
+  - **HB' done** (`ac703f2e…` tip `df84fd67` on `c2774498`; fast gate `--base c3ba5a61` green at 159 s; mutations F, R, B, N killed, `.local/q9/muts2-2026-10-30.log`):
+    - Responsive forms: labelled Cancel with the repository → icon Cancel → label without the repository.
+    - Where even the barest form fits in neither the spacer nor the trailing line, the label and Cancel take the status line's place (`OperationPlace::StatusBar`) instead of a header row, recorded in DESIGN.md:201/274. The status line keeps Cancel's room on every repository frame, so the hints give way sooner.
+    - The placement table is in the agent's report: at 13 pt the bar is used at 900 → 800 and 609–600; at 18 pt at 900–800 and 461 × 330.
+    - Code review of `c3ba5a61..df84fd67` running.
+    - Native QA: Settings' x, the header height and the first History row's top, before and during a Fetch, at 1480/1000/800/461 px × 13/18 pt; the status-bar form at 800 px 13 pt.
+  - **R combined:** `pick/r-comb` = `637d3b2c`, 41 commits on `3f7bf2b6`: R's first two, the workspace line plus R2k, the Reflog line (two DESIGN.md sentence merges), and R2l = `637d3b2c` (DESIGN.md:377 "may not reach"; the optional shared `next_frame` helper goes to the follow-ups).
+    - Integration onto `1ae711ad` conflicts in code at `4938ce58` (`main.rs` fields, `page_navigation.rs` `return_from_page`, `workspace.rs` the read's doc and the write-end handler).
+    - Delegated to an implementer-hard in `.local/wt-pick-e` (brief `briefs-q9/R-int.md`; it starts at `5cc2f8ab` = head + R's first two). Once it is green and R2k's review is clean, fast-forward the branch, push, and remove the R worktrees.
   - **Width-step rerun done** (`410da911`: a new section of `docs/benchmarks/2026-10-29-columns-in-frame.md` plus `rerun-2026-10-30/`; 4 alternating rounds, 32 launches, every one with no build running; a 39 min quiet hold).
     - `aeab555` draws Compare width steps at 1480 ↔ 1000 in one frame (64/64; the base drew two on 64/64). The last frame comes 10–42 ms sooner at p50, resolved in 7 of 8 rows. All 160 steps per build settled. No regression.
     - Still two frames in both builds: History (its table's columns) and the tiled 461 ↔ 980 Compare steps at 18 pt. Follow-up: trace those.
