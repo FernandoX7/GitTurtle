@@ -75,6 +75,24 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
     - `3700316d`: the create-end test.
     - Open: a cancelled PR Changes shows the Fetch error, not a cancelled notice; the bar's Cancel tooltip says "Git operation" during a GitHub request.
     - Verification review running.
+  - **F2 done** (in F's worktree, tip `17bfd002` on `b2ef5ac6`; fast gate `--base ce15f480` green at 129 s; every test fails without its fix):
+    - `30188c63`: a rebuilt menu never moves the cursor to another action. It rests and remembers the item until it can act; a key or the pointer ends that; Up/Down start from its place. App tests cover the project row, the Working row and a real merge conflict at 18 pt.
+    - `d7f93664`: duplicate labels by ordinal; scroll only on a row change.
+    - `17bfd002`: docs.
+    - **New finding (follow-up, should fix):** with a Shift-F10 Working row menu open, a file that becomes conflicted gets a conflict view whose resolution editor takes focus (`conflicts.rs:438`) while the menu stays drawn, so Enter goes to the draft.
+    - No app test for the commit menu case (d).
+    - Verification review and security re-review running.
+  - **HB line reviewed** (`c3ba5a61..df84fd67`): all items are fixed and there is no blocker. The arrangement measures only on a cache miss, the icon Cancel's name and tooltip are correct, and `body_size` is used throughout.
+    - Should fix:
+      - `disabled_git_actions_keep_their_shape_on_the_toolbar` keeps HB's relative-bounds relaxation, so a page pushed down passes (confirmed by mutation).
+      - The status bar reserves Cancel's room on every repository frame, so the hints and Details… give way about 28 px early even where the header holds the group.
+    - Nits:
+      - the labelled Cancel shrinks on "Cancelling…" despite the docs;
+      - DESIGN.md:284 still says "the header's";
+      - `CHROME_WIDTHS` churns between windows.
+    - Simplification: the layout is computed twice per busy frame.
+    - Integration risks: `views.rs` next to `operation-error-summary`; `authentication.rs` against R2k; rounding of `status_bar_top`.
+    - → **HB''** (`briefs-q9/HB3.md`) once R lands: it rebases the HB line onto the head, then fixes these.
   - **R2k verified: no blocker.** Item 1 is confirmed by the reviewer's own mutation under the probe (exactly the 3 plus the create test fail). `busy_reason()` cannot confuse a write with a request, the local cancellation cannot hit a later operation, and `close_blame`'s read goes through `can_start`.
     - Should fix (reachability uncertain): Create tag's Review tag (`tags.rs:710-712`, `:747`) still says "current Git operation" during a GitHub request, against DESIGN.md:284; use `busy_reason()`.
     - Nits:
@@ -97,6 +115,12 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
     - `aeab555` draws Compare width steps at 1480 ↔ 1000 in one frame (64/64; the base drew two on 64/64). The last frame comes 10–42 ms sooner at p50, resolved in 7 of 8 rows. All 160 steps per build settled. No regression.
     - Still two frames in both builds: History (its table's columns) and the tiled 461 ↔ 980 Compare steps at 18 pt. Follow-up: trace those.
     - The record's earlier guess at the cause (`fit_container`) is corrected in the section, and its old "configure to first request" column was really measured from the driver's command; the section says so.
+  - **S2g done** (`worktree-agent-a27da682…` tip `e6cc5a2b` on `e629eccf`; fast gate green at 178 s; mutations caught):
+    - `fefc1546`: a Stashes refusal no frame drew is withdrawn on another stash, via `copy_feedback::alert` → an `Alerted` handle and a generation-checked `withdraw`.
+    - `a2dd8ec1`: one `restore_said` helper.
+    - `e6cc5a2b`: the line is bounded to 16 KiB.
+    - Open: a refusal landing as Stashes closes is not withdrawn; the polite pause-ended line is not withdrawn on a same-frame stash change (it is about the repository).
+    - **Verified clean** (the reviewer's mutation of the withdraw fails the test; `withdraw` cannot remove another feature's alert, since it is generation-checked). It lands right after R, because R also changes `copy_feedback.rs`. Afterwards remove `abf2d0b0` (S2f) and the S2g worktree.
   - **T landed and pushed:** `c3ba5a61..384e7ab3` (T4–T6) cherry-picked cleanly, ending at `c40f8080`, with the diff equal to the line's own. Fast gate green (`.local/gate-T-c40f8080.log`). Removed after landing: the T worktrees `a1a88f32`, `a04d30f6`, `a7f8e110`; the I worktrees `aa7562e3`, `adeaabc4`, `a2de7a78`, `a991068f`; the S worktrees `ade8ef97`, `acc15d69`, `ab82d8f3`, and `.local/wt-int`; refs `pick/i-int`, `pick/s-int`. `abf2d0b0` (S2f) stays until S2g ends.
   - **Width-step rerun started:** clean release `.local/item8-2026-10-27/gitturtle-aeab555` (embeds `aeab555a`, not `5e128852`; sha256 `819bf2d6…`) against `gitturtle-5e12885`. A performance-reviewer runs it under `.local/build-slots/quiet`; its output goes to `docs/benchmarks/2026-10-29-columns-in-frame/rerun-2026-10-30/` plus a new section in the record. If the session stops mid-run, delete the quiet file.
   - **Rules from the stop:** mutations and probes are applied in place, so a stopped agent can leave one in its tree. Before committing or reviewing in a resumed worktree, run `grep -rnE '// ?MUTATION|Q9_MUT|Q9_PROBE|PROBE_SLOW' crates vendor`; implementers tag their mutations and probes so this grep finds them. Update this file as each line lands.
