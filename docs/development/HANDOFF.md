@@ -144,66 +144,34 @@ Keep the human section under 15 lines: what changed last, what is next, the exac
     - **Verified clean** (the reviewer's mutation of the withdraw fails the test; `withdraw` cannot remove another feature's alert, since it is generation-checked). It lands right after R, because R also changes `copy_feedback.rs`. Afterwards remove `abf2d0b0` (S2f) and the S2g worktree.
   - **T landed and pushed:** `c3ba5a61..384e7ab3` (T4–T6) cherry-picked cleanly, ending at `c40f8080`, with the diff equal to the line's own. Fast gate green (`.local/gate-T-c40f8080.log`). Removed after landing: the T worktrees `a1a88f32`, `a04d30f6`, `a7f8e110`; the I worktrees `aa7562e3`, `adeaabc4`, `a2de7a78`, `a991068f`; the S worktrees `ade8ef97`, `acc15d69`, `ab82d8f3`, and `.local/wt-int`; refs `pick/i-int`, `pick/s-int`. `abf2d0b0` (S2f) stays until S2g ends.
   - **Width-step rerun started:** clean release `.local/item8-2026-10-27/gitturtle-aeab555` (embeds `aeab555a`, not `5e128852`; sha256 `819bf2d6…`) against `gitturtle-5e12885`. A performance-reviewer runs it under `.local/build-slots/quiet`; its output goes to `docs/benchmarks/2026-10-29-columns-in-frame/rerun-2026-10-30/` plus a new section in the record. If the session stops mid-run, delete the quiet file.
-  - **Next session starts here (continued session).** Pushed head `f1973206`: the I, S (with S2g), T and R lines have landed, plus the width-step rerun.
-    - **In flight** (new worktrees `.claude/worktrees/agent-*`, each a chain on `f1973206`; if this session stopped, check each worktree's `git log f1973206..HEAD` and status, and give a stopped one a fresh agent with its brief):
-      - **J-int** (`briefs-q9/J-int.md`): J's 25 commits plus J3e's nits.
-      - **HB''** (`briefs-q9/HB3.md`): HB's 3 commits plus the review's fixes.
-      - **F3** (`briefs-q9/F3.md`): F/F2's 5 commits plus the security Low and the F2 findings.
-    - **F3 done** (`worktree-agent-ab6c3a38…`, 8 commits on `f1973206`; fast gate green at 141 s):
-      - F/F2 rebased as `d25394f0`…`4f6c40e5` (`vendor/AGENTS.md` for `30188c63` by hand, word diff equal).
-      - `fd57677e`: the keyboard conflict test runs in an active window (menu closes, focus in the draft).
-      - `64808f4c`: `pointer_selection`: a rebuild after the pointer owned the selection selects nothing. The app test at 461 px 18 pt shows Enter stages nothing.
-      - `c3fa67a3`: the Linux fallback `NativeMenu` is kept 8 px above the status bar (`fallback.rs:130`).
-      - Mutations caught, except the defensive flag clear in `set_selected_index`.
-      - **Code verification clean.** The rebased line is identical to `17bfd002`. The reviewer's own mutations fail the two new tests. Keys still work after a cursorless rebuild.
-        - Nit (design review): a fallback menu that slides up to clear the bar now covers the clicked point, unlike row menus (DESIGN.md:377).
-        - Nit (pre-existing): the fallback menu has no height cap in very short windows.
-      - **Security re-review: pass with fixes.** The delta is sound, and the Low is fixed on every rebuild path.
-        - Pre-existing Low: row menus follow their row, so an outside change that moves the menu puts another item under a resting pointer. GPUI hover selects it, and Enter runs it.
-        - → **F4** (`briefs-q9/F4.md`, after F lands): in prepaint, when the origin moves, treat the pointer as still.
-    - **HB'' done** (`worktree-agent-a8b414e5…` tip `9a440e8b`, 8 commits on `f1973206`; the HB line picked cleanly as `9e7af654` `2b224ba6` `c74ecd98`; fast gate green at 105 s; mutations caught):
-      - `96a55ebd`: toolbar test on window bounds.
-      - `77bc4e1f`: one `HeaderPlan` per frame.
-      - `8ac32b79`: the bar keeps Cancel's room only where the widest label (the 180 px limit) would go there. In practice it is still kept at most widths ≤ 1000 px at 13 pt and almost everywhere at 18 pt.
-      - `5cb1b61a`: the labelled Cancel keeps its width when pressed.
-      - `9a440e8b`: DESIGN.md:284.
-      - Note: `c74ecd98`'s message still says "on every repository frame".
-      - The placement table is in the agent report. Native QA: before = during for Settings' x, header height and row top at 1480/1000/800/461 × 13/18 pt; the 461 × 980 18 pt hints whole with no write.
-      - **Verified: can land.** The plan reads `body_size`; the 180 px proxy is sound (labels are capped at the limit); the room never flips as a write starts (the reviewer's compact-path mutation was caught); the rebased line is identical to `df84fd67`.
-        - Nit: reword `c74ecd98`'s message at landing.
-        - Design note: the idle bar's room can depend on header label widths at a boundary width.
-    - **J-int done** (`worktree-agent-ad0a45c7…` tip `ccfb5ba0`, 29 commits on `f1973206`; fast gate green at 151 s; it hit the turn limit once and was resumed).
-      - Hand resolutions:
-        - `9c6d5929`: new `Target::held_control`; the open control keeps the side header's focus handle while a wrapper tracks the Stashes detail's container.
-        - `7edff938`: both sides' tests kept.
-        - `60cf74b9` and `d4045b41`: J's foot with the head's `native_accessibility::bounded_accessible_text`.
-      - Follow-ups:
-        - `08841f99` `cues` along `viewport_bounds()`;
-        - `8e0853b8` a wheel check of the hidden-bar room;
-        - `e8369bd3` the labels measured;
-        - `ccfb5ba0` the side header forms change in the frame Compare draws: a mutation fails it, so J adds no frame back.
-      - Open: no Stashes test drives Tab onto a stashed model's open control.
-      - **Verified: can land.** The resolutions match their originals; `held_control` adds no tab stop, node or leak; `render_preview` is the head's; the reviewer's mutations failed `ccfb5ba0`'s and `08841f99`'s tests. Should fix → **J4** after landing:
-        - a test of the Stashes detail half of `held_control` (focus `model-external` with the detail scrolled away, assert `holds_focus` and that it lies in `stash-detail`);
-        - uncertain: nested reveals working from the previous frame's bounds can leave the focused control below the detail; if that test fails with the region scrolled, re-run the detail's reveal next frame.
-        - Pre-existing: an image side's open control in Stashes uses `target.button`.
-      - Native QA: forms switch in the resize's frame (model open controls at 1121 px, page view at 881 px); Stashes and the rewrite review at 461 × 490 18 pt with a stashed model or PDF (Tab to the open control is shown whole in both containers).
-    - **J landed and pushed** (`…f3807a80`, tree equal to `ccfb5ba0` except HANDOFF.md; gate green 107 s, `.local/gate-J-f3807a80.log`). HB'' and F were test-picked cleanly on top in `.local/wt-pick-e` (HB'' → `6db0623e`, F → `a13ff450`). The branch is fast-forwarded to `6db0623e` and gating (`.local/gate-HB-6db0623e.log`); then `a13ff450`. `c74ecd98`'s message is kept: it is true for its own commit, and `8ac32b79` records the change.
-    - **Landing order:** J (short verification first) → HB'' (short verification; re-pick onto J with `cp.sh`) → F3 (code + security verification; re-pick) → R2m (`briefs-q9/R2m.md`, from the head after HB''). Each: `cp.sh`, gate on `.local/target-coord`, push, remove its worktrees (old J chain `a09d62b7 a135ded6 a27ae44c a4a30150 a82de15a a99ebc5b aa73aff2 afc6bcd1`, HB `a7d9d968 ac703f2e`, F `a9211ca3`, R2k `a3fa8572` after R2m).
-    - **Follow-ups found this session** (on top of the earlier list in the "Session 2026-10-30" bullet):
-      - narrow (461 ↔ 980) Compare and History width steps still draw 2 frames: trace them;
-      - `scripts/vendor-crate-test.sh` cannot build gpui-component's tests (sibling `include_str!`s, `input.rs` borrow errors);
+  - **Next session starts here (continued session, handed off at about 40% of context).**
+    - **Landed and pushed this session, in order:** I (`3e9aa590`…`aeab555a`), the width-step rerun (`410da911`), S (`…e629eccf`), T4–T6 (`…c40f8080`), R (`…35628d02`, 41 commits incl. R2k and R2l), S2g (`f76bfd37` `7066f8ec` `d9fda194`), J (`…f3807a80`, incl. J3e and the J-int follow-ups), HB/HB'' (`9e7af654`…`6db0623e`), F/F2/F3 (`…ca823778`). Every gate is green; the logs are `.local/gate-<line>-<sha>.log`.
+    - **Ready to start first, three small rounds from the head in parallel** (fresh implementers with `isolation: worktree`; each brief says what to read):
+      - **J4** (`briefs-q9/J4.md`): the Stashes-detail test of `held_control` and the nested-reveal check.
+      - **R2m** (`briefs-q9/R2m.md`): Create tag's reason via `busy_reason()`, the bar's Cancel name during GitHub requests, `REQUEST_REASON` for local work, label tests through real callers, `run`'s doc. It reads R2k's scratch in `agent-a3fa8572…`.
+      - **F4** (`briefs-q9/F4.md`, vendor): a menu whose origin moves under a resting pointer selects nothing. It reads the hooks in `agent-a9211ca3…/.local/q9/` and `agent-ab6c3a38…/.local/f3/`. Afterwards a security re-review.
+      - Each then gets a short verification, `cp.sh`, a gate on `.local/target-coord` and a push. Remove `a3fa8572` after R2m, and `a9211ca3` and `ab6c3a38` after F4.
+    - **Then** the earlier follow-up list (the "Session 2026-10-30" bullet's "Next session starts here"), plus this session's:
+      - narrow (461 ↔ 980) Compare and History width steps still draw 2 frames;
+      - `scripts/vendor-crate-test.sh` cannot build gpui-component's tests;
       - the views menu joins its names every render;
-      - the side header's controls region has a degenerate thumb at its floor (design call);
+      - the side header controls region's degenerate thumb (design);
       - S's Stashes `cancel_recovery_preparation` runs no noted read;
       - a passive status refresh landing a conflicted preview moves focus into the resolution editor (`conflicts.rs:368-372`, `:438`);
       - nothing is announced when a menu's cursor rests (design);
+      - the fallback menu covers its clicked point when it slides up (design);
       - a cancelled PR Changes shows the Fetch error;
-      - `github-error` is hidden while a conversation is active (`github_view.rs:1340`);
-      - R2j's optional shared `atspi_state_tests::next_frame`;
-      - `CHROME_WIDTHS`/`STATUS_WIDTHS` single slots shared across windows;
-      - the TOML-escaped `[patch]` header in the vendor runner.
-    - **Then** the rest of the prompt's step 2, the clean release, native QA (one native-qa agent, sheets 86 onward, with every native-QA note recorded in these bullets), the design review (include HB's status-bar placement and F's resting cursor), `docs(validation)`; then step 3 (Orca) and step 4 (parity).
+      - `github-error` is hidden in a conversation (`github_view.rs:1340`);
+      - R2j's optional shared `next_frame`;
+      - single-slot `CHROME_WIDTHS`/`STATUS_WIDTHS`;
+      - the vendor runner's TOML-escaped headers;
+      - the idle bar's Cancel room depending on header label widths at a boundary (design note).
+    - **Then** the rest of the prompt's step 2: the clean release, native QA (one native-qa agent, sheets 86 onward, covering every native-QA note in these bullets: HB's before = during table, F's menus at 461 px 18 pt, S's Orca checks, J's same-frame forms, R2k's GitHub labels), the design review (HB's status-bar placement, F's resting cursor and fallback menu), `docs(validation)`; then step 3 (Orca 51.1, `.local/orca/`, `run-orca.sh LOG` before the app, `stop-orca.sh`, never `pkill orca`, `NO_AT_BRIDGE=1` in agent shells) and step 4 (parity).
+    - **Checkouts left:** `a3fa8572` (R2k), `a9211ca3` (F), `ab6c3a38` (F3), `.local/wt-0dd91c0` (release builds), `.local/wt-pick-e` (scratch). `/home` has 163 G free.
+    - **Lessons:**
+      - The `pick/*` refs were never gated: I and R had compile breaks from signature changes on the head, both fixed in their commits.
+      - Subagents can't write report files, so record each result here as it lands.
+      - The review rules' `git checkout -- <file>` would wipe uncommitted work, so review only committed trees.
   - **Rules from the stop:** mutations and probes are applied in place, so a stopped agent can leave one in its tree. Before committing or reviewing in a resumed worktree, run `grep -rnE '// ?MUTATION|Q9_MUT|Q9_PROBE|PROBE_SLOW' crates vendor`; implementers tag their mutations and probes so this grep finds them. Update this file as each line lands.
 - **Session 2026-10-30 (read the "continued" bullet above first).** Started at `c3ba5a61` (pushed). Housekeeping: `/home` 199 G free; all 14 kept worktrees clean at the tips the bullet below records (no uncommitted work); `pick/e-combined` = `aa35064b`. Code-review common rules for verification rounds: `.local/item8-2026-10-27/tools/review-code-common-q9.md`; new briefs go in `tools/briefs-q9/`.
   - **Started:** verification reviews of E3d' (`aa35064b..cb73c4d0`), S2b (`62bbca50..7adbae09`), R2f (`672b6acd..9ccd7ab2`), R2e (`8f7b3c56..eea684b2`, also re-checking R2d's findings for R2i), J3c (`a284c0c0..3f099b91`, also re-checking J3b's findings for J3d); implementer **I6** (`briefs-q9/I6.md`, from `76c4a6ba`: the probe skips its reveal while a scroll request is pending, an open popup follows its trigger, a vendor test of the Popup branch; vendor, so a security re-review of its delta); implementer **HB** (`briefs-q9/HB.md`, from `c3ba5a61`: the header's busy progress and Cancel keep the trailing controls in place and count in the wrap decision; `narrow` and the Projects/Settings forms from the body width, `status_bar_top` from snapped insets); implementer **T4** (`briefs-q9/T4.md`, from `c3ba5a61`: a group's first entry reveals its heading on every path, foot-clamp and Down-past-the-foot tests, Shortcuts tests against rendered bounds).
