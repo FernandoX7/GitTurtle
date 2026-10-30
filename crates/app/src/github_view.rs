@@ -1137,8 +1137,10 @@ impl Panel {
     fn refuse(&mut self, error: impl Into<String>) {
         self.refuse_at(Origin::Panel, error);
     }
-    /// Says that the panel's own local read as it opens failed, on the panel's top line: no
-    /// control asked for it.
+    /// Says that local work no request carried failed, on the panel's top line: the panel's
+    /// own read as it opens, which no control asked for, or a Files row's preparation, which
+    /// runs beside the requests. A preparation's failure once kept the last request's origin
+    /// and stood in an open reply's composer after a refused Review reply….
     fn local_read_failed(&mut self, error: impl Into<String>) {
         self.error = Some(error.into());
         self.origin = Origin::Panel;
@@ -4399,6 +4401,80 @@ mod tests {
             alerted(cx).map(|(id, _)| id),
             Some(heard),
             "and is said once"
+        );
+        escape(cx);
+    }
+
+    /// A Files row whose preparation fails says so on the panel's top line, though the last
+    /// outcome before it, a refused Review reply…, answered in the open reply's composer: no
+    /// request carried the preparation, so it takes none's origin. It once kept that origin
+    /// and stood under the reply's draft.
+    #[gpui::test]
+    async fn a_file_preparation_failure_answers_on_the_top_line(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let pull = github::review::fixture_pull(false);
+        let identity = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Files;
+                panel.receive_threads(page, None);
+                // GitHub returned a path the panel refuses to prepare.
+                panel.review.files = vec![github::review::PullFile {
+                    filename: "../outside".into(),
+                    previous_filename: None,
+                    status: "modified".into(),
+                    additions: 1,
+                    deletions: 0,
+                    patch: Some("@@ -0,0 +1 @@\n+line\n".into()),
+                    rows: Vec::new(),
+                    unavailable: None,
+                }];
+            })
+        });
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+
+        // Review reply… with nothing written: refused in the reply's composer.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.begin_reply(target.clone(), window, cx);
+                panel.review_reply(window, cx);
+            })
+        });
+        draw(cx);
+        draw(cx);
+        assert!(
+            cx.debug_bounds("github-reply-error").is_some(),
+            "the refusal answers in the reply's composer"
+        );
+
+        // The file, chosen, fails to prepare off the UI thread.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.select_review_file(0, window, cx))
+        });
+        cx.run_until_parked();
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            panel
+                .read_with(cx, |panel, _| panel.error.clone())
+                .as_deref(),
+            Some("GitHub returned an invalid changed-file path"),
+            "the preparation failed"
+        );
+        assert!(
+            cx.debug_bounds("github-error").is_some(),
+            "its failure stands on the panel's top line"
+        );
+        assert!(
+            cx.debug_bounds("github-reply-error").is_none(),
+            "nothing answers under the reply's draft"
         );
         escape(cx);
     }

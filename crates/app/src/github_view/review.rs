@@ -982,7 +982,9 @@ impl Panel {
                         this.review.presentation = presentation;
                         this.review.decorate_source(window, cx);
                     }
-                    Err(error) => this.error = Some(format!("{error:#}")),
+                    // No request carried it, so it answers on the panel's top line rather
+                    // than where the last request was asked for.
+                    Err(error) => this.local_read_failed(format!("{error:#}")),
                 }
                 cx.notify();
             });
