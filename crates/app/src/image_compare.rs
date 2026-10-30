@@ -1715,6 +1715,17 @@ impl ToolbarWidths {
     /// items, even where the mode menu would leave the Pan menu room beside
     /// the zooms; counting the forms drawn instead would change the pan's
     /// form with the width the mode menu reads or the amount.
+    ///
+    /// Another: the adjustment is counted only overlaid or wiped, where it
+    /// is drawn, so switching between Side by side and Overlay or Wipe can
+    /// change the zooms' form, and the pan's with them, at a width where the
+    /// labelled zooms fit one row beside the modes and the Pan menu but not
+    /// beside the adjustment too: from 488 px of toolbar up to 724.5 px in
+    /// `the_pan_folds_before_it_takes_a_row`'s widths, the zooms are
+    /// labelled side by side and a menu overlaid or wiped. Counting the
+    /// adjustment side by side as well would keep their form across the
+    /// switch, but side by side every toolbar in that range, which wide
+    /// windows give, would lose the labelled zooms it holds.
     fn forms(&self, panning: bool) -> ToolbarForms {
         let [labelled, menu] = self.zooms;
         let zooms_labelled = match self.pan {
