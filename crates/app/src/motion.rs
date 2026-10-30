@@ -5450,6 +5450,171 @@ mod tests {
         drop(fixture);
     }
 
+    /// The page the window leaves the repository for: Settings, or the hub.
+    #[derive(Clone, Copy, Debug)]
+    enum Away {
+        Settings,
+        Projects,
+    }
+
+    /// Leaves the repository for `away`, as its button does, and draws the
+    /// page, which takes focus on its first control.
+    fn leave_for(app: &Entity<GitTurtle>, cx: &mut VisualTestContext, away: Away) {
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| match away {
+                Away::Settings => app.show_settings(window, cx),
+                Away::Projects => app.show_projects(window, cx),
+            })
+        });
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.page != AppPage::Repository),
+            "{away:?}: the repository is hidden"
+        );
+    }
+
+    /// Returns to the repository through its own tab, as its entry in the
+    /// tab strip does (`switch_repository_tab`), and draws the frames focus
+    /// returns in.
+    fn return_through_the_tab(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        let tab = app.read_with(cx, |app, _| {
+            app.repository_tabs.active.expect("the repository's tab")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| app.switch_repository_tab(tab, window, cx))
+        });
+        next_frame(cx);
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.page == AppPage::Repository),
+            "back on the repository through its tab"
+        );
+    }
+
+    /// Focuses `focus`, which names `what`, leaves the repository for
+    /// Settings and then for the hub, and returns each time through the
+    /// repository's own tab: focus is back on `focus` each time, as Back
+    /// puts it back (`resume_repository_page`).
+    fn focus_returns_through_the_tab(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        focus: &FocusHandle,
+        what: &str,
+    ) {
+        let focused = |cx: &mut VisualTestContext| cx.update(|window, _| focus.is_focused(window));
+        for away in [Away::Settings, Away::Projects] {
+            cx.update(|window, cx| window.focus(focus, cx));
+            next_frame(cx);
+            assert!(focused(cx), "{what}: focused before the window leaves");
+            leave_for(app, cx, away);
+            assert!(!focused(cx), "{what}: {away:?} took focus as it opened");
+            return_through_the_tab(app, cx);
+            assert!(
+                focused(cx),
+                "{what}: focus returned from {away:?} through the repository's tab"
+            );
+        }
+    }
+
+    /// Returning through the repository's own tab, from Settings or the
+    /// hub, puts focus back on History's commit list where it was as the
+    /// window left, as Back does (`resume_repository_page`).
+    #[gpui::test]
+    async fn returning_through_the_active_tab_puts_history_focus_back(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = clean_history_for_menus(cx).await;
+        let list = app.read_with(cx, |app, _| app.focus.clone());
+        focus_returns_through_the_tab(&app, cx, &list, "History's commit list");
+        drop(fixture);
+    }
+
+    /// Returning through the repository's own tab puts focus back in
+    /// Working's commit description where it was as the window left, its
+    /// exact field rather than the list (`resume_repository_page`): without
+    /// the return, focus stayed on the Settings or hub control the window
+    /// had left, which no longer draws.
+    #[gpui::test]
+    async fn returning_through_the_active_tab_puts_the_commit_editors_focus_back(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = six_files_for_menus(cx).await;
+        let description = app.read_with(cx, |app, cx| app.commit_message.read(cx).focus_handle(cx));
+        focus_returns_through_the_tab(&app, cx, &description, "the commit description");
+        drop(fixture);
+    }
+
+    /// Returning through the repository's own tab puts focus back in the
+    /// Find field of Working's preview where it was as the window left,
+    /// not on the preview's editor or the list (`resume_repository_page`).
+    #[gpui::test]
+    async fn returning_through_the_active_tab_puts_find_focus_back(cx: &mut TestAppContext) {
+        let (fixture, app, cx) = six_files_for_menus(cx).await;
+        crate::views::tests::settle(&app, cx).await;
+        let editor = app.read_with(cx, |app, cx| {
+            app.patch_editor
+                .as_ref()
+                .expect("alpha's preview has its editor")
+                .focus_handle(cx)
+        });
+        cx.update(|window, cx| window.focus(&editor, cx));
+        next_frame(cx);
+        #[cfg(target_os = "macos")]
+        cx.simulate_keystrokes("cmd-f");
+        #[cfg(not(target_os = "macos"))]
+        cx.simulate_keystrokes("ctrl-f");
+        next_frame(cx);
+        let find = cx
+            .update(|window, cx| window.focused(cx))
+            .expect("Find takes focus");
+        assert!(
+            !cx.update(|window, _| editor.is_focused(window)),
+            "Find's field holds focus, not the editor"
+        );
+        focus_returns_through_the_tab(&app, cx, &find, "the preview's Find field");
+        drop(fixture);
+    }
+
+    /// A working row's preview that lands while Settings is shown builds no
+    /// editor, the page hidden (`receive`); returning through the
+    /// repository's own tab builds it, as Back does
+    /// (`resume_repository_page`), so the preview is drawn without the row
+    /// being chosen again.
+    #[gpui::test]
+    async fn returning_through_the_active_tab_builds_a_preview_that_landed_meanwhile(
+        cx: &mut TestAppContext,
+    ) {
+        let (fixture, app, cx) = six_files_for_menus(cx).await;
+        crate::views::tests::settle(&app, cx).await;
+        let gamma = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .expect("a status")
+                .entries
+                .iter()
+                .position(|entry| entry.path.as_os_str() == std::ffi::OsStr::new("gamma.txt"))
+                .expect("gamma's entry")
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.select_working(gamma, ChangeArea::Unstaged, window, cx);
+                app.show_settings(window, cx);
+            })
+        });
+        crate::views::tests::settle(&app, cx).await;
+        assert!(
+            app.read_with(cx, |app, _| app.page == AppPage::Settings
+                && app.working_selected == Some((gamma, ChangeArea::Unstaged))
+                && app.content.is_some()
+                && app.patch_editor.is_none()),
+            "gamma's preview landed on Settings and built no editor"
+        );
+        return_through_the_tab(&app, cx);
+        assert!(
+            app.read_with(cx, |app, _| app.patch_editor.is_some()),
+            "back through the tab, gamma's preview has its editor"
+        );
+        drop(fixture);
+    }
+
     /// A working row's side selected with nothing to show stops the
     /// window's reads (`invalidate_read`), a write's running quiet reload
     /// with them, and starts that reload again, as History's file filter
