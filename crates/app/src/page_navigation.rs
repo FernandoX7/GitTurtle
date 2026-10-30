@@ -1971,11 +1971,18 @@ mod tests {
             });
             click(cx, "review-tag");
         }
-        /// Ignore's Preview rule, for the untracked draft.
-        fn preview_rule(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        /// Ignore…, for the untracked draft, which reviews the file first.
+        fn ignore(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
             let draft = entry(app, "draft.txt", cx);
             cx.update(|window, cx| app.update(cx, |app, cx| app.open_ignore(draft, window, cx)));
-            crate::views::tests::draw(cx);
+        }
+        /// Ignore's form, opened once Ignore…'s review of the file lands.
+        fn ignore_form(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+            ignore(app, cx);
+            crate::ignore::tests::ignore_lands(app, cx);
+        }
+        /// The open Ignore form's Preview rule.
+        fn preview_rule(_: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
             cx.update(|window, cx| {
                 window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
             });
@@ -1995,11 +2002,13 @@ mod tests {
         cx.simulate_keystrokes(&primary("2"));
         settle(&app, cx).await;
         crate::path_filter::filters_land(&app, cx);
-        // What starts each, with the executor held as a slow disk or remote
-        // holds it, and what ends it before it answers, if anything.
-        let cases: [(&str, Step, Option<Step>); 9] = [
+        // What opens the form it starts from, if anything, what starts each,
+        // with the executor held as a slow disk or remote holds it, and what
+        // ends it before it answers, if anything.
+        let cases: [(&str, Option<Step>, Step, Option<Step>); 10] = [
             (
                 "Tags",
+                None,
                 |app, cx| {
                     cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)))
                 },
@@ -2007,13 +2016,26 @@ mod tests {
             ),
             (
                 "Create tag's Cancel",
+                None,
                 review_tag,
                 Some(|_, cx| click(cx, "cancel-create-tag")),
             ),
-            ("Ignore's Preview rule", preview_rule, None),
-            ("Ignore's Cancel", preview_rule, Some(cancel)),
+            ("Ignore…'s review of the file", None, ignore, None),
+            (
+                "Ignore's Preview rule",
+                Some(ignore_form),
+                preview_rule,
+                None,
+            ),
+            (
+                "Ignore's Cancel",
+                Some(ignore_form),
+                preview_rule,
+                Some(cancel),
+            ),
             (
                 "Amend last commit",
+                None,
                 |app, cx| {
                     let head = app.read_with(cx, |app, _| app.commits[0].oid.clone());
                     cx.update(|window, cx| {
@@ -2024,10 +2046,16 @@ mod tests {
                 },
                 None,
             ),
-            ("Edit local commits' Load commits", load_commits, None),
-            ("Edit local commits' Cancel", load_commits, Some(cancel)),
+            ("Edit local commits' Load commits", None, load_commits, None),
+            (
+                "Edit local commits' Cancel",
+                None,
+                load_commits,
+                Some(cancel),
+            ),
             (
                 "A profile's Apply…",
+                None,
                 |app, cx| {
                     cx.update(|window, cx| {
                         app.update(cx, |app, cx| {
@@ -2039,6 +2067,7 @@ mod tests {
             ),
             (
                 "Check publication destination…",
+                None,
                 |app, cx| {
                     cx.update(|window, cx| {
                         crate::rewrite_review::check_publication(app, window, cx)
@@ -2047,8 +2076,11 @@ mod tests {
                 None,
             ),
         ];
-        for (index, (case, start, end)) in cases.into_iter().enumerate() {
+        for (index, (case, before, start, end)) in cases.into_iter().enumerate() {
             let later = format!("later-{index}.txt");
+            if let Some(before) = before {
+                before(&app, cx);
+            }
             let held = app.update(cx, |app, _| app.operations.hold());
             start(&app, cx);
             draw(cx);
@@ -2288,8 +2320,9 @@ mod tests {
     }
 
     /// Every page switch ends the same reviews being prepared
-    /// (`GitTurtle::end_preparations`): Tags, Discard…'s review and Merge…'s
-    /// comparison open nothing over the view shown next, and the working
+    /// (`GitTurtle::end_preparations`): Tags, Discard…'s and Ignore…'s
+    /// reviews of the file and Merge…'s comparison open nothing over the
+    /// view shown next, and the working
     /// read Refresh asked for meanwhile runs. Settings and Projects cancel
     /// them at once and read; Changes opened over History and History shown
     /// again from Changes drop them, the window busy until the dropped read
@@ -2334,21 +2367,26 @@ mod tests {
                 |app, window, cx| app.show_history(window, cx),
             ),
         ];
-        let preparations: [(&str, Switch); 3] = [
+        /// The untracked draft's working entry.
+        fn draft(app: &GitTurtle) -> gitturtle_core::StatusEntry {
+            app.work_status
+                .as_ref()
+                .and_then(|status| {
+                    status
+                        .entries
+                        .iter()
+                        .find(|entry| entry.path == std::path::Path::new("draft.txt"))
+                        .cloned()
+                })
+                .expect("draft.txt is listed")
+        }
+        let preparations: [(&str, Switch); 4] = [
             ("Tags", |app, window, cx| app.open_tags(window, cx)),
             ("Discard…", |app, window, cx| {
-                let draft = app
-                    .work_status
-                    .as_ref()
-                    .and_then(|status| {
-                        status
-                            .entries
-                            .iter()
-                            .find(|entry| entry.path == std::path::Path::new("draft.txt"))
-                            .cloned()
-                    })
-                    .expect("draft.txt is listed");
-                app.open_discard(draft, window, cx)
+                app.open_discard(draft(app), window, cx)
+            }),
+            ("Ignore…", |app, window, cx| {
+                app.open_ignore(draft(app), window, cx)
             }),
             ("Merge…", |app, window, cx| {
                 app.prepare_integration("main".into(), false, window, cx)

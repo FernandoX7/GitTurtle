@@ -46,7 +46,10 @@ keeps its previous branch-only behavior. Remote tag deletion is not exposed.
 
 Select an untracked item and choose **Actions → Ignore selected untracked file…**,
 or right-click its row and choose **Ignore…**. On a tracked row Ignore… is
-unavailable, with its condition, Untracked files only, beside it. The form distinguishes **Shared .gitignore** from
+unavailable, with its condition, Untracked files only, beside it. Before the form
+opens, Ignore… reads the file's status again off the UI thread, as Discard… reviews
+its row: a file staged or removed outside GitTurtle since Changes last read it opens
+no form, and the window's error says why. The form distinguishes **Shared .gitignore** from
 **Local excludes** and optionally offers the selected file's containing directory.
 The repository root cannot be selected as a directory rule.
 
@@ -71,7 +74,8 @@ Preparation captures the original bytes, file identity/permissions and parent
 directory identity. Execution rereads the selection and destination, opens every
 directory without following symlinks, prepares a new file under an exclusive lock,
 rechecks the original and atomically replaces it. Stale changes require a new
-preview. This protects GitTurtle writes and catches external changes during review;
+preview, and a file staged after its form opened is refused by Preview rule and by
+the write. This protects GitTurtle writes and catches external changes during review;
 uncooperative external writers are not participants in GitTurtle's lock protocol.
 
 ## Behavioral evidence

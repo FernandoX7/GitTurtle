@@ -3951,10 +3951,11 @@ mod tests {
             "{opening:?}: gamma's menu {drawn:?} beside its row {moved:?} as it opened, \
              {item:?} beside {row:?}"
         );
-        // Its Ignore… acts on gamma.
+        // Its Ignore… acts on gamma, whose form opens once Ignore…'s review
+        // of the file lands.
         cx.simulate_click(drawn.center(), Modifiers::default());
         cx.executor().run_until_parked();
-        draw(cx);
+        crate::ignore::tests::ignore_lands(&app, cx);
         let selected = crate::native_accessibility::written::get("ignore-selected-path")
             .and_then(|written| written.node.value().map(str::to_owned));
         assert_eq!(

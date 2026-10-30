@@ -436,7 +436,8 @@ async fn every_label_of_these_screens_is_named(cx: &mut TestAppContext) {
             .expect("scratch.txt is untracked")
     });
     cx.update(|window, cx| app.update(cx, |app, cx| app.open_ignore(untracked, window, cx)));
-    draw(cx);
+    // The form opens once Ignore…'s review of the file lands.
+    crate::ignore::tests::ignore_lands(&app, cx);
     labels_named(
         cx,
         "Ignore",

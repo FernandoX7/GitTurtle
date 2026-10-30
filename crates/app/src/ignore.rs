@@ -7,6 +7,14 @@ use gpui_kit::{
 };
 
 const PREPARING: &str = "Preparing ignore rule…";
+/// Why Ignore… opens no form for a file that is now tracked, in the core's
+/// words for the same refusal from Preview rule (`ignore_plan`).
+const NO_LONGER_UNTRACKED: &str =
+    "This file is no longer untracked. Refresh Changes; ignore rules never untrack files.";
+/// Why Ignore… opens no form for a file that has left the working status,
+/// in the words of Discard…'s review (`discard_plan`).
+const NO_LONGER_LISTED: &str =
+    "This file no longer appears in Changes. Refresh and review it again.";
 
 use crate::native_accessibility::text as static_text;
 
@@ -14,6 +22,22 @@ use crate::native_accessibility::text as static_text;
 pub(super) struct State {
     generation: u64,
     task: Option<Task<()>>,
+}
+
+/// Reads `path`'s status again, as Discard…'s review reads its row's
+/// (`GitRepository::discard_plan`): the row Changes drew is the status read
+/// last, which a change outside the app can have overtaken. Passive, on the
+/// operation executor. Refuses, in the words a refusal is said in, a path
+/// that is no longer listed or no longer untracked.
+fn still_untracked(repo: &GitRepository, path: &std::path::Path) -> anyhow::Result<()> {
+    let status = repo.status()?;
+    let entry = status
+        .entries
+        .iter()
+        .find(|entry| entry.path == path)
+        .ok_or_else(|| anyhow::anyhow!(NO_LONGER_LISTED))?;
+    anyhow::ensure!(entry.untracked, NO_LONGER_UNTRACKED);
+    Ok(())
 }
 
 impl GitTurtle {
@@ -24,21 +48,85 @@ impl GitTurtle {
             self.operation_busy = None;
         }
     }
+
+    /// Reviews the untracked file `entry` names again before its form opens,
+    /// as Discard… reviews its row before its confirmation: `entry` is the
+    /// row Changes drew from the status it read last, and a file staged or
+    /// removed outside the app since then is no longer one an ignore rule
+    /// is for. The form then opens, or, refused, it does not, and the
+    /// window's error says why, as it says Discard…'s refusal, a fresh
+    /// alert each time it is asked (`error_refusals`). The form once opened
+    /// for whatever the row last said; Preview rule and the write still
+    /// refuse a file that becomes tracked while the form is open
+    /// (`ignore_plan`, `execute_ignore`).
+    ///
+    /// The review is this action's preparation: it holds the operation
+    /// executor and the window's busy state as Preview rule's does, and
+    /// leaving the page cancels it (`cancel_ignore_action`).
     pub(super) fn open_ignore(
         &mut self,
         entry: StatusEntry,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.operation_busy.is_some() || !entry.untracked {
+        if self.operation_busy.is_some() || self.page != AppPage::Repository || !entry.untracked {
             return;
         }
+        let Some(repo) = self.repository.clone() else {
+            return;
+        };
+        let repository = repo.path().to_owned();
+        self.cancel_ignore_action();
+        let generation = self.ignore_actions.generation;
+        self.operation_busy = Some(PREPARING);
+        self.operation_error = None;
+        let path = entry.path;
+        let checked = path.clone();
+        let response = self
+            .operations
+            .submit_read(move || still_untracked(&repo, &checked));
+        self.ignore_actions.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = response.await.unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "Ignore preparation was interrupted. Choose Ignore… again."
+                ))
+            });
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.ignore_actions.generation != generation {
+                    return;
+                }
+                this.ignore_actions.task = None;
+                if this.operation_busy == Some(PREPARING) {
+                    this.operation_busy = None;
+                }
+                this.read_deferred_working(window, cx);
+                if this.path.as_ref() != Some(&repository) || this.page != AppPage::Repository {
+                    cx.notify();
+                    return;
+                }
+                match result {
+                    Ok(()) => this.show_ignore_form(path, window, cx),
+                    Err(error) => {
+                        this.operation_error = Some(format!("{error:#}"));
+                        // A fresh node, heard again however often it refuses.
+                        this.error_refusals = this.error_refusals.wrapping_add(1);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Opens the Ignore form for the untracked file `path`, reviewed again
+    /// just now ([`Self::open_ignore`]).
+    fn show_ignore_form(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let owner = cx.entity().downgrade();
-        let path = self.path.clone();
+        let repository = self.path.clone();
         let form = cx.new(|_| IgnoreForm {
             owner,
-            repository: path,
-            path: entry.path,
+            repository,
+            path,
             directory: false,
             local: false,
             preparing: None,
@@ -176,7 +264,7 @@ impl Render for IgnoreForm {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use core::prelude::v1::test;
     use std::{cell::RefCell, rc::Rc};
@@ -351,10 +439,20 @@ mod tests {
         (fixture, app, cx, root, scratch)
     }
 
-    /// Asks the open Ignore form for Preview rule, as its OK does.
+    /// Asks the open Ignore form for Preview rule, as its OK does, or
+    /// confirms the review it opened.
     fn preview_rule(cx: &mut VisualTestContext) {
         use gpui_kit::component::dialog::Confirm;
         cx.update(|window, cx| window.dispatch_action(Box::new(Confirm { secondary: false }), cx));
+    }
+
+    /// Lets what Ignore… asked of the operation executor answer, its review
+    /// of the file before the form opens included, and draws the outcome.
+    /// It runs on the executor's thread, which `run_until_parked` cannot
+    /// wait for.
+    pub(crate) fn ignore_lands(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+        app.read_with(cx, |app, _| app.operations.drain());
+        crate::views::tests::draw(cx);
     }
 
     /// Preview rule asked for again once Settings has cancelled the rule's
@@ -368,7 +466,7 @@ mod tests {
         use crate::views::tests::{draw, settle};
         let (_fixture, app, cx, _, scratch) = untracked_scratch(cx).await;
         cx.update(|window, cx| app.update(cx, |app, cx| app.open_ignore(scratch, window, cx)));
-        draw(cx);
+        ignore_lands(&app, cx);
         // Preview rule, its read held as a slow disk holds it, and Settings.
         let held = app.update(cx, |app, _| app.operations.hold());
         preview_rule(cx);
@@ -398,6 +496,124 @@ mod tests {
         assert!(
             cx.debug_bounds("operation-consequences").is_some(),
             "Preview rule previews the rule"
+        );
+    }
+
+    /// Ignore… reads the file's status again before its form opens, as
+    /// Discard… reviews its row (`GitTurtle::open_ignore`): a file staged
+    /// outside the app since Changes read it opens no form, and the
+    /// window's error says why, in the words Preview rule refuses it in, an
+    /// alert heard at once and again each time it is asked. The form trusted
+    /// the row Changes had drawn, and opened for a file now tracked. Still
+    /// untracked, the file opens the form; staged once the form is open, it
+    /// is refused by Preview rule, beneath the form's fields, and staged
+    /// once the rule is reviewed, by the write, which leaves `.gitignore` as
+    /// it was.
+    #[gpui::test]
+    async fn ignore_reviews_the_file_again_before_its_form_opens(cx: &mut TestAppContext) {
+        use crate::native_accessibility::written;
+        use crate::views::tests::{fixture_git, settle};
+        let (_fixture, app, cx, root, scratch) = untracked_scratch(cx).await;
+        let dialog =
+            |cx: &mut VisualTestContext| cx.update(|window, cx| window.has_active_dialog(cx));
+        let open = |cx: &mut VisualTestContext| {
+            let scratch = scratch.clone();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_ignore(scratch, window, cx)));
+        };
+        let ignore_file = root.join(".gitignore");
+        let ignored_before = std::fs::read(&ignore_file).ok();
+
+        // Staged outside the app: Changes still draws it untracked.
+        fixture_git(&root, &["add", "scratch.txt"]);
+        let mut nodes = Vec::new();
+        for press in ["Ignore…", "Ignore… again"] {
+            open(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_busy),
+                Some(PREPARING),
+                "{press}: the file is reviewed again"
+            );
+            ignore_lands(&app, cx);
+            assert!(!dialog(cx), "{press}: no form opens");
+            assert_eq!(
+                app.read_with(cx, |app, _| (
+                    app.operation_busy,
+                    app.operation_error.clone()
+                )),
+                (None, Some(NO_LONGER_UNTRACKED.to_owned())),
+                "{press}: the window's error says why"
+            );
+            assert!(
+                cx.debug_bounds("operation-error-summary").is_some(),
+                "{press}: drawn"
+            );
+            let mut announced = written::announced_from("operation-error-summary-");
+            assert_eq!(
+                announced.len(),
+                1,
+                "{press}: one refusal announced: {announced:?}"
+            );
+            let (node, how) = announced.pop().expect("the refusal");
+            assert_eq!(how, written::Announced::ASSERTIVE, "{press}: at once");
+            nodes.push(node);
+        }
+        assert_ne!(
+            nodes[0], nodes[1],
+            "the refusal asked for again is a fresh node, heard again"
+        );
+
+        // Untracked again: the form opens.
+        fixture_git(&root, &["reset", "-q", "scratch.txt"]);
+        app.update(cx, |app, _| app.operation_error = None);
+        open(cx);
+        ignore_lands(&app, cx);
+        assert!(dialog(cx), "the form opens for an untracked file");
+        assert_eq!(
+            written::get("ignore-selected-path")
+                .and_then(|text| text.node.value().map(str::to_owned))
+                .as_deref(),
+            Some("Selected untracked file: scratch.txt")
+        );
+
+        // Staged once the form is open: Preview rule refuses it there.
+        fixture_git(&root, &["add", "scratch.txt"]);
+        preview_rule(cx);
+        ignore_lands(&app, cx);
+        assert_eq!(
+            written::get("ignore-preparation-error")
+                .and_then(|text| text.node.value().map(str::to_owned))
+                .as_deref(),
+            Some(NO_LONGER_UNTRACKED),
+            "Preview rule says why beneath the fields"
+        );
+        assert!(cx.debug_bounds("operation-consequences").is_none());
+
+        // Untracked again, the rule is reviewed, and staged before the
+        // write: the write refuses it and leaves the ignore file alone.
+        fixture_git(&root, &["reset", "-q", "scratch.txt"]);
+        preview_rule(cx);
+        ignore_lands(&app, cx);
+        assert!(
+            cx.debug_bounds("operation-consequences").is_some(),
+            "the rule is reviewed"
+        );
+        fixture_git(&root, &["add", "scratch.txt"]);
+        preview_rule(cx);
+        ignore_lands(&app, cx);
+        settle(&app, cx).await;
+        assert!(!dialog(cx), "the review closes as the write runs");
+        assert_eq!(
+            app.read_with(cx, |app, _| (
+                app.operation_busy,
+                app.operation_error.clone()
+            )),
+            (None, Some(NO_LONGER_UNTRACKED.to_owned())),
+            "the write refuses the file staged since its review, as Preview rule does"
+        );
+        assert_eq!(
+            std::fs::read(&ignore_file).ok(),
+            ignored_before,
+            "the ignore file is as it was"
         );
     }
 }
