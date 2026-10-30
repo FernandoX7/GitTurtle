@@ -14,6 +14,11 @@ const CREDENTIAL_GUIDANCE: &str = if cfg!(target_os = "macos") {
     "Requested by the Git operation you started. Your configured credential helper may save this response. GitTurtle does not save it."
 };
 
+/// Cancel's labels while the write runs and once it is cancelled. The header
+/// keeps room for the wider (`views::OperationStatus`), so Cancel changing
+/// its label moves nothing.
+pub(crate) const CANCEL_LABELS: [&str; 2] = ["Cancel operation", "Cancelling…"];
+
 /// One string supplies the prompt's visible guidance and the static text it
 /// is read as.
 fn guidance(confirmation: bool) -> native_accessibility::StaticText<Stateful<Div>> {
@@ -148,7 +153,7 @@ impl GitTurtle {
         Button::new("cancel-git-operation")
             .debug_selector(|| "cancel-git-operation".into())
             .secondary().small()
-            .label(if control.is_cancelled() { "Cancelling…" } else { "Cancel operation" })
+            .label(CANCEL_LABELS[usize::from(control.is_cancelled())])
             .disabled(control.is_cancelled())
             .tooltip("Stop Git and its child processes. Local or remote changes may already have applied; inspect before retrying.")
             .accessibility_label("Cancel the running Git operation")
