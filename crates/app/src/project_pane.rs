@@ -1180,6 +1180,7 @@ impl GitTurtle {
             .rounded(px(6.))
             .icon(Icon::default().path("icons/sliders.svg").size(px(12.)))
             .accessibility_label(label)
+            .debug_selector(move || format!("project-row-menu-{index}"))
             .opacity(if reveal { 1. } else { 0. })
             .group_hover("project-pane-row", |style| style.opacity(1.))
             // The popover trigger consumes the press, so the row beneath it
@@ -1189,6 +1190,10 @@ impl GitTurtle {
                 let snapshot = owner.upgrade().map(|app| app.read(cx).menu_snapshot(&key));
                 row_menu(menu, &owner, &key, snapshot)
             })
+            // A write's start or end builds the open menu again, as it does
+            // the row's right-click and keyboard menus: read only as it
+            // opened, Open project stayed as the write found it.
+            .follows_writes(cx.entity().downgrade())
             .on_open_change(move |open, _, cx| {
                 let open = *open;
                 let _ = toggled.update(cx, |this, cx| {
@@ -1208,9 +1213,9 @@ impl GitTurtle {
     }
 }
 
-/// What a row menu shows, captured when the menu opens. Pointer menus read
-/// it from the entity at that moment; the keyboard menu captures it before
-/// building, because the entity is being updated then.
+/// What a row menu shows, captured when the menu opens or is built again.
+/// Pointer menus read it from the entity at that moment; the keyboard menu
+/// captures it before building, because the entity is being updated then.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuSnapshot {
     pub name: String,
@@ -1239,7 +1244,9 @@ impl GitTurtle {
 }
 
 /// One menu for the hover button, the right-click and Shift-F10. Nothing is
-/// rebuilt while rows render; the snapshot arrives when the menu opens.
+/// rebuilt while rows render; the snapshot arrives when the menu opens, and
+/// again as a write starts or ends, which builds each of them again
+/// (`native_accessibility::MenuInputs`).
 fn row_menu(
     menu: PopupMenu,
     owner: &WeakEntity<GitTurtle>,

@@ -479,6 +479,55 @@ fn a_project_rows_keyboard_menu_follows_writes(cx: &mut TestAppContext) {
     }
 }
 
+/// A project row's actions button, the control a hover reveals at the row's
+/// end, opens the menu its right-click and Shift-F10 open, and it follows
+/// writes as they do: Open project, which a write refuses, is disabled in
+/// place as a write starts and available again as it ends, the menu open
+/// throughout. Built only as it opened, it kept Open project as the write
+/// found it, available while the write ran, until it was opened again.
+#[gpui::test]
+fn a_project_rows_actions_button_menu_follows_writes(cx: &mut TestAppContext) {
+    let (library, _, _) = library_with_group();
+    let (app, cx) = test_app(cx, enabled(), library);
+    // The last row, beta, a project.
+    let beta = app.read_with(cx, |app, _| app.project_pane.rows.len() - 1);
+    let button = cx
+        .debug_bounds(format!("project-row-menu-{beta}").leak())
+        .expect("beta's actions button");
+    cx.simulate_mouse_move(button.center(), None, Modifiers::default());
+    settle(cx);
+    cx.simulate_click(button.center(), Modifiers::default());
+    settle(cx);
+    let open = |cx: &mut VisualTestContext, disabled: bool| {
+        let selector = if disabled {
+            "menu-item: Open project · MenuItem disabled"
+        } else {
+            "menu-item: Open project · MenuItem"
+        };
+        cx.debug_bounds(selector).is_some()
+    };
+    let busy = |cx: &mut VisualTestContext, busy: Option<&'static str>| {
+        app.update(cx, |app, cx| {
+            app.operation_busy = busy;
+            cx.notify();
+        });
+        settle(cx);
+    };
+    assert!(open(cx, false), "the button opened Open project at rest");
+    assert_eq!(
+        app.read_with(cx, |app, _| app.project_pane.menu_open),
+        Some(beta),
+        "beta's menu is open"
+    );
+    busy(cx, Some("Testing"));
+    assert!(open(cx, true), "Open project once a write starts");
+    assert!(!open(cx, false), "and offered no longer");
+    busy(cx, None);
+    assert!(open(cx, false), "Open project once the write ends");
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+}
+
 /// A project row's keyboard menu closes, with focus back on the tree, once
 /// its row no longer holds its project, as one removed above it moves the
 /// rows up: built again for the place it opened beside, it would have acted
