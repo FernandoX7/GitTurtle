@@ -45,6 +45,12 @@ fn file_rows_shown() -> usize {
 /// text and placeholders do, one inset for all.
 const TEXT_INSET: Pixels = appearance::FIELD_TEXT_INSET;
 
+/// How long after an arrow key's last repeat the entry list takes the key
+/// to have stopped where no key-up arrives: longer than the gap between
+/// repeats at a usual rate (40 ms at 25 a second), short enough that the
+/// entry's read follows the stop at once.
+const REPEAT_PAUSE: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// The entries whose text the last layout cut, which alone carry a tooltip.
 #[derive(Clone, Default)]
 struct CutEntries(std::rc::Rc<std::cell::RefCell<HashSet<usize>>>);
@@ -329,9 +335,16 @@ pub(crate) struct ReflogBrowser {
     /// Whether a read submitted to `reader` is yet to answer: the browser
     /// submits one at a time ([`Self::read`]).
     reading: bool,
-    /// The latest read asked for while another was yet to answer, which
-    /// starts once that one answers.
+    /// The latest read asked for while another was yet to answer or an
+    /// arrow key repeats, which starts once neither holds.
     waiting: Option<WaitingRead>,
+    /// While an arrow key repeats over the entry list: the timer that ends
+    /// the repeat [`REPEAT_PAUSE`] after its last repeat, unless the key
+    /// comes up first ([`Self::end_repeat`]).
+    repeat: Option<Task<()>>,
+    /// How many reads the browser has submitted to its reader.
+    #[cfg(test)]
+    submitted: usize,
     cancellation: gitturtle_core::HistoryCancellation,
     scope: Entity<InputState>,
     query: Entity<InputState>,
@@ -421,6 +434,9 @@ impl ReflogBrowser {
             task: None,
             reading: false,
             waiting: None,
+            repeat: None,
+            #[cfg(test)]
+            submitted: 0,
             cancellation: Default::default(),
             scope,
             query,
@@ -513,7 +529,10 @@ impl ReflogBrowser {
     /// Up, Down, Home and End on the entry list select the entry they reach
     /// and move focus, the list's one Tab stop, onto it, as History's list
     /// and the Stashes list select with them; Space and Enter on the entry
-    /// select it as a click does.
+    /// select it as a click does. A held key's repeats select as they go,
+    /// but the entry they rest on is read only once they stop: each reply
+    /// started the latest entry's read while the key repeated, and the next
+    /// repeat cancelled it, one Git process started and stopped per repeat.
     fn entry_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.modifiers.modified() {
             return;
@@ -531,12 +550,35 @@ impl ReflogBrowser {
             _ => return,
         };
         cx.stop_propagation();
+        if event.is_held {
+            self.repeat = Some(cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(REPEAT_PAUSE).await;
+                let _ = this.update_in(cx, |this, window, cx| this.end_repeat(window, cx));
+            }));
+        }
         let focus = self.entries.focus(("reflog-entry", target), cx);
         window.focus(&focus, cx);
         if self.selected.as_ref() != Some(&matches[target]) {
             self.select(matches[target].clone(), window, cx);
         }
         cx.notify();
+    }
+    /// A key coming up on the entry list ends an arrow key's repeat.
+    fn entry_key_up(&mut self, _: &KeyUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.repeat.is_some() {
+            self.end_repeat(window, cx);
+        }
+    }
+    /// Ends an arrow key's repeat, as the key comes up or pauses: the read
+    /// its last repeat asked for starts, unless an earlier read is yet to
+    /// answer, whose reply starts it.
+    fn end_repeat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.repeat = None;
+        if !self.reading
+            && let Some(waiting) = self.waiting.take()
+        {
+            waiting(self, window, cx);
+        }
     }
     /// Whether the browser may act now: not while a write runs.
     fn current(&self, cx: &App) -> bool {
@@ -548,10 +590,12 @@ impl ReflogBrowser {
     /// Asks the browser's reader for a read, one at a time: while an earlier
     /// read is yet to answer, this one cancels it, so its Git process stops,
     /// and waits in place of any read already waiting, to start once the
-    /// earlier one answers, whose reply then lands nowhere. Each arrow press
-    /// selects an entry and asks for its read, and the reader's queue holds
-    /// eight, so a key held while a read was slow filled it and the presses
-    /// after that failed at once with "Background executor is busy…".
+    /// earlier one answers, whose reply then lands nowhere. While an arrow
+    /// key repeats, the read waits for the repeat to end too. Each arrow
+    /// press selects an entry and asks for its read, and the reader's queue
+    /// holds eight, so a key held while a read was slow filled it and the
+    /// presses after that failed at once with "Background executor is
+    /// busy…".
     fn read<T: Send + 'static>(
         &mut self,
         operation: impl FnOnce(GitRepository) -> anyhow::Result<T> + Send + 'static,
@@ -562,7 +606,7 @@ impl ReflogBrowser {
         self.cancellation.cancel();
         self.pending = true;
         self.error = None;
-        if self.reading {
+        if self.reading || self.repeat.is_some() {
             self.waiting = Some(Box::new(move |this, window, cx| {
                 this.submit(operation, receive, window, cx)
             }));
@@ -572,7 +616,8 @@ impl ReflogBrowser {
         }
     }
     /// Submits a read to the browser's reader. Its reply lands it, unless a
-    /// later read waits, which the reply starts instead.
+    /// later read waits, which the reply starts instead, or the repeat it
+    /// waits for ends.
     fn submit<T: Send + 'static>(
         &mut self,
         operation: impl FnOnce(GitRepository) -> anyhow::Result<T> + Send + 'static,
@@ -587,6 +632,10 @@ impl ReflogBrowser {
             gitturtle_core::run_cancellable_inspection(cancellation, || operation(repo))
         });
         self.reading = true;
+        #[cfg(test)]
+        {
+            self.submitted += 1;
+        }
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await.unwrap_or_else(|_| {
                 Err(anyhow::anyhow!(
@@ -598,12 +647,17 @@ impl ReflogBrowser {
                 if this.closed.load(std::sync::atomic::Ordering::Acquire) {
                     return;
                 }
-                // A later read waits: this reply is superseded, and starts it.
-                if let Some(waiting) = this.waiting.take() {
+                // A later read waits: this reply is superseded, and starts
+                // it, unless an arrow key still repeats, whose end does.
+                if this.waiting.is_some() {
                     #[cfg(test)]
                     this.superseded
                         .push(result.err().map(|error| format!("{error:#}")));
-                    waiting(this, window, cx);
+                    if this.repeat.is_none()
+                        && let Some(waiting) = this.waiting.take()
+                    {
+                        waiting(this, window, cx);
+                    }
                     return;
                 }
                 this.pending = false;
@@ -855,7 +909,7 @@ impl Render for ReflogBrowser {
                     label(
                         "reflog-loading",
                         match place {
-                            ReadPlace::Log => "Reading local reflog or selected commit…",
+                            ReadPlace::Log => "Reading local reflog…",
                             ReadPlace::Entry => "Reading the selected commit…",
                             ReadPlace::Recovery => "Checking the entry and branch name…",
                         },
@@ -904,7 +958,7 @@ impl Render for ReflogBrowser {
             .child(shown(filter).py(room).my(-room).child(Input::new(&self.query).aria_label("Filter loaded reflog entries").cleanable(true)))
             .children(loading_above)
             .children(error_above)
-            .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().on_children_prepainted(show_list).child(cue.list(div().on_children_prepainted(cue.observe(show_entry)).id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(list_height).p(room).m(-room).overflow_y_scroll().track_scroll(self.entries.scroll()).on_key_down(cx.listener(Self::entry_key)).flex().flex_col().gap_1().children(matches.iter().take(100).zip(entries).enumerate().map(|(index, (entry, focus))| {
+            .child(div().debug_selector(|| "reflog-entries".into()).flex().flex_col().flex_shrink_0().on_children_prepainted(show_list).child(cue.list(div().on_children_prepainted(cue.observe(show_entry)).id("reflog-list").debug_selector(|| "reflog-list".into()).max_h(list_height).p(room).m(-room).overflow_y_scroll().track_scroll(self.entries.scroll()).on_key_down(cx.listener(Self::entry_key)).on_key_up(cx.listener(Self::entry_key_up)).flex().flex_col().gap_1().children(matches.iter().take(100).zip(entries).enumerate().map(|(index, (entry, focus))| {
                 let entry = entry.clone(); let text = format!("{} · {} · {} · {}", entry.selector, short_oid(&entry.oid), full_date(entry.timestamp), if entry.message.is_empty() { "Reference updated" } else { &entry.message });
                 entry_button(index, text, self.selected.as_ref() == Some(&entry), &self.cut_entries, cx.entity().downgrade(), p).track_focus(&focus).tab_stop(index == stop).on_click(cx.listener(move |this, _, window, cx| this.click_entry(index, entry.clone(), window, cx)))
             })).when(matches.is_empty() && self.page.is_some() && !self.pending, |element| element.child(div().ml(TEXT_INSET).child(if self.page.as_ref().is_some_and(|page| page.entries.is_empty()) { EmptyState::new("reflog-empty", "No reflog records for this scope").tooltip("Reflog recording may be disabled, the branch may not exist, or older entries may have expired.") } else { EmptyState::new("reflog-empty", "No loaded entries match this filter") }.block(cx)))), "reflog-list-scrollbar")))
@@ -1386,8 +1440,8 @@ mod tests {
     /// entries passed over are never read, so no press is refused. Every
     /// press queued a read on the browser's reader, whose queue holds eight,
     /// so the presses after the eighth failed at once with "Background
-    /// executor is busy…". Once the slow read answers, the last entry's
-    /// commit lands.
+    /// executor is busy…". Once the key is up and the slow read answers,
+    /// the last entry's commit lands.
     #[gpui::test]
     async fn held_arrows_wait_for_a_slow_read(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
@@ -1437,6 +1491,104 @@ mod tests {
             Some(last.oid),
             "the last entry's commit lands"
         );
+    }
+
+    /// Held, an arrow key selects each entry its repeats reach but starts no
+    /// read until it stops. The press reads at once, its first repeat
+    /// cancels that read, and the key's release, or 150 ms without a repeat
+    /// where no release arrives, starts one read, of the entry it rests on,
+    /// even when the slow read answers while the key still repeats. Each
+    /// reply started the latest entry's read while the key repeated, and the
+    /// next repeat cancelled it: one Git process started and stopped per
+    /// repeat.
+    #[gpui::test]
+    async fn held_arrows_read_once_they_stop(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let entries = browser.read_with(cx, |this, _| {
+            this.page.as_ref().expect("the log loaded").entries.clone()
+        });
+        let submitted =
+            |cx: &mut VisualTestContext| browser.read_with(cx, |this, _| this.submitted);
+        let state = |cx: &mut VisualTestContext| {
+            browser.read_with(cx, |this, _| {
+                (
+                    this.selected.as_ref().map(|entry| entry.oid.clone()),
+                    this.commit.as_ref().map(|commit| commit.oid.clone()),
+                )
+            })
+        };
+        // Entry `index` selected, with its commit landed.
+        let landed = |index: usize| {
+            let oid = Some(entries[index].oid.clone());
+            (oid.clone(), oid)
+        };
+        let key = |cx: &mut VisualTestContext, key: &str, is_held: bool| {
+            cx.simulate_event(KeyDownEvent {
+                keystroke: Keystroke::parse(key).unwrap(),
+                is_held,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        };
+        let answer = |cx: &mut VisualTestContext| {
+            browser.read_with(cx, |this, _| this.reader.drain());
+            cx.executor().run_until_parked();
+            draw(cx);
+        };
+        // The gap between repeats at 25 a second.
+        let gap = std::time::Duration::from_millis(40);
+
+        // Down pressed and held, its read slow, which answers while the key
+        // still repeats.
+        let mut held = Some(browser.read_with(cx, |this, _| this.reader.hold()));
+        let start = submitted(cx);
+        key(cx, "down", false);
+        assert_eq!(submitted(cx), start + 1, "the press reads at once");
+        let pressed = browser.read_with(cx, |this, _| this.cancellation.clone());
+        for repeat in 1..=8 {
+            cx.executor().advance_clock(gap);
+            key(cx, "down", true);
+            if repeat == 3 {
+                drop(held.take());
+                answer(cx);
+            }
+            assert_eq!(submitted(cx), start + 1, "repeat {repeat} starts no read");
+        }
+        assert!(pressed.is_cancelled(), "a repeat cancels the press's read");
+        cx.simulate_event(KeyUpEvent {
+            keystroke: Keystroke::parse("down").unwrap(),
+        });
+        draw(cx);
+        assert_eq!(submitted(cx), start + 2, "the release starts one read");
+        settle_reads(cx, &browser);
+        answer(cx);
+        assert_eq!(state(cx), landed(9), "the entry the key rests on lands");
+        assert_eq!(submitted(cx), start + 2, "and no other read starts");
+
+        // Up pressed and held with no release, as when its key-up reaches
+        // another window: 150 ms after its last repeat, the read starts.
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        let start = submitted(cx);
+        key(cx, "up", false);
+        for _ in 0..3 {
+            cx.executor().advance_clock(gap);
+            key(cx, "up", true);
+        }
+        drop(held);
+        answer(cx);
+        cx.executor().advance_clock(REPEAT_PAUSE - gap);
+        draw(cx);
+        assert_eq!(submitted(cx), start + 1, "no read starts before the pause");
+        cx.executor().advance_clock(gap);
+        draw(cx);
+        assert_eq!(submitted(cx), start + 2, "the pause starts one read");
+        settle_reads(cx, &browser);
+        answer(cx);
+        assert_eq!(state(cx), landed(5), "the entry the key rests on lands");
     }
 
     /// While a commit's read runs, the next press cancels it, so its Git
