@@ -1655,6 +1655,157 @@ mod tests {
         );
     }
 
+    /// Each review's preparation, and the series review's remote check, holds
+    /// the operation executor, so the working-state read asked for while it
+    /// runs waits for it, and its end runs that read, as does the Cancel of
+    /// a form whose preparation then never ends (`read_deferred_working`).
+    /// The read is asked for here as History's Refresh asks once its
+    /// snapshot lands (`open`), which a form over the window leaves
+    /// possible. Only Discard…'s end was tested to run it; without its call
+    /// an end left the read noted and the rows as they were read last.
+    #[gpui::test]
+    async fn every_preparations_end_runs_the_read_asked_for_meanwhile(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        use gpui_kit::component::dialog::{Cancel, Confirm};
+        type Step = fn(&Entity<GitTurtle>, &mut VisualTestContext);
+        fn click(cx: &mut VisualTestContext, selector: &'static str) {
+            crate::views::tests::draw(cx);
+            let bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is drawn"));
+            cx.simulate_click(bounds.center(), Modifiers::default());
+        }
+        /// Create tag's Review tag.
+        fn review_tag(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    crate::tags::open_tag_annotation(app, window, cx);
+                })
+            });
+            click(cx, "review-tag");
+        }
+        /// Ignore's Preview rule, for the untracked draft.
+        fn preview_rule(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+            let draft = entry(app, "draft.txt", cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_ignore(draft, window, cx)));
+            crate::views::tests::draw(cx);
+            cx.update(|window, cx| {
+                window.dispatch_action(Box::new(Confirm { secondary: false }), cx)
+            });
+        }
+        /// Edit local commits' Load commits.
+        fn load_commits(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| app.open_interactive_rebase(None, window, cx))
+            });
+            click(cx, "load-rebase-commits");
+        }
+        fn cancel(_: &Entity<GitTurtle>, cx: &mut VisualTestContext) {
+            cx.update(|window, cx| window.dispatch_action(Box::new(Cancel), cx));
+        }
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        let root = fixture.path().join("narrow");
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        // What starts each, with the executor held as a slow disk or remote
+        // holds it, and what ends it before it answers, if anything.
+        let cases: [(&str, Step, Option<Step>); 9] = [
+            (
+                "Tags",
+                |app, cx| {
+                    cx.update(|window, cx| app.update(cx, |app, cx| app.open_tags(window, cx)))
+                },
+                None,
+            ),
+            (
+                "Create tag's Cancel",
+                review_tag,
+                Some(|_, cx| click(cx, "cancel-create-tag")),
+            ),
+            ("Ignore's Preview rule", preview_rule, None),
+            ("Ignore's Cancel", preview_rule, Some(cancel)),
+            (
+                "Amend last commit",
+                |app, cx| {
+                    let head = app.read_with(cx, |app, _| app.commits[0].oid.clone());
+                    cx.update(|window, cx| {
+                        app.update(cx, |app, cx| {
+                            crate::recovery::prepare_amend(app, head, window, cx)
+                        })
+                    })
+                },
+                None,
+            ),
+            ("Edit local commits' Load commits", load_commits, None),
+            ("Edit local commits' Cancel", load_commits, Some(cancel)),
+            (
+                "A profile's Apply…",
+                |app, cx| {
+                    cx.update(|window, cx| {
+                        app.update(cx, |app, cx| {
+                            crate::profiles::apply_profile(app, window, cx)
+                        })
+                    })
+                },
+                None,
+            ),
+            (
+                "Check publication destination…",
+                |app, cx| {
+                    cx.update(|window, cx| {
+                        crate::rewrite_review::check_publication(app, window, cx)
+                    })
+                },
+                None,
+            ),
+        ];
+        for (index, (case, start, end)) in cases.into_iter().enumerate() {
+            let later = format!("later-{index}.txt");
+            let held = app.update(cx, |app, _| app.operations.hold());
+            start(&app, cx);
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.operation_busy.is_some()),
+                "{case} runs"
+            );
+            std::fs::write(root.join(&later), "later\n").unwrap();
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            app.read_with(cx, |app, _| {
+                assert!(app.working_read_pending(), "{case}: the read is asked for");
+                assert!(app.status_task.is_none(), "{case}: the read waits for it");
+            });
+            if let Some(end) = end {
+                end(&app, cx);
+            }
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle(&app, cx).await;
+            crate::path_filter::filters_land(&app, cx);
+            app.read_with(cx, |app, _| {
+                assert!(app.operation_busy.is_none(), "{case} ended");
+                assert_eq!(
+                    app.working_read_deferred, None,
+                    "{case}: no read stays noted"
+                );
+            });
+            assert!(
+                entries(&app, cx).is_some_and(|entries| entries.contains(&later)),
+                "{case}: the read asked for ran"
+            );
+            // What its end opened closes before the next.
+            cx.update(|window, cx| {
+                for _ in 0..4 {
+                    if window.has_active_dialog(cx) {
+                        window.close_dialog(cx);
+                    }
+                }
+                assert!(!window.has_active_dialog(cx), "{case}: its dialogs close");
+            });
+            settle(&app, cx).await;
+        }
+    }
+
     /// A tab switch or close cancels Discard…'s review and drops the
     /// working read Changes asked for meanwhile with the tab's other reads:
     /// shown again, a tab reads quietly. The read once stayed noted, and the

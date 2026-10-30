@@ -758,6 +758,39 @@ impl Render for SeriesBrowser {
     }
 }
 
+/// Presses Check publication destination… in a series review of `app`'s
+/// repository that names only its worktree, for the regression of the reads
+/// a check's end runs in `page_navigation::tests`. The check needs a
+/// remote the fixture has none of, so Git refuses it as soon as it runs.
+#[cfg(test)]
+pub(crate) fn check_publication(app: &Entity<GitTurtle>, window: &mut Window, cx: &mut App) {
+    let repo = app.read(cx).repository.clone().expect("a repository");
+    let review = RewriteReview {
+        root: repo.path().to_owned(),
+        branch: "main".into(),
+        base: String::new(),
+        original_head: String::new(),
+        rewritten_head: String::new(),
+        original: Vec::new(),
+        rewritten: Vec::new(),
+        rows: Vec::new(),
+    };
+    let browser = cx.new(|cx| {
+        SeriesBrowser::new(
+            app.downgrade(),
+            repo,
+            "origin".into(),
+            "main".into(),
+            window,
+            cx,
+        )
+    });
+    browser.update(cx, |browser, cx| {
+        browser.review = Some(Arc::new(review));
+        browser.check_remote(window, cx);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -11,6 +11,21 @@ mod menu_tests;
 mod store;
 use store::{Definition, Mutation, Signing, Store};
 
+/// Presses a profile's Apply…, whose review opens once its preparation
+/// answers, for the regression of the reads a preparation's end runs in
+/// `page_navigation::tests`.
+#[cfg(test)]
+pub(crate) fn apply_profile(app: &mut GitTurtle, window: &mut Window, cx: &mut Context<GitTurtle>) {
+    let definition = Definition {
+        id: "reviewer".into(),
+        label: "Reviewer".into(),
+        name: "Reviewer".into(),
+        email: "reviewer@example.com".into(),
+        signing: None,
+    };
+    app.prepare_profile(definition, window, cx);
+}
+
 #[derive(Default)]
 pub(super) struct State {
     store: Option<Store>,
