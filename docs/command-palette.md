@@ -50,7 +50,7 @@ shortcut; as in the palette and Quick Open, the list scrolls only for an entry
 not wholly in it, which it centres. A click selects the entry it lands on and
 scrolls the least that shows it whole, as does a shorter window that would
 cut a selected entry the list showed whole, or a text size chosen with help
-open. Otherwise a window resized under the list keeps it where the wheel or
+open, whether or not the list's height changes with it (`Span::follows`). Otherwise a window resized under the list keeps it where the wheel or
 a key left it, clamped to its rows: a list the wheel moved away from the
 selection stays there, where a resize once brought the selection back on
 every frame.

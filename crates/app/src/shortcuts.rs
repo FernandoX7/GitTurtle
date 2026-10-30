@@ -1021,6 +1021,14 @@ struct Span {
     bottom: Pixels,
 }
 
+/// How the list was laid out: its height inside its border, and the
+/// interface size its rows were measured at (`appearance::ui_scale`).
+#[derive(Clone, Copy, Debug, Default)]
+struct Laid {
+    view: Pixels,
+    scale: f32,
+}
+
 /// How the list brings the selected entry into view where some of it lies
 /// outside the list.
 #[derive(Clone, Copy)]
@@ -1100,6 +1108,21 @@ impl Span {
         self.top >= scrolled - Self::ROUNDING && self.bottom <= scrolled + view + Self::ROUNDING
     }
 
+    /// Whether the list, laid out `now` after `was` and scrolled by
+    /// `scrolled`, brings the entry into view: as it is first laid out; after
+    /// a text size chosen with it open, which changes every row's height
+    /// under the scroll, whether or not the list's height changes with it
+    /// (where the dialog's cap held the height, the entry stayed wherever the
+    /// scaled rows put it); and after a resize only where the new height
+    /// would cut the entry the list showed whole, so a list the wheel moved
+    /// away from it stays where the person put it.
+    fn follows(self, was: Laid, now: Laid, scrolled: Pixels) -> bool {
+        if was.view <= px(0.) || was.scale.to_bits() != now.scale.to_bits() {
+            return true;
+        }
+        was.view != now.view && self.whole(scrolled, was.view) && !self.whole(scrolled, now.view)
+    }
+
     /// The scroll, from the list's top, that brings the span whole into a
     /// list `view` tall that holds `content` and is scrolled by `scrolled`,
     /// or `None` where it lies whole there already.
@@ -1140,11 +1163,10 @@ struct ShortcutHelpView {
     /// toolkit's virtual list, which takes each row's height, rather than a
     /// `uniform_list`, which gives every row the first one's.
     scroll: gpui_kit::base::VirtualListScrollHandle,
-    /// The list's height inside its border as last laid out, and the
-    /// interface size its rows were measured at then: when the dialog's
-    /// height cap changes the height, the list keeps a selected entry it
-    /// showed whole in view.
-    list_height: std::rc::Rc<std::cell::Cell<(Pixels, f32)>>,
+    /// How the list was last laid out ([`Span::follows`]): when the dialog's
+    /// height cap changes its height, it keeps a selected entry it showed
+    /// whole in view.
+    list_height: std::rc::Rc<std::cell::Cell<Laid>>,
     return_focus: Option<FocusHandle>,
     closed: bool,
     _subscription: Subscription,
@@ -1450,15 +1472,14 @@ impl Render for ShortcutHelpView {
                         // list's view. Taken 2 px shorter, it ended an entry
                         // it revealed from below 2 px above the list's foot
                         // and, at the floor, cut the entry's top.
-                        let view = bounds.size.height;
-                        let (was, measured) = seen.replace((view, scale));
-                        if was != view && let Some(span) = span {
-                            let offset = scroll.offset();
-                            let resized = was > px(0.) && measured.to_bits() == scale.to_bits();
-                            let cut = span.whole(-offset.y, was) && !span.whole(-offset.y, view);
-                            if (!resized || cut) && let Some(to) = span.reveal(-offset.y, view, content, Reveal::Nearest) {
-                                scroll.set_offset(point(offset.x, -to));
-                            }
+                        let now = Laid { view: bounds.size.height, scale };
+                        let was = seen.replace(now);
+                        let offset = scroll.offset();
+                        if let Some(span) = span
+                            && span.follows(was, now, -offset.y)
+                            && let Some(to) = span.reveal(-offset.y, now.view, content, Reveal::Nearest)
+                        {
+                            scroll.set_offset(point(offset.x, -to));
                         }
                     }
                 })
@@ -1608,6 +1629,81 @@ mod tests {
                 "Ctrl+Y"
             }
         );
+    }
+
+    /// The list brings the selected entry into view as it is first laid
+    /// out, after a text size chosen with it open, with or without its
+    /// height changing, and after a resize only where the new height would
+    /// cut the entry it showed whole: with the entry 42 px tall 380 px down
+    /// a 428 px list, a text size with the height held, which the window
+    /// tests cannot hold to the pixel, brings it in, as does a 400 px list
+    /// that would cut it, while a resize with the list scrolled past it, or
+    /// one that leaves it whole, keeps the list where it was. With the
+    /// height held, a text size brought nothing back.
+    #[test]
+    fn the_list_follows_the_entry_through_a_text_size_but_not_a_resize_past_it() {
+        let span = Span {
+            heading: None,
+            top: px(380.),
+            bottom: px(422.),
+        };
+        let laid = |view: f32, scale: f32| Laid {
+            view: px(view),
+            scale,
+        };
+        for (was, now, scrolled, follows, what) in [
+            (
+                Laid::default(),
+                laid(428., 1.),
+                px(0.),
+                true,
+                "first laid out",
+            ),
+            (
+                laid(428., 1.),
+                laid(428., 1.4),
+                px(1000.),
+                true,
+                "a text size, height held",
+            ),
+            (
+                laid(428., 1.),
+                laid(560., 1.4),
+                px(1000.),
+                true,
+                "a text size, height grown",
+            ),
+            (
+                laid(428., 1.),
+                laid(400., 1.),
+                px(0.),
+                true,
+                "a resize that cuts it",
+            ),
+            (
+                laid(428., 1.),
+                laid(300., 1.),
+                px(1000.),
+                false,
+                "a resize past it",
+            ),
+            (
+                laid(428., 1.),
+                laid(500., 1.),
+                px(0.),
+                false,
+                "a resize that keeps it whole",
+            ),
+            (
+                laid(428., 1.),
+                laid(428., 1.),
+                px(1000.),
+                false,
+                "nothing changed",
+            ),
+        ] {
+            assert_eq!(span.follows(was, now, scrolled), follows, "{what}");
+        }
     }
 }
 
@@ -2270,6 +2366,61 @@ mod list_tests {
                  whole to its foot, {:?}: {drawn:?}",
                 shown.view(),
                 shown.foot
+            );
+            close(cx);
+        }
+    }
+
+    /// A text size chosen with the list open brings the selected entry back
+    /// whole, even where the wheel had moved the list away from it, as a
+    /// resize would not: at 13 pt in a 1200 × 800 window, with the second
+    /// group's first entry selected and the wheel 1,000 px past it, 18 pt,
+    /// which grows the list, shows the entry whole. Taken for a resize, the
+    /// larger size left the entry where the scaled rows put it, out of the
+    /// list. Where the dialog's cap holds the list's height through the
+    /// change, `Span::follows` is checked directly: the cap snaps to the half
+    /// pixel and the dialog's other parts take fractional heights, so no
+    /// window from 14 to 18 pt held the 13 pt list's 428 px to 0.01 px.
+    #[gpui::test]
+    async fn a_text_size_chosen_with_the_list_open_brings_the_selection_back(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        {
+            let (text, height) = (18, 800.);
+            open(&app, cx, 13, (1200., height));
+            let mut shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            let heading = shown.headings()[1];
+            let first = heading + 1;
+            for _ in 0..entries.iter().position(|&entry| entry == first).unwrap() {
+                press(cx, "down");
+            }
+            scroll_down(
+                cx,
+                shown.centre,
+                ScrollDelta::Pixels(point(px(0.), px(-1000.))),
+            );
+            assert!(
+                shown.drawn(cx, first).is_none(),
+                "the wheel moves entry {first} out of the list"
+            );
+            let view = shown.view();
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            draw(cx);
+            shown.relist(cx);
+            let at = format!("{text} pt in a 1200 × {height} window");
+            assert!(
+                (shown.view() - view).abs() > EDGE,
+                "{at}: the list grows from its 13 pt {view:?}: {:?}",
+                shown.view()
+            );
+            assert!(
+                shown.selected(cx) == Some(first) && shown.whole(cx, first),
+                "{at}: entry {first} comes back whole: it is drawn at {:?}",
+                shown.drawn(cx, first)
             );
             close(cx);
         }
