@@ -106,6 +106,14 @@ pub(crate) trait CredentialStore {
     fn remove(&self) -> Result<()>;
 }
 pub(crate) struct SecureStore;
+impl SecureStore {
+    /// The store as the panel names it to the person, from this one place: macOS Keychain
+    /// only on a Mac. Connect's success once named macOS Keychain on every platform.
+    #[cfg(target_os = "macos")]
+    pub(crate) const NAME: &str = "macOS Keychain";
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) const NAME: &str = "secure storage";
+}
 #[cfg(target_os = "macos")]
 impl CredentialStore for SecureStore {
     fn load(&self) -> Result<Option<Credential>> {
@@ -212,7 +220,8 @@ impl GhTransport {
         SecureStore.save(&client.0.credential)?;
         ensure!(
             !control.is_cancelled(),
-            "GitHub account connection cancelled; authorization may be stored in Keychain"
+            "GitHub account connection cancelled; authorization may be stored in {}",
+            SecureStore::NAME
         );
         Ok(user.login)
     }

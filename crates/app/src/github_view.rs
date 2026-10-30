@@ -4,6 +4,7 @@ use crate::github::{
     self, Action, Client, ComparisonTarget, NewPull, PullRequest, PullStatus, Repository,
     ReviewDraft, ReviewEvent,
     drafts::{self, Draft},
+    transport::SecureStore,
 };
 use crate::native_accessibility::LiveRegion as _;
 use crate::*;
@@ -395,6 +396,33 @@ impl RequestKind {
                 "Cancel reading the pull request templates",
                 "Stop reading the PR templates locally. Nothing changes.",
             ),
+        }
+    }
+    /// What the panel's own Cancel says it asked for while this runs, as the
+    /// operation bar's Cancel says in its tooltip ([`Self::cancel`]): what
+    /// stops and what may already have happened. It once said "Your review
+    /// draft is retained" while Connect, Disconnect or a comparison ran,
+    /// which involve no review draft.
+    fn requested(self) -> &'static str {
+        match self {
+            Self::Load => {
+                "Cancellation requested. The request only reads; your drafts are retained."
+            }
+            Self::Send => {
+                "Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."
+            }
+            Self::Connect => {
+                "Cancellation requested. Authorization may already be stored; Disconnect removes it."
+            }
+            Self::Disconnect => {
+                "Cancellation requested. GitTurtle keeps its stored authorization unless its removal has already begun."
+            }
+            Self::Compare => {
+                "Cancellation requested. Comparing the PR's changes locally changes nothing."
+            }
+            Self::Templates => {
+                "Cancellation requested. Reading the PR templates locally changes nothing."
+            }
         }
     }
     /// What the panel says in its failure's place once Cancel stopped this
@@ -1175,7 +1203,8 @@ impl Panel {
             |result, this, _, _| match result {
                 Ok(login) => {
                     this.notice = Some(format!(
-                        "Connected as {login}; authorization is stored in macOS Keychain."
+                        "Connected as {login}; authorization is stored in {}.",
+                        SecureStore::NAME
                     ));
                     this.account = Some(login);
                 }
@@ -1664,7 +1693,7 @@ impl Render for Panel {
             .when(pending,|element|element.child(self.part("busy",div(),cx).flex().items_center().gap_2().pl(text_inset())
                 .child(label("github-busy",self.request.label()).role(Role::Status).live_region(gpui::accesskit::Live::Polite, true))
                 .child(button("github-cancel","Cancel","",false).track_focus(self.cancel_request.handle()).debug_selector(||"github-cancel".into()).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
-                    if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(if this.request.writing(){"Cancellation requested. Check GitHub before resubmitting; an accepted action is never replayed."}else{"Cancellation requested. Your review draft is retained."}.into());cx.notify();})))))
+                    if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(this.request.requested().into());cx.notify();})))))
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
                 // The list scrolls, so it clips its rows on both axes. Its full-width rows keep
                 // their rings' room inside that clip: its sides give the room back through their
@@ -2694,6 +2723,79 @@ mod tests {
                 );
             });
         }
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+    }
+
+    /// The panel's own Cancel says what it asked for in the request's own words
+    /// (`RequestKind::requested`), as the operation bar's Cancel does in its tooltip: it said
+    /// "Your review draft is retained" while Connect, Disconnect or a comparison ran, where no
+    /// review draft is involved. Connect's success names the platform's store from one place
+    /// (`SecureStore::NAME`): it named macOS Keychain on every platform.
+    #[gpui::test]
+    async fn the_panel_says_what_its_cancel_and_connect_did(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::click;
+        use crate::views::tests::draw;
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| panel.review.fixture = false);
+        });
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+        for kind in RequestKind::ALL {
+            let held = app.update(cx, |app, _| app.operations.hold());
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.run(
+                        kind,
+                        |_| Ok(()),
+                        |_: anyhow::Result<()>, _, _, _| {},
+                        window,
+                        cx,
+                    )
+                })
+            });
+            draw(cx);
+            click(cx, "github-cancel");
+            let notice = panel.read_with(cx, |panel, _| panel.notice.clone());
+            assert_eq!(notice.as_deref(), Some(kind.requested()), "{kind:?}");
+            if matches!(
+                kind,
+                RequestKind::Connect | RequestKind::Disconnect | RequestKind::Compare
+            ) {
+                assert!(
+                    !kind.requested().contains("review draft"),
+                    "{kind:?} involves no review draft"
+                );
+            }
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle_panel(&app, cx).await;
+        }
+
+        // Connect, reaching the test build's stand-in for the account.
+        click(cx, "github-account-options");
+        cx.run_until_parked();
+        draw(cx);
+        click(cx, "github-connect");
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        let notice = panel.read_with(cx, |panel, _| panel.notice.clone().unwrap_or_default());
+        assert_eq!(
+            notice,
+            format!(
+                "Connected as {}; authorization is stored in {}.",
+                account::LOGIN,
+                SecureStore::NAME
+            )
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert!(
+            !notice.contains("Keychain"),
+            "no Keychain outside macOS: {notice}"
+        );
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
         settle_panel(&app, cx).await;
     }
