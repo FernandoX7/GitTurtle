@@ -6,14 +6,18 @@
 //! Fetch, Pull, Push, Create and Switch, and the branch picker's switch and
 //! tracking-branch creation).
 //!
-//! Its announcement node also says what no control confirms ([`announce`]),
-//! and an alert node beside it says a failure at once ([`alert`]): the GitHub
-//! panel's notice, and its failures and refused input, as the panel opens
-//! with them and as they change, from wherever its body has scrolled them;
-//! and Stashes' answer to Review restore…, and the end of the pause it was
-//! refused for, from wherever its detail has scrolled the note that says
-//! them. Neither ends the confirmation a control reads, nor shortens its
-//! time.
+//! Its announcement node, at the window root, also says what no control
+//! confirms ([`announce`]), and an alert node beside it says a failure at
+//! once ([`alert`]): the GitHub panel's notice, and its failures and refused
+//! input, as the panel opens with them and as they change, from wherever its
+//! body has scrolled them; and Stashes' answer to Review restore…, and the
+//! end of the pause it was refused for, from wherever its detail has
+//! scrolled the note that says them. Neither ends the confirmation a control
+//! reads, nor shortens its time. The announcement node also says one failure
+//! that focus moved away from, with no mark: a Reflog entry's read that fails
+//! as focus leaves its Cancel for the entry (`reflog`), whose error the
+//! content then shows past its fold, where AccessKit's filter leaves its line
+//! out.
 //!
 //! Every copy a person asks for goes through [`copy`]: it writes the
 //! clipboard, marks the copy button it came from, if any, and posts one polite

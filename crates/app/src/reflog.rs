@@ -1,5 +1,4 @@
 //! A local reflog is an expiring Git record, separate from app activity.
-use crate::native_accessibility::LiveRegion as _;
 use crate::*;
 use focus_reveal::{FocusReveal, Trigger};
 use gitturtle_core::{ReflogEntry, ReflogPage, ReflogRecoveryPlan, WriteCommand};
@@ -385,14 +384,6 @@ pub(crate) struct ReflogBrowser {
     /// details or below Review recovery branch…, the content's last line
     /// ([`reveal_landed`]).
     reveal_error: bool,
-    /// Whether the error the last read ended with is a polite live region,
-    /// announced to assistive technology once it has read what it is
-    /// saying: an entry's read that fails while keyboard focus is on its
-    /// Cancel, which hands focus to the entry and shows the entry rather
-    /// than the error. At 18 pt in a 461 × 490 half tile the entry and its
-    /// error cannot both show, so nothing in view or in speech reported the
-    /// failure. It holds while the error stands, until the next read.
-    announce_error: bool,
     /// The changed-file list's scroll, which its scrollbar follows.
     files_scroll: ScrollHandle,
     /// The entries whose text the last layout cut.
@@ -470,7 +461,6 @@ impl ReflogBrowser {
             entries: FocusReveal::new(Trigger::Keyboard),
             reveal_filter: false,
             reveal_error: false,
-            announce_error: false,
             files_scroll: ScrollHandle::new(),
             cut_entries: CutEntries::default(),
             pending: false,
@@ -635,7 +625,6 @@ impl ReflogBrowser {
         self.cancellation.cancel();
         self.pending = true;
         self.error = None;
-        self.announce_error = false;
         if self.reading || self.repeat.is_some() {
             self.waiting = Some(Box::new(move |this, window, cx| {
                 this.submit(operation, receive, window, cx)
@@ -720,13 +709,20 @@ impl ReflogBrowser {
                 // view. Focus that leaves an entry's Cancel for the entry,
                 // far above the error, is revealed instead, so the entry it
                 // lands on draws its ring, and the error, which may then lie
-                // below the fold, is announced politely, after the entry.
+                // below the fold, is announced politely, once, from the
+                // window root's announcement node, a fresh node for each
+                // failure. The error's own line, a live region in the
+                // content, was left out of the tree by AccessKit's filter
+                // while it lay wholly past the content's clip beside
+                // neighbours past it too, so it was announced only once
+                // scrolled into view, and again at each scroll back in.
                 match place {
                     ReadPlace::Log => this.reveal_filter = true,
                     ReadPlace::Entry => {
-                        let failed = this.error.is_some();
-                        this.reveal_error = failed && !left_cancel;
-                        this.announce_error = failed && left_cancel;
+                        this.reveal_error = this.error.is_some() && !left_cancel;
+                        if left_cancel && let Some(error) = this.error.clone() {
+                            copy_feedback::confirm(window, cx, None, error);
+                        }
                     }
                     ReadPlace::Recovery => this.reveal_error = this.error.is_some(),
                 }
@@ -976,7 +972,6 @@ impl Render for ReflogBrowser {
             label("reflog-error", error.clone())
                 .text_size(crate::appearance::ui_text(12.))
                 .text_color(rgb(p.warning))
-                .when(self.announce_error, |error| error.polite())
                 .when(reveal_error, |error| {
                     error.on_prepaint(reveal_landed(self.content.scroll().clone(), room))
                 })
@@ -1391,9 +1386,10 @@ mod tests {
     /// frame that draws the key's move of focus; a later scroll stays where
     /// it takes the content. Focus that leaves the read's Cancel for the
     /// entry as the error lands is shown instead, the entry's ring whole,
-    /// and the error, then below the fold, is announced politely, after the
-    /// entry. The error lay out of view, focus on the entry, and nothing in
-    /// view said the read had failed; after Cancel, nothing in speech did.
+    /// and the error stays below the fold, announced instead
+    /// (`a_failed_read_landing_on_its_cancel_is_announced_once`). The
+    /// error lay out of view, focus on the entry, and nothing in view said
+    /// the read had failed.
     #[gpui::test]
     async fn an_entry_read_error_scrolls_into_view(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
@@ -1472,23 +1468,265 @@ mod tests {
             "focus moves from Cancel to the entry"
         );
         crate::tags::tests::assert_rings_whole(cx, &["reflog-entry-1"]);
-        // The content shows the entry, its error below the fold, so the
-        // error is announced instead, politely, once the entry has been.
+        // The content shows the entry, its error below the fold.
         let content = rendered(cx, "reflog-browser-content");
         let error = rendered(cx, "reflog-error");
         assert!(
             !shows_whole(content, error),
             "the error {error:?} lies past the content {content:?}"
         );
-        assert_eq!(
-            native_accessibility::written::announced("reflog-error"),
-            Some(native_accessibility::written::Announced {
-                live: gpui::accesskit::Live::Polite,
-                atomic: true,
-                busy: false,
-            }),
-            "the error is announced politely"
+    }
+
+    /// An entry's read that fails while keyboard focus is on its loading
+    /// row's Cancel is announced once, as it fails, at 18 pt in a 461 × 490
+    /// half tile, where focus moves to the entry, which the content shows,
+    /// and the error lies past the fold: from the window root's announcement
+    /// node, beside the page and the dialog, which AccessKit's filter keeps
+    /// wherever the content scrolls. Scrolling the error into view and out
+    /// again announces nothing more, and the error's line is no live region.
+    /// A second failure with the same text, while the first one's node still
+    /// stands, is announced again from a fresh node. The error's line was
+    /// the live region: the filter leaves out a child of the clipping
+    /// content that lies wholly past its clip beside neighbours past it too,
+    /// so the line was announced only once scrolled in, and again at each
+    /// scroll back in.
+    ///
+    /// The test platform builds no accessibility tree, so the test builds
+    /// what GPUI would: the nodes the wrappers wrote, the dialog's own node
+    /// beside the page holding what the dialog layer drew, and the window
+    /// root's announcement node, each keyed by its element ID, so that
+    /// successive frames update one another. It walks each frame through
+    /// AccessKit's filter and, on Linux, feeds the AT-SPI adapter frame by
+    /// frame, as GPUI's Linux backend does.
+    #[gpui::test]
+    async fn a_failed_read_landing_on_its_cancel_is_announced_once(cx: &mut TestAppContext) {
+        use crate::native_accessibility::{reachable, written};
+        use gpui::accesskit::{Live, Node, Rect, Role as A11yRole, TreeUpdate};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = pruned_repository(fixture.path());
+        let (app, browser, cx) = opened_browser(cx, &repo).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        set_interface_text_size(cx, &app, 18);
+        let entry = |index: usize| Some(ElementId::from(("reflog-entry", index)));
+        let in_list = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| browser.read(cx).entries.focused(window))
+        };
+        // The window's tree as its next frame builds it: the page, hidden
+        // beneath the dialog, the window root's announcement beside it, and
+        // the dialog holding the Reflog's content, whose wrappers' nodes go
+        // in the order they were written, the tree's. The kit's Copy commit
+        // ID button writes its own node, after the entry's details: the
+        // filter keeps the first child past the content's fold, which the
+        // details' last line, partly drawn above the fold, would otherwise
+        // make the error.
+        let frame = |cx: &mut VisualTestContext| -> TreeUpdate {
+            written::forget();
+            draw(cx);
+            let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+            let physical = |bounds: Bounds<Pixels>| Rect {
+                x0: f64::from(f32::from(bounds.left())) * scale,
+                y0: f64::from(f32::from(bounds.top())) * scale,
+                x1: f64::from(f32::from(bounds.right())) * scale,
+                y1: f64::from(f32::from(bounds.bottom())) * scale,
+            };
+            let mut dialog = Node::new(A11yRole::Dialog);
+            dialog.set_label("Local reflog and recovery");
+            dialog.set_modal();
+            let mut tree = written::Assembly::default().written("gitturtle-page", None);
+            if let Some((id, text)) = copy_feedback::tests::announced(cx) {
+                let key = id.to_string();
+                assert_eq!(
+                    written::announced(&key),
+                    Some(written::Announced {
+                        live: Live::Polite,
+                        atomic: true,
+                        busy: false,
+                    }),
+                    "the announcement is polite"
+                );
+                let mut node = Node::new(A11yRole::Status);
+                node.set_label(text.clone());
+                node.set_value(text);
+                node.set_live(Live::Polite);
+                node.set_live_atomic();
+                tree = tree.node(&key, node, None);
+            }
+            tree = tree.node("dialog", dialog, None);
+            let mut inside: Vec<(u64, String)> = written::inside("reflog-browser-content")
+                .into_iter()
+                .filter_map(|id| Some((written::get(&id)?.order, id)))
+                .collect();
+            inside.sort();
+            for (_, id) in inside {
+                tree = tree.written(&id, Some("dialog"));
+                if id == "reflog-selected-object"
+                    && let Some(bounds) = cx.debug_bounds("copy-reflog-oid/rest")
+                {
+                    let mut copy = Node::new(A11yRole::Button);
+                    copy.set_label("Copy commit ID");
+                    copy.set_bounds(physical(bounds));
+                    tree = tree.node("copy-reflog-oid", copy, Some("reflog-browser-content"));
+                }
+            }
+            let window = Bounds::new(
+                point(px(0.), px(0.)),
+                cx.update(|window, _| window.viewport_size()),
+            );
+            tree.tree(physical(window), None)
+        };
+        // Whether an assistive technology reaches a node named `name` with
+        // `role` in `update`'s tree.
+        let reaches = |update: &TreeUpdate, role: A11yRole, name: &str| {
+            reachable(update.clone())
+                .iter()
+                .any(|node| node.role == role && node.name.as_deref() == Some(name))
+        };
+        // What an assistive technology reaches in `update`'s tree, by role,
+        // the start of its name and its bounds, for a failure's message.
+        let reached = |update: &TreeUpdate| -> Vec<String> {
+            reachable(update.clone())
+                .iter()
+                .map(|node| {
+                    let name = node.name.as_deref().unwrap_or_default();
+                    let name: String = name.chars().take(24).collect();
+                    format!("{:?} {name:?} {:?}", node.role, node.bounds)
+                })
+                .collect()
+        };
+        // Down from the first entry reaches the pruned commit, its read held
+        // as a slow read is, and Tab past Copy commit ID reaches the read's
+        // Cancel, which focus leaves for the entry as the read fails.
+        let fail_on_cancel = |cx: &mut VisualTestContext| {
+            let held = browser.read_with(cx, |this, _| this.reader.hold());
+            cx.simulate_keystrokes("down");
+            draw(cx);
+            cx.simulate_keystrokes("tab tab");
+            draw(cx);
+            let cancel = browser.read_with(cx, |this, _| this.cancel_read.handle().clone());
+            assert!(
+                cx.update(|window, _| cancel.is_focused(window)),
+                "Tab reaches the read's Cancel"
+            );
+            held
+        };
+
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(in_list(cx), entry(0), "the keyboard is on the first entry");
+        let held = fail_on_cancel(cx);
+        #[cfg(target_os = "linux")]
+        let mut bus = crate::native_accessibility::atspi_state_tests::Bus::new(frame(cx));
+        #[cfg(target_os = "linux")]
+        bus.announced();
+        drop(held);
+        settle_reads(cx, &browser);
+        let error = browser
+            .read_with(cx, |this, _| this.error.clone())
+            .expect("the pruned commit's read fails");
+        assert_eq!(in_list(cx), entry(1), "focus moves to the entry");
+        let failed = frame(cx);
+        let content = rendered(cx, "reflog-browser-content");
+        let line = rendered(cx, "reflog-error");
+        assert!(
+            line.top() >= content.bottom(),
+            "the error {line:?} lies wholly past the content {content:?}"
         );
+        assert!(
+            !reaches(&failed, A11yRole::Label, &error),
+            "the filter leaves out the error's line past the fold: {:#?}",
+            reached(&failed)
+        );
+        assert!(
+            reaches(&failed, A11yRole::Status, &error),
+            "the announcement is in reach: {:#?}",
+            reached(&failed)
+        );
+        assert_eq!(
+            written::announced("reflog-error"),
+            None,
+            "the error's line is no live region"
+        );
+        let (first, _) = copy_feedback::tests::announced(cx).expect("the failure is announced");
+        #[cfg(target_os = "linux")]
+        {
+            bus.update(failed);
+            assert_eq!(
+                bus.announced(),
+                std::slice::from_ref(&error),
+                "announced once as it fails"
+            );
+        }
+
+        // The error scrolled into view, out again, and in again.
+        for (at, in_view) in [("in", true), ("out", false), ("in again", true)] {
+            if in_view {
+                content_to_end(cx, &browser);
+            } else {
+                content_to_top(cx, &browser);
+            }
+            let scrolled = frame(cx);
+            assert_eq!(
+                reaches(&scrolled, A11yRole::Label, &error),
+                in_view,
+                "the error's line is in reach only while scrolled {at}: {:#?}",
+                reached(&scrolled)
+            );
+            #[cfg(target_os = "linux")]
+            {
+                bus.update(scrolled);
+                assert_eq!(
+                    bus.announced(),
+                    Vec::<String>::new(),
+                    "scrolled {at}, the error is not announced again"
+                );
+            }
+        }
+
+        // Up to the entry above, whose commit lands, and the same failure
+        // again from its Cancel while the first one's node still stands.
+        content_to_top(cx, &browser);
+        cx.simulate_keystrokes("up");
+        settle_reads(cx, &browser);
+        assert_eq!(in_list(cx), entry(0));
+        let held = fail_on_cancel(cx);
+        let waiting = frame(cx);
+        assert_eq!(
+            copy_feedback::tests::announced(cx).map(|(id, _)| id),
+            Some(first.clone()),
+            "the first failure's node still stands"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            bus.update(waiting);
+            bus.announced();
+        }
+        #[cfg(not(target_os = "linux"))]
+        drop(waiting);
+        drop(held);
+        settle_reads(cx, &browser);
+        assert_eq!(
+            browser.read_with(cx, |this, _| this.error.clone()),
+            Some(error.clone()),
+            "the second read fails with the same text"
+        );
+        let again = frame(cx);
+        assert!(
+            reaches(&again, A11yRole::Status, &error),
+            "the second announcement is in reach: {:#?}",
+            reached(&again)
+        );
+        #[cfg(target_os = "linux")]
+        {
+            bus.update(again);
+            assert_eq!(
+                bus.announced(),
+                std::slice::from_ref(&error),
+                "the second failure is announced once"
+            );
+        }
+        let (second, _) = copy_feedback::tests::announced(cx).expect("the failure is announced");
+        assert_ne!(second, first, "each failure is a fresh node");
     }
 
     /// Down held past the last entry while a commit's read is slow selects
