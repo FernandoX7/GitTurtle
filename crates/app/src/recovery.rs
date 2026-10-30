@@ -22,6 +22,11 @@ pub(super) const PAUSED_REFUSAL: &str =
 /// read finds the integration it refused for ended
 /// (`GitTurtle::integration_ended`).
 const PAUSE_ENDED: &str = "The paused operation has ended. Review again to continue.";
+/// Review restore…'s label while its own preparation looks busy
+/// ([`StashBrowser::review_restore`]).
+const RESTORE_PREPARING: &str = "Preparing…";
+/// Review restore…'s name while its own preparation runs, heard at once.
+const RESTORE_PREPARING_NAME: &str = "Review restore…, preparing the restoration";
 const STASH_PAGE_SIZE: usize = 40;
 /// The least height a saved file's comparison keeps in the Stashes detail,
 /// at the default interface size, where the window leaves the detail less
@@ -1807,6 +1812,84 @@ impl StashBrowser {
         answers
     }
 
+    /// Whether Review restore…'s own preparation still runs: the window's
+    /// recovery read it started, which ends as it answers or is cancelled,
+    /// from Stashes or from the window. A flag only its answer cleared would
+    /// stay set where the window dropped that answer.
+    fn preparing(&self, cx: &App) -> bool {
+        self.restoring.as_ref().is_some_and(|(_, read)| {
+            self.owner.upgrade().is_some_and(|owner| {
+                let owner = owner.read(cx);
+                owner.recovery.generation == *read && owner.recovery.task.is_some()
+            })
+        })
+    }
+
+    /// Whether a press of Drop… or Review restore… is refused, and whether
+    /// they look it: the window's busy spell, its own Review restore…'s
+    /// preparation included, or the browser's own read.
+    fn refusal(&self, cx: &App) -> (bool, bool) {
+        let busy = self.metadata_task.is_some();
+        let (refused, dimmed) =
+            crate::workspace::dialog_refusal(&self.owner, Some(self.repository.path()), cx);
+        (busy || refused, busy || dimmed)
+    }
+
+    /// Review restore…, tracking `focus`. While Git prepares its
+    /// restoration it says so in place, where the window's progress label
+    /// that says it lies beneath the dialog: its name at once, and its label
+    /// reads "Preparing…" once the preparation looks busy, as it dims
+    /// ([`crate::workspace::BusyLook`]). Both labels share one cell, so the
+    /// control keeps the wider one's width, its own, and Drop… and the
+    /// footer beside it never move; focus stays on it.
+    fn review_restore(&self, focus: &FocusHandle, cx: &App) -> Button {
+        let (refused, dimmed) = self.refusal(cx);
+        let preparing = self.preparing(cx);
+        let shown = preparing && dimmed;
+        // Each label as the kit lays its own out, centred in the cell.
+        let cell = |text: &'static str, state: &'static str, visible: bool| {
+            div()
+                .row_start(1)
+                .col_start(1)
+                .flex()
+                .justify_center()
+                .when(!visible, |cell| cell.invisible())
+                // Named only while shown, so tests find
+                // `restore-saved-stash/rest` or `…/preparing`, never both.
+                .when(visible, |cell| {
+                    cell.debug_selector(move || format!("restore-saved-stash/{state}"))
+                })
+                .child(
+                    div()
+                        .min_w_0()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .line_height(relative(1.))
+                        .child(text),
+                )
+        };
+        let restore = Button::new("restore-saved-stash")
+            .primary()
+            .small()
+            .child(
+                div()
+                    .grid()
+                    .grid_cols(1)
+                    .items_center()
+                    .child(cell("Review restore…", "rest", !shown))
+                    .child(cell(RESTORE_PREPARING, "preparing", shown)),
+            )
+            // The content is drawn text, which names nothing.
+            .accessibility_label(if preparing {
+                RESTORE_PREPARING_NAME
+            } else {
+                "Review restore…"
+            })
+            .track_focus(focus)
+            .debug_selector(|| "restore-saved-stash".into());
+        crate::workspace::refusing(restore, || "restore-saved-stash".into(), refused, dimmed)
+    }
+
     /// Stops preparing Review restore…'s restoration, which no longer
     /// answers what Stashes shows, or Stashes has closed: the window's read
     /// is cancelled ([`GitTurtle::cancel_recovery_preparation`]), so its
@@ -2422,9 +2505,7 @@ impl Render for StashBrowser {
         // once it looks busy (`workspace::BusyLook`); each refused a press
         // silently, announced and drawn available. The browser's own read
         // leaves them unavailable at once.
-        let (refused, dimmed) =
-            crate::workspace::dialog_refusal(&self.owner, Some(self.repository.path()), cx);
-        let (refused, dimmed) = (busy || refused, busy || dimmed);
+        let (refused, dimmed) = self.refusal(cx);
         // One line of the footer note, which a refusal keeps two or one of
         // in the stacked detail.
         let note_line = crate::image_compare::text_line(crate::appearance::ui_text(10.), window);
@@ -2481,20 +2562,7 @@ impl Render for StashBrowser {
                         .on_click(cx.listener(|this, _, window, cx| this.drop_stash(window, cx))),
                 )
                 .child(
-                    Button::new("restore-saved-stash")
-                        .primary()
-                        .small()
-                        .label("Review restore…")
-                        .track_focus(&restore)
-                        .debug_selector(|| "restore-saved-stash".into())
-                        .map(|restore| {
-                            crate::workspace::refusing(
-                                restore,
-                                || "restore-saved-stash".into(),
-                                refused,
-                                dimmed,
-                            )
-                        })
+                    self.review_restore(&restore, cx)
                         .on_click(cx.listener(|this, _, window, cx| this.restore(window, cx))),
                 );
             div()
@@ -4275,6 +4343,129 @@ mod tests {
         drop(stashes);
         cx.update(|window, cx| window.close_all_dialogs(cx));
         crate::views::tests::draw(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+        drop(fixture);
+    }
+
+    /// While Git prepares Review restore…'s restoration, Review restore…
+    /// says so in place, at 13 pt in a 1480 × 980 window and at 18 pt in a
+    /// 461 × 490 one, where it lies in the stacked detail: pressed from the
+    /// keyboard, its name says it is preparing at once, and once the
+    /// preparation looks busy it reads "Preparing…", keeping focus, whole
+    /// with its ring, and its width, so Drop… and the footer stay where they
+    /// were. Once Git answers, the review opens in Stashes' place. Nothing in
+    /// Stashes said Git was preparing: the window's progress label that said
+    /// so lay beneath the dialog's backdrop.
+    #[gpui::test]
+    async fn review_restore_says_it_is_preparing_in_place(cx: &mut gpui::TestAppContext) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        // The app's palette, whose accent draws the keyboard ring.
+        crate::focus_ring::sweep::prepare(&app, cx);
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let _git = two_stashes(&repository);
+        // Review restore…'s accessibility node as the window would write it
+        // now, built inside a draw as `tags::tests` builds Review tag's.
+        let name = |stashes: &Entity<StashBrowser>, cx: &mut gpui::VisualTestContext| {
+            let stashes = stashes.clone();
+            crate::views::tests::view_node(cx, move |window, cx| {
+                use gpui::Element as _;
+                let detail = stashes.read(cx).detail.clone();
+                let focus = detail.focus("restore-saved-stash", cx);
+                let button = stashes.read(cx).review_restore(&focus, cx);
+                let button = button.base(window, cx);
+                let element = RenderOnce::render(button, window, cx).into_element();
+                let mut node = gpui::accesskit::Node::new(
+                    element.a11y_role().expect("Review restore…'s role"),
+                );
+                element.write_a11y_info(&mut node);
+                node
+            })
+            .label()
+            .map(str::to_owned)
+        };
+        let footer = |cx: &mut gpui::VisualTestContext| {
+            ["restore-saved-stash", "drop-saved-stash", "stash-actions"]
+                .map(|name| cx.debug_bounds(name).unwrap_or_else(|| panic!("no {name}")))
+        };
+        let label = |cx: &mut gpui::VisualTestContext| match (
+            cx.debug_bounds("restore-saved-stash/rest").is_some(),
+            cx.debug_bounds("restore-saved-stash/preparing").is_some(),
+        ) {
+            (true, false) => "Review restore…",
+            (false, true) => RESTORE_PREPARING,
+            drawn => panic!("Review restore… draws one label, not {drawn:?}"),
+        };
+        for (width, height, interface) in [(1480., 980., 13), (461., 490., 18)] {
+            let at = format!("{interface} pt in {width} × {height}");
+            cx.update(|window, cx| appearance::apply_text_sizes(interface, 12, window, cx));
+            cx.simulate_resize(size(px(width), px(height)));
+            open_selected_stash(&app, cx).await;
+            let stashes = app
+                .read_with(cx, |app, _| app.recovery.browser.clone())
+                .and_then(|browser| browser.upgrade())
+                .expect("Stashes is open");
+            tab_to(&stashes, "restore-saved-stash", cx);
+            let at_rest = footer(cx);
+            assert_eq!(label(cx), "Review restore…", "{at}");
+            assert_eq!(
+                name(&stashes, cx).as_deref(),
+                Some("Review restore…"),
+                "{at}"
+            );
+
+            let held = app.update(cx, |app, _| app.operations.hold());
+            space(cx);
+            crate::views::tests::draw(cx);
+            assert!(
+                stashes.read_with(cx, |stashes, cx| stashes.preparing(cx)),
+                "{at}: Git prepares the restoration"
+            );
+            // Heard at once; the look waits as the busy look does.
+            assert_eq!(
+                name(&stashes, cx).as_deref(),
+                Some(RESTORE_PREPARING_NAME),
+                "{at}: its name says it is preparing at once"
+            );
+            assert_eq!(label(cx), "Review restore…", "{at}: the look waits");
+            cx.executor()
+                .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+            crate::views::tests::draw(cx);
+            assert_eq!(
+                label(cx),
+                RESTORE_PREPARING,
+                "{at}: it reads Preparing… once the preparation looks busy"
+            );
+            let preparing = footer(cx);
+            for ((before, now), name) in
+                at_rest
+                    .iter()
+                    .zip(&preparing)
+                    .zip(["Review restore…", "Drop…", "the footer"])
+            {
+                assert_eq!(before, now, "{at}: {name} keeps its place and width");
+            }
+            assert_eq!(
+                cx.update(|window, cx| stashes.read(cx).detail.focused(window)),
+                Some("restore-saved-stash".into()),
+                "{at}: Review restore… keeps focus"
+            );
+            let ring = ring_around(cx, preparing[0])
+                .unwrap_or_else(|| panic!("{at}: Review restore… draws no ring"));
+            assert!(ring.whole, "{at}: Review restore…'s ring {ring:?} is whole");
+
+            drop(held);
+            recovery_lands(&app, cx);
+            assert!(
+                cx.debug_bounds("operation-consequences").is_some()
+                    && cx.debug_bounds("stash-browser").is_none(),
+                "{at}: the review opens in place of Stashes"
+            );
+            drop(stashes);
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            crate::views::tests::draw(cx);
+        }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
         drop(fixture);
     }
