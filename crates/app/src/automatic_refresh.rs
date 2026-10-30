@@ -77,12 +77,6 @@ impl State {
     pub(crate) fn quiet_read_requested(&self) -> bool {
         !self.pending.is_empty() || self.inflight.is_some()
     }
-    /// Whether a quiet read runs or waits to run: it reads the shown
-    /// repository's working state whatever it was asked for, and one that
-    /// waits starts as the write, read or page that holds it back ends.
-    pub(super) fn reads_working(&self) -> bool {
-        self.task.is_some() || !self.pending.is_empty()
-    }
     pub fn reset(&mut self) {
         let epoch = self.epoch.wrapping_add(1);
         *self = Self {
@@ -317,6 +311,19 @@ impl GitTurtle {
     /// available again, its cursor reset at each.
     pub(super) fn quiet_reads_held(&self) -> bool {
         self.page != AppPage::Repository || self.inspection_open()
+    }
+
+    /// Whether a quiet read reads the shown repository's working state,
+    /// whatever it was asked for: one runs, or one waits to start as the
+    /// write, read, search or page that holds it back ends. One an open
+    /// inspection holds back waits for whoever closes it
+    /// ([`Self::inspection_open`]), so it does not count: with attribution
+    /// open on Changes and its status read failed, a change reported
+    /// meanwhile once kept Changes saying "Reading the working tree…" for
+    /// as long as attribution stayed open, though nothing read.
+    pub(super) fn quiet_read_reads_working(&self) -> bool {
+        self.automatic.task.is_some()
+            || (!self.automatic.pending.is_empty() && !self.inspection_open())
     }
 
     pub(super) fn try_automatic_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {

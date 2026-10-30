@@ -1283,6 +1283,84 @@ mod tests {
         );
     }
 
+    /// A quiet read that attribution holds back waits for attribution to
+    /// close, so Changes with no status shown says it is unavailable, not
+    /// reading, until then, and closing attribution starts the read. With
+    /// attribution open on a row, a Refresh whose status read failed and a
+    /// change reported meanwhile kept Changes saying "Reading the working
+    /// tree…" for as long as attribution stayed open, though nothing read,
+    /// and closing it read nothing until another change was reported.
+    #[gpui::test]
+    async fn a_quiet_read_attribution_holds_back_waits_for_it_to_close(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        let (_fixture, app, cx, root) = checked_out(cx).await;
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        quiet_reads_land(&app, cx);
+        select_unstaged(&app, "draft.txt", cx).await;
+        let row = app.read_with(cx, |app, _| app.working_selected.unwrap().0);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_blame(row, window, cx)));
+        crate::blame::lands(&app, cx);
+        assert!(app.read_with(cx, |app, _| app.blame.is_visible()));
+        // Refresh, its status read failing on an unreadable index.
+        let index = root.join(".git").join("index");
+        let kept = std::fs::read(&index).expect("the fixture's index");
+        std::fs::write(&index, b"not an index").unwrap();
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+        settle(&app, cx).await;
+        // A change reported meanwhile, as the watcher reports one.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.queue_automatic_refresh(
+                    crate::local_refresh::LocalChange {
+                        worktree: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.work_status.is_none(), "the status read failed");
+            assert!(app.blame.is_visible(), "attribution stays open");
+            assert!(app.status_task.is_none());
+            assert!(
+                app.automatic.quiet_read_requested(),
+                "a quiet read waits for attribution"
+            );
+        });
+        assert!(
+            cx.debug_bounds("working-unavailable").is_some(),
+            "Changes says it is unavailable"
+        );
+        assert!(cx.debug_bounds("working-reading").is_none());
+        assert_eq!(
+            app.read_with(cx, |app, cx| app.commit_action_label(cx)),
+            "Changes unavailable"
+        );
+        // The index readable again and attribution closed: the next frame
+        // starts the read, drawn before its reply can land, and Changes says
+        // it reads. Nothing else would start it (`quiet_reads_land`).
+        std::fs::write(&index, kept).unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.close_blame(window, cx);
+            });
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        assert!(
+            cx.debug_bounds("working-reading").is_some(),
+            "Changes says it is reading"
+        );
+        quiet_reads_land(&app, cx);
+        draw(cx);
+        assert_eq!(entries(&app, cx), Some(vec!["draft.txt".to_owned()]));
+    }
+
     /// `checked_out`'s repository in the first tab, shown, and a second
     /// repository, `other`, with `draft.txt` new, opened in a second tab and
     /// read there.
