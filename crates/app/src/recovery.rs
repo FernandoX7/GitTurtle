@@ -57,6 +57,15 @@ const STASH_PAGE_SIZE: usize = 40;
 /// at the default interface size, where the window leaves the detail less
 /// than its inspection and it scrolls: about six lines of a patch.
 const STASH_CONTENT_FLOOR: f32 = 120.;
+/// How readily the stacked list panel's spare height and the gap above the
+/// detail give way, next to the detail's floor, which shrinks at the usual
+/// rate: a thousand times as readily, so they give their room first, down to
+/// their least, and only a window too short for even that takes the detail
+/// below its floor, where it scrolls and fades as before rather than spill
+/// past the browser's foot, as a `min_h` floor would. (A detail that shrank
+/// at a tiny rate instead kept its floor and spilled: a flex line whose
+/// shrinking items' factors sum below one gives up only that share.)
+const STACKED_SPARE_SHRINK: f32 = 1000.;
 type Failure = Box<dyn FnOnce(String, &mut Window, &mut Context<GitTurtle>)>;
 /// What runs as a prepared recovery action's review would open, before it
 /// does: whether it still answers what was asked, false dropping it.
@@ -2001,6 +2010,23 @@ impl StashBrowser {
         (busy || refused, busy || dimmed)
     }
 
+    /// The stacked detail's floor: Review restore…'s compact frame whole with
+    /// its ring's `room` above it, the note's `gap_1` and one `line` of the
+    /// note beneath it, so the detail's view, `room` taller than the column
+    /// it fills, holds both with the ring's room at either edge
+    /// ([`reveal_note`]).
+    fn stacked_floor(room: Pixels, line: Pixels, window: &Window) -> Pixels {
+        room + appearance::ui_size(28.) + window.rem_size() * 0.25 + line
+    }
+
+    /// The least the stacked list panel gives up its spare height to: its
+    /// 38 px header, one 58 px row and its 36 px pager at the interface
+    /// size, with the header's and pager's rules and the panel's border
+    /// (1 px each), so its one row stays whole.
+    fn stacked_list_minimum() -> Pixels {
+        appearance::ui_size(38. + 58. + 36.) + px(4.)
+    }
+
     /// Review restore…, tracking `focus`. While Git prepares its
     /// restoration it says so in place, where the window's progress label
     /// that says it lies beneath the dialog: its name at once, and its label
@@ -2980,7 +3006,10 @@ impl Render for StashBrowser {
             div()
                 .flex()
                 .flex_col()
-                .gap_2()
+                // Stacked, the note lies close beneath the buttons, so the
+                // two fit the detail's floor ([`StashBrowser::stacked_floor`]).
+                .when(pinned, |actions| actions.gap_2())
+                .when(!pinned, |actions| actions.gap_1())
                 .flex_shrink_0()
                 // Beside the list the footer ends at the browser's foot,
                 // where the dialog's content clips: it keeps the room of the
@@ -3017,9 +3046,29 @@ impl Render for StashBrowser {
         // keeps that height, which takes no room from the actions; a chosen
         // file's comparison keeps a floor of its own.
         let file_chosen = self.selected_file.is_some();
-        div().debug_selector(|| "stash-browser".into()).h(px(height)).min_h_0().flex().gap_3().when(narrow, |element| element.flex_col())
+        // Stacked beneath the list, the detail keeps a floor that holds
+        // Review restore… whole with its ring and a line of its note beneath
+        // it, so the note's reveal needs no scroll of anything else. Where the
+        // dialog's height cap leaves the detail less, as at 18 pt in a 461 ×
+        // 490 window, the room comes from empty space: the list panel's spare
+        // height beneath its one row, down to its header, that row and its
+        // pager, and the gap between the list and the detail, down to
+        // `gap_1`. A taller window or a smaller size leaves both as they
+        // were, and a window too short even for that takes the detail below
+        // its floor ([`STACKED_SPARE_SHRINK`]). The detail once kept 57.5 px
+        // there, too short for the 39 px Review restore… and its 22.5 px line.
+        let stacked = narrow && detail;
+        let floor = (!pinned && self.snapshot.is_some())
+            .then(|| Self::stacked_floor(room, note_line, window));
+        div().debug_selector(|| "stash-browser".into()).h(px(height)).min_h_0().flex().when(!stacked, |element| element.gap_3()).when(narrow, |element| element.flex_col())
             .child(div().debug_selector(|| "stash-list-panel".into()).w(px(255.)).min_w_0().flex_shrink_0().h_full().flex().flex_col().border_1().border_color(rgb(p.border)).rounded(px(7.)).overflow_hidden()
-                .when(narrow && detail, |element| element.w_full().h(crate::appearance::ui_size(140.)))
+                .when(stacked, |element| {
+                    element
+                        .w_full()
+                        .h(crate::appearance::ui_size(140.))
+                        .flex_shrink(STACKED_SPARE_SHRINK)
+                        .min_h(Self::stacked_list_minimum())
+                })
                 .when(!detail, |element| element.w_full().flex_1())
                 .child(div().h(crate::appearance::ui_size(38.)).flex().items_center().px_2().gap_1().border_b_1().border_color(rgb(p.border))
                     .child(native_accessibility::text("stash-list-heading", heading).flex_1().text_size(crate::appearance::ui_text(11.)).font_weight(FontWeight::SEMIBOLD))
@@ -3051,7 +3100,10 @@ impl Render for StashBrowser {
             // controls around it, as at 18 pt in a 1000 × 680 window, where
             // it kept 30 px without one. Beside the list the actions are the
             // footer below it (`pinned`).
-            .when(detail, |element| element.child(div().debug_selector(|| "stash-detail-column".into()).flex_1().min_w_0().min_h_0().flex().flex_col().gap_2().child(cue.list(div().on_children_prepainted(cue.observe(self.detail.observe())).id("stash-detail").debug_selector(|| "stash-detail".into()).flex_1().min_w_0().min_h_0().p(room).mx(-room).mt(-room).overflow_y_scroll().track_scroll(self.detail.scroll()).flex().flex_col().gap_2()
+            // Stacked, the gap between the list and the detail, 0.75 rem,
+            // gives way down to 0.25 rem where the detail needs its floor.
+            .when(stacked, |element| element.child(div().debug_selector(|| "stash-stack-gap".into()).flex_shrink(STACKED_SPARE_SHRINK).h(rems(0.75)).min_h(rems(0.25))))
+            .when(detail, |element| element.child(div().debug_selector(|| "stash-detail-column".into()).flex_1().min_w_0().min_h_0().when_some(floor, |column, floor| column.flex_basis(floor)).flex().flex_col().gap_2().child(cue.list(div().on_children_prepainted(cue.observe(self.detail.observe())).id("stash-detail").debug_selector(|| "stash-detail".into()).flex_1().min_w_0().min_h_0().p(room).mx(-room).mt(-room).overflow_y_scroll().track_scroll(self.detail.scroll()).flex().flex_col().gap_2()
                 .children(self.loading.map(|loading| native_accessibility::text("stash-detail-loading", loading).text_size(crate::appearance::ui_text(12.)).text_color(rgb(p.muted))))
                 .children(self.error.as_ref().map(|error| form_error(error, cx)))
                 .when_some(snapshot, |element, snapshot| element
@@ -5197,6 +5249,95 @@ mod tests {
                 None
             }
         }
+    }
+
+    /// Stacked beneath the list at 18 pt in a 461 × 490 window, the detail
+    /// holds Review restore… and a line of its note together before anything
+    /// scrolls: as Stashes opens, its view is already as tall as Review
+    /// restore…'s frame, the note's line beneath it and the ring's room at
+    /// either edge, taken from the list panel's spare height and the gap
+    /// above the detail; and once Review restore…, pressed from the keyboard
+    /// with a merge paused, is refused, the refusal lies on its own line
+    /// beneath it, both whole in that view. The detail kept
+    /// 57.5 px there, too short for the frame and the line. At 13 pt the
+    /// list and the gap keep their heights.
+    #[gpui::test]
+    async fn the_stacked_detail_holds_review_restore_and_its_note(cx: &mut gpui::TestAppContext) {
+        let (_fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let git = two_stashes(&repository);
+        cx.simulate_resize(size(px(461.), px(490.)));
+        let slack = px(0.5);
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            git(&["merge", "-q", "--no-commit", "--no-ff", "side"]);
+            open_selected_stash(&app, cx).await;
+            crate::views::tests::draw(cx);
+            let browser = app
+                .read_with(cx, |app, _| app.recovery.browser.clone())
+                .and_then(|browser| browser.upgrade())
+                .expect("Stashes is open");
+            let scroll = browser.read_with(cx, |browser, _| browser.detail.scroll().clone());
+            assert_eq!(
+                scroll.offset(),
+                Point::default(),
+                "{text} pt: nothing scrolled"
+            );
+            let (room, line, rem) = cx.update(|window, cx| {
+                (
+                    appearance::button_ring_room(cx),
+                    crate::image_compare::text_line(appearance::ui_text(10.), window),
+                    window.rem_size(),
+                )
+            });
+            let [list, gap, view] = ["stash-list-panel", "stash-stack-gap", "stash-detail"]
+                .map(|name| cx.debug_bounds(name).expect(name));
+            let held = room * 2. + appearance::ui_size(28.) + rem * 0.25 + line;
+            assert!(
+                view.size.height >= held - slack,
+                "{text} pt: the detail's view {view:?} holds Review restore… and its line, {held:?}"
+            );
+            if text == 13 {
+                assert!(
+                    (list.size.height - appearance::ui_size(140.)).abs() < slack
+                        && (gap.size.height - rem * 0.75).abs() < slack,
+                    "13 pt: the list {list:?} and the gap {gap:?} keep their heights"
+                );
+            } else {
+                assert!(
+                    list.size.height < appearance::ui_size(140.) - slack
+                        && list.size.height >= StashBrowser::stacked_list_minimum() - slack
+                        && gap.size.height >= rem * 0.25 - slack,
+                    "18 pt: the room comes from the list's spare height {list:?} and the gap {gap:?}"
+                );
+            }
+            // Refused for the paused merge, from the keyboard: the refusal
+            // takes the note's place, revealed with Review restore….
+            press_review_restore(&browser, cx);
+            recovery_lands(&app, cx);
+            let [restore, note, view] = [
+                "restore-saved-stash",
+                "stash-restore-refusal",
+                "stash-detail",
+            ]
+            .map(|name| cx.debug_bounds(name).expect(name));
+            assert!(
+                note.top() >= restore.bottom(),
+                "{text} pt: the refusal {note:?} lies on its own line beneath Review restore… {restore:?}"
+            );
+            assert!(
+                restore.top() - room >= view.top() - slack
+                    && note.top() + line <= view.bottom() - room + slack,
+                "{text} pt: Review restore… {restore:?} and the refusal's first line {note:?} \
+                 lie whole in the detail's view {view:?}"
+            );
+            cx.update(|window, cx| window.close_all_dialogs(cx));
+            crate::views::tests::draw(cx);
+            git(&["merge", "--abort"]);
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// Review restore… answers only what Stashes still shows, with the
