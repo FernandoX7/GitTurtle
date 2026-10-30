@@ -4257,13 +4257,15 @@ impl GitTurtle {
                     // write's start or end, and the reload or status read it
                     // asks for landing (`write_unsettled`), build it again
                     // through `follows_writes` alone, once for each. While
-                    // the rows of a newer status are prepared, the rows
-                    // drawn are the previous status's, and the menu waits
-                    // for the new ones before it is built again, but for a
-                    // write that starts meanwhile, which builds it refused.
+                    // the rows of a newer status or of the filter's query
+                    // are prepared, the rows drawn are the previous ones,
+                    // and the menu waits for the new ones before it is
+                    // built again, but for a write that starts or ends
+                    // meanwhile, which builds it refused, and for the
+                    // reason its refused items state changing.
                     .built_from(menu_entry)
                     .follows_writes(cx.entity().downgrade())
-                    .waits_while(|app| app.working_paths.pending)
+                    .waits_while(GitTurtle::working_rows_wait)
                     .into_any_element()
             }
         }
@@ -4333,7 +4335,13 @@ impl GitTurtle {
                 window,
                 cx,
             )
-            .followed_by(Self::follow_working_menu, self, window, cx),
+            .followed_by(
+                Self::follow_working_menu,
+                Self::working_rows_wait,
+                self,
+                window,
+                cx,
+            ),
         );
         cx.notify();
     }

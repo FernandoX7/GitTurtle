@@ -5122,6 +5122,117 @@ mod tests {
             .await;
     }
 
+    /// A working row's menu waiting for the filter's rows, each item saying
+    /// "Filtering…", is built again as a newer status lands meanwhile, as a
+    /// file added outside the app brings: the rows the filter then prepares
+    /// are that status's, and each item says "Refreshing…" until they land
+    /// (`working_rows_wait`). A right-click's menu opens on the filter's
+    /// rows; a keyboard's opens at rest and waits with them once a write
+    /// that starts and ends meanwhile has built it again. Either kept saying
+    /// "Filtering…" until the rows landed, since the status's landing starts
+    /// no write and ends none.
+    async fn a_waiting_row_menu_follows_a_newer_status_under_the_filter(
+        cx: &mut TestAppContext,
+        opening: Opening,
+    ) {
+        use crate::working_selection::Preparation;
+        let at = format!("{opening:?}");
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let gamma: &'static str = format!(
+            "working-row-{}",
+            position_of(&app, cx, "gamma.txt", ChangeArea::Unstaged)
+        )
+        .leak();
+        let waiting = |cx: &mut VisualTestContext, reason: &str| {
+            offered(cx, &format!("Delete untracked file…, {reason}"))
+        };
+        let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
+        if let Opening::Keyboard = opening {
+            open_row_menu(&app, cx, "gamma.txt", opening);
+            assert_eq!(delete(cx), Some(true), "{at}: at rest");
+        }
+        let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+        // Every file but epsilon matches.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.working_filter
+                    .update(cx, |input, cx| input.set_value("a", window, cx));
+                app.filter_working_paths(window, cx);
+            })
+        });
+        next_frame(cx);
+        match opening {
+            Opening::RightClick => right_click(cx, gamma),
+            Opening::Keyboard => {
+                let write = held(
+                    &app,
+                    cx,
+                    gitturtle_core::WriteCommand::CreateBranch {
+                        name: "side-q9".into(),
+                        start_point: None,
+                    },
+                );
+                drop(write);
+                let task = app
+                    .update(cx, |app, _| app.operation_task.take())
+                    .expect("the write");
+                task.await;
+                cx.executor().run_until_parked();
+                quiet_reads_land(&app, cx);
+                next_frame(cx);
+            }
+        }
+        assert!(
+            app.read_with(cx, |app, _| !app.write_unsettled()
+                && app.working_paths.pending
+                && app.working_paths.preparation == Preparation::Filter),
+            "{at}: the filter's rows are prepared, and no write is unsettled"
+        );
+        assert_eq!(
+            waiting(cx, "filtering…"),
+            Some(false),
+            "{at}: waiting for the filter's rows, saying so"
+        );
+        std::fs::write(repository.join("omega.txt"), "omega\n").unwrap();
+        quietly_read_while_rows_held(&app, cx);
+        assert!(
+            app.read_with(cx, |app, _| !app.write_unsettled()
+                && app.working_paths.preparation == Preparation::Status),
+            "{at}: the filter prepares the newer status's rows, and no write is unsettled"
+        );
+        assert_eq!(
+            waiting(cx, "refreshing…"),
+            Some(false),
+            "{at}: built again for the newer status's rows, saying so"
+        );
+        assert_eq!(
+            waiting(cx, "filtering…"),
+            None,
+            "{at}: the filter's own rows are no longer why"
+        );
+        drop(rows);
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert_eq!(delete(cx), Some(true), "{at}: offered once the rows land");
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menu_waiting_for_filtered_rows_follows_a_newer_status(
+        cx: &mut TestAppContext,
+    ) {
+        a_waiting_row_menu_follows_a_newer_status_under_the_filter(cx, Opening::RightClick).await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_menu_waiting_for_filtered_rows_follows_a_newer_status(
+        cx: &mut TestAppContext,
+    ) {
+        a_waiting_row_menu_follows_a_newer_status_under_the_filter(cx, Opening::Keyboard).await;
+    }
+
     /// A History window on a clean worktree, wide enough for the action bar
     /// and the navigator, with the app's keys bound. Keep the returned
     /// directory until the test ends.

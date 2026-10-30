@@ -381,17 +381,22 @@ impl KeyboardMenu {
     /// integration pauses or ends ([`MenuInputs`], read from `app` as the
     /// menu opens), as a Working Changes row's menu is built again from its
     /// file as it then stands (`GitTurtle::follow_working_menu`), rather
-    /// than from what the file was as the menu opened.
+    /// than from what the file was as the menu opened, and whenever the
+    /// reason `wait` gives for the rows its row's list is preparing changes
+    /// ([`PointerMenu::waits_while`]), which its items, refused meanwhile,
+    /// state: a newer status that landed while the filter's rows were
+    /// prepared left a menu saying "Filtering…" until the rows landed.
     pub(super) fn followed_by(
         mut self,
         follow: fn(&mut GitTurtle, &mut Window, &mut Context<GitTurtle>),
+        wait: RowsWait,
         app: &GitTurtle,
         window: &mut Window,
         cx: &mut Context<GitTurtle>,
     ) -> Self {
-        let mut inputs = MenuInputs::of(app, None);
+        let mut inputs = (MenuInputs::of(app, None), wait(app));
         self.watch(window, cx, move |app, _, window, cx| {
-            let now = MenuInputs::of(app, None);
+            let now = (MenuInputs::of(app, None), wait(app));
             if now != inputs {
                 inputs = now;
                 follow(app, window, cx);
@@ -1221,7 +1226,7 @@ pub(crate) trait AppContextMenu:
             writes: None,
             commit: None,
             inputs: None,
-            preparing: None,
+            wait: None,
         }
     }
 }
@@ -1252,10 +1257,15 @@ pub(crate) struct PointerMenu<E> {
     commit: Option<MenuCommit>,
     /// What the row builds its menu from in this frame ([`Self::built_from`]).
     inputs: Option<BuiltFrom>,
-    /// Whether that app is preparing the rows that replace the row's
-    /// ([`Self::waits_while`]).
-    preparing: Option<fn(&crate::GitTurtle) -> bool>,
+    /// Why that app is preparing the rows that replace the row's, or `None`
+    /// while it is not ([`Self::waits_while`]).
+    wait: Option<RowsWait>,
 }
+
+/// Why an app is preparing the rows that replace a row's, which the row's
+/// menu states on each item it refuses meanwhile, or `None` while it is not
+/// ([`PointerMenu::waits_while`]).
+pub(crate) type RowsWait = fn(&crate::GitTurtle) -> Option<&'static str>;
 
 /// What a row built its open menu from, compared by value.
 #[derive(Clone)]
@@ -1313,40 +1323,42 @@ impl<E> PointerMenu<E> {
         self
     }
 
-    /// The row is one of a list's rows that `preparing` finds being
-    /// replaced in the app the menu follows ([`Self::follows_writes`]), as
-    /// Working Changes' rows are while those of a newer status are prepared:
-    /// the rows still drawn then are the previous status's, held in place,
-    /// and a click or key on them acts on nothing. While `preparing` holds,
-    /// the open menu is built again neither from the row's inputs nor as a
-    /// write's reload lands, but it is as a write starts or ends, which its
-    /// builder answers by refusing its items, each saying why as it then
-    /// stands, the write while it runs, as it does every build until the new
-    /// rows are drawn; once they are, it is built again from them, once,
-    /// where either changed meanwhile or it opened meanwhile. A Working
-    /// row's menu built again as a Stage's status read landed, before the
-    /// read's rows had, offered Delete untracked file… for a file the read
-    /// had found added, as the previous rows still showed it, until the rows
-    /// landed; one that waited as a write started kept offering the items
-    /// that write refused until the rows landed.
-    pub(crate) fn waits_while(mut self, preparing: fn(&crate::GitTurtle) -> bool) -> Self {
-        self.preparing = Some(preparing);
+    /// The row is one of a list's rows that `wait` finds being replaced in
+    /// the app the menu follows ([`Self::follows_writes`]), and says why, as
+    /// Working Changes' rows are while those of a newer status or of the
+    /// filter's query are prepared: the rows still drawn then are the
+    /// previous ones, held in place, and a click or key on them acts on
+    /// nothing. While `wait` finds them replaced, the open menu is built
+    /// again neither from the row's inputs nor as a write's reload lands,
+    /// but it is as a write starts or ends, which its builder answers by
+    /// refusing its items, each saying why as it then stands, the write
+    /// while it runs, as it does every build until the new rows are drawn;
+    /// a menu built so is built again as the reason `wait` gives changes, as
+    /// a newer status lands while the filter's rows are prepared, so each
+    /// item says why as it now stands. Once the new rows are drawn, it is
+    /// built again from them, once, where either changed meanwhile or it
+    /// opened meanwhile. A Working row's menu built again as a Stage's
+    /// status read landed, before the read's rows had, offered Delete
+    /// untracked file… for a file the read had found added, as the previous
+    /// rows still showed it, until the rows landed; one that waited as a
+    /// write started kept offering the items that write refused until the
+    /// rows landed; one that said "Filtering…" kept saying so after a
+    /// status read had landed and the rows were that status's.
+    pub(crate) fn waits_while(mut self, wait: RowsWait) -> Self {
+        self.wait = Some(wait);
         self
     }
 
-    /// Whether `writes`, the app the menu follows, is preparing the rows
-    /// that replace the row's, as `preparing` reads it now
+    /// Why `writes`, the app the menu follows, is preparing the rows that
+    /// replace the row's, as `wait` reads it now, or `None` while it is not
     /// ([`Self::waits_while`]).
-    fn preparing(
-        preparing: Option<fn(&crate::GitTurtle) -> bool>,
+    fn wait(
+        wait: Option<RowsWait>,
         writes: Option<&WeakEntity<crate::GitTurtle>>,
         cx: &App,
-    ) -> bool {
-        preparing.is_some_and(|preparing| {
-            writes
-                .and_then(WeakEntity::upgrade)
-                .is_some_and(|app| preparing(app.read(cx)))
-        })
+    ) -> Option<&'static str> {
+        let app = writes.and_then(WeakEntity::upgrade)?;
+        wait.and_then(|wait| wait(app.read(cx)))
     }
 
     fn shared(id: &GlobalElementId, window: &mut Window) -> SharedPointerMenu {
@@ -1535,7 +1547,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
             // Built from what the row showed when it was built; the row
             // shows something else now, so it is built again from that. Its
             // rows being replaced, it waits for the new ones.
-            let preparing = Self::preparing(self.preparing, self.writes.as_ref(), cx);
+            let preparing = Self::wait(self.wait, self.writes.as_ref(), cx).is_some();
             let rebuild = {
                 let mut state = shared.borrow_mut();
                 let state = &mut *state;
@@ -1644,8 +1656,7 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
         element.paint(window, cx);
         let shared = Self::shared(id.expect("the menu's id"), window);
         let (build, writes, hitbox) = (self.build.clone(), self.writes.clone(), hitbox.clone());
-        let (inputs, preparing, commit) =
-            (self.inputs.clone(), self.preparing, self.commit.clone());
+        let (inputs, wait, commit) = (self.inputs.clone(), self.wait, self.commit.clone());
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if !phase.bubble() || event.button != MouseButton::Right || !hitbox.is_hovered(window) {
                 return;
@@ -1676,12 +1687,18 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
             window.defer(cx, move |window, cx| {
                 let cap = row.cap(menu_bounds(window));
                 let latest = build.clone();
-                let open: std::rc::Rc<OpenMenu> = std::rc::Rc::new(
+                // Why its rows were being replaced as it was last built,
+                // which its items, refused then, say, or `None` where they
+                // were not ([`PointerMenu::waits_while`]).
+                let stated = std::rc::Rc::new(std::cell::Cell::new(None));
+                let open: std::rc::Rc<OpenMenu> = std::rc::Rc::new({
+                    let (stated, writes) = (stated.clone(), writes.clone());
                     move |menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>| {
                         #[cfg(test)]
                         POINTER_MENU_BUILDS.with(|builds| {
                             *builds.borrow_mut().entry(cx.entity_id()).or_default() += 1;
                         });
+                        stated.set(Self::wait(wait, writes.as_ref(), cx));
                         let build = latest.borrow().clone();
                         let menu = build(menu, window, cx);
                         // No action context: an action item dispatches from
@@ -1689,12 +1706,12 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                         // the row's ancestors, as the kit's context menu has
                         // it; focus returns on dismissal below.
                         open_menu_in(menu, false, Some(cap), None, cx)
-                    },
-                );
+                    }
+                });
                 let open_with = open.clone();
                 // Opened on rows being replaced, it is built again once the
                 // new ones are drawn ([`PointerMenu::waits_while`]).
-                let waited = Self::preparing(preparing, writes.as_ref(), cx);
+                let waited = Self::wait(wait, writes.as_ref(), cx).is_some();
                 let waiting = std::rc::Rc::downgrade(&shared);
                 let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
                     let viewport = window.viewport_size();
@@ -1709,31 +1726,43 @@ impl<E: ParentElement + IntoElement + 'static> Element for PointerMenu<E> {
                         let open = open.clone();
                         cx.observe_in(&app, window, move |menu, app, window, cx| {
                             let now = MenuInputs::of(app.read(cx), commit.as_ref());
-                            if now != inputs {
-                                // A write's start or end changes why the
-                                // items of a menu waiting for its rows are
-                                // refused: that write while it runs.
-                                let restated =
-                                    now.starts_a_write(&inputs) || (inputs.running && !now.running);
-                                inputs = now;
-                                // Its rows being replaced, the builder would
-                                // read the rows the window no longer acts
-                                // on: the rows' landing builds it again. A
-                                // write that starts or ends meanwhile builds
-                                // it now, its builder refusing every item
-                                // while the rows are prepared, so it never
-                                // offers what that write refuses, and each
-                                // item says why as it then stands.
-                                if preparing.is_some_and(|preparing| preparing(app.read(cx))) {
-                                    if let Some(state) = waiting.upgrade() {
-                                        state.borrow_mut().waited = true;
-                                    }
-                                    if !restated {
-                                        return;
-                                    }
-                                }
-                                menu.rebuild(window, cx, |menu, window, cx| open(menu, window, cx));
+                            let reason = wait.and_then(|wait| wait(app.read(cx)));
+                            // Its items, refused while its rows are
+                            // replaced, say why as they were built, which
+                            // can change with no write starting or ending,
+                            // as a newer status lands while the filter's
+                            // rows are prepared and the rows are that
+                            // status's: "Filtering…" stayed until they
+                            // landed.
+                            let reworded = reason.is_some()
+                                && stated.get().is_some_and(|stated| Some(stated) != reason);
+                            if now == inputs && !reworded {
+                                return;
                             }
+                            // A write's start or end changes why the items
+                            // of a menu waiting for its rows are refused:
+                            // that write while it runs.
+                            let restated = reworded
+                                || now.starts_a_write(&inputs)
+                                || (inputs.running && !now.running);
+                            inputs = now;
+                            // Its rows being replaced, the builder would read
+                            // the rows the window no longer acts on: the
+                            // rows' landing builds it again. A write that
+                            // starts or ends meanwhile builds it now, its
+                            // builder refusing every item while the rows are
+                            // prepared, so it never offers what that write
+                            // refuses, and each item says why as it then
+                            // stands, as a menu whose reason changed is.
+                            if reason.is_some() {
+                                if let Some(state) = waiting.upgrade() {
+                                    state.borrow_mut().waited = true;
+                                }
+                                if !restated {
+                                    return;
+                                }
+                            }
+                            menu.rebuild(window, cx, |menu, window, cx| open(menu, window, cx));
                         })
                         .detach();
                     }

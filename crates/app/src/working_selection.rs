@@ -330,8 +330,11 @@ impl GitTurtle {
     /// a write that starts meanwhile builds the menu again at once, from the
     /// file as it last found it, every item refused, where it once kept
     /// offering what that write refused until the rows landed, and a menu
-    /// built so is built again as the reason it states changes, as that
-    /// write ends (`working_rows_wait`).
+    /// built so is built again as the reason it states changes
+    /// (`working_rows_wait`), as that write ends or a newer status lands
+    /// while the filter's rows are prepared, which `followed_by` runs it for
+    /// too: the rows the filter then prepares are that status's, and the
+    /// menu once kept saying "Filtering…" until they landed.
     pub(super) fn follow_working_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(followed) = &self.file_menu_row else {
             return;
