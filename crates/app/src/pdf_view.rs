@@ -783,6 +783,12 @@ pub(crate) mod tests {
     ) {
         cx.update(gpui_kit::init);
         let cx = cx.add_empty_window();
+        // Every seed runs on one thread, which keeps the readings the last
+        // laid out and the count of builds: each starts from no readings
+        // and counts its own builds. Counted from the thread's first, the
+        // second seed found five.
+        BEFORE_PAGE_NUMBER.with(std::cell::RefCell::take);
+        let before = PAGE_NUMBER_READINGS_BUILT.with(std::cell::Cell::get);
         let widths = cx.update(|window, _| {
             [3, 111, 107, 107, 3].map(|count| page_number_widths(0, count, window))
         });
@@ -795,7 +801,7 @@ pub(crate) mod tests {
         assert_eq!(widths[2], widths[1], "107 pages' are 111 pages'");
         assert_eq!(widths[4], widths[0], "3 pages' are measured again");
         assert_eq!(
-            PAGE_NUMBER_READINGS_BUILT.with(std::cell::Cell::get),
+            PAGE_NUMBER_READINGS_BUILT.with(std::cell::Cell::get) - before,
             3,
             "built for 3 pages, for 111 and for 3 again; not for 107, whose digits are 111's"
         );
