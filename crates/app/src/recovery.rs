@@ -1847,20 +1847,26 @@ impl StashBrowser {
             let report = reason.trim_end().len() > first.len();
             let shown = SharedString::from(first.to_owned());
             let tooltip = shown.clone();
-            let note = div()
-                .id(("stash-restore-refusal", self.refusals))
-                .debug_selector(|| "stash-restore-refusal".into())
-                .role(Role::Alert)
-                .aria_label(shown.clone())
-                .assertive()
-                .text_size(crate::appearance::ui_text(10.))
-                .text_color(rgb(p.warning))
-                .line_clamp(lines)
-                .text_ellipsis()
-                .tooltip(move |window, cx| {
-                    gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
-                })
-                .child(shown);
+            // Static text, whose node reports the part of it the stacked
+            // detail draws, as the note that its pause has ended does.
+            let note = native_accessibility::static_text(
+                div()
+                    .id(("stash-restore-refusal", self.refusals))
+                    .debug_selector(|| "stash-restore-refusal".into())
+                    .role(Role::Alert)
+                    .aria_label(shown.clone())
+                    .assertive()
+                    .text_size(crate::appearance::ui_text(10.))
+                    .text_color(rgb(p.warning))
+                    .line_clamp(lines)
+                    .text_ellipsis()
+                    .tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(tooltip.clone())
+                            .build(window, cx)
+                    })
+                    .child(shown.clone()),
+                shown,
+            );
             if !report {
                 return note.into_any_element();
             }
@@ -3610,7 +3616,10 @@ mod tests {
     /// refusal lands, so Space presses it again; at 18 pt in the 461 × 490
     /// window, where the detail is about 60 px tall, the refusal keeps one
     /// line beneath it. The detail scrolled to show the whole two-line
-    /// refusal there and cut Review restore…'s ring.
+    /// refusal there and cut Review restore…'s ring. The refusal's node is
+    /// static text that reports the part of it the window draws, cut at the
+    /// detail's foot once the detail scrolls it half past there, where it
+    /// reported its whole layout.
     #[gpui::test]
     async fn review_restore_reads_the_pause_and_answers_in_stashes(cx: &mut gpui::TestAppContext) {
         let (fixture, app, cx) =
@@ -3733,6 +3742,59 @@ mod tests {
                     None,
                     "{at}: and nowhere else"
                 );
+                // Its node is static text that reports the part of it the
+                // detail draws: all of it, revealed, and only what the
+                // detail's foot leaves of it once the detail scrolls it half
+                // past there, at 18 pt in the 461 × 490 window. It reported
+                // its whole layout wherever the detail scrolled it.
+                let scale = f64::from(cx.update(|window, _| window.scale_factor()));
+                let physical = |edge: Pixels| f64::from(f32::from(edge)) * scale;
+                let node = || {
+                    let written = crate::native_accessibility::written::get(&format!(
+                        "stash-restore-refusal-{refusals}"
+                    ))
+                    .unwrap_or_else(|| panic!("{at}: the refusal writes its node as static text"));
+                    assert_eq!(written.node.role(), Role::Alert, "{at}");
+                    assert_eq!(written.node.label(), Some(PAUSED_REFUSAL), "{at}");
+                    written.node.bounds().expect("bounds")
+                };
+                let whole = node();
+                assert!(
+                    (whole.y0 - physical(line.top())).abs() < 0.5
+                        && (whole.y1 - physical(line.bottom())).abs() < 0.5,
+                    "{at}: the whole refusal {line:?} reports {whole:?}"
+                );
+                if width < 800. && interface == 18 {
+                    let scroll =
+                        stashes.read_with(cx, |stashes, _| stashes.detail.scroll().clone());
+                    let kept = scroll.offset();
+                    let foot = cx
+                        .debug_bounds("stash-detail")
+                        .expect("the detail")
+                        .bottom();
+                    let middle = line.top() + line.size.height / 2.;
+                    scroll.set_offset(point(kept.x, kept.y + (foot - middle)));
+                    crate::views::tests::draw(cx);
+                    let cut = cx
+                        .debug_bounds("stash-restore-refusal")
+                        .expect("the refusal");
+                    let foot = cx
+                        .debug_bounds("stash-detail")
+                        .expect("the detail")
+                        .bottom();
+                    assert!(
+                        cut.top() < foot && cut.bottom() > foot,
+                        "{at}: the detail's foot {foot:?} cuts the refusal {cut:?}"
+                    );
+                    let drawn = node();
+                    assert!(
+                        (drawn.y0 - physical(cut.top())).abs() < 0.5
+                            && (drawn.y1 - physical(foot)).abs() < 0.5,
+                        "{at}: the refusal {cut:?}, cut at {foot:?}, reports {drawn:?}"
+                    );
+                    scroll.set_offset(kept);
+                    crate::views::tests::draw(cx);
+                }
                 quiet_reads_land(&app, cx);
                 assert!(
                     app.read_with(cx, |app, _| app.integration_state.is_some()),
