@@ -10,6 +10,19 @@ pub(super) fn return_page(page: AppPage, origin: AppPage, repository: bool) -> A
     }
 }
 
+/// The window's wait for a review's preparation a switch dropped while its
+/// read may still run on the operation executor
+/// ([`GitTurtle::wait_for_dropped_preparation`]).
+#[derive(Default)]
+pub(super) struct DroppedPreparation {
+    /// Counts the waits begun and ended, so the end of one acts only while
+    /// the window still holds that wait.
+    generation: u64,
+    /// The running wait: the dropped preparation's label, which the busy
+    /// state shows until it ends, and the wait for its marker.
+    running: Option<(&'static str, Task<()>)>,
+}
+
 /// Where a page switch goes, which decides what becomes of the reviews
 /// being prepared as the window leaves the view that asked for them
 /// ([`GitTurtle::end_preparations`]).
@@ -102,44 +115,74 @@ impl GitTurtle {
     /// reaches a marker queued behind that preparation's read, which may
     /// still run, and then ends the busy state and reads what was asked for
     /// meanwhile ([`Self::read_deferred_working`]), as a dismissed
-    /// preparation's end does. A wait already running for the same
-    /// preparation, as each switch back and forth drops it again, goes on
-    /// rather than queue another marker.
+    /// preparation's end does.
+    ///
+    /// The wait is keyed on its generation, not on the label: nothing
+    /// starts while it holds the busy state, and whatever ends that state
+    /// meanwhile ends the wait with it (Settings, Projects and `open`,
+    /// [`Self::end_dropped_preparation`]) or takes it back for the wait
+    /// ([`Self::hold_dropped_preparation`]). So a wait already running holds
+    /// the very preparation dropped again, as each switch back and forth
+    /// drops it, and goes on rather than queue another marker, and its end
+    /// ends only its own busy state. Keyed on the label, a wait that a tab
+    /// switch had stripped of its busy state went on, so Discard…'s review
+    /// started again in the next tab, under the same label, queued behind
+    /// its marker, and the marker's end ended that review's busy state
+    /// while it still ran: a Commit was accepted meanwhile, and the
+    /// review's confirmation opened as it ran.
     fn wait_for_dropped_preparation(
         &mut self,
         label: &'static str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.operation_busy = Some(label);
-        if self
-            .dropped_preparation
-            .as_ref()
-            .is_some_and(|(waiting, _)| *waiting == label)
-        {
+        if self.hold_dropped_preparation() {
             return;
         }
+        self.operation_busy = Some(label);
+        let generation = self.dropped_preparation.generation.wrapping_add(1);
+        self.dropped_preparation.generation = generation;
         let reached = self.operations.submit_read(|| Ok(()));
         let wait = cx.spawn_in(window, async move |this, cx| {
             let _ = reached.await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.dropped_preparation = None;
-                if this.operation_busy == Some(label) {
-                    this.operation_busy = None;
+                if this.dropped_preparation.generation != generation {
+                    return;
                 }
+                this.end_dropped_preparation();
                 this.read_deferred_working(window, cx);
                 cx.notify();
             });
         });
-        self.dropped_preparation = Some((label, wait));
+        self.dropped_preparation.running = Some((label, wait));
+    }
+
+    /// Gives a running wait for a dropped preparation
+    /// ([`Self::wait_for_dropped_preparation`]) back the busy state it
+    /// holds, which a cancel run meanwhile ended by its label, and says
+    /// whether one runs. A tab switch and a tab close cancel Discard…'s
+    /// review and the branch comparison in the tab they leave, whose
+    /// labels a wait may hold: the read it waits for still runs on the
+    /// executor every tab shares, so the wait goes on into the tab shown
+    /// next, and that tab's reads are noted for its end rather than queued
+    /// behind the read.
+    pub(super) fn hold_dropped_preparation(&mut self) -> bool {
+        let Some((label, _)) = &self.dropped_preparation.running else {
+            return false;
+        };
+        self.operation_busy = Some(*label);
+        true
     }
 
     /// Ends the wait for a dropped preparation
     /// ([`Self::wait_for_dropped_preparation`]) with its busy state, as a
     /// cancel ends a preparation's: Settings, Projects and opening a
-    /// repository cancel what it waits for.
+    /// repository cancel what it waits for. A later generation leaves the
+    /// end of the wait it replaces nothing to do.
     pub(super) fn end_dropped_preparation(&mut self) {
-        if let Some((label, _)) = self.dropped_preparation.take()
+        let waits = &mut self.dropped_preparation;
+        waits.generation = waits.generation.wrapping_add(1);
+        if let Some((label, _)) = waits.running.take()
             && self.operation_busy == Some(label)
         {
             self.operation_busy = None;
@@ -2248,6 +2291,116 @@ mod tests {
             !cx.update(|window, cx| window.has_active_dialog(cx)),
             "no plan opens over the other tab"
         );
+    }
+
+    /// Discard…'s review, dropped as History shows again from Changes,
+    /// keeps the window busy through a tab switch or a tab close until the
+    /// read its wait is for ends: the read still runs on the executor every
+    /// tab shares, so the next tab's Changes notes its read for the wait's
+    /// end, and Discard… there waits too. The switch's cancel of Discard…
+    /// once ended the busy state the wait held, which went on: Discard…
+    /// started again in the next tab under the same label, queued behind
+    /// the wait's marker, and the marker's end ended that review's busy
+    /// state while it still ran, so a Commit was accepted meanwhile and the
+    /// review's confirmation opened as it ran.
+    #[gpui::test]
+    async fn a_dropped_reviews_wait_keeps_its_busy_state_into_the_next_tab(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        const REVIEWING: &str = "Reviewing file changes…";
+        let (_fixture, app, cx, root, other) = beside_another_tab(cx).await;
+        for (index, close) in [false, true].into_iter().enumerate() {
+            let case = if close { "a tab close" } else { "a tab switch" };
+            if index > 0 {
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx))
+                });
+                settle(&app, cx).await;
+                quiet_reads_land(&app, cx);
+            }
+            assert_eq!(
+                app.read_with(cx, |app, _| app.path.clone()),
+                Some(root.clone())
+            );
+            // Discard…'s review in Changes, held as a slow disk holds it,
+            // and History shown again, which drops it and waits for it.
+            cx.simulate_keystrokes(&primary("2"));
+            settle(&app, cx).await;
+            crate::path_filter::filters_land(&app, cx);
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let draft = entry(&app, "draft.txt", cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+            cx.simulate_keystrokes(&primary("1"));
+            draw(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_busy),
+                Some(REVIEWING),
+                "{case}: History waits for the dropped review"
+            );
+
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    if close {
+                        app.close_repository_tab(0, window, cx)
+                    } else {
+                        app.switch_repository_tab(1, window, cx)
+                    }
+                })
+            });
+            draw(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.path.clone()),
+                Some(other.clone())
+            );
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_busy),
+                Some(REVIEWING),
+                "{case}: the wait keeps its busy state"
+            );
+            // The next tab's Changes notes its read, and its Discard… waits.
+            let later = format!("later-{index}.txt");
+            std::fs::write(other.join(&later), "later\n").unwrap();
+            cx.simulate_keystrokes(&primary("2"));
+            draw(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.status_task.is_none()),
+                "{case}: no read queues behind the dropped review"
+            );
+            let draft = entry(&app, "draft.txt", cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+
+            drop(held);
+            preparation_ends(&app, cx).await;
+            quiet_reads_land(&app, cx);
+            assert!(!dialog_open(cx), "{case}: nothing opens");
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.operation_busy, None, "{case}: the wait ended");
+                assert!(!status_read_pending(app), "{case}: no read stays noted");
+            });
+            assert!(
+                entries(&app, cx).is_some_and(|entries| entries.contains(&later)),
+                "{case}: the wait's end reads the next tab"
+            );
+
+            // Discard… asked for again there holds its own busy state until
+            // its review ends, and then its confirmation opens.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let draft = entry(&app, "draft.txt", cx);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+            cx.executor().run_until_parked();
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_busy),
+                Some(REVIEWING),
+                "{case}: the review asked for there"
+            );
+            assert!(!dialog_open(cx), "{case}: not before its review ends");
+            drop(held);
+            preparation_ends(&app, cx).await;
+            assert!(dialog_open(cx), "{case}: its confirmation opens");
+            assert_eq!(app.read_with(cx, |app, _| app.operation_busy), None);
+            close_dialogs(cx);
+        }
     }
 
     /// Settings and Projects drop the branch comparison Merge… or Rebase…

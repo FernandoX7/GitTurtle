@@ -823,6 +823,7 @@ impl GitTurtle {
         self.working_read_deferred = None;
         self.cancel_integration_comparison();
         self.cancel_discard_action();
+        self.hold_dropped_preparation();
         self.file_history.pause_for_tab();
         self.revision_inspection.pause_for_tab();
         self.blame.pause_for_tab();
@@ -1260,6 +1261,7 @@ impl GitTurtle {
         let active = self.repository_tabs.active == Some(index);
         if active {
             self.cancel_discard_action();
+            self.hold_dropped_preparation();
             self.working_read_deferred = None;
             self.persist_commit_draft(window, cx);
             self.invalidate_read();

@@ -430,7 +430,7 @@ struct GitTurtle {
     /// operation executor, and the wait for a marker queued behind that
     /// read (`GitTurtle::end_preparations`): reads asked for meanwhile are
     /// noted rather than queued behind it, and the marker's end reads them.
-    dropped_preparation: Option<(&'static str, Task<()>)>,
+    dropped_preparation: page_navigation::DroppedPreparation,
     profile: Option<gitturtle_core::GitProfile>,
     profiles: profiles::State,
     theme_editor: theme_editor::State,
@@ -799,7 +799,7 @@ impl GitTurtle {
             working_paths: working_selection::FilterState::default(),
             integration_state: None,
             integration_task: None,
-            dropped_preparation: None,
+            dropped_preparation: Default::default(),
             profile: None,
             profiles: profiles::State::default(),
             theme_editor: theme_editor::State::default(),
