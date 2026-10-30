@@ -187,7 +187,27 @@ impl GitTurtle {
                 self.cancel_branch_action();
             }
         }
-        // A preparation cancelled above ended its busy state with it.
+        self.wait_for_cancelled_preparation(busy, window, cx);
+    }
+
+    /// Waits for the preparation a cancel just ended, whose read may still
+    /// run on the operation executor ([`Self::wait_for_dropped_preparation`]):
+    /// `busy` is the busy state before the cancels ran, and one that ended it
+    /// cancelled the preparation it was, or took a running wait's label,
+    /// which the wait then takes back. Every switch that drops
+    /// (`end_preparations`) and `open` in place, as History's Refresh opens
+    /// the repository shown, run their cancels through it. Refresh once
+    /// cancelled a recovery plan, a branch's actions or Edit local commits
+    /// History was preparing without a wait, so each press during a slow
+    /// read queued a status read behind it, each keeping its slot of the
+    /// executor's bounded queue though the next press dropped it, until one
+    /// was refused as busy and Changes lost its rows.
+    pub(super) fn wait_for_cancelled_preparation(
+        &mut self,
+        busy: Option<&'static str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(label) = busy
             && self.operation_busy.is_none()
         {
@@ -195,8 +215,9 @@ impl GitTurtle {
         }
     }
 
-    /// Keeps the window busy as `label`, the preparation a switch between
-    /// History and Changes just dropped, until the operation executor
+    /// Keeps the window busy as `label`, the preparation a switch or `open`
+    /// in place just dropped ([`Self::wait_for_cancelled_preparation`]),
+    /// until the operation executor
     /// reaches a marker queued behind that preparation's read, which may
     /// still run, and then ends the busy state and reads what was asked for
     /// meanwhile ([`Self::read_deferred_working`]), as a dismissed
@@ -2786,7 +2807,8 @@ mod tests {
 
     /// Presses History's Refresh nine times in the tab shown, whose
     /// repository is `root`, while a dropped review's wait runs on `held`,
-    /// then lets the read end: each Refresh holds the wait, and its
+    /// or a review History asked for is prepared there, which the first
+    /// press drops, then lets the read end: each Refresh holds the wait, and its
     /// snapshot notes its working read for the wait's end, so no status
     /// read queues behind the review's read, none is refused as busy and
     /// the rows stay as they were; the wait's end then reads the tab once,
@@ -2963,6 +2985,37 @@ mod tests {
             "a tab that opens the closed tab's repository again",
         )
         .await;
+    }
+
+    /// History's Refresh drops a plan History is preparing, Amend last
+    /// commit, a branch's actions or a paused rebase's Continue, and waits
+    /// for its read as a switch that drops it does
+    /// (`wait_for_cancelled_preparation`): the read still runs on the
+    /// operation executor, so each Refresh's snapshot notes its working read
+    /// for the wait's end, which reads once, and the plan opens nothing.
+    /// Refresh once cancelled the plan without a wait, so each press during
+    /// a slow read queued a status read behind it, each keeping its slot of
+    /// the executor's bounded queue though the next press dropped it, until
+    /// one was refused as busy and Changes lost its rows.
+    #[gpui::test]
+    async fn historys_refresh_waits_for_the_plan_it_drops(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, root) = checked_out(cx).await;
+        let head = app.read_with(cx, |app, _| app.commits[0].oid.clone());
+        for (index, (plan, prepare)) in plans().into_iter().enumerate() {
+            if plan == "Continue rebase" {
+                pause_a_reword(&app, &root, cx).await;
+            }
+            // Asked for in History, held as a slow disk holds it.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let commit = head.clone();
+            cx.update(|window, cx| app.update(cx, |app, cx| prepare(app, commit, window, cx)));
+            assert!(
+                app.read_with(cx, |app, _| app.operation_busy.is_some()),
+                "{plan} is prepared"
+            );
+            let later = format!("later-{index}.txt");
+            refreshes_hold_the_wait(&app, cx, &root, &later, held, plan).await;
+        }
     }
 
     /// A dropped review's wait says where its work runs in a tab that did
