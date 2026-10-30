@@ -408,10 +408,6 @@ impl GitTurtle {
         let refreshing = self.status_task.is_some();
         let owner = cx.entity().downgrade();
         let repository = self.path.clone();
-        let head = self
-            .work_status
-            .as_ref()
-            .and_then(|status| status.head.clone());
         let has_changes = self
             .work_status
             .as_ref()
@@ -434,9 +430,21 @@ impl GitTurtle {
                 // A paused integration, read here too, disables Save changes
                 // to stash…, Amend and Undo, as the menu is built again when
                 // one pauses or ends (`native_accessibility::MenuInputs`).
-                let (busy, paused) = owner.upgrade().map_or((true, true), |owner| {
+                // Amend and Undo act on HEAD as the menu is built, which it
+                // is again as HEAD moves (`AppDropdown::follows_head`): taken
+                // as the menu opened, they reviewed the commit a `git reset`
+                // outside the app had moved HEAD off, which the review then
+                // refused.
+                let (busy, paused, head) = owner.upgrade().map_or((true, true, None), |owner| {
                     let owner = owner.read(cx);
-                    (owner.write_unsettled(), owner.integration_state.is_some())
+                    (
+                        owner.write_unsettled(),
+                        owner.integration_state.is_some(),
+                        owner
+                            .work_status
+                            .as_ref()
+                            .and_then(|status| status.head.clone()),
+                    )
                 });
                 if let Some(refresh) = tight {
                     menu = menu
@@ -546,8 +554,10 @@ impl GitTurtle {
                     },
                 )
             })
-            // A write's start or end builds the open menu again.
+            // A write's start or end builds the open menu again, as does
+            // HEAD moving to another commit.
             .follows_writes(cx.entity().downgrade())
+            .follows_head()
             .into_any_element()
     }
 

@@ -992,6 +992,8 @@ pub(crate) struct AppDropdown {
     writes: Option<WeakEntity<crate::GitTurtle>>,
     /// The commit a commit's menu acts on ([`Self::follows_head_of`]).
     commit: Option<MenuCommit>,
+    /// Whether the menu acts on HEAD itself ([`Self::follows_head`]).
+    tip: bool,
 }
 
 /// What a menu that follows writes reads as it is built
@@ -1006,17 +1008,23 @@ pub(crate) struct AppDropdown {
 /// changes to stash…, Amend and Undo, and, for a commit's menu alone
 /// ([`AppDropdown::follows_head_of`], [`PointerMenu::follows_head_of`],
 /// [`KeyboardMenu::following`]'s `commit`), whether its commit is HEAD,
-/// which adds Amend and Undo.
+/// which adds Amend and Undo, and, for the Changes Actions menu alone
+/// ([`AppDropdown::follows_head`]), whose Amend and Undo act on HEAD
+/// itself, which commit HEAD is.
 /// The menu is built again when any of them changes; built again only for
 /// the write, a menu open as a cherry-pick stopped on conflicts offered
 /// those items once the write had ended, until it was opened again, one
 /// built again only as the reload landed kept a project row's Open project
 /// refused after the write, and a commit's menu kept Amend and Undo once a
-/// `git reset` outside the app had moved HEAD off its commit. HEAD counts
-/// for no other menu, which reads nothing it changes: counted for every
-/// menu, a branch's, a worktree's, a project's or a working row's open menu
-/// was built again whenever HEAD moved, as a commit made or a reset outside
-/// the app moves it, its keyboard's cursor back on its first item.
+/// `git reset` outside the app had moved HEAD off its commit, and the
+/// Changes Actions menu, built from HEAD as it opened, offered Amend and
+/// Undo of the commit a `git reset` outside the app had moved HEAD off,
+/// which the review then refused ("Amend and Undo apply only to the
+/// displayed current tip"). HEAD counts for no other menu, which reads
+/// nothing it changes: counted for every menu, a branch's, a worktree's, a
+/// project's or a working row's open menu was built again whenever HEAD
+/// moved, as a commit made or a reset outside the app moves it, its
+/// keyboard's cursor back on its first item.
 #[derive(Clone, PartialEq, Eq)]
 struct MenuInputs {
     running: bool,
@@ -1025,6 +1033,9 @@ struct MenuInputs {
     /// Whether a commit's menu's commit is HEAD; `None` for every other
     /// menu.
     head: Option<bool>,
+    /// HEAD's commit, for a menu that acts on HEAD itself
+    /// ([`Self::with_tip`]); `None` for every other menu.
+    tip: Option<Option<String>>,
 }
 
 /// The commit a commit's menu acts on, read as its object ID
@@ -1046,7 +1057,21 @@ impl MenuInputs {
                     .and_then(|status| status.head.as_deref())
                     == Some((**commit).as_ref())
             }),
+            tip: None,
         }
+    }
+
+    /// These inputs for a menu that acts on HEAD itself, which also reads
+    /// which commit HEAD is, where `tip`.
+    fn with_tip(mut self, app: &crate::GitTurtle, tip: bool) -> Self {
+        if tip {
+            self.tip = Some(
+                app.work_status
+                    .as_ref()
+                    .and_then(|status| status.head.clone()),
+            );
+        }
+        self
     }
 
     /// Whether a write started, or its reload or status read began to
@@ -1073,6 +1098,17 @@ impl AppDropdown {
     /// ([`MenuInputs`]).
     pub(crate) fn follows_head_of(mut self, commit: MenuCommit) -> Self {
         self.commit = Some(commit);
+        self
+    }
+
+    /// The menu acts on HEAD itself, whichever commit that is, as the
+    /// Changes Actions menu's Amend and Undo do: following writes
+    /// ([`Self::follows_writes`]), it is built again as well once HEAD
+    /// moves to another commit ([`MenuInputs`]), its keyboard's cursor kept
+    /// on its item, so its items act on HEAD as it then stands. Its builder
+    /// reads HEAD each time it runs.
+    pub(crate) fn follows_head(mut self) -> Self {
+        self.tip = true;
         self
     }
 
@@ -1117,6 +1153,7 @@ impl AppMenu for Button {
             on_open_change: None,
             writes: None,
             commit: None,
+            tip: false,
         }
     }
 
@@ -1150,7 +1187,7 @@ impl RenderOnce for AppDropdown {
             .clone();
         let painted = anchor.clone();
         let (build, max, on_open_change) = (self.build, self.max, self.on_open_change);
-        let (writes, commit) = (self.writes, self.commit);
+        let (writes, commit, tip) = (self.writes, self.commit, self.tip);
         // The kit's popup host only moves a dropdown into the window, so one
         // taller than the room below its Button moved up over it; the side
         // is chosen here instead, from the same painted bounds as the room.
@@ -1195,10 +1232,13 @@ impl RenderOnce for AppDropdown {
                 let menu = open(menu, keyboard, window, cx);
                 if let Some(app) = writes.as_ref().and_then(WeakEntity::upgrade) {
                     let commit = commit.clone();
-                    let mut inputs = MenuInputs::of(app.read(cx), commit.as_ref());
+                    let read = move |app: &crate::GitTurtle| {
+                        MenuInputs::of(app, commit.as_ref()).with_tip(app, tip)
+                    };
+                    let mut inputs = read(app.read(cx));
                     let open = open.clone();
                     cx.observe_in(&app, window, move |menu, app, window, cx| {
-                        let now = MenuInputs::of(app.read(cx), commit.as_ref());
+                        let now = read(app.read(cx));
                         if now != inputs {
                             inputs = now;
                             menu.rebuild(window, cx, |menu, window, cx| {

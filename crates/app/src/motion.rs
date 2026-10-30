@@ -3374,6 +3374,122 @@ mod tests {
         a_commit_menu_follows_head(cx, CommitOpening::Actions).await;
     }
 
+    /// Menus that act on HEAD, and menus whose items wait for a write.
+    mod waiting_menus {
+        use super::*;
+        use core::prelude::v1::test;
+
+        /// A whole press of `key`: GPUI's keyboard click waits for the key
+        /// up.
+        fn whole_press(cx: &mut VisualTestContext, key: &str) {
+            let keystroke = gpui::Keystroke::parse(key).expect("a keystroke");
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(gpui::KeyUpEvent { keystroke });
+            next_frame(cx);
+        }
+
+        /// Opens the Changes Actions menu from the keyboard: the window's
+        /// tab order moves focus onto its button, which draws its focus
+        /// ring there, and Enter opens its menu with the keyboard's cursor
+        /// on its first action.
+        async fn open_changes_actions_from_the_keyboard(
+            app: &Entity<GitTurtle>,
+            cx: &mut VisualTestContext,
+        ) {
+            let ringed = |cx: &mut VisualTestContext| {
+                let button = cx
+                    .debug_bounds("working-recovery-menu")
+                    .expect("the Actions button");
+                !crate::appearance::painted_button(cx, button).1.is_empty()
+            };
+            for _ in 0..64 {
+                if ringed(cx) {
+                    break;
+                }
+                cx.update(|window, cx| window.focus_next(cx));
+                next_frame(cx);
+            }
+            assert!(ringed(cx), "keyboard focus reached Actions");
+            whole_press(cx, "enter");
+            crate::views::tests::settle(app, cx).await;
+            next_frame(cx);
+            assert_eq!(
+                offered(cx, "Browse stashes…"),
+                Some(true),
+                "Enter on Actions opened its menu"
+            );
+        }
+
+        /// The Changes Actions menu, opened from the keyboard with its
+        /// cursor moved to Amend last commit…, is built again in place as a
+        /// `git reset` outside the app moves HEAD to another commit: the
+        /// cursor stays on Amend, and Enter there reviews the amend of HEAD
+        /// as it now stands. Built from HEAD as it opened, and not again as
+        /// HEAD moved, its Amend reviewed the commit HEAD had left, which
+        /// the review refused ("Amend and Undo apply only to the displayed
+        /// current tip").
+        #[gpui::test]
+        async fn the_changes_actions_menu_follows_head(cx: &mut TestAppContext) {
+            const AMEND: &str = "Amend last commit…";
+            let (fixture, app, cx) = clean_history_for_menus(cx).await;
+            let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+            let head = |cx: &mut VisualTestContext| {
+                app.read_with(cx, |app, _| {
+                    app.work_status
+                        .as_ref()
+                        .and_then(|status| status.head.clone())
+                        .expect("HEAD")
+                })
+            };
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+            crate::views::tests::settle(&app, cx).await;
+            next_frame(cx);
+            open_changes_actions_from_the_keyboard(&app, cx).await;
+            assert!(
+                cursor_on(cx, "Browse stashes…"),
+                "opened from the keyboard on its first action"
+            );
+            // Down from the first action to Amend, the keyboard's cursor.
+            for _ in 0..8 {
+                if cursor_on(cx, AMEND) {
+                    break;
+                }
+                cx.simulate_keystrokes("down");
+                next_frame(cx);
+            }
+            assert!(cursor_on(cx, AMEND), "Down reached Amend");
+            let opened = head(cx);
+            fixture_git(&repository, &["reset", "-q", "--hard", "HEAD~1"]);
+            refs_quietly_refreshed(&app, cx).await;
+            let moved = head(cx);
+            assert_ne!(moved, opened, "the reset moved HEAD");
+            assert!(
+                cursor_on(cx, AMEND),
+                "the cursor stays on Amend as the menu is built again"
+            );
+            cx.simulate_keystrokes("enter");
+            // The review is read on the operation executor.
+            app.read_with(cx, |app, _| app.operations.drain());
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| (
+                    app.operation_busy,
+                    app.operation_error.clone()
+                )),
+                (None, None),
+                "Amend reviews HEAD as it now stands"
+            );
+            assert!(dialog_open(cx), "the amend form opens for {moved}");
+            close_dialog(cx);
+            drop(fixture);
+        }
+    }
+
     /// Whether the open menu's keyboard cursor is on `item`, available: the
     /// item's row draws the toolkit's `list_active` fill, which only the
     /// keyboard's cursor draws.
