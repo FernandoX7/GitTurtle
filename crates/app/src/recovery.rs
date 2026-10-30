@@ -5089,10 +5089,17 @@ mod tests {
     /// 490 afterwards, the detail stacked beneath the list is not scrolled
     /// to the refusal; Tab and Shift+Tab back onto the saved files reveal
     /// them whole, and once a read finds the merge ended the note says so
-    /// with the saved files still focused and whole in view. A press's
-    /// reveal left due past the frame beside the list scrolls the first
-    /// stacked frame to Review restore… and the note, whatever focus has
-    /// done since, and wins over any end of the pause before that frame.
+    /// with the saved files still focused and whole in view.
+    ///
+    /// A refactor guard, not a regression test: the code before Stashes
+    /// took the reveal as it renders passed it too, since a frame beside
+    /// the list cleared the reveal and every stacked frame's footer spent
+    /// it, so no frame it could reach left one due. It holds that take
+    /// (`NoteReveal::due_in`) to its promise for every frame that draws
+    /// Stashes: a press's reveal kept past the frame beside the list would
+    /// scroll the first stacked frame to Review restore… and the note,
+    /// whatever focus had done since, and win over any end of the pause
+    /// before that frame.
     #[gpui::test]
     async fn a_press_answer_beside_the_list_expires_with_its_frame(cx: &mut gpui::TestAppContext) {
         let (fixture, app, cx) =
