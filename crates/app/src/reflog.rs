@@ -23,6 +23,9 @@ const FILE_ROW_TEXT: f32 = 12.;
 const FILE_ROW_LINE: f32 = std::f32::consts::GOLDEN_RATIO;
 /// The changed-file list's height bound at the default interface size.
 const FILE_LIST_BOUND: f32 = 110.;
+/// The opacity of the last entry's details, kept drawn while the selected
+/// entry's read runs: a loading Button's fade (`DESIGN.md`, keyboard focus).
+const READING_FADE: f32 = 0.8;
 
 /// A changed-file row's height, its own line height: one line of
 /// [`FILE_ROW_LINE`] at every text size, rounded to whole pixels so that GPUI's
@@ -356,6 +359,15 @@ pub(crate) struct ReflogBrowser {
     name: Entity<InputState>,
     page: Option<ReflogPage>,
     selected: Option<ReflogEntry>,
+    /// The entry whose commit, message and changed files below are drawn,
+    /// once its read has landed. Selecting another entry leaves the last
+    /// one's drawn in place, faded behind the read's loading row and not to
+    /// be acted on, until the new entry's land and swap in within one frame;
+    /// this is `None` meanwhile ([`Self::reading_over_details`]). Cleared at
+    /// once, the details shrank to nothing for the read's duration, so the
+    /// content's scroll moved the list above them and everything below
+    /// them moved twice.
+    details: Option<ReflogEntry>,
     commit: Option<Commit>,
     changes: Vec<FileChange>,
     message: Option<Entity<EditorState>>,
@@ -449,6 +461,7 @@ impl ReflogBrowser {
             name: cx.new(|cx| InputState::new(window, cx).placeholder("recovery/my-commit")),
             page: None,
             selected: None,
+            details: None,
             commit: None,
             changes: Vec::new(),
             message: None,
@@ -474,6 +487,22 @@ impl ReflogBrowser {
         self.reading = false;
         self.waiting = None;
         self.pending = false;
+        self.drop_kept_details();
+    }
+    /// Whether the details draw the last entry's commit while the selected
+    /// entry's read runs.
+    fn reading_over_details(&self) -> bool {
+        self.commit.is_some() && self.details.is_none()
+    }
+    /// Drops the last entry's details, kept drawn while the selected entry's
+    /// read ran, once that read ends without its own: no commit stands
+    /// under another entry's heading.
+    fn drop_kept_details(&mut self) {
+        if self.reading_over_details() {
+            self.commit = None;
+            self.message = None;
+            self.changes.clear();
+        }
     }
     /// As the loading row goes, focus its Cancel holds moves to the stop the
     /// row's place ([`Self::read_place`]) leaves nearest, the stop above it:
@@ -495,13 +524,13 @@ impl ReflogBrowser {
     }
     /// Where the read in progress, and the error the last read ended with,
     /// stand. Only the recovery review reads with the selected entry's
-    /// commit landed; an entry's read starts without it, and the log's
-    /// without an entry.
+    /// commit landed; an entry's read starts without it, over the last
+    /// entry's details where they are kept, and the log's without an entry.
     fn read_place(&self) -> ReadPlace {
-        match (&self.selected, &self.commit) {
-            (None, None) => ReadPlace::Log,
-            (Some(_), None) => ReadPlace::Entry,
-            (_, Some(_)) => ReadPlace::Recovery,
+        match (&self.selected, &self.details) {
+            (None, _) => ReadPlace::Log,
+            (Some(entry), Some(details)) if entry == details => ReadPlace::Recovery,
+            (Some(_), _) => ReadPlace::Entry,
         }
     }
     /// The entry, among the first `count` the list draws, that holds focus.
@@ -686,6 +715,7 @@ impl ReflogBrowser {
                         Err(error) => this.error = Some(format!("{error:#}")),
                     }
                 }
+                this.drop_kept_details();
                 // Only the log's read adds a line above the filter, the
                 // scope's summary, so only its landing scrolls back to the
                 // filter. An entry's read and the recovery review add
@@ -749,6 +779,7 @@ impl ReflogBrowser {
             format!("refs/heads/{scope}")
         };
         self.selected = None;
+        self.details = None;
         self.commit = None;
         self.message = None;
         self.changes.clear();
@@ -782,9 +813,10 @@ impl ReflogBrowser {
     /// `index`. A Button takes no focus on a press, so a click left the
     /// keyboard where it was: on another entry, from which the arrows went
     /// on rather than from the one clicked, or on the selected entry's
-    /// commit, which the selection takes away until the next commit lands,
-    /// a control no frame drew. Focus on either moves to the clicked entry;
-    /// focus elsewhere, as in the filter, stays.
+    /// commit, which the selection fades, not to be acted on, until the
+    /// next commit lands (once it took it away, leaving focus on a control
+    /// no frame drew). Focus on either moves to the clicked entry; focus
+    /// elsewhere, as in the filter, stays.
     fn click_entry(
         &mut self,
         index: usize,
@@ -801,9 +833,10 @@ impl ReflogBrowser {
     }
     fn select(&mut self, entry: ReflogEntry, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = Some(entry.clone());
-        self.commit = None;
-        self.message = None;
-        self.changes.clear();
+        // The last entry's commit, message and changed files stay drawn
+        // where they are until this entry's land ([`Self::details`]).
+        self.details = None;
+        let landed = entry.clone();
         self.name.update(cx, |input, cx| {
             if input.value().is_empty() {
                 input.set_value(format!("recovery/{}", short_oid(&entry.oid)), window, cx);
@@ -820,13 +853,20 @@ impl ReflogBrowser {
                 this.message = Some(text::editor(&text, "text", None, window, cx));
                 this.commit = Some(commit);
                 this.changes = changes;
+                this.details = Some(landed);
             },
             window,
             cx,
         );
     }
     fn recover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pending || self.commit.is_none() || !self.current(cx) {
+        // The selected entry's own commit, never the last entry's that its
+        // read leaves drawn.
+        if self.pending
+            || self.details.is_none()
+            || self.details != self.selected
+            || !self.current(cx)
+        {
             return;
         }
         let Some(entry) = self.selected.clone() else {
@@ -961,6 +1001,19 @@ impl Render for ReflogBrowser {
                 )
         });
         let (loading_above, loading_below, loading_after_review) = place.slots(loading);
+        // While an entry's read runs over the last entry's details, its
+        // loading row stands over their first line, the commit's metadata,
+        // which keeps its room undrawn, so nothing below moves as the row
+        // comes and goes; the rest fades, not to be acted on, until the
+        // entry's own details swap in. Without kept details the row stands
+        // in their place below Copy commit ID.
+        let kept = self.reading_over_details();
+        let (loading_below, loading_over) = if kept {
+            (None, loading_below)
+        } else {
+            (loading_below, None)
+        };
+        let fade = |element: Div| element.when(kept, |element| element.opacity(READING_FADE));
         // So does the error such a read ends with, as for a commit pruned
         // since Git logged it or a recovery branch name already taken: it
         // stood above the list, which moved down by its height with each
@@ -1013,19 +1066,19 @@ impl Render for ReflogBrowser {
                     .children(error_below)
             })
             .when_some(self.commit.as_ref(), |element, commit| element
-                .child(label("reflog-commit-metadata", format!("{} · {}\n{} parent{} · {} against {}", commit.author, full_date(commit.timestamp), commit.parents.len(), if commit.parents.len() == 1 { "" } else { "s" }, crate::changed_files(self.changes.len()), if commit.parents.len() > 1 { "first parent" } else { "parent or empty tree" })).text_size(crate::appearance::ui_text(12.)))
+                .child(div().relative().child(label("reflog-commit-metadata", format!("{} · {}\n{} parent{} · {} against {}", commit.author, full_date(commit.timestamp), commit.parents.len(), if commit.parents.len() == 1 { "" } else { "s" }, crate::changed_files(self.changes.len()), if commit.parents.len() > 1 { "first parent" } else { "parent or empty tree" })).text_size(crate::appearance::ui_text(12.)).when(kept, |metadata| metadata.invisible())).children(loading_over.map(|row| row.absolute().top_0().left_0().right_0())))
                 // The read-only editor draws no edge of its own: holding
                 // keyboard focus, it rings its own edge over its lines, as
                 // Compare's text does, where it showed no focus at all.
-                .when_some(self.message.as_ref(), |element, message| { let focus = message.read(cx).focus_handle(cx); let ring = self.owner.upgrade().and_then(|owner| owner.read(cx).focus_ring.edge(&focus, rgb(p.accent))); element.child(shown(focus).debug_selector(|| "reflog-commit-message".into()).relative().flex_shrink_0().child(crate::editor_find::Editor::new(message).readonly(true).h(px(110.)).aria_label("Reflog commit message")).children(ring)) })
+                .when_some(self.message.as_ref(), |element, message| { let focus = message.read(cx).focus_handle(cx); let ring = self.owner.upgrade().and_then(|owner| owner.read(cx).focus_ring.edge(&focus, rgb(p.accent))); element.child(fade(shown(focus)).debug_selector(|| "reflog-commit-message".into()).relative().flex_shrink_0().child(crate::editor_find::Editor::new(message).readonly(true).h(px(110.)).aria_label("Reflog commit message")).children(ring)) })
                 // Whole rows of one line each, so the list's bound cuts no
                 // row; past that bound its scrollbar, in a gutter of its own,
                 // cues the rest.
-                .child(div().relative().flex_shrink_0().child(native_accessibility::clips_children(div().id("reflog-commit-files").debug_selector(|| "reflog-commit-files".into()).max_h(file_row * files_shown as f32).overflow_y_scroll().track_scroll(&self.files_scroll).flex().flex_col().when(files_scroll, |list| list.pr(Scrollbar::width())).children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); native_accessibility::static_text(div().id(("reflog-commit-file", index)).debug_selector(move || format!("reflog-commit-file-{index}")), text.clone()).ml(TEXT_INSET).flex_shrink_0().h(file_row).text_size(crate::appearance::ui_text(FILE_ROW_TEXT)).line_height(file_row).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text) })))).when(files_scroll, |list| list.child(Scrollbar::vertical(&self.files_scroll).id("reflog-files-scrollbar").mode(ScrollbarMode::Always))))
-                .when(self.changes.len() > 100, |element| element.child(label("reflog-file-limit", "Showing the first 100 changed paths.").text_size(crate::appearance::ui_text(12.))))
-                .child(label("reflog-recovery-name-label", "Create a new branch at this commit to keep it reachable").text_size(crate::appearance::ui_text(12.)))
-                .child(shown(name).child(Input::new(&self.name).aria_label("New recovery branch name")))
-                .child(shown(review.clone()).flex().flex_col().child(button("review-reflog-recovery", "Review recovery branch…", "", false).track_focus(&review).debug_selector(|| "review-reflog-recovery".into()).map(|review| crate::workspace::refusing(review, || "review-reflog-recovery".into(), unavailable, dimmed)).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx)))))
+                .child(fade(div()).relative().flex_shrink_0().child(native_accessibility::clips_children(div().id("reflog-commit-files").debug_selector(|| "reflog-commit-files".into()).max_h(file_row * files_shown as f32).overflow_y_scroll().track_scroll(&self.files_scroll).flex().flex_col().when(files_scroll, |list| list.pr(Scrollbar::width())).children(self.changes.iter().take(100).enumerate().map(|(index, file)| { let text = format!("{} · {}", file.status.label(), file.path().display()); native_accessibility::static_text(div().id(("reflog-commit-file", index)).debug_selector(move || format!("reflog-commit-file-{index}")), text.clone()).ml(TEXT_INSET).flex_shrink_0().h(file_row).text_size(crate::appearance::ui_text(FILE_ROW_TEXT)).line_height(file_row).whitespace_nowrap().overflow_hidden().text_ellipsis().child(text) })))).when(files_scroll, |list| list.child(Scrollbar::vertical(&self.files_scroll).id("reflog-files-scrollbar").mode(ScrollbarMode::Always))))
+                .when(self.changes.len() > 100, |element| element.child(fade(div()).child(label("reflog-file-limit", "Showing the first 100 changed paths.").text_size(crate::appearance::ui_text(12.)))))
+                .child(fade(div()).child(label("reflog-recovery-name-label", "Create a new branch at this commit to keep it reachable").text_size(crate::appearance::ui_text(12.))))
+                .child(fade(shown(name)).child(Input::new(&self.name).aria_label("New recovery branch name")))
+                .child(fade(shown(review.clone())).flex().flex_col().child(button("review-reflog-recovery", "Review recovery branch…", "", false).track_focus(&review).debug_selector(|| "review-reflog-recovery".into()).map(|review| crate::workspace::refusing(review, || "review-reflog-recovery".into(), unavailable, dimmed)).on_click(cx.listener(|this, _, window, cx| this.recover(window, cx)))))
                 // The review's loading row and error stand below the button
                 // that asked for it, the content's last children.
                 .children(loading_after_review)
@@ -2612,6 +2665,123 @@ mod tests {
         assert!(
             cx.update(|window, _| filter.is_focused(window)),
             "focus stays in the filter"
+        );
+    }
+
+    /// Selecting another entry keeps the last entry's details drawn where
+    /// they are, faded behind the read's loading row, until the new entry's
+    /// commit lands and swaps in within one frame, with the content scrolled
+    /// until the entry list starts at its top: the list's rows and the
+    /// details stand where they stood before the click, in the frame after
+    /// it and in the frame the commit lands in. Nothing acts on the kept
+    /// details: Review recovery branch… reviews nothing while the read runs,
+    /// and Cancel drops them rather than leave the last commit under the new
+    /// entry's heading. The selection cleared the details at once, so the
+    /// content shrank, its scroll moved the list down, and everything below
+    /// it moved again as the commit landed.
+    #[gpui::test]
+    async fn a_selection_keeps_the_details_in_place_until_its_commit_lands(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        // Entries 1 to 3 are empty commits, whose details take the same room.
+        click_entry(cx, &browser, 1);
+        let content = rendered(cx, "reflog-browser-content");
+        let list = in_content(cx, &browser, "reflog-list");
+        let scrolled = content.top() - list.top();
+        browser.update(cx, |this, _| {
+            assert!(this.content.scroll().max_offset().y > -scrolled);
+            this.content.scroll().set_offset(point(px(0.), scrolled));
+        });
+        cx.update(|window, _| window.refresh());
+        draw(cx);
+        let places = |cx: &mut VisualTestContext| -> Vec<(&'static str, Bounds<Pixels>)> {
+            [
+                "reflog-list",
+                "reflog-entry-0",
+                "reflog-entry-1",
+                "reflog-entry-2",
+                "reflog-entry-3",
+                "reflog-selected-object",
+                "reflog-commit-metadata",
+                "reflog-commit-message",
+                "review-reflog-recovery",
+            ]
+            .into_iter()
+            .map(|selector| (selector, rendered(cx, selector)))
+            .collect()
+        };
+        let submitted =
+            |cx: &mut VisualTestContext| browser.read_with(cx, |this, _| this.submitted);
+        let review = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| browser.update(cx, |this, cx| this.recover(window, cx)));
+        };
+        let before = places(cx);
+
+        // Entry 2, its read held as a slow read is.
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        let entry = rendered(cx, "reflog-entry-2");
+        cx.simulate_click(entry.center(), Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("cancel-reflog-read").is_some(),
+            "the read shows its loading row"
+        );
+        assert_eq!(
+            places(cx),
+            before,
+            "the frame after the click moves nothing"
+        );
+        let reads = submitted(cx);
+        review(cx);
+        assert_eq!(
+            submitted(cx),
+            reads,
+            "Review reviews nothing while the read runs"
+        );
+        drop(held);
+        settle_reads(cx, &browser);
+        assert_eq!(
+            places(cx),
+            before,
+            "the frame the entry lands in moves nothing"
+        );
+        browser.read_with(cx, |this, _| {
+            let page = this.page.as_ref().expect("the log loaded");
+            assert_eq!(
+                this.commit.as_ref().map(|landed| landed.oid.clone()),
+                Some(page.entries[2].oid.clone()),
+                "entry 2's details swapped in"
+            );
+        });
+
+        // Entry 3, its read cancelled: the kept details go with it.
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        let entry = rendered(cx, "reflog-entry-3");
+        cx.simulate_click(entry.center(), Modifiers::default());
+        draw(cx);
+        assert_eq!(places(cx), before, "the next click moves nothing");
+        cx.update(|window, cx| {
+            browser.update(cx, |this, cx| {
+                this.cancel();
+                this.leave_loading_row(window, cx);
+                cx.notify();
+            })
+        });
+        drop(held);
+        settle_reads(cx, &browser);
+        assert!(
+            cx.debug_bounds("reflog-commit-metadata").is_none(),
+            "no details stand under entry 3's heading"
+        );
+        let reads = submitted(cx);
+        review(cx);
+        assert_eq!(
+            submitted(cx),
+            reads,
+            "Review reviews nothing without its details"
         );
     }
 
