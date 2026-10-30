@@ -5124,6 +5124,60 @@ mod tests {
         drop(fixture);
     }
 
+    /// A working row's side selected with nothing to show stops the
+    /// window's reads (`invalidate_read`), a write's running quiet reload
+    /// with them, and starts that reload again, as History's file filter
+    /// hiding the selected file and Working rows landing without the
+    /// selected row do. With no read of its own to start it, the reload once
+    /// waited for the next local change, every menu that follows writes
+    /// refused meanwhile.
+    #[gpui::test]
+    async fn a_selection_with_nothing_to_show_runs_a_writes_reload_again(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        hold_quiet_reads(&app, cx, true);
+        let write = held(
+            &app,
+            cx,
+            gitturtle_core::WriteCommand::CreateBranch {
+                name: "side-q9".into(),
+                start_point: None,
+            },
+        );
+        release(&app, write, cx).await;
+        next_frame(cx);
+        reload_runs(&app, cx);
+        let gamma = app.read_with(cx, |app, _| {
+            app.work_status
+                .as_ref()
+                .expect("a status")
+                .entries
+                .iter()
+                .position(|entry| entry.path.as_os_str() == std::ffi::OsStr::new("gamma.txt"))
+                .expect("gamma's entry")
+        });
+        // gamma is untracked: its Staged side has nothing to show.
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.select_working(gamma, ChangeArea::Staged, window, cx)
+            })
+        });
+        assert!(
+            app.read_with(cx, |app, _| app.working_selected.is_none()),
+            "nothing to show, nothing selected"
+        );
+        assert!(
+            app.read_with(cx, |app, _| app.automatic.quiet_read_running()
+                && app.write_unsettled()),
+            "the write's reload runs again, and menus wait for it"
+        );
+        quiet_reads_land(&app, cx);
+        crate::path_filter::filters_land(&app, cx);
+        assert!(
+            !app.read_with(cx, |app, _| app.write_unsettled()),
+            "menus are offered once the reload lands"
+        );
+    }
+
     /// Shift-F10 in an open right-click menu, on a History commit, a
     /// navigator branch or a working row, opens no keyboard's menu beside
     /// it: one menu is open at a time, and the right-click menu, the row's

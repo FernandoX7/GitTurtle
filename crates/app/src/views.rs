@@ -2441,7 +2441,7 @@ impl GitTurtle {
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.file_filter
                         .update(cx, |input, cx| input.set_value("", window, cx));
-                    this.change_file_filter(cx);
+                    this.change_file_filter(window, cx);
                     window.focus(&this.file_focus, cx);
                 }))
         });

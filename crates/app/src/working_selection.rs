@@ -627,6 +627,9 @@ impl GitTurtle {
                             this.working_selected = None;
                             if this.mode == WorkspaceMode::Working {
                                 this.invalidate_read(); this.clear_preview(); this.files.clear(); this.file_paths.reset(); this.selected_file = None;
+                                // The stopped read puts a running quiet read
+                                // back to wait; nothing else here starts it.
+                                this.try_automatic_refresh(window, cx);
                             }
                         }
                         if let Some(anchor) = anchor {

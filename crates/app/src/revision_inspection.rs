@@ -342,7 +342,7 @@ impl GitTurtle {
             return;
         }
         self.files = files;
-        self.refresh_file_filter(cx);
+        self.refresh_file_filter(window, cx);
         self.selected_file = None;
         self.status = format!(
             "{} · pinned local revisions · open a file to compare",
@@ -376,7 +376,7 @@ impl GitTurtle {
             return;
         }
         self.files = vec![file];
-        self.refresh_file_filter(cx);
+        self.refresh_file_filter(window, cx);
         self.selected_file = Some(0);
         self.text_mode = TextMode::After;
         self.status = "Tracked source file · browsing is local and read-only".into();

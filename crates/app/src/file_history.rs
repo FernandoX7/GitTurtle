@@ -367,7 +367,7 @@ impl GitTurtle {
         self.inspector_message
             .replace(retained.inspector_message, cx);
         self.files = retained.files;
-        self.refresh_file_filter(cx);
+        self.refresh_file_filter(window, cx);
         self.selected_file = retained.selected_file;
         self.preferred_file = retained.preferred_file;
         // A restored preview is a new showing of it.
@@ -664,7 +664,7 @@ impl GitTurtle {
             .scroll
             .scroll_to_item(index, ScrollStrategy::Center);
         self.files = vec![change];
-        self.refresh_file_filter(cx);
+        self.refresh_file_filter(window, cx);
         self.selected_file = None;
         self.pane = Pane::Files;
         window.focus(&self.file_focus, cx);

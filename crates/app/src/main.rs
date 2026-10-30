@@ -907,9 +907,9 @@ impl GitTurtle {
         this.subscriptions.push(cx.subscribe_in(
             &file_filter,
             window,
-            |this, _, event: &InputEvent, _, cx| {
+            |this, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::Change) {
-                    this.change_file_filter(cx);
+                    this.change_file_filter(window, cx);
                 }
             },
         ));
@@ -1236,7 +1236,7 @@ impl GitTurtle {
                     return;
                 }
                 self.files = vec![file];
-                self.refresh_file_filter(cx);
+                self.refresh_file_filter(window, cx);
                 self.selected_file = Some(0);
                 self.receive(Output::Preview(content, elapsed), window, cx);
             }
@@ -1319,7 +1319,7 @@ impl GitTurtle {
                     elapsed.as_secs_f64() * 1000.
                 );
                 self.files = files;
-                self.refresh_file_filter(cx);
+                self.refresh_file_filter(window, cx);
                 if !self.files.is_empty() {
                     let index = self
                         .preferred_file
@@ -1670,7 +1670,7 @@ impl GitTurtle {
             self.clear_preview();
             let (files, selected) = self.retained_history_files.take().unwrap_or_default();
             self.files = files;
-            self.refresh_file_filter(cx);
+            self.refresh_file_filter(window, cx);
             self.selected_file = selected;
             self.status = changed_files(self.files.len());
         }

@@ -1564,7 +1564,7 @@ impl GitTurtle {
         self.mode = WorkspaceMode::Compare;
         self.pane = Pane::Files;
         self.sidebar = false;
-        self.refresh_file_filter(cx);
+        self.refresh_file_filter(window, cx);
         restore_list_viewport(
             &self.history_scroll,
             saved.history_y,

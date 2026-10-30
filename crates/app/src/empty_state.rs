@@ -1206,7 +1206,7 @@ pub(crate) mod tests {
             app.update(cx, |app, cx| {
                 app.file_filter
                     .update(cx, |input, cx| input.set_value("no-such-path", window, cx));
-                app.change_file_filter(cx);
+                app.change_file_filter(window, cx);
             })
         });
         crate::path_filter::filters_land(&app, cx);

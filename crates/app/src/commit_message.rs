@@ -923,7 +923,7 @@ pub(crate) mod tests {
                 &"Long paragraph. ".repeat(5000),
             )],
         );
-        cx.update(|_, cx| {
+        cx.update(|window, cx| {
             app.update(cx, |app, cx| {
                 app.files = (0..100)
                     .map(|index| FileChange {
@@ -937,7 +937,7 @@ pub(crate) mod tests {
                     })
                     .collect();
                 app.selected_file = Some(80);
-                app.refresh_file_filter(cx);
+                app.refresh_file_filter(window, cx);
                 app.file_scroll.scroll_to_item(80, ScrollStrategy::Bottom);
             })
         });
@@ -1477,7 +1477,7 @@ pub(crate) mod tests {
         let message = full_message(&selected);
         let (probe, app, cx) = fixture(cx, vec![selected, commit("b", "Older", "")]);
         let path = "dir/東京 notes.txt";
-        cx.update(|_, cx| {
+        cx.update(|window, cx| {
             shortcuts::bind_keys(cx);
             app.update(cx, |app, cx| {
                 app.graph = crate::graph::layout(&app.commits, || Ok::<_, ()>(())).unwrap();
@@ -1495,7 +1495,7 @@ pub(crate) mod tests {
                     })
                     .collect();
                 app.selected_file = Some(1);
-                app.refresh_file_filter(cx);
+                app.refresh_file_filter(window, cx);
             });
             probe.update(cx, |probe, cx| {
                 probe.history = true;

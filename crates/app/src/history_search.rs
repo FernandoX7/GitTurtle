@@ -299,7 +299,7 @@ impl GitTurtle {
         self.graph_lanes = self.graph.iter().map(|row| row.width).max().unwrap_or(1);
         self.selected_commit = normal.selected_commit;
         self.files = normal.files;
-        self.refresh_file_filter(cx);
+        self.refresh_file_filter(window, cx);
         self.selected_file = normal.selected_file;
         self.parent = normal.parent;
         self.preferred_file = normal.preferred_file;

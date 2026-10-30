@@ -2,7 +2,7 @@
 //! identities; Unicode normalization and matching happen on one background lane.
 use crate::{FileChange, GitTurtle, SerialExecutor, WorkspaceMode};
 use anyhow::{Result, ensure};
-use gpui_kit::{App, Context, ScrollStrategy, Task};
+use gpui_kit::{App, Context, ScrollStrategy, Task, Window};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -180,22 +180,22 @@ impl GitTurtle {
 
     /// Every replacement of the owned changed-file snapshot calls this hook.
     /// The identity guard also prevents a missed clear from exposing stale rows.
-    pub(super) fn refresh_file_filter(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn refresh_file_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let identity = (self.files.as_ptr() as usize, self.files.len());
         if self.file_paths.identity != Some(identity) {
             self.file_paths.reset();
             self.file_paths.identity = Some(identity);
         }
-        self.schedule_file_filter(cx);
+        self.schedule_file_filter(window, cx);
     }
 
-    pub(super) fn change_file_filter(&mut self, cx: &mut Context<Self>) {
-        self.refresh_file_filter(cx);
+    pub(super) fn change_file_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_file_filter(window, cx);
         self.file_scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
 
-    fn schedule_file_filter(&mut self, cx: &mut Context<Self>) {
+    fn schedule_file_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Working Changes owns a separate status-path filter. Its one-file
         // preview snapshot must not be hidden by a retained History query.
         let query = if self.mode == WorkspaceMode::Working {
@@ -272,10 +272,12 @@ impl GitTurtle {
             Ok((index, visible))
         });
         self.file_paths.running = true;
-        self.file_paths.task = Some(cx.spawn(async move |this, cx| {
+        // Landed in the window, which starts the quiet reads a hidden
+        // selection's cancelled read held (`land_file_filter`).
+        self.file_paths.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
-            let _ = this.update(cx, |this, cx| {
-                this.answer_file_filter(ticket, identity, result, cx)
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.answer_file_filter(ticket, identity, result, window, cx)
             });
         }));
         cx.notify();
@@ -289,14 +291,15 @@ impl GitTurtle {
         ticket: u64,
         identity: Option<(usize, usize)>,
         result: Answer,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.file_paths.running = false;
         self.file_paths.task = None;
         if std::mem::take(&mut self.file_paths.queued) {
-            self.schedule_file_filter(cx);
+            self.schedule_file_filter(window, cx);
         } else {
-            self.land_file_filter(ticket, identity, result, cx);
+            self.land_file_filter(ticket, identity, result, window, cx);
         }
     }
 
@@ -308,6 +311,7 @@ impl GitTurtle {
         ticket: u64,
         identity: Option<(usize, usize)>,
         result: Answer,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.file_paths.cancellation.load(Ordering::Relaxed) != ticket
@@ -330,6 +334,11 @@ impl GitTurtle {
                     self.invalidate_read();
                     self.clear_preview();
                     self.selected_file = None;
+                    // The stopped read puts a running quiet read back to
+                    // wait, and nothing else here starts it: a write's
+                    // reload once waited for the next local change, every
+                    // menu that follows writes refused.
+                    self.try_automatic_refresh(window, cx);
                 }
                 self.file_paths.visible = visible;
             }
@@ -409,7 +418,7 @@ mod tests {
                 app.file_filter.update(cx, |input, cx| {
                     input.set_value("external", window, cx);
                 });
-                app.refresh_file_filter(cx);
+                app.refresh_file_filter(window, cx);
                 assert!(app.file_paths.pending);
                 app.retained_history_files =
                     Some((std::mem::take(&mut app.files), app.selected_file.take()));
@@ -545,16 +554,19 @@ mod tests {
             }
         }
         // An older query's answer that lands now is dropped.
-        app.update(cx, |app, cx| {
-            let current = app.file_paths.cancellation.load(Ordering::Relaxed);
-            let identity = app.file_paths.identity;
-            app.land_file_filter(
-                current - 1,
-                identity,
-                Ok(Ok((Arc::new(Vec::new()), Arc::from([0usize])))),
-                cx,
-            );
-            assert!(app.file_paths.pending, "the newest query still pends");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let current = app.file_paths.cancellation.load(Ordering::Relaxed);
+                let identity = app.file_paths.identity;
+                app.land_file_filter(
+                    current - 1,
+                    identity,
+                    Ok(Ok((Arc::new(Vec::new()), Arc::from([0usize])))),
+                    window,
+                    cx,
+                );
+                assert!(app.file_paths.pending, "the newest query still pends");
+            })
         });
         draw(cx);
         assert_eq!(drawn(cx), vec![0, 1, 2, 3], "a stale answer is dropped");

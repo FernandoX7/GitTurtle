@@ -2130,6 +2130,11 @@ impl GitTurtle {
             self.files.clear();
             self.file_paths.reset();
             self.selected_file = None;
+            // The stopped read puts a running quiet read back to wait, and
+            // with nothing of its own to read this starts it again: a
+            // write's reload once waited for the next local change, every
+            // menu that follows writes refused.
+            self.try_automatic_refresh(window, cx);
             return;
         }
         let repo = repo.clone();

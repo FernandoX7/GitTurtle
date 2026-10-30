@@ -524,7 +524,7 @@ impl GitTurtle {
             self.clear_preview();
         }
         self.files = vec![file];
-        self.refresh_file_filter(cx);
+        self.refresh_file_filter(window, cx);
         self.selected_file = Some(0);
         if let Content::Images { old, new } = content.as_ref() {
             self.images = [old.render.clone(), new.render.clone()];
