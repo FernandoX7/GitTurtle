@@ -1182,8 +1182,11 @@ mod tests {
     /// In a 461 × 490 half tile, at 13 and 18 pt, every Tab stop of the
     /// Reflog draws its ring whole and in view while the pointer moves, with
     /// the log alone and with an entry selected, whose form lies below the
-    /// content's fold. Tab once left every entry past the list's or the
-    /// content's fold where it lay, the first cut by the fold and the rest
+    /// content's fold, and so does every entry the arrow keys move focus onto
+    /// in the entry list, which is one Tab stop: Down through all twelve from
+    /// the first, past the list's fold and the content's, then Home and End.
+    /// Focus moved onto an entry once stayed where the entry lay, past the
+    /// list's or the content's fold, the first cut by the fold and the rest
     /// drawing no ring, and the read-only commit message drew no ring at any
     /// size.
     #[gpui::test]
@@ -1219,6 +1222,18 @@ mod tests {
                     draw(cx);
                 }
                 sweep::walk(&app, cx, surface, interface, &mut failures);
+                // The walk reaches the one entry the list's stop stands on;
+                // the arrows reach the others, from the filter's next stop.
+                let filter = browser.read_with(cx, |this, cx| this.filter_focus(cx));
+                cx.update(|window, cx| window.focus(&filter, cx));
+                draw(cx);
+                let at = format!("{surface} at {interface} pt");
+                key_to_entry(cx, &browser, "tab", 0, &at, &mut failures);
+                for index in 1..12 {
+                    key_to_entry(cx, &browser, "down", index, &at, &mut failures);
+                }
+                key_to_entry(cx, &browser, "home", 0, &at, &mut failures);
+                key_to_entry(cx, &browser, "end", 11, &at, &mut failures);
                 sweep::close_dialogs(cx, surface, interface, &mut failures);
             }
         }
@@ -1346,6 +1361,68 @@ mod tests {
             }
         }
         panic!("the Reflog's reads land");
+    }
+
+    /// Presses `key` on the Reflog, lets the read it starts land and adds to
+    /// `failures`, named by `at`, unless focus moves to entry `index`, whose
+    /// Button draws its ring whole, every side inside the list's and the
+    /// content's clips, while the pointer moves: an entry left past either
+    /// fold is cut by it or draws no ring at all.
+    fn key_to_entry(
+        cx: &mut VisualTestContext,
+        browser: &Entity<ReflogBrowser>,
+        key: &str,
+        index: usize,
+        at: &str,
+        failures: &mut Vec<String>,
+    ) {
+        cx.simulate_keystrokes(key);
+        settle_reads(cx, browser);
+        draw(cx);
+        cx.simulate_mouse_move(point(px(2.), px(2.)), None, Modifiers::default());
+        draw(cx);
+        let at = format!("{at}, {key} to entry {index}");
+        let focused = cx.update(|window, cx| browser.read(cx).entries.focused(window));
+        if focused != Some(ElementId::from(("reflog-entry", index))) {
+            failures.push(format!("{at}: focus is on {focused:?}"));
+            return;
+        }
+        let selector: &'static str = format!("reflog-entry-{index}").leak();
+        let entry = rendered(cx, selector);
+        let ring =
+            entry.dilate(appearance::BUTTON_FOCUS_RING.gap + appearance::BUTTON_FOCUS_RING.width);
+        let accent: Hsla = cx.read(|cx| rgb(palette(cx).accent).into());
+        let rings: Vec<_> = crate::focus_ring::painted_outlines_where(cx, |color| {
+            color.a > 0.
+                && Hsla {
+                    a: accent.a,
+                    ..color
+                } == accent
+        })
+        .into_iter()
+        .filter(|outline| {
+            outline.drawn
+                && [
+                    (outline.bounds.left(), ring.left()),
+                    (outline.bounds.top(), ring.top()),
+                    (outline.bounds.right(), ring.right()),
+                    (outline.bounds.bottom(), ring.bottom()),
+                ]
+                .into_iter()
+                .all(|(drawn, expected)| (drawn - expected).abs() <= px(0.5))
+        })
+        .collect();
+        if rings.is_empty() {
+            failures.push(format!(
+                "{at}: the entry at {entry:?} paints no ring in view"
+            ));
+        }
+        for outline in rings.iter().filter(|outline| !outline.whole) {
+            failures.push(format!(
+                "{at}: a clip cuts its ring at {:?}, sides {:?}",
+                outline.bounds, outline.sides
+            ));
+        }
     }
 
     /// Twelve HEAD reflog entries, as on the native fixture, so the entry list
