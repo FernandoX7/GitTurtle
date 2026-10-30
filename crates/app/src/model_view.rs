@@ -797,7 +797,9 @@ fn render_side<T: 'static>(
                     // An alert is named and valued by its text, a label
                     // read by its value.
                     .map(|element| {
-                        let read = bounded_accessible_text(format!("{label}: {message}"));
+                        let read = native_accessibility::bounded_accessible_text(format!(
+                            "{label}: {message}"
+                        ));
                         if side.error.is_some() {
                             element.alert(read)
                         } else {
@@ -1071,7 +1073,7 @@ fn render_side<T: 'static>(
             div()
                 .id(("model-details", index))
                 .role(Role::Label)
-                .aria_value(bounded_accessible_text(format!(
+                .aria_value(native_accessibility::bounded_accessible_text(format!(
                     "{label} model details: {details}"
                 )))
                 .max_h(px(48.))
@@ -1097,19 +1099,6 @@ fn render_side<T: 'static>(
                 .child(details),
         )
         .into_any_element()
-}
-
-fn bounded_accessible_text(mut text: String) -> String {
-    const MAX_BYTES: usize = 16 * 1024;
-    if text.len() > MAX_BYTES {
-        let mut end = MAX_BYTES - '…'.len_utf8();
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text.truncate(end);
-        text.push('…');
-    }
-    text
 }
 
 #[allow(clippy::too_many_arguments)]

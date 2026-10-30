@@ -6435,7 +6435,12 @@ impl Render for GitTurtle {
                                 // one again is announced again.
                                 .id(("operation-error-summary", self.error_refusals))
                                 .debug_selector(|| "operation-error-summary".into())
-                                .alert(error.clone())
+                                // The whole report, which Git's output can make
+                                // megabytes long, bounded as every long
+                                // accessible text is, and said once: a
+                                // multi-megabyte name and value went to
+                                // assistive technology in every frame.
+                                .alert(native_accessibility::bounded_accessible_text(error))
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
@@ -20701,6 +20706,55 @@ pub(crate) mod tests {
             assert!(!app.commits.is_empty());
         });
         assert!(cx.debug_bounds("operation-error-summary").is_none());
+    }
+
+    /// The window's operation error says a report of any length once, as
+    /// its alert's name and value alike, and bounded: Git's output can make
+    /// a report megabytes long, and the alert carries at most 16 KiB of it,
+    /// cut between characters and ending in an ellipsis, while its line
+    /// draws the first 220 characters. Unbounded, the whole report went to
+    /// assistive technology twice, as the name and as the value, in every
+    /// frame that drew it.
+    #[gpui::test]
+    async fn the_operation_errors_alert_bounds_a_long_report(cx: &mut TestAppContext) {
+        let (_fixture, app, cx) = history_window(cx).await;
+        // A megabyte and more of output, whose bound falls inside a
+        // three-byte character.
+        let report = format!("Push failed:\n{}", "€ rejected\n".repeat(100_000));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.operation_error = Some(report.clone());
+                cx.notify();
+            })
+        });
+        crate::native_accessibility::written::forget();
+        draw(cx);
+        assert!(
+            cx.debug_bounds("operation-error-summary").is_some(),
+            "the error is drawn"
+        );
+        let mut announced =
+            crate::native_accessibility::written::announced_from("operation-error-summary-");
+        assert_eq!(announced.len(), 1, "one alert: {announced:?}");
+        let (node, _) = announced.pop().expect("the alert");
+        let node = crate::native_accessibility::written::get(&node)
+            .expect("the alert's node")
+            .node;
+        let (name, value) = (
+            node.label().expect("a name"),
+            node.value().expect("a value"),
+        );
+        assert_eq!(name, value, "said once, as its name and its value alike");
+        assert!(
+            name.len() <= 16 * 1024 && name.len() > 16 * 1024 - 8,
+            "at most 16 KiB, and nearly all of it: {} bytes",
+            name.len()
+        );
+        let kept = name.strip_suffix('…').expect("it ends in an ellipsis");
+        assert!(
+            report.starts_with(kept),
+            "the report's start, cut between characters"
+        );
     }
 
     #[gpui::test]
