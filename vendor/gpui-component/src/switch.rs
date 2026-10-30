@@ -366,8 +366,8 @@ mod tests {
     use std::{cell::Cell, rc::Rc};
 
     use gpui::{
-        Context, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, Render,
-        StatefulInteractiveElement as _, TestAppContext, VisualTestContext, point,
+        Context, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, Render, TestAppContext,
+        VisualTestContext, point,
     };
 
     use super::*;

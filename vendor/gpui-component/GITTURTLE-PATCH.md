@@ -1231,7 +1231,10 @@ gpui-base the application builds. In `src/input/input.rs`,
 `impl IntoElement` that `RenderOnce::render` returns, holds the `window` and
 `cx` borrows until it drops, so neither probe borrow-checked (E0499, E0500). Each
 now drops the frame before it renders the state. The frame projects into the
-state as it renders, so what the probes read is unchanged. Remove
+state as it renders, so what the probes read is unchanged. The test module of
+`src/switch.rs` no longer imports `gpui::StatefulInteractiveElement`, which
+none of its tests use, so the lib tests build without an unused-import
+warning; that change goes with the module's tests. Remove
 `upstream-files/` when a kit update's tests include no file outside its
 package, and drop the probe change with the input patch or when upstream's
 probes compile.
