@@ -3741,10 +3741,12 @@ mod tests {
     /// the list at 18 pt in a 461 × 490 window, with Tab on one of a
     /// stashed model's header controls and the region scrolled away from
     /// it, scrolling the detail, which moves the region but changes neither
-    /// focus nor the region's size, leaves the region where it was. Judged
-    /// by where the region lay in the window, which the detail's scroll
-    /// moves, the region scrolled back to its focused control, since GPUI
-    /// keeps the keyboard as the last input through a trackpad's scroll.
+    /// focus nor the region's size, leaves the region where it was: whether
+    /// the region shows the control cut or whole with its ring's room cut,
+    /// which a frame counts as shown and a resize would reveal. Judged by
+    /// where the region lay in the window, which the detail's scroll moves,
+    /// the region scrolled back to its focused control, since GPUI keeps
+    /// the keyboard as the last input through a trackpad's scroll.
     #[cfg(target_os = "linux")]
     #[gpui::test]
     async fn a_side_header_keeps_its_scroll_as_the_detail_scrolls(
@@ -3807,32 +3809,69 @@ mod tests {
         assert!(!whole(cx), "{region} is scrolled away from {camera}");
         let away = list.scroll().offset();
         // The detail scrolls without a key or the pointer moving.
-        let at = rendered(cx, region).origin;
-        let shown = detail.scroll().offset().y;
-        let reach = detail.scroll().max_offset().y;
-        let step = if shown < -reach / 2. {
-            px(20.)
-        } else {
-            px(-20.)
+        let scroll_detail = |cx: &mut VisualTestContext| {
+            let at = rendered(cx, region).origin;
+            let shown = detail.scroll().offset().y;
+            let reach = detail.scroll().max_offset().y;
+            let step = if shown < -reach / 2. {
+                px(20.)
+            } else {
+                px(-20.)
+            };
+            cx.update(|window, _| {
+                detail.scroll().set_offset(point(px(0.), shown + step));
+                window.refresh();
+            });
+            draw(cx);
+            assert_ne!(
+                rendered(cx, region).origin,
+                at,
+                "the detail's scroll moves {region}"
+            );
+            assert!(
+                cx.update(|window, _| window.last_input_was_keyboard()),
+                "the last input is still Tab"
+            );
         };
-        cx.update(|window, _| {
-            detail.scroll().set_offset(point(px(0.), shown + step));
-            window.refresh();
-        });
-        draw(cx);
-        assert_ne!(
-            rendered(cx, region).origin,
-            at,
-            "the detail's scroll moves {region}"
-        );
-        assert!(
-            cx.update(|window, _| window.last_input_was_keyboard()),
-            "the last input is still Tab"
-        );
+        scroll_detail(cx);
         assert_eq!(
             list.scroll().offset(),
             away,
             "{region} stays where it was scrolled"
+        );
+
+        // Scrolled by less than its ring's room, the control still lies
+        // whole in the region, so the frame counts it as shown, and only
+        // the region's unchanged size keeps the detail's scroll from
+        // revealing it: judged by where the region lay, that scroll moved
+        // the region back by the rest of the ring's room.
+        let (control, view) = (rendered(cx, camera), rendered(cx, region));
+        let offset = list.scroll().offset().y;
+        let near = [
+            offset + (view.top() + room / 2. - control.top()),
+            offset + (view.bottom() - room / 2. - control.bottom()),
+        ]
+        .into_iter()
+        .find(|near| *near <= px(0.) && *near >= -end)
+        .unwrap_or_else(|| panic!("{region} scrolls {camera} within its ring's room of an edge"));
+        cx.update(|window, _| {
+            list.scroll().set_offset(point(px(0.), near));
+            window.refresh();
+        });
+        draw(cx);
+        let (control, view) = (rendered(cx, camera), rendered(cx, region));
+        assert!(
+            control.top() + slack >= view.top()
+                && control.bottom() <= view.bottom() + slack
+                && !whole(cx),
+            "{camera} {control:?} lies whole in {region} {view:?}, its ring's room cut"
+        );
+        let near = list.scroll().offset();
+        scroll_detail(cx);
+        assert_eq!(
+            list.scroll().offset(),
+            near,
+            "{region} stays where it was scrolled, {camera} whole in it"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
