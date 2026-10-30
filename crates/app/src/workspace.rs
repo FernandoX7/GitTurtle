@@ -4375,14 +4375,19 @@ impl GitTurtle {
     /// Why a Working row's menu refuses every item while the rows are
     /// prepared, which each item states, or `None` while none are: the write
     /// that runs, by the label it runs under, as Fetch, Pull and Push name it
-    /// while it runs, and otherwise what the rows are for
-    /// ([`FILTERING_ROWS`], [`REFRESHING_ROWS`]). Every item once said
-    /// "Refreshing…", for a filter's rows too, and through a write that
-    /// started as the rows were prepared.
+    /// while it runs, once it looks busy ([`Self::operation_shown`]), and
+    /// otherwise, as before then, what the rows are for ([`FILTERING_ROWS`],
+    /// [`REFRESHING_ROWS`]). Every item once said "Refreshing…", for a
+    /// filter's rows too, and through a write that started as the rows were
+    /// prepared; later, a right-click on rows being prepared named a write
+    /// as it started, inside the [`BUSY_LOOK_DELAY`] in which a write that
+    /// lands sooner shows none of its busy look. The menus follow the reason
+    /// as it changes, as the busy look shows (`PointerMenu::waits_while`,
+    /// `KeyboardMenu::followed_by`).
     pub(super) fn working_rows_wait(&self) -> Option<&'static str> {
         use crate::working_selection::Preparation;
         self.working_paths.pending.then(|| {
-            self.operation_busy
+            self.operation_shown()
                 .unwrap_or(match self.working_paths.preparation {
                     Preparation::Filter => FILTERING_ROWS,
                     Preparation::Status => REFRESHING_ROWS,

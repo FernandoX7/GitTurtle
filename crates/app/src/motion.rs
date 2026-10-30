@@ -4861,8 +4861,9 @@ mod tests {
 
     /// A working row's menu, opened as `opening` opens it at rest, keeps
     /// its items while the rows of a newer status are prepared, and is
-    /// built again at once, every item refused and naming the write, as a
-    /// write starts meanwhile; once the rows land it is built from them,
+    /// built again at once, every item refused and saying why, as a write
+    /// starts meanwhile: "Refreshing…", for the rows, since the write shows
+    /// none of its busy look yet; once the rows land it is built from them,
     /// refusing what the write refuses, and once the write's reload lands it
     /// offers its items again. Waiting for the rows, it kept offering Delete
     /// untracked file… through the write until the rows landed.
@@ -4874,8 +4875,9 @@ mod tests {
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         open_row_menu(&app, cx, "gamma.txt", opening);
         let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
-        // The held write runs as "Working…" (`held`).
-        let waiting = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…, working…");
+        // Until the held write looks busy, the rows are why.
+        let waiting =
+            |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…, refreshing…");
         assert_eq!(delete(cx), Some(true), "{opening:?}: at rest");
         let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
         std::fs::write(repository.join("omega.txt"), "omega\n").unwrap();
@@ -4953,9 +4955,13 @@ mod tests {
     /// (`working_rows_wait`): "Filtering…" for the filter's query, as the
     /// list says "Filtering working paths…" until its first rows land, and
     /// "Refreshing…" for a newer status; while a write started meanwhile
-    /// runs, `through_write`, the write, by the label it runs under, as
-    /// Fetch, Pull and Push name it, and once more what the rows are for as
-    /// it ends, built again then. A right-click's menu opens on the rows
+    /// runs, `through_write`, what the rows are for until the write looks
+    /// busy, `BUSY_LOOK_DELAY` after the rows began to be prepared, and
+    /// then the write, by the label it runs under, as Fetch, Pull and Push
+    /// name it, built again as it looks busy, and once more what the rows
+    /// are for as it ends, built again then. Named as it started, the write
+    /// was named inside the delay in which a write that lands sooner shows
+    /// none of its busy look. A right-click's menu opens on the rows
     /// being prepared; a keyboard's, which Shift-F10 on those rows does not
     /// open, opens at rest and keeps its items until a write starts. Once
     /// the rows land, and any write's reload, it offers its items. Every
@@ -5043,13 +5049,37 @@ mod tests {
                 })
             });
             next_frame(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.operation_busy.is_some()
+                    && app.operation_shown().is_none()),
+                "{at}: the write runs, and does not look busy yet"
+            );
+            assert_eq!(
+                waiting(cx, reason),
+                Some(false),
+                "{at}: built again as the write starts, saying {reason:?} until it looks busy"
+            );
+            assert_eq!(
+                waiting(cx, "creating branch…"),
+                None,
+                "{at}: not named before it looks busy"
+            );
+            assert_eq!(delete(cx), None, "{at}: offered no more");
+            cx.executor()
+                .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.operation_shown().is_some()
+                    && app.working_paths.pending),
+                "{at}: the write looks busy, and the rows are still prepared"
+            );
             assert_eq!(
                 waiting(cx, "creating branch…"),
                 Some(false),
-                "{at}: built again as the write starts, naming it"
+                "{at}: built again as the write looks busy, naming it"
             );
             assert_eq!(waiting(cx, reason), None, "{at}: the write is why");
-            assert_eq!(delete(cx), None, "{at}: offered no more");
             // The write ends while the rows are still prepared.
             drop(write);
             let task = app
