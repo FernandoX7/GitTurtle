@@ -63,7 +63,13 @@ it is drawn. The work is one walk up the node's ancestors, ending at the
 first clip that leaves the node out, when a client reads its state or the
 adapter compares a changed node's states; a change of `Showing` reaches
 clients as the existing state-change event. macOS has no showing state and
-uses `accesskit_macos`, which this does not touch.
+uses `accesskit_macos`, which this does not touch: there a node AccessKit
+keeps past a fold, which GitTurtle reports at its layout, has nothing marking
+it off screen, and VoiceOver's cursor may outline what lies there, as the
+GitHub panel's notice below its body's fold over Back to repository. That is
+an open item, not yet checked with VoiceOver; a list the window draws none
+of reports one pixel beside its edge there too, so none of its rows is
+reachable.
 
 Upstream status: not proposed upstream. The published 0.19.1 source inserts
 both states for every included node; whether a later release tells an
@@ -123,7 +129,8 @@ adapter for each X11 or Wayland window; `accesskit_unix` serves AT-SPI
 `Accessible.GetState` from this crate's `PlatformNode::state()`. The vendored
 `gpui-base` patch already sets the AccessKit disabled property on disabled
 Buttons; this patch lets that property reach AT-SPI. macOS uses
-`accesskit_macos` and is unaffected.
+`accesskit_macos` and is unaffected, so it keeps the open off-screen item
+above.
 
 The Linux-only application test
 `native_accessibility::atspi_state_tests` maps an AccessKit tree with enabled,
