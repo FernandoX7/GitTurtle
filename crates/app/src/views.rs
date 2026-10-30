@@ -189,17 +189,17 @@ impl GitTurtle {
         )
         .debug_selector(|| "page-back".into())
         .accessibility_label(back_label)
-        // History's Back opens Projects, which a running write refuses; once
-        // it looks refused, its tooltip says why.
+        // History's Back opens Projects, which a running write refuses
+        // (`projects_refusal`); once it looks refused, its tooltip says why.
         .map(|back| {
             self.refusing_with_reason(
                 back,
                 "page-back",
-                self.operation_busy.is_some() && self.mode == WorkspaceMode::History,
+                self.projects_refusal().0 && self.mode == WorkspaceMode::History,
                 |app| crate::workspace::WaitingTooltip {
                     name: app.back_label().into(),
                     shortcut: Some(format!("{}[", primary_label()).into()),
-                    dimmed: app.operation_shown().is_some() && app.mode == WorkspaceMode::History,
+                    dimmed: app.projects_refusal().1 && app.mode == WorkspaceMode::History,
                 },
                 cx,
             )
@@ -371,17 +371,17 @@ impl GitTurtle {
             .debug_selector(|| "projects".into())
             .accessibility_label("Projects")
             // `show_projects` refuses while a write runs, since every action
-            // Projects offers starts another operation; once the button looks
-            // refused, its tooltip says why.
+            // Projects offers starts another operation (`projects_refusal`);
+            // once the button looks refused, its tooltip says why.
             .map(|projects| {
                 self.refusing_with_reason(
                     projects,
                     "projects",
-                    self.operation_busy.is_some(),
+                    self.projects_refusal().0,
                     |app| crate::workspace::WaitingTooltip {
                         name: "Open Projects".into(),
                         shortcut: None,
-                        dimmed: app.operation_shown().is_some(),
+                        dimmed: app.projects_refusal().1,
                     },
                     cx,
                 )
@@ -7022,9 +7022,13 @@ impl Render for GitTurtle {
         // After the focus repairs above, before any list is built.
         self.focus_ring.begin_frame(window, cx);
         let colors = palette(cx);
-        let menu_state = (self.repository.is_some(), self.operation_busy.is_some());
+        let menu_state = (
+            self.repository.is_some(),
+            self.operation_busy.is_some(),
+            self.projects_refusal().0,
+        );
         if self.menu_state != Some(menu_state) {
-            platform_polish::menus(menu_state.0, menu_state.1, cx);
+            platform_polish::menus(menu_state.0, menu_state.1, menu_state.2, cx);
             self.menu_state = Some(menu_state);
         }
         let chrome = self.chrome(window, cx);

@@ -311,6 +311,9 @@ struct Availability {
     /// While the busy spell runs, why the commands it refuses wait
     /// (`GitTurtle::busy_reason`).
     busy: Option<&'static str>,
+    /// Whether that spell is only a wait for a dropped review's read, which
+    /// Projects ends as it opens (`GitTurtle::projects_refusal`).
+    dropped_wait: bool,
     branch: bool,
     file: bool,
     working_file: bool,
@@ -351,8 +354,10 @@ impl CommandId {
         // Going to History, Changes or Settings only reads, so it stays
         // available while a write runs, as their shortcuts and the header's
         // toggle do; the palette and the Linux Main Menu once refused them.
-        // Projects waits: every action it offers starts another operation.
+        // Projects waits: every action it offers starts another operation,
+        // but not for a dropped review's wait, which it ends as it opens.
         if let Some(reason) = context.busy
+            && !(self == Self::Projects && context.dropped_wait)
             && !matches!(
                 self,
                 Self::History
@@ -577,6 +582,7 @@ impl GitTurtle {
             repository: self.repository.is_some(),
             workspace: self.page == AppPage::Repository,
             busy: self.operation_busy.map(|_| self.busy_reason()),
+            dropped_wait: self.waits_only_for_dropped_preparation(),
             branch: self
                 .work_status
                 .as_ref()

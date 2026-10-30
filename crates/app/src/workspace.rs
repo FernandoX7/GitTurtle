@@ -2585,6 +2585,22 @@ impl GitTurtle {
         self.operation_busy.filter(|_| self.busy_shown())
     }
 
+    /// Whether Projects is refused now, and whether it looks it, wherever it
+    /// is offered: the header's Projects, History's Back to Projects, File ▸
+    /// Projects…, the palette and the Linux Main Menu. Refused while the
+    /// busy spell runs, since each action Projects offers starts another
+    /// operation, and dimmed once that spell looks busy, as everywhere else,
+    /// but neither while the window waits only for a dropped preparation's
+    /// read ([`Self::waits_only_for_dropped_preparation`]), which
+    /// `show_projects` ends as it opens: Projects is the way out of a read
+    /// that never ends, so it is never refused for one, as its shortcut
+    /// never was. Through that wait it once looked and was announced
+    /// unavailable, giving the wait's reason, while its shortcut opened it.
+    pub(crate) fn projects_refusal(&self) -> (bool, bool) {
+        let refused = self.operation_busy.is_some() && !self.waits_only_for_dropped_preparation();
+        (refused, refused && self.operation_shown().is_some())
+    }
+
     /// Whether a dialog's actions on the repository at `path` are refused
     /// now, and whether they look it: refused while that repository is no
     /// longer the one shown or a write runs, and dimmed for a write only

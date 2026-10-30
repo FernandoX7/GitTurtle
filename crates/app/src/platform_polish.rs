@@ -232,7 +232,11 @@ impl Render for PrimaryMenu {
     }
 }
 
-pub(super) fn menus(repository: bool, busy: bool, cx: &mut App) {
+/// The native menus, built for a repository open (`repository`), the busy
+/// spell (`busy`) and whether Projects is refused (`projects_refused`,
+/// `GitTurtle::projects_refusal`), which a wait for a dropped review's read
+/// never refuses, since Projects ends it.
+pub(super) fn menus(repository: bool, busy: bool, projects_refused: bool, cx: &mut App) {
     let action = |label: &str, action: Box<dyn Action>, enabled: bool| MenuItem::Action {
         name: label.to_owned().into(),
         action,
@@ -254,7 +258,7 @@ pub(super) fn menus(repository: bool, busy: bool, cx: &mut App) {
         ]),
         Menu::new("File").items([
             action("Open Repository…", Box::new(OpenRepository), !busy),
-            action("Projects…", Box::new(ShowProjects), !busy),
+            action("Projects…", Box::new(ShowProjects), !projects_refused),
             action("Close Window", Box::new(CloseWindow), !busy),
             MenuItem::separator(),
             action(
