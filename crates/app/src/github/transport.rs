@@ -1,7 +1,7 @@
 //! Supported GitHub CLI OAuth handoff, native credential storage, and bounded API
 //! subprocesses. No token appears in an argument, preference, log, or diagnostic.
 use super::*;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 use anyhow::Context as _;
 use std::{
     io::{Read, Write},
@@ -9,9 +9,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(target_os = "macos")]
+// The store's item, which a test build never reaches: it builds no store (`CredentialStore`).
+#[cfg(all(target_os = "macos", not(test)))]
 const SERVICE: &str = "com.gitturtle.github.oauth";
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 const ACCOUNT: &str = "github.com";
 // Legacy macOS Keychain interaction policy is process-wide. Every app-owned
 // credential operation uses this lock so an explicit connection in another
@@ -44,7 +45,7 @@ fn decode_stored_credential(
     }
 }
 /// Caller holds KEYCHAIN_ACCESS until this read restores the interaction policy.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 fn read_credential_without_interaction() -> Result<Option<Credential>> {
     use security_framework::os::macos::keychain::SecKeychain;
     // The existing item lives in the legacy login Keychain, where per-query
@@ -96,13 +97,15 @@ impl std::fmt::Debug for Credential {
 }
 /// Platform abstraction never falls back to ordinary files. Linux can add a
 /// Secret Service implementation without changing collaboration semantics.
+///
+/// A test build has no store, so a test that reads, saves or removes the stored
+/// authorization fails to compile: Connect and Disconnect reach a stand-in there
+/// (`github_view::account`), and a transport opened with the fixture off refuses
+/// (`review::UiTransport::open`), never reaching a developer's stored authorization.
+#[cfg(not(test))]
 pub(crate) trait CredentialStore {
     fn load(&self) -> Result<Option<Credential>>;
-    // A test build saves and removes nothing: Connect and Disconnect reach a stand-in there
-    // (`github_view::account`), never a developer's stored authorization.
-    #[cfg_attr(test, allow(dead_code))]
     fn save(&self, credential: &Credential) -> Result<()>;
-    #[cfg_attr(test, allow(dead_code))]
     fn remove(&self) -> Result<()>;
 }
 pub(crate) struct SecureStore;
@@ -114,7 +117,7 @@ impl SecureStore {
     #[cfg(not(target_os = "macos"))]
     pub(crate) const NAME: &str = "secure storage";
 }
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 impl CredentialStore for SecureStore {
     fn load(&self) -> Result<Option<Credential>> {
         let _access = keychain_access()?;
@@ -155,7 +158,7 @@ impl CredentialStore for SecureStore {
         }
     }
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(test)))]
 impl CredentialStore for SecureStore {
     fn load(&self) -> Result<Option<Credential>> {
         Ok(None)
@@ -170,21 +173,26 @@ impl CredentialStore for SecureStore {
     }
 }
 
+/// The connected account's API transport. A test build never makes one: it has no stored
+/// authorization to make it from ([`CredentialStore`]) and no connection.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) struct GhTransport {
     credential: Credential,
 }
 impl GhTransport {
+    #[cfg(not(test))]
     pub fn stored() -> Result<Self> {
         Ok(Self { credential:SecureStore.load()?.ok_or_else(||anyhow!("Connect a GitHub account first. Sign in through GitHub CLI using ‘gh auth login --hostname github.com --web --skip-ssh-key’, then choose Connect GitHub CLI account."))? })
     }
+    #[cfg_attr(test, allow(dead_code))]
     pub fn login(&self) -> &str {
         &self.credential.login
     }
     /// This is an explicit account connection, including the /user request.
     /// GitHub CLI owns browser OAuth. GitTurtle never invokes auth setup-git,
     /// switches the CLI account, uploads a key, or creates a credential file.
-    /// A test build connects a stand-in instead (`github_view::account`).
-    #[cfg_attr(test, allow(dead_code))]
+    /// A test build has none: it connects a stand-in (`github_view::account`).
+    #[cfg(not(test))]
     pub fn connect_existing(control: &OperationControl) -> Result<String> {
         let mut command = gh_command()?;
         command.args(["auth", "token", "--hostname", "github.com"]);
