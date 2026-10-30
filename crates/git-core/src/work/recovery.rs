@@ -475,12 +475,30 @@ impl GitRepository {
             "Open a working copy to perform recovery operations"
         );
         let status = self.status()?;
-        ensure!(
-            status.operation.is_none()
-                && !status.entries.iter().any(|entry| entry.conflicted)
-                && self.operation_state()?.is_none(),
-            "Finish the current operation and resolve conflicts before starting another recovery action"
-        );
+        let paused =
+            if status.operation.is_some() || status.entries.iter().any(|entry| entry.conflicted) {
+                // Named from the full operation read where it answers, and from
+                // the status's own marker otherwise; conflicts with neither, as
+                // a stash restoration leaves, refuse in their own words.
+                let named = status.operation.as_deref().and_then(|label| {
+                    OperationKind::ALL
+                        .into_iter()
+                        .find(|kind| kind.label() == label)
+                });
+                Some(
+                    self.operation_state()
+                        .ok()
+                        .flatten()
+                        .map(|operation| operation.kind)
+                        .or(named),
+                )
+            } else {
+                self.operation_state()?
+                    .map(|operation| Some(operation.kind))
+            };
+        if let Some(operation) = paused {
+            bail!(paused_recovery_refusal(operation));
+        }
         let head = status
             .head
             .clone()
@@ -800,6 +818,40 @@ impl GitRepository {
         }
         Ok(format!("{:x}", digest.finalize()))
     }
+}
+
+/// Why every recovery plan refuses while `operation` is paused, or while
+/// conflicts remain with no operation to continue (`None`, as a conflicted
+/// stash restoration leaves them): it names the paused operation and the
+/// two ways its banner ends it, Continue (Complete merge for a merge) and
+/// Abort. A client that refuses before asking, from the pause it read
+/// last, uses the same words, and [`is_paused_recovery_refusal`] tells
+/// them apart from any other reason.
+pub const fn paused_recovery_refusal(operation: Option<OperationKind>) -> &'static str {
+    match operation {
+        Some(OperationKind::Merge) => {
+            "A merge is paused. Complete or abort it before another recovery action."
+        }
+        Some(OperationKind::Rebase) => {
+            "A rebase is paused. Continue or abort it before another recovery action."
+        }
+        Some(OperationKind::CherryPick) => {
+            "A cherry-pick is paused. Continue or abort it before another recovery action."
+        }
+        Some(OperationKind::Revert) => {
+            "A revert is paused. Continue or abort it before another recovery action."
+        }
+        None => {
+            "Conflicts remain in this working copy. Resolve them before another recovery action."
+        }
+    }
+}
+
+/// Whether `reason` is one of the [`paused_recovery_refusal`]s.
+pub fn is_paused_recovery_refusal(reason: &str) -> bool {
+    std::iter::once(None)
+        .chain(OperationKind::ALL.map(Some))
+        .any(|operation| paused_recovery_refusal(operation) == reason)
 }
 
 fn recovery_parent(commit: &RecoveryCommit, mainline: Option<usize>) -> Result<usize> {

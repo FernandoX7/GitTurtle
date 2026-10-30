@@ -10,6 +10,9 @@ pub enum OperationKind {
 }
 
 impl OperationKind {
+    /// Every operation that can pause.
+    pub const ALL: [Self; 4] = [Self::Merge, Self::Rebase, Self::CherryPick, Self::Revert];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Merge => "Merge",

@@ -13,11 +13,13 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 
 const PREPARING: &str = "Preparing recovery action…";
-/// Why a recovery action refuses while an integration is paused, in the
-/// words of the core's plans (`GitTurtle::read_recovery`).
+/// Why a recovery action refuses while the merge the tests pause is paused
+/// (`gitturtle_core::paused_recovery_refusal`).
+#[cfg(test)]
 pub(super) const PAUSED_REFUSAL: &str =
-    "Finish the current operation and resolve conflicts before starting another recovery action";
-/// What a recovery form says in place of [`PAUSED_REFUSAL`] once a status
+    gitturtle_core::paused_recovery_refusal(Some(gitturtle_core::OperationKind::Merge));
+/// What a recovery form says in place of a refusal for a paused
+/// integration (`gitturtle_core::paused_recovery_refusal`) once a status
 /// read finds the integration it refused for ended
 /// (`GitTurtle::integration_ended`).
 const PAUSE_ENDED: &str = "The paused operation has ended. Review again to continue.";
@@ -198,7 +200,14 @@ impl GitTurtle {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let message = PAUSED_REFUSAL.to_owned();
+        // In the core's words for the pause the window read, naming the
+        // operation and how to end it.
+        let message = gitturtle_core::paused_recovery_refusal(
+            self.integration_state
+                .as_ref()
+                .map(|operation| operation.kind),
+        )
+        .to_owned();
         cx.defer_in(window, move |this, window, cx| {
             match failure {
                 Some(failure) => failure(message, window, cx),
@@ -266,7 +275,11 @@ impl GitTurtle {
                 }
             });
         }
-        if self.operation_error.as_deref() == Some(PAUSED_REFUSAL) {
+        if self
+            .operation_error
+            .as_deref()
+            .is_some_and(gitturtle_core::is_paused_recovery_refusal)
+        {
             self.operation_error = None;
         }
     }
@@ -355,7 +368,7 @@ impl GitTurtle {
                     return;
                 }
                 let refused_for_pause =
-                    matches!(&result, Err(error) if format!("{error:#}") == PAUSED_REFUSAL);
+                    matches!(&result, Err(error) if gitturtle_core::is_paused_recovery_refusal(&format!("{error:#}")));
                 if refused_for_pause != this.integration_state.is_some() {
                     this.read_pause_again(window, cx);
                 }
@@ -1316,7 +1329,10 @@ fn show_stash_form(form: Entity<StashForm>, window: &mut Window, cx: &mut App) {
 /// was paused with the line that says it has ended, `ended`; returns whether
 /// it did. Any other reason stays.
 fn pause_ended(error: &mut Option<String>, ended: &mut bool) -> bool {
-    if error.as_deref() != Some(PAUSED_REFUSAL) {
+    if !error
+        .as_deref()
+        .is_some_and(gitturtle_core::is_paused_recovery_refusal)
+    {
         return false;
     }
     *error = None;
@@ -2226,7 +2242,8 @@ impl StashBrowser {
             // empty line, or said nothing at all, showed an empty note. With
             // no such line the note says that Git could not prepare the
             // restoration, and no Details… opens an empty report.
-            let report = reason != PAUSED_REFUSAL && first_line(reason).is_some();
+            let report =
+                !gitturtle_core::is_paused_recovery_refusal(reason) && first_line(reason).is_some();
             let shown = restore_said(reason);
             let tooltip = shown.clone();
             // Static text, whose node reports the part of it the stacked
@@ -7512,6 +7529,90 @@ mod tests {
             None,
             "the window's refusal ends with the merge"
         );
+        drop(fixture);
+    }
+
+    /// A recovery action refused from the pause the window read names the
+    /// paused operation and how to end it, in the core's words: a commit's
+    /// Revert says so for a cherry-pick and for a revert stopped on a
+    /// conflict outside the app. Every pause once read "Finish the current
+    /// operation and resolve conflicts before starting another recovery
+    /// action", whatever had paused.
+    #[gpui::test]
+    async fn a_paused_refusal_names_the_paused_operation(cx: &mut gpui::TestAppContext) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let identity = [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "core.editor=true",
+        ];
+        let arguments =
+            |rest: &[&'static str]| -> Vec<&'static str> { [&identity[..], rest].concat() };
+        let git = |args: &[&str]| crate::views::tests::fixture_git(&repository, args);
+        let commit = |text: &'static str| {
+            std::fs::write(repository.join("conflict.txt"), text).unwrap();
+            git(&arguments(&["add", "conflict.txt"]));
+            git(&arguments(&["commit", "-q", "-m", text.trim()]));
+        };
+        git(&["reset", "-q", "--hard"]);
+        git(&["checkout", "-q", "-b", "side"]);
+        commit("side\n");
+        git(&["checkout", "-q", "main"]);
+        commit("one\n");
+        commit("two\n");
+        for (stop, end, kind, said) in [
+            (
+                ["cherry-pick", "side"],
+                "cherry-pick",
+                gitturtle_core::OperationKind::CherryPick,
+                "A cherry-pick is paused. Continue or abort it before another recovery action.",
+            ),
+            (
+                ["revert", "HEAD~1"],
+                "revert",
+                gitturtle_core::OperationKind::Revert,
+                "A revert is paused. Continue or abort it before another recovery action.",
+            ),
+        ] {
+            let stopped = crate::views::tests::fixture_git_output(&repository, &arguments(&stop));
+            assert!(!stopped.status.success(), "{kind:?} stops on a conflict");
+            read_pause(&app, cx).await;
+            assert_eq!(
+                app.read_with(cx, |app, _| app
+                    .integration_state
+                    .as_ref()
+                    .map(|state| state.kind)),
+                Some(kind)
+            );
+            let target = app.read_with(cx, |app, _| commit_target(&app.commits[0]));
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.choose_commit_recovery(RecoveryKind::Revert, target, window, cx)
+                })
+            });
+            frame(cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_error.clone())
+                    .as_deref(),
+                Some(said),
+                "{kind:?}: the window's error names it"
+            );
+            git(&[end, "--abort"]);
+            cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
+            crate::views::tests::settle(&app, cx).await;
+            quiet_reads_land(&app, cx);
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_error.clone()),
+                None,
+                "{kind:?}: the refusal ends with the pause"
+            );
+        }
         drop(fixture);
     }
 

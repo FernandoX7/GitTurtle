@@ -1045,6 +1045,85 @@ fn cherry_pick_and_revert_abort_restore_preoperation_files_and_preserve_untracke
     }
 }
 
+/// A recovery plan refused while an operation is paused names that
+/// operation and how to end it; conflicts with no operation say so.
+#[test]
+fn recovery_refusals_name_the_paused_operation() {
+    fn diverged(rebase: bool) -> Fixture {
+        let f = Fixture::new();
+        f.base();
+        f.git(&["switch", "-c", "other"]);
+        f.write("file.txt", "other side\n");
+        f.commit("other change");
+        f.git(&["switch", "main"]);
+        f.write("file.txt", "main side\n");
+        f.commit("main change");
+        let args: &[&str] = if rebase {
+            &["rebase", "other"]
+        } else {
+            &["merge", "other"]
+        };
+        assert!(!f.output(args).status.success());
+        f
+    }
+    let stashed = || {
+        let f = Fixture::new();
+        f.base();
+        f.write("file.txt", "stashed conflicting change\n");
+        let stash = create_stash(&f, "Conflict", false);
+        f.write("file.txt", "new committed change\n");
+        f.commit("diverged after stash");
+        let plan = f.repo().stash_apply_plan(&stash, false).unwrap();
+        assert!(f.recover(RecoveryCommand::ApplyStash { plan }).is_err());
+        f
+    };
+    for (f, operation, words) in [
+        (
+            diverged(false),
+            Some(OperationKind::Merge),
+            "A merge is paused. Complete or abort it before another recovery action.",
+        ),
+        (
+            diverged(true),
+            Some(OperationKind::Rebase),
+            "A rebase is paused. Continue or abort it before another recovery action.",
+        ),
+        (
+            conflicted_recovery(RecoveryKind::CherryPick).0,
+            Some(OperationKind::CherryPick),
+            "A cherry-pick is paused. Continue or abort it before another recovery action.",
+        ),
+        (
+            conflicted_recovery(RecoveryKind::Revert).0,
+            Some(OperationKind::Revert),
+            "A revert is paused. Continue or abort it before another recovery action.",
+        ),
+        (
+            stashed(),
+            None,
+            "Conflicts remain in this working copy. Resolve them before another recovery action.",
+        ),
+    ] {
+        let repo = f.repo();
+        assert_eq!(
+            repo.operation_state().unwrap().map(|state| state.kind),
+            operation
+        );
+        for refused in [
+            repo.recovery_plan(RecoveryKind::Undo, None, None).map(drop),
+            repo.stash_create_plan(false).map(drop),
+        ] {
+            let reason = format!("{:#}", refused.unwrap_err());
+            assert_eq!(reason, words, "{operation:?}");
+            assert_eq!(gitturtle_core::paused_recovery_refusal(operation), words);
+            assert!(gitturtle_core::is_paused_recovery_refusal(&reason));
+        }
+    }
+    assert!(!gitturtle_core::is_paused_recovery_refusal(
+        "Create the first commit before using this recovery action"
+    ));
+}
+
 #[test]
 fn cherry_pick_and_revert_abort_still_protect_independently_staged_work() {
     for kind in [RecoveryKind::CherryPick, RecoveryKind::Revert] {
