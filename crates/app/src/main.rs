@@ -1157,9 +1157,11 @@ impl GitTurtle {
             return;
         }
         // A repository opened again in place, as History's Refresh opens
-        // it, cancels what it was preparing, and ends the wait for a
-        // preparation it dropped, but holds the wait for one another tab
-        // dropped, whose read still runs (`end_own_dropped_preparation`).
+        // it, cancels what it was preparing, but holds the wait for a
+        // preparation a switch dropped, whichever tab asked for it, since
+        // its read still runs on the executor every tab shares
+        // (`hold_dropped_preparation`): the snapshot's working read waits
+        // for the wait's end rather than queue behind that read.
         // One opened in a new tab or a tab switched to has none shown here:
         // the tab left dropped what it was preparing (`retain_active_tab`),
         // and the window waits for that read as a warm tab's switch does.
@@ -1172,7 +1174,7 @@ impl GitTurtle {
             self.cancel_interactive_rebase_action();
             self.cancel_ignore_action();
             self.cancel_discard_action();
-            self.end_own_dropped_preparation();
+            self.hold_dropped_preparation();
         }
         // The working read Changes asked for while a preparation cancelled
         // above ran is dropped: the snapshot opened below reads the working
