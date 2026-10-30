@@ -1,7 +1,7 @@
 //! Transient authentication UI. The helper/agent owns durable credentials;
 //! no response enters preferences, recents, operation notices or diagnostics.
 use crate::*;
-use gitturtle_core::{AuthenticationPrompt, OperationControl};
+use gitturtle_core::{AuthenticationPrompt, HistoryCancellation, OperationControl};
 use gpui_kit::component::{WindowExt, dialog::DialogButtonProps, input::InputContentType};
 use std::time::Duration;
 
@@ -29,6 +29,10 @@ fn guidance(confirmation: bool) -> native_accessibility::StaticText<Stateful<Div
 #[derive(Default)]
 pub(super) struct State {
     control: Option<OperationControl>,
+    /// A local read the running operation does through its own
+    /// cancellation, which its Cancel stops too
+    /// ([`GitTurtle::cancel_with_operation`]).
+    local: Option<HistoryCancellation>,
     task: Option<Task<()>>,
     prompt_open: bool,
     prompt_id: Option<u64>,
@@ -43,6 +47,7 @@ impl GitTurtle {
     ) -> OperationControl {
         let control = OperationControl::default();
         self.authentication.control = Some(control.clone());
+        self.authentication.local = None;
         self.authentication.task = Some(cx.spawn_in(window, async move |this, cx| {
             let mut previous_progress = None;
             loop {
@@ -74,8 +79,19 @@ impl GitTurtle {
         control
     }
 
+    /// Lets the running operation's Cancel stop `local` too: a read the
+    /// operation does through its own cancellation, as a PR's Changes
+    /// compares its revisions, which the control alone never reached, so
+    /// the operation bar's Cancel left the comparison running.
+    pub(super) fn cancel_with_operation(&mut self, local: HistoryCancellation) {
+        if self.authentication.control.is_some() {
+            self.authentication.local = Some(local);
+        }
+    }
+
     pub(super) fn finish_operation_control(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.authentication.control = None;
+        self.authentication.local = None;
         self.authentication.task = None;
         if self.authentication.prompt_open {
             window.close_dialog(cx);
@@ -90,6 +106,9 @@ impl GitTurtle {
     pub(super) fn cancel_operation(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(control) = &self.authentication.control {
             control.cancel();
+        }
+        if let Some(local) = &self.authentication.local {
+            local.cancel();
         }
         cx.notify();
     }

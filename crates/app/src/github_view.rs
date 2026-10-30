@@ -1345,7 +1345,8 @@ impl Panel {
         let repo = self.repo.clone();
         let cancellation = HistoryCancellation::default();
         self.local_control = Some(cancellation.clone());
-        self.run(RequestKind::Compare, move |_| {
+        let stop = cancellation.clone();
+        let sent = self.run(RequestKind::Compare, move |_| {
             let comparison = repo.compare_revisions(&target.pull.base.sha, &target.pull.head.sha, gitturtle_core::ComparisonMode::SinceBranching, &cancellation)?;
             Ok((target.worktree, comparison))
         }, |result, this, window, cx| match result {
@@ -1357,6 +1358,13 @@ impl Panel {
             },
             Err(error) => this.error = Some(format!("PR changes need their captured head, base, and common ancestor locally. Use an explicit Fetch if needed, then reopen the PR. {error:#}")),
         }, window, cx);
+        // The comparison reads through its own cancellation, which the
+        // panel's Cancel stops; the operation bar's Cancel stops it too.
+        if sent {
+            let _ = self
+                .owner
+                .update(cx, |owner, _| owner.cancel_with_operation(stop));
+        }
     }
     fn discard_draft(&mut self, draft: Draft, window: &mut Window, cx: &mut Context<Self>) {
         let key = draft.key();
@@ -2250,6 +2258,60 @@ mod tests {
         drop(held);
         app.read_with(cx, |app, _| app.operations.drain());
         settle(&app, cx).await;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+    }
+
+    /// The operation bar's Cancel (`GitTurtle::cancel_operation`) stops a
+    /// PR's Changes, as the panel's own Cancel does: the comparison reads
+    /// through its own cancellation, which the bar's Cancel once never
+    /// reached, so the comparison ran on and opened.
+    #[gpui::test]
+    async fn the_operation_bars_cancel_stops_a_prs_changes(cx: &mut TestAppContext) {
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        // A PR from the window's first commit to its latest, both local.
+        let (base, head) = app.read_with(cx, |app, _| {
+            (
+                app.commits.last().unwrap().oid.clone(),
+                app.commits.first().unwrap().oid.clone(),
+            )
+        });
+        assert_ne!(base, head);
+        let pull: PullRequest = serde_json::from_value(serde_json::json!({
+            "number": 7, "title": "Local", "body": null, "state": "open", "draft": false,
+            "user": {"login": "river-chen"},
+            "head": {"sha": head, "ref": "feature", "label": "river-chen:feature"},
+            "base": {"sha": base, "ref": "main", "label": "gitturtle-fixture:main"}
+        }))
+        .unwrap();
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.pull = Some(pull)));
+        // Changes, held as a large comparison holds it, then the bar's Cancel.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.changes(window, cx)));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.operation_busy),
+            Some(RequestKind::Compare.label()),
+            "Changes runs as the busy spell"
+        );
+        cx.update(|window, cx| app.update(cx, |app, cx| app.cancel_operation(window, cx)));
+        assert!(
+            panel.read_with(cx, |panel, _| panel
+                .local_control
+                .as_ref()
+                .is_some_and(HistoryCancellation::is_cancelled)),
+            "the bar's Cancel stops the comparison"
+        );
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.operation_busy, None, "Changes ended");
+            assert!(!app.revision_inspection.is_active(), "no comparison opens");
+        });
+        assert!(
+            panel.read_with(cx, |panel, _| panel.error.is_some()),
+            "the panel says it did not compare"
+        );
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
         settle_panel(&app, cx).await;
     }
