@@ -30,7 +30,9 @@
 //! frame that first draws the focus. Revealed from where the last frame drew
 //! it, before the header's region scrolled, the control lay below the
 //! detail's edge for one frame after Shift+Tab onto it, until the request
-//! its bounds made scrolled it in.
+//! its bounds made scrolled it in. The outer container's own scroll moves
+//! the inner one whole and reveals nothing in it: the inner container stays
+//! where the person left it.
 
 use gpui_kit::*;
 use std::{
@@ -40,11 +42,16 @@ use std::{
 };
 
 /// What the container last drew with. A reveal is due only when this changes,
-/// so a render without a focus change scrolls nothing.
+/// so a render without a focus change scrolls nothing. The container's size
+/// counts, not where it lies in the window: inside another container that
+/// scrolls, it moves with that scroll, which changes nothing it shows. Judged
+/// by where it lay, a side header's region scrolled back to its focused
+/// control whenever the Stashes detail around it scrolled after a key, as a
+/// trackpad's scroll leaves the keyboard the last input.
 #[derive(Default, PartialEq)]
 struct Observation {
     focus: Option<FocusHandle>,
-    viewport: Bounds<Pixels>,
+    size: Size<Pixels>,
     rem_size: Pixels,
 }
 
@@ -189,7 +196,7 @@ impl FocusReveal {
         }
         if let Some((bounds, margin)) = self.drawn_focus(window, cx) {
             let at = bounds + point(px(0.), self.scroll.offset().y);
-            if let Some(offset) = self.target(at, margin, observed.viewport) {
+            if let Some(offset) = self.target(at, margin, self.scroll.bounds()) {
                 self.scroll.set_offset(offset);
             }
         }
@@ -338,7 +345,7 @@ impl FocusReveal {
     fn observation(&self, window: &Window, cx: &App) -> Observation {
         Observation {
             focus: window.focused(cx),
-            viewport: self.scroll.bounds(),
+            size: self.scroll.bounds().size,
             rem_size: window.rem_size(),
         }
     }
@@ -473,7 +480,7 @@ impl FocusReveal {
         if !self.due(&observed, window) {
             return;
         }
-        let viewport = observed.viewport;
+        let viewport = self.scroll.bounds();
         let Some(offset) = self.target(bounds, margin, viewport) else {
             return;
         };

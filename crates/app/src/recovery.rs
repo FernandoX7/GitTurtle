@@ -3737,6 +3737,107 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// A side header's region keeps where the person scrolled it when the
+    /// Stashes detail around it scrolls after a key input: stacked beneath
+    /// the list at 18 pt in a 461 × 490 window, with Tab on one of a
+    /// stashed model's header controls and the region scrolled away from
+    /// it, scrolling the detail, which moves the region but changes neither
+    /// focus nor the region's size, leaves the region where it was. Judged
+    /// by where the region lay in the window, which the detail's scroll
+    /// moves, the region scrolled back to its focused control, since GPUI
+    /// keeps the keyboard as the last input through a trackpad's scroll.
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    async fn a_side_header_keeps_its_scroll_as_the_detail_scrolls(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::focus_reveal::tests::control;
+        use crate::tags::tests::{draw, rendered};
+        let fixture = tempfile::tempdir().unwrap();
+        let model = |scale: &str| format!("v 0 0 0\nv {scale} 0 0\nv 0 {scale} 0\nf 1 2 3\n");
+        let shape = (
+            "shape.obj",
+            model("2").into_bytes(),
+            model("1").into_bytes(),
+        );
+        let (browser, cx) = stashed(
+            cx,
+            fixture.path(),
+            &[shape],
+            (461., 490., 18),
+            (0, "model-side-1/header"),
+        );
+        let view = browser.entity_id();
+        let detail = browser.read_with(cx, |browser, _| browser.detail.clone());
+        let list = cx
+            .update(|_, cx| crate::system_preview::side_header(view, "model-side-1", cx))
+            .expect("After's header");
+        let region = "model-side-1/header";
+        let room = cx.read(appearance::button_ring_room);
+        let (before, (id, camera)) = (control("model-camera", 5), control("model-camera", 6));
+        // Tab onto the camera's second control, from its first.
+        list.reveal_next_focus();
+        cx.update(|window, cx| list.focus(before.0.clone(), cx).focus(window, cx));
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(
+            cx.update(|window, _| list.focused(window)),
+            Some(id),
+            "Tab moves onto {camera}"
+        );
+        let slack = px(0.01);
+        let whole = |cx: &mut VisualTestContext| {
+            let (ring, view) = (rendered(cx, camera).dilate(room), rendered(cx, region));
+            ring.top() + slack >= view.top() && ring.bottom() <= view.bottom() + slack
+        };
+        assert!(whole(cx), "Tab reveals {camera} in {region}");
+        // The person scrolls the region away from the focused control.
+        let end = list.scroll().max_offset().y;
+        assert!(end > px(0.), "{region} scrolls at 18 pt in 461 × 490");
+        for offset in [px(0.), -end] {
+            cx.update(|window, _| {
+                list.scroll().set_offset(point(px(0.), offset));
+                window.refresh();
+            });
+            draw(cx);
+            if !whole(cx) {
+                break;
+            }
+        }
+        assert!(!whole(cx), "{region} is scrolled away from {camera}");
+        let away = list.scroll().offset();
+        // The detail scrolls without a key or the pointer moving.
+        let at = rendered(cx, region).origin;
+        let shown = detail.scroll().offset().y;
+        let reach = detail.scroll().max_offset().y;
+        let step = if shown < -reach / 2. {
+            px(20.)
+        } else {
+            px(-20.)
+        };
+        cx.update(|window, _| {
+            detail.scroll().set_offset(point(px(0.), shown + step));
+            window.refresh();
+        });
+        draw(cx);
+        assert_ne!(
+            rendered(cx, region).origin,
+            at,
+            "the detail's scroll moves {region}"
+        );
+        assert!(
+            cx.update(|window, _| window.last_input_was_keyboard()),
+            "the last input is still Tab"
+        );
+        assert_eq!(
+            list.scroll().offset(),
+            away,
+            "{region} stays where it was scrolled"
+        );
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The saved files cue their overflow as the detail around them does
     /// (`tags::ScrollCue`): at 13 and 18 pt in a 1000 × 680 window, eleven
     /// unstaged files overflow their box, which shows a scrollbar in a
