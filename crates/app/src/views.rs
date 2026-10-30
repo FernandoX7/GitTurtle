@@ -411,26 +411,27 @@ impl GitTurtle {
     /// focused control's ring takes above and below it and draws no bottom
     /// rule: the action bar's compact row follows it on the same surface. A
     /// running write's status goes before the trailing controls where the
-    /// name leaves it room, and to the status bar elsewhere
-    /// ([`GitTurtle::compact_operation_place`]), so nothing on the row moves.
+    /// name leaves it room, and to the status bar elsewhere, as the frame's
+    /// `plan` has it ([`GitTurtle::compact_operation_place`]), so nothing on
+    /// the row moves.
     fn render_compact_header(
         &self,
         turtle: bool,
         name: Pixels,
+        plan: HeaderPlan,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = palette(cx);
         let busy = self.operation_shown().is_some();
         let widths = self.chrome_widths(window);
-        let width = self
-            .compact_operation_width(name, &widths, window)
-            .map(|(width, _)| width);
-        let place = self.compact_operation_place(name, &widths, window);
+        let place = plan.operation;
         let before = self
             .operation_shown()
             .filter(|_| place.place == OperationPlace::Spacer)
-            .map(|label| self.render_operation_status(label, place, width, &widths, window, cx));
+            .map(|label| {
+                self.render_operation_status(label, place, plan.width, &widths, window, cx)
+            });
         let back_to_projects = self.back_label() == "Back to Projects";
         let ring = appearance::button_ring_room(cx);
         let history = self.mode != WorkspaceMode::Working;
@@ -567,22 +568,28 @@ impl GitTurtle {
     /// the labelled Back outside History's root, so Back leaves the turtle,
     /// the name and the toggles after it in place. Where the trailing
     /// controls take a row of their own ([`Trailing::OwnRow`]) the profile
-    /// and Settings lead it in every mode and Projects follows them.
-    pub(super) fn render_header(
+    /// and Settings lead it in every mode and Projects follows them. A
+    /// Repository frame brings the `plan` it worked out for its header
+    /// ([`GitTurtle::header_plan`]).
+    fn render_header(
         &self,
         chrome: Chrome,
+        plan: Option<HeaderPlan>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let compact = match chrome {
-            Chrome::Compact {
-                app_icon: turtle,
-                name,
-            } if self.page == AppPage::Repository => {
-                return self.render_compact_header(turtle, name, window, cx);
+        let compact = match (chrome, plan) {
+            (
+                Chrome::Compact {
+                    app_icon: turtle,
+                    name,
+                },
+                Some(plan),
+            ) if self.page == AppPage::Repository => {
+                return self.render_compact_header(turtle, name, plan, window, cx);
             }
-            Chrome::Compact { .. } => false,
-            Chrome::Full { narrow } => narrow,
+            (Chrome::Compact { .. }, _) => false,
+            (Chrome::Full { narrow }, _) => narrow,
         };
         let p = palette(cx);
         let busy = self.operation_shown().is_some();
@@ -618,7 +625,9 @@ impl GitTurtle {
         }
         // The return slot is the labelled Projects' width outside `compact`.
         let widths = self.chrome_widths(window);
-        let (trailing, slot, place) = self.header_arrangement(compact, &widths, window);
+        let plan = plan.unwrap_or_else(|| self.header_plan(chrome, window));
+        let (trailing, slot) = plan.full.unwrap_or((Trailing::Shared, false));
+        let place = plan.operation;
         let own_row = trailing != Trailing::Shared;
         // A running write's status, in the spacer or after the trailing
         // controls, wherever it moves nothing; elsewhere the status bar
@@ -4215,6 +4224,22 @@ struct OperationLayout {
     form: OperationForm,
 }
 
+/// How a Repository frame's header is arranged, worked out once per frame
+/// before layout ([`GitTurtle::header_plan`]): the header and a running
+/// write's status both read it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HeaderPlan {
+    /// The full header's trailing controls ([`Trailing`]) and whether
+    /// History's root keeps the Projects slot among them; none for the
+    /// compact row.
+    full: Option<(Trailing, bool)>,
+    /// Where a running write's status goes, for its label, and its form.
+    operation: OperationLayout,
+    /// The width the compact row gives the status where it goes there
+    /// ([`GitTurtle::compact_operation_width`]).
+    width: Option<Pixels>,
+}
+
 /// The full header's controls laid out in a window as `render_header` lays
 /// them out ([`GitTurtle::full_header_layout`]).
 struct HeaderLayout {
@@ -4828,103 +4853,126 @@ impl GitTurtle {
     }
 
     /// Whether History's root keeps an empty slot where Projects stands in
-    /// the other modes: wherever the slot adds no row to the full header,
-    /// so History lays out the controls the other modes do and the name
-    /// takes the same share of the row. Where it would add a row, the other
-    /// modes' row wraps and leaves the name its minimum, as History's
-    /// tighter row does without the slot. On the trailing controls' own row
-    /// ([`Trailing::OwnRow`]) the slot would only open that row with an
-    /// empty space, so `render_header` asks only when they share a row.
-    fn keeps_projects_slot(&self, narrow: bool, widths: &ChromeWidths, window: &Window) -> bool {
-        let width = body_size(window).width;
+    /// the other modes, in a full header `width` wide: wherever the slot
+    /// adds no row to the header, so History lays out the controls the
+    /// other modes do and the name takes the same share of the row. Where it
+    /// would add a row, the other modes' row wraps and leaves the name its
+    /// minimum, as History's tighter row does without the slot. On the
+    /// trailing controls' own row ([`Trailing::OwnRow`]) the slot would only
+    /// open that row with an empty space, so `render_header` asks only when
+    /// they share a row.
+    fn keeps_projects_slot(
+        &self,
+        width: Pixels,
+        narrow: bool,
+        widths: &ChromeWidths,
+        window: &Window,
+    ) -> bool {
         self.full_header_height(width, narrow, true, false, widths, window)
             <= self.full_header_height(width, narrow, false, false, widths, window)
     }
 
-    /// How the full header lays out its trailing controls in this window,
-    /// across the body as it is laid out ([`body_size`]), decided from the
-    /// other modes' controls, Projects among them, so History's root lays
-    /// them out alike. A running write's status has its own place
-    /// ([`OperationPlace`]), so it never changes this.
-    fn trailing(&self, narrow: bool, widths: &ChromeWidths, window: &Window) -> Trailing {
-        let width = body_size(window).width;
+    /// How a full header `width` wide, the body's as it is laid out
+    /// ([`body_size`]) where it is drawn, lays out its trailing controls,
+    /// decided from the other modes' controls, Projects among them, so
+    /// History's root lays them out alike. A running write's status has its
+    /// own place ([`OperationPlace`]), so it never changes this.
+    fn trailing(
+        &self,
+        width: Pixels,
+        narrow: bool,
+        widths: &ChromeWidths,
+        window: &Window,
+    ) -> Trailing {
         self.full_header_layout(width, narrow, true, false, widths, window)
             .trailing
     }
 
-    /// How the full header is arranged in this window: its trailing controls
-    /// ([`Self::trailing`]), whether History's root keeps the Projects slot
-    /// among them ([`Self::keeps_projects_slot`], asked only where they share
-    /// a row), and where a running write's status goes beside the controls
-    /// this mode draws ([`OperationPlace`]), for the write's label. The
-    /// controls' arrangement never depends on whether a write runs, and the
-    /// status's place moves none of them, so the busy look's coming and going
-    /// moves nothing.
+    /// How a full header `width` wide is arranged ([`HeaderPlan`]): its
+    /// trailing controls ([`Self::trailing`]), whether History's root keeps
+    /// the Projects slot among them ([`Self::keeps_projects_slot`], asked
+    /// only where they share a row), and where a running write's status
+    /// goes beside the controls this mode draws ([`OperationPlace`]), for
+    /// the write's label. The controls' arrangement never depends on whether
+    /// a write runs, and the status's place moves none of them, so the busy
+    /// look's coming and going moves nothing.
     fn header_arrangement(
         &self,
+        width: Pixels,
         narrow: bool,
         widths: &ChromeWidths,
         window: &Window,
-    ) -> (Trailing, bool, OperationLayout) {
-        let trailing = self.trailing(narrow, widths, window);
+    ) -> HeaderPlan {
+        let trailing = self.trailing(width, narrow, widths, window);
         let projects = self.back_label() != "Back to Projects";
         let slot = !projects
             && trailing == Trailing::Shared
-            && self.keeps_projects_slot(narrow, widths, window);
-        let width = body_size(window).width;
-        let place = self
-            .full_header_layout(width, narrow, projects || slot, false, widths, window)
-            .operation;
-        (trailing, slot, place)
+            && self.keeps_projects_slot(width, narrow, widths, window);
+        let layout =
+            self.full_header_layout(width, narrow, projects || slot, false, widths, window);
+        HeaderPlan {
+            full: Some((trailing, slot)),
+            operation: layout.operation,
+            width: None,
+        }
     }
 
-    /// Where the compact header draws a running write's status: before the
-    /// trailing controls where the room the name's row leaves it beside the
-    /// name's whole width (`name` being the most the name takes, from
-    /// `Chrome::Compact`) holds the status's barest form, and the status bar
-    /// elsewhere ([`OperationPlace::StatusBar`]), so the row's controls keep
-    /// their place and the name stays whole.
+    /// How the compact header draws a running write's status
+    /// ([`HeaderPlan`]): before the trailing controls where the room the
+    /// name's row leaves it beside the name's whole width (`name` being the
+    /// most the name takes, from `Chrome::Compact`) holds the status's
+    /// barest form, and the status bar elsewhere
+    /// ([`OperationPlace::StatusBar`]), so the row's controls keep their
+    /// place and the name stays whole.
     fn compact_operation_place(
         &self,
         name: Pixels,
         widths: &ChromeWidths,
         window: &Window,
-    ) -> OperationLayout {
-        match self.compact_operation_width(name, widths, window) {
-            Some((_, form)) => OperationLayout {
-                place: OperationPlace::Spacer,
-                form,
+    ) -> HeaderPlan {
+        let status = self.operation_status_size(widths, window);
+        let fit = Self::compact_operation_width(status, name, widths, window);
+        HeaderPlan {
+            full: None,
+            operation: match fit {
+                Some((_, form)) => OperationLayout {
+                    place: OperationPlace::Spacer,
+                    form,
+                },
+                None => OperationLayout {
+                    place: OperationPlace::StatusBar,
+                    form: OperationForm::ORDER[2],
+                },
             },
-            None => OperationLayout {
-                place: OperationPlace::StatusBar,
-                form: OperationForm::ORDER[2],
-            },
+            width: fit.map(|(width, _)| width),
         }
     }
 
-    /// Where a running write's status goes in a Repository frame drawn with
-    /// `chrome` ([`Self::header_arrangement`],
-    /// [`Self::compact_operation_place`]), for the write's label.
-    fn operation_layout(&self, chrome: Chrome, window: &Window) -> OperationLayout {
+    /// The header's arrangement in a Repository frame drawn with `chrome`
+    /// ([`Self::header_arrangement`] for the body's width,
+    /// [`Self::compact_operation_place`]), for the write's label. The frame
+    /// works it out once, before layout, for the header and the status bar.
+    fn header_plan(&self, chrome: Chrome, window: &Window) -> HeaderPlan {
         let widths = self.chrome_widths(window);
         match chrome {
             Chrome::Compact { name, .. } => self.compact_operation_place(name, &widths, window),
-            Chrome::Full { narrow } => self.header_arrangement(narrow, &widths, window).2,
+            Chrome::Full { narrow } => {
+                self.header_arrangement(body_size(window).width, narrow, &widths, window)
+            }
         }
     }
 
-    /// The width a running write's status takes before the compact row's
-    /// trailing controls, and its form, if it goes there: the room the name
-    /// leaves, a gap before Projects kept, up to the form's most, where that
-    /// holds the barest form. Cancel is its 28 px icon there, as every
-    /// control on the row is.
+    /// The width `status` takes before the compact row's trailing controls,
+    /// and its form, if it goes there: the room the name leaves, a gap
+    /// before Projects kept, up to the form's most, where that holds the
+    /// barest form. Cancel is its 28 px icon there, as every control on the
+    /// row is.
     fn compact_operation_width(
-        &self,
+        status: OperationStatus,
         name: Pixels,
         widths: &ChromeWidths,
         window: &Window,
     ) -> Option<(Pixels, OperationForm)> {
-        let status = self.operation_status_size(widths, window);
         let gap = window.pixel_snap(window.rem_size() * 0.5);
         let room = (name - widths.name.min(name) - gap).floor();
         status
@@ -6938,13 +6986,15 @@ impl Render for GitTurtle {
         };
         let watch_warning =
             self.page == AppPage::Repository && self.automatic.watch_warning().is_some();
+        // The header's arrangement, worked out once for the frame: the
+        // header and a running write's status read it.
+        let plan = (self.page == AppPage::Repository).then(|| self.header_plan(chrome, window));
         let status = self.fit_status_bar(window, cx);
         // A running write's status, where the header's rows have no room for
         // it ([`OperationPlace::StatusBar`]).
         let bar_operation = self
             .operation_shown()
-            .filter(|_| self.page == AppPage::Repository)
-            .filter(|_| self.operation_layout(chrome, window).place == OperationPlace::StatusBar);
+            .filter(|_| plan.is_some_and(|plan| plan.operation.place == OperationPlace::StatusBar));
         // Everything an open dialog covers. The dialogs and the copy
         // announcement are drawn beside it, inside the element whose actions
         // they dispatch through.
@@ -6956,7 +7006,7 @@ impl Render for GitTurtle {
             .flex_col()
             .child(self.render_repository_tabs(window, cx))
             .when(self.page != AppPage::Projects, |root| {
-                root.child(self.render_header(chrome, window, cx))
+                root.child(self.render_header(chrome, plan, window, cx))
             })
             // The busy look, which waits for the write to run a moment
             // (`workspace::BusyLook`), as the header's progress label does.
@@ -11051,8 +11101,13 @@ pub(crate) mod tests {
                 (
                     (
                         app.full_chrome_heights(&widths, window, cx).0,
-                        app.trailing(narrow(device), &widths, window),
-                        app.keeps_projects_slot(narrow(device), &widths, window),
+                        app.trailing(body_size(window).width, narrow(device), &widths, window),
+                        app.keeps_projects_slot(
+                            body_size(window).width,
+                            narrow(device),
+                            &widths,
+                            window,
+                        ),
                     ),
                     header(app, drawn.size.width, narrow(device), window),
                 )
@@ -14503,7 +14558,12 @@ pub(crate) mod tests {
         let trailing = |cx: &mut VisualTestContext| {
             cx.update(|window, cx| {
                 let app = app.read(cx);
-                app.trailing(narrow_header(window), &app.chrome_widths(window), window)
+                app.trailing(
+                    body_size(window).width,
+                    narrow_header(window),
+                    &app.chrome_widths(window),
+                    window,
+                )
             })
         };
         let controls = |cx: &mut VisualTestContext| {
@@ -14651,10 +14711,11 @@ pub(crate) mod tests {
                 let app = app.read(cx);
                 let widths = app.chrome_widths(window);
                 let chrome = app.chrome(window, cx);
-                let place = app.operation_layout(chrome, window);
+                let plan = app.header_plan(chrome, window);
+                let place = plan.operation;
                 match chrome {
                     Chrome::Full { narrow } => {
-                        let (trailing, slot, _) = app.header_arrangement(narrow, &widths, window);
+                        let (trailing, slot) = plan.full.expect("the full header's arrangement");
                         let projects = app.back_label() != "Back to Projects" || slot;
                         let width = body_size(window).width;
                         let height =
@@ -15046,7 +15107,9 @@ pub(crate) mod tests {
                     let at = format!("{text} pt in a {window:?} window, {mode}");
                     let place = cx.update(|window, cx| {
                         let app = app.read(cx);
-                        app.operation_layout(app.chrome(window, cx), window).place
+                        app.header_plan(app.chrome(window, cx), window)
+                            .operation
+                            .place
                     });
                     if place != OperationPlace::StatusBar {
                         continue;
