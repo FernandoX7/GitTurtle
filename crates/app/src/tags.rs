@@ -17,32 +17,50 @@ const PREPARING: &str = "Reading tags…";
 /// below its last control gives the room back by narrowing this gap.
 pub(crate) const DIALOG_FOOTER_GAP: Pixels = px(16.);
 
-/// The always-visible scrollbar a scrolling list of tab-stop rows cues the
-/// rows beyond its edge with, as the review dialogs cue theirs: the branch
-/// chooser, the remote manager, Tags and the tag inspector's Push to… list.
+/// The cue a scrolling list gives the rows beyond its edge, the same for
+/// every list the app cues: the branch chooser, the remote manager, Tags,
+/// the tag inspector's Push to… list, the Reflog's entries, the worktree
+/// manager's lists, Stashes' detail, the GitHub panel's body, a document
+/// side's own header controls and a 3D model's details. Where the
+/// scrollbar's thumb can move along its track it is the always-visible
+/// scrollbar the review dialogs cue theirs with; along a shorter track it
+/// is a soft fade at each edge the rows continue past ([`edge_fades`]).
 ///
-/// While the list overflows, its rows keep a gutter at their right, and the
-/// scrollbar paints its track there, over the column the rows lie in: inside
-/// the list, clear of the room it keeps around its rows for their focus
-/// rings, so the track covers no row and no ring, and clear of the dialog's
-/// side padding, where the dialog's own scrollbar runs. The gutter is the
+/// While the list overflows, its rows keep a gutter at their right, and
+/// along a track at least [`SHORTEST_SCROLL_TRACK`] tall the scrollbar
+/// paints its track there, over the column the rows lie in: inside the
+/// list, clear of the room it keeps around its rows for their focus rings,
+/// so the track covers no row and no ring, and clear of the dialog's side
+/// padding, where the dialog's own scrollbar runs. The gutter is the
 /// scrollbar's width plus the room of the ring every palette installs, so a
-/// row's ring ends where the track begins, and neither the rows nor the track
-/// move with the ring's room, which the list gives back. A list whose rows
-/// fit keeps no gutter and draws no scrollbar, so its rows keep their width.
+/// row's ring ends where the track begins, and neither the rows nor the
+/// track move with the ring's room, which the list gives back. A list whose
+/// rows fit keeps no gutter and draws no scrollbar, so its rows keep their
+/// width.
+///
+/// Along a shorter track the kit's thumb ran out of its track against the
+/// scroll or barely moved, as in a side header's controls region at its
+/// 36–44 px floor, so there the list draws no scrollbar, leaving no
+/// scrollbar element behind, and fades the edges its rows continue past
+/// instead. It keeps the gutter, so nothing it holds moves as it grows or
+/// shrinks past that length: without it, a document header's controls
+/// wrapped wider and moved up a line when a click's answer shortened the
+/// header past it. It still scrolls under a wheel and as Tab reveals a
+/// control, and still reports itself, as every cued list does, as a scroll
+/// view that clips its rows (`native_accessibility::clips_children`).
 ///
 /// GPUI lays a frame out before it knows whether the list overflows, so the
 /// gutter follows the overflow the list's scroll handle kept from the last
-/// frame. A frame whose layout overflows the other way draws once more after
-/// it is painted; each frame draws the gutter and the scrollbar together or
-/// neither, so a thumb never paints over a row.
+/// frame, and the scrollbar the length of the track it kept. A frame whose
+/// layout differs draws once more after it is painted; a frame draws the
+/// scrollbar only with the gutter, so a thumb never paints over a row. The
+/// fades read the list as it is painted, so they follow its offset and its
+/// reach in the frame that changes them.
 pub(crate) struct ScrollCue {
     rows: RowColumn,
-    /// The shortest list that draws the gutter and the scrollbar
-    /// ([`ScrollCue::where_a_thumb_moves`]).
-    shortest: Pixels,
-    /// Whether this frame draws the gutter and the scrollbar.
-    cued: bool,
+    /// Whether this frame keeps the gutter, and whether it draws the
+    /// scrollbar in it ([`cues`]).
+    cued: (bool, bool),
 }
 
 /// The shortest track a scrollbar's thumb moves along: the kit's shortest
@@ -53,6 +71,14 @@ pub(crate) struct ScrollCue {
 /// less the thumb's, at most zero.
 pub(crate) const SHORTEST_SCROLL_TRACK: Pixels = px(48. + 4. * 2.);
 
+/// How tall an edge fade is at the default interface size: about the room
+/// a 28 px control keeps above and below its label, with its ring's, so a
+/// fade over a control at the edge softens its ring and frame and leaves
+/// its label clear. It scales with the interface text size, as the rows it
+/// lies over do, and takes at most a quarter of the list, so at either size
+/// the list's middle half reads unfaded.
+const EDGE_FADE: f32 = 8.;
+
 impl ScrollCue {
     /// The cue for the list `scroll` tracks, which keeps `room` around its
     /// rows for their rings, for the frame being rendered.
@@ -62,59 +88,118 @@ impl ScrollCue {
             room,
         };
         Self {
-            cued: cues(&rows, Pixels::ZERO),
+            cued: cues(&rows),
             rows,
-            shortest: Pixels::ZERO,
         }
     }
 
-    /// The cue for a list that can shrink below the shortest track a
-    /// scrollbar's thumb moves along ([`SHORTEST_SCROLL_TRACK`]), as a side's
-    /// foot does (`system_preview::SideHeader::foot`): shorter, the list
-    /// still scrolls but keeps no gutter and draws no scrollbar.
-    pub(crate) fn where_a_thumb_moves(mut self) -> Self {
-        self.shortest = SHORTEST_SCROLL_TRACK;
-        self.cued = cues(&self.rows, self.shortest);
-        self
-    }
-
     /// For the list's `on_children_prepainted`: runs `prepainted`, then draws
-    /// once more when this frame's layout overflows otherwise than the cue
+    /// once more when this frame's layout cues otherwise than the cue
     /// assumed.
     pub(crate) fn observe(
         &self,
         prepainted: impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static,
     ) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
-        let (rows, shortest, cued) = (self.rows.clone(), self.shortest, self.cued);
+        let (rows, cued) = (self.rows.clone(), self.cued);
         move |bounds, window, cx| {
             prepainted(bounds, window, cx);
-            if cues(&rows, shortest) != cued {
+            if cues(&rows) != cued {
                 window.defer(cx, |window, _| window.refresh());
             }
         }
     }
 
-    /// `list`, with the gutter and the scrollbar `id` while it overflows. The
-    /// list is a node that clips its rows (`native_accessibility::clips_children`),
-    /// so a row scrolled out of view is out of reach as well as out of sight.
+    /// `list`, with the gutter while it overflows, the scrollbar `id` in it
+    /// along a track a thumb moves on, and otherwise the fades at the edges
+    /// its rows continue past. The list is a node that clips its rows
+    /// (`native_accessibility::clips_children`), so a row scrolled out of
+    /// view is out of reach as well as out of sight. Tests find the
+    /// scrollbar, while it is drawn, by `id`.
     pub(crate) fn list(&self, list: Stateful<Div>, id: &'static str) -> Div {
         let ring = appearance::BUTTON_FOCUS_RING;
         let gutter = Scrollbar::width() + ring.gap + ring.width;
         let room = self.rows.room;
-        div()
+        let (kept, scrollbar) = self.cued;
+        let cue = div()
             .flex()
             .flex_col()
             .child(crate::native_accessibility::clips_children(
-                list.when(self.cued, |list| list.pr(room + gutter)),
-            ))
-            .when(self.cued, |cue| {
-                cue.child(
-                    Scrollbar::vertical(&self.rows)
-                        .id(id)
-                        .mode(ScrollbarMode::Always),
-                )
-            })
+                list.when(kept, |list| list.pr(room + gutter)),
+            ));
+        if scrollbar {
+            cue.child(
+                div()
+                    .debug_selector(move || id.into())
+                    .absolute()
+                    .size_full()
+                    .child(
+                        Scrollbar::vertical(&self.rows)
+                            .id(id)
+                            .mode(ScrollbarMode::Always),
+                    ),
+            )
+        } else {
+            cue.child(edge_fades(self.rows.scroll.clone()))
+        }
     }
+}
+
+/// The fades over a list too short for its scrollbar's thumb to move
+/// ([`ScrollCue`]): at each edge its rows continue past, a band as wide as
+/// the list and [`EDGE_FADE`] tall, opaque at the edge in the theme's
+/// background colour (the palette's canvas, which panes and dialogs are
+/// drawn on) and clear inward, so the rows there dissolve into the surface
+/// rather than end at a cut, as macOS fades content scrolled beneath a
+/// window's edge. It draws none at an end the list is scrolled to, and
+/// none on a list whose rows fit.
+///
+/// It reads the list's bounds, offset and reach as it paints, after the
+/// list has laid out and clamped its offset in the same frame, so a wheel,
+/// a reveal, a resize or rows that arrive show their fades in the first
+/// frame that draws them; read as the cue renders, rows that arrived drew
+/// no fade until something else drew the list again. It inserts no hitbox,
+/// so the pointer reaches what lies beneath it: a wheel over a fade scrolls
+/// the list, and a row under one takes its hover and click. It does not
+/// move: a fade comes and goes with the scroll that reveals an edge, in
+/// that frame.
+fn edge_fades(scroll: ScrollHandle) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, _, window, cx| {
+            let list = scroll.bounds();
+            let fade = appearance::ui_size(EDGE_FADE).min(list.size.height / 4.);
+            if fade <= Pixels::ZERO {
+                return;
+            }
+            // Half a pixel either way is an end: GPUI rounds the reach to
+            // two decimals.
+            let slack = px(0.5);
+            let scrolled = -scroll.offset().y;
+            let surface: Hsla = rgb(appearance::palette(cx).canvas).into();
+            let band = |angle: f32| {
+                linear_gradient(
+                    angle,
+                    linear_color_stop(surface.opacity(0.), 0.),
+                    linear_color_stop(surface, 1.),
+                )
+            };
+            if scrolled > slack {
+                // Toward the top, opaque at the list's top edge.
+                let top = Bounds::new(list.origin, size(list.size.width, fade));
+                window.paint_quad(fill(top, band(0.)));
+            }
+            if scrolled < scroll.max_offset().y - slack {
+                // Toward the bottom, opaque at the list's bottom edge.
+                let bottom = Bounds::new(
+                    point(list.left(), list.bottom() - fade),
+                    size(list.size.width, fade),
+                );
+                window.paint_quad(fill(bottom, band(180.)));
+            }
+        },
+    )
+    .absolute()
+    .size_full()
 }
 
 /// A list's scroll as its scrollbar reads it: over the column its rows lie
@@ -152,15 +237,19 @@ fn overflows(scroll: &ScrollHandle) -> bool {
     scroll.max_offset().y > Pixels::ZERO
 }
 
-/// Whether the list `rows` reads draws its gutter and scrollbar: where it
-/// overflowed when last laid out, with the track the scrollbar lies along
-/// at least `shortest` tall. The kit lays that track over the scrollbar's
-/// viewport, the list less the room it keeps around its rows
-/// (`RowColumn::viewport_bounds`); judged by the list's whole height, a
-/// list keeping room drew a thumb along a track up to twice that room
-/// shorter than `shortest`.
-fn cues(rows: &RowColumn, shortest: Pixels) -> bool {
-    overflows(&rows.scroll) && rows.viewport_bounds().size.height >= shortest
+/// Whether the list `rows` reads keeps its gutter, where it overflowed when
+/// last laid out, and whether it draws its scrollbar there, along a track a
+/// thumb moves on ([`SHORTEST_SCROLL_TRACK`]). The kit lays that track over
+/// the scrollbar's viewport, the list less the room it keeps around its
+/// rows (`RowColumn::viewport_bounds`); judged by the list's whole height,
+/// a list keeping room drew a thumb along a track up to twice that room
+/// shorter than the shortest.
+fn cues(rows: &RowColumn) -> (bool, bool) {
+    let overflows = overflows(&rows.scroll);
+    (
+        overflows,
+        overflows && rows.viewport_bounds().size.height >= SHORTEST_SCROLL_TRACK,
+    )
 }
 
 use crate::native_accessibility::text as static_text;
@@ -2142,52 +2231,121 @@ pub(crate) mod tests {
         (app, list, cx)
     }
 
-    /// A list that keeps room around its rows and is cued only where a thumb
-    /// moves ([`ScrollCue::where_a_thumb_moves`]) judges that by the track
-    /// its scrollbar lies along, the list less that room, which is where
-    /// the kit lays it: 60 px tall with 8 px around its rows, a 44 px track
-    /// shorter than [`SHORTEST_SCROLL_TRACK`], it draws no scrollbar and
-    /// keeps no gutter, and 80 px tall, a 64 px track, it draws both. Judged
-    /// by the list's whole height, the 60 px list drew a thumb along a track
-    /// shorter than the thumb.
-    #[gpui::test]
-    fn a_cue_where_a_thumb_moves_judges_the_track_its_scrollbar_lies_along(
+    /// A list `height` tall that keeps `room` around its `rows` rows, each
+    /// 20 px tall, cued by [`ScrollCue`] as the app's lists are. Tests find
+    /// it as `cued-list`, its rows as `cued-row-<n>` and its scrollbar, while
+    /// it is drawn, as `cued-list/scrollbar`.
+    struct Cued {
+        scroll: ScrollHandle,
+        height: Pixels,
+        room: Pixels,
+        rows: usize,
+    }
+
+    impl Render for Cued {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let cue = ScrollCue::new(&self.scroll, self.room);
+            let observe = cue.observe(|_, _, _| {});
+            let list = div()
+                .id("cued-list")
+                .debug_selector(|| "cued-list".into())
+                .h(self.height)
+                .p(self.room)
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .children((0..self.rows).map(|row| {
+                    div()
+                        .debug_selector(move || format!("cued-row-{row}"))
+                        .h(px(20.))
+                        .child(format!("Row {row}"))
+                }));
+            div().w(px(200.)).child(
+                cue.list(list, "cued-list/scrollbar")
+                    .on_children_prepainted(observe),
+            )
+        }
+    }
+
+    /// A window drawing a [`Cued`] list `height` tall with `rows` rows and
+    /// `room` around them, in the Midnight palette.
+    fn cued_window(
         cx: &mut gpui_kit::TestAppContext,
-    ) {
-        const ROOM: Pixels = px(8.);
-        struct Cued {
-            scroll: ScrollHandle,
-            height: Pixels,
-        }
-        impl Render for Cued {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                let cue = ScrollCue::new(&self.scroll, ROOM).where_a_thumb_moves();
-                let observe = cue.observe(|_, _, _| {});
-                let list = div()
-                    .id("cued-list")
-                    .debug_selector(|| "cued-list".into())
-                    .h(self.height)
-                    .p(ROOM)
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .children((0..20).map(|row| {
-                        div()
-                            .debug_selector(move || format!("cued-row-{row}"))
-                            .h(px(20.))
-                            .child(format!("Row {row}"))
-                    }));
-                div().w(px(200.)).child(
-                    cue.list(list, "cued-list/scrollbar")
-                        .on_children_prepainted(observe),
-                )
-            }
-        }
+        height: f32,
+        room: Pixels,
+        rows: usize,
+    ) -> (Entity<Cued>, &mut VisualTestContext) {
         cx.update(gpui_kit::init);
         cx.update(|cx| appearance::ThemeChoice::Midnight.apply(None, cx));
         let (list, cx) = cx.add_window_view(|_, _| Cued {
             scroll: ScrollHandle::new(),
-            height: px(60.),
+            height: px(height),
+            room,
+            rows,
         });
+        draw(cx);
+        (list, cx)
+    }
+
+    /// The edge fades painted over the list drawn at `list`: the height of
+    /// the one along its top and of the one along its bottom, each as wide
+    /// as the list and in the palette's canvas, the theme's background,
+    /// opaque at the list's edge and clear inward.
+    pub(crate) fn painted_fades(
+        cx: &mut VisualTestContext,
+        list: Bounds<Pixels>,
+    ) -> (Option<Pixels>, Option<Pixels>) {
+        cx.update(|window, cx| fades_in(window, cx, list))
+    }
+
+    /// [`painted_fades`] in the frame `window` drew last.
+    fn fades_in(
+        window: &Window,
+        cx: &App,
+        list: Bounds<Pixels>,
+    ) -> (Option<Pixels>, Option<Pixels>) {
+        let surface: Hsla = rgb(appearance::palette(cx).canvas).into();
+        // A gradient toward `angle` (0° the top, 180° the bottom), clear
+        // where it starts and the surface where it ends.
+        let toward = |angle: f32| {
+            linear_gradient(
+                angle,
+                linear_color_stop(surface.opacity(0.), 0.),
+                linear_color_stop(surface, 1.),
+            )
+        };
+        let (up, down) = (toward(0.), toward(180.));
+        let near = |a: Pixels, b: Pixels| (a - b).abs() < px(0.5);
+        let scale = window.scale_factor();
+        let (mut top, mut bottom) = (None, None);
+        for quad in window.painted_quads() {
+            let band = logical(quad.bounds, scale);
+            if !near(band.left(), list.left()) || !near(band.right(), list.right()) {
+                continue;
+            }
+            if quad.background == up && near(band.top(), list.top()) {
+                assert!(top.is_none(), "one fade along {list:?}'s top");
+                top = Some(band.size.height);
+            } else if quad.background == down && near(band.bottom(), list.bottom()) {
+                assert!(bottom.is_none(), "one fade along {list:?}'s bottom");
+                bottom = Some(band.size.height);
+            }
+        }
+        (top, bottom)
+    }
+
+    /// A list that keeps room around its rows is cued where a thumb moves,
+    /// which it judges by the track its scrollbar lies along, the list less
+    /// that room, which is where the kit lays it: 60 px tall with 8 px
+    /// around its rows, a 44 px track shorter than [`SHORTEST_SCROLL_TRACK`],
+    /// it draws no scrollbar, and 80 px tall, a 64 px track, it draws one.
+    /// Judged by the list's whole height, the 60 px list drew a thumb along a
+    /// track shorter than the thumb. Every [`ScrollCue`] follows the rule; it
+    /// was once a list's own choice. At either length its overflowing rows
+    /// keep the scrollbar's gutter, so they never move as it crosses.
+    #[gpui::test]
+    fn a_cue_judges_the_track_its_scrollbar_lies_along(cx: &mut gpui_kit::TestAppContext) {
+        const ROOM: Pixels = px(8.);
+        let (list, cx) = cued_window(cx, 60., ROOM, 20);
         let bar = Scrollbar::width();
         for (height, cued) in [(60., false), (80., true), (60., false)] {
             list.update(cx, |list, cx| {
@@ -2197,10 +2355,9 @@ pub(crate) mod tests {
             draw(cx);
             let bounds = cx.debug_bounds("cued-list").expect("the list");
             let row = cx.debug_bounds("cued-row-0").expect("its first row");
-            assert_eq!(
+            assert!(
                 row.right() < bounds.right() - ROOM - px(0.5),
-                cued,
-                "{height} px: the row {row:?} keeps a gutter in {bounds:?} only where cued"
+                "{height} px: the overflowing row {row:?} keeps a gutter in {bounds:?}"
             );
             // The scrollbar's viewport, which its track fills.
             let track = Bounds::new(
@@ -2213,7 +2370,93 @@ pub(crate) mod tests {
                 cued,
                 "{height} px: a scrollbar ({thumb:?}) only along a track a thumb moves on"
             );
+            assert_eq!(
+                cx.debug_bounds("cued-list/scrollbar").is_some(),
+                cued,
+                "{height} px: the scrollbar's element is drawn only along a track a thumb moves on"
+            );
+            assert_eq!(
+                painted_fades(cx, bounds).1.is_some(),
+                !cued,
+                "{height} px: a list at its top fades its bottom edge only where it draws no scrollbar"
+            );
         }
+    }
+
+    /// A list too short for the kit's thumb to move along its track draws no
+    /// scrollbar and cues the rows beyond its edges with a fade at each edge
+    /// they continue past: at 13 and 18 pt, 40 px tall with ten 20 px rows,
+    /// it leaves no scrollbar element behind, its rows keep the gutter they
+    /// keep beside a scrollbar, so they never move as the list grows or
+    /// shrinks past the shortest track, and at its top it fades its bottom
+    /// edge alone, part way down both,
+    /// and scrolled to its end its top alone. Each fade is the scaled 8 px,
+    /// at most a quarter of the list, so it grows with the text, and lies
+    /// across the list's whole width. A side header's controls region at
+    /// its 36–44 px floor once drew the kit's 48 px thumb along a track
+    /// shorter than the thumb.
+    #[gpui::test]
+    fn a_list_too_short_for_a_thumb_fades_the_edges_its_rows_continue_past(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (list, cx) = cued_window(cx, 40., Pixels::ZERO, 10);
+        let scroll = list.read_with(cx, |list, _| list.scroll.clone());
+        let mut fades = Vec::new();
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            scroll_list_to(cx, &scroll, 0.);
+            let at = format!("{text} pt");
+            let region = cx.debug_bounds("cued-list").expect("the list");
+            assert!(
+                (region.size.height - px(40.)).abs() < px(0.01) && scroll.max_offset().y > px(100.),
+                "{at}: the 40 px list {region:?} overflows"
+            );
+            let bar = Scrollbar::width() + px(4.);
+            let track = Bounds::new(
+                point(region.right() - bar, region.top()),
+                size(bar, region.size.height),
+            );
+            assert!(
+                cx.debug_bounds("cued-list/scrollbar").is_none()
+                    && painted_thumb(cx, track).is_none(),
+                "{at}: the list {region:?} draws no scrollbar"
+            );
+            let row = cx.debug_bounds("cued-row-0").expect("its first row");
+            let ring = appearance::BUTTON_FOCUS_RING;
+            let gutter = Scrollbar::width() + ring.gap + ring.width;
+            assert!(
+                (row.right() - (region.right() - gutter)).abs() < px(0.5),
+                "{at}: the row {row:?} keeps the {gutter:?} gutter it keeps beside a scrollbar in {region:?}"
+            );
+            let fade = cx
+                .update(|_, _| appearance::ui_size(8.))
+                .min(region.size.height / 4.);
+            let near = |painted: Option<Pixels>| {
+                painted.is_some_and(|height| (height - fade).abs() < px(0.01))
+            };
+            let (top, bottom) = painted_fades(cx, region);
+            assert!(
+                top.is_none() && near(bottom),
+                "{at}: at its top the list fades its bottom edge alone by {fade:?}, not {top:?} and {bottom:?}"
+            );
+            scroll_list_to(cx, &scroll, 0.5);
+            let (top, bottom) = painted_fades(cx, region);
+            assert!(
+                near(top) && near(bottom),
+                "{at}: part way down the list fades both edges, not {top:?} and {bottom:?}"
+            );
+            scroll_list_to(cx, &scroll, 1.);
+            let (top, bottom) = painted_fades(cx, region);
+            assert!(
+                near(top) && bottom.is_none(),
+                "{at}: scrolled to its end the list fades its top edge alone, not {top:?} and {bottom:?}"
+            );
+            fades.push(fade);
+        }
+        assert!(
+            fades[1] > fades[0],
+            "the fade grows with the text: {fades:?}"
+        );
     }
 
     /// Tags' 30 rows overflow its list at 1000 × 680, and its scrollbar's

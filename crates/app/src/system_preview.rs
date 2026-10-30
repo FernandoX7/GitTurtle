@@ -756,9 +756,12 @@ pub(crate) struct HeaderEnd {
 /// room or the header's own padding above and below, whichever is larger,
 /// and otherwise what is left beyond that floor; the header takes the rest,
 /// whole where that holds its controls and otherwise in a region that tall
-/// which scrolls, cued by a scrollbar and revealing the control Tab moves
-/// onto, so its controls stay inside the preview and the line whole beneath
-/// them. A side's `foot`, the model's
+/// which scrolls, revealing the control Tab moves onto, so its controls stay
+/// inside the preview and the line whole beneath them. The region is cued
+/// as every scrolling list is ([`crate::tags::ScrollCue`]): by a scrollbar
+/// where its thumb moves along the region, and at the region's 36–44 px
+/// floor, where the kit's 48 px thumb filled its track, by a fade at each
+/// edge its controls continue past. A side's `foot`, the model's
 /// details, gives way before the header does. In a narrow side, at 13 and
 /// 18 pt in a 461 × 490 window and at 18 pt in 640 × 680, the controls once
 /// wrapped past the preview's foot and took the line out of view; then the
@@ -823,7 +826,7 @@ pub(crate) fn header_ends(
             .flex()
             .flex_col()
             // A region that scrolls and clips what it holds for assistive
-            // technology, its scrollbar shown while it overflows. It never
+            // technology, cued while it overflows. It never
             // shrinks, since `most` bounds it and the foot always takes the
             // shortfall: shrinking, it took about a millionth of the foot's
             // share, which GPUI's snapping to device pixels and its scroll
@@ -1178,15 +1181,16 @@ impl SideHeader {
     /// its header (the model's details), as the scroll area of its own that
     /// [`OwnHeader`]'s foot is: with no minimum height, so it shrinks with
     /// the foot to nothing and its lines, with the padding `area` keeps
-    /// inside it, stay within its reach, and cued while they overflow by
-    /// the always-visible scrollbar `scrollbar`, as a comparable bounded
-    /// area's is ([`crate::tags::ScrollCue`]), where it is tall enough for
-    /// a thumb that moves ([`crate::tags::SHORTEST_SCROLL_TRACK`]). Shrunk to
+    /// inside it, stay within its reach, and cued while they overflow as
+    /// every scrolling list is ([`crate::tags::ScrollCue`]): by the
+    /// always-visible scrollbar `scrollbar` where it is tall enough for a
+    /// thumb that moves ([`crate::tags::SHORTEST_SCROLL_TRACK`]), and
+    /// otherwise by a fade at each edge its lines continue past. Shrunk to
     /// a sliver, the model's details once showed a part of their lines with
     /// no sign that the rest scrolled, and a little taller, a thumb that ran
     /// out of its track against the scroll.
     pub(crate) fn foot(&self, area: Stateful<Div>, scrollbar: &'static str) -> Div {
-        let cue = crate::tags::ScrollCue::new(&self.foot, px(0.)).where_a_thumb_moves();
+        let cue = crate::tags::ScrollCue::new(&self.foot, px(0.));
         let observe = cue.observe(|_, _, _| {});
         let area = area.min_h_0().overflow_y_scroll().track_scroll(&self.foot);
         cue.list(area, scrollbar)

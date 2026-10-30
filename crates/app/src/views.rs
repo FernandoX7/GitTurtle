@@ -12470,8 +12470,12 @@ pub(crate) mod tests {
     /// view's, keeps its content first and its controls reachable. At 13 pt
     /// in a 461 × 490 window, where the header once took the side's whole
     /// room and left the model and the page 0 px, the content keeps its
-    /// scaled 96 px minimum and the header scrolls above it with a scrollbar
-    /// painted while it overflows; the model's details, a label, gave their
+    /// scaled 96 px minimum and the header scrolls above it, cued while it
+    /// overflows as every scrolling list is: at 13 and 18 pt, at its 36–44 px
+    /// floor, where the kit's 48 px thumb once filled its track, by no
+    /// scrollbar and a fade at each edge its controls continue past, the
+    /// bottom's at its top and the top's alone scrolled to its end; the
+    /// model's details, a label, gave their
     /// room before the controls were cut, where at 18 pt they kept 48 px and
     /// left After's open control 10 px. At 13 and 18 pt Tab moves through
     /// every control of the model's and the page view's header and Shift+Tab
@@ -12524,19 +12528,38 @@ pub(crate) mod tests {
             });
             cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(index, window, cx)));
         };
-        // Whether the region `region` paints a scrollbar's thumb at its edge.
-        let cued = |region: &'static str, cx: &mut VisualTestContext| {
-            let held = bounds(region, cx);
+        let reveal = |name: &'static str, app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+            cx.update(|_, cx| crate::system_preview::side_header(app.entity_id(), name, cx))
+                .expect("the side's header")
+        };
+        // Whether side `name`'s header region, which overflows, cues the
+        // controls beyond its edges as every scrolling list does: along a
+        // track a thumb moves on with a scrollbar's thumb at its edge, and
+        // shorter, as at its 36–44 px floor, where the kit's 48 px thumb once
+        // filled its track, with no scrollbar and a fade at each edge its
+        // controls continue past, none at an end it is scrolled to. The
+        // region's height, for the caller to tell which.
+        let cued = |name: &'static str, cx: &mut VisualTestContext| -> (bool, Pixels) {
+            let held = bounds(format!("{name}/header").leak(), cx);
             let width = gpui_kit::component::scroll::Scrollbar::width();
             let track = Bounds::new(
                 point(held.right() - width - px(4.), held.top()),
                 size(width + px(4.), held.size.height),
             );
-            crate::tags::tests::painted_thumb(cx, track).is_some()
-        };
-        let reveal = |name: &'static str, app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
-            cx.update(|_, cx| crate::system_preview::side_header(app.entity_id(), name, cx))
-                .expect("the side's header")
+            let thumb = crate::tags::tests::painted_thumb(cx, track);
+            let scrollbar = cx.debug_bounds(format!("{name}/scrollbar").leak());
+            let (top, bottom) = crate::tags::tests::painted_fades(cx, held);
+            let scroll = reveal(name, &app, cx).scroll().clone();
+            let scrolled = -scroll.offset().y;
+            let cued = if held.size.height < crate::tags::SHORTEST_SCROLL_TRACK {
+                thumb.is_none()
+                    && scrollbar.is_none()
+                    && top.is_some() == (scrolled > px(0.5))
+                    && bottom.is_some() == (scrolled < scroll.max_offset().y - px(0.5))
+            } else {
+                thumb.is_some() && scrollbar.is_some() && top.is_none() && bottom.is_none()
+            };
+            (cued, held.size.height)
         };
         // From focus on `first`, revealed as a page that opens on it does,
         // Tab moves through `controls` of side `name`'s header and Shift+Tab
@@ -12584,7 +12607,11 @@ pub(crate) mod tests {
             bounds("model-side-header-1", cx).bottom() > held.bottom() + slack,
             "the header {held:?} scrolls"
         );
-        assert!(cued("model-side-1/header", cx), "a scrollbar cues the rest");
+        let (cue, floor) = cued("model-side-1", cx);
+        assert!(
+            cue && floor < crate::tags::SHORTEST_SCROLL_TRACK,
+            "at its {floor:?} floor the region cues the rest with a fade, not a scrollbar"
+        );
         let details = bounds("model-side-1/foot", cx);
         assert!(
             details.size.height < slack,
@@ -12627,6 +12654,11 @@ pub(crate) mod tests {
             details.size.height < slack,
             "at 18 pt the details {details:?} give way before the header's controls are cut"
         );
+        let (cue, floor) = cued("model-side-1", cx);
+        assert!(
+            cue && floor < crate::tags::SHORTEST_SCROLL_TRACK,
+            "at 18 pt, at its {floor:?} floor, the region cues the rest with a fade, not a scrollbar"
+        );
         walk(cx, "the model at 18 pt", model, &source, &controls);
         // In a full window the details stay, beneath a header that fits.
         cx.simulate_resize(size(px(1480.), px(980.)));
@@ -12666,7 +12698,7 @@ pub(crate) mod tests {
             body.size.height >= minimum - slack,
             "the page {body:?} keeps its minimum {minimum:?}"
         );
-        assert!(cued("pdf-side-1/header", cx), "a scrollbar cues the rest");
+        assert!(cued("pdf-side-1", cx).0, "the region cues the rest");
         written::forget();
         draw(cx);
         assert!(
@@ -12738,6 +12770,14 @@ pub(crate) mod tests {
             uncovered(
                 cx,
                 &format!("at {text} pt with the header scrolled to its end"),
+            );
+            // Scrolled to its end, the region cues the controls above it
+            // alone: a thumb at its track's end, or where it is too short
+            // for one, a fade at its top edge.
+            let (cue, height) = cued("pdf-side-1", cx);
+            assert!(
+                cue,
+                "at {text} pt, scrolled to its end, the {height:?} region cues the controls above it alone"
             );
         }
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
@@ -12817,11 +12857,13 @@ pub(crate) mod tests {
     /// of their lines with no sign that the rest scrolled. Where the side
     /// gives them less than the shortest track a thumb moves along
     /// ([`crate::tags::SHORTEST_SCROLL_TRACK`]), they draw no scrollbar but
-    /// a wheel still scrolls them to the end of their lines and back, and
-    /// any thumb drawn lies within its track: between about 16 and 56 px the
-    /// kit's 48 px thumb once ran out of its track against the scroll, or
-    /// barely moved (at 13 pt in a 461 × 688 window, a 52.5 px room drew
-    /// one). That a foot draws none where its lines fit is also
+    /// fade the edge their lines continue past, the bottom's at their top and
+    /// the top's alone at their end, a wheel still scrolls them to the end of
+    /// their lines and back, and any thumb drawn lies within its track:
+    /// between about 16 and 56 px the kit's 48 px thumb once ran out of its
+    /// track against the scroll, or barely moved (at 13 pt in a 461 × 688
+    /// window, a 52.5 px room drew one). That a foot draws none where its
+    /// lines fit is also
     /// `system_preview::tests::a_side_s_foot_cues_its_scroll_only_while_it_overflows`.
     #[cfg(target_os = "linux")]
     #[gpui::test]
@@ -12892,21 +12934,37 @@ pub(crate) mod tests {
                     continue;
                 }
                 whole = whole.max(area.size.height);
-                // Too short for a thumb that moves, they draw no scrollbar.
+                // Too short for a thumb that moves, they draw no scrollbar
+                // and fade the edge their lines continue past.
                 if area.size.height < crate::tags::SHORTEST_SCROLL_TRACK {
+                    let fades = crate::tags::tests::painted_fades;
                     assert!(
-                        thumb(area, cx).is_none(),
+                        thumb(area, cx).is_none()
+                            && cx.debug_bounds("model-details-1/scrollbar").is_none(),
                         "{at}: the details' room {area:?}, too short for a thumb that moves, draws no scrollbar"
+                    );
+                    // A room a few pixels tall takes a fade a pixel tall at
+                    // most, a quarter of it.
+                    let (top, bottom) = fades(cx, area);
+                    assert!(
+                        area.size.height < px(4.) || (top.is_none() && bottom.is_some()),
+                        "{at}: at their top the details {area:?} fade their bottom edge alone, not {top:?} and {bottom:?}"
                     );
                     if area.size.height >= px(16.) {
                         // With no scrollbar they still scroll, to the end
-                        // of their lines and back.
+                        // of their lines and back, and fade the edge their
+                        // lines then continue past.
                         wheel(area, -10_000., cx);
                         let end = bounds("model-details-lines-1", cx);
                         assert!(
                             end.top() < lines.top()
                                 && (end.bottom() - area.bottom()).abs() < px(0.5),
                             "{at}: the details {area:?}, with no scrollbar, scroll their lines {lines:?} to their end {end:?}"
+                        );
+                        let (top, bottom) = fades(cx, area);
+                        assert!(
+                            top.is_some() && bottom.is_none(),
+                            "{at}: at their end the details {area:?} fade their top edge alone, not {top:?} and {bottom:?}"
                         );
                         wheel(area, 10_000., cx);
                         let back = bounds("model-details-lines-1", cx);
