@@ -4347,8 +4347,10 @@ fn line_slack(items: &[(Pixels, Pixels)], at: usize, room: Pixels, gap: Pixels) 
 /// [`HeaderLayout::changes_slack`]). Until then the controls keep
 /// their lines and every room the status could take only shrinks as the
 /// control grows, so each arrangement is asked where it leaves the least,
-/// a hair short of its line's filling, and the next a hair past it, where
-/// the line's last control has wrapped, until `most`.
+/// where its line fills exactly, which still holds the line's last control
+/// ([`wrapped_rows`] breaks only past the room), and a hair short of that
+/// in case rounding wrapped the control there; and the next a hair past
+/// it, where the line's last control has wrapped, until `most`.
 fn to_bar_anywhere(
     least: Pixels,
     most: Pixels,
@@ -4367,7 +4369,7 @@ fn to_bar_anywhere(
         if slack < px(0.) || full >= most {
             return width < most && to_bar(most).0;
         }
-        if slack > hair && to_bar(full - hair).0 {
+        if slack > px(0.) && (to_bar(full).0 || (slack > hair && to_bar(full - hair).0)) {
             return true;
         }
         width = full + hair;
@@ -16274,6 +16276,42 @@ pub(crate) mod tests {
             "the room is kept at some widths and not at others: {kept:?}"
         );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The bar's room search ([`to_bar_anywhere`]) asks each arrangement
+    /// where its line fills exactly, which the line still holds
+    /// ([`wrapped_rows`] breaks only past the room): a control whose line
+    /// fills at 10 px, its room for the status shrinking as it grows and
+    /// coming back once a control wraps past 10 px, leaves the status too
+    /// little only at the fill width itself, and the search finds it.
+    /// Asked only a hair short of the fill width, it missed it, so a header
+    /// at an exact boundary could send a write to a bar that kept no room.
+    #[test]
+    fn the_bars_room_search_asks_the_exact_fill_width() {
+        // The status's width: more than the room the line leaves where it
+        // fills, less than the room a 64th of a pixel short of that.
+        let status = 2. + 1. / 256.;
+        let to_bar = |width: Pixels| {
+            let width = f32::from(width);
+            if width <= 10. {
+                (12. - width < status, px(10. - width))
+            } else {
+                (false, px(100. - width))
+            }
+        };
+        assert!(to_bar_anywhere(px(0.), px(50.), to_bar));
+        // Nowhere in an arrangement whose room never falls short.
+        assert!(!to_bar_anywhere(px(0.), px(50.), |width: Pixels| {
+            let width = f32::from(width);
+            (
+                false,
+                px(if width <= 10. {
+                    10. - width
+                } else {
+                    100. - width
+                }),
+            )
+        }));
     }
 
     /// The bar's room for Cancel and the status bar's widths are kept for
