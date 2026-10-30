@@ -98,7 +98,11 @@ impl std::fmt::Debug for Credential {
 /// Secret Service implementation without changing collaboration semantics.
 pub(crate) trait CredentialStore {
     fn load(&self) -> Result<Option<Credential>>;
+    // A test build saves and removes nothing: Connect and Disconnect reach a stand-in there
+    // (`github_view::account`), never a developer's stored authorization.
+    #[cfg_attr(test, allow(dead_code))]
     fn save(&self, credential: &Credential) -> Result<()>;
+    #[cfg_attr(test, allow(dead_code))]
     fn remove(&self) -> Result<()>;
 }
 pub(crate) struct SecureStore;
@@ -171,6 +175,8 @@ impl GhTransport {
     /// This is an explicit account connection, including the /user request.
     /// GitHub CLI owns browser OAuth. GitTurtle never invokes auth setup-git,
     /// switches the CLI account, uploads a key, or creates a credential file.
+    /// A test build connects a stand-in instead (`github_view::account`).
+    #[cfg_attr(test, allow(dead_code))]
     pub fn connect_existing(control: &OperationControl) -> Result<String> {
         let mut command = gh_command()?;
         command.args(["auth", "token", "--hostname", "github.com"]);

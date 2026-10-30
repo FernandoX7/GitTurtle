@@ -4,7 +4,6 @@ use crate::github::{
     self, Action, Client, ComparisonTarget, NewPull, PullRequest, PullStatus, Repository,
     ReviewDraft, ReviewEvent,
     drafts::{self, Draft},
-    transport::{CredentialStore, GhTransport, SecureStore},
 };
 use crate::native_accessibility::LiveRegion as _;
 use crate::*;
@@ -401,13 +400,17 @@ impl RequestKind {
     /// What the panel says in its failure's place once Cancel stopped this
     /// request before it changed anything ([`Panel::outcome`]), where the
     /// request can tell: a local read stopped by its cancellation ends with
-    /// [`gitturtle_core::ReadCancelled`]. A cancelled PR comparison once
-    /// showed the failure telling the person to Fetch. A request to GitHub
-    /// has none: the GitHub CLI's stop reaches it as a failure, and a sent
-    /// action's outcome stays uncertain.
+    /// [`gitturtle_core::ReadCancelled`], and Connect and Disconnect, asked
+    /// to stop before they reach the account, with [`NotStarted`]. A
+    /// cancelled PR comparison once showed the failure telling the person to
+    /// Fetch, and a cancelled Disconnect a failure saying the authorization
+    /// was kept. A request to GitHub has none: the GitHub CLI's stop reaches
+    /// it as a failure, and a sent action's outcome stays uncertain.
     fn cancelled(self) -> Option<&'static str> {
         match self {
-            Self::Load | Self::Send | Self::Connect | Self::Disconnect => None,
+            Self::Load | Self::Send => None,
+            Self::Connect => Some("Cancelled · no account was connected"),
+            Self::Disconnect => Some("Cancelled · GitTurtle's authorization was kept"),
             Self::Compare => Some("Cancelled · the PR's changes were not compared"),
             Self::Templates => Some("Cancelled · the PR templates were not read"),
         }
@@ -436,6 +439,54 @@ fn stopped_by_cancel(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<gitturtle_core::ReadCancelled>()
         .is_some()
+        || error.downcast_ref::<NotStarted>().is_some()
+}
+/// The error a request ends with when Cancel came before it began, so it
+/// reached nothing: Connect read no token and Disconnect removed nothing.
+#[derive(Debug)]
+struct NotStarted;
+impl std::fmt::Display for NotStarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Cancelled before it began")
+    }
+}
+impl std::error::Error for NotStarted {}
+/// Ends a request with [`NotStarted`] where Cancel came before it began.
+fn not_cancelled(control: &OperationControl) -> anyhow::Result<()> {
+    if control.is_cancelled() {
+        return Err(NotStarted.into());
+    }
+    Ok(())
+}
+/// Where Connect and Disconnect reach the account: the GitHub CLI's signed-in account and
+/// the platform's secure store ([`github::transport::SecureStore`]).
+#[cfg(not(test))]
+mod account {
+    use crate::github::transport::{CredentialStore, GhTransport, SecureStore};
+    use gitturtle_core::OperationControl;
+    pub(super) fn connect(control: &OperationControl) -> anyhow::Result<String> {
+        GhTransport::connect_existing(control)
+    }
+    pub(super) fn remove() -> anyhow::Result<()> {
+        SecureStore.remove()
+    }
+}
+/// A test build's stand-in for the account, which answers as a signed-in GitHub CLI and an
+/// emptied store would, so no test starts the CLI, reads a developer's token or removes their
+/// stored authorization (on macOS a Keychain item), even where a cancellation guard
+/// regressed: a Disconnect test once reached the real store's removal with nothing but the
+/// guard in its way.
+#[cfg(test)]
+mod account {
+    use gitturtle_core::OperationControl;
+    /// The account the stand-in connects.
+    pub(super) const LOGIN: &str = "stand-in-reviewer";
+    pub(super) fn connect(_: &OperationControl) -> anyhow::Result<String> {
+        Ok(LOGIN.into())
+    }
+    pub(super) fn remove() -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 /// What a request's reply says when none arrives.
 const INTERRUPTED: &str = "GitHub operation was interrupted. Its outcome may be uncertain; check the destination before submitting again.";
@@ -1117,7 +1168,10 @@ impl Panel {
         }
         self.run(
             RequestKind::Connect,
-            |control| GhTransport::connect_existing(&control),
+            |control| {
+                not_cancelled(&control)?;
+                account::connect(&control)
+            },
             |result, this, _, _| match result {
                 Ok(login) => {
                     this.notice = Some(format!(
@@ -1138,11 +1192,8 @@ impl Panel {
         self.run(
             RequestKind::Disconnect,
             |control| {
-                anyhow::ensure!(
-                    !control.is_cancelled(),
-                    "Disconnect was cancelled; GitTurtle's authorization was kept."
-                );
-                SecureStore.remove()
+                not_cancelled(&control)?;
+                account::remove()
             },
             |result, this, _, _| match result {
                 Ok(()) => {
@@ -2582,9 +2633,12 @@ mod tests {
     /// panel's busy line: their own buttons choose the request's kind, which
     /// a test sending each kind through `Panel::run` cannot tell. Both once
     /// read "Loading your requested PR context…". Cancelled from the panel
-    /// before they run, neither reaches the GitHub CLI or the stored
-    /// authorization: the account stays and the panel says why, where
-    /// Disconnect's removal once ignored Cancel.
+    /// before they run, neither reaches the account: the account stays and
+    /// the panel says it was cancelled, where Disconnect's removal once
+    /// ignored Cancel. A test build reaches the account's stand-in
+    /// (`account`), which would connect it or empty it, so a guard that
+    /// regressed fails here rather than reading a developer's GitHub CLI
+    /// token or removing their stored authorization.
     #[gpui::test]
     async fn connect_and_disconnect_name_themselves_from_their_buttons(cx: &mut TestAppContext) {
         use crate::copy_feedback::tests::click;
@@ -2633,7 +2687,11 @@ mod tests {
                     Some("offline-reviewer"),
                     "{button}: the account stays"
                 );
-                assert!(panel.error.is_some(), "{button}: the panel says why");
+                assert_eq!(
+                    (panel.error.as_deref(), panel.cancelled),
+                    (None, kind.cancelled()),
+                    "{button}: the panel says it was cancelled"
+                );
             });
         }
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
