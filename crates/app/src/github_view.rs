@@ -2236,8 +2236,43 @@ mod tests {
         Entity<Panel>,
         &mut VisualTestContext,
     ) {
-        use crate::views::tests::{history_script, history_window_from};
-        let (fixture, app, cx) = history_window_from(cx, history_script(2, 3)).await;
+        busy_fixture_panel_from(cx, crate::views::tests::history_script(2, 3)).await
+    }
+
+    /// [`busy_fixture_panel`] with a new PR's base, `main`, holding a PR template.
+    async fn templated_fixture_panel(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        &mut VisualTestContext,
+    ) {
+        const MESSAGE: &str = "Add the PR template";
+        const TEMPLATE: &str = "## What changes\n";
+        let script = crate::views::tests::history_script(2, 3);
+        let script = format!(
+            "{}commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1700000002 +0000\n\
+             data {}\n{MESSAGE}\nM 100644 inline .github/pull_request_template.md\ndata {}\n\
+             {TEMPLATE}\ndone\n",
+            script.strip_suffix("done\n").expect("the script's end"),
+            MESSAGE.len(),
+            TEMPLATE.len(),
+        );
+        busy_fixture_panel_from(cx, script).await
+    }
+
+    /// [`busy_fixture_panel`] over the repository `script` imports.
+    async fn busy_fixture_panel_from(
+        cx: &mut TestAppContext,
+        script: String,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        Entity<Panel>,
+        &mut VisualTestContext,
+    ) {
+        let (fixture, app, cx) = crate::views::tests::history_window_from(cx, script).await;
         let panel = cx.update(|window, cx| {
             let repo = app.read(cx).repository.clone().unwrap();
             let panel = cx.new(|cx| Panel::new(app.downgrade(), repo, "main".into(), window, cx));
@@ -2604,11 +2639,14 @@ mod tests {
     /// its child processes" while the panel connected an account. A Git
     /// write's Cancel still names the Git operation. A new PR's templates,
     /// read in the local repository, stop at the bar's Cancel, as its name
-    /// says: the read once ran to its end and showed them.
+    /// says: none shows and the panel says the read was cancelled, where the
+    /// read once ran to its end and showed them. The fixture's base holds a
+    /// template, which the read finds uncancelled: with none, a read that
+    /// ignored Cancel showed nothing all the same.
     #[gpui::test]
     async fn the_operation_bars_cancel_names_what_it_cancels(cx: &mut TestAppContext) {
         use crate::authentication::{CANCEL_LABELS, CANCEL_NAME, CANCEL_TOOLTIP};
-        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        let (_fixture, app, panel, cx) = templated_fixture_panel(cx).await;
         // Cancel as the window would build it now, labelled or as its icon:
         // its accessible name and its tooltip.
         let cancel = |icon: bool, cx: &mut VisualTestContext| {
@@ -2688,6 +2726,21 @@ mod tests {
         app.read_with(cx, |app, _| app.operations.drain());
         crate::views::tests::settle(&app, cx).await;
 
+        // The templates read finds the base's template.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.load_templates(window, cx)));
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle_panel(&app, cx).await;
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel
+                .templates
+                .iter()
+                .map(|template| template.path.clone())
+                .collect::<Vec<_>>()),
+            [".github/pull_request_template.md"],
+            "the base holds a template"
+        );
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.templates.clear()));
+
         // The templates read, held, then the bar's Cancel.
         let held = app.update(cx, |app, _| app.operations.hold());
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.load_templates(window, cx)));
@@ -2708,6 +2761,14 @@ mod tests {
         app.read_with(cx, |app, _| app.operations.drain());
         settle_panel(&app, cx).await;
         assert_eq!(app.read_with(cx, |app, _| app.operation_busy), None);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.templates.is_empty(), "no template shows");
+            assert_eq!(
+                (panel.error.as_deref(), panel.cancelled),
+                (None, RequestKind::Templates.cancelled()),
+                "the panel says the read was cancelled"
+            );
+        });
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
         settle_panel(&app, cx).await;
     }

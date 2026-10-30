@@ -650,7 +650,8 @@ pub(crate) struct Template {
     pub body: String,
 }
 /// The PR templates at `revision` in the local repository, read until
-/// `cancellation` stops them.
+/// `cancellation` stops them, which ends the read with
+/// [`gitturtle_core::ReadCancelled`].
 pub(crate) fn local_templates(
     repo: &gitturtle_core::GitRepository,
     revision: &str,
@@ -661,6 +662,15 @@ pub(crate) fn local_templates(
         "pull_request_template",
         cancellation,
     )?;
+    read_templates(repo, listing, cancellation)
+}
+/// The templates `listing` names, each read only while `cancellation` lets
+/// it: a cancel arriving after the listing stops before the next template.
+fn read_templates(
+    repo: &gitturtle_core::GitRepository,
+    listing: gitturtle_core::TrackedPaths,
+    cancellation: &gitturtle_core::HistoryCancellation,
+) -> Result<Vec<Template>> {
     let revision = match listing.scope {
         gitturtle_core::PathScope::Revision(oid) => oid,
         _ => unreachable!(),
@@ -691,10 +701,9 @@ pub(crate) fn local_templates(
         if !applicable || !matches!(entry.mode.as_str(), "100644" | "100755") {
             continue;
         }
-        ensure!(
-            !cancellation.is_cancelled(),
-            "Reading the PR templates was cancelled"
-        );
+        if cancellation.is_cancelled() {
+            return Err(gitturtle_core::ReadCancelled.into());
+        }
         ensure!(
             templates.len() < 32,
             "More than 32 PR templates are present; choose a narrower supported template set"
@@ -1036,5 +1045,31 @@ mod tests {
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].body, "Captured template\n");
         assert_eq!(templates[0].revision.len(), 40);
+
+        // A cancel arriving once the listing has named the templates stops the read
+        // before the next one, as a cancel the person asked for: the panel's Cancel or
+        // the operation bar's while the templates are read. The panel's own test
+        // cancels before the read starts, which stops the listing instead.
+        let cancellation = gitturtle_core::HistoryCancellation::default();
+        let listing = repo
+            .search_tracked_paths(
+                &gitturtle_core::PathScope::Revision("main".into()),
+                "pull_request_template",
+                &cancellation,
+            )
+            .unwrap();
+        assert!(
+            !listing.entries.is_empty(),
+            "the listing names the template"
+        );
+        cancellation.cancel();
+        let error =
+            read_templates(&repo, listing, &cancellation).expect_err("the cancel stops the read");
+        assert!(
+            error
+                .downcast_ref::<gitturtle_core::ReadCancelled>()
+                .is_some(),
+            "{error:#}"
+        );
     }
 }
