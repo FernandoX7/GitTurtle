@@ -55,9 +55,13 @@ partly drawn node, a node without bounds and a node with no clipping
 ancestor keep `Showing`. GitTurtle's clipping nodes report the part of
 themselves the window draws (`native_accessibility::clips_children`), and
 one the window draws none of reports a pixel beyond one of its corners,
-outside its extent along both axes and outside what is drawn, so its
-children lie outside it. Every clipping ancestor counts, not
-the nearest alone: AccessKit's filter keeps an inner clipping node past an
+outside its extent along both axes and, wherever a corner allows, outside
+what is drawn, so its children lie outside it. Where no
+corner allows, it reports its top left one anyway, which then lies in what
+is drawn or in its clipping ancestor's bounds, as for a container
+collapsed to no height inside what is drawn; this adapter can then read it
+as showing. Every clipping ancestor counts, not the nearest alone:
+AccessKit's filter keeps an inner clipping node past an
 outer one's fold as the child past that edge, so a node inside the inner one
 can lie wholly outside the outer one, the one place nothing of it is drawn.
 The work is one walk up the node's ancestors, ending at the first clip that

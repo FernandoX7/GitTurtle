@@ -2229,6 +2229,14 @@ fn drawn_span(start: f64, end: f64, from: f64, to: f64, pixel: f64) -> Option<(f
 /// row with only its head under a drawn list's 1 px bottom border is drawn
 /// nowhere, while the pixel beyond its top left corner lies in the list's
 /// left border, inside the list; it takes its bottom left, below the list.
+/// Where every corner's pixel meets `mask` or `clip`, the top left one is
+/// reported anyway, inside what is drawn or the bounds of the clipping
+/// ancestor, which the filter then measures the container inside: one that
+/// collapses to no height inside the mask, as a `flex_1().min_h_0()` list
+/// can, or one that an element clipping without a node of its own, such as
+/// an `overflow_hidden` div no wrapper reports, leaves out inside the part
+/// of the ancestor that is drawn. What the container holds still lies
+/// outside that pixel, as above.
 ///
 /// It was a strip a pixel across along the container's own extent, beside
 /// its leading edge across the axis the mask left it out along (its left
@@ -3390,6 +3398,21 @@ mod tests {
                 "{drawn:?} lies outside {layout:?}, {mask:?} and {clip:?}"
             );
         }
+
+        // Collapsed to no height inside the mask, as a `flex_1().min_h_0()`
+        // list can be, with every corner's pixel in the mask: beyond its top
+        // left corner all the same, outside its extent but inside the mask.
+        let collapsed = rect(10., 300., 110., 300.);
+        let drawn = drawn_rect(collapsed, mask, 1., Undrawn::Edge(None));
+        assert_eq!(
+            drawn,
+            rect(9., 299., 10., 300.),
+            "{collapsed:?} in {mask:?}"
+        );
+        assert!(
+            !drawn.intersect(mask).is_empty(),
+            "{drawn:?} lies in {mask:?}"
+        );
     }
 
     /// A wrapped row that a list scrolled down draws none of, with only its
