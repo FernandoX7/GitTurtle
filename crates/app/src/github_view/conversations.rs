@@ -303,7 +303,15 @@ impl Panel {
             cx,
         );
     }
-    fn begin_reply(&mut self, target: CapturedThread, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens `target`'s reply composer, focused on its draft. An outcome asked for from
+    /// another conversation's composer stays that conversation's ([`Origin::Reply`]): it
+    /// moves to the panel's top line, never under this draft.
+    pub(super) fn begin_reply(
+        &mut self,
+        target: CapturedThread,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.pending
             || !self
                 .conversations
@@ -344,14 +352,16 @@ impl Panel {
             .focus(window, cx);
         cx.notify();
     }
-    fn review_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn review_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_draft(window, cx);
         let Some(Draft::Reply(reply)) = self.reply_snapshot(cx) else {
             return;
         };
-        // Review reply… is pressed in the reply's composer, where its refusal answers.
+        // Review reply… is pressed in this conversation's reply composer, where its refusal
+        // answers.
+        let origin = Origin::Reply(Box::new(reply.target.clone()));
         if let Err(error) = github::validate_text(&reply.body, true) {
-            self.refuse_at(Origin::Reply, error.to_string());
+            self.refuse_at(origin, error.to_string());
             cx.notify();
             return;
         }
@@ -361,7 +371,7 @@ impl Panel {
             .iter()
             .any(|thread| reply_matches(thread, &reply.target, self.account.as_deref()))
         {
-            self.refuse_at(Origin::Reply, "The captured reply context is unavailable or changed. Refresh this conversation explicitly; the original draft remains available to copy.");
+            self.refuse_at(origin, "The captured reply context is unavailable or changed. Refresh this conversation explicitly; the original draft remains available to copy.");
             cx.notify();
             return;
         }

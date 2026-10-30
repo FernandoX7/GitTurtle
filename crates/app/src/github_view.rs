@@ -3,6 +3,7 @@
 use crate::github::{
     self, Action, Client, ComparisonTarget, NewPull, PullRequest, PullStatus, Repository,
     ReviewDraft, ReviewEvent,
+    conversations::CapturedThread,
     drafts::{self, Draft},
     transport::SecureStore,
 };
@@ -314,11 +315,14 @@ struct Presses {
 /// touched. The panel records it as the request starts or the press is refused, and restores it
 /// as the request answers. While a conversation was open, every outcome once answered in the
 /// reply's composer, a comparison's cancel from Overview included.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Origin {
-    /// The reply's composer: Review reply… and Send for a reply. Its outcome stands in the
-    /// composer, under the draft, while the reply is open.
-    Reply,
+    /// The composer of the reply to this conversation: its Review reply… and the Send of its
+    /// reply. Its outcome stands in that composer, under the draft, while that composer is
+    /// drawn, and otherwise on the panel's top line, never in another conversation's composer:
+    /// a reply refused on one conversation once showed under the draft of the next one that
+    /// Reply opened.
+    Reply(Box<CapturedThread>),
     /// Every other control (Open captured local comparison, Connect, Disconnect, Resolve and
     /// Reopen, Refresh PRs, the templates): its outcome stands on the panel's top line.
     Panel,
@@ -1146,9 +1150,13 @@ impl Panel {
         self.presses.error = self.presses.error.wrapping_add(1);
     }
     /// Whether the failure line answers in the open reply's composer, rather than on the
-    /// panel's top line: only for what was asked from that composer ([`Origin`]).
+    /// panel's top line: only for what was asked from that composer, the composer of the
+    /// conversation it was asked for ([`Origin`]).
     fn answers_in_reply(&self) -> bool {
-        self.origin == Origin::Reply && self.conversations.active.is_some()
+        matches!(
+            (&self.origin, &self.conversations.active),
+            (Origin::Reply(asked), Some(open)) if **asked == *open
+        )
     }
     /// Answers a press with `issue` on the refused-input line, said at once however often it
     /// repeats ([`Presses`]).
@@ -1215,7 +1223,7 @@ impl Panel {
         self.request = kind;
         self.error = None;
         self.cancelled = None;
-        self.origin = origin;
+        self.origin = origin.clone();
         self.notice = None;
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response
@@ -1492,8 +1500,8 @@ impl Panel {
         let sent_action = confirmation.action.clone();
         // A reply's Send answers in the reply's composer, where the reply was written; every
         // other action's, a conversation's Resolve or Reopen included, on the panel's top line.
-        let origin = match confirmation.action {
-            Action::Reply { .. } => Origin::Reply,
+        let origin = match &confirmation.action {
+            Action::Reply { target, .. } => Origin::Reply(Box::new(target.clone())),
             _ => Origin::Panel,
         };
         let sent = self.run_from(origin, RequestKind::Send, move |control| {
@@ -4114,14 +4122,14 @@ mod tests {
                 panel.review.show_list = false;
                 panel.review.section = Section::Overview;
                 panel.receive_threads(page, None);
-                panel.conversations.active = Some(target);
+                panel.conversations.active = Some(target.clone());
             })
         });
         let set = |cx: &mut VisualTestContext, error: Option<&str>, cancelled| {
             cx.update(|_, cx| {
                 panel.update(cx, |panel, cx| {
                     // As a request from the reply's composer answers.
-                    panel.origin = Origin::Reply;
+                    panel.origin = Origin::Reply(Box::new(target.clone()));
                     panel.error = error.map(str::to_owned);
                     panel.cancelled = cancelled;
                     cx.notify();
@@ -4311,6 +4319,88 @@ mod tests {
         );
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
         settle_panel(&app, cx).await;
+    }
+
+    /// A reply refused on one conversation stays that conversation's ([`Origin::Reply`]):
+    /// Reply on another opens its composer with nothing under its draft, and the refusal,
+    /// whose composer is no longer drawn, stands on the panel's top line, said once. It once
+    /// stood under the other conversation's draft, which no one had reviewed.
+    #[gpui::test]
+    async fn a_refused_reply_stays_with_its_conversation(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::alerted;
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let pull = github::review::fixture_pull(false);
+        let identity = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let open = page
+            .items
+            .iter()
+            .filter(|thread| thread.reply_available())
+            .map(|thread| thread.target.clone())
+            .collect::<Vec<_>>();
+        let [first, second, ..] = &open[..] else {
+            panic!("two of the fixture's conversations accept a reply");
+        };
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+            })
+        });
+        open_notice_panel(&app, &panel, (13, 1480., 980.), cx).await;
+
+        // Reply on the first, then Review reply… with nothing written: refused there.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.begin_reply(first.clone(), window, cx);
+                panel.review_reply(window, cx);
+            })
+        });
+        draw(cx);
+        draw(cx);
+        let refusal = panel
+            .read_with(cx, |panel, _| panel.error.clone())
+            .expect("an empty reply is refused");
+        assert!(
+            cx.debug_bounds("github-reply-error").is_some(),
+            "the refusal answers in the first conversation's composer"
+        );
+        let (heard, text) = alerted(cx).expect("an alert");
+        assert_eq!(text, refusal, "the window says the refusal");
+
+        // Reply on the second.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.begin_reply(second.clone(), window, cx)
+            })
+        });
+        draw(cx);
+        draw(cx);
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.conversations.active.clone()),
+            Some(second.clone()),
+            "the second conversation's composer is open"
+        );
+        assert!(
+            cx.debug_bounds("github-reply-error").is_none()
+                && cx.debug_bounds("github-reply-cancelled").is_none(),
+            "nothing answers under the second conversation's draft"
+        );
+        assert!(
+            cx.debug_bounds("github-error").is_some(),
+            "the first conversation's refusal stands on the panel's top line"
+        );
+        assert_eq!(
+            alerted(cx).map(|(id, _)| id),
+            Some(heard),
+            "and is said once"
+        );
+        escape(cx);
     }
 
     /// Each press the panel refuses is said again, with a fresh alert node, though it refuses
