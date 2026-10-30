@@ -7569,6 +7569,11 @@ impl Render for GitTurtle {
                     return;
                 }
                 if this.mode == WorkspaceMode::Working {
+                    // A control inside Working Changes' list takes Enter
+                    // itself, as the key goes on to it.
+                    if this.working_control_focused(window, cx) {
+                        cx.propagate();
+                    }
                     return;
                 }
                 if let Some(index) = this.selected_file {

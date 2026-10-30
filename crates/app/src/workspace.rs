@@ -2463,6 +2463,15 @@ impl GitTurtle {
         false
     }
 
+    /// Whether focus is on a control inside Working Changes' list, such as
+    /// Clear filter or a row's Stage, rather than on the list itself. Enter
+    /// is then that control's, which acts on it as Space or a click does:
+    /// the list's Enter (`NextPane`) once took the key from every control
+    /// inside the list, so Enter on a focused Clear filter did nothing.
+    pub(super) fn working_control_focused(&self, window: &Window, cx: &App) -> bool {
+        !self.file_focus.is_focused(window) && self.file_focus.contains_focused(window, cx)
+    }
+
     pub(super) fn move_working_selection(
         &mut self,
         direction: i32,
@@ -3415,11 +3424,15 @@ impl GitTurtle {
                     this.open_working_row_menu(forms.file_action, window, cx)
                 },
             ))
-            // Enter chooses the selected row's file, as a click on it does,
-            // where the arrow keys only select it; with nothing to activate,
-            // the window's Open Selected List Item takes it.
+            // Enter on the list chooses the selected row's file, as a click
+            // on it does, where the arrow keys only select it; with nothing
+            // to activate, the window's Open Selected List Item takes it. On
+            // a control inside the list it goes on to that control
+            // (`working_control_focused`).
             .on_action(cx.listener(|this, _: &NextPane, window, cx| {
-                if !this.activate_working_preview(window, cx) {
+                if this.working_control_focused(window, cx)
+                    || !this.activate_working_preview(window, cx)
+                {
                     cx.propagate();
                 }
             }))

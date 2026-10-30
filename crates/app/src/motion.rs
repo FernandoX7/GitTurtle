@@ -5305,6 +5305,126 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Enter on a control inside Working Changes' list is that control's:
+    /// Clear filter, which the list draws where its filter matches nothing,
+    /// takes Enter as Space or a click, emptying the filter and moving to the
+    /// list, which shows every file again. The list's Enter, which chooses
+    /// its selected file, took the key from every control inside the list,
+    /// so Enter on a focused Clear filter did nothing.
+    #[gpui::test]
+    async fn enter_presses_a_focused_control_inside_the_working_list(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, _repository) = narrow_notes(cx).await;
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.working_filter
+                    .update(cx, |input, cx| input.set_value("zzz", window, cx));
+                app.filter_working_paths(window, cx);
+            })
+        });
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert!(
+            cx.debug_bounds("working-clear-filter").is_some(),
+            "the list says its filter matches nothing, with Clear filter"
+        );
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| list.focus(window, cx));
+        next_frame(cx);
+        cx.simulate_keystrokes("tab");
+        next_frame(cx);
+        assert!(
+            cx.update(|window, cx| list.contains_focused(window, cx) && !list.is_focused(window)),
+            "Tab reaches Clear filter, the one control inside the list"
+        );
+
+        // A press: Enter down, then up, on which a focused control acts.
+        let enter = gpui::Keystroke::parse("enter").unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: enter.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        let query = cx.update(|_, cx| app.read(cx).working_filter.read(cx).value().to_string());
+        assert_eq!(query, "", "Enter on Clear filter empties the filter");
+        assert!(
+            cx.update(|window, _| list.is_focused(window)),
+            "and moves to the list"
+        );
+        assert!(
+            cx.debug_bounds("working-clear-filter").is_none(),
+            "which shows every file again"
+        );
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Enter on a row's Stage control, focused inside Working Changes' list
+    /// while a conflicted file's view is open, runs that control: its file
+    /// is staged and no draft takes focus. The list's Enter chose the
+    /// selected conflicted file instead, focusing its resolution draft, and
+    /// the Stage never ran.
+    #[gpui::test]
+    async fn enter_on_a_rows_focused_stage_control_runs_it(cx: &mut TestAppContext) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        // Wide enough at 13 pt for each row to draw its Stage control.
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+        cx.simulate_resize(size(px(1480.), px(1300.)));
+        next_frame(cx);
+        std::fs::write(repository.join("another.txt"), "another\n").unwrap();
+        merge_stopping_on_notes(&repository);
+        quietly_refreshed(&app, cx);
+        preview_landed(&app, cx);
+        let notes = position_of(&app, cx, "notes.txt", ChangeArea::Unstaged);
+        let selector: &'static str = format!("working-row-{notes}").leak();
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(row.center(), Modifiers::default());
+        preview_landed(&app, cx);
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        cx.update(|window, cx| list.focus(window, cx));
+        next_frame(cx);
+        assert_eq!(
+            conflict_shown(&app, cx),
+            Some(false),
+            "notes.txt's view is open, focus on the list"
+        );
+        let selector: &'static str = format!("working-stage-{notes}").leak();
+        assert!(cx.debug_bounds(selector).is_some(), "the rows draw Stage");
+
+        // Tab on to the first row's Stage, the first control inside the list.
+        cx.simulate_keystrokes("tab");
+        next_frame(cx);
+        assert!(
+            cx.update(|window, cx| app.read(cx).working_control_focused(window, cx)),
+            "Tab reaches a row's Stage, inside the list"
+        );
+
+        let enter = gpui::Keystroke::parse("enter").unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: enter.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke: enter });
+        next_frame(cx);
+        assert_ne!(
+            conflict_shown(&app, cx),
+            Some(true),
+            "no resolution draft takes focus"
+        );
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("Enter runs the Stage");
+        write.await;
+        crate::views::tests::settle(&app, cx).await;
+        let staged = committing_git(&repository, &["diff", "--cached", "--name-only"]);
+        assert!(
+            !staged.stdout.is_empty(),
+            "the focused Stage staged its file"
+        );
+    }
+
     /// The selected working file's preview that lands conflicted while
     /// Settings shows opens its conflict view as the window returns to the
     /// repository, without its draft taking focus even for a frame: focus
