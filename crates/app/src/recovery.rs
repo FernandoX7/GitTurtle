@@ -300,10 +300,14 @@ impl GitTurtle {
                 }
             });
         }
+        // As the forms do, a refusal for conflicts alone stays: the end of
+        // an integration does not resolve them.
         if self
             .operation_error
             .as_deref()
-            .is_some_and(gitturtle_core::is_paused_recovery_refusal)
+            .and_then(gitturtle_core::paused_recovery_operation)
+            .flatten()
+            .is_some()
         {
             self.operation_error = None;
         }
@@ -7692,6 +7696,32 @@ mod tests {
             );
             cx.update(|window, cx| window.close_dialog(cx));
             crate::views::tests::draw(cx);
+        }
+        drop(fixture);
+    }
+
+    /// The end of a paused integration ends the window's refusal for it, but
+    /// not one for conflicts left with no operation, which that end does not
+    /// resolve, as the forms already keep theirs; the window once cleared
+    /// both.
+    #[gpui::test]
+    async fn an_ended_pause_keeps_a_refusal_for_conflicts_alone(cx: &mut gpui::TestAppContext) {
+        let (fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(2, 1))
+                .await;
+        for (operation, kept) in [(None, true), (Some(OperationKind::Merge), false)] {
+            let refusal = gitturtle_core::paused_recovery_refusal(operation);
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.operation_error = Some(refusal.to_owned());
+                    app.integration_ended(window, cx);
+                })
+            });
+            assert_eq!(
+                app.read_with(cx, |app, _| app.operation_error.clone()),
+                kept.then(|| refusal.to_owned()),
+                "{operation:?}"
+            );
         }
         drop(fixture);
     }
