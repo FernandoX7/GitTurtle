@@ -30,13 +30,26 @@ pub(crate) fn set_error_line(
     window: &mut Window,
     cx: &mut App,
 ) {
+    alert_error_line(slot, text, window, cx);
+}
+
+/// [`set_error_line`], returning the alert, for a form whose line can stop
+/// answering what it shows before a frame draws it: it keeps the alert to
+/// take it back (`copy_feedback::withdraw`), as Stashes does.
+pub(crate) fn alert_error_line(
+    slot: &mut Option<String>,
+    text: impl Into<String>,
+    window: &mut Window,
+    cx: &mut App,
+) -> crate::copy_feedback::Alerted {
     let text = text.into();
-    crate::copy_feedback::alert(
+    let alerted = crate::copy_feedback::alert(
         window,
         cx,
         native_accessibility::bounded_accessible_text(text.as_str()),
     );
     *slot = Some(text);
+    alerted
 }
 
 /// A dialog's own footer, the kit's OK and optional Cancel built on the app's

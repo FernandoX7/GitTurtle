@@ -1460,6 +1460,13 @@ pub(crate) struct StashBrowser {
     /// alert has been said with it and stays, however far the detail has
     /// scrolled the note.
     restore_alert: Option<crate::copy_feedback::Alerted>,
+    /// The window's alert that says a failed read of the list or of the
+    /// stash chosen (`tags::alert_error_line`) until a frame draws its
+    /// line: another stash or page chosen before then takes it back
+    /// unheard ([`Self::forget_read_alert`]), as Review restore…'s refusal
+    /// is, so a failure for a stash the person has just moved off is never
+    /// said.
+    read_alert: Option<crate::copy_feedback::Alerted>,
     /// Whether that note says the integration Review restore… was last
     /// refused for has ended ([`PAUSE_ENDED`]).
     pause_ended: bool,
@@ -1627,6 +1634,7 @@ impl StashBrowser {
             restoring: None,
             restore_line: None,
             restore_alert: None,
+            read_alert: None,
             pause_ended: false,
             reveal_note: Default::default(),
             note_lines: std::rc::Rc::new(std::cell::Cell::new(2)),
@@ -1701,6 +1709,7 @@ impl StashBrowser {
         self.loading = Some("Reading stashes…");
         self.error = None;
         self.forget_restore_line(cx);
+        self.forget_read_alert(cx);
         let repo = self.repository.clone();
         let response = self
             .metadata
@@ -1718,12 +1727,12 @@ impl StashBrowser {
                 this.metadata_task = None;
                 this.loading = None;
                 if !this.is_current(cx) {
-                    crate::tags::set_error_line(
+                    this.read_alert = Some(crate::tags::alert_error_line(
                         &mut this.error,
                         "The repository changed. Close this inspector and open Stashes again.",
                         window,
                         cx,
-                    );
+                    ));
                     cx.notify();
                     return;
                 }
@@ -1733,12 +1742,14 @@ impl StashBrowser {
                         this.offset = offset;
                         this.stash_scroll.scroll_to_item(0, ScrollStrategy::Top);
                     }
-                    Err(error) => crate::tags::set_error_line(
-                        &mut this.error,
-                        format!("{error:#}"),
-                        window,
-                        cx,
-                    ),
+                    Err(error) => {
+                        this.read_alert = Some(crate::tags::alert_error_line(
+                            &mut this.error,
+                            format!("{error:#}"),
+                            window,
+                            cx,
+                        ));
+                    }
                 }
                 cx.notify();
             });
@@ -1779,6 +1790,7 @@ impl StashBrowser {
         self.loading = Some("Reading saved changes…");
         self.error = None;
         self.forget_restore_line(cx);
+        self.forget_read_alert(cx);
         let repo = self.repository.clone();
         let response = self
             .metadata
@@ -1796,12 +1808,12 @@ impl StashBrowser {
                 this.metadata_task = None;
                 this.loading = None;
                 if !this.is_current(cx) {
-                    crate::tags::set_error_line(
+                    this.read_alert = Some(crate::tags::alert_error_line(
                         &mut this.error,
                         "The repository changed. Open Stashes again.",
                         window,
                         cx,
-                    );
+                    ));
                     cx.notify();
                     return;
                 }
@@ -1814,12 +1826,14 @@ impl StashBrowser {
                         this.snapshot = Some(Arc::new(snapshot));
                         this.file_scroll.scroll_to_item(0, ScrollStrategy::Top);
                     }
-                    Err(error) => crate::tags::set_error_line(
-                        &mut this.error,
-                        format!("{error:#}"),
-                        window,
-                        cx,
-                    ),
+                    Err(error) => {
+                        this.read_alert = Some(crate::tags::alert_error_line(
+                            &mut this.error,
+                            format!("{error:#}"),
+                            window,
+                            cx,
+                        ));
+                    }
                 }
                 cx.notify();
             });
@@ -2151,6 +2165,14 @@ impl StashBrowser {
     /// `cause` ([`NoteReveal::due_in`]).
     fn reveal_note_for(&self, cause: NoteReveal) {
         NoteReveal::due_in(&self.reveal_note, cause);
+    }
+
+    /// Takes back the alert of a failed read no frame has drawn yet
+    /// ([`Self::read_alert`]), as another stash or page is chosen.
+    fn forget_read_alert(&mut self, cx: &mut App) {
+        if let Some(alerted) = self.read_alert.take() {
+            crate::copy_feedback::withdraw(alerted, cx);
+        }
     }
 
     /// The footer note says again what restoring does, and no longer
@@ -2959,6 +2981,11 @@ impl Render for StashBrowser {
             // alert: a refusal it says has been heard and is no longer taken
             // back as another stash is chosen ([`Self::restore_alert`]).
             self.restore_alert = None;
+        }
+        if self.error.is_some() {
+            // This frame draws a failed read's line: its alert has been
+            // heard with it ([`Self::read_alert`]).
+            self.read_alert = None;
         }
         let actions = self.snapshot.is_some().then(|| {
             let row = div()
@@ -5265,6 +5292,90 @@ mod tests {
                 None
             }
         }
+    }
+
+    /// A stash whose read fails is said from the window's alert in the frame
+    /// that draws its line, but a failure for a stash the person moved off
+    /// before any frame drew it is taken back unheard, as Review restore…'s
+    /// refusal is: the older stash's commit gone, choosing it and then the
+    /// newest stash before a frame says nothing, and choosing it and waiting
+    /// says its failure. The failure was said whatever had been chosen since.
+    #[gpui::test]
+    async fn a_failed_read_left_before_it_shows_is_never_said(cx: &mut gpui::TestAppContext) {
+        use crate::copy_feedback::tests::alerted;
+        let (_fixture, app, cx) =
+            crate::views::tests::history_window_from(cx, crate::views::tests::history_script(3, 3))
+                .await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let _git = two_stashes(&repository);
+        cx.simulate_resize(size(px(1480.), px(980.)));
+        open_selected_stash(&app, cx).await;
+        let stashes = app
+            .read_with(cx, |app, _| app.recovery.browser.clone())
+            .and_then(|browser| browser.upgrade())
+            .expect("Stashes is open");
+        assert_eq!(alerted(cx), None, "nothing is said as Stashes opens");
+        // The older stash's saved tree goes, which no other stash holds, so
+        // reading it fails while the newest still reads.
+        let commit = stashes.read_with(cx, |stashes, _| {
+            stashes.page.as_ref().expect("the list").entries[1]
+                .oid
+                .clone()
+        });
+        let tree = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(["rev-parse", &format!("{commit}^{{tree}}")])
+            .output()
+            .unwrap();
+        let oid = String::from_utf8(tree.stdout).unwrap().trim().to_owned();
+        std::fs::remove_file(
+            repository
+                .join(".git/objects")
+                .join(&oid[..2])
+                .join(&oid[2..]),
+        )
+        .unwrap();
+        let choose = |index: usize, cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| {
+                stashes.update(cx, |stashes, cx| stashes.select_stash(index, window, cx))
+            });
+        };
+        // Failed, then left before a frame draws it, as a click handled
+        // before the display's next frame is: the test window draws as soon
+        // as the failure's update ends, so the choice is made from an
+        // observer, which runs first.
+        choose(1, cx);
+        let chooses = cx.update(|window, cx| {
+            window.observe(&stashes, cx, |stashes, window, cx| {
+                let failed = stashes.read(cx);
+                if failed.error.is_some() && failed.selected == Some(1) {
+                    stashes.update(cx, |stashes, cx| stashes.select_stash(0, window, cx));
+                }
+            })
+        });
+        stashes.read_with(cx, |stashes, _| stashes.metadata.drain());
+        crate::views::tests::draw(cx);
+        drop(chooses);
+        StashBrowser::lands(&stashes, cx);
+        assert_eq!(
+            stashes.read_with(cx, |stashes, _| (stashes.selected, stashes.error.clone())),
+            (Some(0), None),
+            "the newest stash is chosen and reads"
+        );
+        assert_eq!(
+            alerted(cx),
+            None,
+            "a failure for the stash moved off is never said"
+        );
+        // Failed and shown: said with its line.
+        choose(1, cx);
+        StashBrowser::lands(&stashes, cx);
+        let error = stashes
+            .read_with(cx, |stashes, _| stashes.error.clone())
+            .expect("the read fails again");
+        let (_, said) = alerted(cx).expect("the failure shown is said");
+        assert_eq!(said, error);
     }
 
     /// Stashes' footer buttons stand on the compact frame (`button_frame`),
