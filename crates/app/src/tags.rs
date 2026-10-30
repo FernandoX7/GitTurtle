@@ -2628,6 +2628,55 @@ pub(crate) mod tests {
         }
     }
 
+    /// How far each fade reaches with the focused control's ring at each
+    /// place along a 100 px list whose fades are 10 px: a ring above the
+    /// list, wholly outside it, or below it leaves both fades whole, as one
+    /// in the list's middle, between the bands, does; a ring inside a band
+    /// ends that band where the ring begins, the other whole; and a ring
+    /// that reaches the list's edge, or past it, leaves that edge no fade.
+    /// A ring just outside an edge, touching it, is outside the list, so
+    /// the fade there stays whole. Without the checks that the ring lies
+    /// within the list, a ring above it took the top fade away, and one
+    /// below it the bottom's.
+    #[test]
+    fn a_fade_stops_short_of_a_ring_only_inside_its_band() {
+        let list = Bounds::new(point(px(0.), px(0.)), size(px(200.), px(100.)));
+        let fade = px(10.);
+        let ring = |top: f32, bottom: f32| {
+            Some(Bounds::from_corners(
+                point(px(10.), px(top)),
+                point(px(150.), px(bottom)),
+            ))
+        };
+        for (at, ring, reach) in [
+            ("no ring", None, (fade, fade)),
+            ("above the list", ring(-30., -20.), (fade, fade)),
+            (
+                "touching the top edge from outside",
+                ring(-14., 0.),
+                (fade, fade),
+            ),
+            ("reaching the top edge", ring(-2., 12.), (px(0.), fade)),
+            ("inside the top band", ring(4., 20.), (px(4.), fade)),
+            (
+                "below the top band, above the bottom one",
+                ring(40., 60.),
+                (fade, fade),
+            ),
+            ("inside the bottom band", ring(80., 96.), (fade, px(4.))),
+            ("reaching the bottom edge", ring(88., 102.), (fade, px(0.))),
+            (
+                "touching the bottom edge from outside",
+                ring(100., 114.),
+                (fade, fade),
+            ),
+            ("below the list", ring(120., 130.), (fade, fade)),
+            ("across the whole list", ring(-5., 105.), (px(0.), px(0.))),
+        ] {
+            assert_eq!(fade_reach(list, fade, ring), reach, "a ring {at}: {ring:?}");
+        }
+    }
+
     /// A list's fades follow its length in the frame that changes it: rows
     /// arriving in a 200 px list, whose track holds a thumb that moves, draw
     /// no fade in the first frame that draws them, while its scrollbar is
