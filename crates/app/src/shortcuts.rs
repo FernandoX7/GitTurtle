@@ -911,26 +911,48 @@ fn row_height(row: &HelpRow) -> Pixels {
     })
 }
 
-/// Each row's height in the list's order, at the interface size, as the
-/// toolkit's virtual list takes them.
-fn row_sizes(rows: &[HelpRow]) -> std::rc::Rc<Vec<Size<Pixels>>> {
-    std::rc::Rc::new(
-        rows.iter()
-            .map(|row| Size {
-                width: px(0.),
-                height: row_height(row),
+/// The rows' heights in the list's order at one interface size, as the
+/// toolkit's virtual list takes them, and where each row starts.
+struct RowLayout {
+    sizes: std::rc::Rc<Vec<Size<Pixels>>>,
+    /// Each row's top in the list, summed in the order the virtual list sums
+    /// them, and then the list's whole height.
+    tops: Vec<Pixels>,
+    /// The interface size they were measured at, `appearance::ui_scale`.
+    scale: f32,
+}
+
+impl RowLayout {
+    fn new(rows: &[HelpRow]) -> Self {
+        let mut tops = Vec::with_capacity(rows.len() + 1);
+        let mut top = px(0.);
+        let sizes = rows
+            .iter()
+            .map(|row| {
+                let height = row_height(row);
+                tops.push(top);
+                top += height;
+                Size {
+                    width: px(0.),
+                    height,
+                }
             })
-            .collect(),
-    )
+            .collect();
+        tops.push(top);
+        Self {
+            sizes: std::rc::Rc::new(sizes),
+            tops,
+            scale: appearance::ui_scale(),
+        }
+    }
 }
 
 struct ShortcutHelpView {
     query: Entity<InputState>,
     rows: Vec<HelpRow>,
-    /// Each row's height, built with the rows and again when the interface
-    /// size (`heights_scale`) changes, rather than on every frame.
-    heights: std::rc::Rc<Vec<Size<Pixels>>>,
-    heights_scale: f32,
+    /// Each row's height and top, built with the rows and again when the
+    /// interface size changes, rather than on every frame or key press.
+    layout: RowLayout,
     selected: usize,
     /// A group's heading row is shorter than an entry's, so the list is the
     /// toolkit's virtual list, which takes each row's height, rather than a
@@ -969,8 +991,7 @@ impl ShortcutHelpView {
         let rows = help_matches("");
         Self {
             query,
-            heights: row_sizes(&rows),
-            heights_scale: appearance::ui_scale(),
+            layout: RowLayout::new(&rows),
             rows,
             selected: 1,
             scroll: gpui_kit::base::VirtualListScrollHandle::new(),
@@ -983,21 +1004,16 @@ impl ShortcutHelpView {
 
     /// Lists `rows`, with their heights at the interface size.
     fn set_rows(&mut self, rows: Vec<HelpRow>) {
-        self.heights = row_sizes(&rows);
-        self.heights_scale = appearance::ui_scale();
+        self.layout = RowLayout::new(&rows);
         self.rows = rows;
     }
 
-    /// Each row's height in the list's order at the interface size, measured
-    /// again when that size has changed since the rows were, as when a text
-    /// size is chosen with the dialog open.
-    fn heights(&mut self) -> std::rc::Rc<Vec<Size<Pixels>>> {
-        let scale = appearance::ui_scale();
-        if scale.to_bits() != self.heights_scale.to_bits() {
-            self.heights = row_sizes(&self.rows);
-            self.heights_scale = scale;
+    /// Measures the rows again when the interface size has changed since
+    /// they were, as when a text size is chosen with the dialog open.
+    fn measure(&mut self) {
+        if appearance::ui_scale().to_bits() != self.layout.scale.to_bits() {
+            self.layout = RowLayout::new(&self.rows);
         }
-        self.heights.clone()
     }
 
     /// Brings the entry Up or Down selected into view as the palette's and
@@ -1005,23 +1021,43 @@ impl ShortcutHelpView {
     /// left where it lies whole in it. The toolkit's virtual list centres on
     /// every request, so holding Down kept the highlight at the list's middle
     /// and scrolled the list on each press.
+    ///
+    /// A group's first entry brings its group's heading with it, as a search
+    /// does, and the two are centred together where the list holds both:
+    /// counted whole on its own, the entry left its heading as the wheel had
+    /// cut it at the list's top, and no key brought the heading back. The
+    /// toolkit centres a single row, so the scroll is set here.
+    ///
+    /// A key reads the list as laid out for it: GPUI draws a frame still
+    /// pending before it dispatches a key (`Window::dispatch_key_event`). The
+    /// scroll the press before it set and the list's height after a text size
+    /// chosen with the dialog open, which refreshes the window
+    /// (`appearance::apply_text_sizes`), are laid out by then, and `measure`
+    /// has the rows' heights at that size.
     fn reveal_selected(&mut self) {
         // The toolkit scrolls a row to an edge in window coordinates, so a
         // row it placed there can read a rounding error past it here.
         const ROUNDING: Pixels = px(0.01);
-        let heights = self.heights();
-        let Some(height) = heights.get(self.selected).map(|size| size.height) else {
+        self.measure();
+        let (selected, tops) = (self.selected, &self.layout.tops);
+        let Some(&bottom) = tops.get(selected + 1) else {
             return;
         };
-        let top: Pixels = heights[..self.selected]
-            .iter()
-            .map(|size| size.height)
-            .sum();
         // How far the list is scrolled, and its height, as last laid out.
-        let (scrolled, view) = (-self.scroll.offset().y, self.scroll.bounds().size.height);
-        if top < scrolled - ROUNDING || top + height > scrolled + view + ROUNDING {
-            self.scroll
-                .scroll_to_item(self.selected, ScrollStrategy::Center);
+        let (offset, view) = (self.scroll.offset(), self.scroll.bounds().size.height);
+        // From the group's heading above it, where the list holds both.
+        let heading = selected.checked_sub(1).filter(|&above| {
+            matches!(self.rows[above], HelpRow::Group(_)) && bottom - tops[above] <= view
+        });
+        let top = tops[heading.unwrap_or(selected)];
+        let scrolled = -offset.y;
+        let whole = top >= scrolled - ROUNDING && bottom <= scrolled + view + ROUNDING;
+        if !whole && view > px(0.) {
+            let content = tops[tops.len() - 1];
+            let centred = ((top + bottom) / 2. - view / 2.)
+                .min(content - view)
+                .max(px(0.));
+            self.scroll.set_offset(point(offset.x, -centred));
         }
     }
 
@@ -1053,10 +1089,11 @@ impl Render for ShortcutHelpView {
         // floor, by layout: the chrome around it, such as the hint that wraps
         // in a narrow window, is never estimated.
         let height = list_height();
+        self.measure();
         let list = gpui_kit::base::v_virtual_list(
             cx.entity(),
             "shortcut-help-list",
-            self.heights(),
+            self.layout.sizes.clone(),
             |this, range: std::ops::Range<usize>, _, cx| {
                 let p = palette(cx);
                 // Fitted once for the rows drawn, not for each row.
@@ -1333,7 +1370,7 @@ mod tests {
 #[cfg(test)]
 mod list_tests {
     use super::*;
-    use crate::tags::tests::{draw, tagged_repository, window};
+    use crate::tags::tests::{draw, scroll_down, tagged_repository, window};
     use core::prelude::v1::test;
 
     /// The selector of the row at `index` among `rows`.
@@ -1388,51 +1425,141 @@ mod list_tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Opens Keyboard Shortcuts at `text` pt in a `width` × `height` window.
+    fn open(
+        app: &Entity<GitTurtle>,
+        cx: &mut VisualTestContext,
+        text: u8,
+        (width, height): (f32, f32),
+    ) {
+        cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
+        draw(cx);
+    }
+
+    /// Closes the dialog and restores the default text size.
+    fn close(cx: &mut VisualTestContext) {
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Presses `keys`, then draws.
+    fn press(cx: &mut VisualTestContext, keys: &str) {
+        cx.simulate_keystrokes(keys);
+        draw(cx);
+    }
+
+    /// The open list's rows for a search, and where the list is drawn.
+    struct Shown {
+        rows: Vec<HelpRow>,
+        /// Each row's top in the list at the interface size, then the list's
+        /// whole height.
+        tops: Vec<Pixels>,
+        /// The list's top and height inside its 1 px border, and its centre.
+        top: Pixels,
+        view: Pixels,
+        centre: Point<Pixels>,
+    }
+
+    impl Shown {
+        fn read(cx: &mut VisualTestContext, query: &str) -> Self {
+            let rows = help_matches(query);
+            let tops = RowLayout::new(&rows).tops;
+            let list = cx.debug_bounds("shortcut-help-results").expect("the list");
+            Self {
+                rows,
+                tops,
+                top: list.top() + px(1.),
+                view: list.size.height - px(2.),
+                centre: list.center(),
+            }
+        }
+
+        fn content(&self) -> Pixels {
+            self.tops[self.tops.len() - 1]
+        }
+
+        /// The entries, in the list's order.
+        fn entries(&self) -> Vec<usize> {
+            (0..self.rows.len())
+                .filter(|&row| matches!(self.rows[row], HelpRow::Entry(_)))
+                .collect()
+        }
+
+        /// What Up or Down brings into view with `entry`: its top and bottom,
+        /// from its group's heading where it is the group's first entry and
+        /// the list holds both.
+        fn span(&self, entry: usize) -> (Pixels, Pixels) {
+            let bottom = self.tops[entry + 1];
+            match self.rows[entry - 1] {
+                HelpRow::Group(_) if bottom - self.tops[entry - 1] <= self.view => {
+                    (self.tops[entry - 1], bottom)
+                }
+                _ => (self.tops[entry], bottom),
+            }
+        }
+
+        /// Whether `entry`'s span lies whole in the list scrolled by `scroll`.
+        fn whole(&self, entry: usize, scroll: Pixels) -> bool {
+            let (top, bottom) = self.span(entry);
+            top >= scroll && bottom <= scroll + self.view
+        }
+
+        /// The scroll that centres `entry`'s span, within the list's range.
+        fn centred(&self, entry: usize) -> Pixels {
+            let (top, bottom) = self.span(entry);
+            ((top + bottom) / 2. - self.view / 2.).clamp(px(0.), self.content() - self.view)
+        }
+
+        /// How far the list is scrolled, read from where row `index` is drawn.
+        fn scrolled(&self, cx: &mut VisualTestContext, index: usize) -> Pixels {
+            let drawn = cx
+                .debug_bounds(row_selector(&self.rows, index))
+                .unwrap_or_else(|| panic!("row {index} is drawn"));
+            self.top + self.tops[index] - drawn.top()
+        }
+
+        /// Wheels the list from `from` to `to`, reading the scroll from row
+        /// `index`, drawn at both.
+        fn wheel(&self, cx: &mut VisualTestContext, from: Pixels, to: Pixels, index: usize) {
+            scroll_down(
+                cx,
+                self.centre,
+                ScrollDelta::Pixels(point(px(0.), from - to)),
+            );
+            let now = self.scrolled(cx, index);
+            assert!(
+                (now - to).abs() < px(0.5),
+                "the wheel scrolls the list to {to:?}: {now:?}"
+            );
+        }
+    }
+
     /// Up and Down move the highlight through the entries the list shows
     /// whole without scrolling it, as the palette's and Quick Open's lists
     /// do, and scroll it only for an entry outside it or cut by its edge,
-    /// centring that entry: at 13 pt in a 1200 × 800 window, Down from the
-    /// first entry keeps the list at its top until it passes the foot, and
-    /// Up from a scrolled list keeps it still until it passes the top. The
-    /// toolkit's virtual list centred the entry on every press, so holding
-    /// Down kept the highlight at the list's middle and scrolled it each time.
+    /// centring that entry, with its group's heading where it is the group's
+    /// first: at 13 pt in a 1200 × 800 window, Down from the first entry
+    /// keeps the list at its top until it passes the foot, and Up from a
+    /// scrolled list keeps it still until it passes the top. The toolkit's
+    /// virtual list centred the entry on every press, so holding Down kept
+    /// the highlight at the list's middle and scrolled it each time.
     #[gpui::test]
     async fn up_and_down_scroll_the_list_only_past_its_edges(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
         let repo = tagged_repository(fixture.path());
         let (app, cx) = window(cx, &repo);
-        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
-        cx.simulate_resize(size(px(1200.), px(800.)));
-        cx.update(|window, cx| app.update(cx, |app, cx| app.shortcut_help(window, cx)));
-        draw(cx);
-        let rows = help_matches("");
-        let heights: Vec<Pixels> = rows.iter().map(row_height).collect();
-        let tops: Vec<Pixels> = heights
-            .iter()
-            .scan(px(0.), |top, height| {
-                let at = *top;
-                *top += *height;
-                Some(at)
-            })
-            .collect();
-        let content: Pixels = heights.iter().copied().sum();
-        let entries: Vec<usize> = (0..rows.len())
-            .filter(|&index| matches!(rows[index], HelpRow::Entry(_)))
-            .collect();
-        let list = cx.debug_bounds("shortcut-help-results").expect("the list");
-        // Inside the list's 1 px border.
-        let (top, view) = (list.top() + px(1.), list.size.height - px(2.));
+        open(&app, cx, 13, (1200., 800.));
+        let shown = Shown::read(cx, "");
         assert!(
-            content > view * 3.,
-            "{content:?} in {view:?}: the list scrolls"
+            shown.content() > shown.view * 3.,
+            "{:?} in {:?}: the list scrolls",
+            shown.content(),
+            shown.view
         );
-        let whole = |entry: usize, scroll: Pixels| {
-            tops[entry] >= scroll && tops[entry] + heights[entry] <= scroll + view
-        };
-        // The scroll that centres `entry`, within the list's range.
-        let centred = |entry: usize| {
-            (tops[entry] + heights[entry] / 2. - view / 2.).clamp(px(0.), content - view)
-        };
+        let entries = shown.entries();
         let (mut selected, mut scroll) = (entries[0], px(0.));
         // Down three times past the list's foot, then Up once past its top.
         for (key, scrolls) in [("down", 3), ("up", 1)] {
@@ -1440,15 +1567,9 @@ mod list_tests {
             while moved < scrolls {
                 let at = entries.iter().position(|&entry| entry == selected).unwrap();
                 let next = entries[if key == "down" { at + 1 } else { at - 1 }];
-                let inside = whole(next, scroll);
-                cx.simulate_keystrokes(key);
-                draw(cx);
-                // How far the list is scrolled, read from where the newly
-                // selected entry is drawn.
-                let drawn = cx
-                    .debug_bounds(row_selector(&rows, next))
-                    .unwrap_or_else(|| panic!("{key} to entry {next}: it is drawn"));
-                let now = top + tops[next] - drawn.top();
+                let inside = shown.whole(next, scroll);
+                press(cx, key);
+                let now = shown.scrolled(cx, next);
                 if inside {
                     assert!(
                         (now - scroll).abs() < px(0.5),
@@ -1457,7 +1578,7 @@ mod list_tests {
                     );
                     kept += 1;
                 } else {
-                    let centre = centred(next);
+                    let centre = shown.centred(next);
                     assert!(
                         (now - centre).abs() < px(0.5) && (now - scroll).abs() >= px(0.5),
                         "{key} to entry {next}, outside the list scrolled {scroll:?}, \
@@ -1470,7 +1591,189 @@ mod list_tests {
             }
             assert!(kept >= 3, "{key} kept the list still for {kept} entries");
         }
-        cx.simulate_keystrokes("escape");
-        draw(cx);
+        close(cx);
+    }
+
+    /// Up onto a group's first entry brings back the group's heading that
+    /// the wheel left cut at the list's top, centring the two together: at
+    /// 13 pt in a 1200 × 800 window, with each of the first three groups'
+    /// headings 10 px above the list's top and the second entry selected,
+    /// Up shows the heading whole. Counted whole on its own, the first entry
+    /// left the heading cut, and no key brought it back.
+    #[gpui::test]
+    async fn up_onto_a_groups_first_entry_brings_its_heading_back(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let shown = Shown::read(cx, "");
+        let entries = shown.entries();
+        let headings: Vec<usize> = (0..shown.rows.len())
+            .filter(|&row| {
+                matches!(shown.rows[row], HelpRow::Group(_))
+                    && matches!(shown.rows.get(row + 2), Some(HelpRow::Entry(_)))
+                    && shown.tops[row] + px(10.) <= shown.content() - shown.view
+            })
+            .take(3)
+            .collect();
+        assert_eq!(headings.len(), 3, "three groups the list scrolls past");
+        let mut selected = entries[0];
+        for heading in headings {
+            let (first, second) = (heading + 1, heading + 2);
+            while selected != second {
+                press(cx, "down");
+                selected = entries[entries.iter().position(|&e| e == selected).unwrap() + 1];
+            }
+            let cut = shown.tops[heading] + px(10.);
+            assert!(
+                shown.tops[first] >= cut && shown.whole(second, cut),
+                "group {heading}: its first entry lies whole below the cut heading"
+            );
+            let scroll = shown.scrolled(cx, second);
+            shown.wheel(cx, scroll, cut, second);
+            press(cx, "up");
+            selected = first;
+            let now = shown.scrolled(cx, first);
+            let centre = shown.centred(first);
+            assert!(
+                (now - centre).abs() < px(0.5),
+                "group {heading}: Up onto its first entry, heading cut at {cut:?}, \
+                 centres heading and entry at {centre:?}: {now:?}"
+            );
+            let drawn = cx
+                .debug_bounds(row_selector(&shown.rows, heading))
+                .expect("the heading is drawn");
+            assert!(
+                drawn.top() >= shown.top - px(0.5)
+                    && drawn.bottom() <= shown.top + shown.view + px(0.5),
+                "group {heading}: its heading {drawn:?} lies whole in the list from \
+                 {:?}, {:?} tall",
+                shown.top,
+                shown.view
+            );
+        }
+        close(cx);
+    }
+
+    /// Presses delivered back to back end where they do with a frame drawn
+    /// after each, each deciding against the scroll the one before it set:
+    /// GPUI draws the frame a press leaves pending before it dispatches the
+    /// next key. At 13 pt in a 1200 × 800 window, Down twice past the list's
+    /// foot centres the first entry past it and keeps the second whole below,
+    /// and Up past the top then Down back leaves the entry above centred.
+    #[gpui::test]
+    async fn presses_back_to_back_end_where_they_do_a_frame_apiece(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        let mut ends = Vec::new();
+        for one_frame in [false, true] {
+            let frames = if one_frame {
+                "back to back"
+            } else {
+                "a frame apiece"
+            };
+            open(&app, cx, 13, (1200., 800.));
+            let shown = Shown::read(cx, "");
+            let entries = shown.entries();
+            // Down to the last entry the list holds whole at its top.
+            let last = entries
+                .iter()
+                .rposition(|&entry| shown.whole(entry, px(0.)))
+                .unwrap();
+            for _ in 0..last {
+                press(cx, "down");
+            }
+            assert!(shown.scrolled(cx, entries[last]).abs() < px(0.5));
+            let (past, beyond) = (entries[last + 1], entries[last + 2]);
+            if one_frame {
+                press(cx, "down down");
+            } else {
+                press(cx, "down");
+                press(cx, "down");
+            }
+            let down = shown.scrolled(cx, beyond);
+            assert!(
+                (down - shown.centred(past)).abs() < px(0.5) && shown.whole(beyond, down),
+                "Down twice {frames} centres entry {past} at {:?} and keeps entry \
+                 {beyond} whole: {down:?}",
+                shown.centred(past)
+            );
+            // The wheel leaves `beyond` at the list's top, `past` above it.
+            let (top, _) = shown.span(beyond);
+            shown.wheel(cx, down, top, beyond);
+            if one_frame {
+                press(cx, "up down");
+            } else {
+                press(cx, "up");
+                press(cx, "down");
+            }
+            let back = shown.scrolled(cx, beyond);
+            assert!(
+                (back - shown.centred(past)).abs() < px(0.5) && shown.whole(beyond, back),
+                "Up then Down {frames} centres entry {past} at {:?} and keeps entry \
+                 {beyond} whole: {back:?}",
+                shown.centred(past)
+            );
+            ends.push((down, back));
+            close(cx);
+        }
+        assert!(
+            (ends[0].0 - ends[1].0).abs() < px(0.5) && (ends[0].1 - ends[1].1).abs() < px(0.5),
+            "a frame apiece ends at {:?}, back to back at {:?}",
+            ends[0],
+            ends[1]
+        );
+    }
+
+    /// Up and Down read a scroll the wheel set: at 13 pt in a 1200 × 800
+    /// window, with the wheel leaving an entry cut 3 px by the list's top,
+    /// Down and Up through the whole entries below it keep the list still,
+    /// and Up onto the cut entry centres it.
+    #[gpui::test]
+    async fn a_wheeled_list_keeps_whole_entries_still_and_centres_a_cut_one(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = tagged_repository(fixture.path());
+        let (app, cx) = window(cx, &repo);
+        open(&app, cx, 13, (1200., 800.));
+        let shown = Shown::read(cx, "");
+        let entries = shown.entries();
+        // An entry past the list's first screen, not its group's first, with
+        // two entries of its group below it.
+        let at = (1..entries.len() - 2)
+            .find(|&at| {
+                let entry = entries[at];
+                shown.tops[entry] >= shown.view
+                    && matches!(shown.rows[entry - 1], HelpRow::Entry(_))
+                    && entries[at + 2] == entry + 2
+                    && shown.tops[entry] + px(3.) <= shown.content() - shown.view
+            })
+            .expect("an entry the wheel can cut");
+        let (cut, below) = (entries[at], entries[at + 1]);
+        for _ in 0..=at {
+            press(cx, "down");
+        }
+        let wheeled = shown.tops[cut] + px(3.);
+        let scroll = shown.scrolled(cx, below);
+        shown.wheel(cx, scroll, wheeled, below);
+        for (key, entry) in [("down", entries[at + 2]), ("up", below)] {
+            press(cx, key);
+            let now = shown.scrolled(cx, entry);
+            assert!(
+                (now - wheeled).abs() < px(0.5),
+                "{key} to entry {entry}, whole in the list the wheel scrolled to \
+                 {wheeled:?}, scrolled it to {now:?}"
+            );
+        }
+        press(cx, "up");
+        let now = shown.scrolled(cx, cut);
+        let centre = shown.centred(cut);
+        assert!(
+            (now - centre).abs() < px(0.5) && (now - wheeled).abs() >= px(0.5),
+            "Up to entry {cut}, cut 3 px by the list's top, centres it at {centre:?}: {now:?}"
+        );
+        close(cx);
     }
 }
