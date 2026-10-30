@@ -545,12 +545,11 @@ pub struct PopupMenu {
     hovered_index: Option<usize>,
     /// GitTurtle patch: the item a press of the primary button went down on,
     /// by its index; only a release on that item acts
-    /// ([`PopupMenu::on_click`]). A rebuild keeps it only where the same
-    /// item, by its name, stands at that index and can still act.
+    /// ([`PopupMenu::on_click`]). A rebuild forgets it.
     pressed: Option<usize>,
     /// GitTurtle patch: how many times the menu has been built again
     /// ([`PopupMenu::rebuild`]); a row drawn before the latest rebuild
-    /// records a press only for the item it drew ([`PopupMenu::pressed_on`]).
+    /// records no press ([`PopupMenu::pressed_on`]).
     builds: usize,
     /// GitTurtle patch: where the last frame drew each drawn row, by its
     /// item's index, scrolled and clipped as drawn; none after a rebuild
@@ -1071,25 +1070,20 @@ impl PopupMenu {
         let row = self.selected_index;
         let resting = self.kept_cursor.is_some();
         let pointer = cursor.is_none() && self.pointer_selection;
-        // A press before the rebuild went down on the item that stood at its
-        // index then: its release acts only where that item, by its name,
-        // still stands there and can act, and otherwise on nothing.
-        let pressed = self
-            .pressed
-            .and_then(|ix| Some((ix, self.menu_items.get(ix)?.name()?.clone())));
         let mut menu = std::mem::replace(self, Self::new(cx));
         menu.menu_items.clear();
         menu.selected_index = None;
         menu.kept_cursor = None;
+        // A press before the rebuild went down on the item that stood at its
+        // index then, which an item of the same label may now replace, as
+        // Undo last local commit… acts on another commit once HEAD moves:
+        // its release acts on nothing.
         menu.pressed = None;
         menu.builds = menu.builds.wrapping_add(1);
         // The builder's selection, which a kept cursor or the pointer's
         // ownership replaces, scrolls a handle nothing draws.
         let scroll = (cursor.is_some() || pointer).then(|| std::mem::take(&mut menu.scroll_handle));
         *self = f(menu, window, cx);
-        self.pressed = pressed
-            .filter(|(ix, name)| self.offers_at(*ix, Some(name)))
-            .map(|(ix, _)| ix);
         if let Some(scroll) = scroll {
             self.scroll_handle = scroll;
         }
@@ -1297,30 +1291,25 @@ impl PopupMenu {
             .filter(|(_, item)| item.is_clickable())
     }
 
-    /// GitTurtle patch: whether the item at `ix` can act and is named `name`.
-    fn offers_at(&self, ix: usize, name: Option<&SharedString>) -> bool {
-        self.menu_items
-            .get(ix)
-            .is_some_and(|item| item.is_clickable() && item.name() == name)
-    }
-
     /// GitTurtle patch: a press went down on the row drawn for the item at
-    /// `ix`, named `name`, as the menu stood after `builds` rebuilds. GPUI
-    /// delivers a press to the rows of the last frame drawn, which can come
-    /// before the menu is drawn again after a rebuild: such a press records
-    /// the item only where that same item, by its name, still stands at
-    /// `ix` and can act, and otherwise nothing, so its release runs nothing.
-    fn pressed_on(&mut self, ix: usize, name: Option<&SharedString>, builds: usize) {
-        self.pressed =
-            (self.builds == builds || (name.is_some() && self.offers_at(ix, name))).then_some(ix);
+    /// `ix` as the menu stood after `builds` rebuilds. GPUI delivers a press
+    /// to the rows of the last frame drawn, which can come before the menu
+    /// is drawn again after a rebuild: such a press records nothing, so its
+    /// release runs nothing.
+    fn pressed_on(&mut self, ix: usize, builds: usize) {
+        self.pressed = (self.builds == builds).then_some(ix);
     }
 
     /// GitTurtle patch: a click acts only where its press went down on the
-    /// item at `ix`, as last built or the same item, by its name, at that
-    /// index after a rebuild ([`Self::rebuild`], [`Self::pressed_on`]). Rows
-    /// are wired, and GPUI keeps a pending press, by the item's index, so a
-    /// press and release that straddled a rebuild ran whatever item the
-    /// rebuild put at the pressed index, which the person never pressed.
+    /// item at `ix` as the menu was last built ([`Self::rebuild`],
+    /// [`Self::pressed_on`]). Rows are wired, and GPUI keeps a pending press,
+    /// by the item's index, so a press and release that straddled a rebuild
+    /// ran whatever item the rebuild put at the pressed index, which the
+    /// person never pressed. A label is not an item's identity: kept for an
+    /// item of the same label, a press on Undo last local commit… ran the
+    /// Undo of the commit HEAD had moved to, and one on a project group's
+    /// "Archive" the other group of that name, so a press across a rebuild
+    /// runs nothing and the person clicks again.
     fn on_click(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         window.prevent_default();
@@ -2071,13 +2060,11 @@ impl PopupMenu {
                 ..
             } => this
                 .when(!disabled, |this| {
-                    let (name, builds) = (item.name().cloned(), self.builds);
-                    this.on_press(
-                        cx.listener(move |this, _, _, _| {
-                            this.pressed_on(ix, name.as_ref(), builds)
-                        }),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)))
+                    let builds = self.builds;
+                    this.on_press(cx.listener(move |this, _, _, _| this.pressed_on(ix, builds)))
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
+                        )
                 })
                 .disabled(*disabled)
                 .child(
@@ -2114,13 +2101,11 @@ impl PopupMenu {
                 });
 
                 this.when(!disabled, |this| {
-                    let (name, builds) = (item.name().cloned(), self.builds);
-                    this.on_press(
-                        cx.listener(move |this, _, _, _| {
-                            this.pressed_on(ix, name.as_ref(), builds)
-                        }),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)))
+                    let builds = self.builds;
+                    this.on_press(cx.listener(move |this, _, _, _| this.pressed_on(ix, builds)))
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
+                        )
                 })
                 .disabled(*disabled)
                 .h(item_height)
@@ -3737,39 +3722,130 @@ mod tests {
         assert_eq!(*ran.borrow(), ["Four"], "a fresh click runs Four");
     }
 
-    /// A click in progress survives a rebuild that leaves its item, by its
-    /// name, at the pressed index able to act, as a write's start or end
-    /// builds the menu again with the same items: pressed on Two before
-    /// the rebuild, or on Two's row drawn before it, its release runs Two.
-    /// Every rebuild once dropped the press, so the click did nothing.
-    #[gpui::test]
-    fn a_press_on_an_item_a_rebuild_keeps_runs_it(cx: &mut TestAppContext) {
-        let ran = Ran::default();
-        let (_, menu, cx) = placed(cx, FOUR, &ran);
-        let pointer = drawn_item(cx, "Two").center();
-        cx.simulate_mouse_move(pointer, None, Modifiers::default());
-        draw(cx);
-        cx.simulate_mouse_down(pointer, gpui::MouseButton::Left, Modifiers::default());
-        draw(cx);
-        rebuilt_acting(&menu, cx, FOUR, &ran);
-        cx.simulate_mouse_up(pointer, gpui::MouseButton::Left, Modifiers::default());
-        draw(cx);
-        assert_eq!(*ran.borrow(), ["Two"], "pressed before the rebuild");
+    /// A menu of `items`, each running into `ran` as `name@target`, as an
+    /// item of one label acts on whatever its menu was built for.
+    fn targeted(
+        menu: PopupMenu,
+        items: &[&'static str],
+        target: &'static str,
+        ran: &Rc<std::cell::RefCell<Vec<String>>>,
+    ) -> PopupMenu {
+        items.iter().fold(menu.label("Heading"), |menu, name| {
+            let (ran, name) = (ran.clone(), *name);
+            menu.item(
+                PopupMenuItem::new(name)
+                    .on_click(move |_, _, _| ran.borrow_mut().push(format!("{name}@{target}"))),
+            )
+        })
+    }
 
+    /// A press across a rebuild runs nothing, whatever stands at its index
+    /// with whatever label: a label is not an item's identity. Pressed on
+    /// Two, built for A, and released after a rebuild for B with the same
+    /// labels, as Undo last local commit… is built for the commit HEAD moves
+    /// to, it ran Two for B; pressed on Two's row drawn for A after that
+    /// rebuild, before a draw, the same; and with two items named Archive,
+    /// the first pressed and a rebuild without One putting the second
+    /// Archive at its index, it ran the other Archive. A fresh click then
+    /// runs the item drawn under the pointer.
+    #[gpui::test]
+    fn a_press_across_a_rebuild_runs_nothing_whatever_its_label(cx: &mut TestAppContext) {
+        const SAME: &[&str] = &["One", "Two", "Three"];
+        const ARCHIVES: &[&str] = &["One", "Archive", "Archive"];
+        const SHIFTED: &[&str] = &["Archive", "Archive"];
+        let ran = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        cx.update(|cx| {
+            cx.set_global(Theme::default());
+            init(cx);
+        });
+        let r = ran.clone();
+        let (placed, cx) = cx.add_window_view(move |window, cx| {
+            let menu = cx.new(|cx| targeted(PopupMenu::new(cx), SAME, "A", &r));
+            menu.read(cx).focus_handle.clone().focus(window, cx);
+            Placed {
+                menu,
+                top: px(0.),
+                left: px(0.),
+            }
+        });
+        draw(cx);
+        let menu = placed.read_with(cx, |placed, _| placed.menu.clone());
+        let rebuilt_for = |cx: &mut VisualTestContext, items: &'static [&'static str], target| {
+            let r = ran.clone();
+            cx.update(|window, cx| {
+                menu.update(cx, |menu, cx| {
+                    menu.rebuild(window, cx, move |menu, _, _| {
+                        targeted(menu, items, target, &r)
+                    })
+                })
+            });
+        };
+        let left = gpui::MouseButton::Left;
+
+        // Pressed for A, released after a rebuild for B.
+        let two = drawn_item(cx, "Two").center();
+        cx.simulate_mouse_move(two, None, Modifiers::default());
+        draw(cx);
+        cx.simulate_mouse_down(two, left, Modifiers::default());
+        rebuilt_for(cx, SAME, "B");
+        draw(cx);
+        cx.simulate_mouse_up(two, left, Modifiers::default());
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "same label, new target: {:?}",
+            ran.borrow()
+        );
+
+        // Pressed on Two's row drawn for B, after a rebuild for C, before a
+        // draw.
         let r = ran.clone();
         cx.update(|window, cx| {
             menu.update(cx, |menu, cx| {
-                menu.rebuild(window, cx, move |menu, _, _| acting(menu, FOUR, &r))
+                menu.rebuild(window, cx, move |menu, _, _| targeted(menu, SAME, "C", &r))
             });
-            press_at(pointer, window, cx);
+            press_at(two, window, cx);
         });
         draw(cx);
-        cx.simulate_mouse_up(pointer, gpui::MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(two, left, Modifiers::default());
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "a stale frame's press: {:?}",
+            ran.borrow()
+        );
+
+        // Two items named Archive: the second shifts into the first's index.
+        rebuilt_for(cx, ARCHIVES, "D");
+        draw(cx);
+        // Both items named Archive share a selector; the first lies a row
+        // below One.
+        let one = drawn_item(cx, "One");
+        let first = gpui::point(one.center().x, one.center().y + one.size.height);
+        assert_eq!(
+            menu.read_with(cx, |menu, _| menu.menu_items[2].name().cloned()),
+            Some("Archive".into()),
+            "the first Archive at index 2"
+        );
+        cx.simulate_mouse_move(first, None, Modifiers::default());
+        draw(cx);
+        cx.simulate_mouse_down(first, left, Modifiers::default());
+        rebuilt_for(cx, SHIFTED, "E");
+        draw(cx);
+        cx.simulate_mouse_up(first, left, Modifiers::default());
+        draw(cx);
+        assert!(
+            ran.borrow().is_empty(),
+            "a duplicate label shifted into the pressed index: {:?}",
+            ran.borrow()
+        );
+
+        cx.simulate_click(first, Modifiers::default());
         draw(cx);
         assert_eq!(
             *ran.borrow(),
-            ["Two", "Two"],
-            "pressed on the row drawn before the rebuild"
+            ["Archive@E"],
+            "a fresh click runs the Archive drawn under it"
         );
     }
 

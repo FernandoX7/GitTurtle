@@ -1273,26 +1273,38 @@ Three, a rebuild without One that put Four at Three's index and place, and
 the release ran Four, which the person never pressed. A row's press now
 records its index (`pressed`, through the item element's `on_press` in
 `src/menu/menu_item.rs`, called from the mouse-down listener an item that
-acts already has) where the row was drawn from the menu as last built
-(`builds`, which each rebuild counts) or where the item it was drawn for,
-by its name, still stands at that index and can act (`pressed_on`): GPUI
-delivers a press to the rows of the last frame drawn, which can come
-between a rebuild and the next draw, and such a press once recorded the
-old index. A rebuild keeps a recorded press only where the same item, by
-its name, stands at that index and can act, so a write's start or end that
-builds the menu again with the same items does not drop a click in
-progress, as every rebuild once did. `on_click` acts only where its press
-is recorded for that index. Enter and the menu keys are unchanged.
+acts already has) only where the row was drawn from the menu as last built
+(`builds`, which each rebuild counts; `pressed_on`): GPUI delivers a press
+to the rows of the last frame drawn, which can come between a rebuild and
+the next draw, and such a press once recorded the old index. Every rebuild
+forgets a recorded press, and `on_click` acts only where its press is
+recorded for that index, so a press and release that a rebuild comes
+between run nothing, and the person clicks again. Enter and the menu keys
+are unchanged. A label is not an item's identity: an earlier form kept a
+press across a rebuild where an item of the same label stood at its index,
+and a press on the Changes Actions menu's Undo last local commit…, a commit
+outside the app and its quiet refresh coming before the release, then
+reviewed the Undo of the commit HEAD had moved to, and with two project
+groups named Archive the press could run the other one. A dropped click
+costs one more click; running another target than the one pressed costs a
+review of a commit the person never chose.
 `a_press_and_release_across_a_rebuild_run_nothing` presses Three, builds
 the menu again without One and releases, and
 `a_press_on_rows_drawn_before_a_rebuild_runs_nothing` delivers the press
 after that rebuild but before the next draw: nothing runs either way, and a
 fresh click then runs Four, the row drawn under the pointer; without the
 check the first release runs Four, and without the build count the second
-does. `a_press_on_an_item_a_rebuild_keeps_runs_it` presses Two before, and
-after, a rebuild with the same items and releases: Two runs both times;
-with every rebuild forgetting the press, nothing runs. Remove this part
-when upstream ties a click to the item it was pressed on.
+does. `a_press_across_a_rebuild_runs_nothing_whatever_its_label` presses
+Two built for one target and releases after a rebuild for another with the
+same labels, presses Two's row drawn before such a rebuild, and presses
+the first of two items named Archive before a rebuild puts the second at
+its index: nothing runs each time, and a fresh click runs the item drawn
+under the pointer; with the press kept by its label, the first runs Two for
+the new target. The app's
+`motion::tests::waiting_menus::a_press_on_undo_across_a_head_move_runs_nothing`
+presses Undo, commits outside the app and refreshes before the release: no
+review opens. Remove this part when upstream ties a click to the item it
+was pressed on.
 
 The consumers are every open menu the app builds again, in
 `crates/app/src/native_accessibility.rs`: a keyboard's row menu

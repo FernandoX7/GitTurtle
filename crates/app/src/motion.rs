@@ -3578,6 +3578,56 @@ mod tests {
             drop(fixture);
         }
 
+        /// A press on the Changes Actions menu's Undo last local commit…
+        /// that a commit outside the app and the quiet refresh after it
+        /// come between, before the release, runs nothing: the menu is built
+        /// again for the new HEAD, and the item at the pressed place, of the
+        /// same label, would undo a commit the person never pressed. Kept
+        /// across the rebuild by its label, the press reviewed the Undo of
+        /// the new commit. A fresh click then reviews the Undo of HEAD as
+        /// it stands.
+        #[gpui::test]
+        async fn a_press_on_undo_across_a_head_move_runs_nothing(cx: &mut TestAppContext) {
+            const UNDO: &str = "Undo last local commit…";
+            let (fixture, app, cx) = clean_history_for_menus(cx).await;
+            let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+            cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
+            crate::views::tests::settle(&app, cx).await;
+            next_frame(cx);
+            press(cx, "working-recovery-menu");
+            next_frame(cx);
+            let undo = cx
+                .debug_bounds(format!("menu-item: {UNDO} · MenuItem").leak())
+                .expect("Undo offered")
+                .center();
+            let reviewed = |app: &Entity<GitTurtle>, cx: &mut VisualTestContext| {
+                app.read_with(cx, |app, _| app.operations.drain());
+                cx.executor().run_until_parked();
+                next_frame(cx);
+                dialog_open(cx)
+            };
+            cx.simulate_mouse_move(undo, None, Modifiers::default());
+            next_frame(cx);
+            cx.simulate_mouse_down(undo, gpui::MouseButton::Left, Modifiers::default());
+            commit_outside(&repository);
+            refs_quietly_refreshed(&app, cx).await;
+            cx.simulate_mouse_up(undo, gpui::MouseButton::Left, Modifiers::default());
+            next_frame(cx);
+            assert!(
+                !reviewed(&app, cx),
+                "the release across the HEAD move reviews nothing"
+            );
+            assert_eq!(
+                offered(cx, UNDO),
+                Some(true),
+                "the menu stays open, built for the new HEAD"
+            );
+            cx.simulate_click(undo, Modifiers::default());
+            assert!(reviewed(&app, cx), "a fresh click reviews the Undo");
+            close_dialog(cx);
+            drop(fixture);
+        }
+
         /// The label a Fetch runs under, as the window's progress line
         /// shows it.
         const FETCHING: &str = "Fetching remote…";
