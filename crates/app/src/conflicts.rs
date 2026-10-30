@@ -375,6 +375,14 @@ impl ConflictView {
         this
     }
 
+    /// Whether the resolution draft holds the window's focus.
+    #[cfg(test)]
+    pub(crate) fn resolution_focused(&self, window: &Window, cx: &App) -> bool {
+        self.resolution
+            .as_ref()
+            .is_some_and(|editor| editor.focus_handle(cx).is_focused(window))
+    }
+
     fn open_resolution_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.resolution.is_none()
             && let Some(value) = &self.presentation.result

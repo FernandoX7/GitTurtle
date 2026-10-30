@@ -1078,11 +1078,14 @@ menu's cursor down to Delete untracked file…, start and end a Stage of another
 file, and read the cursor on no item while the write runs and back on Delete
 untracked file… once its rows land, then on no item once Ignore…, where the
 keys had moved it, can no longer act, and back on Ignore… once it can.
-`a_right_click_menus_cursor_rests_as_its_file_becomes_conflicted` and
-`a_keyboard_menus_cursor_rests_as_its_file_becomes_conflicted` leave a narrow
-row's menu on Discard changes… as a merge outside the app conflicts its file
-and read no cursor, and the first presses Enter and finds the file still
-conflicted;
+`a_right_click_menus_cursor_rests_as_its_file_becomes_conflicted` leaves a
+narrow row's right-click menu on Discard changes… as a merge outside the app
+conflicts its file, reads no cursor, presses Enter and finds no write started
+and the file still conflicted; `a_keyboard_menu_closes_as_its_file_becomes_conflicted`
+does the same with a keyboard's menu in an active window, where the conflicted
+file's preview focuses its resolution draft and the menu closes, so no
+rebuild reaches it (a test window starts inactive, where focus leaving the
+menu closed nothing);
 `project_pane::tests::a_project_rows_keyboard_menu_follows_writes` reads a
 project's cursor on Open project, on none while a write refuses it, and on
 Open project again after. Remove this part of the patch when upstream's

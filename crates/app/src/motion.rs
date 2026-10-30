@@ -4476,52 +4476,86 @@ mod tests {
         a_row_menu_keeps_its_cursor_across_a_write(cx, Opening::Keyboard).await;
     }
 
-    /// A working row's menu, opened as `opening` opens it at 18 pt in a
-    /// 461 px window, where the row has no room for its Stage control and
-    /// the menu leads with Stage, its cursor moved to Discard changes…,
-    /// rests the cursor on none once a merge outside the app leaves the
-    /// file conflicted and the item can no longer act, and Enter in a
-    /// right-click's then runs nothing: the file stays conflicted. Moved to
-    /// the nearest item that could act, the cursor fell to Stage, and Enter
-    /// ran `git add` on the conflicted file at once, marking it resolved.
-    async fn a_row_menus_cursor_rests_as_its_file_becomes_conflicted(
+    /// The items of notes.txt's menu in [`narrow_notes`]: available,
+    /// refused, or refused with the condition it waits for.
+    const NOTES_ITEMS: [&str; 4] = [
+        "Stage",
+        "Ignore…, untracked files only",
+        "Discard changes…",
+        "Discard changes…, after conflict resolution",
+    ];
+
+    /// notes.txt's menu's Stage, drawn available.
+    const NOTES_STAGE: &str = "menu-item: Stage · MenuItem";
+
+    /// Git with `arguments` in `repository` under a fixture identity.
+    fn committing_git(repository: &Path, arguments: &[&str]) -> std::process::Output {
+        crate::views::tests::fixture_git_output(
+            repository,
+            &[
+                &[
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                ][..],
+                arguments,
+            ]
+            .concat(),
+        )
+    }
+
+    /// Whether notes.txt in `repository` is unmerged.
+    fn notes_unmerged(repository: &Path) -> bool {
+        let unmerged = committing_git(repository, &["ls-files", "-u", "--", "notes.txt"]);
+        unmerged.status.success() && !unmerged.stdout.is_empty()
+    }
+
+    /// Whether `app` runs or holds a write.
+    fn writing(app: &Entity<GitTurtle>, cx: &mut VisualTestContext) -> bool {
+        app.read_with(cx, |app, _| {
+            app.operation_busy.is_some() || app.operation_task.is_some()
+        })
+    }
+
+    /// Working Changes at 18 pt in a 461 px window, where a row has no room
+    /// for its Stage control and its menu leads with Stage, with the app's
+    /// keys bound: notes.txt changed on a side branch and on main, then
+    /// edited. Returns the repository with the window. The window is active,
+    /// as the app's is while someone works in it, so focus that leaves an
+    /// open menu closes it; a test window starts inactive, where a keyboard's
+    /// menu that a conflicted file's resolution draft took focus from stayed
+    /// open, unlike the app's.
+    async fn narrow_notes(
         cx: &mut TestAppContext,
-        opening: Opening,
+    ) -> (
+        tempfile::TempDir,
+        Entity<GitTurtle>,
+        &mut VisualTestContext,
+        PathBuf,
     ) {
-        const STAGE: &str = "menu-item: Stage · MenuItem";
-        const ITEMS: [&str; 4] = [
-            "Stage",
-            "Ignore…, untracked files only",
-            "Discard changes…",
-            "Discard changes…, after conflict resolution",
-        ];
         let (fixture, app, cx) = history_window_from(cx, history_script(40, 3)).await;
         let repository = fixture.path().join("narrow");
-        let git = |arguments: &[&str]| {
-            crate::views::tests::fixture_git_output(
-                &repository,
-                &[
-                    &[
-                        "-c",
-                        "user.name=Fixture",
-                        "-c",
-                        "user.email=fixture@example.invalid",
-                    ][..],
-                    arguments,
-                ]
-                .concat(),
-            )
-        };
-        // notes.txt changed on a side branch and on main, then edited.
         fixture_git(&repository, &["reset", "--hard", "--quiet"]);
         fixture_git(&repository, &["checkout", "-q", "-b", "side"]);
         std::fs::write(repository.join("notes.txt"), "side\n").unwrap();
-        assert!(git(&["commit", "-q", "-am", "side"]).status.success());
+        assert!(
+            committing_git(&repository, &["commit", "-q", "-am", "side"])
+                .status
+                .success()
+        );
         fixture_git(&repository, &["checkout", "-q", "main"]);
         std::fs::write(repository.join("notes.txt"), "main\n").unwrap();
-        assert!(git(&["commit", "-q", "-am", "main"]).status.success());
+        assert!(
+            committing_git(&repository, &["commit", "-q", "-am", "main"])
+                .status
+                .success()
+        );
         std::fs::write(repository.join("notes.txt"), "edited\n").unwrap();
-        cx.update(|window, cx| crate::appearance::apply_text_sizes(18, 12, window, cx));
+        cx.update(|window, cx| {
+            window.activate_window();
+            crate::appearance::apply_text_sizes(18, 12, window, cx);
+        });
         cx.simulate_resize(size(px(461.), px(1300.)));
         cx.update(|window, cx| app.update(cx, |app, cx| app.show_working(window, cx)));
         rows_arrived(&app, cx).await;
@@ -4530,7 +4564,26 @@ mod tests {
             crate::shortcuts::bind_keys(cx);
             crate::native_accessibility::bind_keys(cx);
         });
-        open_row_menu_showing(&app, cx, "notes.txt", opening, STAGE);
+        (fixture, app, cx, repository)
+    }
+
+    /// A working row's menu, opened as `opening` opens it in
+    /// [`narrow_notes`], its cursor moved to Discard changes…, as a merge
+    /// outside the app leaves the file conflicted and the item can no
+    /// longer act. A right-click's menu is built again with the cursor
+    /// resting on none, and Enter runs nothing: the file stays conflicted.
+    /// Moved to the nearest item that could act, the cursor fell to Stage,
+    /// and Enter ran `git add` on the conflicted file at once, marking it
+    /// resolved. A keyboard's opening selected the row, so the conflicted
+    /// file's preview, landing with the status, focuses its resolution
+    /// draft, and the menu, its focus gone, closes, leaving focus in the
+    /// draft and the file conflicted.
+    async fn a_row_menus_cursor_rests_as_its_file_becomes_conflicted(
+        cx: &mut TestAppContext,
+        opening: Opening,
+    ) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        open_row_menu_showing(&app, cx, "notes.txt", opening, NOTES_STAGE);
         // A right-click's menu opens with no cursor, a keyboard's with it on
         // Stage; Down passes over the refused Ignore….
         cx.simulate_keystrokes(match opening {
@@ -4539,54 +4592,61 @@ mod tests {
         });
         next_frame(cx);
         assert_eq!(
-            cursor_among(cx, &ITEMS),
+            cursor_among(cx, &NOTES_ITEMS),
             ["Discard changes…"],
             "{opening:?}: the keys moved the cursor to Discard changes…"
         );
 
         fixture_git(&repository, &["checkout", "-q", "--", "notes.txt"]);
         assert!(
-            !git(&["merge", "-q", "side"]).status.success(),
+            !committing_git(&repository, &["merge", "-q", "side"])
+                .status
+                .success(),
             "the merge stops on notes.txt"
         );
         quietly_refreshed(&app, cx);
-        assert_eq!(
-            offered(cx, "Discard changes…, after conflict resolution"),
-            Some(false),
-            "{opening:?}: rebuilt for the conflicted file"
-        );
-        assert_eq!(
-            offered(cx, "Stage"),
-            Some(true),
-            "{opening:?}: Stage offered"
-        );
-        assert_eq!(
-            cursor_among(cx, &ITEMS),
-            Vec::<&str>::new(),
-            "{opening:?}: the cursor rests on none"
-        );
-        // A keyboard's opening selected the row, and the conflicted file's
-        // preview, built as it lands, focuses its resolution draft, which
-        // takes the keys from the menu; a right-click's keeps them.
-        if let Opening::RightClick = opening {
-            cx.simulate_keystrokes("enter");
-            cx.executor().run_until_parked();
-            next_frame(cx);
-            assert_eq!(
-                app.read_with(cx, |app, _| (
-                    app.operation_busy,
-                    app.operation_task.is_some()
-                )),
-                (None, false),
-                "Enter started no write"
-            );
-            assert_eq!(offered(cx, "Stage"), Some(true), "the menu stays open");
-            let unmerged = git(&["ls-files", "-u", "--", "notes.txt"]);
-            assert!(
-                unmerged.status.success() && !unmerged.stdout.is_empty(),
-                "notes.txt is still conflicted"
-            );
+        match opening {
+            Opening::RightClick => {
+                assert_eq!(
+                    offered(cx, "Discard changes…, after conflict resolution"),
+                    Some(false),
+                    "rebuilt for the conflicted file"
+                );
+                assert_eq!(offered(cx, "Stage"), Some(true), "Stage offered");
+                assert_eq!(
+                    cursor_among(cx, &NOTES_ITEMS),
+                    Vec::<&str>::new(),
+                    "the cursor rests on none"
+                );
+                cx.simulate_keystrokes("enter");
+                cx.executor().run_until_parked();
+                next_frame(cx);
+                assert_eq!(offered(cx, "Stage"), Some(true), "the menu stays open");
+            }
+            Opening::Keyboard => {
+                cx.executor().run_until_parked();
+                next_frame(cx);
+                assert!(
+                    app.read_with(cx, |app, _| app.file_menu.is_none()),
+                    "the keyboard's menu closed"
+                );
+                assert_eq!(offered(cx, "Stage"), None, "no menu drawn");
+                assert!(
+                    cx.update(|window, cx| {
+                        app.read(cx)
+                            .conflict_view
+                            .as_ref()
+                            .is_some_and(|view| view.read(cx).resolution_focused(window, cx))
+                    }),
+                    "focus in the conflicted file's resolution draft"
+                );
+            }
         }
+        assert!(!writing(&app, cx), "{opening:?}: no write started");
+        assert!(
+            notes_unmerged(&repository),
+            "{opening:?}: notes.txt is still conflicted"
+        );
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
@@ -4598,7 +4658,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn a_keyboard_menus_cursor_rests_as_its_file_becomes_conflicted(cx: &mut TestAppContext) {
+    async fn a_keyboard_menu_closes_as_its_file_becomes_conflicted(cx: &mut TestAppContext) {
         a_row_menus_cursor_rests_as_its_file_becomes_conflicted(cx, Opening::Keyboard).await;
     }
 
