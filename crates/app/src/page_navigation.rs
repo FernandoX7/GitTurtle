@@ -584,6 +584,114 @@ mod tests {
         );
     }
 
+    /// An LFS download reloads only the preview it was asked from: Changes
+    /// opened while it ran reads once it ends, and in Changes whose view
+    /// has moved on by then, here to another row, the row shown keeps its
+    /// preview, which a working read at the download's end once cleared and
+    /// loaded again, losing its scroll and selection. The download's busy
+    /// spell and end are driven as `write_from` drives them
+    /// (`read_after_write`), since building one needs Git LFS installed; a
+    /// running write refuses a row's selection, so the row is chosen before
+    /// that end.
+    #[gpui::test]
+    async fn an_lfs_downloads_end_reads_only_what_its_view_asked_for(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        use gitturtle_core::ChangeArea;
+        let (fixture, app, cx, root) = checked_out(cx).await;
+        // What `write_from` captures as a download starts.
+        let capture = |cx: &mut VisualTestContext| {
+            app.read_with(cx, |app, _| {
+                app.selected_file
+                    .and_then(|index| app.files.get(index))
+                    .cloned()
+                    .map(|file| (file, app.mode, app.generation))
+            })
+        };
+        let start = |cx: &mut VisualTestContext| {
+            app.update(cx, |app, _| {
+                app.operation_busy = Some("Downloading LFS object…");
+                app.operation_repository = app.path.clone();
+            })
+        };
+        let end = |cx: &mut VisualTestContext, selection: Option<crate::workspace::LfsView>| {
+            let root = root.clone();
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.operation_busy = None;
+                    app.operation_repository = None;
+                    app.read_after_write(&root, false, Some((true, selection)), window, cx);
+                })
+            })
+        };
+
+        // From History, with the newest commit's file selected.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.select_file(0, window, cx)));
+        settle(&app, cx).await;
+        let selection = capture(cx);
+        assert!(selection.is_some(), "a file is shown");
+        // The download holds the operation executor while it runs.
+        let download = app.update(cx, |app, _| app.operations.hold());
+        start(cx);
+        std::fs::write(fixture.path().join("narrow/later.txt"), "later\n").unwrap();
+        cx.simulate_keystrokes(&primary("2"));
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.mode == WorkspaceMode::Working));
+        assert!(
+            app.read_with(cx, |app, _| app.status_task.is_none()),
+            "no read waits behind the download"
+        );
+        let reads = app.update(cx, |app, _| app.operations.hold());
+        drop(download);
+        end(cx, selection);
+        assert!(
+            app.read_with(cx, |app, _| app.status_task.is_some()),
+            "Changes, opened during the download, reads as it ends"
+        );
+        drop(reads);
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        assert_eq!(
+            entries(&app, cx),
+            Some(vec!["draft.txt".to_owned(), "later.txt".to_owned()])
+        );
+
+        // In Changes, a download asked from draft.txt's preview, with
+        // later.txt shown by the time it ends.
+        let select = |cx: &mut VisualTestContext, name: &str| {
+            let index = app.read_with(cx, |app, _| {
+                app.work_status
+                    .as_ref()
+                    .unwrap()
+                    .entries
+                    .iter()
+                    .position(|entry| entry.path == std::path::Path::new(name))
+                    .unwrap()
+            });
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.select_working(index, ChangeArea::Unstaged, window, cx)
+                })
+            });
+        };
+        select(cx, "draft.txt");
+        settle(&app, cx).await;
+        assert_eq!(previewed(&app, cx).as_deref(), Some("draft.txt"));
+        let selection = capture(cx);
+        select(cx, "later.txt");
+        settle(&app, cx).await;
+        assert_eq!(previewed(&app, cx).as_deref(), Some("later.txt"));
+        end(cx, selection);
+        app.read_with(cx, |app, _| {
+            assert!(app.status_task.is_none(), "no working read");
+            assert!(app.task.is_none(), "no preview read");
+        });
+        assert_eq!(
+            previewed(&app, cx).as_deref(),
+            Some("later.txt"),
+            "the shown row keeps its preview"
+        );
+    }
+
     /// A review's preparation runs on the operation executor as a write
     /// does, so Changes opened while it runs queues no read behind it either:
     /// the preparation's end reads the working state. Each opening once

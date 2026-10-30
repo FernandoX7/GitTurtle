@@ -2738,11 +2738,10 @@ impl GitTurtle {
 
     /// The reads a write in `path` asks for as it ends: a write that
     /// `refresh_history` names refreshes quietly, keeping what History and
-    /// Changes show; an LFS `download` reloads the preview it was asked
-    /// from, if that preview is still shown, and reads the working state for
-    /// Changes shown since; any other write reads the working state. Then
-    /// a read asked for while the write ran, in whichever repository is
-    /// shown, runs ([`Self::read_deferred_working`]).
+    /// Changes show; an LFS `download` reloads only the preview it was asked
+    /// from, if that preview is still shown; any other write reads the
+    /// working state. Then a read asked for while the write ran, in
+    /// whichever repository is shown, runs ([`Self::read_deferred_working`]).
     pub(super) fn read_after_write(
         &mut self,
         path: &std::path::Path,
@@ -2759,6 +2758,10 @@ impl GitTurtle {
                 self.working_read_deferred = None;
                 self.refresh_after_write(path.to_owned(), window, cx);
             } else if let Some((succeeded, selection)) = download {
+                // Only the preview the download was asked from reloads. A
+                // view that has moved on meanwhile keeps its own preview,
+                // which a working read here would clear and load again,
+                // losing its scroll; Changes opened meanwhile reads below.
                 let same_view = selection.as_ref().is_some_and(|(file, mode, generation)| {
                     self.mode == *mode
                         && self.generation == *generation
@@ -2774,8 +2777,6 @@ impl GitTurtle {
                     {
                         self.load_file(index, window, cx);
                     }
-                } else if !same_view && self.mode == WorkspaceMode::Working {
-                    self.refresh_worktree(window, cx);
                 }
             } else {
                 // Menus wait for this read as for a reload
