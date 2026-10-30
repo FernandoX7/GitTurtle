@@ -55,75 +55,99 @@ fn history_scroll_viewport(
 }
 
 impl GitTurtle {
+    /// Watches a list's viewport and reveals its selected row when the
+    /// viewport's size or the row height changes
+    /// ([`reveal_resized_selection`]).
+    ///
+    /// The changed files' probe reveals the row as it is prepainted, so it
+    /// goes before their list: the list applies the reveal as it lays its
+    /// rows out in the same frame, and the frame that first draws the list
+    /// at a new size, as the inspector after a width change, draws the
+    /// selection where it settles and asks for no other. Revealed as it was
+    /// painted, after the list, the row moved only in the next frame, so
+    /// each reveal asked for one, and a Compare width step drew two frames
+    /// where the second, the selection still in view, redrew the first.
+    /// History's probe reveals as it is painted, once History's prepaint has
+    /// measured the viewport's width (`history_width`), and moves the graph's
+    /// lanes, which the rows already built read, so it asks for the next
+    /// frame.
     fn list_viewport_probe(&self, history: bool, cx: &Context<Self>) -> impl IntoElement {
         let owner = cx.entity().downgrade();
-        canvas(
-            |_, _, _| (),
-            move |bounds, _, window, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    // Cold loading geometry must not reveal selection over a
-                    // saved viewport or a wheel scroll made during restoration.
-                    if this.repository_tabs.restoring.is_some() {
-                        return;
-                    }
-                    let row_height = px(if history {
-                        this.settings.density.history_row_height()
-                    } else {
-                        this.settings.density.file_row_height()
-                    });
-                    let previous = if history {
-                        this.history_list_layout
-                    } else {
-                        this.file_list_layout
-                    };
-                    // History's probe sits in its table, which is as wide as
-                    // the columns and scrolls sideways inside the viewport;
-                    // the columns follow the width History's prepaint
-                    // measured a frame earlier. Take the viewport's width
-                    // from this frame's prepaint instead, so after a resize
-                    // the frame that only finishes the table is no viewport
-                    // change: a cold tab's last read can land on the frame
-                    // before it and seed the restored layout there.
-                    let width = if history {
-                        px(this.history_width)
-                    } else {
-                        bounds.size.width
-                    };
-                    let next = (size(width, bounds.size.height), row_height);
-                    if previous == Some(next) {
-                        return;
-                    }
-                    let selected = if history {
-                        this.selected_commit
-                            .and_then(|index| this.visible.iter().position(|i| *i == index))
-                    } else {
-                        this.selected_file.and_then(|index| {
-                            this.filtered_file_indices(cx)
-                                .iter()
-                                .position(|i| *i == index)
-                        })
-                    };
-                    let (previous, scroll) = if history {
-                        (&mut this.history_list_layout, &this.history_scroll)
-                    } else {
-                        (&mut this.file_list_layout, &this.file_scroll)
-                    };
-                    if reveal_resized_selection(previous, next, selected, scroll) {
-                        // The graph's lanes as this frame lays them out, its
-                        // width taken in prepaint: a window narrowed to fewer
-                        // lanes, as narrow History's one, shows the selected
-                        // commit's lane as well as its row.
-                        if history && let Some(index) = this.selected_commit {
-                            this.reveal_graph_lane(index);
-                        }
-                        cx.notify();
-                        // A refresh requested during paint takes effect on the
-                        // next frame, after the list has its new dimensions.
-                        window.defer(cx, |window, _| window.refresh());
-                    }
+        let reveal = move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
+            let _ = owner.update(cx, |this, cx| {
+                // Cold loading geometry must not reveal selection over a
+                // saved viewport or a wheel scroll made during restoration.
+                if this.repository_tabs.restoring.is_some() {
+                    return;
+                }
+                let row_height = px(if history {
+                    this.settings.density.history_row_height()
+                } else {
+                    this.settings.density.file_row_height()
                 });
-            },
-        )
+                let previous = if history {
+                    this.history_list_layout
+                } else {
+                    this.file_list_layout
+                };
+                // History's probe sits in its table, which is as wide as
+                // the columns and scrolls sideways inside the viewport;
+                // the columns follow the width History's prepaint
+                // measured a frame earlier. Take the viewport's width
+                // from this frame's prepaint instead, so after a resize
+                // the frame that only finishes the table is no viewport
+                // change: a cold tab's last read can land on the frame
+                // before it and seed the restored layout there.
+                let width = if history {
+                    px(this.history_width)
+                } else {
+                    bounds.size.width
+                };
+                let next = (size(width, bounds.size.height), row_height);
+                if previous == Some(next) {
+                    return;
+                }
+                let selected = if history {
+                    this.selected_commit
+                        .and_then(|index| this.visible.iter().position(|i| *i == index))
+                } else {
+                    this.selected_file.and_then(|index| {
+                        this.filtered_file_indices(cx)
+                            .iter()
+                            .position(|i| *i == index)
+                    })
+                };
+                let (previous, scroll) = if history {
+                    (&mut this.history_list_layout, &this.history_scroll)
+                } else {
+                    (&mut this.file_list_layout, &this.file_scroll)
+                };
+                if reveal_resized_selection(previous, next, selected, scroll) && history {
+                    // The graph's lanes as this frame lays them out, its
+                    // width taken in prepaint: a window narrowed to fewer
+                    // lanes, as narrow History's one, shows the selected
+                    // commit's lane as well as its row.
+                    if let Some(index) = this.selected_commit {
+                        this.reveal_graph_lane(index);
+                    }
+                    cx.notify();
+                    // A refresh requested during paint takes effect on the
+                    // next frame, after the list has its new dimensions.
+                    window.defer(cx, |window, _| window.refresh());
+                }
+            });
+        };
+        if history {
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, cx| reveal(bounds, window, cx),
+            )
+        } else {
+            canvas(
+                move |bounds, window, cx| reveal(bounds, window, cx),
+                |_, _, _, _| {},
+            )
+        }
         .absolute()
         .inset_0()
     }
@@ -2578,6 +2602,9 @@ impl GitTurtle {
                             window.focus(&this.file_focus, cx);
                         }),
                     )
+                    // Before the list, which applies its reveal in the same
+                    // frame ([`Self::list_viewport_probe`]).
+                    .child(self.list_viewport_probe(false, cx))
                     .child(if visible.is_empty() && self.file_paths.pending {
                         empty(
                             "Filtering changed paths…",
@@ -2613,7 +2640,6 @@ impl GitTurtle {
                         .track_scroll(&self.file_scroll)
                         .into_any_element()
                     })
-                    .child(self.list_viewport_probe(false, cx))
                     .children(self.file_menu.as_ref().map(|menu| {
                         menu.render("changed-file-menu-overlay", Self::dismiss_file_menu, cx)
                     })),
@@ -9382,6 +9408,150 @@ pub(crate) mod tests {
             );
         }
         probe::stop();
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// A Compare width step draws one frame, the one it settles in, and asks
+    /// for no other. The first frame at a new width lays the inspector out
+    /// at its new width ([`a_resize_lays_each_panel_group_out_where_it_settles`]),
+    /// and the changed files' viewport probe revealed the selected file as it
+    /// was painted, after the list, so it asked for the next frame to draw
+    /// the reveal: with the inspector at its 320 px default in a 1,480 px
+    /// window, which a 1,000 px window holds at 280 px, every step between
+    /// the two drew a second frame that redrew the first (3.6–5.3 ms on
+    /// Wayland). Text's review options, which fold into their menu at 13 pt
+    /// in the narrower window, asked for one too: the menu's trigger asked
+    /// for a frame as it was first drawn, although its menu was closed. At
+    /// 13 and 18 pt, each step between 1,480 and 1,000 px, for an image and
+    /// for text, draws one frame of the preview, that frame lays the preview,
+    /// the comparison and the selected file out where they settle, and the
+    /// next frame's callbacks draw nothing. So does a step from 980 to 700 px
+    /// tall, which brings the selected file, at the end of a long list, back
+    /// into the list's view in that frame.
+    #[gpui::test]
+    async fn a_compare_width_step_draws_one_frame_where_it_settles(cx: &mut TestAppContext) {
+        use crate::in_frame::probe;
+        use crate::system_preview::tests::png;
+        /// A commit's files: the image, the text and forty more lines that
+        /// sort before them, so the two end a long list of changed files.
+        fn files<'a>(
+            paths: &'a [String],
+            image: &'a [u8],
+            notes: &'a [u8],
+            line: &'a [u8],
+        ) -> Vec<(&'a str, &'a [u8])> {
+            let mut files = vec![("image.png", image), ("notes.txt", notes)];
+            files.extend(paths.iter().map(|path| (path.as_str(), line)));
+            files
+        }
+        let (before, after) = (png(Some(b"before")), png(Some(b"after")));
+        let paths: Vec<String> = (0..40).map(|index| format!("f-{index:02}.txt")).collect();
+        let added = files(&paths, &before, b"one\ntwo\n", b"first\n");
+        let changed = files(&paths, &after, b"one\nthree\n", b"second\n");
+        let input = file_commits(&[("add", added.as_slice()), ("change", changed.as_slice())]);
+        let (_fixture, app, cx) = history_window_from(cx, &input).await;
+        probe::watch();
+        let (mut folded, mut moved) = (false, false);
+        for text in [13, 18] {
+            for (path, regions) in [
+                ("image.png", &["compare-preview", "image-comparison"][..]),
+                ("notes.txt", &["compare-preview"][..]),
+            ] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                cx.simulate_resize(size(px(1480.), px(980.)));
+                draw(cx);
+                let index = app.read_with(cx, |app, _| {
+                    app.files
+                        .iter()
+                        .position(|file| {
+                            file.new_path.as_deref() == Some(std::path::Path::new(path))
+                        })
+                        .expect("the file changed")
+                });
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.select_file(index, window, cx))
+                });
+                settle(&app, cx).await;
+                draw(cx);
+                // The inspector at its default width in this window.
+                let panels = app.read_with(cx, |app, _| app.content_panels.clone());
+                cx.update(|window, cx| {
+                    panels.update(cx, |panels, cx| {
+                        panels.resize_panel(1, px(320.), window, cx)
+                    })
+                });
+                draw(cx);
+                let steps = [
+                    (1000, 980),
+                    (1480, 980),
+                    (1000, 980),
+                    (1480, 980),
+                    (1480, 700),
+                ];
+                let list = |cx: &mut VisualTestContext| {
+                    app.read_with(cx, |app, _| {
+                        let scroll = &app.file_scroll.0.borrow().base_handle;
+                        (scroll.bounds(), scroll.offset())
+                    })
+                };
+                for (width, height) in steps {
+                    let at = format!("{path} at {text} pt, resized to {width} × {height}");
+                    let menu = cx.debug_bounds("text-review-menu").is_some();
+                    let (_, offset) = list(cx);
+                    probe::take();
+                    cx.simulate_resize(size(px(width as f32), px(height as f32)));
+                    cx.run_until_parked();
+                    let first = probe::take();
+                    let selected = cx.debug_bounds("selected-changed-file");
+                    let (viewport, revealed) = list(cx);
+                    folded |= !menu && cx.debug_bounds("text-review-menu").is_some();
+                    moved |= height == 700 && revealed != offset;
+                    // What the next frame's callbacks ask to draw.
+                    cx.update(|window, cx| {
+                        window.simulate_next_frame(cx);
+                    });
+                    cx.run_until_parked();
+                    let after = probe::take();
+                    assert!(
+                        after.is_empty(),
+                        "{at}: the step asks for no further frame, but it drew {} more",
+                        after.len()
+                    );
+                    draw(cx);
+                    let settled = probe::take();
+                    for region in regions {
+                        let drawn: Vec<_> = first
+                            .iter()
+                            .filter(|frame| frame.region == *region)
+                            .collect();
+                        let last = settled
+                            .iter()
+                            .rfind(|frame| frame.region == *region)
+                            .unwrap_or_else(|| panic!("{at}: {region} is drawn"));
+                        assert_eq!(drawn.len(), 1, "{at}: one frame of {region}: {drawn:?}");
+                        assert_eq!(drawn[0], last, "{at}: {region} as it settles");
+                    }
+                    let selected =
+                        selected.unwrap_or_else(|| panic!("{at}: the selected file is drawn"));
+                    assert_eq!(
+                        Some(selected),
+                        cx.debug_bounds("selected-changed-file"),
+                        "{at}: the selected file where it settles"
+                    );
+                    assert!(
+                        selected.top() >= viewport.top() - px(1.)
+                            && selected.bottom() <= viewport.bottom() + px(1.),
+                        "{at}: the selected file {selected:?} in the list's view {viewport:?}"
+                    );
+                }
+            }
+        }
+        probe::stop();
+        assert!(
+            folded,
+            "a narrowing folds the review options into their menu"
+        );
+        assert!(moved, "the shorter window reveals the selected file");
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 

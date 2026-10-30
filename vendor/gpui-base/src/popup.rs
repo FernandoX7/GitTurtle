@@ -125,6 +125,11 @@ impl RenderOnce for Popup {
             anchor,
             state.read(cx).bounds,
         )));
+        // GitTurtle patch: only content held back for the trigger's bounds
+        // waits for the next frame. A closed popup has none, and a trigger
+        // first drawn closed, as review options that fold into their menu at
+        // a new width, asked for a frame that drew nothing new.
+        let waiting = self.content.is_some() && !state.read(cx).captured;
 
         let root = self
             .base
@@ -134,13 +139,11 @@ impl RenderOnce for Popup {
                 let position = position.clone();
                 move |bounds, window, cx| {
                     position.set(Self::resolved_corner(anchor, bounds));
-                    let first = state.update(cx, |state, _| {
-                        let first = !state.captured;
+                    state.update(cx, |state, _| {
                         state.bounds = bounds;
                         state.captured = true;
-                        first
                     });
-                    if first {
+                    if waiting {
                         window.request_animation_frame();
                     }
                 }

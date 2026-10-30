@@ -155,6 +155,23 @@ or more above the status bar. Remove this part of the patch when upstream lets
 an application keep popups clear of a region at the window's foot, and those
 tests pass without it.
 
+The popup-frame patch also modifies `src/popup.rs`. Upstream a `Popup` asks
+for the next frame (`request_animation_frame`) the first time its trigger is
+prepainted, so content it holds back until the trigger's bounds are known is
+drawn then. It asked whether or not it held any: a `Popover` hands it content
+only while open, so a menu trigger first drawn closed asked for a frame that
+drew nothing new. GitTurtle's text Compare folds its review options into such
+a menu in a narrower window, and Compare chooses that form in the frame it
+draws at a new width, so on Wayland every such width step drew a second
+frame. A popup now asks for the frame only while content waits for its
+trigger's bounds; that content still appears in the next frame, and a popup
+opened later is placed from the bounds its trigger recorded as it was drawn.
+`cargo test --locked -p gitturtle a_compare_width_step_draws_one_frame_where_it_settles`
+delivers only the frames a width step asks for, and fails without this part
+at 13 pt as the window narrows from 1,480 to 1,000 px. Remove it when upstream
+asks for that frame only for content waiting on the trigger's bounds, and the
+test passes without it.
+
 The panel-fit patch modifies `src/resizable/mod.rs`. Upstream a
 `ResizablePanelGroup` learns its size only as it is prepainted, after its
 panels were laid out at their sizes for the old size, and only then rescales
@@ -167,7 +184,12 @@ at its old width, held to its new range, and the comparison beside it up to
 panels for a size the caller knows before the group is laid out at it, as
 the group would after, and records the size, so the group's own adjustment
 then finds nothing to do; the group still adjusts itself where no caller
-fits it. The consumers are GitTurtle's three groups: the root render fits
+fits it. It notifies as that adjustment does. Called while the frame that
+draws the group is drawn, of a group the frame before drew, the notify asks
+for no further frame: GPUI then only marks the state for the next frame
+anything asks for. Of a group the frame before did not draw, it reaches the
+state's observers, as each panel's own notify as it is prepainted does
+anyway. The consumers are GitTurtle's three groups: the root render fits
 the project pane's group, `render_repository` the content columns' group
 and `render_content_columns` History's navigation group, each to the width
 it has in its frame (an `InFrame`) before building it. They are covered on
