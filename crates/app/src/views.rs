@@ -18617,6 +18617,59 @@ pub(crate) mod tests {
         draw(cx);
     }
 
+    /// At 13 and 18 pt in a 461 × 490 window, a right-click in the commit
+    /// title, near the window's foot, opens the field's menu, which Linux
+    /// draws in the window as a kit menu (the kit's `NativeMenu` fallback,
+    /// as for every kit input and text area), with its drawn edge 8 px or
+    /// more above the status bar, as the app's other menus keep theirs:
+    /// taller than the room below the pointer, it moves up. Kept only inside
+    /// the window, it ended over the bar.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[gpui::test]
+    async fn an_editors_menu_keeps_its_edge_8_px_above_the_status_bar(cx: &mut TestAppContext) {
+        const SELECT_ALL: &str = "Select All";
+        let edge = gpui_kit::component::POPOVER_EDGE_WIDTH;
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.update(|window, cx| appearance::ThemeChoice::Midnight.apply(Some(window), cx));
+        cx.simulate_resize(size(px(461.), px(490.)));
+        for text in [13, 18] {
+            cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+            settle(&app, cx).await;
+            let at = format!("{text} pt in 461 × 490");
+            let editor = cx
+                .debug_bounds("commit-title")
+                .unwrap_or_else(|| panic!("{at}: the commit title"));
+            let status = crate::theme_editor::tests::status_bar_top(cx);
+            let pointer = point(editor.left() + px(16.), editor.center().y);
+            cx.simulate_mouse_move(pointer, None, Modifiers::default());
+            cx.simulate_mouse_down(pointer, MouseButton::Right, Modifiers::default());
+            cx.simulate_mouse_up(pointer, MouseButton::Right, Modifiers::default());
+            // The field shows its menu in a deferred callback.
+            cx.run_until_parked();
+            draw(cx);
+            let item = menu_rows(cx, &[SELECT_ALL])
+                .first()
+                .map(|(_, item)| *item)
+                .unwrap_or_else(|| panic!("{at}: the field's menu at {pointer:?}"));
+            let surface = menu_surface(cx, item);
+            assert!(
+                surface.size.height > status - pointer.y - px(8.),
+                "{at}: the menu {surface:?} is taller than the room below {pointer:?} above the bar at {status:?}"
+            );
+            assert!(
+                surface.bottom() + edge <= status - px(8.) + px(0.01),
+                "{at}: the menu {surface:?} draws its edge 8 px above the bar at {status:?}"
+            );
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                menu_rows(cx, &[SELECT_ALL]).is_empty(),
+                "{at}: Escape closed it"
+            );
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The open menu's rows labelled `labels`, in order, where the last frame
     /// drew them, inside or past the menu's fold: an item's whatever its
     /// state, or a label's.

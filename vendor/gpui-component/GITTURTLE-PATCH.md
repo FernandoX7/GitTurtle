@@ -539,8 +539,9 @@ built-in and embedded Omarchy palette and reads the edge each dialog draws.
 Remove this part of the patch when upstream lets a theme set a dialog's border
 apart from `border`, and those tests pass without it.
 
-The popup-inset patch modifies `src/menu/context_menu.rs`, `src/popover.rs`
-and `src/styled.rs`, with the base patch's `set_popup_bottom_inset`
+The popup-inset patch modifies `src/menu/context_menu.rs`,
+`src/native_menu/fallback.rs`, `src/popover.rs` and `src/styled.rs`, with the
+base patch's `set_popup_bottom_inset`
 ([base patch](../gpui-base/GITTURTLE-PATCH.md)). Upstream keeps a popup only
 inside its window: the base popup host, which places dropdown menus and
 popovers, keeps 8 px from the window's edges, and a context menu's GPUI anchor
@@ -552,7 +553,12 @@ over the bar. A context menu is now placed by the base `Positioner`, as the
 popup host places a dropdown: inside the window less the same 8 px and above
 the room the application keeps at the window's foot
 (`gpui_base::popup_bottom_inset`), moving up where it would run lower, as it
-moves in from the window's sides. A popover's quarter-rem gap from its
+moves in from the window's sides. So is the drawn menu an input's
+right-click shows where the platform has no OS-native popup, Linux among them
+(`NativeMenu`'s fallback, which `Root`'s `FallbackMenuOverlay` draws): GPUI's
+anchor kept it only inside the window, less 8 px, so a right-click near the
+foot of an editor low in the window ended over the status bar. A popover's
+quarter-rem gap from its
 trigger is now a margin (`mt_1`, `mb_1`) rather than a relative offset
 (`top_1`, `bottom_1`): the host measures and places the box, and a relative
 offset lies outside it, so a surface the host moved to the inset ended a
@@ -573,9 +579,12 @@ through the kit's context menu: the app's right-click menus
 `menu_bounds`), so the context-menu half reaches only the kit's own
 `ContextMenuExt` callers (`Tree`, `Table` and the sidebar menu), none of which
 the app uses, and the regression below, which opens a kit right-click menu
-directly. The `Editor` and `Textarea` the app does use take their
-`context_menu` builder through the input's OS-native menu (`NativeMenu`, by
-`Input::context_menu`), not through `src/menu/context_menu.rs`.
+directly. The `Input`, `Editor` and `Textarea` the app does use, the commit
+title and description among them, show their right-click menu through the
+input's `NativeMenu` (by `Input::context_menu`), not through
+`src/menu/context_menu.rs`: OS-native on macOS and Windows, and on Linux a
+kit `PopupMenu` drawn by `Root`'s `FallbackMenuOverlay`, which this patch
+keeps above the inset.
 `cargo test --locked -p gitturtle kit_menus_stay_above_the_bottom_inset_an_application_sets`
 sets an inset of 120.5 px and opens a kit dropdown and a kit right-click menu
 at the foot of a 400 × 320 window: the host moves each up so that it ends
@@ -585,9 +594,14 @@ the dropdown ended 3.5 px past the inset.
 menu, a dropdown, at 13 and 18 pt in 461 × 490 and reads its drawn edge 8 px
 or more above the status bar; the right-click menu it opens on History's
 lowest whole row there is the app's own `PointerMenu`, placed by `RowMenu`.
+On Linux, `an_editors_menu_keeps_its_edge_8_px_above_the_status_bar`
+right-clicks in the commit title there, near the window's foot, and reads
+the field's drawn menu, taller than the room below the pointer, with its edge
+8 px or more above the bar; placed by GPUI's anchor, it ran over the bar.
 Remove the dropdown half of this patch (`src/popover.rs`, `src/styled.rs`)
-when upstream lets an application keep popups clear of a region at the
-window's foot, and those tests pass without it. Remove the context-menu half
+and the fallback menu's (`src/native_menu/fallback.rs`) when upstream lets an
+application keep popups clear of a region at the window's foot, and those
+tests pass without it. Remove the context-menu half
 (`src/menu/context_menu.rs`) when upstream places a context menu as it places
 a dropdown, and the first test passes without it; since no app menu uses the
 kit's context menu, a kit update may instead drop that half rather than carry
@@ -1181,9 +1195,10 @@ covers that path, not this one. This part reaches the kit's own
 `ContextMenuExt` callers (`Tree`, `Table` and the sidebar menu), none of which
 the app uses; in the app it reaches only the probe of
 `kit_menus_stay_above_the_bottom_inset_an_application_sets`. The `Editor` and
-`Textarea`, which the app uses, show their right-click menu as the input's
-OS-native menu (`NativeMenu`, by `Input::context_menu`), not through this
-file.
+`Textarea`, which the app uses, show their right-click menu through the
+input's `NativeMenu` (by `Input::context_menu`), not through this file:
+OS-native on macOS and Windows; on Linux a kit `PopupMenu` drawn by `Root`'s
+`FallbackMenuOverlay`, which holds its menu only while it is open.
 The crate's own `menu::context_menu::tests::a_context_menu_goes_with_its_owner`,
 run out of tree with the workspace's patch table, opens an element's menu
 with a right-click, closes it with Escape and takes the element away, then

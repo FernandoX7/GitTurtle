@@ -3,10 +3,16 @@
 //! It renders gpui-component's drawn [`PopupMenu`] through an overlay held by
 //! [`Root`]. Unlike a real native menu it is clipped to the window, but it keeps
 //! the [`super::NativeMenu`] API working on every platform.
+//!
+//! GitTurtle patch: placed as a context menu is, by the base `Positioner`,
+//! inside the window less 8 px and above the room an application keeps at its
+//! foot (`gpui_base::popup_bottom_inset`). GPUI's `anchored` snap kept it only
+//! inside the window, so an input's right-click menu near the window's foot
+//! ended over a status bar.
 
 use gpui::{
-    App, Context, DismissEvent, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Pixels,
-    Point, Render, Subscription, Window, anchored, deferred, div, px,
+    Anchor, App, Context, DismissEvent, Entity, FocusHandle, Focusable, IntoElement, ParentElement,
+    Pixels, Point, Render, Subscription, Window, deferred, div, px,
 };
 
 use crate::menu::{PopupMenu, PopupMenuItem};
@@ -111,14 +117,19 @@ fn build_popup(
 }
 
 impl Render for FallbackMenuOverlay {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = div();
         if let Some(active) = self.active.as_ref() {
             root = root.child(
                 deferred(
-                    anchored()
-                        .position(active.position)
-                        .snap_to_window_with_margin(px(8.))
+                    // GitTurtle patch: placed as a context menu is, inside the
+                    // window less its margin and above the room the
+                    // application keeps at its foot, moving up where it would
+                    // run lower. GPUI's `anchored` snap kept it only inside
+                    // the window, so it could end over a status bar.
+                    gpui_base::Positioner::corner(Anchor::TopLeft, active.position)
+                        .margin(px(8.))
+                        .bottom_inset(gpui_base::popup_bottom_inset(window, cx))
                         .child(active.menu.clone()),
                 )
                 .with_priority(gpui_base::POPUP_PRIORITY),
