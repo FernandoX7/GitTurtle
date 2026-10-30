@@ -5010,6 +5010,65 @@ mod tests {
         cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
     }
 
+    /// Command-click (Ctrl-click on Linux) and Shift-click onto a conflicted
+    /// working file edit the multiselection and only select it, as an arrow
+    /// does: its conflict view opens with focus left on the list, both files
+    /// selected. Each chose the file as a plain click does, so its
+    /// resolution draft took focus from the list being selected in; on
+    /// Linux, Ctrl-click was a plain click, which left only the file
+    /// selected.
+    #[gpui::test]
+    async fn a_multiselection_gesture_selects_a_conflict_without_choosing_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        std::fs::write(repository.join("another.txt"), "another\n").unwrap();
+        merge_stopping_on_notes(&repository);
+        quietly_refreshed(&app, cx);
+        preview_landed(&app, cx);
+        let list = app.read_with(cx, |app, _| app.file_focus.clone());
+        let click = |cx: &mut VisualTestContext, name: &str, modifiers: Modifiers| {
+            let position = position_of(&app, cx, name, ChangeArea::Unstaged);
+            let selector: &'static str = format!("working-row-{position}").leak();
+            let row = cx.debug_bounds(selector).expect(selector);
+            cx.simulate_click(row.center(), modifiers);
+            preview_landed(&app, cx);
+        };
+        for (gesture, modifiers) in [
+            ("Command-click", Modifiers::secondary_key()),
+            ("Shift-click", Modifiers::shift()),
+        ] {
+            click(cx, "another.txt", Modifiers::default());
+            assert_eq!(conflict_shown(&app, cx), None, "another.txt is no conflict");
+            assert!(
+                cx.update(|window, _| list.is_focused(window)),
+                "the click focuses the list"
+            );
+
+            click(cx, "notes.txt", modifiers);
+            assert_eq!(
+                conflict_shown(&app, cx),
+                Some(false),
+                "{gesture} opens notes.txt's view without focusing its draft"
+            );
+            assert!(
+                cx.update(|window, _| list.is_focused(window)),
+                "{gesture}: focus stays on the list"
+            );
+            let selected = app.read_with(cx, |app, _| app.working_copy_paths());
+            let mut selected: Vec<_> = selected.as_deref().unwrap_or("").lines().collect();
+            selected.sort_unstable();
+            assert_eq!(
+                selected,
+                ["another.txt", "notes.txt"],
+                "{gesture} adds notes.txt to the selection"
+            );
+        }
+        assert!(!writing(&app, cx), "no write started");
+        assert!(notes_unmerged(&repository), "notes.txt is still conflicted");
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// The selected working file's preview that lands conflicted while
     /// Settings shows opens its conflict view as the window returns to the
     /// repository, without its draft taking focus even for a frame: focus

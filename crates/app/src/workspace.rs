@@ -4529,18 +4529,19 @@ impl GitTurtle {
                         )
                     })
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        // Command-click (Ctrl-click on Linux, as Select All
+                        // is Ctrl-A there; it read Super) toggles the row in
+                        // the multiselection and Shift-click extends it to
+                        // the row. Both only select, as the arrows do: they
+                        // once chose the file too, so a conflicted one's
+                        // draft took focus from the list being selected in.
                         let modifiers = event.modifiers();
-                        this.choose_working_selection(
-                            index,
-                            area,
-                            modifiers.platform,
-                            modifiers.shift,
-                            window,
-                            cx,
-                        );
-                        // A click on the row chooses its file; one the list
-                        // refuses chooses nothing (`activate_working_preview`).
-                        if this.working_selected == Some((index, area)) {
+                        let (toggle, range) = (modifiers.secondary(), modifiers.shift);
+                        this.choose_working_selection(index, area, toggle, range, window, cx);
+                        // A plain click on the row chooses its file; one the
+                        // list refuses chooses nothing
+                        // (`activate_working_preview`).
+                        if !toggle && !range && this.working_selected == Some((index, area)) {
                             this.activate_working_preview(window, cx);
                         }
                     }))
