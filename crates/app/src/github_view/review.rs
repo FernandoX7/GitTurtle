@@ -381,32 +381,59 @@ fn reveal(
         viewport: scroll.bounds(),
         rem_size: window.rem_size(),
     };
-    let previous_focus = revealed.borrow();
-    // Dialog entrance animation can move the whole viewport without
-    // changing what fits inside it. It must not undo manual scrolling.
-    if previous_focus.focus == observed.focus
-        && previous_focus.viewport.size == observed.viewport.size
-        && previous_focus.rem_size == observed.rem_size
     {
-        return;
+        let previous_focus = revealed.borrow();
+        // Dialog entrance animation can move the whole viewport without
+        // changing what fits inside it. It must not undo manual scrolling.
+        if previous_focus.focus == observed.focus
+            && previous_focus.viewport.size == observed.viewport.size
+            && previous_focus.rem_size == observed.rem_size
+        {
+            return;
+        }
     }
+    let ringed = edge.is_some_and(|edge| edge.is_focused(window));
+    let focus = observed.focus;
+    show(
+        scroll,
+        blocks,
+        bounds,
+        inset,
+        ringed,
+        move |window, cx| window.focused(cx) == focus,
+        window,
+        cx,
+    );
+}
+
+/// Scrolls `scroll` to show `bounds`, `inset` clear of its edges, landing its top edge at the
+/// start of one of `blocks` ([`landing`]), after this frame paints, unless a scroll supersedes
+/// it or `still` no longer holds then; nowhere where they are in view already. Focus stays
+/// where it is. `ringed` is whether the part draws focus as a ring on its own edge.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn show(
+    scroll: &ScrollHandle,
+    blocks: &Blocks,
+    bounds: Vec<Bounds<Pixels>>,
+    inset: Pixels,
+    ringed: bool,
+    still: impl Fn(&Window, &App) -> bool + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some(bounds) = bounds.into_iter().reduce(|a, b| a.union(&b)) else {
         return;
     };
-    let viewport = observed.viewport;
+    let viewport = scroll.bounds();
     let (top, bottom) = (bounds.top() - inset, bounds.bottom() + inset);
     if top >= viewport.top() && bottom <= viewport.bottom() {
         return;
     }
-    let ringed = edge.is_some_and(|edge| edge.is_focused(window));
     let previous = scroll.offset();
     let (scroll, blocks) = (scroll.clone(), blocks.clone());
     // The blocks are known once the container has prepainted, after this part.
     window.defer(cx, move |window, cx| {
-        if window.focused(cx) != observed.focus
-            || scroll.offset() != previous
-            || scroll.bounds() != viewport
-        {
+        if !still(window, cx) || scroll.offset() != previous || scroll.bounds() != viewport {
             return;
         }
         let end = viewport.top() + previous.y + scroll.max_offset().y;

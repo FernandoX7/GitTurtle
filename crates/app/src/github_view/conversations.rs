@@ -41,7 +41,17 @@ pub(super) struct State {
     /// What the conversations pane draws besides its list, laid out last frame: the list
     /// keeps the pane inside the panel's body.
     pub list_chrome: std::rc::Rc<std::cell::Cell<Pixels>>,
+    /// The panel's notice where it concerns one conversation, with that conversation: a reply
+    /// sent or restored, a conversation resolved or reopened. Reply on that conversation keeps
+    /// the notice; Reply on any other clears it ([`Panel::begin_reply`]).
+    pub notice: Option<(String, CapturedThread)>,
+    /// The outcome the open composer showed last frame, if any, which the body has scrolled
+    /// into view ([`Panel::reveal_outcome`]).
+    pub outcome_shown: std::rc::Rc<std::cell::RefCell<Option<Shown>>>,
 }
+/// An outcome the composer shows: its failure, or that Cancel stopped its request, and how many
+/// presses the failure line has answered, so the same refusal pressed again is shown again.
+pub(super) type Shown = (Option<String>, Option<&'static str>, usize);
 impl State {
     pub fn new(window: &mut Window, cx: &mut Context<Panel>) -> Self {
         Self {
@@ -66,6 +76,8 @@ impl State {
             list_revealed: Default::default(),
             list_blocks: Default::default(),
             list_chrome: Default::default(),
+            notice: None,
+            outcome_shown: Default::default(),
         }
     }
     pub fn reset_content(&mut self) {
@@ -77,6 +89,7 @@ impl State {
         self.pagination_notice = None;
         self.invalid_threads.clear();
         self.active = None;
+        self.notice = None;
         self.list_scroll.set_offset(point(px(0.), px(0.)));
     }
 }
@@ -218,6 +231,19 @@ impl Panel {
             *old = thread;
         }
     }
+    /// Says `notice`, which concerns the conversation `about` ([`State::notice`]).
+    fn say_about(&mut self, notice: String, about: CapturedThread) {
+        self.conversations.notice = Some((notice.clone(), about));
+        self.notice = Some(notice);
+    }
+    /// Whether the panel's notice concerns the conversation `target`, as its last notice about
+    /// a conversation did, rather than anything since.
+    fn notice_is_about(&self, target: &CapturedThread) -> bool {
+        matches!(
+            (&self.notice, &self.conversations.notice),
+            (Some(notice), Some((said, about))) if notice == said && about == target
+        )
+    }
     pub(super) fn restore_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let saved = self.saved.iter().find_map(|draft| match draft {
             Draft::Reply(reply)
@@ -232,12 +258,14 @@ impl Panel {
             _ => None,
         });
         if let Some(reply) = saved {
-            self.conversations.active = Some(reply.target);
+            self.conversations.active = Some(reply.target.clone());
             self.conversations
                 .input
                 .update(cx, |input, cx| input.set_value(reply.body, window, cx));
-            self.notice =
-                Some("Unfinished reply restored with its exact conversation and account.".into());
+            self.say_about(
+                "Unfinished reply restored with its exact conversation and account.".into(),
+                reply.target,
+            );
         }
     }
     fn thread_page(&mut self, cursor: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
@@ -305,7 +333,10 @@ impl Panel {
     }
     /// Opens `target`'s reply composer, focused on its draft. An outcome asked for from
     /// another conversation's composer stays that conversation's ([`Origin::Reply`]): it
-    /// moves to the panel's top line, never under this draft.
+    /// moves to the panel's top line, never under this draft. A notice from before that is
+    /// not about this conversation is stale where the person now looks, and goes: pinned above
+    /// the body while the reply is open ([`Panel::pin_top_line`]), it kept room the composer
+    /// needs, and a refused reply's failure once fell below the body's clip under it.
     pub(super) fn begin_reply(
         &mut self,
         target: CapturedThread,
@@ -338,6 +369,9 @@ impl Panel {
                     _ => None,
                 })
                 .unwrap_or_default();
+            if !self.notice_is_about(&target) {
+                self.notice = None;
+            }
             self.conversations.active = Some(target);
             self.conversations
                 .input
@@ -447,9 +481,10 @@ impl Panel {
                         cx,
                     );
                 }
-                self.notice = Some(
+                self.say_about(
                     "Reply sent. Refresh this conversation to read GitHub’s latest comments."
                         .into(),
+                    target.clone(),
                 );
                 self.focus_visible_section(window, cx);
             }
@@ -465,13 +500,41 @@ impl Panel {
                     thread.viewer_can_resolve = false;
                     thread.viewer_can_unresolve = false;
                 }
-                self.notice = Some(format!(
-                    "Conversation {}. Refresh conversations to update available actions.",
-                    if *resolved { "resolved" } else { "reopened" }
-                ));
+                self.say_about(
+                    format!(
+                        "Conversation {}. Refresh conversations to update available actions.",
+                        if *resolved { "resolved" } else { "reopened" }
+                    ),
+                    target.clone(),
+                );
                 self.review.section_focus.focus(window, cx);
             }
             _ => {}
+        }
+    }
+    /// For the element holding the open composer's draft and the outcome under it: as an
+    /// outcome appears there, or a press is answered again, the body scrolls by the least that
+    /// shows the draft with it, a line's room clear of its edges, wherever they are not whole
+    /// in view, and focus stays where it is: the composer says why where the person is
+    /// looking. A refused reply's failure once stood below the body's clip, at 13 pt in a
+    /// 461 × 490 window under a notice pinned above the body, with nothing to show it.
+    fn reveal_outcome(&self) -> impl Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static {
+        let outcome = self
+            .answers_in_reply()
+            .then(|| (self.error.clone(), self.cancelled, self.presses.error));
+        let shown = self.conversations.outcome_shown.clone();
+        let scroll = self.review.body_scroll.clone();
+        let blocks = self.review.body_blocks.clone();
+        move |bounds, window, cx| {
+            if *shown.borrow() == outcome {
+                return;
+            }
+            shown.replace(outcome.clone());
+            if outcome.is_some() {
+                let inset = window.rem_size() + px(2.);
+                let still = |_: &Window, _: &App| true;
+                super::review::show(&scroll, &blocks, bounds, inset, false, still, window, cx);
+            }
         }
     }
     pub(super) fn render_reply_composer(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -489,8 +552,10 @@ impl Panel {
             .child(label("github-reply-heading", format!("Reply to conversation · {}", target.path)).font_weight(FontWeight::SEMIBOLD))
             .child(label("github-reply-context", format!("{} · #{} · {} · captured head {}",target.account,target.pull.number,target.pull.repository.label(),target.pull.head.sha)).text_color(rgb(p.muted)))
             .when(!valid,|element|element.child(label("github-reply-unavailable","Original context is unavailable on this page. Refresh or return to its conversation before sending. Your exact draft remains local.").text_color(rgb(p.warning))))
-            .child(Textarea::new(&self.conversations.input).h(appearance::ui_size(100.)).aria_label("Reply to captured GitHub conversation, saved locally").disabled(self.pending))
-            .when_some(self.outcome("github-reply-error","github-reply-cancelled",cx).filter(|_|self.answers_in_reply()),|element,line|element.child(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().child(line)))
+            // The draft and the outcome under it, which the body shows together as it appears.
+            .child(div().flex().flex_col().gap_2().on_children_prepainted(self.reveal_outcome())
+                .child(Textarea::new(&self.conversations.input).h(appearance::ui_size(100.)).aria_label("Reply to captured GitHub conversation, saved locally").disabled(self.pending))
+                .when_some(self.outcome("github-reply-error","github-reply-cancelled",cx).filter(|_|self.answers_in_reply()),|element,line|element.child(div().id("github-reply-error-scroll").debug_selector(||"github-reply-outcome".into()).flex_shrink_0().max_h(appearance::ui_size(84.)).overflow_y_scroll().child(line))))
             .child(div().flex().flex_wrap().items_center().gap_2()
                 .child(button("github-review-reply","Review reply…","",true).disabled(self.pending||!valid).on_click(cx.listener(|this,_,window,cx|this.review_reply(window,cx))))
                 .child(button("github-close-reply","Save and close reply","",false).disabled(self.pending).on_click(cx.listener(|this,_,window,cx|{this.save_reply(window,cx);this.conversations.active=None;this.confirm=None;this.focus_visible_section(window,cx);cx.notify();})))

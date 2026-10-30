@@ -4328,10 +4328,6 @@ mod tests {
                 panel.review.section = Section::Overview;
                 panel.receive_threads(page, None);
                 panel.conversations.active = Some(target.clone());
-                // As the request that loaded the PR leaves it, which clears the notice: the
-                // fixture's notice would stand above the body while the reply is open
-                // (`Panel::pin_top_line`), in the room the composer fits in.
-                panel.notice = None;
             })
         });
         let set = |cx: &mut VisualTestContext, error: Option<&str>, cancelled| {
@@ -4939,11 +4935,12 @@ mod tests {
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
-    /// Reply opened while the panel's top line says something, a notice or a "Cancelled",
-    /// moves the line from among the content to above the body ([`Panel::flow_top_line`],
-    /// [`Panel::pin_top_line`]), and the conversation drawn below the line stays where it was
-    /// in the frame the reply opens, the body scrolled partway, at 13 pt in a 461 × 490 window
-    /// and in a 1,480 × 980 one. The panel once took the line above the body for a new line,
+    /// Reply opened while the panel's top line says something takes the line from among the
+    /// content ([`Panel::flow_top_line`]): a "Cancelled" moves above the body
+    /// ([`Panel::pin_top_line`]), and a notice from before goes (`Panel::begin_reply`). Either
+    /// way the conversation drawn below the line stays where it was in the frame the reply
+    /// opens, the body scrolled partway, at 13 pt in a 461 × 490 window and in a 1,480 × 980
+    /// one. The panel once took the line above the body for a new line,
     /// though its room among the content went with it, and scrolled the conversation up by
     /// the line's whole height (65 px for the fixture's notice at 461 × 490).
     #[gpui::test]
@@ -5027,9 +5024,11 @@ mod tests {
                     window.draw(cx).clear(cx);
                     placed(&scroll)
                 });
-                assert!(
+                // Reply clears a notice from before; a "Cancelled" moves above the body.
+                assert_eq!(
                     cx.debug_bounds("github-top-line").is_some(),
-                    "{at}: the line stands above the body"
+                    notice.is_none(),
+                    "{at}: the line stands above the body only for the cancel"
                 );
                 // Each row where the frame that opened the reply drew it: where the content
                 // places it, from where that frame placed the content.
@@ -5049,6 +5048,105 @@ mod tests {
             panel.update(cx, |panel, _| panel.conversations.active = None);
             appearance::apply_text_sizes(13, 12, window, cx)
         });
+    }
+
+    /// Reply says why where the person is looking: opening a conversation's composer clears a
+    /// notice from before that is not about that conversation, a resolved conversation's here,
+    /// and a reply refused there shows its failure within the body, with focus still in the
+    /// draft, at 13 pt in a 461 × 490 window. A notice about the conversation Reply opens, its
+    /// reply just sent, stays. Pinned above the body for as long as the reply was open, the
+    /// stale notice kept room the composer needed, and the failure stood below the body's clip.
+    #[gpui::test]
+    async fn reply_clears_a_stale_notice_and_shows_its_refusal(cx: &mut TestAppContext) {
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let pull = github::review::fixture_pull(false);
+        let identity = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let open = page
+            .items
+            .iter()
+            .filter(|thread| thread.reply_available())
+            .map(|thread| thread.target.clone())
+            .collect::<Vec<_>>();
+        let [resolved, other, ..] = &open[..] else {
+            panic!("two of the fixture's conversations accept a reply");
+        };
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+            })
+        });
+        open_notice_panel(&app, &panel, (13, 461., 490.), cx).await;
+        let in_draft = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let input = panel.read(cx).conversations.input.read(cx).focus_handle(cx);
+                input.is_focused(window)
+            })
+        };
+
+        // One conversation resolved, as Send to GitHub finishes it; then Reply on another.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                let action = Action::SetThreadResolved {
+                    target: resolved.clone(),
+                    resolved: true,
+                };
+                panel.finish_conversation_action(&action, window, cx);
+            })
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("github-notice").is_some(),
+            "the panel says the conversation was resolved"
+        );
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.begin_reply(other.clone(), window, cx))
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("github-notice").is_none()
+                && cx.debug_bounds("github-top-line").is_none(),
+            "the resolved conversation's notice went as Reply opened another"
+        );
+
+        // Review reply… with nothing written: refused in the composer, shown in the body.
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.review_reply(window, cx)));
+        draw(cx);
+        draw(cx);
+        let body = cx.debug_bounds("github-panel").expect("the body");
+        let line = cx
+            .debug_bounds("github-reply-error")
+            .expect("the refusal answers in the composer");
+        assert!(
+            body.top() <= line.top() && line.bottom() <= body.bottom(),
+            "the refusal {line:?} stands within the body {body:?}"
+        );
+        assert!(in_draft(cx), "focus stays in the draft");
+
+        // The reply sent, as Send to GitHub finishes it: Reply on the same conversation keeps
+        // the notice about it.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                let action = Action::Reply {
+                    target: other.clone(),
+                    body: panel.conversations.input.read(cx).value().to_string(),
+                };
+                panel.finish_conversation_action(&action, window, cx);
+                panel.begin_reply(other.clone(), window, cx);
+            })
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("github-notice").is_some(),
+            "the notice about the reply sent on this conversation stays"
+        );
+        escape(cx);
     }
 
     /// Each press the panel refuses is said again, with a fresh alert node, though it refuses
