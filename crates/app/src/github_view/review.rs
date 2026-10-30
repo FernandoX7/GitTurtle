@@ -68,6 +68,10 @@ pub(super) struct ReviewState {
     pub body_blocks: Blocks,
     /// A PR has just opened: the next frame shows it from its title ([`Panel::reveal_opened`]).
     pub opened: std::rc::Rc<std::cell::Cell<bool>>,
+    /// How tall the panel's top line stood above the body in the last frame, while a
+    /// conversation is open, and nothing otherwise: the body's scroll moves with each change of
+    /// it, so the body's content stays where it was drawn (`Panel::pin_top_line`).
+    pub top_line: std::rc::Rc<std::cell::Cell<Pixels>>,
     pub files: Vec<PullFile>,
     pub file_page: u32,
     pub files_next: bool,
@@ -119,6 +123,7 @@ impl ReviewState {
             revealed_focus: Default::default(),
             body_blocks: Blocks::default(),
             opened: Default::default(),
+            top_line: Default::default(),
             files: vec![],
             file_page: 1,
             files_next: false,

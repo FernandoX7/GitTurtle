@@ -1648,6 +1648,69 @@ impl Panel {
         }
         .map(|line| line.role(Role::Status))
     }
+    /// The panel's top line while a conversation is open: `lines`, its notice, its failure or
+    /// cancel and refused input, then `busy`, the busy row with its Cancel, on the panel's
+    /// surface above the body with a divider under them, where they stay in view, rather than
+    /// among the content under its toolbar. As the line appears, changes height or clears, the
+    /// body's scroll moves by as much, in the same frame and before the body places its
+    /// content, so nothing drawn in the conversation moves: what the line takes from the
+    /// body's top is still the body's, reached by scrolling up, and when the line clears the
+    /// body takes it back with the scroll. The reveal the body last made keeps its place, so
+    /// the shorter body reveals nothing anew. Among the content, a line appearing pushed the
+    /// conversation, the draft being written included, down by its height. Where the content
+    /// does not fill the body, there is nothing to scroll, and the conversation moves down by
+    /// the line rather than lie under it. Text lines taller than half the body's room scroll
+    /// within the line, so the body keeps room for the conversation.
+    fn pin_top_line(
+        &self,
+        lines: Vec<AnyElement>,
+        busy: Option<AnyElement>,
+        window: &Window,
+        cx: &App,
+    ) -> Div {
+        let p = palette(cx);
+        let drawn = self.review.top_line.clone();
+        let scroll = self.review.body_scroll.clone();
+        let revealed = self.review.revealed_focus.clone();
+        let line = (!lines.is_empty() || busy.is_some()).then(|| {
+            div()
+                .debug_selector(|| "github-top-line".into())
+                .flex()
+                .flex_col()
+                .gap_2()
+                .pb_2()
+                .border_b_1()
+                .border_color(rgb(p.border))
+                .when(!lines.is_empty(), |line| {
+                    line.child(crate::native_accessibility::clips_children(
+                        div()
+                            .id("github-top-line-scroll")
+                            .max_h(body_max_height(window) / 2.)
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .children(lines),
+                    ))
+                })
+                .children(busy)
+        });
+        // Prepainted before the body, which reads its scroll after.
+        div()
+            .flex_shrink_0()
+            .on_children_prepainted(move |line, _, _| {
+                let height = line.first().map_or(Pixels::ZERO, |line| line.size.height);
+                let grew = height - drawn.replace(height);
+                if grew != Pixels::ZERO {
+                    let offset = scroll.offset();
+                    scroll.set_offset(point(offset.x, offset.y - grew));
+                    let mut revealed = revealed.borrow_mut();
+                    revealed.viewport.origin.y += grew;
+                    revealed.viewport.size.height -= grew;
+                }
+            })
+            .children(line)
+    }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending && self.request.writing() {
             self.refuse("A GitHub action is in progress for this captured destination. Wait for the result, or choose Cancel and inspect GitHub before resubmitting.");
@@ -1766,6 +1829,75 @@ impl Render for Panel {
         // Where the line holding the open PR's title starts, for showing the PR as it opens.
         let title_line = std::rc::Rc::new(std::cell::Cell::new(px(0.)));
         let line = title_line.clone();
+        // The panel's top line: its notice, the failure or cancel that answers there, refused
+        // input, then the busy row with its Cancel. While a conversation is open it stands
+        // above the body ([`Self::pin_top_line`]); otherwise among the content, under the
+        // toolbar.
+        let pinned = self.conversations.active.is_some();
+        let mut lines = Vec::new();
+        lines.extend(self.notice.as_ref().map(|notice| {
+            label("github-notice", notice.clone())
+                .debug_selector(|| "github-notice".into())
+                .ml(text_inset())
+                .role(Role::Status)
+                .text_color(rgb(p.muted))
+                .into_any_element()
+        }));
+        lines.extend(
+            self.outcome("github-error", "github-cancelled", cx)
+                .filter(|_| !self.answers_in_reply())
+                .map(|line| line.ml(text_inset()).into_any_element()),
+        );
+        lines.extend(self.draft_issue.map(|issue| {
+            label("github-draft-validation", issue.message())
+                .ml(text_inset())
+                .role(Role::Status)
+                .text_color(rgb(p.warning))
+                .into_any_element()
+        }));
+        // Pinned, the row is always in view, so it is no part the body reveals.
+        let busy = pending.then(|| {
+            if pinned {
+                div()
+            } else {
+                self.part("busy", div(), cx)
+            }
+            .flex()
+            .items_center()
+            .gap_2()
+            .pl(text_inset())
+            .child(
+                label("github-busy", self.request.label())
+                    .role(Role::Status)
+                    .live_region(gpui::accesskit::Live::Polite, true),
+            )
+            .child(
+                button("github-cancel", "Cancel", "", false)
+                    .track_focus(self.cancel_request.handle())
+                    .debug_selector(|| "github-cancel".into())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(control) = &this.control {
+                            control.cancel();
+                        }
+                        if let Some(control) = &this.local_control {
+                            control.cancel();
+                        }
+                        this.notice = Some(this.request.requested().into());
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+        });
+        let (lines, busy, top_line) = if pinned {
+            (
+                Vec::new(),
+                None,
+                Some(self.pin_top_line(lines, busy, window, cx)),
+            )
+        } else {
+            self.review.top_line.set(Pixels::ZERO);
+            (lines, busy, None)
+        };
         // The panel's content, its text one inset in from this edge. Each part of it starts a
         // block of the body, where a reveal may bring the body's top edge.
         let content = div().debug_selector(||"github-panel-content".into()).on_children_prepainted(blocks.starts()).min_w_0().flex().flex_col().gap_2()
@@ -1791,13 +1923,8 @@ impl Render for Panel {
                     .child(button("github-connect","Connect GitHub CLI account","",false).debug_selector(||"github-connect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.connect(window,cx))))
                     .child(copy_button(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND),"Copy sign-in command","",cx).on_click(|_,window,cx|copy_feedback::copy(window,cx,Some(copy_feedback::Mark::new("github-sign-in-help",SIGN_IN_COMMAND)),"sign-in command",SIGN_IN_COMMAND.into())))
                     .child(button("github-disconnect","Disconnect GitTurtle","",false).debug_selector(||"github-disconnect".into()).disabled(pending||self.review.fixture).on_click(cx.listener(|this,_,window,cx|this.disconnect(window,cx)))))))
-            .when_some(self.notice.as_ref(),|element,notice|element.child(label("github-notice",notice.clone()).debug_selector(||"github-notice".into()).ml(text_inset()).role(Role::Status).text_color(rgb(p.muted))))
-            .when_some(self.outcome("github-error","github-cancelled",cx).filter(|_|!self.answers_in_reply()),|element,line|element.child(line.ml(text_inset())))
-            .when_some(self.draft_issue,|element,issue|element.child(label("github-draft-validation",issue.message()).ml(text_inset()).role(Role::Status).text_color(rgb(p.warning))))
-            .when(pending,|element|element.child(self.part("busy",div(),cx).flex().items_center().gap_2().pl(text_inset())
-                .child(label("github-busy",self.request.label()).role(Role::Status).live_region(gpui::accesskit::Live::Polite, true))
-                .child(button("github-cancel","Cancel","",false).track_focus(self.cancel_request.handle()).debug_selector(||"github-cancel".into()).on_click(cx.listener(|this,_,_,cx|{if let Some(control)=&this.control{control.cancel();}
-                    if let Some(control)=&this.local_control{control.cancel();}this.notice=Some(this.request.requested().into());cx.notify();})))))
+            .children(lines)
+            .children(busy)
             .when(!self.create && (self.review.show_list||self.pull.is_none()),|element|element
                 // The list scrolls, so it clips its rows on both axes. Its full-width rows keep
                 // their rings' room inside that clip: its sides give the room back through their
@@ -1895,7 +2022,7 @@ impl Render for Panel {
         // allows no margin, so the room is the body's own. While the body overflows, its
         // scrollbar shows the rest is there.
         let cue = crate::tags::ScrollCue::new(&scroll, room);
-        cue.list(
+        let body = cue.list(
             div()
                 .on_children_prepainted(cue.observe(move |_, window, cx| {
                     review::record_shown(
@@ -1912,6 +2039,7 @@ impl Render for Panel {
                 .debug_selector(|| "github-panel".into())
                 .track_scroll(&self.review.body_scroll)
                 .min_w_0()
+                .min_h_0()
                 .max_h(body_max_height(window))
                 .p(room)
                 .mx(-room)
@@ -1920,7 +2048,20 @@ impl Render for Panel {
                 .flex_col()
                 .child(content),
             "github-panel-scrollbar",
-        )
+        );
+        match top_line {
+            // The line and the body share the body's height, the body taking what the line
+            // leaves.
+            Some(top_line) => div()
+                .min_w_0()
+                .max_h(body_max_height(window))
+                .flex()
+                .flex_col()
+                .child(top_line)
+                .child(body.min_h_0())
+                .into_any_element(),
+            None => body.into_any_element(),
+        }
     }
 }
 
@@ -4143,6 +4284,10 @@ mod tests {
                 panel.review.section = Section::Overview;
                 panel.receive_threads(page, None);
                 panel.conversations.active = Some(target.clone());
+                // As the request that loaded the PR leaves it, which clears the notice: the
+                // fixture's notice would stand above the body while the reply is open
+                // (`Panel::pin_top_line`), in the room the composer fits in.
+                panel.notice = None;
             })
         });
         let set = |cx: &mut VisualTestContext, error: Option<&str>, cancelled| {
@@ -4538,6 +4683,216 @@ mod tests {
             );
         }
         escape(cx);
+    }
+
+    /// While a conversation is open, the panel's top line stands above the body
+    /// ([`Panel::pin_top_line`]), and as it appears, changes or clears, nothing drawn in the
+    /// conversation moves, in the very frame it changes: a PR's Changes asked for while a reply
+    /// is being written, its busy row appearing, then the operation bar's Cancel and the
+    /// "Cancelled" line in place of the row, and the line clearing, at 18 pt in a 461 × 490
+    /// window, whose body is about 185 px tall, and at 13 pt in a 1,480 × 980 one. Focus stays
+    /// in the draft, and the body scrolled to its top shows its first row whole below the
+    /// line. Among the content under the toolbar, the line pushed the conversation, the draft
+    /// included, down by its height.
+    #[gpui::test]
+    async fn the_top_line_moves_nothing_in_an_open_conversation(cx: &mut TestAppContext) {
+        use crate::views::tests::draw;
+        // The conversation's rows, in the order the body draws them, and its draft's composer.
+        const ROWS: [&str; 10] = [
+            "github-fixture-mode",
+            "github-destination",
+            "github-pull-title",
+            "github-branch-context",
+            "github-captured-identities",
+            "github-threads",
+            "github-open-changes",
+            "github-reply-composer",
+            "github-reply-context",
+            "github-recovery-toggle",
+        ];
+        let (_fixture, app, panel, cx) = busy_fixture_panel(cx).await;
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        settle_panel(&app, cx).await;
+        let pull = local_pull(&app, cx);
+        let identity = github::review::fixture_pull(false)
+            .capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+            })
+        });
+        let scroll = panel.read_with(cx, |panel, _| panel.review.body_scroll.clone());
+        // Where the body places its content: its top with its scroll, which the rows lie below
+        // by their places in the content.
+        let placed = |scroll: &ScrollHandle| scroll.bounds().top() + scroll.offset().y;
+        // `change`, then the frame that draws it, in one update, and where that frame placed
+        // the body's content, read before anything the frame deferred runs. A test window draws
+        // itself as an update ends, and again after what that frame deferred, so a scroll moved
+        // a frame late, after a frame drawn without it, would be drawn by the time the frame's
+        // bounds could be read.
+        let frame =
+            |cx: &mut VisualTestContext,
+             change: &dyn Fn(&mut Panel, &mut Window, &mut Context<Panel>)| {
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        change(panel, window, cx);
+                        cx.notify();
+                    });
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                    placed(&scroll)
+                })
+            };
+        let rows = |cx: &mut VisualTestContext| {
+            ROWS.map(|row| (row, cx.debug_bounds(row).expect("the row is drawn")))
+        };
+        let in_draft = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let input = panel.read(cx).conversations.input.read(cx).focus_handle(cx);
+                input.is_focused(window)
+            })
+        };
+        for (interface, width, height) in [(18, 461., 490.), (13, 1480., 980.)] {
+            let at = format!("{interface} pt in {width} × {height}");
+            // As the request that loaded the PR leaves the line: empty.
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, _| {
+                    panel.notice = None;
+                    panel.cancelled = None;
+                })
+            });
+            open_notice_panel(&app, &panel, (interface, width, height), cx).await;
+            // Reply, written in its draft, with the body scrolled to show the draft from its
+            // context line at the body's top, so the scroll has room to move either way.
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.begin_reply(target.clone(), window, cx);
+                    panel
+                        .conversations
+                        .input
+                        .update(cx, |input, cx| input.set_value("Exact reply", window, cx));
+                })
+            });
+            draw(cx);
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let context = cx
+                .debug_bounds("github-reply-context")
+                .expect("the draft's context");
+            scroll.set_offset(point(
+                px(0.),
+                (scroll.offset().y - (context.top() - body.top()))
+                    .clamp(-scroll.max_offset().y, px(0.)),
+            ));
+            draw(cx);
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let context = cx
+                .debug_bounds("github-reply-context")
+                .expect("the draft's context");
+            assert!(
+                context.top() >= body.top() && context.bottom() <= body.bottom(),
+                "{at}: the draft's context {context:?} is in view in {body:?}"
+            );
+            assert!(
+                cx.debug_bounds("github-top-line").is_none(),
+                "{at}: the line has nothing to say"
+            );
+            assert!(in_draft(cx), "{at}: the draft holds focus");
+            let first = ROWS
+                .into_iter()
+                .find(|row| {
+                    cx.debug_bounds(row)
+                        .is_some_and(|bounds| bounds.bottom() > body.top())
+                })
+                .expect("a row is in view");
+            let still = rows(cx);
+            let content = placed(&scroll);
+            let in_frame = |drawn: Pixels, after: &str| {
+                assert_eq!(
+                    drawn, content,
+                    "{at}: {after}, the frame placed the body's content where it was"
+                );
+            };
+            let unmoved = |cx: &mut VisualTestContext, after: &str| {
+                assert_eq!(
+                    rows(cx),
+                    still,
+                    "{at}: {after}, nothing in the conversation moved, its first row in view \
+                     {first} included"
+                );
+                assert!(in_draft(cx), "{at}: {after}, focus stays in the draft");
+            };
+
+            // Open captured local comparison, held as a large comparison holds it: the line
+            // appears with the busy row.
+            let held = app.update(cx, |app, _| app.operations.hold());
+            let drawn = frame(cx, &|panel, window, cx| panel.changes(window, cx));
+            in_frame(drawn, "in the frame the busy row appears");
+            assert!(
+                cx.debug_bounds("github-busy").is_some(),
+                "{at}: the busy row stands on the line"
+            );
+            unmoved(cx, "in the frame the busy row appears");
+
+            // The operation bar's Cancel, which leaves focus where it is; the "Cancelled"
+            // line replaces the busy row as the comparison answers.
+            cx.update(|window, cx| app.update(cx, |app, cx| app.cancel_operation(window, cx)));
+            drop(held);
+            app.read_with(cx, |app, _| app.operations.drain());
+            settle_panel(&app, cx).await;
+            assert!(
+                panel.read_with(cx, |panel, _| !panel.pending && panel.cancelled.is_some()),
+                "{at}: Changes was cancelled"
+            );
+            // The answer lands in a task, and the window draws it as the task's update ends.
+            draw(cx);
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let cancelled = cx
+                .debug_bounds("github-cancelled")
+                .unwrap_or_else(|| panic!("{at}: the cancel answers on the panel's top line"));
+            assert!(
+                cancelled.bottom() <= body.top() && cx.debug_bounds("github-busy").is_none(),
+                "{at}: the line {cancelled:?} stands above the body {body:?}"
+            );
+            unmoved(cx, "in the frame the cancel answers");
+            draw(cx);
+            unmoved(cx, "in the frames after it");
+
+            // The body's top, under the line, is still the body's.
+            let offset = scroll.offset();
+            scroll.set_offset(point(px(0.), px(0.)));
+            draw(cx);
+            let line = cx.debug_bounds("github-top-line").expect("the line");
+            let body = cx.debug_bounds("github-panel").expect("the body");
+            let top = cx.debug_bounds(ROWS[0]).expect("the body's first row");
+            assert!(
+                top.top() >= line.bottom() && top.top() >= body.top(),
+                "{at}: scrolled to its top, the body shows its first row {top:?} below the \
+                 line {line:?}"
+            );
+            scroll.set_offset(offset);
+            draw(cx);
+            unmoved(cx, "scrolled back");
+
+            // The line clears, as the next request clears it.
+            let drawn = frame(cx, &|panel, _, _| panel.cancelled = None);
+            in_frame(drawn, "in the frame the line clears");
+            assert!(
+                cx.debug_bounds("github-top-line").is_none(),
+                "{at}: the line cleared"
+            );
+            unmoved(cx, "in the frame the line clears");
+            cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+            settle_panel(&app, cx).await;
+        }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// Each press the panel refuses is said again, with a fresh alert node, though it refuses
