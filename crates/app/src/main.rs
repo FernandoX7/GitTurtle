@@ -1227,6 +1227,8 @@ impl GitTurtle {
         }
         self.automatic.retained_commit = None;
         self.path = Some(path.clone());
+        // A wait for a preparation another tab dropped says where it runs.
+        self.hold_dropped_preparation();
         self.refs = Default::default();
         self.scope = scope;
         self.clear_preview();

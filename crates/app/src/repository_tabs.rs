@@ -914,6 +914,9 @@ impl GitTurtle {
     fn restore_warm_tab(&mut self, warm: WarmTab, window: &mut Window, cx: &mut Context<Self>) {
         self.repository_tabs.switching = true;
         self.path = Some(warm.repository.path().to_owned());
+        // A wait for a preparation a tab dropped shows its own label in
+        // that tab and says where it runs in another.
+        self.hold_dropped_preparation();
         self.repository = Some(warm.repository);
         self.scope = warm.scope;
         self.file_history = warm.file_history;
@@ -1300,6 +1303,9 @@ impl GitTurtle {
             self.file_paths.reset();
         }
         self.repository_tabs.tabs.remove(index);
+        // A wait for a preparation the closed tab dropped says it finishes
+        // a closed tab's work.
+        self.hold_dropped_preparation();
         if active {
             self.repository_tabs.active = None;
             if !self.repository_tabs.tabs.is_empty() {

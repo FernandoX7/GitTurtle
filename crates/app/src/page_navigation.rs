@@ -25,7 +25,8 @@ pub(super) struct DroppedPreparation {
 /// A running [`DroppedPreparation`].
 struct RunningWait {
     /// The dropped preparation's label, which the busy state shows until
-    /// the wait ends.
+    /// the wait ends in the tab that asked for it; any other tab shows
+    /// where the work runs instead ([`FINISHING_ELSEWHERE`]).
     label: &'static str,
     /// The repository whose tab asked for the preparation: opened again
     /// in place, it ends the wait as it cancels its own preparations, while
@@ -33,6 +34,43 @@ struct RunningWait {
     repository: Option<PathBuf>,
     /// The wait for the marker queued behind the preparation's read.
     _wait: Task<()>,
+}
+
+impl RunningWait {
+    /// Whether the busy state `busy` is this wait's, under its own label or
+    /// one it shows in another tab.
+    fn holds(&self, busy: &str) -> bool {
+        busy == self.label || finishing_elsewhere_reason(busy).is_some()
+    }
+}
+
+/// What a wait for a dropped preparation shows as its busy label in a tab
+/// other than the one that asked for it, with the reason a control it
+/// refuses gives ([`GitTurtle::busy_reason`]): while that tab is open, and
+/// once it has closed. That tab's own label ("Reviewing file changes…")
+/// once stood as the reason the shown tab's actions were unavailable, for
+/// work the shown tab never asked for. Fixed strings, as every busy label
+/// is, they name the tab's kind rather than its project, and run no longer
+/// than a GitHub request's label; like any busy label they go only where
+/// they move nothing, so nothing moves as they show.
+const FINISHING_ELSEWHERE: [(&str, &str); 2] = [
+    (
+        "Finishing another tab's review…",
+        "Wait for another tab's review to finish",
+    ),
+    (
+        "Finishing a closed tab's review…",
+        "Wait for a closed tab's review to finish",
+    ),
+];
+
+/// Why a control waits while the busy state shows `label`, where that is
+/// a wait's label in another tab ([`FINISHING_ELSEWHERE`]).
+pub(crate) fn finishing_elsewhere_reason(label: &str) -> Option<&'static str> {
+    FINISHING_ELSEWHERE
+        .iter()
+        .find(|(shown, _)| *shown == label)
+        .map(|(_, reason)| *reason)
 }
 
 /// Where a page switch goes, which decides what becomes of the reviews
@@ -225,26 +263,52 @@ impl GitTurtle {
     /// runs on the executor every tab shares, so the wait goes on, into the
     /// tab shown next too, and that tab's reads are noted for its end rather
     /// than queued behind the read.
-    fn hold_dropped_preparation(&mut self) -> bool {
-        let Some(running) = &self.dropped_preparation.running else {
+    ///
+    /// The busy state it gives back is the one for the repository shown
+    /// ([`Self::dropped_preparation_label`]), so each change of the shown
+    /// repository calls it too: a tab switched to, warm or cold, or opened
+    /// anew (`restore_warm_tab`, `open`), and a tab closed. Nothing else
+    /// holds the busy state while the wait runs, since nothing starts.
+    pub(super) fn hold_dropped_preparation(&mut self) -> bool {
+        let Some(label) = self.dropped_preparation_label() else {
             return false;
         };
-        self.operation_busy = Some(running.label);
+        self.operation_busy = Some(label);
         true
     }
 
+    /// The busy label of a running wait for a dropped preparation in the
+    /// repository shown: the preparation's own in the tab that asked for
+    /// it, and in any other tab what it finishes and where
+    /// ([`FINISHING_ELSEWHERE`]): another tab, or a closed one once that
+    /// tab has closed.
+    fn dropped_preparation_label(&self) -> Option<&'static str> {
+        let running = self.dropped_preparation.running.as_ref()?;
+        if running.repository == self.path {
+            return Some(running.label);
+        }
+        let open = running.repository.as_ref().is_some_and(|asked| {
+            self.repository_tabs
+                .tabs
+                .iter()
+                .any(|tab| tab.path == *asked)
+        });
+        Some(FINISHING_ELSEWHERE[usize::from(!open)].0)
+    }
+
     /// Ends the wait for a dropped preparation
-    /// ([`Self::wait_for_dropped_preparation`]) with its busy state, as a
-    /// cancel ends a preparation's: Settings, Projects, the last tab's
-    /// close and opening again in place the repository whose tab asked for
-    /// it ([`Self::end_own_dropped_preparation`]) cancel what it waits for.
-    /// A later generation leaves the end of the wait it replaces nothing to
+    /// ([`Self::wait_for_dropped_preparation`]) with its busy state, under
+    /// whichever label it shows, as a cancel ends a preparation's:
+    /// Settings, Projects, the last tab's close and opening again in place
+    /// the repository whose tab asked for it
+    /// ([`Self::end_own_dropped_preparation`]) cancel what it waits for. A
+    /// later generation leaves the end of the wait it replaces nothing to
     /// do.
     fn end_dropped_preparation(&mut self) {
         let waits = &mut self.dropped_preparation;
         waits.generation = waits.generation.wrapping_add(1);
         if let Some(running) = waits.running.take()
-            && self.operation_busy == Some(running.label)
+            && self.operation_busy.is_some_and(|busy| running.holds(busy))
         {
             self.operation_busy = None;
         }
@@ -2419,8 +2483,8 @@ mod tests {
         draw(cx);
         assert_eq!(
             app.read_with(cx, |app, _| app.operation_busy),
-            Some("Comparing branch tips…"),
-            "the next tab waits for the dropped comparison's read"
+            Some("Finishing another tab's review…"),
+            "the next tab waits for the dropped comparison's read, saying where it runs"
         );
         std::fs::write(other.join("later.txt"), "later\n").unwrap();
         cx.simulate_keystrokes(&primary("2"));
@@ -2550,7 +2614,11 @@ mod tests {
                 app.read_with(cx, |app, _| app.path.clone()),
                 Some(other.clone())
             );
-            assert_eq!(busy(cx), Some(label), "{name}: the next tab shows it");
+            assert_eq!(
+                busy(cx),
+                Some("Finishing another tab's review…"),
+                "{name}: the next tab waits for it, saying where it runs"
+            );
             // Its working state asked for, as its Changes asks.
             cx.update(|window, cx| app.update(cx, |app, cx| app.refresh_worktree(window, cx)));
             draw(cx);
@@ -2596,7 +2664,7 @@ mod tests {
         draw(cx);
         assert_eq!(
             busy(cx),
-            Some("Reviewing file changes…"),
+            Some("Finishing another tab's review…"),
             "a new tab waits for the dropped review"
         );
         drop(held);
@@ -2668,8 +2736,12 @@ mod tests {
             );
             assert_eq!(
                 app.read_with(cx, |app, _| app.operation_busy),
-                Some(REVIEWING),
-                "{case}: the wait keeps its busy state"
+                Some(if close {
+                    "Finishing a closed tab's review…"
+                } else {
+                    "Finishing another tab's review…"
+                }),
+                "{case}: the wait keeps its busy state, saying where it runs"
             );
             // The next tab's Changes notes its read, and its Discard… waits.
             let later = format!("later-{index}.txt");
@@ -2797,6 +2869,100 @@ mod tests {
             "the wait's end reads the tab's working state"
         );
         assert!(!dialog_open(cx), "the dropped review opens nothing");
+    }
+
+    /// A dropped review's wait says where its work runs in a tab that did
+    /// not ask for it: the busy label, and the reason a refused control
+    /// gives in its tooltip, as the palette does (`busy_reason`), name
+    /// another tab's review, or a closed tab's once that tab has closed,
+    /// while the tab that asked shows the review's own label and the Git
+    /// operation's reason. The next tab once read "Reviewing file changes…"
+    /// as why its own actions were unavailable, a review it never asked
+    /// for.
+    #[gpui::test]
+    async fn a_dropped_reviews_wait_says_where_it_runs(cx: &mut TestAppContext) {
+        use crate::views::tests::{draw, settle};
+        use crate::workspace::{BUSY_LOOK_DELAY, BUSY_REASON, refusals};
+        let (_fixture, app, cx, _, other) = beside_another_tab(cx).await;
+        // Wide enough that the busy look's progress label takes none of the
+        // header's room from Projects, which Changes shows.
+        cx.simulate_resize(size(px(1600.), px(900.)));
+        let changes = |cx: &mut VisualTestContext| {
+            cx.simulate_keystrokes(&primary("2"));
+            draw(cx);
+        };
+        // The busy label drawn, the reason, and Projects' tooltip, once the
+        // busy look shows.
+        let shown = |cx: &mut VisualTestContext| {
+            cx.executor().advance_clock(BUSY_LOOK_DELAY);
+            draw(cx);
+            assert!(cx.debug_bounds("operation-progress").is_some());
+            let (label, reason) =
+                app.read_with(cx, |app, _| (app.operation_shown(), app.busy_reason()));
+            let tooltip = refusals::tooltip("projects").map(|tooltip| tooltip.to_string());
+            (label, reason, tooltip)
+        };
+        let says = |label: &'static str, reason: &'static str| {
+            (
+                Some(label),
+                reason,
+                Some(format!("Open Projects · {reason}")),
+            )
+        };
+
+        // Discard…'s review in the first tab, held as a slow disk holds it,
+        // dropped as the second tab shows.
+        changes(cx);
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        let held = app.update(cx, |app, _| app.operations.hold());
+        let draft = entry(&app, "draft.txt", cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        changes(cx);
+        assert_eq!(app.read_with(cx, |app, _| app.path.clone()), Some(other));
+        assert_eq!(
+            shown(cx),
+            says(
+                "Finishing another tab's review…",
+                "Wait for another tab's review to finish"
+            ),
+            "the next tab"
+        );
+
+        // The tab that asked shows its own review.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(0, window, cx)));
+        changes(cx);
+        assert_eq!(
+            shown(cx),
+            says("Reviewing file changes…", BUSY_REASON),
+            "the tab that asked"
+        );
+
+        // Closed from the next tab, it is a closed tab's review.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.switch_repository_tab(1, window, cx)));
+        changes(cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.close_repository_tab(0, window, cx)));
+        draw(cx);
+        assert_eq!(
+            shown(cx),
+            says(
+                "Finishing a closed tab's review…",
+                "Wait for a closed tab's review to finish"
+            ),
+            "once the tab that asked has closed"
+        );
+
+        drop(held);
+        preparation_ends(&app, cx).await;
+        quiet_reads_land(&app, cx);
+        draw(cx);
+        assert_eq!(app.read_with(cx, |app, _| app.operation_busy), None);
+        assert_eq!(
+            refusals::tooltip("projects").as_deref(),
+            Some("Open Projects"),
+            "the reason ends with the wait"
+        );
     }
 
     /// Settings and Projects drop the branch comparison Merge… or Rebase…
