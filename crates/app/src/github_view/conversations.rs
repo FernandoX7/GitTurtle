@@ -311,7 +311,7 @@ impl Panel {
                 .iter()
                 .any(|thread| reply_matches(thread, &target, self.account.as_deref()))
         {
-            self.error = Some("This conversation cannot accept a reply in the captured account and PR context. Refresh conversations explicitly, or copy the saved draft.".into());
+            self.refuse("This conversation cannot accept a reply in the captured account and PR context. Refresh conversations explicitly, or copy the saved draft.");
             cx.notify();
             return;
         }
@@ -350,7 +350,7 @@ impl Panel {
             return;
         };
         if let Err(error) = github::validate_text(&reply.body, true) {
-            self.error = Some(error.to_string());
+            self.refuse(error.to_string());
             cx.notify();
             return;
         }
@@ -360,7 +360,7 @@ impl Panel {
             .iter()
             .any(|thread| reply_matches(thread, &reply.target, self.account.as_deref()))
         {
-            self.error = Some("The captured reply context is unavailable or changed. Refresh this conversation explicitly; the original draft remains available to copy.".into());
+            self.refuse("The captured reply context is unavailable or changed. Refresh this conversation explicitly; the original draft remains available to copy.");
             cx.notify();
             return;
         }
@@ -391,7 +391,7 @@ impl Panel {
                     }
             });
         if !valid || self.pending {
-            self.error = Some("GitHub has not granted this account permission to change this conversation in the captured context. Refresh conversations to check again.".into());
+            self.refuse("GitHub has not granted this account permission to change this conversation in the captured context. Refresh conversations to check again.");
             cx.notify();
             return;
         }

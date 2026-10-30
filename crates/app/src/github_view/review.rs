@@ -1053,7 +1053,7 @@ impl Panel {
                     .focus(window, cx);
                 self.save_draft(window, cx);
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => self.refuse(error.to_string()),
         }
         cx.notify();
     }
@@ -1063,12 +1063,12 @@ impl Panel {
         };
         comment.body = self.review.input.read(cx).value().to_string();
         if let Err(error) = github::validate_text(&comment.body, true) {
-            self.error = Some(error.to_string());
+            self.refuse(error.to_string());
             cx.notify();
             return;
         }
         if self.review.comments.len() >= 100 {
-            self.error=Some("A review supports at most 100 inline comments. Finish this review before adding more.".into());
+            self.refuse("A review supports at most 100 inline comments. Finish this review before adding more.");
             cx.notify();
             return;
         }

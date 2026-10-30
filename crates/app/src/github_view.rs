@@ -225,12 +225,22 @@ struct Confirmation {
     account: String,
 }
 /// The lines the panel says through the window's announcements ([`Panel::announce`]): its
-/// notice, its failure, drawn in its body or in the reply composer, and refused input.
+/// notice, its failure, drawn in its body or in the reply composer, and refused input, with
+/// the presses that answered with them.
 #[derive(Default, PartialEq)]
 struct Heard {
     notice: Option<String>,
     error: Option<String>,
     issue: Option<DraftIssue>,
+    presses: Presses,
+}
+/// How many presses the panel has answered with its failure line and with its refused-input
+/// line, so that a press answered as the one before it was is said again: the lines alone
+/// stay the same, and a repeated refusal was silent.
+#[derive(Clone, Copy, Default, PartialEq)]
+struct Presses {
+    error: usize,
+    issue: usize,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DraftIssue {
@@ -417,6 +427,8 @@ struct Panel {
     /// cleared as it closes, so that it says again what it reopens with.
     heard: Heard,
     error: Option<String>,
+    /// The presses answered with `error` and `draft_issue` ([`Presses`]).
+    presses: Presses,
     pending: bool,
     /// The busy row's Cancel, which hands focus to the shown section as the
     /// row goes.
@@ -460,7 +472,7 @@ impl Panel {
             base:cx.new(|cx|InputState::new(window,cx).default_value("main")),title:cx.new(|cx|InputState::new(window,cx).placeholder("Pull request title")),
             body:cx.new(|cx|TextareaState::new(window,cx).auto_grow(5,5).placeholder("Description or review text — saved locally")),
             rows:vec![],page:1,has_next:false,pull:None,status:None,description:None,create:false,draft:true,event:ReviewEvent::Comment,discussion:true,
-            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),error:None,pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,writing:false,closed:false,
+            account:None,notice:Some("Offline until you choose Connect or Refresh. GitHub.com is supported; Git authentication and Push keep their existing behavior.".into()),heard:Heard::default(),error:None,presses:Presses::default(),pending:false,cancel_request:focus_ring::LoadingCancel::new(cx),request_generation:0,local_loaded:false,local_loading:false,local_generation:0,local_task:None,writing:false,closed:false,
             confirm:None,control:None,task:None,saved:vec![],save_status:String::new(),draft_issue:None,saver:Default::default(),deferred_draft:Default::default(),draft_timer:None,save_response_generation:0,save_completion:None,subscriptions:vec![],templates:vec![],attempts:vec![],local_control:None,
         };
         if this.review.fixture {
@@ -799,6 +811,18 @@ impl Panel {
         }
         cx.notify();
     }
+    /// Answers a press with `error` on the failure line, said at once however often the same
+    /// refusal repeats ([`Presses`]).
+    fn refuse(&mut self, error: impl Into<String>) {
+        self.error = Some(error.into());
+        self.presses.error = self.presses.error.wrapping_add(1);
+    }
+    /// Answers a press with `issue` on the refused-input line, said at once however often it
+    /// repeats ([`Presses`]).
+    fn refuse_input(&mut self, issue: DraftIssue) {
+        self.draft_issue = Some(issue);
+        self.presses.issue = self.presses.issue.wrapping_add(1);
+    }
     fn run<T: Send + 'static>(
         &mut self,
         writing: bool,
@@ -816,7 +840,7 @@ impl Panel {
             owner.operations.submit(move || operation(worker_control))
         });
         let Ok(response) = response else {
-            self.error = Some("The repository window is unavailable.".into());
+            self.refuse("The repository window is unavailable.");
             return;
         };
         self.control = Some(control);
@@ -833,7 +857,10 @@ impl Panel {
                 // the panel shows, as when it opens, before the reply moves it
                 // anywhere else.
                 if !this.closed && this.cancel_request.holds_focus(window) {this.focus_visible_section(window,cx);}
-                if !this.closed {receive(result,this,window,cx);}cx.notify();});
+                if !this.closed {receive(result,this,window,cx);}
+                // `run` cleared the failure line, so one there now is this press's answer.
+                if this.error.is_some() {this.presses.error=this.presses.error.wrapping_add(1);}
+                cx.notify();});
         }));
         cx.notify();
     }
@@ -864,7 +891,7 @@ impl Panel {
         let repository = match self.destination(cx) {
             Ok(repo) => repo,
             Err(error) => {
-                self.error = Some(error.to_string());
+                self.refuse(error.to_string());
                 return;
             }
         };
@@ -877,7 +904,7 @@ impl Panel {
         let repository = match self.destination(cx) {
             Ok(repo) => repo,
             Err(error) => {
-                self.error = Some(error.to_string());
+                self.refuse(error.to_string());
                 return;
             }
         };
@@ -953,7 +980,7 @@ impl Panel {
         let draft = match self.current_draft(cx) {
             Ok(draft) => draft,
             Err(issue) => {
-                self.draft_issue = Some(issue);
+                self.refuse_input(issue);
                 self.save_status = issue.save_message().into();
                 cx.notify();
                 return;
@@ -962,9 +989,8 @@ impl Panel {
         self.draft_issue = None;
         if let Draft::Review(review) = &draft {
             if review.composing.is_some() {
-                self.error = Some(
-                    "Add or discard the unfinished inline comment before reviewing submission."
-                        .into(),
+                self.refuse(
+                    "Add or discard the unfinished inline comment before reviewing submission.",
                 );
                 cx.notify();
                 return;
@@ -975,7 +1001,7 @@ impl Panel {
                     || review.event == ReviewEvent::RequestChanges
                     || (review.event == ReviewEvent::Comment && review.comments.is_empty()),
             ) {
-                self.error = Some(error.to_string());
+                self.refuse(error.to_string());
                 cx.notify();
                 return;
             }
@@ -1007,7 +1033,7 @@ impl Panel {
             return;
         }
         let Some(account) = self.account.clone() else {
-            self.error = Some("Connect and refresh the GitHub account before submission.".into());
+            self.refuse("Connect and refresh the GitHub account before submission.");
             return;
         };
         self.confirm = Some(Confirmation {
@@ -1076,12 +1102,15 @@ impl Panel {
     /// head changes it, and a failure lands wherever the body has scrolled. Nor are they
     /// alerts: AT-SPI reports a line's `showing` change as the body scrolls it in or out
     /// (vendored adapter), and Orca presents an alert, a notification there, as it becomes
-    /// showing, so a failure the window's alert said could be said again from its line.
+    /// showing, so a failure the window's alert said could be said again from its line. A
+    /// press answered as the one before it was is said again, a fresh alert node for each
+    /// press, as a refused Toggle Sidebar is: the lines alone stay the same.
     fn announce(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let shown = Heard {
             notice: self.notice.clone(),
             error: self.error.clone(),
             issue: self.draft_issue,
+            presses: self.presses,
         };
         if shown == self.heard {
             return;
@@ -1092,13 +1121,17 @@ impl Panel {
             .notice
             .clone()
             .filter(|_| shown.notice != heard.notice);
-        // A failure and refused input that change together are one alert, as the alert node
-        // holds one.
+        // A failure and refused input that change together, or that presses answer together,
+        // are one alert, as the alert node holds one.
         let alert = [
-            shown.error.clone().filter(|_| shown.error != heard.error),
+            shown.error.clone().filter(|_| {
+                shown.error != heard.error || shown.presses.error != heard.presses.error
+            }),
             shown
                 .issue
-                .filter(|_| shown.issue != heard.issue)
+                .filter(|_| {
+                    shown.issue != heard.issue || shown.presses.issue != heard.presses.issue
+                })
                 .map(|issue| issue.message().to_owned()),
         ]
         .into_iter()
@@ -1117,7 +1150,7 @@ impl Panel {
     }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending && self.writing {
-            self.error=Some("A GitHub action is in progress for this captured destination. Wait for the result, or choose Cancel and inspect GitHub before resubmitting.".into());
+            self.refuse("A GitHub action is in progress for this captured destination. Wait for the result, or choose Cancel and inspect GitHub before resubmitting.");
             cx.notify();
             return;
         }
@@ -1194,21 +1227,19 @@ impl Panel {
         };
         cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
-            let _ =
-                this.update_in(cx, |this, _, cx| {
-                    match result {
-                        Ok(Ok(())) => {
-                            this.saved.retain(|draft| draft.key() != key);
-                            this.notice =
-                                Some("The selected saved draft was discarded locally.".into());
-                        }
-                        _ => this.error = Some(
-                            "Could not discard the selected draft; its stored text was preserved."
-                                .into(),
-                        ),
+            let _ = this.update_in(cx, |this, _, cx| {
+                match result {
+                    Ok(Ok(())) => {
+                        this.saved.retain(|draft| draft.key() != key);
+                        this.notice =
+                            Some("The selected saved draft was discarded locally.".into());
                     }
-                    cx.notify();
-                });
+                    _ => this.refuse(
+                        "Could not discard the selected draft; its stored text was preserved.",
+                    ),
+                }
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -2576,6 +2607,46 @@ mod tests {
         assert_eq!(alerted(cx), None);
         escape(cx);
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// Each press the panel refuses is said again, with a fresh alert node, though it refuses
+    /// it as it refused the one before: Review submission… pressed twice with no pull request
+    /// chosen. The lines alone stay the same, so the second press was silent.
+    #[gpui::test]
+    async fn the_window_alerts_each_refused_press(cx: &mut TestAppContext) {
+        use crate::copy_feedback::tests::alerted;
+        use crate::tags::tests::draw;
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        open_notice_panel(&app, &panel, (13, 461., 490.), cx).await;
+        #[cfg(target_os = "linux")]
+        let mut bus = {
+            use crate::native_accessibility::atspi_state_tests::{Bus, next_frame};
+            Bus::new(next_frame(cx))
+        };
+        let refused = DraftIssue::Selection.message();
+        let mut heard = Vec::new();
+        for press in ["first", "second"] {
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| panel.review_submission(window, cx))
+            });
+            draw(cx);
+            draw(cx);
+            let (id, text) = alerted(cx).unwrap_or_else(|| panic!("the {press} press is said"));
+            assert_eq!(text, refused, "the {press} press is refused");
+            heard.push(id);
+            #[cfg(target_os = "linux")]
+            {
+                use crate::native_accessibility::atspi_state_tests::next_frame;
+                bus.update(next_frame(cx));
+                assert_eq!(
+                    bus.announced(),
+                    vec![refused.to_owned()],
+                    "AT-SPI announces the {press} press"
+                );
+            }
+        }
+        assert_ne!(heard[0], heard[1], "each press is a fresh alert node");
+        escape(cx);
     }
 
     /// A request that answers while keyboard focus is on the busy row's
