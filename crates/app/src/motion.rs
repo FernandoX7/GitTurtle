@@ -4861,10 +4861,10 @@ mod tests {
 
     /// A working row's menu, opened as `opening` opens it at rest, keeps
     /// its items while the rows of a newer status are prepared, and is
-    /// built again at once, every item refused and saying why, as a write
-    /// starts meanwhile; once the rows land it is built from them, refusing
-    /// what the write refuses, and once the write's reload lands it offers
-    /// its items again. Waiting for the rows, it kept offering Delete
+    /// built again at once, every item refused and naming the write, as a
+    /// write starts meanwhile; once the rows land it is built from them,
+    /// refusing what the write refuses, and once the write's reload lands it
+    /// offers its items again. Waiting for the rows, it kept offering Delete
     /// untracked file… through the write until the rows landed.
     async fn a_row_menu_refuses_a_write_started_while_its_rows_are_prepared(
         cx: &mut TestAppContext,
@@ -4874,8 +4874,8 @@ mod tests {
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         open_row_menu(&app, cx, "gamma.txt", opening);
         let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
-        let waiting =
-            |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…, refreshing…");
+        // The held write runs as "Working…" (`held`).
+        let waiting = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…, working…");
         assert_eq!(delete(cx), Some(true), "{opening:?}: at rest");
         let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
         std::fs::write(repository.join("omega.txt"), "omega\n").unwrap();
@@ -4937,6 +4937,189 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         a_row_menu_refuses_a_write_started_while_its_rows_are_prepared(cx, Opening::Keyboard).await;
+    }
+
+    /// What the rows a Working row's menu waits for are prepared for.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Cause {
+        /// The filter's query.
+        Filter,
+        /// A newer status, as a quiet read lands it.
+        Status,
+    }
+
+    /// A working row's menu waiting for rows being prepared for `cause`
+    /// refuses every item, each stating why at its row's end
+    /// (`working_rows_wait`): "Filtering…" for the filter's query, as the
+    /// list says "Filtering working paths…" until its first rows land, and
+    /// "Refreshing…" for a newer status; while a write started meanwhile
+    /// runs, `through_write`, the write, by the label it runs under, as
+    /// Fetch, Pull and Push name it, and once more what the rows are for as
+    /// it ends, built again then. A right-click's menu opens on the rows
+    /// being prepared; a keyboard's, which Shift-F10 on those rows does not
+    /// open, opens at rest and keeps its items until a write starts. Once
+    /// the rows land, and any write's reload, it offers its items. Every
+    /// item once said "Refreshing…", for a filter's rows too and through a
+    /// write, though the Changes header says so only while a status is read.
+    async fn a_waiting_row_menu_states_why_by_its_cause(
+        cx: &mut TestAppContext,
+        opening: Opening,
+        cause: Cause,
+        through_write: bool,
+    ) {
+        let at = format!("{opening:?}, {cause:?}");
+        let (_fixture, app, cx) = six_files_for_menus(cx).await;
+        let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
+        let gamma: &'static str = format!(
+            "working-row-{}",
+            position_of(&app, cx, "gamma.txt", ChangeArea::Unstaged)
+        )
+        .leak();
+        let waiting = |cx: &mut VisualTestContext, reason: &str| {
+            offered(cx, &format!("Delete untracked file…, {reason}"))
+        };
+        let delete = |cx: &mut VisualTestContext| offered(cx, "Delete untracked file…");
+        if let Opening::Keyboard = opening {
+            open_row_menu(&app, cx, "gamma.txt", opening);
+            assert_eq!(delete(cx), Some(true), "{at}: at rest");
+        }
+        let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+        if cause == Cause::Filter {
+            // Every file but epsilon matches.
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.working_filter
+                        .update(cx, |input, cx| input.set_value("a", window, cx));
+                    app.filter_working_paths(window, cx);
+                })
+            });
+            next_frame(cx);
+        } else {
+            std::fs::write(repository.join("omega.txt"), "omega\n").unwrap();
+            quietly_read_while_rows_held(&app, cx);
+        }
+        assert!(
+            app.read_with(cx, |app, _| app.working_paths.pending),
+            "{at}: the rows are prepared"
+        );
+        let reason = if cause == Cause::Filter {
+            "filtering…"
+        } else {
+            "refreshing…"
+        };
+        match opening {
+            Opening::RightClick => {
+                right_click(cx, gamma);
+                assert_eq!(
+                    waiting(cx, reason),
+                    Some(false),
+                    "{at}: opened on rows being prepared, refused, saying {reason:?}"
+                );
+                assert_eq!(
+                    delete(cx),
+                    None,
+                    "{at}: none refused with nothing to say why"
+                );
+            }
+            Opening::Keyboard => assert_eq!(
+                delete(cx),
+                Some(true),
+                "{at}: kept as it was built while the rows are prepared"
+            ),
+        }
+        if through_write {
+            let write = app.update(cx, |app, _| app.operations.hold());
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.write(
+                        gitturtle_core::WriteCommand::CreateBranch {
+                            name: "side-q9".into(),
+                            start_point: None,
+                        },
+                        "Creating branch…",
+                        window,
+                        cx,
+                    )
+                })
+            });
+            next_frame(cx);
+            assert_eq!(
+                waiting(cx, "creating branch…"),
+                Some(false),
+                "{at}: built again as the write starts, naming it"
+            );
+            assert_eq!(waiting(cx, reason), None, "{at}: the write is why");
+            assert_eq!(delete(cx), None, "{at}: offered no more");
+            // The write ends while the rows are still prepared.
+            drop(write);
+            let task = app
+                .update(cx, |app, _| app.operation_task.take())
+                .expect("the write");
+            task.await;
+            cx.executor().run_until_parked();
+            next_frame(cx);
+            assert!(
+                app.read_with(cx, |app, _| app.operation_busy.is_none()
+                    && app.working_paths.pending),
+                "{at}: the write ended, and the rows are still prepared"
+            );
+            assert_eq!(
+                waiting(cx, reason),
+                Some(false),
+                "{at}: built again as the write ends, saying {reason:?}"
+            );
+            assert_eq!(
+                waiting(cx, "creating branch…"),
+                None,
+                "{at}: the ended write is not named"
+            );
+        }
+        drop(rows);
+        crate::path_filter::filters_land(&app, cx);
+        if through_write {
+            quiet_reads_land(&app, cx);
+            crate::path_filter::filters_land(&app, cx);
+        }
+        next_frame(cx);
+        assert_eq!(delete(cx), Some(true), "{at}: offered once the rows land");
+        cx.simulate_keystrokes("escape");
+        next_frame(cx);
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menu_waiting_for_filtered_rows_says_filtering(cx: &mut TestAppContext) {
+        a_waiting_row_menu_states_why_by_its_cause(cx, Opening::RightClick, Cause::Filter, false)
+            .await;
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menu_waiting_for_a_newer_status_says_refreshing(
+        cx: &mut TestAppContext,
+    ) {
+        a_waiting_row_menu_states_why_by_its_cause(cx, Opening::RightClick, Cause::Status, false)
+            .await;
+    }
+
+    #[gpui::test]
+    async fn a_right_click_menu_waiting_through_a_write_names_the_write(cx: &mut TestAppContext) {
+        a_waiting_row_menu_states_why_by_its_cause(cx, Opening::RightClick, Cause::Status, true)
+            .await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_menu_waiting_for_filtered_rows_names_a_write_then_says_filtering(
+        cx: &mut TestAppContext,
+    ) {
+        a_waiting_row_menu_states_why_by_its_cause(cx, Opening::Keyboard, Cause::Filter, true)
+            .await;
+    }
+
+    #[gpui::test]
+    async fn a_keyboard_menu_waiting_for_a_newer_status_names_a_write_then_says_refreshing(
+        cx: &mut TestAppContext,
+    ) {
+        a_waiting_row_menu_states_why_by_its_cause(cx, Opening::Keyboard, Cause::Status, true)
+            .await;
     }
 
     /// A History window on a clean worktree, wide enough for the action bar

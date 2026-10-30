@@ -1977,7 +1977,13 @@ impl GitTurtle {
             self.status = self.working_summary();
         }
         if entries_changed {
-            self.schedule_working_filter(working_anchor, !quiet, window, cx);
+            self.schedule_working_filter(
+                working_anchor,
+                !quiet,
+                crate::working_selection::Preparation::Status,
+                window,
+                cx,
+            );
         } else if !self.working_paths.pending {
             // No new rows: a departed row whose write has finished did not
             // move. Rows still being prepared for an earlier status, as a
@@ -4227,11 +4233,11 @@ impl GitTurtle {
                         // the open menu again. Opened on rows the filter is
                         // replacing, it refuses its items until the new rows
                         // land and build it again (`waits_while`), as a
-                        // click on those rows refuses, each item saying so.
-                        let (busy, preparing) =
-                            ignore_owner.upgrade().map_or((true, false), |owner| {
+                        // click on those rows refuses, each item saying why.
+                        let (busy, waiting) =
+                            ignore_owner.upgrade().map_or((true, None), |owner| {
                                 let owner = owner.read(cx);
-                                (owner.write_unsettled(), owner.working_paths.pending)
+                                (owner.write_unsettled(), owner.working_rows_wait())
                             });
                         working_row_menu(
                             menu,
@@ -4243,7 +4249,7 @@ impl GitTurtle {
                             },
                             forms.file_action,
                             busy,
-                            preparing,
+                            waiting,
                         )
                     })
                     // A file whose status changes under its open menu, as
@@ -4313,7 +4319,7 @@ impl GitTurtle {
             },
             stage_control,
             busy: false,
-            preparing: false,
+            waiting: None,
         });
         let Some(items) = self.working_menu_items(cx) else {
             return;
@@ -4340,10 +4346,10 @@ impl GitTurtle {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<impl FnOnce(PopupMenu) -> PopupMenu + 'static> {
-        let (busy, preparing) = (self.write_unsettled(), self.working_paths.pending);
+        let (busy, waiting) = (self.write_unsettled(), self.working_rows_wait());
         let (owner, repository) = (cx.entity().downgrade(), self.path.clone());
         let followed = self.file_menu_row.as_mut()?;
-        (followed.busy, followed.preparing) = (busy, preparing);
+        (followed.busy, followed.waiting) = (busy, waiting);
         let (target, stage_control) = (followed.target.clone(), followed.stage_control);
         Some(move |menu| {
             working_row_menu(
@@ -4353,8 +4359,26 @@ impl GitTurtle {
                 target,
                 stage_control,
                 busy,
-                preparing,
+                waiting,
             )
+        })
+    }
+
+    /// Why a Working row's menu refuses every item while the rows are
+    /// prepared, which each item states, or `None` while none are: the write
+    /// that runs, by the label it runs under, as Fetch, Pull and Push name it
+    /// while it runs, and otherwise what the rows are for
+    /// ([`FILTERING_ROWS`], [`REFRESHING_ROWS`]). Every item once said
+    /// "Refreshing…", for a filter's rows too, and through a write that
+    /// started as the rows were prepared.
+    pub(super) fn working_rows_wait(&self) -> Option<&'static str> {
+        use crate::working_selection::Preparation;
+        self.working_paths.pending.then(|| {
+            self.operation_busy
+                .unwrap_or(match self.working_paths.preparation {
+                    Preparation::Filter => FILTERING_ROWS,
+                    Preparation::Status => REFRESHING_ROWS,
+                })
         })
     }
 
@@ -4819,9 +4843,11 @@ pub(super) struct WorkingMenu {
     pub(super) stage_control: bool,
     /// Whether the items were built refusing writes.
     pub(super) busy: bool,
-    /// Whether the items were built while the rows were prepared, refused
-    /// and saying so, which the rows' landing builds again.
-    pub(super) preparing: bool,
+    /// Why the items were built refused while the rows were prepared, which
+    /// each states (`GitTurtle::working_rows_wait`), or `None` where they
+    /// were not: the rows' landing builds them again, and so does a change
+    /// of that reason meanwhile.
+    pub(super) waiting: Option<&'static str>,
 }
 
 /// A Working Changes file row's element ID: its group and its path's bytes,
@@ -4885,8 +4911,12 @@ impl WorkingRowIds {
 }
 
 /// What a Working row's menu item states beside it while the rows of a newer
-/// status are prepared, the Changes header's word for that read.
-pub(super) const PREPARING_ROWS: &str = "Refreshing…";
+/// status are prepared, as a read of it lands.
+pub(super) const REFRESHING_ROWS: &str = "Refreshing…";
+/// What it states while the rows the filter's query or the Directories
+/// grouping shows are prepared, as the list says "Filtering working paths…"
+/// until the first of them land.
+pub(super) const FILTERING_ROWS: &str = "Filtering…";
 
 /// A Working Changes file row's menu, which a right-click on the row and
 /// Shift-F10 or the Menu key on the list's cursor row open alike. Without its
@@ -4895,9 +4925,9 @@ pub(super) const PREPARING_ROWS: &str = "Refreshing…";
 /// on its file by path: a Stage or Unstage departs from where the file's row
 /// stands when it acts, which rows coming or going before it may have moved
 /// since the menu opened. `busy`, a write or what it reads after it, refuses
-/// every item; so does `preparing`, while the rows of a newer status are
-/// prepared, each item then stating why apart from it ([`PREPARING_ROWS`]),
-/// as an item a row cannot take states its condition.
+/// every item; so does `waiting`, while the rows are prepared, each item then
+/// stating why apart from it (`GitTurtle::working_rows_wait`), as an item a
+/// row cannot take states its condition.
 pub(super) fn working_row_menu(
     menu: PopupMenu,
     owner: WeakEntity<GitTurtle>,
@@ -4905,18 +4935,19 @@ pub(super) fn working_row_menu(
     target: MenuRow,
     stage_control: bool,
     busy: bool,
-    preparing: bool,
+    waiting: Option<&'static str>,
 ) -> PopupMenu {
     let MenuRow { entry, staged } = target;
     // Refused with nothing to say why, a menu opened as the rows were
     // prepared showed every item dim and was announced so.
     let item = |label: &'static str| {
-        if preparing {
-            native_accessibility::detailed_item(label, PREPARING_ROWS)
+        if let Some(reason) = waiting {
+            native_accessibility::detailed_item(label, reason)
         } else {
             PopupMenuItem::new(label)
         }
     };
+    let preparing = waiting.is_some();
     let busy = busy || preparing;
     let discard_owner = owner.clone();
     let discard_repository = repository.clone();

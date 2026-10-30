@@ -85,6 +85,17 @@ impl Selection {
     }
 }
 
+/// What the Working rows being prepared are for, which a row's menu, its
+/// items refused meanwhile, states (`GitTurtle::working_rows_wait`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Preparation {
+    /// The rows of a newer status, as a read of it lands.
+    #[default]
+    Status,
+    /// The rows the filter's query or the Directories grouping shows.
+    Filter,
+}
+
 /// Status snapshots and the prepared index are shared; query changes do not
 /// copy or normalize every path on the UI thread.
 #[derive(Default)]
@@ -93,6 +104,9 @@ pub(super) struct FilterState {
     index: Option<Arc<path_filter::Index>>,
     task: Option<Task<()>>,
     pub pending: bool,
+    /// What the rows prepared while `pending` are for, as the latest
+    /// preparation was asked.
+    pub preparation: Preparation,
     pub error: Option<String>,
     pub staged_count: usize,
     pub visible_count: usize,
@@ -315,13 +329,18 @@ impl GitTurtle {
     /// being prepared there is none to act on, and the rows landing run it;
     /// a write that starts meanwhile builds the menu again at once, from the
     /// file as it last found it, every item refused, where it once kept
-    /// offering what that write refused until the rows landed.
+    /// offering what that write refused until the rows landed, and a menu
+    /// built so is built again as the reason it states changes, as that
+    /// write ends (`working_rows_wait`).
     pub(super) fn follow_working_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(followed) = &self.file_menu_row else {
             return;
         };
         if self.working_paths.pending {
-            if !followed.busy && self.write_unsettled() {
+            let waiting = self.working_rows_wait();
+            if (!followed.busy && self.write_unsettled())
+                || (followed.waiting.is_some() && followed.waiting != waiting)
+            {
                 let items = self.working_menu_items(cx);
                 if let (Some(items), Some(menu)) = (items, &mut self.file_menu) {
                     menu.rebuild(items, window, cx);
@@ -335,8 +354,9 @@ impl GitTurtle {
             return;
         };
         let changed = (*entry != target.entry).then(|| entry.clone());
-        let rebuild =
-            changed.is_some() || followed.busy != self.write_unsettled() || followed.preparing;
+        let rebuild = changed.is_some()
+            || followed.busy != self.write_unsettled()
+            || followed.waiting.is_some();
         if let (Some(entry), Some(followed)) = (changed, self.file_menu_row.as_mut()) {
             followed.target.entry = entry;
         }
@@ -547,13 +567,16 @@ impl GitTurtle {
     pub(super) fn filter_working_paths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.working_selection.clear();
         self.working_scroll.scroll_to_item(0, ScrollStrategy::Top);
-        self.schedule_working_filter(None, false, window, cx);
+        self.schedule_working_filter(None, false, Preparation::Filter, window, cx);
     }
 
+    /// Prepares the rows the filter shows of the window's status, for
+    /// `preparation`, off the UI thread.
     pub(super) fn schedule_working_filter(
         &mut self,
         anchor: Option<ScrollAnchor>,
         center_selected: bool,
+        preparation: Preparation,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -617,6 +640,7 @@ impl GitTurtle {
             Ok((index, rows, staged, conflicted, matches.len(), landing))
         });
         self.working_paths.pending = true;
+        self.working_paths.preparation = preparation;
         self.working_paths.task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = response.await;
             let _ = this.update_in(cx, |this, window, cx| {
