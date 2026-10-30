@@ -4695,12 +4695,18 @@ mod tests {
     /// it follows, by the window or by its row: once as a write starts,
     /// once as it ends, once for the status read the write asks for, as the
     /// read's rows land rather than as the read does, and once as its
-    /// file's status changes outside the app. Built again from the file and
-    /// the write's state together, by its row, and for the write as well,
-    /// by the window, it was built twice as each write started, and twice
-    /// more as the read landed, before its rows.
+    /// file's status changes outside the app. Waiting for the filter's rows
+    /// through a write, it is built again once for each change of the
+    /// reason its refused items state: as the write starts, as it looks
+    /// busy, as it ends, and as a newer status lands and its rows become
+    /// why, with no write starting or ending; not as the write's reload
+    /// lands, and once as the rows do. Built again from the file and the
+    /// write's state together, by its row, and for the write as well, by
+    /// the window, it was built twice as each write started, and twice more
+    /// as the read landed, before its rows.
     #[gpui::test]
     async fn a_right_click_working_menu_is_built_once_per_change(cx: &mut TestAppContext) {
+        use crate::working_selection::Preparation;
         let (_fixture, app, cx) = six_files_for_menus(cx).await;
         let repository = app.read_with(cx, |app, _| app.path.clone().expect("a repository"));
         open_row_menu(&app, cx, "gamma.txt", Opening::RightClick);
@@ -4770,6 +4776,110 @@ mod tests {
             offered(cx, "Discard changes…"),
             Some(true),
             "for gamma's edit"
+        );
+        // The filter's rows wait behind this; gamma matches its query.
+        let waiting = |cx: &mut VisualTestContext, reason: &str| {
+            offered(cx, &format!("Discard changes…, {reason}"))
+        };
+        let rows = app.update(cx, |app, _| app.file_paths.executor().hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.working_filter
+                    .update(cx, |input, cx| input.set_value("a", window, cx));
+                app.filter_working_paths(window, cx);
+            })
+        });
+        next_frame(cx);
+        assert_eq!(built(), 0, "not built as the filter's rows are prepared");
+        let write = app.update(cx, |app, _| app.operations.hold());
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.write(
+                    gitturtle_core::WriteCommand::CreateBranch {
+                        name: "side-q9".into(),
+                        start_point: None,
+                    },
+                    "Creating branch…",
+                    window,
+                    cx,
+                )
+            })
+        });
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_some()
+                && app.operation_shown().is_none()),
+            "the write runs, and does not look busy yet"
+        );
+        assert_eq!(built(), 1, "built once as the write starts");
+        assert_eq!(waiting(cx, "filtering…"), Some(false), "for the filter");
+        cx.executor()
+            .advance_clock(crate::workspace::BUSY_LOOK_DELAY);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_shown().is_some()
+                && app.working_paths.pending),
+            "the write looks busy, and the filter's rows are still prepared"
+        );
+        assert_eq!(built(), 1, "built once as the write looks busy");
+        assert_eq!(
+            waiting(cx, "creating branch…"),
+            Some(false),
+            "naming the write"
+        );
+        drop(write);
+        let write = app
+            .update(cx, |app, _| app.operation_task.take())
+            .expect("the write");
+        write.await;
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| app.operation_busy.is_none()
+                && app.working_paths.pending),
+            "the write ended, and the filter's rows are still prepared"
+        );
+        assert_eq!(built(), 1, "built once as the write ends");
+        assert_eq!(
+            waiting(cx, "filtering…"),
+            Some(false),
+            "for the filter again"
+        );
+        quiet_reads_land(&app, cx);
+        next_frame(cx);
+        assert!(
+            app.read_with(cx, |app, _| !app.write_unsettled()
+                && app.working_paths.pending
+                && app.working_paths.preparation == Preparation::Filter),
+            "the write's reload landed, and the filter's rows are still prepared"
+        );
+        assert_eq!(built(), 0, "not built as the write's reload lands");
+        std::fs::write(repository.join("omega.txt"), "omega\n").unwrap();
+        quietly_read_while_rows_held(&app, cx);
+        assert!(
+            app.read_with(cx, |app, _| !app.write_unsettled()
+                && app.working_paths.preparation == Preparation::Status),
+            "the filter prepares the newer status's rows, and no write is unsettled"
+        );
+        assert_eq!(
+            built(),
+            1,
+            "built once as the newer status's rows become why"
+        );
+        assert_eq!(
+            waiting(cx, "refreshing…"),
+            Some(false),
+            "for the newer status"
+        );
+        drop(rows);
+        crate::path_filter::filters_land(&app, cx);
+        next_frame(cx);
+        assert_eq!(built(), 1, "built once as the rows land");
+        assert_eq!(
+            offered(cx, "Discard changes…"),
+            Some(true),
+            "once the rows land"
         );
     }
 
