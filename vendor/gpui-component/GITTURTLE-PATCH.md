@@ -570,10 +570,12 @@ from `POPOVER_EDGE_WIDTH` as it caps the app's menus. No app menu opens
 through the kit's context menu: the app's right-click menus
 (`AppContextMenu`, which builds a `PointerMenu`) and its keyboard row menus
 (`KeyboardMenu`) place themselves beside their row (`RowMenu`, inside
-`menu_bounds`), so the context-menu half reaches only the kit's own callers
-(`Tree`, `Table`, the sidebar menu and the `Editor` and `Textarea`
-context-menu builders), none of which the app uses, and the regression below,
-which opens a kit right-click menu directly.
+`menu_bounds`), so the context-menu half reaches only the kit's own
+`ContextMenuExt` callers (`Tree`, `Table` and the sidebar menu), none of which
+the app uses, and the regression below, which opens a kit right-click menu
+directly. The `Editor` and `Textarea` the app does use take their
+`context_menu` builder through the input's OS-native menu (`NativeMenu`, by
+`Input::context_menu`), not through `src/menu/context_menu.rs`.
 `cargo test --locked -p gitturtle kit_menus_stay_above_the_bottom_inset_an_application_sets`
 sets an inset of 120.5 px and opens a kit dropdown and a kit right-click menu
 at the foot of a 400 × 320 window: the host moves each up so that it ends
@@ -1156,11 +1158,13 @@ the History and Working Changes rows' among them, are built by
 (`crates/app/src/native_accessibility.rs`), which keeps its own shared state
 and holds it weakly from its dismissal the same way (`PointerMenuState`);
 `cargo test --locked -p gitturtle native_accessibility::menu_tests::a_context_menu_goes_with_its_row`
-covers that path, not this one. This part reaches the kit's own `Tree` and
-the kit's other `ContextMenuExt` callers (`Table`, the sidebar menu and the
-`Editor` and `Textarea` context-menu builders), none of which the app uses; in
-the app it reaches only the probe of
-`kit_menus_stay_above_the_bottom_inset_an_application_sets`.
+covers that path, not this one. This part reaches the kit's own
+`ContextMenuExt` callers (`Tree`, `Table` and the sidebar menu), none of which
+the app uses; in the app it reaches only the probe of
+`kit_menus_stay_above_the_bottom_inset_an_application_sets`. The `Editor` and
+`Textarea`, which the app uses, show their right-click menu as the input's
+OS-native menu (`NativeMenu`, by `Input::context_menu`), not through this
+file.
 The crate's own `menu::context_menu::tests::a_context_menu_goes_with_its_owner`,
 run out of tree with the workspace's patch table, opens an element's menu
 with a right-click, closes it with Escape and takes the element away, then
