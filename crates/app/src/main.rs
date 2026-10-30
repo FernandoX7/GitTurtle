@@ -1141,6 +1141,11 @@ impl GitTurtle {
         self.cancel_interactive_rebase_action();
         self.cancel_ignore_action();
         self.cancel_discard_action();
+        // The working read Changes asked for while a preparation cancelled
+        // above ran is dropped: the snapshot opened below reads the working
+        // state too. As History's Refresh cancelled Discard…'s review, the
+        // read once stayed noted, and a later preparation's end read unasked.
+        self.working_read_deferred = None;
         self.close_inspections(window, cx);
         self.close_blame(window, cx);
         self.blame = blame::State::default();

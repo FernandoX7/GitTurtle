@@ -1362,6 +1362,63 @@ mod tests {
         assert!(on_list(cx), "Back returns focus to the list");
     }
 
+    /// History's Refresh opens the repository again, which cancels a
+    /// review's preparation and drops the working read Changes asked for
+    /// meanwhile: the snapshot it reads reads the working state itself.
+    /// Refresh pressed during Discard…'s review, then History's Refresh,
+    /// once left the read noted, and a later preparation's end, before that
+    /// snapshot landed or where it failed, read the working state unasked.
+    #[gpui::test]
+    async fn historys_refresh_drops_the_read_a_cancelled_preparation_held_back(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::views::tests::{draw, settle};
+        let (fixture, app, cx, _) = checked_out(cx).await;
+        cx.simulate_keystrokes(&primary("2"));
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        // Discard…'s review, held as a slow disk holds it, and Refresh.
+        let held = app.update(cx, |app, _| app.operations.hold());
+        let draft = entry(&app, "draft.txt", cx);
+        cx.update(|window, cx| app.update(cx, |app, cx| app.open_discard(draft, window, cx)));
+        std::fs::write(fixture.path().join("narrow").join("later.txt"), "later\n").unwrap();
+        cx.simulate_keystrokes(&primary("r"));
+        draw(cx);
+        assert!(app.read_with(cx, |app, _| app.working_read_pending()));
+        cx.simulate_keystrokes(&primary("1"));
+        draw(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::History, "History shows");
+            assert!(app.operation_busy.is_some(), "the review still runs");
+        });
+        // History's Refresh, read here before its snapshot can land.
+        cx.update(|window, cx| app.update(cx, |app, cx| app.refresh(&Refresh, window, cx)));
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.operation_busy, None, "Refresh cancels the review");
+            assert_eq!(
+                app.working_read_deferred, None,
+                "and drops the read Changes asked for"
+            );
+        });
+        drop(held);
+        app.read_with(cx, |app, _| app.operations.drain());
+        settle(&app, cx).await;
+        crate::path_filter::filters_land(&app, cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.mode == WorkspaceMode::History);
+            assert_eq!(app.operation_busy, None);
+            assert!(!app.working_read_pending(), "no read stays noted");
+        });
+        assert!(
+            entries(&app, cx).is_some_and(|entries| entries.contains(&"later.txt".to_owned())),
+            "the snapshot's own read reads the working state"
+        );
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "the cancelled review opens nothing"
+        );
+    }
+
     /// A tab switch or close cancels Discard…'s review and drops the
     /// working read Changes asked for meanwhile with the tab's other reads:
     /// shown again, a tab reads quietly. The read once stayed noted, and the

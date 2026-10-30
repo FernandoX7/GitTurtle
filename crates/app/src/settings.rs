@@ -401,7 +401,7 @@ impl GitTurtle {
         // A preparation cancelled above never reaches its end, which would
         // have run the read Changes asked for meanwhile: clicking the tab
         // back, which reads nothing, once left Refresh unrun.
-        self.read_deferred_working(window, cx);
+        self.read_noted_working(window, cx);
         self.column_menu = false;
         self.column_drag = None;
         self.image_drag = None;

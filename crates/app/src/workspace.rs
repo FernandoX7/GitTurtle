@@ -1793,12 +1793,18 @@ impl GitTurtle {
                 this.operation_busy = None;
                 this.operation_repository = None;
                 this.finish_operation_control(window, cx);
-                this.read_deferred_working(window, cx);
+                // The repository opened below reads afresh: `open` drops a
+                // working read noted meanwhile, and would cancel at once a
+                // quiet refresh started here.
+                let opening = result.is_ok() && this.path == accepted_path && this.page == accepted_page;
+                if !opening {
+                    this.read_deferred_working(window, cx);
+                }
                 this.hub.update(cx, |hub, cx| hub.set_busy(false, cx));
                 match result {
                     Ok(repo) => {
                         let message = format!("{} · {}", if label.starts_with("Cloning") { "Repository cloned" } else { "Repository created" }, this.project_name(repo.path()));
-                        if this.path == accepted_path && this.page == accepted_page {
+                        if opening {
                             this.limit = 500; this.open(repo.path().to_owned(), None, window, cx);
                             this.operation_notice = Some(message);
                         } else {
@@ -1836,7 +1842,7 @@ impl GitTurtle {
         self.page_origin = AppPage::Repository;
         // A preparation cancelled above never reaches its end, which would
         // have run the read Changes asked for meanwhile.
-        self.read_deferred_working(window, cx);
+        self.read_noted_working(window, cx);
         self.hub.update(cx, |hub, cx| {
             hub.set_busy(false, cx);
             hub.set_error(None, cx);
@@ -2162,13 +2168,17 @@ impl GitTurtle {
     /// ([`Self::refresh_worktree`]) and none runs now. Every write, clone,
     /// create and preparation calls it as it ends, whichever repository it
     /// ran in: Changes may have been opened in another tab meanwhile, whose
-    /// rows the write's own reads never touch. So does whatever cancels a
-    /// preparation, whose end then never runs: Settings, Projects and a
-    /// form's Cancel. A tab switch or close drops the read instead
-    /// (`retain_active_tab`, `close_repository_tab`): the tab reads quietly
-    /// when it is shown again. A read another tab asked for is dropped too,
-    /// as the shown one did not ask. A cancel once left the read noted, so
-    /// Refresh never ran, or ran unasked at the end of a later preparation.
+    /// rows the write's own reads never touch. A clone or create that opens
+    /// its repository leaves both to `open`, which drops the read, and whose
+    /// snapshot reads afresh. Whatever cancels a preparation, whose end then
+    /// never runs, reads it too: a form's Cancel, and Settings and Projects
+    /// through [`Self::read_noted_working`]. A tab switch or close drops the
+    /// read instead (`retain_active_tab`, `close_repository_tab`), the tab
+    /// reading quietly when it is shown again, and so does `open`, as
+    /// History's Refresh calls it, whose snapshot reads the working state
+    /// itself. A read another tab asked for is dropped too, as the shown one
+    /// did not ask. A cancel once left the read noted, so Refresh never ran,
+    /// or ran unasked at the end of a later preparation.
     ///
     /// Then the quiet refresh the running write or preparation refused
     /// starts ([`Self::try_automatic_refresh`]), or, behind a read just
@@ -2177,6 +2187,15 @@ impl GitTurtle {
     /// with no watch registered behind it, once kept the history and rows
     /// last read after the end, until something else read them.
     pub(super) fn read_deferred_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.read_noted_working(window, cx);
+        self.try_automatic_refresh(window, cx);
+    }
+
+    /// The working read of [`Self::read_deferred_working`] without its
+    /// quiet refresh, for Settings and Projects as they cancel a
+    /// preparation: off the repository page a quiet refresh is refused, and
+    /// the return there starts it (`return_from_page`).
+    pub(super) fn read_noted_working(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.operation_busy.is_none() && self.working_read_deferred.is_some() {
             if self.working_read_deferred == self.path {
                 self.refresh_worktree(window, cx);
@@ -2184,7 +2203,6 @@ impl GitTurtle {
                 self.working_read_deferred = None;
             }
         }
-        self.try_automatic_refresh(window, cx);
     }
 
     /// Whether the shown repository's working state is being read, or is to
