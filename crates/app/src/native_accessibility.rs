@@ -493,13 +493,18 @@ impl KeyboardMenu {
     /// as while a write refuses it or once it states a condition it waits
     /// for, the cursor rests on none until the item can act again, when it
     /// returns to it, or a key or the pointer moves it (the kit's
-    /// `PopupMenu::rebuild`). A right-click's menu built again
+    /// `PopupMenu::rebuild`). Once the pointer has taken the selection, or
+    /// taken the cursor off its row, nothing is selected after the rebuild
+    /// until a key places the cursor again, though the builder opens the menu
+    /// on its first item. A right-click's menu built again
     /// ([`PointerMenu::built_from`]) keeps its cursor the same way. The
     /// cursor once returned to the first item that can act, and a
     /// right-click's lost it, so Enter just after a write ended could choose
     /// another item than the one the keys had reached; later it moved to the
     /// nearest item that could act, so a conflicted file's refused Discard
-    /// changes… left it on Stage, and Enter marked the file resolved.
+    /// changes… left it on Stage, and Enter marked the file resolved; and a
+    /// menu the pointer had moved over took the builder's first item, Stage
+    /// on a narrow Working row, where Enter staged the file.
     pub(super) fn rebuild(
         &self,
         build: impl FnOnce(PopupMenu) -> PopupMenu,
@@ -513,7 +518,11 @@ impl KeyboardMenu {
     /// taller than `cap`. The builder opens the menu from the keyboard,
     /// on its first item that can act, as it opened; the kit's rebuild
     /// then puts the cursor back where the keys had left it, or rests it on
-    /// none while that item cannot act.
+    /// none while that item cannot act. Where the kit remembers no item, the
+    /// builder's cursor on the first item stands, as for a menu that opened
+    /// with every item refused, unless the pointer has taken the selection
+    /// or the cursor off its row since a key last placed it: then nothing is
+    /// selected.
     fn build_again(
         menu: &Entity<PopupMenu>,
         focus: FocusHandle,

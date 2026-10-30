@@ -493,6 +493,11 @@ pub struct PopupMenu {
     /// Down start from its place. A menu key or the pointer that moves the
     /// selection forgets it. While it is held nothing is selected.
     kept_cursor: Option<KeptCursor>,
+    /// GitTurtle patch: the pointer took the selection, or took the
+    /// keyboard's cursor off its row, since a menu key last placed it, so a
+    /// rebuild selects nothing, whatever its builder selects
+    /// ([`PopupMenu::rebuild`]). A menu key or a dismissal clears it.
+    pointer_selection: bool,
     /// GitTurtle patch: where the pointer rested when a wheel scrolled the
     /// rows under it, until it moves from there. Meanwhile no row draws the
     /// pointer's hover or takes its selection: the person never moved to
@@ -546,6 +551,7 @@ impl PopupMenu {
             selected_index: None,
             keyboard_selection: false,
             kept_cursor: None,
+            pointer_selection: false,
             still_pointer: None,
             hovered_index: None,
             min_width: None,
@@ -957,17 +963,24 @@ impl PopupMenu {
     /// selection. From rest, Up and Down start from the item's place. A
     /// remembered item takes the place of any selection the builder makes
     /// ([`Self::select_first_item`]); with none, the builder's selection
-    /// stands. Upstream cleared the selection, so an open menu built again,
-    /// as its content arrived or the state its items read changed, lost its
-    /// cursor, and a caller that put one back could only put it on the first
-    /// item; moved to the nearest item that could act, the cursor once
-    /// rested on an action the person had not chosen, which Enter then ran.
-    /// A selection the pointer made is cleared, as upstream: the pointer's
-    /// own place decides what it lights. A capped menu scrolls to the cursor
-    /// only where the rebuild moves it to another row, as its item moved or
-    /// it returns from rest, and the builder's selection, which a kept
-    /// cursor replaces, scrolls nothing: a menu the wheel scrolled stays
-    /// where it was.
+    /// stands, unless the pointer owns the selection. Upstream cleared the
+    /// selection, so an open menu built again, as its content arrived or the
+    /// state its items read changed, lost its cursor, and a caller that put
+    /// one back could only put it on the first item; moved to the nearest
+    /// item that could act, the cursor once rested on an action the person
+    /// had not chosen, which Enter then ran. A selection the pointer made is
+    /// cleared, as upstream: the pointer's own place decides what it lights.
+    /// Once the pointer has taken the selection, or taken the keyboard's
+    /// cursor off its row, since a menu key last placed it
+    /// (`pointer_selection`), the rebuild selects nothing, though its builder
+    /// selects an item, as a menu opened from the keyboard is built on its
+    /// first item, until a menu key places the cursor again: the builder's
+    /// first item once took the cursor of a keyboard-opened menu the pointer
+    /// had moved over, and Enter ran that item. A capped menu scrolls to the
+    /// cursor only where the rebuild moves it to another row, as its item
+    /// moved or it returns from rest, and the builder's selection, which a
+    /// kept cursor or the pointer's ownership replaces, scrolls nothing: a
+    /// menu the wheel scrolled stays where it was.
     pub fn rebuild(
         &mut self,
         window: &mut Window,
@@ -976,21 +989,26 @@ impl PopupMenu {
     ) {
         let cursor = self.keyboard_cursor();
         let row = self.selected_index;
+        let pointer = cursor.is_none() && self.pointer_selection;
         let mut menu = std::mem::replace(self, Self::new(cx));
         menu.menu_items.clear();
         menu.selected_index = None;
         menu.kept_cursor = None;
-        // The builder's selection, which a kept cursor replaces, scrolls a
-        // handle nothing draws.
-        let scroll = cursor
-            .as_ref()
-            .map(|_| std::mem::take(&mut menu.scroll_handle));
+        // The builder's selection, which a kept cursor or the pointer's
+        // ownership replaces, scrolls a handle nothing draws.
+        let scroll = (cursor.is_some() || pointer).then(|| std::mem::take(&mut menu.scroll_handle));
         *self = f(menu, window, cx);
         if let Some(scroll) = scroll {
             self.scroll_handle = scroll;
         }
         if let Some(cursor) = cursor {
             self.place_kept_cursor(cursor, row);
+        } else if pointer {
+            // The builder's selection cleared the flag; the pointer still
+            // owns the selection, for the next rebuild as well.
+            self.selected_index = None;
+            self.keyboard_selection = false;
+            self.pointer_selection = true;
         }
         cx.notify();
     }
@@ -1230,8 +1248,10 @@ impl PopupMenu {
     /// submenu's first item and a keyboard-opened menu's).
     fn set_selected_index(&mut self, ix: usize, cx: &mut Context<Self>) {
         // GitTurtle patch: a key that moves the cursor ends a rebuild's
-        // remembering of the item it was on ([`Self::rebuild`]).
+        // remembering of the item it was on, and the pointer's ownership of
+        // the selection ([`Self::rebuild`]).
         self.kept_cursor = None;
+        self.pointer_selection = false;
         if self.selected_index != Some(ix) || !self.keyboard_selection {
             self.selected_index = Some(ix);
             self.keyboard_selection = true;
@@ -1416,6 +1436,7 @@ impl PopupMenu {
     fn dismiss(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
         self.selected_index = None;
         self.kept_cursor = None;
+        self.pointer_selection = false;
         cx.emit(DismissEvent);
 
         // Focus back to the previous focused handle, unless the item's click
@@ -1646,6 +1667,7 @@ impl PopupMenu {
             self.selected_index = Some(ix);
             self.keyboard_selection = false;
             self.kept_cursor = None;
+            self.pointer_selection = true;
         }
         cx.notify();
     }
@@ -1722,8 +1744,10 @@ impl PopupMenu {
                         this.selected_index = Some(ix);
                         this.keyboard_selection = false;
                         // The pointer's selection ends a rebuild's
-                        // remembering ([`PopupMenu::rebuild`]).
+                        // remembering, and is its own until a menu key
+                        // moves it ([`PopupMenu::rebuild`]).
                         this.kept_cursor = None;
+                        this.pointer_selection = true;
                     }
                 } else {
                     if this.hovered_index == Some(ix) {
@@ -1732,6 +1756,9 @@ impl PopupMenu {
                     if !still && !is_submenu && this.selected_index == Some(ix) {
                         // TODO: Better handle the submenu unselection when hover out
                         this.selected_index = None;
+                        // The pointer took the selection, a keyboard's
+                        // cursor among it, off this row.
+                        this.pointer_selection = true;
                     }
                 }
 
@@ -2509,12 +2536,17 @@ mod tests {
         );
     }
 
-    /// The pointer leaving the row that holds the keyboard's cursor takes
-    /// the cursor away, and a rebuild then remembers no item, though the
-    /// menu had remembered that item while it was refused and put the
-    /// cursor back on it. A key press stops GPUI reporting the pointer's
-    /// row hovered until the pointer moves, so the row a rebuild puts the
-    /// cursor on, under a still pointer, is the one it can leave.
+    /// The pointer on a row selects it, and a rebuild whose builder selects
+    /// its first item, as a menu opened from the keyboard is built, then
+    /// selects nothing: the pointer owns the selection. The pointer leaving
+    /// the row that holds the keyboard's cursor takes the cursor away, and a
+    /// rebuild then remembers no item and selects none, though the menu had
+    /// remembered that item while it was refused and put the cursor back on
+    /// it. A key press stops GPUI reporting the pointer's row hovered until
+    /// the pointer moves, so the cursor the menu opening from the keyboard
+    /// puts on the row under the still pointer is one it can leave. The
+    /// builder's first item once took the cursor each time, so Enter ran an
+    /// item neither the keys nor the pointer had chosen.
     #[gpui::test]
     fn a_rebuild_after_the_pointer_leaves_the_cursors_row_keeps_no_cursor(cx: &mut TestAppContext) {
         const TWO_FIRST: &[(&str, bool)] = &[("Two", true), ("Three", true)];
@@ -2526,17 +2558,28 @@ mod tests {
         let three = cx
             .debug_bounds("menu-item: Three · MenuItem")
             .expect("Three drawn");
-        cx.simulate_mouse_move(two.center(), None, Modifiers::default());
-        draw(cx);
         let selection = |cx: &mut VisualTestContext| {
             menu.read_with(cx, |menu, _| (menu.selected_index, menu.keyboard_selection))
         };
-        assert_eq!(selection(cx), (Some(1), false), "the pointer on Two");
+        cx.simulate_mouse_move(three.center(), None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(2), false), "the pointer on Three");
         rebuilt_from_keyboard(&menu, cx, TWO_FIRST);
+        assert_eq!(
+            selection(cx).0,
+            None,
+            "the pointer's selection: the builder's first item, Two, does not take it"
+        );
+
+        cx.simulate_mouse_move(two.center(), None, Modifiers::default());
+        draw(cx);
+        assert_eq!(selection(cx), (Some(1), false), "the pointer on Two");
+        menu.update(cx, |menu, cx| menu.select_first_item(cx));
+        draw(cx);
         assert_eq!(
             cursor(&menu, cx).as_deref(),
             Some("Two"),
-            "a keyboard's builder put the cursor on Two"
+            "opened from the keyboard, the cursor on Two, under the pointer"
         );
         rebuilt(&menu, cx, TWO_REFUSED);
         assert_eq!(cursor(&menu, cx).as_deref(), None, "Two refused");
@@ -2550,24 +2593,49 @@ mod tests {
         );
         draw(cx);
         assert_eq!(selection(cx).0, None, "the pointer left Two's row");
-        rebuilt(&menu, cx, TWO_FIRST);
-        assert_eq!(selection(cx).0, None, "built again, nothing selected");
+        rebuilt_from_keyboard(&menu, cx, TWO_FIRST);
+        assert_eq!(
+            selection(cx).0,
+            None,
+            "built again from the keyboard, nothing selected"
+        );
     }
 
     /// A selection the pointer made is cleared by a rebuild, as upstream:
-    /// the pointer's place decides what it lights.
+    /// the pointer's place decides what it lights. It stays cleared where
+    /// the builder selects its first item, as a menu opened from the
+    /// keyboard is built, however often the menu is built again, until a
+    /// menu key moves the cursor, which a rebuild then keeps.
     #[gpui::test]
     fn a_rebuilt_menu_clears_the_pointers_selection(cx: &mut TestAppContext) {
         let (menu, cx) = open(cx, FOUR);
-        menu.update(cx, |menu, _| {
-            menu.selected_index = Some(2);
-            menu.keyboard_selection = false;
-        });
+        let three = cx
+            .debug_bounds("menu-item: Three · MenuItem")
+            .expect("Three drawn");
+        cx.simulate_mouse_move(three.center(), None, Modifiers::default());
+        draw(cx);
+        let selected =
+            |cx: &mut VisualTestContext| menu.read_with(cx, |menu, _| menu.selected_index);
+        assert_eq!(selected(cx), Some(3), "the pointer on Three");
         rebuilt(&menu, cx, FOUR);
+        assert_eq!(selected(cx), None, "nothing selected");
+        rebuilt_from_keyboard(&menu, cx, FOUR);
         assert_eq!(
-            menu.read_with(cx, |menu, _| menu.selected_index),
+            selected(cx),
             None,
-            "nothing selected"
+            "nothing selected by a keyboard's builder"
+        );
+        rebuilt_from_keyboard(&menu, cx, FOUR);
+        assert_eq!(selected(cx), None, "nor built so again");
+
+        cx.simulate_keystrokes("down down");
+        draw(cx);
+        assert_eq!(cursor(&menu, cx).as_deref(), Some("Two"), "Down twice");
+        rebuilt_from_keyboard(&menu, cx, FOUR);
+        assert_eq!(
+            cursor(&menu, cx).as_deref(),
+            Some("Two"),
+            "the keys' cursor kept"
         );
     }
 

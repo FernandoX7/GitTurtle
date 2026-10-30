@@ -1041,8 +1041,17 @@ capped menu scrolls to the cursor only where the rebuild moves it to another
 row, as its item moved or it returns from rest; the selection of a builder
 whose choice a kept cursor replaces scrolls a handle nothing draws. A menu
 the wheel had scrolled once scrolled back to the cursor at every rebuild. A
-selection the pointer made is cleared, as upstream, and the menu keys are
-otherwise unchanged. An earlier form of this patch moved the cursor to the
+selection the pointer made is cleared, as upstream. Once the pointer has
+taken the selection, or taken the keyboard's cursor off its row, since a menu
+key last placed it (`pointer_selection`, which a menu key or a dismissal
+clears), a rebuild that remembers no item selects nothing, though its builder
+selects one, as a menu opened from the keyboard is built on its first item,
+and that selection scrolls nothing; the builder's first item once took the
+cursor of a keyboard-opened menu the pointer had moved over, so a narrow
+Working row's menu, the keys on Discard changes… and the pointer over it, put
+the cursor on Stage as a status change outside the app built it again, and
+Enter staged the file. The menu keys are otherwise unchanged. An earlier
+form of this patch moved the cursor to the
 nearest item that could act and remembered that one, which left it on an
 action the person had not chosen: a project's Rename project… while a write
 refused Open project, and after the write; Discard changes… once Ignore… was
@@ -1069,9 +1078,11 @@ build a menu again with the same items, an item added above the cursor's, its
 item refused or gone while another can act and the builder selects its first
 item, then offered again, and read the cursor's item each time, Up and Down
 from rest, a repeated name, a capped menu's scroll offset, and the pointer
-leaving the cursor's row; without the kept cursor the first reads no cursor
-once the menu is built again, and with the nearest item that can act the
-second reads the cursor on Rename.
+on a row and leaving the cursor's row, where a builder that selects its
+first item then selects nothing; without the kept cursor the first reads no
+cursor once the menu is built again, with the nearest item that can act the
+second reads the cursor on Rename, and with the builder's selection standing
+where the pointer owns it the last two read the first item selected.
 `cargo test --locked -p gitturtle a_right_click_row_menu_keeps_its_cursor_across_a_write`
 and `a_keyboard_row_menu_keeps_its_cursor_across_a_write` move a Working row
 menu's cursor down to Delete untracked file…, start and end a Stage of another
@@ -1086,6 +1097,11 @@ does the same with a keyboard's menu in an active window, where the conflicted
 file's preview focuses its resolution draft and the menu closes, so no
 rebuild reaches it (a test window starts inactive, where focus leaving the
 menu closed nothing);
+`a_keyboard_menu_the_pointer_moved_onto_selects_nothing_once_built_again`
+moves a narrow row's keyboard menu's cursor to Discard changes…, moves the
+pointer onto it, changes the file's mode outside the app, and reads no
+cursor once the menu is built again and no write after Enter, where the
+builder's Stage once took the cursor and Enter staged the file;
 `project_pane::tests::a_project_rows_keyboard_menu_follows_writes` reads a
 project's cursor on Open project, on none while a write refuses it, and on
 Open project again after. Remove this part of the patch when upstream's

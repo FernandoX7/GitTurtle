@@ -4662,6 +4662,84 @@ mod tests {
         a_row_menus_cursor_rests_as_its_file_becomes_conflicted(cx, Opening::Keyboard).await;
     }
 
+    /// A working row's keyboard menu in [`narrow_notes`], its cursor moved
+    /// down to Discard changes… and the pointer then moved onto that item,
+    /// is built again as a change outside the app changes its file, here
+    /// its mode. Its builder opens it from the keyboard, on Stage, its first
+    /// item, but the pointer owns the selection, so nothing is selected and
+    /// Enter starts no write. Stage once took the cursor there, and Enter
+    /// staged the file, an action neither the keys nor the pointer had
+    /// chosen.
+    #[gpui::test]
+    async fn a_keyboard_menu_the_pointer_moved_onto_selects_nothing_once_built_again(
+        cx: &mut TestAppContext,
+    ) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_fixture, app, cx, repository) = narrow_notes(cx).await;
+        let (_, discard) = open_row_menu_showing(
+            &app,
+            cx,
+            "notes.txt",
+            Opening::Keyboard,
+            "menu-item: Discard changes… · MenuItem",
+        );
+        cx.simulate_keystrokes("down");
+        next_frame(cx);
+        assert_eq!(
+            cursor_among(cx, &NOTES_ITEMS),
+            ["Discard changes…"],
+            "Down moved the cursor to Discard changes…"
+        );
+        cx.simulate_mouse_move(discard.center(), None, Modifiers::default());
+        next_frame(cx);
+        assert_eq!(
+            cursor_among(cx, &NOTES_ITEMS),
+            Vec::<&str>::new(),
+            "the pointer took the selection from the keyboard's cursor"
+        );
+        let menu = app.read_with(cx, |app, _| {
+            app.file_menu
+                .as_ref()
+                .expect("the keyboard's menu")
+                .menu()
+                .clone()
+        });
+        // How often the menu is built again.
+        let built = std::rc::Rc::new(std::cell::Cell::new(0));
+        let _built = cx.update(|_, cx| {
+            let built = built.clone();
+            cx.observe(&menu, move |_, _| built.set(built.get() + 1))
+        });
+
+        std::fs::set_permissions(
+            repository.join("notes.txt"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        quietly_refreshed(&app, cx);
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(built.get() > 0, "the mode change built the menu again");
+        assert_eq!(offered(cx, "Stage"), Some(true), "Stage offered");
+        assert_eq!(
+            cursor_among(cx, &NOTES_ITEMS),
+            Vec::<&str>::new(),
+            "nothing selected: Stage, the builder's first item, took no cursor"
+        );
+        cx.simulate_keystrokes("enter");
+        cx.executor().run_until_parked();
+        next_frame(cx);
+        assert!(!writing(&app, cx), "Enter started no write");
+        assert_eq!(offered(cx, "Stage"), Some(true), "the menu stays open");
+        let staged = committing_git(&repository, &["diff", "--cached", "--name-only"]);
+        assert!(
+            staged.status.success() && staged.stdout.is_empty(),
+            "nothing staged: {}",
+            String::from_utf8_lossy(&staged.stdout)
+        );
+        cx.update(|window, cx| crate::appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
     /// A working row's keyboard menu closes, focus on the list, as soon as a
     /// status read moves the selection off its row, as one that finds gamma
     /// staged outside the app moves it to gamma's Staged row; a read that
