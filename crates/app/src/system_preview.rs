@@ -787,12 +787,13 @@ pub(crate) fn header_ends(
             .flex()
             .flex_col()
             // A region that scrolls and clips what it holds for assistive
-            // technology, its scrollbar shown while it overflows.
-            .child(
-                cue.list(region, held.scrollbar)
-                    .flex_shrink(1.)
-                    .min_h(row.min(most)),
-            )
+            // technology, its scrollbar shown while it overflows. It never
+            // shrinks, since `most` bounds it and the foot always takes the
+            // shortfall: shrinking, it took about a millionth of the foot's
+            // share, which GPUI's snapping to device pixels and its scroll
+            // range's rounding absorb, so no test reproduces a range from
+            // it, but a header that fits must never get one.
+            .child(cue.list(region, held.scrollbar).flex_shrink_0())
             .child(
                 div()
                     .flex_1()
