@@ -3991,6 +3991,8 @@ struct ChromeWidths {
 
 impl ChromeWidths {
     fn measure(text: &ChromeText, window: &Window) -> Self {
+        #[cfg(test)]
+        CHROME_MEASURED.with(|measured| measured.set(measured.get() + 1));
         let regular = |text: &str, size: Pixels| line_widths(&[(text, size)], window);
         let medium = |text: &str| {
             shaped_width(text, appearance::ui_text(12.), FontWeight::MEDIUM, window).ceil()
@@ -4041,8 +4043,10 @@ impl ChromeWidths {
 }
 
 thread_local! {
-    static CHROME_WIDTHS: RefCell<Option<(LineKey, ChromeText, ChromeWidths)>> =
-        const { RefCell::new(None) };
+    /// [`ChromeWidths`] for each chrome text and font and sizes drawn
+    /// lately, so the windows and text sizes drawn in turn keep their own.
+    static CHROME_WIDTHS: RefCell<Measured<(LineKey, ChromeText), ChromeWidths>> =
+        const { RefCell::new(Measured::new()) };
 }
 
 /// How the full header lays out its trailing controls: Projects (or History
@@ -4813,7 +4817,9 @@ impl GitTurtle {
 
     /// `ChromeWidths` for the chrome's current text, measured again only when
     /// the text, the font or the sizes change, so a steady render asks the
-    /// text system nothing.
+    /// text system nothing. Each window's text, and each text size, keeps
+    /// its own ([`Measured`]): kept in one slot, two windows' repositories
+    /// measured again on each other's frames.
     fn chrome_widths(&self, window: &Window) -> ChromeWidths {
         let status = self.work_status.as_ref();
         let edge = self.repository_edge();
@@ -4852,19 +4858,10 @@ impl GitTurtle {
                 .operation_busy
                 .map_or_else(String::new, |label| self.operation_text(label)),
         };
-        let key = LineKey::current(window);
-        CHROME_WIDTHS.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            match &*cache {
-                Some((cached, cached_text, widths)) if *cached == key && *cached_text == text => {
-                    *widths
-                }
-                _ => {
-                    let widths = ChromeWidths::measure(&text, window);
-                    *cache = Some((key, text, widths));
-                    widths
-                }
-            }
+        CHROME_WIDTHS.with_borrow_mut(|cache| {
+            *cache.get((LineKey::current(window), text), |(_, text)| {
+                ChromeWidths::measure(text, window)
+            })
         })
     }
 
@@ -5961,8 +5958,11 @@ thread_local! {
     /// The status line's whole text, measured where spare keyboard hints
     /// ask whether it keeps it (`GitTurtle::fit_status_bar`).
     static STATUS_TEXT: TextWidth = const { RefCell::new(None) };
-    /// [`StatusWidths`] for the status bar's current keyboard hints.
-    static STATUS_WIDTHS: RefCell<Option<(LineKey, shortcuts::KeyHints, StatusWidths)>> = const { RefCell::new(None) };
+    /// [`StatusWidths`] for the keyboard hints and font and sizes drawn
+    /// lately, so the windows, pages and text sizes drawn in turn keep their
+    /// own.
+    static STATUS_WIDTHS: RefCell<Measured<(LineKey, shortcuts::KeyHints), StatusWidths>> =
+        const { RefCell::new(Measured::new()) };
     /// The changed-file filter's placeholder as it fits the width its field
     /// last painted at (`workspace::placeholder_fit`).
     static CHANGED_FILTER_FIT: crate::workspace::PlaceholderFit = const { RefCell::new(None) };
@@ -6280,6 +6280,45 @@ pub(crate) fn compact_control_name(
     #[cfg(not(test))]
     let _ = selector;
     control.accessibility_label(name)
+}
+
+/// Values measured for a few keys, the most recently used first, so the
+/// windows, repository tabs, pages or text sizes drawn in turn each keep
+/// theirs. A cache of one slot, keyed by what it measured, made two windows
+/// measure their chrome again on each other's frames, every frame. It keeps
+/// [`MEASURED_KEYS`], the least recently used giving way to a new key.
+pub(crate) struct Measured<K, V>(Vec<(K, V)>);
+
+/// How many keys a [`Measured`] keeps: more windows and text sizes than a
+/// session draws in turn, few enough that a lookup stays a short scan.
+const MEASURED_KEYS: usize = 8;
+
+impl<K: PartialEq, V> Measured<K, V> {
+    pub(crate) const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    /// What was measured for `key`, measured now with `measure` where it is
+    /// not kept.
+    pub(crate) fn get(&mut self, key: K, measure: impl FnOnce(&K) -> V) -> &V {
+        match self.0.iter().position(|(kept, _)| *kept == key) {
+            Some(at) => self.0[..=at].rotate_right(1),
+            None => {
+                let value = measure(&key);
+                self.0.truncate(MEASURED_KEYS - 1);
+                self.0.insert(0, (key, value));
+            }
+        }
+        &self.0[0].1
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`ChromeWidths`] and [`StatusWidths`] were measured,
+    /// for a test.
+    static CHROME_MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static STATUS_MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// `width` for `key`, computed again only when `key` changes, so a steady
@@ -6866,17 +6905,10 @@ impl GitTurtle {
         if bar_room {
             room -= gap + window.pixel_snap(appearance::ui_size(WATCH_CONTROL));
         }
-        STATUS_WIDTHS.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            let key = LineKey::current(window);
-            if !matches!(&*cache, Some((cached, measured, _)) if *cached == key && *measured == hints)
-            {
-                let widths = self.status_widths(&hints, window);
-                *cache = Some((key, hints, widths));
-            }
-            let Some((_, _, widths)) = &*cache else {
-                unreachable!("measured above");
-            };
+        STATUS_WIDTHS.with_borrow_mut(|cache| {
+            let widths = cache.get((LineKey::current(window), hints), |(_, hints)| {
+                self.status_widths(hints, window)
+            });
             let line = match self.fresh_outcome() {
                 Some(outcome) => cached_text_width(&STATUS_OUTCOME, outcome, window, || {
                     line_widths(&[(outcome, appearance::ui_text(10.))], window)
@@ -6921,6 +6953,8 @@ impl GitTurtle {
 
     /// What [`Self::fit_status_bar`] measures for `hints`.
     fn status_widths(&self, hints: &shortcuts::KeyHints, window: &Window) -> StatusWidths {
+        #[cfg(test)]
+        STATUS_MEASURED.with(|measured| measured.set(measured.get() + 1));
         let text = |text: &str| line_widths(&[(text, appearance::ui_text(10.))], window);
         let gap = window.pixel_snap(window.rem_size() * 0.5);
         let lead = text(WATCH_WARNING)
@@ -15605,6 +15639,54 @@ pub(crate) mod tests {
                 }
             );
         }
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
+    }
+
+    /// The chrome's widths and the status bar's are kept for each text and
+    /// size they were measured for, so two drawn in turn are each measured
+    /// once ([`Measured`]): alternating 16 and 18 pt three times in a
+    /// repository window measures each once, and each size draws its
+    /// header, its status bar and its hints where it drew them the first
+    /// time. Each cache kept one slot, so two windows, or two text sizes,
+    /// measured again on each other's frames, every frame.
+    #[gpui::test]
+    async fn alternating_two_sizes_measures_the_chrome_and_the_status_bar_once_each(
+        cx: &mut TestAppContext,
+    ) {
+        let (_fixture, app, cx) = working_window(cx).await;
+        cx.simulate_resize(size(px(1000.), px(700.)));
+        settle(&app, cx).await;
+        let measured = || {
+            (
+                CHROME_MEASURED.with(std::cell::Cell::get),
+                STATUS_MEASURED.with(std::cell::Cell::get),
+            )
+        };
+        let before = measured();
+        let mut first = std::collections::HashMap::new();
+        for _ in 0..3 {
+            for text in [16, 18] {
+                cx.update(|window, cx| appearance::apply_text_sizes(text, 12, window, cx));
+                draw(cx);
+                let drawn = ["repository-header", "status-bar", "status-hints"]
+                    .map(|part| cx.debug_bounds(part));
+                assert!(
+                    drawn[..2].iter().all(Option::is_some),
+                    "{text} pt: the header and the status bar are drawn"
+                );
+                assert_eq!(
+                    *first.entry(text).or_insert(drawn),
+                    drawn,
+                    "{text} pt: drawn where it was the first time"
+                );
+            }
+        }
+        let after = measured();
+        assert_eq!(
+            (after.0 - before.0, after.1 - before.1),
+            (2, 2),
+            "the chrome's and the status bar's widths are measured once for each size"
+        );
         cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
