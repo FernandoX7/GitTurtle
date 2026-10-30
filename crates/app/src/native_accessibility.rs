@@ -2098,8 +2098,8 @@ enum Undrawn {
     Layout,
     /// A clipping container: a strip one pixel across beside it, outside
     /// its layout and what is drawn, which leaves its children outside it
-    /// ([`aside`]), clear of the bounds its nearest clipping ancestor
-    /// reported, if any.
+    /// ([`aside`]), and, wherever a strip beside it can, outside the bounds
+    /// its nearest clipping ancestor reported, if any.
     Edge(Option<gpui::accesskit::Rect>),
 }
 
@@ -2107,7 +2107,8 @@ thread_local! {
     /// The bounds each [`ClipsChildren`] that writes a node reported as it
     /// prepaints what it holds, innermost last: where a container nested in
     /// one reports its own, such as a wrapped row in a list the window draws
-    /// none of, it keeps clear of the bounds around it ([`aside`]). GPUI
+    /// none of, or one under a drawn list's border, it takes a strip clear
+    /// of the bounds around it wherever one beside it is ([`aside`]). GPUI
     /// prepaints a window's elements one inside another, on this thread.
     static CLIPS: std::cell::RefCell<Vec<gpui::accesskit::Rect>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -2182,9 +2183,9 @@ fn drawn_rect(
     match (x, y, undrawn) {
         (Some((x0, x1)), Some((y0, y1)), _) => gpui::accesskit::Rect { x0, y0, x1, y1 },
         (_, _, Undrawn::Layout) => laid_out,
-        (_, None, Undrawn::Edge(clip)) => aside(laid_out, pixel, gpui::Axis::Vertical, clip),
+        (_, None, Undrawn::Edge(clip)) => aside(laid_out, mask, pixel, gpui::Axis::Vertical, clip),
         (None, Some(_), Undrawn::Edge(clip)) => {
-            aside(laid_out, pixel, gpui::Axis::Horizontal, clip)
+            aside(laid_out, mask, pixel, gpui::Axis::Horizontal, clip)
         }
     }
 }
@@ -2215,11 +2216,18 @@ fn drawn_span(start: f64, end: f64, from: f64, to: f64, pixel: f64) -> Option<(f
 /// above or below, its top for one past a side), along its own extent, at
 /// least a pixel, which lies outside the mask along `undrawn` and outside
 /// its layout across it, so its children, which lie across it as it does,
-/// lie outside the strip and AccessKit's filter keeps none of them. Where
-/// the strip would meet `clip`, the bounds its nearest clipping ancestor
-/// reported, as a wrapped row's does in a list the window draws none of, it
-/// lies against the trailing edge instead, so the filter keeps the row out
-/// of that list too.
+/// lie outside the strip and AccessKit's filter keeps none of them. The
+/// strip keeps clear of `mask` and of `clip`, the bounds its nearest
+/// clipping ancestor reported: where the leading one would meet either, as a
+/// wrapped row's does in a list the window draws none of, it lies against
+/// the trailing edge, and where that would too, beyond the container's end
+/// facing away from `mask` along `undrawn`, along its other extent; only
+/// where all three would does it keep the leading one. `clip` can reach
+/// past `mask`: GPUI draws a container's children inside its bounds less
+/// its border, so a wrapped row with only its foot under a list's 1 px top
+/// border is drawn nowhere, while both strips beside it lay in the list's
+/// border, inside its bounds, and the filter kept that row, and the one
+/// before it as its neighbour, as if drawn.
 ///
 /// It lay along the scroll axis, against the container's edge nearest the
 /// mask, where the children a scrolling container holds past that edge run
@@ -2233,54 +2241,81 @@ fn drawn_span(start: f64, end: f64, from: f64, to: f64, pixel: f64) -> Option<(f
 /// height where that list starts on the content's fold.
 fn aside(
     laid_out: gpui::accesskit::Rect,
+    mask: gpui::accesskit::Rect,
     pixel: f64,
     undrawn: gpui::Axis,
     clip: Option<gpui::accesskit::Rect>,
 ) -> gpui::accesskit::Rect {
     use gpui::accesskit::Rect;
-    let (leading, trailing) = match undrawn {
-        gpui::Axis::Vertical => {
-            let (y0, y1) = (laid_out.y0, laid_out.y1.max(laid_out.y0 + pixel));
-            let x1 = laid_out.x1.max(laid_out.x0 + pixel);
-            (
-                Rect {
-                    x0: laid_out.x0 - pixel,
-                    y0,
-                    x1: laid_out.x0,
-                    y1,
-                },
-                Rect {
-                    x0: x1,
-                    y0,
-                    x1: x1 + pixel,
-                    y1,
-                },
-            )
-        }
-        gpui::Axis::Horizontal => {
-            let (x0, x1) = (laid_out.x0, laid_out.x1.max(laid_out.x0 + pixel));
-            let y1 = laid_out.y1.max(laid_out.y0 + pixel);
-            (
-                Rect {
-                    x0,
-                    y0: laid_out.y0 - pixel,
-                    x1,
-                    y1: laid_out.y0,
-                },
+    let (x0, y0) = (laid_out.x0, laid_out.y0);
+    let (x1, y1) = (laid_out.x1.max(x0 + pixel), laid_out.y1.max(y0 + pixel));
+    let (leading, trailing, away) = match undrawn {
+        gpui::Axis::Vertical => (
+            Rect {
+                x0: x0 - pixel,
+                y0,
+                x1: x0,
+                y1,
+            },
+            Rect {
+                x0: x1,
+                y0,
+                x1: x1 + pixel,
+                y1,
+            },
+            if y0 >= mask.y1 {
                 Rect {
                     x0,
                     y0: y1,
                     x1,
                     y1: y1 + pixel,
-                },
-            )
-        }
+                }
+            } else {
+                Rect {
+                    x0,
+                    y0: y0 - pixel,
+                    x1,
+                    y1: y0,
+                }
+            },
+        ),
+        gpui::Axis::Horizontal => (
+            Rect {
+                x0,
+                y0: y0 - pixel,
+                x1,
+                y1: y0,
+            },
+            Rect {
+                x0,
+                y0: y1,
+                x1,
+                y1: y1 + pixel,
+            },
+            if x0 >= mask.x1 {
+                Rect {
+                    x0: x1,
+                    y0,
+                    x1: x1 + pixel,
+                    y1,
+                }
+            } else {
+                Rect {
+                    x0: x0 - pixel,
+                    y0,
+                    x1: x0,
+                    y1,
+                }
+            },
+        ),
     };
-    if clip.is_some_and(|clip| !leading.intersect(clip).is_empty()) {
-        trailing
-    } else {
-        leading
-    }
+    let clear = |strip: &Rect| {
+        strip.intersect(mask).is_empty() && clip.is_none_or(|clip| strip.intersect(clip).is_empty())
+    };
+    [leading, trailing, away]
+        .into_iter()
+        .find(clear)
+        .unwrap_or(leading)
 }
 
 /// `bounds` in the physical window pixels of AccessKit's bounds, at `scale`.
@@ -3275,7 +3310,8 @@ mod tests {
     /// leaves it out along, along its own extent: outside the container and
     /// the mask, however near the mask it lies, at either scale, and beside
     /// its trailing edge where the leading strip would meet the bounds its
-    /// nearest clipping ancestor reported.
+    /// nearest clipping ancestor reported, or beyond its end facing away
+    /// from the mask where both would.
     #[test]
     fn an_undrawn_container_reports_a_strip_beside_it() {
         use gpui::accesskit::Rect;
@@ -3321,6 +3357,15 @@ mod tests {
                 Some(rect(-1., 600., 0., 700.)),
                 rect(100., 620., 101., 640.),
             ),
+            // Under a drawn list's 1 px top border, which the list's bounds
+            // hold and the mask leaves out, with both strips beside it in
+            // the list's side borders: beyond its top, clear of the list.
+            (
+                1.,
+                rect(1., 170., 599., 199.5),
+                Some(rect(0., 199., 600., 600.)),
+                rect(1., 169., 599., 170.),
+            ),
         ] {
             let drawn = drawn_rect(layout, mask, pixel, Undrawn::Edge(clip));
             assert_eq!(
@@ -3332,6 +3377,118 @@ mod tests {
                     && drawn.intersect(mask).is_empty()
                     && clip.is_none_or(|clip| drawn.intersect(clip).is_empty()),
                 "{drawn:?} lies outside {layout:?}, {mask:?} and {clip:?}"
+            );
+        }
+    }
+
+    /// A wrapped row that a list scrolled down draws none of, with only its
+    /// foot under the list's 1 px top border, reports bounds outside the
+    /// list's, so AccessKit's filter keeps it only as the neighbour of the
+    /// first row drawn, not the row before it as its neighbour, and AT-SPI
+    /// reads it as off screen. GPUI draws the rows inside the list's bounds
+    /// less its border, and the list reports its bounds whole: both strips
+    /// beside the row lay in the list's side borders, inside those bounds,
+    /// so the filter measured the row inside the list, kept the row before
+    /// it too, and AT-SPI read the row as showing.
+    #[gpui::test]
+    fn a_row_under_its_lists_border_lies_outside_the_list(cx: &mut TestAppContext) {
+        const ROWS: usize = 8;
+        struct Bordered {
+            scroll: ScrollHandle,
+        }
+        impl Render for Bordered {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let rows = (0..ROWS).map(|index| {
+                    clips_children(
+                        div()
+                            .id(ElementId::Name(format!("bordered-row-{index}").into()))
+                            .debug_selector(move || format!("bordered-row-{index}"))
+                            .role(Role::Button)
+                            .aria_label(format!("Row {index}"))
+                            .h(px(30.))
+                            .flex_shrink_0(),
+                    )
+                });
+                div().size_full().p(px(50.)).child(clips_children(
+                    div()
+                        .id("bordered-list")
+                        .debug_selector(|| "bordered-list".into())
+                        .role(Role::ListBox)
+                        .aria_label("Rows")
+                        .w(px(100.))
+                        .h(px(100.))
+                        .border_1()
+                        .border_color(rgb(0x000000))
+                        .overflow_scroll()
+                        .track_scroll(&self.scroll)
+                        .flex()
+                        .flex_col()
+                        .children(rows),
+                ))
+            }
+        }
+
+        // The rows start under the border; 60.5 px down, the second row
+        // ends half a pixel inside it.
+        let scroll = ScrollHandle::new();
+        scroll.set_offset(point(px(0.), px(-60.5)));
+        let (_view, cx) = cx.add_window_view({
+            let scroll = scroll.clone();
+            move |_, _| Bordered { scroll }
+        });
+        written::forget();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let scale = cx.update(|window, _| f64::from(window.scale_factor()));
+        let physical = |bounds: Bounds<Pixels>| super::physical(bounds, scale as f32);
+        let layout = physical(cx.debug_bounds("bordered-list").expect("the list"));
+        let row = physical(cx.debug_bounds("bordered-row-1").expect("the second row"));
+        assert!(
+            row.y1 > layout.y0 && row.y1 < layout.y0 + scale && row.x0 > layout.x0,
+            "the second row {row:?} ends inside the list's {layout:?} top border"
+        );
+        let list = clipping_node("bordered-list")
+            .and_then(|node| node.bounds())
+            .expect("the list clips its rows");
+        assert_eq!(list, layout, "the list is drawn whole");
+        let reported = clipping_node("bordered-row-1")
+            .and_then(|node| node.bounds())
+            .expect("the wrapped row clips what it holds");
+        assert!(
+            reported.intersect(list).is_empty(),
+            "the second row, drawn nowhere, reports {reported:?} inside the list's {list:?}"
+        );
+
+        let assembly = || {
+            (0..ROWS).fold(written::Assembly::default(), |assembly, index| {
+                assembly.written(&format!("bordered-row-{index}"), None)
+            })
+        };
+        let window = cx.update(|window, _| {
+            physical(Bounds::new(point(px(0.), px(0.)), window.viewport_size()))
+        });
+        let found = reachable(assembly().tree(window, None));
+        let rows: Vec<_> = found
+            .iter()
+            .filter(|node| node.role == Role::Button)
+            .filter_map(|node| node.label.clone())
+            .collect();
+        assert!(
+            rows.starts_with(&["Row 1".to_string(), "Row 2".to_string()]),
+            "AccessKit's filter keeps the second row as the first drawn row's neighbour, and \
+             not the first row: {rows:?}"
+        );
+
+        #[cfg(target_os = "linux")]
+        {
+            use accesskit_atspi_common::State;
+            let found = atspi_state_tests::reached(assembly().tree(window, None));
+            let row = found
+                .iter()
+                .find(|node| node.name == "Row 1")
+                .expect("AT-SPI reaches the second row");
+            assert!(
+                row.state.contains(State::Visible) && !row.state.contains(State::Showing),
+                "the second row is visible but off screen: {row:?}"
             );
         }
     }
