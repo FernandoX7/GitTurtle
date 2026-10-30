@@ -73,6 +73,9 @@ pub(super) struct ReviewState {
     /// content while none is (`Panel::flow_top_line`). The body's scroll moves with each change
     /// of it while a conversation is open, so the body's content stays where it was drawn.
     pub top_line: std::rc::Rc<std::cell::Cell<Pixels>>,
+    /// The scroll of the top line's text while it stands above the body, which its scrollbar
+    /// cues where the text is taller than its room.
+    pub top_line_scroll: ScrollHandle,
     pub files: Vec<PullFile>,
     pub file_page: u32,
     pub files_next: bool,
@@ -125,6 +128,7 @@ impl ReviewState {
             body_blocks: Blocks::default(),
             opened: Default::default(),
             top_line: Default::default(),
+            top_line_scroll: ScrollHandle::new(),
             files: vec![],
             file_page: 1,
             files_next: false,

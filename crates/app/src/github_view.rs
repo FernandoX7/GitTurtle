@@ -1660,7 +1660,9 @@ impl Panel {
     /// conversation, the draft being written included, down by its height. Where the content
     /// does not fill the body, there is nothing to scroll, and the conversation moves down by
     /// the line rather than lie under it. Text lines taller than half the body's room scroll
-    /// within the line, so the body keeps room for the conversation.
+    /// within the line, so the body keeps room for the conversation, and the line's scrollbar
+    /// cues the rest ([`crate::tags::ScrollCue`]); a long remedy was once cut there with no
+    /// sign of more.
     fn pin_top_line(
         &self,
         lines: Vec<AnyElement>,
@@ -1672,6 +1674,9 @@ impl Panel {
         let drawn = self.review.top_line.clone();
         let scroll = self.review.body_scroll.clone();
         let revealed = self.review.revealed_focus.clone();
+        // The text holds no control, so its rows keep no room for rings.
+        let text = &self.review.top_line_scroll;
+        let cue = crate::tags::ScrollCue::new(text, Pixels::ZERO);
         let line = (!lines.is_empty() || busy.is_some()).then(|| {
             div()
                 .debug_selector(|| "github-top-line".into())
@@ -1682,16 +1687,22 @@ impl Panel {
                 .border_b_1()
                 .border_color(rgb(p.border))
                 .when(!lines.is_empty(), |line| {
-                    line.child(crate::native_accessibility::clips_children(
-                        div()
-                            .id("github-top-line-scroll")
-                            .max_h(body_max_height(window) / 2.)
-                            .overflow_y_scroll()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .children(lines),
-                    ))
+                    line.child(
+                        cue.list(
+                            div()
+                                .on_children_prepainted(cue.observe(|_, _, _| {}))
+                                .id("github-top-line-scroll")
+                                .debug_selector(|| "github-top-line-scroll".into())
+                                .track_scroll(text)
+                                .max_h(body_max_height(window) / 2.)
+                                .overflow_y_scroll()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .children(lines),
+                            "github-top-line-scrollbar",
+                        ),
+                    )
                 })
                 .children(busy)
         });
@@ -5147,6 +5158,77 @@ mod tests {
             "the notice about the reply sent on this conversation stays"
         );
         escape(cx);
+    }
+
+    /// The top line's text, where it is taller than its room above an open conversation, scrolls
+    /// within the line, and the line's scrollbar cues the rest, its thumb in a gutter clear of
+    /// the text: the fixture's notice with a long failure at 18 pt in a 461 × 490 window. A
+    /// short line keeps no gutter and paints no thumb. The text once scrolled with no sign of
+    /// more, a long remedy cut at the line's edge.
+    #[gpui::test]
+    async fn the_top_lines_long_text_cues_its_scrollbar(cx: &mut TestAppContext) {
+        use crate::tags::tests::{draw, painted_thumb};
+        use gpui_kit::component::scroll::Scrollbar;
+        const FAILURE: &str = "PR changes need their captured head, base, and common ancestor \
+                               locally. Use an explicit Fetch if needed, then reopen the PR. \
+                               The comparison could not find the captured base revision in \
+                               the local repository, nor the captured head revision, nor a \
+                               common ancestor of the two.";
+        let (_fixture, app, panel, cx) = notice_panel(cx);
+        let pull = github::review::fixture_pull(false);
+        let identity = pull.capture(Repository::parse("gitturtle-fixture/native-review").unwrap());
+        let page = Client(UiTransport::Fixture { moved: false })
+            .review_threads(&identity, None, &OperationControl::default())
+            .unwrap();
+        let target = page.items[0].target.clone();
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, _| {
+                panel.pull = Some(pull);
+                panel.review.show_list = false;
+                panel.review.section = Section::Overview;
+                panel.receive_threads(page, None);
+                panel.conversations.active = Some(target);
+            })
+        });
+        let bar = Scrollbar::width();
+        for (interface, width, height, failure, cued) in [
+            (18, 461., 490., Some(FAILURE), true),
+            (13, 1480., 980., None, false),
+        ] {
+            let at = format!("{interface} pt in {width} × {height}");
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, _| {
+                    // A failure of a request from the panel, which answers on its top line.
+                    panel.origin = Origin::Panel;
+                    panel.error = failure.map(str::to_owned);
+                })
+            });
+            open_notice_panel(&app, &panel, (interface, width, height), cx).await;
+            draw(cx);
+            let text = cx
+                .debug_bounds("github-top-line-scroll")
+                .expect("the line's text");
+            let notice = cx.debug_bounds("github-notice").expect("the notice");
+            assert_eq!(
+                notice.right() < text.right() - px(0.5),
+                cued,
+                "{at}: the notice {notice:?} keeps a gutter in {text:?} only where cued"
+            );
+            // The scrollbar's viewport, which its track fills.
+            let track = Bounds::new(
+                point(text.right() - bar - px(4.), text.top()),
+                size(bar + px(4.), text.size.height),
+            );
+            let thumb = painted_thumb(cx, track);
+            assert_eq!(
+                thumb.is_some(),
+                cued,
+                "{at}: a scrollbar ({thumb:?}) only where the line's text is taller than its room"
+            );
+            escape(cx);
+        }
+        cx.update(|_, cx| panel.update(cx, |panel, _| panel.error = None));
+        cx.update(|window, cx| appearance::apply_text_sizes(13, 12, window, cx));
     }
 
     /// Each press the panel refuses is said again, with a fresh alert node, though it refuses
