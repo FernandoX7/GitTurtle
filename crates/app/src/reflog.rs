@@ -256,12 +256,21 @@ impl ReflogBrowser {
     }
 }
 
+/// A read asked for while another is yet to answer, which submits it.
+type WaitingRead = Box<dyn FnOnce(&mut ReflogBrowser, &mut Window, &mut Context<ReflogBrowser>)>;
+
 pub(crate) struct ReflogBrowser {
     closed: Arc<std::sync::atomic::AtomicBool>,
     owner: WeakEntity<GitTurtle>,
     repo: GitRepository,
     reader: operations::SerialExecutor,
     task: Option<Task<()>>,
+    /// Whether a read submitted to `reader` is yet to answer: the browser
+    /// submits one at a time ([`Self::read`]).
+    reading: bool,
+    /// The latest read asked for while another was yet to answer, which
+    /// starts once that one answers.
+    waiting: Option<WaitingRead>,
     cancellation: gitturtle_core::HistoryCancellation,
     scope: Entity<InputState>,
     query: Entity<InputState>,
@@ -335,6 +344,8 @@ impl ReflogBrowser {
             repo,
             reader: operations::SerialExecutor::new("reflog-browser"),
             task: None,
+            reading: false,
+            waiting: None,
             cancellation: Default::default(),
             scope,
             query,
@@ -355,9 +366,13 @@ impl ReflogBrowser {
             _subscriptions: vec![scope_subscription, query_subscription],
         }
     }
+    /// Cancels the read in progress and drops its reply, and any read
+    /// waiting to start after it.
     fn cancel(&mut self) {
         self.cancellation.cancel();
         self.task = None;
+        self.reading = false;
+        self.waiting = None;
         self.pending = false;
     }
     /// As the loading row goes, focus its Cancel holds moves to the stop the
@@ -425,6 +440,13 @@ impl ReflogBrowser {
             owner.path.as_deref() == Some(self.repo.path()) && owner.operation_busy.is_none()
         })
     }
+    /// Asks the browser's reader for a read, one at a time: while an earlier
+    /// read is yet to answer, this one cancels it, so its Git process stops,
+    /// and waits in place of any read already waiting, to start once the
+    /// earlier one answers, whose reply then lands nowhere. Each arrow press
+    /// selects an entry and asks for its read, and the reader's queue holds
+    /// eight, so a key held while a read was slow filled it and the presses
+    /// after that failed at once with "Background executor is busy…".
     fn read<T: Send + 'static>(
         &mut self,
         operation: impl FnOnce(GitRepository) -> anyhow::Result<T> + Send + 'static,
@@ -432,18 +454,66 @@ impl ReflogBrowser {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.cancel();
+        self.cancellation.cancel();
         self.pending = true;
         self.error = None;
+        if self.reading {
+            self.waiting = Some(Box::new(move |this, window, cx| {
+                this.submit(operation, receive, window, cx)
+            }));
+            cx.notify();
+        } else {
+            self.submit(operation, receive, window, cx);
+        }
+    }
+    /// Submits a read to the browser's reader. Its reply lands it, unless a
+    /// later read waits, which the reply starts instead.
+    fn submit<T: Send + 'static>(
+        &mut self,
+        operation: impl FnOnce(GitRepository) -> anyhow::Result<T> + Send + 'static,
+        receive: impl FnOnce(&mut Self, T, &mut Window, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let repo = self.repo.clone();
         self.cancellation = Default::default();
         let cancellation = self.cancellation.clone();
         let response = self.reader.submit_read(move || {
             gitturtle_core::run_cancellable_inspection(cancellation, || operation(repo))
         });
+        self.reading = true;
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = response.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Reflog read interrupted. Refresh to try again.")));
-            let _ = this.update_in(cx, |this, window, cx| { if this.closed.load(std::sync::atomic::Ordering::Acquire) { return; } this.pending = false; this.reveal_filter = true; this.leave_loading_row(window, cx); if !this.current(cx) { this.error = Some("The repository changed or an operation started. Reopen the reflog when it finishes.".into()); } else { match result { Ok(value) => receive(this, value, window, cx), Err(error) => this.error = Some(format!("{error:#}")) } } cx.notify(); });
+            let result = response.await.unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "Reflog read interrupted. Refresh to try again."
+                ))
+            });
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.reading = false;
+                if this.closed.load(std::sync::atomic::Ordering::Acquire) {
+                    return;
+                }
+                // A later read waits: this reply is superseded, and starts it.
+                if let Some(waiting) = this.waiting.take() {
+                    waiting(this, window, cx);
+                    return;
+                }
+                this.pending = false;
+                this.reveal_filter = true;
+                this.leave_loading_row(window, cx);
+                if !this.current(cx) {
+                    this.error = Some(
+                        "The repository changed or an operation started. Reopen the reflog when it finishes."
+                            .into(),
+                    );
+                } else {
+                    match result {
+                        Ok(value) => receive(this, value, window, cx),
+                        Err(error) => this.error = Some(format!("{error:#}")),
+                    }
+                }
+                cx.notify();
+            });
         }));
         cx.notify();
     }
@@ -1048,6 +1118,65 @@ mod tests {
         assert!(cx.debug_bounds("reflog-error").is_none(), "the next read");
         assert!(browser.read_with(cx, |this, _| this.commit.is_some()));
         assert_eq!(rendered(cx, "reflog-list"), list, "the list stays put");
+    }
+
+    /// Down held past the last entry while a commit's read is slow selects
+    /// each entry it reaches as it goes, but the browser reads one commit at
+    /// a time: the entry the key rests on waits for the slow read, and the
+    /// entries passed over are never read, so no press is refused. Every
+    /// press queued a read on the browser's reader, whose queue holds eight,
+    /// so the presses after the eighth failed at once with "Background
+    /// executor is busy…". Once the slow read answers, the last entry's
+    /// commit lands.
+    #[gpui::test]
+    async fn held_arrows_wait_for_a_slow_read(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = changed_repository(fixture.path(), 1);
+        let (_, browser, cx) = opened_browser(cx, &repo).await;
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+
+        // The reader's thread is held, as by a slow read, while Down repeats
+        // sixteen times through the twelve entries.
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        let down = Keystroke::parse("down").unwrap();
+        for repeat in 0..16 {
+            cx.simulate_event(KeyDownEvent {
+                keystroke: down.clone(),
+                is_held: repeat > 0,
+                prefer_character_input: false,
+            });
+            draw(cx);
+        }
+        cx.simulate_event(KeyUpEvent { keystroke: down });
+        draw(cx);
+        let last = browser.read_with(cx, |this, _| {
+            this.page.as_ref().expect("the log loaded").entries[11].clone()
+        });
+        assert_eq!(
+            cx.update(|window, cx| browser.read(cx).entries.focused(window)),
+            Some(ElementId::from(("reflog-entry", 11_usize))),
+            "focus moves with every press"
+        );
+        let (selected, pending, error) = browser.read_with(cx, |this, _| {
+            (this.selected.clone(), this.pending, this.error.clone())
+        });
+        assert_eq!(selected.as_ref(), Some(&last), "and so does the selection");
+        assert_eq!(error, None, "no press is refused");
+        assert!(pending, "the last entry's read waits");
+        assert!(cx.debug_bounds("reflog-error").is_none());
+        assert!(cx.debug_bounds("cancel-reflog-read").is_some());
+
+        drop(held);
+        settle_reads(cx, &browser);
+        let (commit, error) =
+            browser.read_with(cx, |this, _| (this.commit.clone(), this.error.clone()));
+        assert_eq!(error, None);
+        assert_eq!(
+            commit.map(|commit| commit.oid),
+            Some(last.oid),
+            "the last entry's commit lands"
+        );
     }
 
     /// In a 461 × 490 half tile, at 13 and 18 pt, every Tab stop of the

@@ -21,6 +21,7 @@ Bounds apply at each owner's scope, not automatically to the whole process. Trac
 | Changed/working path filtering | The window's lazy `path_filter::State` executor, with snapshot identity and cancellation tickets; working filtering reuses this lane. |
 | Later PDF pages and model frames | Separate process-wide `OnceLock` renderers in `pdf_view::renderer` and `model_view::renderer`; content owners retain their own caches, generations and cancellation. A shared lane does not make retained view memory global or free. |
 | Stash inspection | The dialog's `StashBrowser` owns a metadata executor and preview `Worker`; replacement/closure must also pause retained documents. |
+| Reflog inspection | The dialog's `ReflogBrowser` owns a `SerialExecutor` and submits one read to it at a time: a read asked for meanwhile cancels the one running and waits in place of any earlier request until that one answers, so key repeat on the entry list cannot fill the executor's bounded queue. Cancel and closing the dialog cancel the running read and drop the waiting one. |
 | Linux desktop preferences | One app-global `desktop_text::Observer`; see [desktop observers](#desktop-observers). |
 
 New read jobs need a captured identity, a bounded queue/input/result and a terminal path for supersession, error and owner release. Keep accepted writes on their existing path. Do not add a second persistence or Git policy implementation to a native view merely because it uses a separate executor.
