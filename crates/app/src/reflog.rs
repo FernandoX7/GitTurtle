@@ -144,6 +144,40 @@ impl ReadPlace {
     }
 }
 
+/// For the `on_prepaint` of the error a read has just ended with, inside
+/// the content `scroll` tracks: once the frame is painted, scrolls the
+/// content by the least amount that shows the error with `room` around it,
+/// to the nearest edge. It acts after the reveal of any control focus moved
+/// onto in the same frame, which a quick reply can share with the key that
+/// asked for the read, so that reveal cannot leave the error out of view;
+/// it acts once, so a later scroll, the user's or a focus change's, stays
+/// where it takes the content.
+fn reveal_landed(
+    scroll: ScrollHandle,
+    room: Pixels,
+) -> impl FnOnce(Bounds<Pixels>, &mut Window, &mut App) + 'static {
+    move |error, window, cx| {
+        let drawn_at = scroll.offset().y;
+        window.defer(cx, move |window, _| {
+            let offset = scroll.offset();
+            let view = scroll.bounds();
+            let error = error + point(px(0.), offset.y - drawn_at);
+            let mut by = Pixels::ZERO;
+            if error.bottom() + room > view.bottom() {
+                by = view.bottom() - (error.bottom() + room);
+            }
+            if error.top() - room + by < view.top() {
+                by = view.top() - (error.top() - room);
+            }
+            let y = (offset.y + by).clamp(-scroll.max_offset().y, Pixels::ZERO);
+            if y != offset.y {
+                scroll.set_offset(point(offset.x, y));
+                window.refresh();
+            }
+        });
+    }
+}
+
 /// [`native_accessibility::text`] at the dialog's text inset.
 fn label(
     id: &'static str,
@@ -317,13 +351,15 @@ pub(crate) struct ReflogBrowser {
     /// Whether the next frame scrolls the content to show the filter, if it
     /// holds focus: set as the dialog opens and as a read of the log or an
     /// entry lands, since the scope's summary that a read adds above the
-    /// filter moves it down. The recovery review's read, whose error stands
-    /// at the content's end, sets [`Self::reveal_recovery`] instead.
+    /// filter moves it down. An entry's read that fails, and the recovery
+    /// review's read, whose errors stand at the content's end, set
+    /// [`Self::reveal_error`] instead.
     reveal_filter: bool,
-    /// Whether the next frame scrolls the content to its end, to show the
-    /// error the recovery review ended with below Review recovery branch…,
-    /// the content's last control.
-    reveal_recovery: bool,
+    /// Whether the next frame scrolls the content by the least amount that
+    /// shows the error a read just ended with, in the selected entry's
+    /// details or below Review recovery branch…, the content's last line
+    /// ([`reveal_landed`]).
+    reveal_error: bool,
     /// The changed-file list's scroll, which its scrollbar follows.
     files_scroll: ScrollHandle,
     /// The entries whose text the last layout cut.
@@ -397,7 +433,7 @@ impl ReflogBrowser {
             content: FocusReveal::new(Trigger::Keyboard),
             entries: FocusReveal::new(Trigger::Keyboard),
             reveal_filter: false,
-            reveal_recovery: false,
+            reveal_error: false,
             files_scroll: ScrollHandle::new(),
             cut_entries: CutEntries::default(),
             pending: false,
@@ -571,6 +607,7 @@ impl ReflogBrowser {
                     return;
                 }
                 this.pending = false;
+                let left_cancel = this.cancel_read.holds_focus(window);
                 this.leave_loading_row(window, cx);
                 let place = this.read_place();
                 if !this.current(cx) {
@@ -584,15 +621,22 @@ impl ReflogBrowser {
                         Err(error) => this.error = Some(format!("{error:#}")),
                     }
                 }
-                // The recovery review's error stands at the content's end,
-                // below the fold where the content scrolls, and its read
-                // does not scroll back to the filter, which the pointer's
-                // presses leave holding focus: that moved the list, and
-                // Review recovery branch… with it, from under the pointer,
-                // and took the review's error out of view.
+                // The error an entry's read or the recovery review ends with
+                // stands at the content's end, below its fold where the
+                // content is short, as at 18 pt in a 461 × 490 half tile:
+                // it is revealed as it lands, focus staying where it is, so
+                // a failed read is never out of view. Neither read scrolls
+                // back to the filter, which the pointer's presses leave
+                // holding focus: that moved the list, and Review recovery
+                // branch… with it, from under the pointer, and took the
+                // review's error out of view. Focus that leaves an entry's
+                // Cancel for the entry, far above the error, is revealed
+                // instead, so the entry it lands on draws its ring.
                 match place {
-                    ReadPlace::Log | ReadPlace::Entry => this.reveal_filter = true,
-                    ReadPlace::Recovery => this.reveal_recovery = this.error.is_some(),
+                    ReadPlace::Log => this.reveal_filter = true,
+                    ReadPlace::Entry if this.error.is_none() => this.reveal_filter = true,
+                    ReadPlace::Entry => this.reveal_error = !left_cancel,
+                    ReadPlace::Recovery => this.reveal_error = this.error.is_some(),
                 }
                 cx.notify();
             });
@@ -769,12 +813,6 @@ impl Render for ReflogBrowser {
                 + usize::from(self.page.as_ref().is_some_and(|page| page.truncated));
             self.content.scroll().scroll_to_item(filter);
         }
-        // The recovery review's error is the content's last child, below
-        // Review recovery branch…: the content's end shows it and its ring
-        // room, which only a fold that cuts it moves.
-        if std::mem::take(&mut self.reveal_recovery) {
-            self.content.scroll().scroll_to_bottom();
-        }
         let scope = self.scope.read(cx).focus_handle(cx);
         let read_log = self.content.focus("refresh-reflog", cx);
         let filter = self.query.read(cx).focus_handle(cx);
@@ -841,10 +879,14 @@ impl Render for ReflogBrowser {
         // stood above the list, which moved down by its height with each
         // failed read, far from Review recovery branch… and out of view
         // where the content had scrolled down to it.
+        let reveal_error = std::mem::take(&mut self.reveal_error);
         let error = self.error.as_ref().map(|error| {
             label("reflog-error", error.clone())
                 .text_size(crate::appearance::ui_text(12.))
                 .text_color(rgb(p.warning))
+                .when(reveal_error, |error| {
+                    error.on_prepaint(reveal_landed(self.content.scroll().clone(), room))
+                })
         });
         let (error_above, error_below, error_after_review) = place.slots(error);
         let show_entry = self.entries.items(entries.clone(), room);
@@ -1200,9 +1242,10 @@ mod tests {
 
     /// An entry whose commit has been pruned since Git logged it shows its
     /// read's error in the details below the list, where the read's loading
-    /// row stood, and the list stays where it was, focus on the entry; the
-    /// error stood above the list, which moved down by its height with each
-    /// entry whose read failed. The next entry's read takes it away.
+    /// row stood, and the list keeps its place in the content, focus on the
+    /// entry; the error stood above the list, which moved down by its height
+    /// with each entry whose read failed. The next entry's read takes it
+    /// away.
     #[gpui::test]
     async fn a_pruned_commits_error_stands_below_the_entry_list(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
@@ -1211,7 +1254,7 @@ mod tests {
         let entry = |index: usize| Some(ElementId::from(("reflog-entry", index)));
         cx.simulate_keystrokes("tab");
         draw(cx);
-        let list = rendered(cx, "reflog-list");
+        let list = in_content(cx, &browser, "reflog-list");
 
         cx.simulate_keystrokes("down");
         settle_reads(cx, &browser);
@@ -1219,9 +1262,13 @@ mod tests {
             .read_with(cx, |this, _| this.error.clone())
             .expect("the pruned commit's read fails");
         assert!(error.contains("unavailable locally"), "{error}");
-        assert_eq!(rendered(cx, "reflog-list"), list, "the list stays put");
-        let shown = rendered(cx, "reflog-error");
-        let details = rendered(cx, "reflog-selected-object");
+        assert_eq!(
+            in_content(cx, &browser, "reflog-list"),
+            list,
+            "the list keeps its place"
+        );
+        let shown = in_content(cx, &browser, "reflog-error");
+        let details = in_content(cx, &browser, "reflog-selected-object");
         assert!(
             shown.top() >= details.bottom() && details.top() >= list.bottom(),
             "the error {shown:?} stands below the entry's details {details:?}, \
@@ -1237,7 +1284,100 @@ mod tests {
         settle_reads(cx, &browser);
         assert!(cx.debug_bounds("reflog-error").is_none(), "the next read");
         assert!(browser.read_with(cx, |this, _| this.commit.is_some()));
-        assert_eq!(rendered(cx, "reflog-list"), list, "the list stays put");
+        assert_eq!(
+            in_content(cx, &browser, "reflog-list"),
+            list,
+            "the list keeps its place"
+        );
+    }
+
+    /// At 18 pt in a 461 × 490 half tile an entry's read error stands below
+    /// the content's fold. As it lands, the content scrolls by the least
+    /// amount that shows it, focus staying on the entry, even in a frame
+    /// whose focus reveal is due, as when a quick reply lands before the
+    /// frame that draws the key's move of focus; a later scroll stays where
+    /// it takes the content. Focus that leaves the read's Cancel for the
+    /// entry as the error lands is shown instead, the entry's ring whole.
+    /// The error lay out of view, focus on the entry, and nothing in view
+    /// said the read had failed.
+    #[gpui::test]
+    async fn an_entry_read_error_scrolls_into_view(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = pruned_repository(fixture.path());
+        let (app, browser, cx) = opened_browser(cx, &repo).await;
+        cx.simulate_resize(size(px(461.), px(490.)));
+        set_interface_text_size(cx, &app, 18);
+        let entry = |index: usize| Some(ElementId::from(("reflog-entry", index)));
+        let in_list = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| browser.read(cx).entries.focused(window))
+        };
+        let offset = |cx: &mut VisualTestContext| {
+            browser.read_with(cx, |this, _| this.content.scroll().offset().y)
+        };
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(in_list(cx), entry(0), "the keyboard is on the first entry");
+
+        // Down reaches the pruned commit, its read held as a slow read is.
+        // The frame its error lands in has the content's focus reveal due,
+        // as a reply landing before the frame that draws the key's move of
+        // focus has it; the harness draws after every update, so a key's
+        // move of focus is always drawn before a reply can land.
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        browser.read_with(cx, |this, _| this.content.reveal_next_focus());
+        drop(held);
+        settle_reads(cx, &browser);
+        assert!(
+            browser.read_with(cx, |this, _| this.error.is_some()),
+            "the pruned commit's read fails"
+        );
+        let content = rendered(cx, "reflog-browser-content");
+        let error = rendered(cx, "reflog-error");
+        assert!(
+            shows_whole(content, error),
+            "the content {content:?} shows the error {error:?}"
+        );
+        assert_eq!(in_list(cx), entry(1), "focus stays on the entry");
+
+        // A wheel over the error scrolls the content back to its start, where
+        // it stays.
+        cx.simulate_mouse_move(error.center(), None, Modifiers::default());
+        draw(cx);
+        cx.simulate_event(ScrollWheelEvent {
+            position: error.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(2000.))),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        draw(cx);
+        park_pointer(cx);
+        assert_eq!(offset(cx), px(0.), "the later scroll stays");
+
+        // Up to the entry above, whose commit lands, then Down again with the
+        // read held, and Tab past Copy commit ID to the read's Cancel.
+        cx.simulate_keystrokes("up");
+        settle_reads(cx, &browser);
+        let held = browser.read_with(cx, |this, _| this.reader.hold());
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        cx.simulate_keystrokes("tab tab");
+        draw(cx);
+        let cancel = browser.read_with(cx, |this, _| this.cancel_read.handle().clone());
+        assert!(
+            cx.update(|window, _| cancel.is_focused(window)),
+            "Tab reaches the read's Cancel"
+        );
+        drop(held);
+        settle_reads(cx, &browser);
+        assert!(browser.read_with(cx, |this, _| this.error.is_some()));
+        assert_eq!(
+            in_list(cx),
+            entry(1),
+            "focus moves from Cancel to the entry"
+        );
+        crate::tags::tests::assert_rings_whole(cx, &["reflog-entry-1"]);
     }
 
     /// Down held past the last entry while a commit's read is slow selects
